@@ -403,47 +403,22 @@ namespace impl {
         static constexpr bool kwargs        = U::is_kwargs;
     };
 
+    /// TODO: it might be possible to completely bypass overload keys for C++ function
+    /// calls, since all the validation is done at compile time, and I can directly
+    /// recur over the parameter pack to generate the call.  That would be a great
+    /// optimization, since it would avoid any dynamic allocations or additional
+    /// validation overhead.
+    /// -> Params would still need to be generated in order to get an accurate hash,
+    /// but these are lightweight, trivially destructible, and can be placed entirely
+    /// on the stack using a std::array of a definite size if possible.  If argument
+    /// unpacking operators are used at the call site, then a dynamic allocation will
+    /// be unavoidable, and I'll just instantiate the overload directly and fill it in
+    /// using the index operator, which will directly assign to the internal vector.
+
     /* An overload key consisting of a sequence of parameter annotations, which
     describe a Python-style call signature.  Keys of this form can be used to search a
     function's overload trie during calls and other operations. */
     struct OverloadKey {
-    private:
-
-        /* Convert a Python string into a coherent argument name, ensuring that it
-        is well-formed and does not contain any invalid characters.  Leading '*' and
-        '**' prefixes will be preserved. */
-        static std::string_view param_name(PyObject* str) {
-            Py_ssize_t len;
-            const char* data = PyUnicode_AsUTF8AndSize(str, &len);
-            if (data == nullptr) {
-                Exception::from_python();
-            }
-            std::string_view view{data, static_cast<size_t>(len)};
-            std::string_view sub = view.substr(
-                view.starts_with("*") +
-                view.starts_with("**")
-            );
-            if (sub.empty()) {
-                throw TypeError("argument name cannot be empty");
-            }
-            if (std::isdigit(sub.front())) {
-                throw TypeError(
-                    "argument name cannot start with a number: '" +
-                    std::string(sub) + "'"
-                );
-            }
-            for (const char c : sub) {
-                if (!std::isalnum(c) && c != '_') {
-                    throw TypeError(
-                        "argument name must only contain alphanumerics and "
-                        "underscores: '" + std::string(sub) + "'"
-                    );
-                }
-            }
-            return view;
-        }
-
-    public:
         struct Param {
             enum Category {
                 POSONLY_DELIMITER,
@@ -498,7 +473,7 @@ namespace impl {
                 return category == KWARGS;
             }
 
-            std::string description() const noexcept {
+            std::string_view description() const noexcept {
                 switch (category) {
                     case POSONLY_DELIMITER: return "positional-only '/' delimiter";
                     case KWONLY_DELIMITER: return "keyword-only '*' delimiter";
@@ -521,8 +496,43 @@ namespace impl {
                     static_cast<size_t>(category)
                 );
             }
+
+            static std::string_view get_name(std::string_view view) {
+                std::string_view sub = view.substr(
+                    view.starts_with("*") +
+                    view.starts_with("**")
+                );
+                if (sub.empty()) {
+                    throw TypeError("argument name cannot be empty");
+                }
+                if (std::isdigit(sub.front())) {
+                    throw TypeError(
+                        "argument name cannot start with a number: '" +
+                        std::string(sub) + "'"
+                    );
+                }
+                for (const char c : sub) {
+                    if (!std::isalnum(c) && c != '_') {
+                        throw TypeError(
+                            "argument name must only contain alphanumerics and "
+                            "underscores: '" + std::string(sub) + "'"
+                        );
+                    }
+                }
+                return view;
+            }
+
+            static std::string_view get_name(PyObject* str) {
+                Py_ssize_t len;
+                const char* data = PyUnicode_AsUTF8AndSize(str, &len);
+                if (data == nullptr) {
+                    Exception::from_python();
+                }
+                return get_name({data, static_cast<size_t>(len)});
+            }
         };
 
+    private:
         std::vector<Param> vec;
         Py_ssize_t idx;
         Py_ssize_t posonly_idx;
@@ -531,11 +541,13 @@ namespace impl {
         Py_ssize_t args_idx;
         Py_ssize_t kwargs_idx;
         Py_ssize_t default_idx;
-        size_t hash;
+        size_t _hash;
+
+    public:
 
         explicit OverloadKey(size_t size) :
             idx(0), posonly_idx(size), kw_idx(size), kwonly_idx(size), args_idx(size),
-            kwargs_idx(size), default_idx(size), hash(0)
+            kwargs_idx(size), default_idx(size), _hash(0)
         {
             vec.reserve(size);
         }
@@ -578,7 +590,7 @@ namespace impl {
             } else {
                 throw TypeError("invalid category for overload parameter");
             }
-            hash = impl::hash_combine(hash, par.hash());
+            _hash = impl::hash_combine(_hash, par.hash());
             vec[idx++] = std::move(par);
         }
 
@@ -618,7 +630,7 @@ namespace impl {
                         repr(reinterpret_borrow<Object>(slice->stop))
                     );
                 }
-                name = param_name(slice->start);
+                name = Param::get_name(slice->start);
                 category = Param::KW;
                 type = reinterpret_cast<PyTypeObject*>(slice->stop);
 
@@ -722,7 +734,7 @@ namespace impl {
                 // These may also have default values provided as an optional
                 // third element.
                 } else if (PyUnicode_Check(slice->start)) {
-                    name = param_name(slice->start);
+                    name = Param::get_name(slice->start);
                     if (!PyType_Check(slice->stop)) {
                         throw TypeError(
                             "argument type for parameter '" + std::string(name) +
@@ -900,6 +912,20 @@ namespace impl {
         /// needs to be a cousin for Python calls that does the same thing from a
         /// vectorcall argument array.  Both of the latter can apply the simplified
         /// logic, since it will be used in the call operator.
+
+        size_t hash() const noexcept { return _hash; }
+        size_t size() const noexcept { return vec.size(); }
+        bool empty() const noexcept { return vec.empty(); }
+
+        Param& operator[](size_t i) noexcept { return vec[i]; }
+        const Param& operator[](size_t i) const noexcept { return vec[i]; }
+
+        auto begin() noexcept { return vec.begin(); }
+        auto begin() const noexcept { return vec.begin(); }
+        auto cbegin() const noexcept { return vec.cbegin(); }
+        auto end() noexcept { return vec.end(); }
+        auto end() const noexcept { return vec.end(); }
+        auto cend() const noexcept { return vec.cend(); }
     };
 
     /// TODO: Inspect will require some interaction with the global type map, which
@@ -909,125 +935,6 @@ namespace impl {
     /* A helper that inspects pure Python functions and extracts their inline parameter
     annotations so that they can be translated into overload keys. */
     struct Inspect {
-    private:
-
-        /* Get an iterator over the parameters in the signature, and record its
-        length. */
-        PyObject* get_iter(Py_ssize_t& len) const {
-            PyObject* parameters = PyObject_GetAttr(
-                signature,
-                impl::TemplateString<"parameters">::ptr
-            );
-            if (parameters == nullptr) {
-                Exception::from_python();
-            }
-            PyObject* parameters_items = PyObject_CallMethodNoArgs(
-                parameters,
-                impl::TemplateString<"items">::ptr
-            );
-            Py_DECREF(parameters);
-            if (parameters_items == nullptr) {
-                Exception::from_python();
-            }
-            PyObject* iter = PyObject_GetIter(parameters_items);
-            Py_DECREF(parameters_items);
-            if (iter == nullptr) {
-                Exception::from_python();
-            }
-            len = PyObject_Length(parameters);
-            if (len == -1) {
-                Py_DECREF(iter);
-                Exception::from_python();
-            }
-            return iter;
-        }
-
-        static std::vector<OverloadKey> recursive_overloads(
-            std::vector<OverloadKey>&& overloads,
-            PyObject* iter,
-            Py_ssize_t len,
-            Py_ssize_t idx
-        ) {
-            if (idx == len) {
-                return std::move(overloads);
-            }
-            PyObject* item = PyIter_Next(iter);
-            if (item == nullptr) {
-                Exception::from_python();
-            }
-
-            PyObject* name = PyTuple_GET_ITEM(item, 0);
-            PyObject* parameter = PyTuple_GET_ITEM(item, 1);
-            PyObject* kind = PyObject_GetAttr(
-                parameter,
-                impl::TemplateString<"kind">::ptr
-            );
-            if (kind == nullptr) {
-                Py_DECREF(item);
-                Py_DECREF(iter);
-                Exception::from_python();
-            }
-            // PyObject* annotation = PyObject_GetAttr(
-            //     parameter,
-            //     impl::TemplateString<"annotation">::ptr
-            // );
-            // if (annotation == nullptr) {
-            //     Py_DECREF(kind);
-            //     Py_DECREF(item);
-            //     Py_DECREF(iter);
-            //     Exception::from_python();
-            // }
-            // int is_positional_only = PyObject_RichCompareBool(
-            //     kind,
-            //     POSITIONAL_ONLY,
-            //     Py_EQ
-            // );
-            // if (is_positional_only < 0) {
-            //     Exception::from_python();
-            // } else if (is_positional_only) {
-            //     vec.emplace_back(
-            //         "",
-
-            //     )
-
-            // } else {
-
-            // }
-
-
-
-            Py_DECREF(item);
-        }
-
-    public:
-        PyObject* func;
-        PyObject* func_signature;  // result of inspect.signature(func)
-        PyObject* func_annotations;  // result of typing.get_type_hints(func)
-
-        /// TODO: this is going to get really complicated trying to parse Python's
-        /// type hinting syntax and reflecting it in the overload keys.  Most likely,
-        /// what I will need to do to account for things like parametrized containers
-        /// is use the equivalent bertrand type rather than the Python type, so that
-        /// all parametrizations evaluate to a unique Python type.  That also means
-        /// isinstance() checks on these types will need to also match built-in
-        /// Python equivalents using iteration, to ensure that the overload logic
-        /// remains intact.
-        /// -> That may not work, since C++ can only work with the list types that
-        /// have been instantiated at the C++ level.  Although I might be able to
-        /// fall back to Container<> in those cases.
-        /// -> Also, how would you handle user-defined generics?  They would probably
-        /// all need to fall back to the origin type.  Perhaps I can search for
-        /// an equivalent bertrand type at the C++ level and apply the same
-        /// logic as for the Python types, falling back to the origin type if no
-        /// equivalent is found.
-        /// -> Maybe the way to support generics of these types is to modify the
-        /// bertrand.python type registration to map type OR GenericAlias objects to
-        /// a corresponding bertrand type, such that I can directly map the type
-        /// hint to a bertrand type if possible, or to the origin type if it is a
-        /// GenericAlias, or to the dynamic Object otherwise.  The only way that will
-        /// fully work is after modules have been defined, however, which is a long
-        /// way away.
-
         PyObject* inspect;
         PyObject* signature;
         PyObject* Signature;
@@ -1479,44 +1386,198 @@ namespace impl {
             Py_XDECREF(TypeAliasType);
         }
 
+        PyObject* func;
+        PyObject* func_signature;  // inspect.signature(func) w/ corrected type hints
+
+        void load_signature() {
+            // func_signature = inspect.signature(func)
+            // hints = typing.get_type_hints(func)
+            // func_signature = func_signature.replace(
+            //      return_annotation=hints.get("return", inspect.Parameter.empty),
+            //      parameters=[
+            //         p if p.annotation is inspect.Parameter.empty else
+            //         p.replace(annotation=hints[p.name])
+            //         for p in func_signature.parameters.values()
+            //     ]
+            // )
+            func_signature = PyObject_CallOneArg(signature, func);
+            if (func_signature == nullptr) {
+                Exception::from_python();
+            }
+            PyObject* hints = PyObject_CallOneArg(get_type_hints, func);
+            if (hints == nullptr) {
+                Py_DECREF(func_signature);
+                Exception::from_python();
+            }
+            try {
+                Py_ssize_t idx = 0;
+                Py_ssize_t len;
+                PyObject* iter = get_iter(len);
+                PyObject* new_params = PyList_New(len);
+                PyObject* param;
+                while ((param = PyIter_Next(iter))) {
+                    PyObject* annotation = PyObject_GetAttr(
+                        param,
+                        impl::TemplateString<"annotation">::ptr
+                    );
+                    if (annotation == nullptr) {
+                        Py_DECREF(iter);
+                        Py_DECREF(new_params);
+                        Py_DECREF(param);
+                        Exception::from_python();
+                    }
+                    bool not_empty = annotation != empty;
+                    Py_DECREF(annotation);
+                    if (not_empty) {
+                        PyObject* name = PyObject_GetAttr(
+                            param,
+                            impl::TemplateString<"name">::ptr
+                        );
+                        if (name == nullptr) {
+                            Py_DECREF(iter);
+                            Py_DECREF(new_params);
+                            Py_DECREF(param);
+                            Exception::from_python();
+                        }
+                        annotation = PyDict_GetItemWithError(hints, name);
+                        Py_DECREF(name);
+                        if (annotation == nullptr) {
+                            Py_DECREF(iter);
+                            Py_DECREF(new_params);
+                            if (PyErr_Occurred()) {
+                                Py_DECREF(param);
+                                Exception::from_python();
+                            } else {
+                                throw KeyError(
+                                    "no type hint for parameter: " +
+                                    repr(reinterpret_steal<Object>(param))
+                                );
+                            }
+                        }
+                        PyObject* replace = PyObject_GetAttr(
+                            param,
+                            impl::TemplateString<"replace">::ptr
+                        );
+                        if (replace == nullptr) {
+                            Py_DECREF(iter);
+                            Py_DECREF(new_params);
+                            Py_DECREF(param);
+                            Py_DECREF(annotation);
+                            Exception::from_python();
+                        }
+                        PyObject* replace_args[] = {annotation};
+                        PyObject* replace_kwnames = PyTuple_Pack(
+                            1,
+                            impl::TemplateString<"annotation">::ptr
+                        );
+                        if (replace_kwnames == nullptr) {
+                            Py_DECREF(iter);
+                            Py_DECREF(new_params);
+                            Py_DECREF(param);
+                            Py_DECREF(annotation);
+                            Py_DECREF(replace);
+                            Exception::from_python();
+                        }
+                        PyObject* temp = param;
+                        param = PyObject_Vectorcall(
+                            replace,
+                            replace_args,
+                            1,
+                            replace_kwnames
+                        );
+                        Py_DECREF(temp);
+                        Py_DECREF(annotation);
+                        Py_DECREF(replace);
+                        Py_DECREF(replace_kwnames);
+                        if (param == nullptr) {
+                            Py_DECREF(iter);
+                            Py_DECREF(new_params);
+                            Exception::from_python();
+                        }
+                    }
+                    PyList_SET_ITEM(new_params, idx++, param);  // steals a reference
+                }
+                Py_DECREF(iter);
+                PyObject* replace = PyObject_GetAttr(
+                    func_signature,
+                    impl::TemplateString<"replace">::ptr
+                );
+                if (replace == nullptr) {
+                    Py_DECREF(new_params);
+                    Exception::from_python();
+                }
+                PyObject* return_annotation = PyDict_GetItem(
+                    hints,
+                    impl::TemplateString<"return">::ptr
+                );
+                if (return_annotation == nullptr) {
+                    return_annotation = Py_NewRef(empty);
+                }
+                PyObject* replace_args[] = {return_annotation, new_params};
+                PyObject* replace_kwnames = PyTuple_Pack(
+                    2,
+                    impl::TemplateString<"return_annotation">::ptr,
+                    impl::TemplateString<"parameters">::ptr
+                );
+                if (replace_kwnames == nullptr) {
+                    Py_DECREF(new_params);
+                    Py_DECREF(replace);
+                    Py_DECREF(return_annotation);
+                    Exception::from_python();
+                }
+                PyObject* temp = func_signature;
+                func_signature = PyObject_Vectorcall(
+                    replace,
+                    replace_args,
+                    2,
+                    replace_kwnames
+                );
+                Py_DECREF(temp);
+                Py_DECREF(new_params);
+                Py_DECREF(replace);
+                Py_DECREF(return_annotation);
+                Py_DECREF(replace_kwnames);
+                if (func_signature == nullptr) {
+                    Exception::from_python();
+                }
+            } catch (...) {
+                Py_DECREF(func_signature);
+                Py_DECREF(hints);
+                throw;
+            }
+            Py_DECREF(hints);
+        }
+
         explicit Inspect(PyObject* func) : func(Py_NewRef(func)) {
             try {
                 load_inspect();
             } catch (...) {
-                Py_DECREF(func);
+                Py_DECREF(this->func);
                 throw;
             }
             try {
                 load_typing();
             } catch (...) {
-                Py_DECREF(func);
+                Py_DECREF(this->func);
                 unload_inspect();
                 throw;
             }
             try {
                 load_types();
             } catch (...) {
-                Py_DECREF(func);
+                Py_DECREF(this->func);
                 unload_inspect();
                 unload_typing();
                 throw;
             }
-            func_signature = PyObject_CallOneArg(signature, func);
-            if (func_signature == nullptr) {
+            try {
+                load_signature();
+            } catch (...) {
                 Py_DECREF(this->func);
-                unload_types();
-                unload_typing();
                 unload_inspect();
-                Exception::from_python();
-            }
-            func_annotations = PyObject_CallOneArg(get_type_hints, func);
-            if (func_annotations == nullptr) {
-                Py_DECREF(this->func);
-                Py_DECREF(func_signature);
-                unload_types();
                 unload_typing();
-                unload_inspect();
-                Exception::from_python();
+                unload_types();
+                throw;
             }
         }
 
@@ -1528,74 +1589,163 @@ namespace impl {
         ~Inspect() noexcept {
             Py_XDECREF(func);
             Py_XDECREF(func_signature);
-            Py_XDECREF(func_annotations);
             unload_inspect();
             unload_typing();
             unload_types();
         }
 
+        /* In order to allow custom extensions, each `inspect.Parameter` object will
+        be passed through a sequence of callbacks that update the internal key vector
+        according to their own semantics.  The predicates will always be tested in
+        order, and the `inspect.Parameter` object will be directly forwarded to the
+        first one that returns true, invoking its callback.
 
+        If no callback can be found for a given parameter, then its type hint will be
+        interpreted as a single type object, and will cause an error if this is not
+        the case.  Note that each parameter's `annotation` field is passed through the
+        map produced by `inspect.get_type_hints()`, which normalizes stringized
+        annotations and forward references, etc. */
+        struct Callback {
+            using Predicate = std::function<bool(PyObject*)>;
+            using Func = std::function<void(PyObject*, std::vector<OverloadKey>&)>;
+            std::string id;
+            Predicate predicate;
+            Func callback;
+        };
+        inline static std::vector<Callback> callbacks {
+            {
+                "Union",
+                [](PyObject*) -> bool {
 
+                },
+                [](PyObject*, std::vector<OverloadKey>&) -> void {
+                    /// TODO: If I encounter a union, then I copy all of the existing keys up to
+                    /// their current values, and then append a unique parameter for each
+                    /// type in the union.  I then continue to the next parameter, and
+                    /// geometrically grow the key sequence if I encounter another union.
+                }
+            },
+            {
+                /// TODO: ...
+            }
+        };
 
+        /// TODO: this is going to get really complicated trying to parse Python's
+        /// type hinting syntax and reflecting it in the overload keys.  Most likely,
+        /// what I will need to do to account for things like parametrized containers
+        /// is use the equivalent bertrand type rather than the Python type, so that
+        /// all parametrizations evaluate to a unique Python type.  That also means
+        /// isinstance() checks on these types will need to also match built-in
+        /// Python equivalents using iteration, to ensure that the overload logic
+        /// remains intact.
+        /// -> That may not work, since C++ can only work with the list types that
+        /// have been instantiated at the C++ level.  Although I might be able to
+        /// fall back to Container<> in those cases.
+        /// -> Also, how would you handle user-defined generics?  They would probably
+        /// all need to fall back to the origin type.  Perhaps I can search for
+        /// an equivalent bertrand type at the C++ level and apply the same
+        /// logic as for the Python types, falling back to the origin type if no
+        /// equivalent is found.
+        /// -> Maybe the way to support generics of these types is to modify the
+        /// bertrand.python type registration to map type OR GenericAlias objects to
+        /// a corresponding bertrand type, such that I can directly map the type
+        /// hint to a bertrand type if possible, or to the origin type if it is a
+        /// GenericAlias, or to the dynamic Object otherwise.  The only way that will
+        /// fully work is after modules have been defined, however, which is a long
+        /// way away.
 
-        /// TODO: this is going to have to return a collection of overload keys due
-        /// to the presence of union types in the Python function signature, which must
-        /// be collapsed somehow.  That may require recursion to properly handle.
+    private:
+        mutable bool initialized = false;  // TODO: might be able to use overload_keys.empty()
+        mutable std::vector<OverloadKey> overload_keys;
 
-        std::vector<OverloadKey> overload_keys() const {
-            // get an iterator over the function's parameters
+        /* Get an iterator over the parameters in the signature. */
+        PyObject* get_iter(Py_ssize_t& len) const {
+            PyObject* parameters = PyObject_GetAttr(
+                func_signature,
+                impl::TemplateString<"parameters">::ptr
+            );
+            if (parameters == nullptr) {
+                Exception::from_python();
+            }
+            PyObject* parameters_values = PyObject_CallMethodNoArgs(
+                parameters,
+                impl::TemplateString<"values">::ptr
+            );
+            Py_DECREF(parameters);
+            if (parameters_values == nullptr) {
+                Exception::from_python();
+            }
+            PyObject* iter = PyObject_GetIter(parameters_values);
+            if (iter == nullptr) {
+                Py_DECREF(parameters_values);
+                Exception::from_python();
+            }
+            len = PyObject_Length(parameters_values);
+            Py_DECREF(parameters_values);
+            if (len < 0) {
+                Py_DECREF(iter);
+                Exception::from_python();
+            }
+            return iter;
+        }
+
+        /* Iterate over the Python signature and invoke the matching callbacks */
+        void get_overloads() const {
             Py_ssize_t len;
             PyObject* iter = get_iter(len);
-
-
-            std::vector<Lookup> vec;
-            vec.reserve(len);
-            PyObject* item;
-            while ((item = PyIter_Next(iter))) {
-                PyObject* name = PyTuple_GET_ITEM(item, 0);
-                PyObject* parameter = PyTuple_GET_ITEM(item, 1);
-                PyObject* kind = PyObject_GetAttr(
-                    parameter,
-                    impl::TemplateString<"kind">::ptr
-                );
-                if (kind == nullptr) {
-                    Py_DECREF(item);
+            PyObject* param;
+            while ((param = PyIter_Next(iter))) {
+                try {
+                    auto it = callbacks.begin();
+                    auto end = callbacks.end();
+                    while (it != end) {
+                        if (it->predicate(param)) {
+                            it->callback(param, overload_keys);
+                            break;
+                        }
+                    }
+                    if (it == end) {
+                        /// TODO: default behavior, interpreting the annotation as a
+                        /// single type.
+                    }
+                } catch (...) {
+                    Py_DECREF(param);
                     Py_DECREF(iter);
-                    Exception::from_python();
+                    throw;
                 }
-                PyObject* annotation = PyObject_GetAttr(
-                    parameter,
-                    impl::TemplateString<"annotation">::ptr
-                );
-                if (annotation == nullptr) {
-                    Py_DECREF(kind);
-                    Py_DECREF(item);
-                    Py_DECREF(iter);
-                    Exception::from_python();
-                }
-                int is_positional_only = PyObject_RichCompareBool(
-                    kind,
-                    POSITIONAL_ONLY,
-                    Py_EQ
-                );
-                if (is_positional_only < 0) {
-                    Exception::from_python();
-                } else if (is_positional_only) {
-                    vec.emplace_back(
-                        "",
-
-                    )
-
-                } else {
-
-                }
-
-
-                Py_DECREF(item);
+                Py_DECREF(param);
             }
             Py_DECREF(iter);
-            return vec;
         }
+
+    public:
+
+        auto begin() {
+            if (!initialized) {
+                get_overloads();
+                initialized = true;
+            }
+            return overload_keys.begin();
+        }
+        auto begin() const {
+            if (!initialized) {
+                get_overloads();
+                initialized = true;
+            }
+            return overload_keys.cbegin();
+        }
+        auto cbegin() const { return begin(); }
+        auto end() { return overload_keys.end(); }
+        auto end() const { return overload_keys.cend(); }
+        auto cend() const { return end(); }
+
+        /// TODO: include a method to get the return type of the function, which is
+        /// checked after ensuring that the overload keys are compatible with the
+        /// function's template signature, which means iterating over this container
+        /// and checking each key against Parameters<...>::check(key).
+        /// -> ::check() is distinct from ::validate() in that the foirmer returns a
+        /// boolean true/false, while the latter raises an informative exception if the
+        /// key is malformed.
 
     };
 
