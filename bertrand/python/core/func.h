@@ -415,6 +415,12 @@ namespace impl {
     /// be unavoidable, and I'll just instantiate the overload directly and fill it in
     /// using the index operator, which will directly assign to the internal vector.
 
+    /// TODO: hash collisions should be exceedingly rare, but I can implement some
+    /// minimal guards against them by wrapping a cached function call in a try-catch
+    /// that catches TypeErrors and initiates a full search of the overload trie.  If
+    /// the final node does not match the cached node, then I swallow the error and
+    /// retry the call with the correct overload.
+
     /* An overload key consisting of a sequence of parameter annotations, which
     describe a Python-style call signature.  Keys of this form can be used to search a
     function's overload trie during calls and other operations. */
@@ -423,12 +429,12 @@ namespace impl {
             enum Category {
                 POSONLY_DELIMITER,
                 KWONLY_DELIMITER,
-                POS,
+                POSONLY,
                 KW,
                 KWONLY,
                 ARGS,
                 KWARGS,
-                POS_DEFAULT,
+                POSONLY_DEFAULT,
                 KW_DEFAULT,
                 KWONLY_DEFAULT,
             };
@@ -446,7 +452,7 @@ namespace impl {
             }
 
             bool delimiter() const noexcept {
-                return category < POS;
+                return category < POSONLY;
             }
 
             bool has_default() const noexcept {
@@ -454,7 +460,7 @@ namespace impl {
             }
 
             bool pos() const noexcept {
-                return category == POS || category == POS_DEFAULT;
+                return category == POSONLY || category == POSONLY_DEFAULT;
             }
 
             bool kw() const noexcept {
@@ -477,12 +483,12 @@ namespace impl {
                 switch (category) {
                     case POSONLY_DELIMITER: return "positional-only '/' delimiter";
                     case KWONLY_DELIMITER: return "keyword-only '*' delimiter";
-                    case POS: return "positional";
+                    case POSONLY: return "positional";
                     case KW: return "keyword";
                     case KWONLY: return "keyword-only";
                     case ARGS: return "variadic positional";
                     case KWARGS: return "variadic keyword";
-                    case POS_DEFAULT: return "positional with default";
+                    case POSONLY_DEFAULT: return "positional with default";
                     case KW_DEFAULT: return "keyword with default";
                     case KWONLY_DEFAULT: return "keyword-only with default";
                     default: return "unknown";
@@ -534,6 +540,8 @@ namespace impl {
 
     private:
         std::vector<Param> vec;
+
+    public:
         Py_ssize_t idx;
         Py_ssize_t posonly_idx;
         Py_ssize_t kw_idx;
@@ -541,13 +549,11 @@ namespace impl {
         Py_ssize_t args_idx;
         Py_ssize_t kwargs_idx;
         Py_ssize_t default_idx;
-        size_t _hash;
-
-    public:
+        size_t hash;
 
         explicit OverloadKey(size_t size) :
             idx(0), posonly_idx(size), kw_idx(size), kwonly_idx(size), args_idx(size),
-            kwargs_idx(size), default_idx(size), _hash(0)
+            kwargs_idx(size), default_idx(size), hash(0)
         {
             vec.reserve(size);
         }
@@ -590,7 +596,7 @@ namespace impl {
             } else {
                 throw TypeError("invalid category for overload parameter");
             }
-            _hash = impl::hash_combine(_hash, par.hash());
+            hash = impl::hash_combine(hash, par.hash());
             vec[idx++] = std::move(par);
         }
 
@@ -610,7 +616,7 @@ namespace impl {
                         repr(reinterpret_borrow<Object>(specifier))
                     );
                 }
-                category = Param::POS;
+                category = Param::POSONLY;
                 type = reinterpret_cast<PyTypeObject*>(specifier);
 
             // slices are interpreted as keyword arguments
@@ -686,7 +692,7 @@ namespace impl {
                         repr(reinterpret_borrow<Object>(specifier))
                     );
                 }
-                category = Param::POS;
+                category = Param::POSONLY;
                 type = reinterpret_cast<PyTypeObject*>(specifier);
 
             // slices are interpreted in several ways depending on their contents
@@ -725,7 +731,7 @@ namespace impl {
                             repr(reinterpret_borrow<Object>(specifier))
                         );
                     }
-                    category = Param::POS_DEFAULT;
+                    category = Param::POSONLY_DEFAULT;
                     type = reinterpret_cast<PyTypeObject*>(slice->start);
 
                 // If the first element is a string, then the second element must
@@ -913,7 +919,6 @@ namespace impl {
         /// vectorcall argument array.  Both of the latter can apply the simplified
         /// logic, since it will be used in the call operator.
 
-        size_t hash() const noexcept { return _hash; }
         size_t size() const noexcept { return vec.size(); }
         bool empty() const noexcept { return vec.empty(); }
 
@@ -935,459 +940,95 @@ namespace impl {
     /* A helper that inspects pure Python functions and extracts their inline parameter
     annotations so that they can be translated into overload keys. */
     struct Inspect {
-        PyObject* inspect;
-        PyObject* signature;
-        PyObject* Signature;
-        PyObject* Parameter;
-        PyObject* empty;  // inspect.Parameter.empty
-        PyObject* POSITIONAL_ONLY;  // inspect.Parameter.POSITIONAL_ONLY
-        PyObject* POSITIONAL_OR_KEYWORD;  // inspect.Parameter.POSITIONAL_OR_KEYWORD
-        PyObject* VAR_POSITIONAL;  // inspect.Parameter.VAR_POSITIONAL
-        PyObject* KEYWORD_ONLY;  // inspect.Parameter.KEYWORD_ONLY
-        PyObject* VAR_KEYWORD;  // inspect.Parameter.VAR_KEYWORD
+        Object inspect;
+        Object signature;
+        Object Signature;
+        Object Parameter;
+        Object empty;  // inspect.Parameter.empty
+        Object POSITIONAL_ONLY;  // inspect.Parameter.POSITIONAL_ONLY
+        Object POSITIONAL_OR_KEYWORD;  // inspect.Parameter.POSITIONAL_OR_KEYWORD
+        Object VAR_POSITIONAL;  // inspect.Parameter.VAR_POSITIONAL
+        Object KEYWORD_ONLY;  // inspect.Parameter.KEYWORD_ONLY
+        Object VAR_KEYWORD;  // inspect.Parameter.VAR_KEYWORD
 
         void load_inspect() {
-            inspect = PyImport_Import(impl::TemplateString<"inspect">::ptr);
-            if (inspect == nullptr) {
-                Exception::from_python();
-            }
-            signature = PyObject_GetAttr(
-                inspect,
-                impl::TemplateString<"signature">::ptr
+            inspect = reinterpret_steal<Object>(
+                PyImport_Import(impl::TemplateString<"inspect">::ptr)
             );
-            if (signature == nullptr) {
-                Py_DECREF(inspect);
+            if (ptr(inspect) == nullptr) {
                 Exception::from_python();
             }
-            Signature = PyObject_GetAttr(
-                inspect,
-                impl::TemplateString<"Signature">::ptr
-            );
-            if (Signature == nullptr) {
-                Py_DECREF(inspect);
-                Py_DECREF(signature);
-                Exception::from_python();
-            }
-            Parameter = PyObject_GetAttr(
-                inspect,
-                impl::TemplateString<"Parameter">::ptr
-            );
-            if (Parameter == nullptr) {
-                Py_DECREF(inspect);
-                Py_DECREF(signature);
-                Py_DECREF(Signature);
-                Exception::from_python();
-            }
-            empty = PyObject_GetAttr(
-                Parameter,
-                impl::TemplateString<"empty">::ptr
-            );
-            if (empty == nullptr) {
-                Py_DECREF(inspect);
-                Py_DECREF(signature);
-                Py_DECREF(Signature);
-                Py_DECREF(Parameter);
-                Exception::from_python();
-            }
-            POSITIONAL_ONLY = PyObject_GetAttr(
-                Parameter,
-                impl::TemplateString<"POSITIONAL_ONLY">::ptr
-            );
-            if (POSITIONAL_ONLY == nullptr) {
-                Py_DECREF(inspect);
-                Py_DECREF(signature);
-                Py_DECREF(Signature);
-                Py_DECREF(Parameter);
-                Py_DECREF(empty);
-                Exception::from_python();
-            }
-            POSITIONAL_OR_KEYWORD = PyObject_GetAttr(
-                Parameter,
-                impl::TemplateString<"POSITIONAL_OR_KEYWORD">::ptr
-            );
-            if (POSITIONAL_OR_KEYWORD == nullptr) {
-                Py_DECREF(inspect);
-                Py_DECREF(signature);
-                Py_DECREF(Signature);
-                Py_DECREF(Parameter);
-                Py_DECREF(empty);
-                Py_DECREF(POSITIONAL_ONLY);
-                Exception::from_python();
-            }
-            VAR_POSITIONAL = PyObject_GetAttr(
-                Parameter,
-                impl::TemplateString<"VAR_POSITIONAL">::ptr
-            );
-            if (VAR_POSITIONAL == nullptr) {
-                Py_DECREF(inspect);
-                Py_DECREF(signature);
-                Py_DECREF(Signature);
-                Py_DECREF(Parameter);
-                Py_DECREF(empty);
-                Py_DECREF(POSITIONAL_ONLY);
-                Py_DECREF(POSITIONAL_OR_KEYWORD);
-                Exception::from_python();
-            }
-            KEYWORD_ONLY = PyObject_GetAttr(
-                Parameter,
-                impl::TemplateString<"KEYWORD_ONLY">::ptr
-            );
-            if (KEYWORD_ONLY == nullptr) {
-                Py_DECREF(inspect);
-                Py_DECREF(signature);
-                Py_DECREF(Signature);
-                Py_DECREF(Parameter);
-                Py_DECREF(empty);
-                Py_DECREF(POSITIONAL_ONLY);
-                Py_DECREF(POSITIONAL_OR_KEYWORD);
-                Py_DECREF(VAR_POSITIONAL);
-                Exception::from_python();
-            }
-            VAR_KEYWORD = PyObject_GetAttr(
-                Parameter,
-                impl::TemplateString<"VAR_KEYWORD">::ptr
-            );
-            if (VAR_KEYWORD == nullptr) {
-                Py_DECREF(inspect);
-                Py_DECREF(signature);
-                Py_DECREF(Signature);
-                Py_DECREF(Parameter);
-                Py_DECREF(empty);
-                Py_DECREF(POSITIONAL_ONLY);
-                Py_DECREF(POSITIONAL_OR_KEYWORD);
-                Py_DECREF(VAR_POSITIONAL);
-                Py_DECREF(KEYWORD_ONLY);
-                Exception::from_python();
-            }
+            signature = getattr<"signature">(inspect);
+            Signature = getattr<"Signature">(inspect);
+            Parameter = getattr<"Parameter">(inspect);
+            empty = getattr<"empty">(Parameter);
+            POSITIONAL_ONLY = getattr<"POSITIONAL_ONLY">(Parameter);
+            POSITIONAL_OR_KEYWORD = getattr<"POSITIONAL_OR_KEYWORD">(Parameter);
+            VAR_POSITIONAL = getattr<"VAR_POSITIONAL">(Parameter);
+            KEYWORD_ONLY = getattr<"KEYWORD_ONLY">(Parameter);
+            VAR_KEYWORD = getattr<"VAR_KEYWORD">(Parameter);
         }
 
-        void unload_inspect() noexcept {
-            Py_XDECREF(inspect);
-            Py_XDECREF(Signature);
-            Py_XDECREF(Parameter);
-            Py_XDECREF(empty);
-            Py_XDECREF(POSITIONAL_ONLY);
-            Py_XDECREF(POSITIONAL_OR_KEYWORD);
-            Py_XDECREF(VAR_POSITIONAL);
-            Py_XDECREF(KEYWORD_ONLY);
-            Py_XDECREF(VAR_KEYWORD);
-        }
-
-        PyObject* typing;
-        PyObject* Any;  // -> object
-        PyObject* AnyStr;  // -> str
-        PyObject* LiteralString;  // -> str
-        PyObject* Never;  // -> nullptr
-        PyObject* NoReturn;  // -> nullptr
-        PyObject* Self;  // -> object
-        PyObject* Union;  // -> recursively split into individual overloads
-        PyObject* Optional;  // -> recursively split into two overloads
-        PyObject* Literal;  // -> get the type within the literal
-        PyObject* TypeGuard;  // -> bool
-        PyObject* TypeVar;  // (broken)
-        PyObject* TypeVarTuple;  // (broken)
-        PyObject* get_origin;
-        PyObject* get_args;
-        PyObject* get_type_hints;
+        Object typing;
+        Object Any;  // -> object
+        Object AnyStr;  // -> str
+        Object LiteralString;  // -> str
+        Object Never;  // -> nullptr
+        Object NoReturn;  // -> nullptr
+        Object Self;  // -> object
+        Object Union;  // -> recursively split into individual overloads
+        Object Optional;  // -> recursively split into two overloads
+        Object Literal;  // -> get the type within the literal
+        Object TypeGuard;  // -> bool
+        Object TypeVar;  // (broken)
+        Object TypeVarTuple;  // (broken)
+        Object get_origin;
+        Object get_args;
+        Object get_type_hints;
 
         void load_typing() {
-            typing = PyImport_Import(impl::TemplateString<"typing">::ptr);
-            if (typing == nullptr) {
-                Exception::from_python();
-            }
-            Any = PyObject_GetAttr(
-                typing,
-                impl::TemplateString<"Any">::ptr
+            typing = reinterpret_steal<Object>(
+                PyImport_Import(impl::TemplateString<"typing">::ptr)
             );
-            if (Any == nullptr) {
-                Py_DECREF(typing);
+            if (ptr(typing) == nullptr) {
                 Exception::from_python();
             }
-            AnyStr = PyObject_GetAttr(
-                typing,
-                impl::TemplateString<"AnyStr">::ptr
-            );
-            if (AnyStr == nullptr) {
-                Py_DECREF(typing);
-                Py_DECREF(Any);
-                Exception::from_python();
-            }
-            LiteralString = PyObject_GetAttr(
-                typing,
-                impl::TemplateString<"LiteralString">::ptr
-            );
-            if (LiteralString == nullptr) {
-                Py_DECREF(typing);
-                Py_DECREF(Any);
-                Py_DECREF(AnyStr);
-                Exception::from_python();
-            }
-            Never = PyObject_GetAttr(
-                typing,
-                impl::TemplateString<"Never">::ptr
-            );
-            if (Never == nullptr) {
-                Py_DECREF(typing);
-                Py_DECREF(Any);
-                Py_DECREF(AnyStr);
-                Py_DECREF(LiteralString);
-                Exception::from_python();
-            }
-            NoReturn = PyObject_GetAttr(
-                typing,
-                impl::TemplateString<"NoReturn">::ptr
-            );
-            if (NoReturn == nullptr) {
-                Py_DECREF(typing);
-                Py_DECREF(Any);
-                Py_DECREF(AnyStr);
-                Py_DECREF(LiteralString);
-                Py_DECREF(Never);
-                Exception::from_python();
-            }
-            Self = PyObject_GetAttr(
-                typing,
-                impl::TemplateString<"Self">::ptr
-            );
-            if (Self == nullptr) {
-                Py_DECREF(typing);
-                Py_DECREF(Any);
-                Py_DECREF(AnyStr);
-                Py_DECREF(LiteralString);
-                Py_DECREF(Never);
-                Py_DECREF(NoReturn);
-                Exception::from_python();
-            }
-            Union = PyObject_GetAttr(
-                typing,
-                impl::TemplateString<"Union">::ptr
-            );
-            if (Union == nullptr) {
-                Py_DECREF(typing);
-                Py_DECREF(Any);
-                Py_DECREF(AnyStr);
-                Py_DECREF(LiteralString);
-                Py_DECREF(Never);
-                Py_DECREF(NoReturn);
-                Py_DECREF(Self);
-                Exception::from_python();
-            }
-            Optional = PyObject_GetAttr(
-                typing,
-                impl::TemplateString<"Optional">::ptr
-            );
-            if (Optional == nullptr) {
-                Py_DECREF(typing);
-                Py_DECREF(Any);
-                Py_DECREF(AnyStr);
-                Py_DECREF(LiteralString);
-                Py_DECREF(Never);
-                Py_DECREF(NoReturn);
-                Py_DECREF(Self);
-                Py_DECREF(Union);
-                Exception::from_python();
-            }
-            Literal = PyObject_GetAttr(
-                typing,
-                impl::TemplateString<"Literal">::ptr
-            );
-            if (Literal == nullptr) {
-                Py_DECREF(typing);
-                Py_DECREF(Any);
-                Py_DECREF(AnyStr);
-                Py_DECREF(LiteralString);
-                Py_DECREF(Never);
-                Py_DECREF(NoReturn);
-                Py_DECREF(Self);
-                Py_DECREF(Union);
-                Py_DECREF(Optional);
-                Exception::from_python();
-            }
-            TypeGuard = PyObject_GetAttr(
-                typing,
-                impl::TemplateString<"TypeGuard">::ptr
-            );
-            if (TypeGuard == nullptr) {
-                Py_DECREF(typing);
-                Py_DECREF(Any);
-                Py_DECREF(AnyStr);
-                Py_DECREF(LiteralString);
-                Py_DECREF(Never);
-                Py_DECREF(NoReturn);
-                Py_DECREF(Self);
-                Py_DECREF(Union);
-                Py_DECREF(Optional);
-                Py_DECREF(Literal);
-                Exception::from_python();
-            }
-            TypeVar = PyObject_GetAttr(
-                typing,
-                impl::TemplateString<"TypeVar">::ptr
-            );
-            if (TypeVar == nullptr) {
-                Py_DECREF(typing);
-                Py_DECREF(Any);
-                Py_DECREF(AnyStr);
-                Py_DECREF(LiteralString);
-                Py_DECREF(Never);
-                Py_DECREF(NoReturn);
-                Py_DECREF(Self);
-                Py_DECREF(Union);
-                Py_DECREF(Optional);
-                Py_DECREF(Literal);
-                Py_DECREF(TypeGuard);
-                Exception::from_python();
-            }
-            TypeVarTuple = PyObject_GetAttr(
-                typing,
-                impl::TemplateString<"TypeVarTuple">::ptr
-            );
-            if (TypeVarTuple == nullptr) {
-                Py_DECREF(typing);
-                Py_DECREF(Any);
-                Py_DECREF(AnyStr);
-                Py_DECREF(LiteralString);
-                Py_DECREF(Never);
-                Py_DECREF(NoReturn);
-                Py_DECREF(Self);
-                Py_DECREF(Union);
-                Py_DECREF(Optional);
-                Py_DECREF(Literal);
-                Py_DECREF(TypeGuard);
-                Py_DECREF(TypeVar);
-                Exception::from_python();
-            }
-            get_origin = PyObject_GetAttr(
-                typing,
-                impl::TemplateString<"get_origin">::ptr
-            );
-            if (get_origin == nullptr) {
-                Py_DECREF(typing);
-                Py_DECREF(Any);
-                Py_DECREF(AnyStr);
-                Py_DECREF(LiteralString);
-                Py_DECREF(Never);
-                Py_DECREF(NoReturn);
-                Py_DECREF(Self);
-                Py_DECREF(Union);
-                Py_DECREF(Optional);
-                Py_DECREF(Literal);
-                Py_DECREF(TypeGuard);
-                Py_DECREF(TypeVar);
-                Py_DECREF(TypeVarTuple);
-                Exception::from_python();
-            }
-            get_args = PyObject_GetAttr(
-                typing,
-                impl::TemplateString<"get_args">::ptr
-            );
-            if (get_args == nullptr) {
-                Py_DECREF(typing);
-                Py_DECREF(Any);
-                Py_DECREF(AnyStr);
-                Py_DECREF(LiteralString);
-                Py_DECREF(Never);
-                Py_DECREF(NoReturn);
-                Py_DECREF(Self);
-                Py_DECREF(Union);
-                Py_DECREF(Optional);
-                Py_DECREF(Literal);
-                Py_DECREF(TypeGuard);
-                Py_DECREF(TypeVar);
-                Py_DECREF(TypeVarTuple);
-                Py_DECREF(get_origin);
-                Exception::from_python();
-            }
-            get_type_hints = PyObject_GetAttr(
-                typing,
-                impl::TemplateString<"get_type_hints">::ptr
-            );
-            if (get_type_hints == nullptr) {
-                Py_DECREF(typing);
-                Py_DECREF(Any);
-                Py_DECREF(AnyStr);
-                Py_DECREF(LiteralString);
-                Py_DECREF(Never);
-                Py_DECREF(NoReturn);
-                Py_DECREF(Self);
-                Py_DECREF(Union);
-                Py_DECREF(Optional);
-                Py_DECREF(Literal);
-                Py_DECREF(TypeGuard);
-                Py_DECREF(TypeVar);
-                Py_DECREF(TypeVarTuple);
-                Py_DECREF(get_origin);
-                Py_DECREF(get_args);
-                Exception::from_python();
-            }
+            Any = getattr<"Any">(typing);
+            AnyStr = getattr<"AnyStr">(typing);
+            LiteralString = getattr<"LiteralString">(typing);
+            Never = getattr<"Never">(typing);
+            NoReturn = getattr<"NoReturn">(typing);
+            Self = getattr<"Self">(typing);
+            Union = getattr<"Union">(typing);
+            Optional = getattr<"Optional">(typing);
+            Literal = getattr<"Literal">(typing);
+            TypeGuard = getattr<"TypeGuard">(typing);
+            TypeVar = getattr<"TypeVar">(typing);
+            TypeVarTuple = getattr<"TypeVarTuple">(typing);
+            get_origin = getattr<"get_origin">(typing);
+            get_args = getattr<"get_args">(typing);
+            get_type_hints = getattr<"get_type_hints">(typing);
         }
 
-        void unload_typing() noexcept {
-            Py_XDECREF(typing);
-            Py_XDECREF(Any);
-            Py_XDECREF(AnyStr);
-            Py_XDECREF(LiteralString);
-            Py_XDECREF(Never);
-            Py_XDECREF(NoReturn);
-            Py_XDECREF(Self);
-            Py_XDECREF(Union);
-            Py_XDECREF(Optional);
-            Py_XDECREF(Literal);
-            Py_XDECREF(TypeGuard);
-            Py_XDECREF(TypeVar);
-            Py_XDECREF(TypeVarTuple);
-            Py_XDECREF(get_origin);
-            Py_XDECREF(get_args);
-        }
-
-        PyObject* types;
-        PyObject* GenericAlias;  // -> use get_origin() + get_args()
-        PyObject* UnionType;  // -> use get_args() to split into overloads
-        PyObject* TypeAliasType;  // -> access .__value__
+        Object types;
+        Object GenericAlias;  // -> use get_origin() + get_args()
+        Object UnionType;  // -> use get_args() to split into overloads
+        Object TypeAliasType;  // -> access .__value__
 
         void load_types() {
-            types = PyImport_Import(impl::TemplateString<"types">::ptr);
-            if (types == nullptr) {
-                Exception::from_python();
-            }
-            GenericAlias = PyObject_GetAttr(
-                types,
-                impl::TemplateString<"GenericAlias">::ptr
+            types = reinterpret_steal<Object>(
+                PyImport_Import(impl::TemplateString<"types">::ptr)
             );
-            if (GenericAlias == nullptr) {
-                Py_DECREF(types);
+            if (ptr(types) == nullptr) {
                 Exception::from_python();
             }
-            UnionType = PyObject_GetAttr(
-                types,
-                impl::TemplateString<"UnionType">::ptr
-            );
-            if (UnionType == nullptr) {
-                Py_DECREF(types);
-                Py_DECREF(GenericAlias);
-                Exception::from_python();
-            }
-            TypeAliasType = PyObject_GetAttr(
-                types,
-                impl::TemplateString<"TypeAliasType">::ptr
-            );
-            if (TypeAliasType == nullptr) {
-                Py_DECREF(types);
-                Py_DECREF(GenericAlias);
-                Py_DECREF(UnionType);
-                Exception::from_python();
-            }
+            GenericAlias = getattr<"GenericAlias">(types);
+            UnionType = getattr<"UnionType">(types);
+            TypeAliasType = getattr<"TypeAliasType">(types);
         }
 
-        void unload_types() noexcept {
-            Py_XDECREF(types);
-            Py_XDECREF(GenericAlias);
-            Py_XDECREF(UnionType);
-            Py_XDECREF(TypeAliasType);
-        }
-
-        PyObject* func;
-        PyObject* func_signature;  // inspect.signature(func) w/ corrected type hints
+        Object func;
+        Object func_signature;  // inspect.signature(func) w/ corrected type hints
 
         void load_signature() {
             // func_signature = inspect.signature(func)
@@ -1400,185 +1041,129 @@ namespace impl {
             //         for p in func_signature.parameters.values()
             //     ]
             // )
-            func_signature = PyObject_CallOneArg(signature, func);
-            if (func_signature == nullptr) {
+            func_signature = reinterpret_steal<Object>(PyObject_CallOneArg(
+                ptr(signature),
+                ptr(func)
+            ));
+            if (ptr(func_signature) == nullptr) {
                 Exception::from_python();
             }
-            PyObject* hints = PyObject_CallOneArg(get_type_hints, func);
-            if (hints == nullptr) {
-                Py_DECREF(func_signature);
+            Object hints = reinterpret_steal<Object>(PyObject_CallOneArg(
+                ptr(get_type_hints),
+                ptr(func)
+            ));
+            if (ptr(hints) == nullptr) {
                 Exception::from_python();
             }
-            try {
-                Py_ssize_t idx = 0;
-                Py_ssize_t len;
-                PyObject* iter = get_iter(len);
-                PyObject* new_params = PyList_New(len);
-                PyObject* param;
-                while ((param = PyIter_Next(iter))) {
-                    PyObject* annotation = PyObject_GetAttr(
+            Py_ssize_t idx = 0;
+            Py_ssize_t len;
+            Object iter = get_iter(len);
+            Object new_params = reinterpret_steal<Object>(PyList_New(len));
+            PyObject* param;
+            while ((param = PyIter_Next(ptr(iter)))) {
+                Object annotation = reinterpret_steal<Object>(PyObject_GetAttr(
+                    param,
+                    impl::TemplateString<"annotation">::ptr
+                ));
+                if (ptr(annotation) == nullptr) {
+                    Py_DECREF(param);
+                    Exception::from_python();
+                }
+                if (!annotation.is(empty)) {
+                    Object name = reinterpret_steal<Object>(PyObject_GetAttr(
                         param,
-                        impl::TemplateString<"annotation">::ptr
-                    );
-                    if (annotation == nullptr) {
-                        Py_DECREF(iter);
-                        Py_DECREF(new_params);
+                        impl::TemplateString<"name">::ptr
+                    ));
+                    if (ptr(name) == nullptr) {
                         Py_DECREF(param);
                         Exception::from_python();
                     }
-                    bool not_empty = annotation != empty;
-                    Py_DECREF(annotation);
-                    if (not_empty) {
-                        PyObject* name = PyObject_GetAttr(
-                            param,
-                            impl::TemplateString<"name">::ptr
-                        );
-                        if (name == nullptr) {
-                            Py_DECREF(iter);
-                            Py_DECREF(new_params);
+                    annotation = reinterpret_steal<Object>(PyDict_GetItemWithError(
+                        ptr(hints),
+                        ptr(name)
+                    ));
+                    if (ptr(annotation) == nullptr) {
+                        if (PyErr_Occurred()) {
                             Py_DECREF(param);
                             Exception::from_python();
-                        }
-                        annotation = PyDict_GetItemWithError(hints, name);
-                        Py_DECREF(name);
-                        if (annotation == nullptr) {
-                            Py_DECREF(iter);
-                            Py_DECREF(new_params);
-                            if (PyErr_Occurred()) {
-                                Py_DECREF(param);
-                                Exception::from_python();
-                            } else {
-                                throw KeyError(
-                                    "no type hint for parameter: " +
-                                    repr(reinterpret_steal<Object>(param))
-                                );
-                            }
-                        }
-                        PyObject* replace = PyObject_GetAttr(
-                            param,
-                            impl::TemplateString<"replace">::ptr
-                        );
-                        if (replace == nullptr) {
-                            Py_DECREF(iter);
-                            Py_DECREF(new_params);
+                        } else {
                             Py_DECREF(param);
-                            Py_DECREF(annotation);
-                            Exception::from_python();
-                        }
-                        PyObject* replace_args[] = {annotation};
-                        PyObject* replace_kwnames = PyTuple_Pack(
-                            1,
-                            impl::TemplateString<"annotation">::ptr
-                        );
-                        if (replace_kwnames == nullptr) {
-                            Py_DECREF(iter);
-                            Py_DECREF(new_params);
-                            Py_DECREF(param);
-                            Py_DECREF(annotation);
-                            Py_DECREF(replace);
-                            Exception::from_python();
-                        }
-                        PyObject* temp = param;
-                        param = PyObject_Vectorcall(
-                            replace,
-                            replace_args,
-                            1,
-                            replace_kwnames
-                        );
-                        Py_DECREF(temp);
-                        Py_DECREF(annotation);
-                        Py_DECREF(replace);
-                        Py_DECREF(replace_kwnames);
-                        if (param == nullptr) {
-                            Py_DECREF(iter);
-                            Py_DECREF(new_params);
-                            Exception::from_python();
+                            throw KeyError(
+                                "no type hint for parameter: " +
+                                repr(reinterpret_borrow<Object>(param))
+                            );
                         }
                     }
-                    PyList_SET_ITEM(new_params, idx++, param);  // steals a reference
+                    Object replace = reinterpret_steal<Object>(PyObject_GetAttr(
+                        param,
+                        impl::TemplateString<"replace">::ptr
+                    ));
+                    if (ptr(replace) == nullptr) {
+                        Py_DECREF(param);
+                        Exception::from_python();
+                    }
+                    PyObject* replace_args[] = {ptr(annotation)};
+                    Object replace_kwnames = reinterpret_steal<Object>(PyTuple_Pack(
+                        1,
+                        impl::TemplateString<"annotation">::ptr
+                    ));
+                    if (ptr(replace_kwnames) == nullptr) {
+                        Py_DECREF(param);
+                        Exception::from_python();
+                    }
+                    PyObject* temp = param;
+                    param = PyObject_Vectorcall(
+                        ptr(replace),
+                        replace_args,
+                        1,
+                        ptr(replace_kwnames)
+                    );
+                    Py_DECREF(temp);
+                    if (param == nullptr) {
+                        Exception::from_python();
+                    }
                 }
-                Py_DECREF(iter);
-                PyObject* replace = PyObject_GetAttr(
-                    func_signature,
-                    impl::TemplateString<"replace">::ptr
-                );
-                if (replace == nullptr) {
-                    Py_DECREF(new_params);
-                    Exception::from_python();
-                }
-                PyObject* return_annotation = PyDict_GetItem(
-                    hints,
-                    impl::TemplateString<"return">::ptr
-                );
-                if (return_annotation == nullptr) {
-                    return_annotation = Py_NewRef(empty);
-                }
-                PyObject* replace_args[] = {return_annotation, new_params};
-                PyObject* replace_kwnames = PyTuple_Pack(
-                    2,
-                    impl::TemplateString<"return_annotation">::ptr,
-                    impl::TemplateString<"parameters">::ptr
-                );
-                if (replace_kwnames == nullptr) {
-                    Py_DECREF(new_params);
-                    Py_DECREF(replace);
-                    Py_DECREF(return_annotation);
-                    Exception::from_python();
-                }
-                PyObject* temp = func_signature;
-                func_signature = PyObject_Vectorcall(
-                    replace,
-                    replace_args,
-                    2,
-                    replace_kwnames
-                );
-                Py_DECREF(temp);
-                Py_DECREF(new_params);
-                Py_DECREF(replace);
-                Py_DECREF(return_annotation);
-                Py_DECREF(replace_kwnames);
-                if (func_signature == nullptr) {
-                    Exception::from_python();
-                }
-            } catch (...) {
-                Py_DECREF(func_signature);
-                Py_DECREF(hints);
-                throw;
+                PyList_SET_ITEM(ptr(new_params), idx++, param);  // steals a reference
             }
-            Py_DECREF(hints);
+            Object replace = getattr<"replace">(func_signature);
+            if (ptr(replace) == nullptr) {
+                Exception::from_python();
+            }
+            Object return_annotation = reinterpret_steal<Object>(PyDict_GetItem(
+                ptr(hints),
+                impl::TemplateString<"return">::ptr
+            ));
+            if (ptr(return_annotation) == nullptr) {
+                return_annotation = empty;
+            }
+            PyObject* replace_args[] = {
+                ptr(return_annotation),
+                ptr(new_params)
+            };
+            Object replace_kwnames = reinterpret_steal<Object>(PyTuple_Pack(
+                2,
+                impl::TemplateString<"return_annotation">::ptr,
+                impl::TemplateString<"parameters">::ptr
+            ));
+            if (ptr(replace_kwnames) == nullptr) {
+                Exception::from_python();
+            }
+            func_signature = reinterpret_steal<Object>(PyObject_Vectorcall(
+                ptr(replace),
+                replace_args,
+                2,
+                ptr(replace_kwnames)
+            ));
+            if (ptr(func_signature) == nullptr) {
+                Exception::from_python();
+            }
         }
 
-        explicit Inspect(PyObject* func) : func(Py_NewRef(func)) {
-            try {
-                load_inspect();
-            } catch (...) {
-                Py_DECREF(this->func);
-                throw;
-            }
-            try {
-                load_typing();
-            } catch (...) {
-                Py_DECREF(this->func);
-                unload_inspect();
-                throw;
-            }
-            try {
-                load_types();
-            } catch (...) {
-                Py_DECREF(this->func);
-                unload_inspect();
-                unload_typing();
-                throw;
-            }
-            try {
-                load_signature();
-            } catch (...) {
-                Py_DECREF(this->func);
-                unload_inspect();
-                unload_typing();
-                unload_types();
-                throw;
-            }
+        explicit Inspect(PyObject* func) : func(reinterpret_borrow<Object>(func)) {
+            load_inspect();
+            load_typing();
+            load_types();
+            load_signature();
         }
 
         Inspect(const Inspect& other) = delete;
@@ -1586,13 +1171,138 @@ namespace impl {
         Inspect& operator=(const Inspect& other) = delete;
         Inspect& operator=(Inspect&& other) noexcept = delete;
 
-        ~Inspect() noexcept {
-            Py_XDECREF(func);
-            Py_XDECREF(func_signature);
-            unload_inspect();
-            unload_typing();
-            unload_types();
-        }
+        /* A callback function to use when parsing inline type hints on a Python
+        function object. */
+        struct Callback {
+            using Predicate = std::function<bool(PyObject*)>;
+            using Func = std::function<void(PyObject*, std::vector<OverloadKey>&)>;
+            std::string id;
+            Predicate predicate;
+            Func callback;
+
+            /* Get the name of an `inspect.Parameter` object, for use in a callback. */
+            static std::string_view get_name(PyObject* parameter) {
+                PyObject* name = PyObject_GetAttr(
+                    parameter,
+                    impl::TemplateString<"name">::ptr
+                );
+                if (name == nullptr) {
+                    Exception::from_python();
+                }
+                std::string_view result = OverloadKey::Param::get_name(name);
+                Py_DECREF(name);
+                return result;
+            }
+
+            /* Get the category associated with an `inspect.Parameter` object, for use in a
+            callback. */
+            static OverloadKey::Param::Category get_category(PyObject* parameter) {
+                Object default_value = get_default(parameter);
+                Object kind = reinterpret_steal<Object>(PyObject_GetAttr(
+                    parameter,
+                    impl::TemplateString<"kind">::ptr
+                ));
+                if (ptr(kind) == nullptr) {
+                    Exception::from_python();
+                }
+                Object inspect = reinterpret_steal<Object>(PyImport_Import(
+                    impl::TemplateString<"inspect">::ptr
+                ));
+                if (ptr(inspect) == nullptr) {
+                    Exception::from_python();
+                }
+                Object Parameter = getattr<"Parameter">(inspect);
+                Object empty = getattr<"empty">(Parameter);
+                Object POSITIONAL_ONLY = getattr<"POSITIONAL_ONLY">(Parameter);
+                Object POSITIONAL_OR_KEYWORD = getattr<"POSITIONAL_OR_KEYWORD">(Parameter);
+                Object VAR_POSITIONAL = getattr<"VAR_POSITIONAL">(Parameter);
+                Object KEYWORD_ONLY = getattr<"KEYWORD_ONLY">(Parameter);
+                Object VAR_KEYWORD = getattr<"VAR_KEYWORD">(Parameter);
+                int rc = PyObject_RichCompareBool(
+                    ptr(kind),
+                    ptr(POSITIONAL_ONLY),
+                    Py_EQ
+                );
+                if (rc < 0) {
+                    Exception::from_python();
+                } else if (rc) {
+                    return default_value.is(empty) ?
+                        OverloadKey::Param::POSONLY :
+                        OverloadKey::Param::POSONLY_DEFAULT;
+                }
+                rc = PyObject_RichCompareBool(
+                    ptr(kind),
+                    ptr(POSITIONAL_OR_KEYWORD),
+                    Py_EQ
+                );
+                if (rc < 0) {
+                    Exception::from_python();
+                } else if (rc) {
+                    return default_value.is(empty) ?
+                        OverloadKey::Param::KW :
+                        OverloadKey::Param::KW_DEFAULT;
+                }
+                rc = PyObject_RichCompareBool(
+                    ptr(kind),
+                    ptr(VAR_POSITIONAL),
+                    Py_EQ
+                );
+                if (rc < 0) {
+                    Exception::from_python();
+                } else if (rc) {
+                    return OverloadKey::Param::ARGS;
+                }
+                rc = PyObject_RichCompareBool(
+                    ptr(kind),
+                    ptr(KEYWORD_ONLY),
+                    Py_EQ
+                );
+                if (rc < 0) {
+                    Exception::from_python();
+                } else if (rc) {
+                    return default_value.is(empty) ?
+                        OverloadKey::Param::KWONLY :
+                        OverloadKey::Param::KWONLY_DEFAULT;
+                }
+                rc = PyObject_RichCompareBool(
+                    ptr(kind),
+                    ptr(VAR_KEYWORD),
+                    Py_EQ
+                );
+                if (rc < 0) {
+                    Exception::from_python();
+                } else if (rc) {
+                    return OverloadKey::Param::KWARGS;
+                }
+                throw TypeError("unrecognized parameter kind: " + repr(kind));
+            }
+
+            /* Get the annotation held within an `inspect.Parameter` object, for use in a
+            callback. */
+            static Object get_annotation(PyObject* parameter) {
+                PyObject* annotation = PyObject_GetAttr(
+                    parameter,
+                    impl::TemplateString<"annotation">::ptr
+                );
+                if (annotation == nullptr) {
+                    Exception::from_python();
+                }
+                return reinterpret_steal<Object>(annotation);
+            }
+
+            /* Get an `inspect.Parameter` object's default value, for use in a callback. */
+            static Object get_default(PyObject* parameter) {
+                PyObject* default_value = PyObject_GetAttr(
+                    parameter,
+                    impl::TemplateString<"default">::ptr
+                );
+                if (default_value == nullptr) {
+                    Exception::from_python();
+                }
+                return reinterpret_steal<Object>(default_value);
+            }
+
+        };
 
         /* In order to allow custom extensions, each `inspect.Parameter` object will
         be passed through a sequence of callbacks that update the internal key vector
@@ -1601,17 +1311,10 @@ namespace impl {
         first one that returns true, invoking its callback.
 
         If no callback can be found for a given parameter, then its type hint will be
-        interpreted as a single type object, and will cause an error if this is not
-        the case.  Note that each parameter's `annotation` field is passed through the
+        interpreted as a generic Object type, which is the equivalent of Python's
+        `typing.Any`.  Note that each parameter's `annotation` field is passed through the
         map produced by `inspect.get_type_hints()`, which normalizes stringized
         annotations and forward references, etc. */
-        struct Callback {
-            using Predicate = std::function<bool(PyObject*)>;
-            using Func = std::function<void(PyObject*, std::vector<OverloadKey>&)>;
-            std::string id;
-            Predicate predicate;
-            Func callback;
-        };
         inline static std::vector<Callback> callbacks {
             {
                 "Union",
@@ -1629,6 +1332,7 @@ namespace impl {
                 /// TODO: ...
             }
         };
+
 
         /// TODO: this is going to get really complicated trying to parse Python's
         /// type hinting syntax and reflecting it in the overload keys.  Most likely,
@@ -1655,35 +1359,29 @@ namespace impl {
         /// way away.
 
     private:
-        mutable bool initialized = false;  // TODO: might be able to use overload_keys.empty()
+        mutable bool initialized = false;
         mutable std::vector<OverloadKey> overload_keys;
 
         /* Get an iterator over the parameters in the signature. */
-        PyObject* get_iter(Py_ssize_t& len) const {
-            PyObject* parameters = PyObject_GetAttr(
-                func_signature,
-                impl::TemplateString<"parameters">::ptr
+        Object get_iter(Py_ssize_t& len) const {
+            Object parameters = getattr<"parameters">(func_signature);
+            Object parameters_values = reinterpret_steal<Object>(
+                PyObject_CallMethodNoArgs(
+                    ptr(parameters),
+                    impl::TemplateString<"values">::ptr
+                )
             );
-            if (parameters == nullptr) {
+            if (ptr(parameters_values) == nullptr) {
                 Exception::from_python();
             }
-            PyObject* parameters_values = PyObject_CallMethodNoArgs(
-                parameters,
-                impl::TemplateString<"values">::ptr
-            );
-            Py_DECREF(parameters);
-            if (parameters_values == nullptr) {
+            Object iter = reinterpret_steal<Object>(PyObject_GetIter(
+                ptr(parameters_values)
+            ));
+            if (ptr(iter) == nullptr) {
                 Exception::from_python();
             }
-            PyObject* iter = PyObject_GetIter(parameters_values);
-            if (iter == nullptr) {
-                Py_DECREF(parameters_values);
-                Exception::from_python();
-            }
-            len = PyObject_Length(parameters_values);
-            Py_DECREF(parameters_values);
+            len = PyObject_Length(ptr(parameters));
             if (len < 0) {
-                Py_DECREF(iter);
                 Exception::from_python();
             }
             return iter;
@@ -1692,9 +1390,9 @@ namespace impl {
         /* Iterate over the Python signature and invoke the matching callbacks */
         void get_overloads() const {
             Py_ssize_t len;
-            PyObject* iter = get_iter(len);
+            Object iter = get_iter(len);
             PyObject* param;
-            while ((param = PyIter_Next(iter))) {
+            while ((param = PyIter_Next(ptr(iter)))) {
                 try {
                     auto it = callbacks.begin();
                     auto end = callbacks.end();
@@ -1705,17 +1403,34 @@ namespace impl {
                         }
                     }
                     if (it == end) {
-                        /// TODO: default behavior, interpreting the annotation as a
-                        /// single type.
+                        Object name = reinterpret_steal<Object>(PyObject_GetAttr(
+                            param,
+                            impl::TemplateString<"name">::ptr
+                        ));
+                        if (ptr(name) == nullptr) {
+                            Exception::from_python();
+                        }
+                        Object kind = reinterpret_steal<Object>(PyObject_GetAttr(
+                            param,
+                            impl::TemplateString<"kind">::ptr
+                        ));
+                        if (ptr(kind) == nullptr) {
+                            Exception::from_python();
+                        }
+                        for (auto& key : overload_keys) {
+                            key.param({
+                                Callback::get_name(ptr(name)),
+                                Callback::get_category(ptr(kind)),
+                                &PyBaseObject_Type
+                            });
+                        }
                     }
                 } catch (...) {
                     Py_DECREF(param);
-                    Py_DECREF(iter);
                     throw;
                 }
                 Py_DECREF(param);
             }
-            Py_DECREF(iter);
         }
 
     public:
