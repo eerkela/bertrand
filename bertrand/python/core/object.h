@@ -9,7 +9,7 @@ namespace py {
 
 /* Retrieve the raw pointer backing a Python object. */
 template <impl::inherits<Object> T>
-[[nodiscard]] PyObject* ptr(T& obj);
+[[nodiscard]] PyObject* ptr(T&& obj);
 
 
 /* Cause a Python object to relinquish ownership over its backing pointer, and then
@@ -33,15 +33,15 @@ already. */
 template <typename T> requires (__object__<std::remove_cvref_t<T>>::enable)
 [[nodiscard]] decltype(auto) as_object(T&& value) {
     using AsObj = __object__<std::remove_cvref_t<T>>;
-    static_assert(
-        !std::same_as<typename AsObj::type, Object>,
-        "C++ types cannot be converted to py::Object directly.  Check your "
-        "specialization of __object__ for this type and ensure the Return type "
-        "derives from py::Object, and is not py::Object itself."
-    );
     if constexpr (impl::has_call_operator<AsObj>) {
         return AsObj{}(std::forward<T>(value));
     } else {
+        static_assert(
+            !std::same_as<typename AsObj::type, Object>,
+            "C++ types cannot be converted to py::Object directly.  Check your "
+            "specialization of __object__ for this type and ensure the Return type "
+            "derives from py::Object, and is not py::Object itself."
+        );
         return typename AsObj::type(std::forward<T>(value));
     }
 }
@@ -133,7 +133,7 @@ protected:
     struct stolen_t {};
 
     template <impl::inherits<Object> T>
-    friend PyObject* ptr(T&);
+    friend PyObject* ptr(T&&);
     template <impl::inherits<Object> T> requires (!std::is_const_v<std::remove_reference_t<T>>)
     friend PyObject* release(T&&);
     template <std::derived_from<Object> T>
@@ -623,7 +623,7 @@ struct Interface<Type<Object>> {};
 
 
 template <impl::inherits<Object> T>
-[[nodiscard]] PyObject* ptr(T& obj) {
+[[nodiscard]] PyObject* ptr(T&& obj) {
     return obj.m_ptr;
 }
 
@@ -731,6 +731,7 @@ struct __explicit_init__<Self, T>                           : Returns<Self> {
 /* Implicitly convert a Python object into one of its subclasses by applying a runtime
 `isinstance()` check. */
 template <impl::inherits<Object> From, impl::inherits<From> To>
+    requires (!impl::is<From, To>)
 struct __cast__<From, To>                                   : Returns<To> {
     static auto operator()(From&& from);  // defined in ops.h
 };
@@ -944,7 +945,7 @@ struct __lshift__<Stream, Self>                             : Returns<Stream&> {
 
 template <impl::inherits<Object> T>
 struct __object__<T>                                     : Returns<T> {
-    static decltype(auto) operator()(T&& value) { return std::forward<T>(value); }
+    static T operator()(T value) { return std::forward<T>(value); }
 };
 
 

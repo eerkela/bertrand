@@ -859,7 +859,9 @@ namespace impl {
     };
 
     template <typename T>
-    concept has_call_operator = requires { &std::decay_t<T>::operator(); };
+    concept has_call_operator = requires() {
+        { &std::remove_cvref_t<T>::operator() };
+    };
 
     template <typename T>
     concept is_callable_any = 

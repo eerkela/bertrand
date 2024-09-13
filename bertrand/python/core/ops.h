@@ -2077,6 +2077,7 @@ bool __issubclass__<T, Base>::operator()(T&& obj, Base&& cls) {
 
 
 template <impl::inherits<Object> From, impl::inherits<From> To>
+    requires (!impl::is<From, To>)
 auto __cast__<From, To>::operator()(From&& from) {
     if (isinstance<To>(from)) {
         if constexpr (std::is_lvalue_reference_v<From>) {
