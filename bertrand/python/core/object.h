@@ -531,6 +531,14 @@ public:
     template <typename Self, typename Key> requires (__contains__<Self, Key>::enable)
     [[nodiscard]] bool contains(this Self&& self, Key&& key);
 
+    /* Python-style contains operator.  Equivalent to Python's `in` keyword, but
+    expects the argument to have a `.contains()` method that can be called with this
+    type, order to support membership testing in both directions. */
+    template <typename Self, impl::has_contains<Self> T>
+    [[nodiscard]] bool in(this Self&& self, T&& other) {
+        return std::forward<T>(other).contains(std::forward<Self>(self));
+    }
+
     /* Contextually convert an Object into a boolean value for use in if/else 
     statements, with the same semantics as in Python. */
     template <typename Self>
