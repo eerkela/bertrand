@@ -1628,6 +1628,22 @@ namespace impl {
         static constexpr size_t _kwargs_idx<T, Ts...> =
             Param<T>::kwargs ? 0 : 1 + _kwargs_idx<Ts...>;
 
+        /* Get a one-hot encoded bitmask with the bit at index I set if and only if
+        the parameter at that index is a required positional or keyword argument.
+        Otherwise, return a zero mask. */
+        template <size_t I>
+        static constexpr uint64_t build_mask = [] {
+            if constexpr (
+                Param<unpack_type<I, Args...>>::opt ||
+                Param<unpack_type<I, Args...>>::args ||
+                Param<unpack_type<I, Args...>>::kwargs
+            ) {
+                return 0ULL;
+            } else {
+                return 1ULL << I;
+            }
+        }();
+
     public:
         static constexpr size_t n                   = sizeof...(Args);
         static constexpr size_t n_pos               = _n_pos<0, Args...>;
@@ -1673,7 +1689,41 @@ namespace impl {
         template <StaticStr Name> requires (has<Name>)
         using Kwarg = Param<unpack_type<idx<Name>, Args...>>::type;
 
+        /* A single entry in a callback table, storing the argument name, a bitmask
+        marking the argument as required/optional, a function that can be used to
+        validate the argument, and a lazy function that can be used to retrieve its
+        Python type object. */
+        struct Callback {
+            std::string_view name;
+            uint64_t mask = 0;
+            bool(*func)(PyTypeObject*) = nullptr;
+            PyTypeObject*(*type)() = nullptr;  /// TODO: should maybe return a new reference?
+            explicit operator bool() const noexcept { return func != nullptr; }
+            bool operator()(PyTypeObject* type) const { return func(type); }
+        };
+
+        /* A bitmask with a 1 in the position of all of the required arguments in the
+        parameter list.  Each callback stores a one-hot encoded version of this mask in
+        addition to the argument name and validation function.  This is just the union
+        of each submask.  When the function is called, a corresponding mask will be
+        built from scratch as each argument is parsed by OR-ing the submasks of all
+        handled arguments.  After the argument list is complete, any missing arguments
+        can be detected by doing an equality check against this mask.  If that
+        evaluates to false, then further bitwise inspection can be done to determine
+        exactly which arguments were missing, as well as their names.
+
+        Note that this mask effectively limits the number of arguments that a function
+        can accept to 64, which is a reasonable limit for most functions.  The
+        performance benefits justify the limitation, and if you need more than 64
+        arguments, you should probably be using a different design pattern. */
+        static constexpr uint64_t required = [] {
+            return []<size_t... Is>(std::index_sequence<Is...>) {
+                return (build_mask<Is> | ...);
+            }(std::make_index_sequence<n>{});
+        }();
+
     private:
+        static constexpr Callback null_callback;
 
         template <size_t I, typename... Ts>
         static constexpr bool validate = true;
@@ -1744,63 +1794,13 @@ namespace impl {
             return validate<I + 1, Ts...>;
         }();
 
-        /* Get a one-hot encoded bitmask with the bit at index I set if and only if
-        the parameter at that index is a required positional or keyword argument.
-        Otherwise, return a zero mask.  One of these is stored on every callback in
-        order to quickly validate whether all required arguments are accounted for. */
-        template <size_t I>
-        static constexpr uint64_t build_mask() {
-            if constexpr (
-                Param<at<I>>::opt ||
-                Param<at<I>>::args ||
-                Param<at<I>>::kwargs
-            ) {
-                return 0ULL;
-            } else {
-                return 1ULL << I;
-            }
-        }
-
-        /* A bitmask with a 1 in the position of all of the required arguments in the
-        parameter list.  Each callback stores a one-hot encoded version of this mask in
-        addition to the argument name and validation function.  This is just the union
-        of each submask.  When the function is called, a corresponding mask will be
-        built from scratch as each argument is parsed by OR-ing the submasks of all
-        handled arguments.  After the argument list is complete, any missing arguments
-        can be detected by doing an equality check against this mask.  If that
-        evaluates to false, then further bitwise inspection can be done to determine
-        exactly which arguments were missing, as well as their names.
-
-        Note that this mask effectively limits the number of arguments that a function
-        can accept to 64, which is a reasonable limit for most functions.  The
-        performance benefits justify the limitation, and if you need more than 64
-        arguments, you should probably be using a different design pattern. */
-        static constexpr uint64_t required = [] {
-            return []<size_t... Is>(std::index_sequence<Is...>) {
-                return (build_mask<Is>() | ...);
-            }(std::make_index_sequence<n>{});
-        }();
-
-        /* A single entry in a callback table, storing the argument name, a bitmask
-        marking the argument as required/optional, a function that can be used to
-        validate the argument, and a lazy function that can be used to retrieve its
-        Python type object. */
-        struct Callback {
-            std::string_view name;
-            uint64_t mask = 0;
-            bool(*func)(PyTypeObject*) = nullptr;
-            PyTypeObject*(*type)() = nullptr;  /// TODO: should maybe return a new reference?
-        };
-
         /* Populate the positional argument table with an appropriate callback for
         each positional argument in the parameter list. */
         template <size_t I>
-        static constexpr void populate_positional_table(
-            std::array<Callback, n>& table
-        ) {
+        static constexpr void populate_positional_table(std::array<Callback, n>& table) {
             table[I] = {
                 Param<at<I>>::name,
-                build_mask<I>(),
+                build_mask<I>,
                 [](PyTypeObject* type) -> bool {
                     int rc = PyObject_IsSubclass(
                         reinterpret_cast<PyObject*>(type),
@@ -1924,7 +1924,7 @@ namespace impl {
                 );
                 table[i] = {
                     Param<at<I>>::name,
-                    build_mask<I>(),
+                    build_mask<I>,
                     [](PyTypeObject* type) -> bool {
                         int rc = PyObject_IsSubclass(
                             reinterpret_cast<PyObject*>(type),
@@ -1963,59 +1963,6 @@ namespace impl {
             );
             return table;
         }();
-
-
-
-
-
-
-        /* After invoking a function with variadic positional arguments, the argument
-        iterators must be fully consumed, otherwise there are additional positional
-        arguments that were not consumed. */
-        template <std::input_iterator Iter, std::sentinel_for<Iter> End>
-        static void assert_args_are_exhausted(Iter& iter, const End& end) {
-            if (iter != end) {
-                std::string message =
-                    "too many arguments in positional parameter pack: ['" +
-                    repr(*iter);
-                while (++iter != end) {
-                    message += "', '";
-                    message += repr(*iter);
-                }
-                message += "']";
-                throw TypeError(message);
-            }
-        }
-
-        /* Before invoking a function with variadic keyword arguments, those arguments
-        need to be scanned to ensure each of them are recognized and do not interfere
-        with other keyword arguments given in the source signature. */
-        template <typename Outer, typename Inner, typename Map>
-        static void assert_kwargs_are_recognized(const Map& kwargs) {
-            []<size_t... Is>(std::index_sequence<Is...>, const Map& kwargs) {
-                std::vector<std::string> extra;
-                for (const auto& [key, value] : kwargs) {
-                    if (
-                        key == "" ||
-                        !((key == Param<typename Outer::template at<Is>>::name) || ...)
-                    ) {
-                        extra.push_back(key);
-                    }
-                }
-                if (!extra.empty()) {
-                    auto iter = extra.begin();
-                    auto end = extra.end();
-                    std::string message =
-                        "unexpected keyword arguments: ['" + repr(*iter);
-                    while (++iter != end) {
-                        message += "', '";
-                        message += repr(*iter);
-                    }
-                    message += "']";
-                    throw TypeError(message);
-                }
-            }(std::make_index_sequence<Outer::n>{}, kwargs);
-        }
 
         template <size_t I>
         static bool _matches(const OverloadKey& key) {
@@ -2311,138 +2258,53 @@ namespace impl {
             }
         }
 
-        template <size_t I>
-        static bool _compatible(
-            const OverloadKey& key,
-            size_t& idx,
-            BitSet& kw_mask
-        ) {
-
-        }
-
-        template <size_t I>
-        static void _assert_compatible(
-            const OverloadKey& key,
-            size_t& idx,
-            BitSet& kw_mask
-        ) {
-
-        }
-
-        template <size_t I>
-        static bool _satisfies(
-            const OverloadKey& key,
-            size_t& idx,
-            uint64_t& mask
-        ) {
-            using T = __object__<std::remove_cvref_t<typename Param<at<I>>::type>>::type;
-
-            if (idx < key.size()) {
-                if constexpr (Param<T>::kwonly) {
-                    /// TODO: involves some kind of search
-
-                } else if constexpr (Param<T>::kw) {
-                    const OverloadKey::Param& param = key[idx];
-                    if (param.posonly()) {
-                        int rc = PyObject_IsSubclass(
-                            reinterpret_cast<PyObject*>(param.type),
-                            ptr(Type<T>())
-                        );
-                        if (rc < 0) {
-                            Exception::from_python();
-                        }
-                        ++idx;
-                        return rc;
-                    }
-                    constexpr size_t observed = 1ULL << (I - kw_idx);
-                    if (mask & observed) {
-                        throw TypeError(
-                            "received multiple values for argument '" +
-                            Param<T>::name + "'"
-                        );
-                    }
-                    constexpr const Callback& callback = callbacks[
-                        modulus(hash(Param<T>::name))
-                    ];
-
-
-                    mask |= observed;
-                    return false;
-
-                } else if constexpr (Param<T>::args) {
-                    const OverloadKey::Param* param = &key[idx];
-                    Type<T> expected;
-                    while (param->posonly()) {
-                        int rc = PyObject_IsSubclass(
-                            reinterpret_cast<PyObject*>(param->type),
-                            ptr(expected)
-                        );
-                        if (rc < 0) {
-                            Exception::from_python();
-                        } else if (!rc) {
-                            return false;
-                        }
-                        param = &key[++idx];
-                    }
-                    return true;
-
-                } else if constexpr (Param<T>::kwargs) {
-                    /// TODO: will have to iterate over the key and pick out every
-                    /// kwarg that hasn't been consumed yet
-
-                } else {
-                    const OverloadKey::Param& param = key[idx];
-                    if (param.posonly()) {
-                        int rc = PyObject_IsSubclass(
-                            reinterpret_cast<PyObject*>(param.type),
-                            ptr(Type<T>())
-                        );
-                        if (rc < 0) {
-                            Exception::from_python();
-                        }
-                        ++idx;
-                        return rc;
-                    }
-                    return false;
-                }
-            }
-
-            return Param<T>::opt || Param<T>::args || Param<T>::kwargs;
-        }
-
-        static void _assert_satisfies(
-            const OverloadKey& key,
-            size_t& idx,
-            uint64_t& kw_mask
-        ) {
-            const OverloadKey::Param& param = key[idx];
-
-        }
-
     public:
 
-        /* If the target signature does not conform to Python calling conventions, throw
-        an informative compile error describing the problem. */
+        /* If the target signature does not conform to Python calling conventions,
+        throw an informative compile error describing the problem. */
         static constexpr bool valid = validate<0, Args...>;
 
         /* Hash a byte string according to the FNV-1a algorithm using the seed and
-        prime that were computed at compile time to perfectly hash the keyword callback
-        table. */
+        prime that were found at compile time to perfectly hash the keyword
+        arguments. */
         static constexpr size_t hash(const char* str) noexcept {
             return fnv1a(str, seed, prime);
         }
 
-        /* Hash an argument name and retrieve the associated callback if it corresponds
-        to a keyword argument in the templated parameter list.  Returns nullptr
-        otherwise. */
-        static constexpr auto callback(std::string_view name) noexcept
-            -> bool(*)(PyTypeObject*)
-        {
-            const Callback& callback = callbacks[modulus(hash(name.data()))];
-            return callback.name == name ? callback.func : nullptr;
+        /* Look up a positional argument, returning a callback object that can be used
+        to efficiently validate it.  If the index does not correspond to a recognized
+        positional argument (accounting for variadic args), a null callback will be
+        returned that evaluates to false under boolean logic. */
+        static constexpr Callback& callback(size_t i) noexcept {
+            if constexpr (has_args) {
+                constexpr Callback& args_callback = positional_table[args_idx];
+                return i < args_idx ? positional_table[i] : args_callback;
+            } else if constexpr (has_kwonly) {
+                return i < kwonly_idx ? positional_table[i] : null_callback;
+            } else {
+                return i < kwargs_idx ? positional_table[i] : null_callback;
+            }
         }
 
-        // static constexpr bool(*abc)(PyTypeObject*) = callback("abc");
+        /* Look up a keyword argument, returning a callback object that can be used to
+        efficiently validate it.  If the argument name is not recognized (accounting
+        for variadic kwargs), a null callback will be returned that evaluates to false
+        under boolean logic. */
+        static constexpr Callback& callback(std::string_view name) noexcept {
+            const Callback& callback = keyword_table[
+                keyword_table_index(hash(name.data()))
+            ];
+            if (callback.name == name) {
+                return callback;
+            } else {
+                if constexpr (has_kwargs) {
+                    constexpr Callback& kwargs_callback = keyword_table[kwargs_idx];
+                    return kwargs_callback;
+                } else {
+                    return null_callback;
+                }
+            }
+        }
 
         /* Check to see if a Python function signature exactly matches the enclosing
         parameter list. */
@@ -2474,60 +2336,61 @@ namespace impl {
 
         /* Check to see if a Python function signature can be bound to the enclosing
         parameter list, meaning that it could be registered as a viable overload. */
-        static bool compatible(const OverloadKey& key) {
-
+        static bool satisfies(const OverloadKey& key) {
+            /// TODO: figure this out
         }
 
         /* Validate a Python function signature, raising an error if it cannot be
         bound to the enclosing parameter list. */
-        static void assert_compatible(const OverloadKey& key) {
-
+        static void assert_satisfies(const OverloadKey& key) {
+            /// TODO: figure this out
         }
 
         /* Check to see if a set of call arguments satisfy the enclosing parameter
         list, accounting for default values, variadics, etc. */
-        static bool satisfies(const OverloadKey& key) {
+        static bool callable(const OverloadKey& key) {
+            size_t size = key.size();
             size_t idx = 0;
-            BitSet kw_mask = 0;
-            []<size_t... Is>(
-                std::index_sequence<Is...>,
-                const OverloadKey& key,
-                size_t& idx,
-                BitSet& kw_mask
-            ) {
-                bool result = (_satisfies<Is>(key, idx, kw_mask) && ...);
-                if (idx < key.size()) {
-                    std::string msg =
-                        "received unexpected arguments: ['" + repr(key[idx]);
-                    while (++idx < key.size()) {
-                        msg += "', '";
-                        msg += repr(key[idx]);
+            uint64_t mask = 0;
+            while (idx < size) {
+                const OverloadKey::Param& param = key[idx];
+                if (param.name.empty()) {
+                    const Callback& callback = Parameters::callback(idx);
+                    if (!callback || !callback(param.type)) {
+                        return false;
                     }
-                    msg += "']";
-                    throw TypeError(msg);
+                    mask |= callback.mask;
+                } else {
+                    const Callback& callback = Parameters::callback(param.name);
+                    if (!callback || mask & callback.mask || !callback(param.type)) {
+                        return false;
+                    }
+                    mask |= callback.mask;
                 }
-                return result;
-            }(std::make_index_sequence<n>{}, key, idx);
+                ++idx;
+            }
+            return mask == required && idx == size;
         }
 
         /* Validate a set of call arguments, raising an error if they do not satisfy
         the enclosing parameter list, accounting for default values, variadics, etc. */
-        static void assert_satisfies(const OverloadKey& key) {
+        static void assert_callable(const OverloadKey& key) {
             size_t size = key.size();
             size_t idx = 0;
             uint64_t mask = 0;
-            while ((idx < n) & (idx < size)) {
+            while (idx < size) {
                 const OverloadKey::Param& param = key[idx];
 
-                /// TODO: I also need to account for variadic argument packs here, and
-                /// not fail in those cases.
-
+                // positional
                 if (param.name.empty()) {
-                    const Callback& callback = positional_table[idx];
-                    /// TODO: what other checks to put here?  I probably need some way
-                    /// to make sure that the argument respects categories, etc.
-
-                    if (!callback.func(param.type)) {
+                    const Callback& callback = Parameters::callback(idx);
+                    if (!callback) {
+                        throw TypeError(
+                            "received unexpected positional argument at index " +
+                            std::to_string(idx) + ": '" + repr(param) + "'"
+                        );
+                    }
+                    if (!callback(param.type)) {
                         throw TypeError(
                             "expected argument at index " + std::to_string(idx) +
                             "' to be a subclass of '" + repr(reinterpret_borrow<Object>(
@@ -2540,20 +2403,22 @@ namespace impl {
                     }
                     mask |= callback.mask;
 
+                // keyword
                 } else {
-                    size_t lookup = keyword_table_index(hash(param.name.data()));
-                    const Callback& callback = keyword_table[lookup];
-                    if (param.name != callback.name) {
+                    const Callback& callback = Parameters::callback(param.name);
+                    if (!callback) {
                         throw TypeError(
                             "received unexpected keyword argument: '" +
                             std::string(param.name) + "'"
                         );
-                    } else if (mask & callback.mask) {
+                    }
+                    if (mask & callback.mask) {
                         throw TypeError(
                             "received multiple values for argument '" +
                             std::string(param.name) + "'"
                         );
-                    } else if (!callback.func(param.type)) {
+                    }
+                    if (!callback(param.type)) {
                         throw TypeError(
                             "expected argument '" + std::string(param.name) +
                             "' to be a subclass of '" + repr(reinterpret_borrow<Object>(
@@ -2569,9 +2434,8 @@ namespace impl {
 
                 ++idx;
             }
-            if (idx < size) {
-                /// TODO: handle extra arguments
-            }
+
+            // check for missing arguments
             if (mask != required) {
                 uint64_t missing = required & ~mask;
                 std::string msg = "missing required arguments: [";
@@ -2580,7 +2444,7 @@ namespace impl {
                     if (missing & (1ULL << i)) {
                         const Callback& param = positional_table[i];
                         if (param.name.empty()) {
-                            msg += "<unnamed at index " + std::to_string(i) + ">";
+                            msg += "<parameter " + std::to_string(i) + ">";
                         } else {
                             msg += "'" + std::string(param.name) + "'";
                         }
@@ -2593,9 +2457,9 @@ namespace impl {
                     if (missing & (1ULL << i)) {
                         const Callback& param = positional_table[i];
                         if (param.name.empty()) {
-                            msg += ", <unnamed at index " + std::to_string(i) + ">";
+                            msg += ", <parameter " + std::to_string(i) + ">";
                         } else {
-                            msg += "', " + std::string(param.name) + "'";
+                            msg += ", '" + std::string(param.name) + "'";
                         }
                     }
                     ++i;
@@ -2603,10 +2467,83 @@ namespace impl {
                 msg += "]";
                 throw TypeError(msg);
             }
+
+            // check for extra arguments
+            if (idx < size) {
+                std::string msg = "received unexpected arguments: [";
+                const OverloadKey::Param& param = key[idx];
+                if (param.name.empty()) {
+                    msg += "<parameter " + std::to_string(idx) + ">";
+                } else {
+                    msg += "'" + std::string(param.name) + "'";
+                }
+                while (++idx < size) {
+                    const OverloadKey::Param& param = key[idx];
+                    if (param.name.empty()) {
+                        msg += ", <parameter " + std::to_string(idx) + ">";
+                    } else {
+                        msg += ", '" + std::string(param.name) + "'";
+                    }
+                }
+                msg += "]";
+                throw TypeError(msg);
+            }
         }
 
-        /* A tuple holding the default values for each argument that is marked as
-        optional in the enclosing signature. */
+    private:
+
+        /* After invoking a function with variadic positional arguments, the argument
+        iterators must be fully consumed, otherwise there are additional positional
+        arguments that were not consumed. */
+        template <std::input_iterator Iter, std::sentinel_for<Iter> End>
+        static void assert_args_are_exhausted(Iter& iter, const End& end) {
+            if (iter != end) {
+                std::string message =
+                    "too many arguments in positional parameter pack: ['" +
+                    repr(*iter);
+                while (++iter != end) {
+                    message += "', '";
+                    message += repr(*iter);
+                }
+                message += "']";
+                throw TypeError(message);
+            }
+        }
+
+        /* Before invoking a function with variadic keyword arguments, those arguments
+        need to be scanned to ensure each of them are recognized and do not interfere
+        with other keyword arguments given in the source signature. */
+        template <typename Outer, typename Inner, typename Map>
+        static void assert_kwargs_are_recognized(const Map& kwargs) {
+            []<size_t... Is>(std::index_sequence<Is...>, const Map& kwargs) {
+                std::vector<std::string> extra;
+                for (const auto& [key, value] : kwargs) {
+                    if (
+                        key == "" ||
+                        !((key == Param<typename Outer::template at<Is>>::name) || ...)
+                    ) {
+                        extra.push_back(key);
+                    }
+                }
+                if (!extra.empty()) {
+                    auto iter = extra.begin();
+                    auto end = extra.end();
+                    std::string message =
+                        "unexpected keyword arguments: ['" + repr(*iter);
+                    while (++iter != end) {
+                        message += "', '";
+                        message += repr(*iter);
+                    }
+                    message += "']";
+                    throw TypeError(message);
+                }
+            }(std::make_index_sequence<Outer::n>{}, kwargs);
+        }
+
+    public:
+
+        /* A tuple holding the default values for each argument in the enclosing
+        parameter list that is marked as optional. */
         struct Defaults {
         private:
             using Outer = Parameters;
@@ -3087,9 +3024,8 @@ namespace impl {
 
         };
 
-        /* A helper that binds observed arguments to the enclosing signature and
-        performs the necessary translation to invoke a matching C++ or Python
-        function. */
+        /* A helper that binds C++ arguments to the enclosing signature and performs
+        the necessary translation to invoke a matching C++ or Python function. */
         template <typename... Values>
         struct Bind {
         private:
