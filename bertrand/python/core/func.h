@@ -377,6 +377,17 @@ namespace impl {
         return seed;
     }
 
+    /* Round a number to the next power of two, if it is not one already. */
+    template <std::unsigned_integral T>
+    T next_power_of_two(T n) {
+        constexpr size_t bits = sizeof(T) * 8;
+        --n;
+        for (size_t i = 1; i < bits; i <<= 1) {
+            n |= (n >> i);
+        }
+        return ++n;
+    }
+
     /// TODO: it might be possible to completely bypass overload keys for C++ function
     /// calls, since all the validation is done at compile time, and I can directly
     /// recur over the parameter pack to generate the call.  That would be a great
@@ -1410,7 +1421,7 @@ namespace impl {
 
     /* Analyze an annotated function signature by inspecting each argument and
     extracting metadata that allows call signatures to be resolved at compile time. */
-    template <typename... Args>
+    template <typename... Args> requires (sizeof...(Args) <= 64)
     struct Parameters : BertrandTag {
     private:
 
@@ -1733,46 +1744,139 @@ namespace impl {
             return validate<I + 1, Ts...>;
         }();
 
-        static constexpr size_t modulus = 2 * n_kw;
-
-        /* A fixed-size, perfect hash table mapping the hashes of all the keyword
-        argument names that appear in the parameter list to callbacks that can be used
-        to validate arguments whose types are only resolved at runtime. */
-        static struct Callback {
-            std::string_view name;
-            bool(*func)(PyTypeObject*) = nullptr;
-            explicit operator bool() const { return func != nullptr; }
-            bool operator()(PyTypeObject* type) const { return func(type); }
-        } callbacks[modulus];
-
+        /* Get a one-hot encoded bitmask with the bit at index I set if and only if
+        the parameter at that index is a required positional or keyword argument.
+        Otherwise, return a zero mask.  One of these is stored on every callback in
+        order to quickly validate whether all required arguments are accounted for. */
         template <size_t I>
-        static constexpr bool collides_recursive(size_t seed, size_t prime, size_t idx) {
-            if constexpr (I < sizeof...(Args)) {
-                using T = unpack_type<I, Args...>;
-                if constexpr (Param<T>::kw) {
-                    size_t hash = fnv1a(
-                        Param<unpack_type<I, Args...>>::name,
-                        seed
+        static constexpr uint64_t build_mask() {
+            if constexpr (
+                Param<at<I>>::opt ||
+                Param<at<I>>::args ||
+                Param<at<I>>::kwargs
+            ) {
+                return 0ULL;
+            } else {
+                return 1ULL << I;
+            }
+        }
+
+        /* A bitmask with a 1 in the position of all of the required arguments in the
+        parameter list.  Each callback stores a one-hot encoded version of this mask in
+        addition to the argument name and validation function.  This is just the union
+        of each submask.  When the function is called, a corresponding mask will be
+        built from scratch as each argument is parsed by OR-ing the submasks of all
+        handled arguments.  After the argument list is complete, any missing arguments
+        can be detected by doing an equality check against this mask.  If that
+        evaluates to false, then further bitwise inspection can be done to determine
+        exactly which arguments were missing, as well as their names.
+
+        Note that this mask effectively limits the number of arguments that a function
+        can accept to 64, which is a reasonable limit for most functions.  The
+        performance benefits justify the limitation, and if you need more than 64
+        arguments, you should probably be using a different design pattern. */
+        static constexpr uint64_t required = [] {
+            return []<size_t... Is>(std::index_sequence<Is...>) {
+                return (build_mask<Is>() | ...);
+            }(std::make_index_sequence<n>{});
+        }();
+
+        /* A single entry in a callback table, storing the argument name, a bitmask
+        marking the argument as required/optional, a function that can be used to
+        validate the argument, and a lazy function that can be used to retrieve its
+        Python type object. */
+        struct Callback {
+            std::string_view name;
+            uint64_t mask = 0;
+            bool(*func)(PyTypeObject*) = nullptr;
+            PyTypeObject*(*type)() = nullptr;  /// TODO: should maybe return a new reference?
+        };
+
+        /* Populate the positional argument table with an appropriate callback for
+        each positional argument in the parameter list. */
+        template <size_t I>
+        static constexpr void populate_positional_table(
+            std::array<Callback, n>& table
+        ) {
+            table[I] = {
+                Param<at<I>>::name,
+                build_mask<I>(),
+                [](PyTypeObject* type) -> bool {
+                    int rc = PyObject_IsSubclass(
+                        reinterpret_cast<PyObject*>(type),
+                        ptr(Type<typename Param<at<I>>::type>())
                     );
-                    return (idx == (hash % modulus)) || collides<I + 1>(seed, prime, idx);
+                    if (rc < 0) {
+                        Exception::from_python();
+                    }
+                    return rc;
+                },
+                []() -> PyTypeObject* {
+                    return reinterpret_cast<PyTypeObject*>(
+                        ptr(Type<typename Param<at<I>>::type>())
+                    );
+                }
+            };
+        }
+
+        /* An array of positional arguments to callbacks and bitmasks that can be used
+        to validate the argument at runtime. */
+        static constexpr std::array<Callback, n> positional_table = [] {
+            std::array<Callback, n> table;
+            []<size_t... Is>(std::index_sequence<Is...>, std::array<Callback, n>& table) {
+                (populate_positional_table<Is>(table), ...);
+            }(std::make_index_sequence<n>{}, table);
+            return table;
+        }();
+
+        /* Get the size of the perfect hash table required to efficiently validate
+        keyword arguments as a power of 2. */
+        static constexpr size_t keyword_table_size = next_power_of_two(2 * n_kw);
+
+        /* Take the modulus with respect to the keyword table by exploiting the power
+        of 2 table size. */
+        static constexpr size_t keyword_table_index(size_t hash) {
+            return hash & (keyword_table_size - 1);
+        }
+
+        /* Given a precomputed keyword index into the hash table, check to see if any
+        subsequent arguments in the parameter list hash to the same index. */
+        template <size_t I>
+        static constexpr bool collides_recursive(size_t idx, size_t seed, size_t prime) {
+            if constexpr (I < sizeof...(Args)) {
+                if constexpr (Param<at<I>>::kw) {
+                    size_t hash = fnv1a(
+                        Param<at<I>>::name,
+                        seed,
+                        prime
+                    );
+                    return
+                        (keyword_table_index(hash) == idx) ||
+                        collides_recursive<I + 1>(idx, seed, prime);
                 } else {
-                    return collides_recursive<I + 1>(seed, prime, idx);
+                    return collides_recursive<I + 1>(idx, seed, prime);
                 }
             } else {
                 return false;
             }
         };
 
+        /* Check to see if the candidate seed and prime produce any collisions for the
+        target argument at index I. */
         template <size_t I>
         static constexpr bool collides(size_t seed, size_t prime) {
             if constexpr (I < sizeof...(Args)) {
-                using T = unpack_type<I, Args...>;
-                if constexpr (Param<T>::kw) {
+                if constexpr (Param<at<I>>::kw) {
                     size_t hash = fnv1a(
-                        Param<unpack_type<I, Args...>>::name,
-                        seed
+                        Param<at<I>>::name,
+                        seed,
+                        prime
                     );
-                    return collides_recursive<I + 1>(seed, prime, hash % modulus);
+                    return collides_recursive<I + 1>(
+                        keyword_table_index(hash),
+                        seed,
+                        prime
+                    ) || collides<I + 1>(seed, prime);
                 } else {
                     return collides<I + 1>(seed, prime);
                 }
@@ -1781,33 +1885,8 @@ namespace impl {
             }
         }
 
-        template <size_t I>
-        static constexpr void get_callback(size_t seed, size_t prime) {
-            using T = unpack_type<I, Args...>;
-            if constexpr (Param<T>::kw) {
-                size_t hash = fnv1a(
-                    Param<unpack_type<I, Args...>>::name,
-                    seed,
-                    prime
-                );
-                callbacks[hash % modulus] = {
-                    Param<T>::name,
-                    [](PyTypeObject* type) -> bool {
-                        int rc = PyObject_IsSubclass(
-                            reinterpret_cast<PyObject*>(type),
-                            ptr(Type<typename Param<T>::type>())
-                        );
-                        if (rc < 0) {
-                            Exception::from_python();
-                        }
-                        return rc;
-                    }
-                };
-            }
-        }
-
         /* Find an FNV-1a seed and prime that produces perfect hashes with respect to
-        the callback table size. */
+        the keyword table size. */
         static constexpr auto hash_components = [] -> std::pair<size_t, size_t> {
             constexpr size_t recursion_limit = fnv1a_hash_basis + 100'000;
             size_t seed = fnv1a_hash_basis;
@@ -1826,33 +1905,69 @@ namespace impl {
                     prime = fnv1a_fallback_primes[i];
                 }
             }
-
-            /// NOTE: we take this opportunity to populate callback table, since it
-            /// requires the correct seed and prime
-            []<size_t... Is>(size_t seed, size_t prime) {
-                (get_callback<Is>(seed, prime), ...);
-            }(std::make_index_sequence<sizeof...(Args)>{}, seed, prime);
-
             return {seed, prime};
         }();
         static constexpr size_t seed = hash_components.first;
         static constexpr size_t prime = hash_components.second;
 
-        #if defined(__GNUC__) || defined(__clang__)
-            #ifdef __SIZEOF_INT128__
-                using BitSet = __uint128_t;
-            #else 
-                using BitSet = uint64_t;
-            #endif
-        #else
-            using BitSet = uint64_t;
-        #endif
+        /* Populate the keyword table with an appropriate callback for each keyword
+        argument in the parameter list. */
+        template <size_t I>
+        static constexpr void populate_keyword_table(
+            std::array<Callback, keyword_table_size>& table,
+            size_t seed,
+            size_t prime
+        ) {
+            if constexpr (Param<at<I>>::kw) {
+                constexpr size_t i = keyword_table_index(
+                    hash(Param<at<I>>::name)
+                );
+                table[i] = {
+                    Param<at<I>>::name,
+                    build_mask<I>(),
+                    [](PyTypeObject* type) -> bool {
+                        int rc = PyObject_IsSubclass(
+                            reinterpret_cast<PyObject*>(type),
+                            ptr(Type<typename Param<at<I>>::type>())
+                        );
+                        if (rc < 0) {
+                            Exception::from_python();
+                        }
+                        return rc;
+                    },
+                    []() -> PyTypeObject* {
+                        return reinterpret_cast<PyTypeObject*>(
+                            ptr(Type<typename Param<at<I>>::type>())
+                        );
+                    }
+                };
+            }
+        }
+
+        /* The table itself.  Each entry holds the expected keyword name for validation
+        as well as a callback that can be used to validate its type at runtime. */
+        static constexpr std::array<Callback, keyword_table_size> keyword_table = [] {
+            std::array<Callback, keyword_table_size> table;
+            []<size_t... Is>(
+                std::index_sequence<Is...>,
+                std::array<Callback, keyword_table_size>& table,
+                size_t seed,
+                size_t prime
+            ) {
+                (populate_keyword_table<Is>(table, seed, prime), ...);
+            }(
+                std::make_index_sequence<n>{},
+                table,
+                seed,
+                prime
+            );
+            return table;
+        }();
 
 
-        /// TODO: I probably need some kind of constexpr hash map that uses a fixed
-        /// number of buckets to be able to lookup up the index of a parameter by name,
-        /// in order to optimize runtime checks where the compile-time helpers are not
-        /// applicable.
+
+
+
 
         /* After invoking a function with variadic positional arguments, the argument
         iterators must be fully consumed, otherwise there are additional positional
@@ -2218,7 +2333,7 @@ namespace impl {
         static bool _satisfies(
             const OverloadKey& key,
             size_t& idx,
-            BitSet& kw_mask
+            uint64_t& mask
         ) {
             using T = __object__<std::remove_cvref_t<typename Param<at<I>>::type>>::type;
 
@@ -2239,7 +2354,19 @@ namespace impl {
                         ++idx;
                         return rc;
                     }
-                    /// TODO: same as all other keyword arguments
+                    constexpr size_t observed = 1ULL << (I - kw_idx);
+                    if (mask & observed) {
+                        throw TypeError(
+                            "received multiple values for argument '" +
+                            Param<T>::name + "'"
+                        );
+                    }
+                    constexpr const Callback& callback = callbacks[
+                        modulus(hash(Param<T>::name))
+                    ];
+
+
+                    mask |= observed;
                     return false;
 
                 } else if constexpr (Param<T>::args) {
@@ -2283,27 +2410,14 @@ namespace impl {
             return Param<T>::opt || Param<T>::args || Param<T>::kwargs;
         }
 
-        template <size_t I>
         static void _assert_satisfies(
             const OverloadKey& key,
             size_t& idx,
-            BitSet& kw_mask
+            uint64_t& kw_mask
         ) {
-            using T = __object__<
-                std::remove_cvref_t<typename Param<at<I>>::type>
-            >::type;
-        }
+            const OverloadKey::Param& param = key[idx];
 
-        /// TODO: probably what I should do for maximum efficiency is break this up
-        /// into a variety of helpers that can take different arguments based on
-        /// what's needed.  Any time I need to account for keyword arguments, what I
-        /// should do is pass in a mutable set or map that stores the hashes of all
-        /// the keywords that have been seen so far.  Then, when I advance to the next
-        /// template parameter, I can check its Param<>::hash value (which is computed
-        /// at compile time) to see if it's in the set and therefore avoid string
-        /// comparisons.
-        /// -> Maybe the real solution is to pre-build the map before calling the
-        /// function, and then
+        }
 
     public:
 
@@ -2324,16 +2438,11 @@ namespace impl {
         static constexpr auto callback(std::string_view name) noexcept
             -> bool(*)(PyTypeObject*)
         {
-            size_t idx = hash(name.data()) % modulus;
-            Callback& callback = callbacks[idx];
-            return callback && callback.name == name ? callback.func : nullptr;
+            const Callback& callback = callbacks[modulus(hash(name.data()))];
+            return callback.name == name ? callback.func : nullptr;
         }
 
-        /* Check whether the signature contains a keyword with the given name, where
-        the name can only be known at runtime. */
-        static bool contains(std::string_view name) noexcept {
-            return callback(name) != nullptr;
-        }
+        // static constexpr bool(*abc)(PyTypeObject*) = callback("abc");
 
         /* Check to see if a Python function signature exactly matches the enclosing
         parameter list. */
@@ -2404,26 +2513,96 @@ namespace impl {
         /* Validate a set of call arguments, raising an error if they do not satisfy
         the enclosing parameter list, accounting for default values, variadics, etc. */
         static void assert_satisfies(const OverloadKey& key) {
+            size_t size = key.size();
             size_t idx = 0;
-            BitSet kw_mask = 0;
-            []<size_t... Is>(
-                std::index_sequence<Is...>,
-                const OverloadKey& key,
-                size_t& idx,
-                BitSet& kw_mask
-            ) {
-                (_assert_satisfies<Is>(key, idx, kw_mask), ...);
-                if (idx < key.size()) {
-                    std::string msg =
-                        "received unexpected arguments: ['" + repr(key[idx]);
-                    while (++idx < key.size()) {
-                        msg += "', '";
-                        msg += repr(key[idx]);
+            uint64_t mask = 0;
+            while ((idx < n) & (idx < size)) {
+                const OverloadKey::Param& param = key[idx];
+
+                /// TODO: I also need to account for variadic argument packs here, and
+                /// not fail in those cases.
+
+                if (param.name.empty()) {
+                    const Callback& callback = positional_table[idx];
+                    /// TODO: what other checks to put here?  I probably need some way
+                    /// to make sure that the argument respects categories, etc.
+
+                    if (!callback.func(param.type)) {
+                        throw TypeError(
+                            "expected argument at index " + std::to_string(idx) +
+                            "' to be a subclass of '" + repr(reinterpret_borrow<Object>(
+                                reinterpret_cast<PyObject*>(callback.type())
+                            )) +
+                            "', not: '" + repr(reinterpret_borrow<Object>(
+                                reinterpret_cast<PyObject*>(param.type)
+                            )) + "'"
+                        );
                     }
-                    msg += "']";
-                    throw TypeError(msg);
+                    mask |= callback.mask;
+
+                } else {
+                    size_t lookup = keyword_table_index(hash(param.name.data()));
+                    const Callback& callback = keyword_table[lookup];
+                    if (param.name != callback.name) {
+                        throw TypeError(
+                            "received unexpected keyword argument: '" +
+                            std::string(param.name) + "'"
+                        );
+                    } else if (mask & callback.mask) {
+                        throw TypeError(
+                            "received multiple values for argument '" +
+                            std::string(param.name) + "'"
+                        );
+                    } else if (!callback.func(param.type)) {
+                        throw TypeError(
+                            "expected argument '" + std::string(param.name) +
+                            "' to be a subclass of '" + repr(reinterpret_borrow<Object>(
+                                reinterpret_cast<PyObject*>(callback.type())
+                            )) +
+                            "', not: '" + repr(reinterpret_borrow<Object>(
+                                reinterpret_cast<PyObject*>(param.type)
+                            )) + "'"
+                        );
+                    }
+                    mask |= callback.mask;
                 }
-            }(std::make_index_sequence<n>{}, key, idx);
+
+                ++idx;
+            }
+            if (idx < size) {
+                /// TODO: handle extra arguments
+            }
+            if (mask != required) {
+                uint64_t missing = required & ~mask;
+                std::string msg = "missing required arguments: [";
+                size_t i = 0;
+                while (i < n) {
+                    if (missing & (1ULL << i)) {
+                        const Callback& param = positional_table[i];
+                        if (param.name.empty()) {
+                            msg += "<unnamed at index " + std::to_string(i) + ">";
+                        } else {
+                            msg += "'" + std::string(param.name) + "'";
+                        }
+                        ++i;
+                        break;
+                    }
+                    ++i;
+                }
+                while (i < n) {
+                    if (missing & (1ULL << i)) {
+                        const Callback& param = positional_table[i];
+                        if (param.name.empty()) {
+                            msg += ", <unnamed at index " + std::to_string(i) + ">";
+                        } else {
+                            msg += "', " + std::string(param.name) + "'";
+                        }
+                    }
+                    ++i;
+                }
+                msg += "]";
+                throw TypeError(msg);
+            }
         }
 
         /* A tuple holding the default values for each argument that is marked as
