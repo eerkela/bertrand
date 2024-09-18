@@ -317,10 +317,10 @@ template <typename Self> requires (__len__<Self>::enable)
         static_assert(
             impl::has_size<impl::cpp_type<Self>>,
             "__len__<T> is enabled for a type whose C++ representation does not have "
-            "a viable overload for `std::size(T)`.  Did you forget to define a custom "
-            "call operator for this type?"
+            "a viable overload for `std::ranges::size(T)`.  Did you forget to define "
+            "a custom call operator for this type?"
         );
-        return std::size(unwrap(std::forward<Self>(obj)));
+        return std::ranges::size(unwrap(std::forward<Self>(obj)));
 
     } else {
         Py_ssize_t size = PyObject_Length(
@@ -338,7 +338,7 @@ template <typename Self> requires (__len__<Self>::enable)
 `size()` method. */
 template <typename T> requires (!__len__<T>::enable && impl::has_size<T>)
 [[nodiscard]] size_t len(T&& obj) {
-    return std::size(std::forward<T>(obj));
+    return std::ranges::size(std::forward<T>(obj));
 }
 
 

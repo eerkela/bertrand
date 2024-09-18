@@ -376,7 +376,7 @@ template <typename Value, impl::cpp_like Container>
 struct __init__<Tuple<Value>, Container>                    : Returns<Tuple<Value>> {
     static auto operator()(const Container& contents) {
         if constexpr (impl::has_size<Container>) {
-            PyObject* result = PyTuple_New(std::size(contents));
+            PyObject* result = PyTuple_New(std::ranges::size(contents));
             if (result == nullptr) {
                 Exception::from_python();
             }
@@ -426,7 +426,7 @@ template <typename Value, impl::cpp_like Container>
 struct __explicit_init__<Tuple<Value>, Container>            : Returns<Tuple<Value>> {
     static auto operator()(const Container& contents) {
         if constexpr (impl::has_size<Container>) {
-            PyObject* result = PyTuple_New(std::size(contents));
+            PyObject* result = PyTuple_New(std::ranges::size(contents));
             if (result == nullptr) {
                 Exception::from_python();
             }
@@ -493,7 +493,7 @@ struct __explicit_init__<Tuple<Value>, Container>           : Returns<Tuple<Valu
             }
         } else {
             if constexpr (impl::has_size<Container>) {
-                PyObject* result = PyTuple_New(std::size(contents));
+                PyObject* result = PyTuple_New(std::ranges::size(contents));
                 if (result == nullptr) {
                     Exception::from_python();
                 }

@@ -377,7 +377,7 @@ template <typename Value, impl::cpp_like Container>
 struct __init__<List<Value>, Container>                     : Returns<List<Value>> {
     static auto operator()(const Container& contents) {
         if constexpr (impl::has_size<Container>) {
-            PyObject* result = PyList_New(std::size(contents));
+            PyObject* result = PyList_New(std::ranges::size(contents));
             if (result == nullptr) {
                 Exception::from_python();
             }
@@ -422,7 +422,7 @@ template <typename Value, impl::cpp_like Container>
 struct __explicit_init__<List<Value>, Container>            : Returns<List<Value>> {
     static auto operator()(const Container& contents) {
         if constexpr (impl::has_size<Container>) {
-            PyObject* result = PyList_New(std::size(contents));
+            PyObject* result = PyList_New(std::ranges::size(contents));
             if (result == nullptr) {
                 Exception::from_python();
             }
@@ -474,7 +474,7 @@ struct __explicit_init__<List<Value>, Container>            : Returns<List<Value
             return reinterpret_steal<List<Value>>(result);
         } else {
             if constexpr (impl::has_size<Container>) {
-                PyObject* result = PyList_New(std::size(contents));
+                PyObject* result = PyList_New(std::ranges::size(contents));
                 if (result == nullptr) {
                     Exception::from_python();
                 }

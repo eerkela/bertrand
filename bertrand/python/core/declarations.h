@@ -64,7 +64,6 @@ namespace impl {
     struct BertrandTag {};
     struct PythonTag : BertrandTag {};
     struct IterTag : BertrandTag {};
-    struct ArgTag : BertrandTag {};
     struct FunctionTag : BertrandTag {};   /// TODO: eliminate this
     struct TypeTag : BertrandTag {};  /// TODO: eliminate this
     struct ModuleTag;  /// TODO: eliminate this
@@ -755,7 +754,9 @@ namespace impl {
     };
 
     template <typename T>
-    using iter_type = decltype(*std::ranges::begin(std::declval<T>()));
+    using iter_type = decltype(*std::ranges::begin(
+        std::declval<std::remove_reference_t<T>&>()
+    ));
 
     template <typename T, typename Value>
     concept yields = iterable<T> && std::convertible_to<iter_type<T>, Value>;
@@ -767,7 +768,9 @@ namespace impl {
     };
 
     template <typename T>
-    using reverse_iter_type = decltype(*std::ranges::rbegin(std::declval<T>()));
+    using reverse_iter_type = decltype(*std::ranges::rbegin(
+        std::declval<std::remove_reference_t<T>&>()
+    ));
 
     template <typename T, typename Value>
     concept yields_reverse =
@@ -790,7 +793,7 @@ namespace impl {
 
     template <typename T>
     concept has_size = requires(T t) {
-        { std::size(t) } -> std::convertible_to<size_t>;
+        { std::ranges::size(t) } -> std::convertible_to<size_t>;
     };
 
     template <typename T>

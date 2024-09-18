@@ -135,7 +135,7 @@ template <impl::cpp_like T>
     )
 struct __explicit_init__<Bool, T>                           : Returns<Bool> {
     static auto operator()(const T& obj) {
-        return reinterpret_borrow<Bool>(std::size(obj) > 0 ? Py_True : Py_False);
+        return reinterpret_borrow<Bool>(std::ranges::size(obj) > 0 ? Py_True : Py_False);
     }
 };
 
