@@ -6,8 +6,6 @@
 #include "except.h"
 #include "ops.h"
 #include "access.h"
-#include "pytypedefs.h"
-#include <string>
 
 
 /// TODO: this file should include the implementation for Object's call operator, just
@@ -293,20 +291,6 @@ namespace impl {
         }
     };
 
-    /// TODO: I need to add a parameter for Self, and then handle it carefully in the
-    /// call operator.  This won't affect the defaults, since `self` cannot be
-    /// optional by definition.  I'm not entirely sure how this needs to work,
-    /// especially considering how the std::function wrapper will need to be stored,
-    /// but perhaps that's a problem that needs to be solved in the __python__ wrapper
-    /// itself, or perhaps in the bindings, via a member dereference operator.  Perhaps
-    /// if all you do to implement it is pass a member function pointer, then I can
-    /// generate a lambda that captures the member function pointer and adds a `self`
-    /// argument, which is dereferenced to forward the remaining arguments.  That would
-    /// automate the process and possibly add a layer wherein everything is stored
-    /// lambdas rather than std::functions, which could be more efficient and avoid the
-    /// only remaining overhead.  For that to work, though, all of the functions would
-    /// need to be wrapped in lambdas for consistency, which adds some extra complexity.
-
     constexpr size_t fnv1a_hash_basis = [] {
         if constexpr (sizeof(size_t) > 4) {
             return 14695981039346656037ULL;
@@ -326,7 +310,7 @@ namespace impl {
     /* In the vast majority of cases, adjusting the seed is all that's needed to get a
     good FNV-1a hash, but just in case, we also provide the next 10 primes after the
     default value in order to further refine hashing strategies. */
-    constexpr auto fnv1a_fallback_primes = [] -> std::array<size_t, 10> {
+    constexpr std::array<size_t, 10> fnv1a_fallback_primes = [] -> std::array<size_t, 10> {
         if constexpr (sizeof(size_t) > 4) {
             return {
                 fnv1a_hash_prime,
@@ -382,24 +366,11 @@ namespace impl {
         return ++n;
     }
 
-    /// TODO: it might be possible to completely bypass overload keys for C++ function
-    /// calls, since all the validation is done at compile time, and I can directly
-    /// recur over the parameter pack to generate the call.  That would be a great
-    /// optimization, since it would avoid any dynamic allocations or additional
-    /// validation overhead.
-    /// -> Params would still need to be generated in order to get an accurate hash,
-    /// but these are lightweight, trivially destructible, and can be placed entirely
-    /// on the stack using a std::array of a definite size if possible.  If argument
-    /// unpacking operators are used at the call site, then a dynamic allocation will
-    /// be unavoidable, and I'll just instantiate the overload directly and fill it in
-    /// using the index operator, which will directly assign to the internal vector.
-
     /// TODO: hash collisions should be exceedingly rare, but I can implement some
     /// minimal guards against them by wrapping a cached function call in a try-catch
     /// that catches TypeErrors and initiates a full search of the overload trie.  If
     /// the final node does not match the cached node, then I swallow the error and
     /// retry the call with the correct overload.
-
 
     /// TODO: account for duplicate argument names when appending elements to the
     /// key?
@@ -408,17 +379,6 @@ namespace impl {
     /// signature, and may have a more efficient way of handling this than a
     /// set-based lookup.  It's not necessary for function introspection either,
     /// since those arguments are always guaranteed to be unique.
-
-    /// TODO: maybe I need to split OverloadKey into 2 separate types, one for
-    /// arguments given at the call site, and one for signatures describing a function
-    /// type.
-    /// -> alternatively, I should only provide a parameter class and let the
-    /// operations that use these keys handle the rest manually.  Everything that
-    /// needs to represent these as a collection would then just return an iterable
-    /// of these parameter types, without regard to what that container is.  It
-    /// might be able to accept a view, which could maybe even be lazily evaluated.
-    /// Or the algorithms which currently expect an overload key will accept a
-    /// begin and end iterator instead.
 
     /* A simple, trivially-destructible struct representing a single parameter in a
     Python function signature or call site. */
@@ -495,418 +455,6 @@ namespace impl {
         auto end() const noexcept { return std::ranges::end(value); }
         auto cend() const noexcept { return std::ranges::cend(value); }
     };
-
-    /// TODO: OverloadKey should be deleted and its methods redistributed to
-    /// py::Function.
-
-    // /* An overload key consisting of a sequence of parameter annotations, which
-    // describe a Python-style call signature.  Keys of this form can be used to search a
-    // function's overload trie during calls and other operations. */
-    // struct OverloadKey {
-    // private:
-    //     std::vector<Param> vec;
-    //     Py_ssize_t idx = 0;
-    //     Py_ssize_t posonly_idx = std::numeric_limits<size_t>::max();
-    //     Py_ssize_t kw_idx = std::numeric_limits<size_t>::max();
-    //     Py_ssize_t kwonly_idx = std::numeric_limits<size_t>::max();
-    //     Py_ssize_t args_idx = std::numeric_limits<size_t>::max();
-    //     Py_ssize_t kwargs_idx = std::numeric_limits<size_t>::max();
-    //     Py_ssize_t default_idx = std::numeric_limits<size_t>::max();
-
-    // public:
-    //     size_t hash = 0;
-
-    //     explicit OverloadKey(size_t size) {
-    //         vec.reserve(size);
-    //     }
-
-    //     OverloadKey(OverloadKey&& other) noexcept = default;
-    //     OverloadKey(const OverloadKey& other) :
-    //         vec(other.vec),
-    //         idx(other.idx),
-    //         posonly_idx(other.posonly_idx),
-    //         kw_idx(other.kw_idx),
-    //         kwonly_idx(other.kwonly_idx),
-    //         args_idx(other.args_idx),
-    //         kwargs_idx(other.kwargs_idx),
-    //         default_idx(other.default_idx),
-    //         hash(other.hash)
-    //     {
-    //         vec.reserve(other.vec.capacity());
-    //     }
-
-    //     OverloadKey& operator=(OverloadKey&& other) noexcept = default;
-    //     OverloadKey& operator=(const OverloadKey& other) {
-    //         vec = other.vec;
-    //         idx = other.idx;
-    //         posonly_idx = other.posonly_idx;
-    //         kw_idx = other.kw_idx;
-    //         kwonly_idx = other.kwonly_idx;
-    //         args_idx = other.args_idx;
-    //         kwargs_idx = other.kwargs_idx;
-    //         default_idx = other.default_idx;
-    //         hash = other.hash;
-    //         vec.reserve(other.vec.capacity());
-    //         return *this;
-    //     }
-
-    //     /* Directly append a parameter to the key and update its hash accordingly. */
-    //     void param(Param&& par) {
-    //         hash = impl::hash_combine(hash, par.hash());
-    //         vec[idx++] = std::move(par);
-    //     }
-
-    //     /* Append a parameter to the key, parsing it as if it were a hypothetical
-    //     argument to a Python function.  This will throw an error if the parameter
-    //     does not conform to Python calling conventions. */
-    //     void getitem(PyObject* specifier) {
-    //         std::string_view name;
-    //         Param::Category category;
-    //         PyTypeObject* type;
-
-    //         // raw types are interpreted as positional arguments
-    //         if (PyType_Check(specifier)) {
-    //             if (idx > kw_idx) {
-    //                 throw TypeError(
-    //                     "positional argument cannot follow keyword argument: " +
-    //                     repr(reinterpret_borrow<Object>(specifier))
-    //                 );
-    //             }
-    //             category = Param::POS;
-    //             type = reinterpret_cast<PyTypeObject*>(specifier);
-
-    //         // slices are interpreted as keyword arguments
-    //         } else if (PySlice_Check(specifier)) {
-    //             PySliceObject* slice = reinterpret_cast<PySliceObject*>(specifier);
-    //             if (!PyUnicode_Check(slice->start)) {
-    //                 throw TypeError(
-    //                     "first element of a slice must be a string representing a "
-    //                     "keyword argument name, not: " +
-    //                     repr(reinterpret_borrow<Object>(slice->start))
-    //                 );
-    //             }
-    //             if (!PyType_Check(slice->stop)) {
-    //                 throw TypeError(
-    //                     "second element of a slice must be a type object representing "
-    //                     "the hypothetical type of the argument, not: " +
-    //                     repr(reinterpret_borrow<Object>(slice->stop))
-    //                 );
-    //             }
-    //             name = Param::get_name(slice->start);
-    //             category = Param::KW;
-    //             type = reinterpret_cast<PyTypeObject*>(slice->stop);
-    //             if (idx < kw_idx) {
-    //                 kw_idx = idx;
-    //             }
-
-    //         // everything else is invalid
-    //         } else {
-    //             throw TypeError(
-    //                 "expected a type for a positional argument or a slice for a "
-    //                 "keyword argument, not: " +
-    //                 repr(reinterpret_borrow<Object>(specifier))
-    //             );
-    //         }
-    //         param({name, type, category});
-    //     }
-
-    //     /* Append a parameter to the key, parsing it as it it were provided to the
-    //     function's Python-level `__class_getitem__()` method, as used to navigate the
-    //     template hierarchy from Python.  This must fully specify the signature of a
-    //     Python function, accounting for optional and variadic arguments, as well as
-    //     Python-style delimiters.  An error will be raised if any of these are
-    //     invalid. */
-    //     void class_getitem(PyObject* specifier) {
-    //         std::string_view name;
-    //         Param::Category category;
-    //         PyTypeObject* type;
-
-    //         // raw types are interpreted as required, positional-only arguments
-    //         if (PyType_Check(specifier)) {
-    //             if (idx > posonly_idx) {
-    //                 throw TypeError(
-    //                     "positional-only argument cannot follow `/` delimiter: " +
-    //                     repr(reinterpret_borrow<Object>(specifier))
-    //                 );
-    //             } else if (idx > kwonly_idx) {
-    //                 throw TypeError(
-    //                     "positional-only argument cannot follow '*' delimiter: " +
-    //                     repr(reinterpret_borrow<Object>(specifier))
-    //                 );
-    //             } else if (idx > kw_idx) {
-    //                 throw TypeError(
-    //                     "positional-only argument cannot follow keyword argument: " +
-    //                     repr(reinterpret_borrow<Object>(specifier))
-    //                 );
-    //             } else if (idx > args_idx) {
-    //                 throw TypeError(
-    //                     "positional-only argument cannot follow variadic positional "
-    //                     "arguments " +
-    //                     repr(reinterpret_borrow<Object>(specifier))
-    //                 );
-    //             } else if (idx > default_idx) {
-    //                 throw TypeError(
-    //                     "parameter without a default value cannot follow a parameter "
-    //                     "with a default value: " +
-    //                     repr(reinterpret_borrow<Object>(specifier))
-    //                 );
-    //             }
-    //             category = Param::POS;
-    //             type = reinterpret_cast<PyTypeObject*>(specifier);
-
-    //         // slices are interpreted in several ways depending on their contents
-    //         } else if (PySlice_Check(specifier)) {
-    //             PySliceObject* slice = reinterpret_cast<PySliceObject*>(specifier);
-
-    //             // If the first element is a type, then the second element must be
-    //             // an ellipsis signifying a positional-only argument with a default
-    //             // value.
-    //             if (PyType_Check(slice->start)) {
-    //                 if (idx > posonly_idx) {
-    //                     throw TypeError(
-    //                         "positional-only argument cannot follow `/` delimiter: " +
-    //                         repr(reinterpret_borrow<Object>(specifier))
-    //                     );
-    //                 } else if (idx > kwonly_idx) {
-    //                     throw TypeError(
-    //                         "positional-only argument cannot follow '*' delimiter: " +
-    //                         repr(reinterpret_borrow<Object>(specifier))
-    //                     );
-    //                 } else if (idx > kw_idx) {
-    //                     throw TypeError(
-    //                         "positional-only argument cannot follow keyword argument: " +
-    //                         repr(reinterpret_borrow<Object>(specifier))
-    //                     );
-    //                 } else if (idx > args_idx) {
-    //                     throw TypeError(
-    //                         "positional-only argument cannot follow variadic "
-    //                         "positional arguments " +
-    //                         repr(reinterpret_borrow<Object>(specifier))
-    //                     );
-    //                 } else if (slice->stop != Py_Ellipsis) {
-    //                     throw TypeError(
-    //                         "positional-only argument with a default value must have "
-    //                         "an ellipsis as the second element of the slice: " +
-    //                         repr(reinterpret_borrow<Object>(specifier))
-    //                     );
-    //                 }
-    //                 category = static_cast<Param::Category>(Param::POS | Param::DEFAULT);
-    //                 type = reinterpret_cast<PyTypeObject*>(slice->start);
-    //                 if (idx < default_idx) {
-    //                     default_idx = idx;
-    //                 }
-
-    //             // If the first element is a string, then the second element must
-    //             // be a type signifying a keyword or keyword-only argument,
-    //             // depending on its position with respect to the "*" delimiter.
-    //             // These may also have default values provided as an optional
-    //             // third element.
-    //             } else if (PyUnicode_Check(slice->start)) {
-    //                 name = Param::get_name(slice->start);
-    //                 if (!PyType_Check(slice->stop)) {
-    //                     throw TypeError(
-    //                         "argument type for parameter '" + std::string(name) +
-    //                         "' must be a type object, not: " +
-    //                         repr(reinterpret_borrow<Object>(slice->stop))
-    //                     );
-    //                 }
-    //                 type = reinterpret_cast<PyTypeObject*>(slice->stop);
-
-    //                 // if the parameter name starts with "**", then it signifies a
-    //                 // variadic keyword argument
-    //                 if (name.starts_with("**")) {
-    //                     if (idx > kwargs_idx) {
-    //                         throw TypeError(
-    //                             "variadic keyword arguments appear at multiple "
-    //                             "indices: " + std::to_string(kwargs_idx) +
-    //                             " and " + std::to_string(idx)
-    //                         );
-    //                     } else if (slice->step != Py_None) {
-    //                         throw TypeError(
-    //                             "variadic keyword arguments cannot have default "
-    //                             "values: " +
-    //                             repr(reinterpret_borrow<Object>(specifier))
-    //                         );
-    //                     }
-    //                     name.remove_prefix(2);
-    //                     category = static_cast<Param::Category>(Param::KW | Param::VARIADIC);
-    //                     kwargs_idx = idx;
-
-    //                 // if the parameter name starts with "*", then it signifies a
-    //                 // variadic positional argument
-    //                 } else if (name.starts_with("*")) {
-    //                     if (idx > args_idx) {
-    //                         throw TypeError(
-    //                             "variadic positional arguments appear at multiple "
-    //                             "indices: " + std::to_string(args_idx) + " and " +
-    //                             std::to_string(idx)
-    //                         );
-    //                     } else if (idx > kwonly_idx) {
-    //                         throw TypeError(
-    //                             "variadic positional arguments cannot follow "
-    //                             "keyword-only argument delimiter '*': " +
-    //                             repr(reinterpret_borrow<Object>(specifier))
-    //                         );
-    //                     } else if (slice->step != Py_None) {
-    //                         throw TypeError(
-    //                             "variadic positional arguments cannot have default "
-    //                             "values: " +
-    //                             repr(reinterpret_borrow<Object>(specifier))
-    //                         );
-    //                     }
-    //                     name.remove_prefix(1);
-    //                     category = static_cast<Param::Category>(Param::POS | Param::VARIADIC);
-    //                     args_idx = idx;
-
-    //                 // otherwise, it's a regular keyword argument
-    //                 } else {
-    //                     if (idx > kwargs_idx) {
-    //                         throw TypeError(
-    //                             "keyword argument cannot follow variadic keyword "
-    //                             "arguments: " +
-    //                             repr(reinterpret_borrow<Object>(specifier))
-    //                         );
-    //                     } else if (slice->step == Py_Ellipsis) {
-    //                         if (idx > kwonly_idx) {
-    //                             category = static_cast<Param::Category>(
-    //                                 Param::KW | Param::DEFAULT
-    //                             );
-    //                         } else {
-    //                             category = static_cast<Param::Category>(
-    //                                 Param::POS | Param::KW | Param::DEFAULT
-    //                             );
-    //                             if (idx < default_idx) {
-    //                                 default_idx = idx;
-    //                             }
-    //                         }
-    //                     } else if (slice->step == Py_None) {
-    //                         if (idx > kwonly_idx) {
-    //                             category = Param::KW;
-    //                         } else if (idx > default_idx) {
-    //                             throw TypeError(
-    //                                 "parameter without a default value cannot follow "
-    //                                 "a parameter with a default value: " +
-    //                                 repr(reinterpret_borrow<Object>(specifier))
-    //                             );
-    //                         } else {
-    //                             category = static_cast<Param::Category>(
-    //                                 Param::POS | Param::KW
-    //                             );
-    //                         }
-    //                     } else {
-    //                         throw TypeError(
-    //                             "Keyword arguments with default values must use an "
-    //                             "ellipsis as the third element, not: " +
-    //                             repr(reinterpret_borrow<Object>(slice->step))
-    //                         );
-    //                     }
-    //                     if (idx < kw_idx) {
-    //                         kw_idx = idx;
-    //                     }
-    //                 }
-
-    //             // everything else is invalid
-    //             } else {
-    //                 throw TypeError(
-    //                     "expected the first index of a slice to be either a type for "
-    //                     "a positional argument or a string for a keyword argument, "
-    //                     "not: " + repr(reinterpret_borrow<Object>(specifier))
-    //                 );
-    //             }
-
-    //         // raw strings are reserved for positional-only '/' or keyword-only '*'
-    //         // delimiters
-    //         } else if (PyUnicode_Check(specifier)) {
-    //             Py_ssize_t len;
-    //             const char* data = PyUnicode_AsUTF8AndSize(
-    //                 specifier,
-    //                 &len
-    //             );
-    //             if (data == nullptr) {
-    //                 Exception::from_python();
-    //             }
-    //             name = {data, static_cast<size_t>(len)};
-
-    //             // positional-only delimiter
-    //             if (name == "/") {
-    //                 if (idx > posonly_idx) {
-    //                     throw TypeError(
-    //                         "positional-only argument delimiter '/' appears at "
-    //                         "multiple indices: " + std::to_string(posonly_idx) +
-    //                         " and " + std::to_string(idx)
-    //                     );
-    //                 } else if (idx > kw_idx) {
-    //                     throw TypeError(
-    //                         "positional-only argument delimiter '/' cannot follow "
-    //                         "keyword arguments at index"
-    //                     );
-    //                 } else if (idx > args_idx) {
-    //                     throw TypeError(
-    //                         "positional-only argument delimiter '/' cannot follow "
-    //                         "variadic positional arguments"
-    //                     );
-    //                 } else if (idx > kwargs_idx) {
-    //                     throw TypeError(
-    //                         "positional-only argument delimiter '/' cannot follow "
-    //                         "variadic keyword arguments"
-    //                     );
-    //                 }
-    //                 posonly_idx = idx;
-    //                 return;
-
-    //             // keyword-only delimiter
-    //             } else if (name == "*") {
-    //                 if (idx > kwonly_idx) {
-    //                     throw TypeError(
-    //                         "keyword-only argument delimiter '*' appears at multiple "
-    //                         "indices: " + std::to_string(kwonly_idx) + " and " +
-    //                         std::to_string(idx)
-    //                     );
-    //                 } else if (idx > kwargs_idx) {
-    //                     throw TypeError(
-    //                         "keyword-only argument delimiter '*' cannot follow "
-    //                         "variadic keyword arguments"
-    //                     );
-    //                 }
-    //                 kwonly_idx = idx;
-    //                 return;
-
-    //             // everything else is invalid
-    //             } else {
-    //                 throw TypeError(
-    //                     "raw strings are reserved for the '/' and '*' argument "
-    //                     "delimiters, not: '" + std::string(name) + "'"
-    //                 );
-    //             }
-
-    //         // everything else is invalid
-    //         } else {
-    //             throw TypeError(
-    //                 "expected a type for a required positional-only argument; a slice "
-    //                 "for a keyword argument, positional-only argument with a default "
-    //                 "value, or a variadic parameter pack prefixed with '*' or '**'; "
-    //                 "or a string for the '/' or '*' argument delimiters, not: " +
-    //                 repr(reinterpret_borrow<Object>(specifier))
-    //             );
-    //         }
-    //         param({name, type, category});
-    //     }
-
-    //     size_t size() const noexcept { return vec.size(); }
-    //     bool empty() const noexcept { return vec.empty(); }
-    //     auto& front() noexcept { return vec.front(); }
-    //     auto& front() const noexcept { return vec.front(); }
-    //     auto& back() noexcept { return vec.back(); }
-    //     auto& back() const noexcept { return vec.back(); }
-    //     auto& operator[](size_t i) noexcept { return vec[i]; }
-    //     auto& operator[](size_t i) const noexcept { return vec[i]; }
-    //     auto begin() noexcept { return vec.begin(); }
-    //     auto begin() const noexcept { return vec.begin(); }
-    //     auto cbegin() const noexcept { return vec.cbegin(); }
-    //     auto end() noexcept { return vec.end(); }
-    //     auto end() const noexcept { return vec.end(); }
-    //     auto cend() const noexcept { return vec.cend(); }
-    // };
 
     /* A helper that inspects pure Python functions and extracts their inline parameter
     annotations so that they can be translated into overload keys. */
@@ -1454,6 +1002,21 @@ namespace impl {
 
     };
 
+    /// TODO: I need to add a parameter for Self, and then handle it carefully in the
+    /// call operator.  This won't affect the defaults, since `self` cannot be
+    /// optional by definition.  I'm not entirely sure how this needs to work,
+    /// especially considering how the std::function wrapper will need to be stored,
+    /// but perhaps that's a problem that needs to be solved in the __python__ wrapper
+    /// itself, or perhaps in the bindings, via a member dereference operator.  Perhaps
+    /// if all you do to implement it is pass a member function pointer, then I can
+    /// generate a lambda that captures the member function pointer and adds a `self`
+    /// argument, which is dereferenced to forward the remaining arguments.  That would
+    /// automate the process and possibly add a layer wherein everything is stored
+    /// lambdas rather than std::functions, which could be more efficient and avoid the
+    /// only remaining overhead.  For that to work, though, all of the functions would
+    /// need to be wrapped in lambdas for consistency, which adds some extra complexity.
+
+
     /// TODO: Args... now includes the `self` argument as the first argument, which
     /// should be fine, but may require adjustments to call logic.  It won't affect
     /// any of the compile-time logic, nor should it change the `Defaults` class, since
@@ -1478,196 +1041,176 @@ namespace impl {
     /// -> The same adjustment would need to be made for the C++ to python argument
     /// translation, wherein I need to allocate a vectorcall argument array.
 
-    /// TODO: variadic args/kwargs will likely need handling when performing
-    /// `compatible` checks.  A function that accepts arbitrary args/kwargs is, by
-    /// definition, compatible with any other function, since it can accept any
-    /// arguments, and all other functions accept only a subset.  compatible<> should
-    /// be thought of as a generality check.  One function is compatible with
-    /// another function if the first function can be called with the arguments of
-    /// the second function, and the return type of the first function is convertible
-    /// to the return type of the second function.
-    /// -> I should avoid std::is_invocable for that kind of check, since it will
-    /// not account for the annotated types.
+    template <typename T>
+    static constexpr bool _is_arg = false;
+    template <typename T>
+    static constexpr bool _is_arg<OptionalArg<T>> = true;
+    template <StaticStr Name, typename T>
+    static constexpr bool _is_arg<PositionalArg<Name, T>> = true;
+    template <StaticStr Name, typename T>
+    static constexpr bool _is_arg<Arg<Name, T>> = true;
+    template <StaticStr Name, typename T>
+    static constexpr bool _is_arg<KeywordArg<Name, T>> = true;
+    template <StaticStr Name, typename T>
+    static constexpr bool _is_arg<VarArgs<Name, T>> = true;
+    template <StaticStr Name, typename T>
+    static constexpr bool _is_arg<VarKwargs<Name, T>> = true;
+    template <typename T>
+    static constexpr bool _is_arg<ArgPack<T>> = true;
+    template <typename T>
+    static constexpr bool _is_arg<KwargPack<T>> = true;
+    template <typename T>
+    concept is_arg = _is_arg<std::remove_cvref_t<T>>;
 
-    /// TODO: add a method to _Signature<> that produces a full subscript overload
-    /// key from the enclosing signature, as well as another method to Bind<> that
-    /// produces a simplified one from a valid C++ parameter list.  There also
-    /// needs to be a cousin for Python calls that does the same thing from a
-    /// vectorcall argument array.  Both of the latter can apply the simplified
-    /// logic, since it will be used in the call operator.
+    template <typename T>
+    struct ArgTraits {
+        using type = T;
+        using no_opt = T;
+        static constexpr StaticStr name = "";
+        static constexpr ArgKind kind = ArgKind::POS;
+        static constexpr bool posonly() noexcept { return kind.posonly(); }
+        static constexpr bool pos() noexcept { return kind.pos(); }
+        static constexpr bool args() noexcept { return kind.args(); }
+        static constexpr bool kwonly() noexcept { return kind.kwonly(); }
+        static constexpr bool kw() noexcept { return kind.kw(); }
+        static constexpr bool kwargs() noexcept { return kind.kwargs(); }
+        static constexpr bool opt() noexcept { return kind.opt(); }
+    };
+
+    template <is_arg T>
+    struct ArgTraits<T> {
+        using type = std::remove_cvref_t<T>::type;
+        using no_opt = T;
+        static constexpr StaticStr name = std::remove_cvref_t<T>::name;
+        static constexpr ArgKind kind = std::remove_cvref_t<T>::kind;
+        static constexpr bool posonly() noexcept { return kind.posonly(); }
+        static constexpr bool pos() noexcept { return kind.pos(); }
+        static constexpr bool args() noexcept { return kind.args(); }
+        static constexpr bool kwonly() noexcept { return kind.kwonly(); }
+        static constexpr bool kw() noexcept { return kind.kw(); }
+        static constexpr bool kwargs() noexcept { return kind.kwargs(); }
+        static constexpr bool opt() noexcept { return kind.opt(); }
+    };
 
     /* Analyze an annotated function signature by inspecting each argument and
     extracting metadata that allows call signatures to be resolved at compile time. */
-    template <typename... Args> requires (sizeof...(Args) <= 64)
+    template <std::convertible_to<Object>... Args> requires (sizeof...(Args) <= 64)
     struct _Signature : BertrandTag {
     private:
-
-        template <typename T>
-        static constexpr bool _is_arg = false;
-        template <typename T>
-        static constexpr bool _is_arg<OptionalArg<T>> = true;
-        template <StaticStr Name, typename T>
-        static constexpr bool _is_arg<PositionalArg<Name, T>> = true;
-        template <StaticStr Name, typename T>
-        static constexpr bool _is_arg<Arg<Name, T>> = true;
-        template <StaticStr Name, typename T>
-        static constexpr bool _is_arg<KeywordArg<Name, T>> = true;
-        template <StaticStr Name, typename T>
-        static constexpr bool _is_arg<VarArgs<Name, T>> = true;
-        template <StaticStr Name, typename T>
-        static constexpr bool _is_arg<VarKwargs<Name, T>> = true;
-        template <typename T>
-        static constexpr bool _is_arg<ArgPack<T>> = true;
-        template <typename T>
-        static constexpr bool _is_arg<KwargPack<T>> = true;
-        template <typename T>
-        static constexpr bool is_arg() {
-            return _is_arg<std::remove_cvref_t<T>>;
-        };
-
-        template <typename T>
-        struct Traits {
-            using type = T;
-            using no_opt = T;
-            static constexpr StaticStr name = "";
-            static constexpr ArgKind kind = ArgKind::POS;
-            static constexpr bool posonly() noexcept { return kind.posonly(); }
-            static constexpr bool pos() noexcept { return kind.pos(); }
-            static constexpr bool args() noexcept { return kind.args(); }
-            static constexpr bool kwonly() noexcept { return kind.kwonly(); }
-            static constexpr bool kw() noexcept { return kind.kw(); }
-            static constexpr bool kwargs() noexcept { return kind.kwargs(); }
-            static constexpr bool opt() noexcept { return kind.opt(); }
-        };
-
-        template <typename T> requires (is_arg<T>())
-        struct Traits<T> {
-            using type = std::remove_cvref_t<T>::type;
-            using no_opt = T;
-            static constexpr StaticStr name = std::remove_cvref_t<T>::name;
-            static constexpr ArgKind kind = std::remove_cvref_t<T>::kind;
-            static constexpr bool posonly() noexcept { return kind.posonly(); }
-            static constexpr bool pos() noexcept { return kind.pos(); }
-            static constexpr bool args() noexcept { return kind.args(); }
-            static constexpr bool kwonly() noexcept { return kind.kwonly(); }
-            static constexpr bool kw() noexcept { return kind.kw(); }
-            static constexpr bool kwargs() noexcept { return kind.kwargs(); }
-            static constexpr bool opt() noexcept { return kind.opt(); }
-        };
 
         template <size_t I, typename... Ts>
         static constexpr size_t _n_pos = 0;
         template <size_t I, typename T, typename... Ts>
         static constexpr size_t _n_pos<I, T, Ts...> =
-            _n_pos<I + Traits<T>::pos(), Ts...>;
+            _n_pos<I + ArgTraits<T>::pos(), Ts...>;
 
         template <size_t I, typename... Ts>
         static constexpr size_t _n_posonly = 0;
         template <size_t I, typename T, typename... Ts>
         static constexpr size_t _n_posonly<I, T, Ts...> =
-            _n_posonly<I + Traits<T>::posonly(), Ts...>;
+            _n_posonly<I + ArgTraits<T>::posonly(), Ts...>;
 
         template <size_t I, typename... Ts>
         static constexpr size_t _n_kw = 0;
         template <size_t I, typename T, typename... Ts>
         static constexpr size_t _n_kw<I, T, Ts...> =
-            _n_kw<I + Traits<T>::kw(), Ts...>;
+            _n_kw<I + ArgTraits<T>::kw(), Ts...>;
 
         template <size_t I, typename... Ts>
         static constexpr size_t _n_kwonly = 0;
         template <size_t I, typename T, typename... Ts>
         static constexpr size_t _n_kwonly<I, T, Ts...> =
-            _n_kwonly<I + Traits<T>::kwonly(), Ts...>;
+            _n_kwonly<I + ArgTraits<T>::kwonly(), Ts...>;
 
         template <size_t I, typename... Ts>
         static constexpr size_t _n_opt = I;
         template <size_t I, typename T, typename... Ts>
         static constexpr size_t _n_opt<I, T, Ts...> =
-            _n_opt<I + Traits<T>::opt(), Ts...>;
+            _n_opt<I + ArgTraits<T>::opt(), Ts...>;
 
         template <size_t I, typename... Ts>
         static constexpr size_t _n_opt_pos = 0;
         template <size_t I, typename T, typename... Ts>
         static constexpr size_t _n_opt_pos<I, T, Ts...> =
-            _n_opt_pos<I + (Traits<T>::pos() && Traits<T>::opt()), Ts...>;
+            _n_opt_pos<I + (ArgTraits<T>::pos() && ArgTraits<T>::opt()), Ts...>;
 
         template <size_t I, typename... Ts>
         static constexpr size_t _n_opt_posonly = 0;
         template <size_t I, typename T, typename... Ts>
         static constexpr size_t _n_opt_posonly<I, T, Ts...> =
-            _n_opt_posonly<I + (Traits<T>::posonly() && Traits<T>::opt()), Ts...>;
+            _n_opt_posonly<I + (ArgTraits<T>::posonly() && ArgTraits<T>::opt()), Ts...>;
 
         template <size_t I, typename... Ts>
         static constexpr size_t _n_opt_kw = 0;
         template <size_t I, typename T, typename... Ts>
         static constexpr size_t _n_opt_kw<I, T, Ts...> =
-            _n_opt_kw<I + (Traits<T>::kw() && Traits<T>::opt()), Ts...>;
+            _n_opt_kw<I + (ArgTraits<T>::kw() && ArgTraits<T>::opt()), Ts...>;
 
         template <size_t I, typename... Ts>
         static constexpr size_t _n_opt_kwonly = 0;
         template <size_t I, typename T, typename... Ts>
         static constexpr size_t _n_opt_kwonly<I, T, Ts...> =
-            _n_opt_kwonly<I + (Traits<T>::kwonly() && Traits<T>::opt()), Ts...>;
+            _n_opt_kwonly<I + (ArgTraits<T>::kwonly() && ArgTraits<T>::opt()), Ts...>;
 
         template <StaticStr Name, typename... Ts>
         static constexpr size_t _idx = 0;
         template <StaticStr Name, typename T, typename... Ts>
         static constexpr size_t _idx<Name, T, Ts...> =
-            (Traits<T>::name == Name) ? 0 : 1 + _idx<Name, Ts...>;
+            (ArgTraits<T>::name == Name) ? 0 : 1 + _idx<Name, Ts...>;
 
         template <typename... Ts>
         static constexpr size_t _kw_idx = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _kw_idx<T, Ts...> =
-            Traits<T>::kw() ? 0 : 1 + _kw_idx<Ts...>;
+            ArgTraits<T>::kw() ? 0 : 1 + _kw_idx<Ts...>;
 
         template <typename... Ts>
         static constexpr size_t _kwonly_idx = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _kwonly_idx<T, Ts...> =
-            Traits<T>::kwonly() ? 0 : 1 + _kwonly_idx<Ts...>;
+            ArgTraits<T>::kwonly() ? 0 : 1 + _kwonly_idx<Ts...>;
 
         template <typename... Ts>
         static constexpr size_t _opt_idx = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _opt_idx<T, Ts...> =
-            Traits<T>::opt() ? 0 : 1 + _opt_idx<Ts...>;
+            ArgTraits<T>::opt() ? 0 : 1 + _opt_idx<Ts...>;
 
         template <typename... Ts>
         static constexpr size_t _opt_pos_idx = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _opt_pos_idx<T, Ts...> =
-            Traits<T>::pos() && Traits<T>::opt() ? 0 : 1 + _opt_pos_idx<Ts...>;
+            ArgTraits<T>::pos() && ArgTraits<T>::opt() ? 0 : 1 + _opt_pos_idx<Ts...>;
 
         template <typename... Ts>
         static constexpr size_t _opt_posonly_idx = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _opt_posonly_idx<T, Ts...> =
-            Traits<T>::posonly() && Traits<T>::opt() ? 0 : 1 + _opt_posonly_idx<Ts...>;
+            ArgTraits<T>::posonly() && ArgTraits<T>::opt() ? 0 : 1 + _opt_posonly_idx<Ts...>;
 
         template <typename... Ts>
         static constexpr size_t _opt_kw_idx = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _opt_kw_idx<T, Ts...> =
-            Traits<T>::kw() && Traits<T>::opt() ? 0 : 1 + _opt_kw_idx<Ts...>;
+            ArgTraits<T>::kw() && ArgTraits<T>::opt() ? 0 : 1 + _opt_kw_idx<Ts...>;
 
         template <typename... Ts>
         static constexpr size_t _opt_kwonly_idx = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _opt_kwonly_idx<T, Ts...> =
-            Traits<T>::kwonly() && Traits<T>::opt() ? 0 : 1 + _opt_kwonly_idx<Ts...>;
+            ArgTraits<T>::kwonly() && ArgTraits<T>::opt() ? 0 : 1 + _opt_kwonly_idx<Ts...>;
 
         template <typename... Ts>
         static constexpr size_t _args_idx = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _args_idx<T, Ts...> =
-            Traits<T>::args() ? 0 : 1 + _args_idx<Ts...>;
+            ArgTraits<T>::args() ? 0 : 1 + _args_idx<Ts...>;
 
         template <typename... Ts>
         static constexpr size_t _kwargs_idx = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _kwargs_idx<T, Ts...> =
-            Traits<T>::kwargs() ? 0 : 1 + _kwargs_idx<Ts...>;
+            ArgTraits<T>::kwargs() ? 0 : 1 + _kwargs_idx<Ts...>;
 
         /* Get a one-hot encoded bitmask with the bit at index I set if and only if
         the parameter at that index is a required positional or keyword argument.
@@ -1675,9 +1218,9 @@ namespace impl {
         template <size_t I>
         static constexpr uint64_t build_mask() {
             if constexpr (
-                Traits<unpack_type<I, Args...>>::opt() ||
-                Traits<unpack_type<I, Args...>>::args() ||
-                Traits<unpack_type<I, Args...>>::kwargs()
+                ArgTraits<unpack_type<I, Args...>>::opt() ||
+                ArgTraits<unpack_type<I, Args...>>::args() ||
+                ArgTraits<unpack_type<I, Args...>>::kwargs()
             ) {
                 return 0ULL;
             } else {
@@ -1726,9 +1269,9 @@ namespace impl {
         template <size_t I> requires (I < n)
         using at = unpack_type<I, Args...>;
         template <size_t I> requires (I < args_idx && I < kwonly_idx)
-        using Arg = Traits<unpack_type<I, Args...>>::type;
+        using Arg = ArgTraits<unpack_type<I, Args...>>::type;
         template <StaticStr Name> requires (has<Name>)
-        using Kwarg = Traits<unpack_type<idx<Name>, Args...>>::type;
+        using Kwarg = ArgTraits<unpack_type<idx<Name>, Args...>>::type;
 
         /* A single entry in a callback table, storing the argument name, a bitmask
         marking the argument as required/optional, a function that can be used to
@@ -1771,9 +1314,9 @@ namespace impl {
 
         template <size_t I, typename T, typename... Ts>
         static constexpr bool validate<I, T, Ts...> = [] {
-            if constexpr (Traits<T>::pos()) {
+            if constexpr (ArgTraits<T>::pos()) {
                 static_assert(
-                    I == idx<Traits<T>::name> || Traits<T>::name == "",
+                    I == idx<ArgTraits<T>::name> || ArgTraits<T>::name == "",
                     "signature must not contain multiple arguments with the same name"
                 );
                 static_assert(
@@ -1789,21 +1332,21 @@ namespace impl {
                     "positional-only arguments must precede variadic keyword arguments"
                 );
                 static_assert(
-                    I < opt_idx || Traits<T>::opt(),
+                    I < opt_idx || ArgTraits<T>::opt(),
                     "all arguments after the first optional argument must also be optional"
                 );
 
-            } else if constexpr (Traits<T>::kw()) {
+            } else if constexpr (ArgTraits<T>::kw()) {
                 static_assert(
-                    I == idx<Traits<T>::name>,
+                    I == idx<ArgTraits<T>::name>,
                     "signature must not contain multiple arguments with the same name"
                 );
                 static_assert(
-                    I < kwonly_idx || Traits<T>::kwonly(),
+                    I < kwonly_idx || ArgTraits<T>::kwonly(),
                     "positional-or-keyword arguments must precede keyword-only arguments"
                 );
                 static_assert(
-                    !(Traits<T>::kwonly() && has_args && I < args_idx),
+                    !(ArgTraits<T>::kwonly() && has_args && I < args_idx),
                     "keyword-only arguments must not precede variadic positional arguments"
                 );
                 static_assert(
@@ -1811,11 +1354,11 @@ namespace impl {
                     "keyword arguments must precede variadic keyword arguments"
                 );
                 static_assert(
-                    I < opt_idx || Traits<T>::opt() || Traits<T>::kwonly(),
+                    I < opt_idx || ArgTraits<T>::opt() || ArgTraits<T>::kwonly(),
                     "all arguments after the first optional argument must also be optional"
                 );
 
-            } else if constexpr (Traits<T>::args()) {
+            } else if constexpr (ArgTraits<T>::args()) {
                 static_assert(
                     I < kwargs_idx,
                     "variadic positional arguments must precede variadic keyword arguments"
@@ -1825,7 +1368,7 @@ namespace impl {
                     "signature must not contain multiple variadic positional arguments"
                 );
 
-            } else if constexpr (Traits<T>::kwargs()) {
+            } else if constexpr (ArgTraits<T>::kwargs()) {
                 static_assert(
                     I == kwargs_idx,
                     "signature must not contain multiple variadic keyword arguments"
@@ -1840,12 +1383,12 @@ namespace impl {
         template <size_t I>
         static constexpr void populate_positional_table(std::array<Callback, n>& table) {
             table[I] = {
-                Traits<at<I>>::name,
+                ArgTraits<at<I>>::name,
                 build_mask<I>(),
                 [](PyTypeObject* type) -> bool {
                     int rc = PyObject_IsSubclass(
                         reinterpret_cast<PyObject*>(type),
-                        ptr(Type<typename Traits<at<I>>::type>())
+                        ptr(Type<typename ArgTraits<at<I>>::type>())
                     );
                     if (rc < 0) {
                         Exception::from_python();
@@ -1854,7 +1397,7 @@ namespace impl {
                 },
                 []() -> PyTypeObject* {
                     return reinterpret_cast<PyTypeObject*>(
-                        ptr(Type<typename Traits<at<I>>::type>())
+                        ptr(Type<typename ArgTraits<at<I>>::type>())
                     );
                 }
             };
@@ -1885,9 +1428,9 @@ namespace impl {
         template <size_t I>
         static constexpr bool collides_recursive(size_t idx, size_t seed, size_t prime) {
             if constexpr (I < sizeof...(Args)) {
-                if constexpr (Traits<at<I>>::kw) {
+                if constexpr (ArgTraits<at<I>>::kw) {
                     size_t hash = fnv1a(
-                        Traits<at<I>>::name,
+                        ArgTraits<at<I>>::name,
                         seed,
                         prime
                     );
@@ -1907,9 +1450,9 @@ namespace impl {
         template <size_t I>
         static constexpr bool collides(size_t seed, size_t prime) {
             if constexpr (I < sizeof...(Args)) {
-                if constexpr (Traits<at<I>>::kw) {
+                if constexpr (ArgTraits<at<I>>::kw) {
                     size_t hash = fnv1a(
-                        Traits<at<I>>::name,
+                        ArgTraits<at<I>>::name,
                         seed,
                         prime
                     );
@@ -1957,17 +1500,17 @@ namespace impl {
             size_t seed,
             size_t prime
         ) {
-            if constexpr (Traits<at<I>>::kw) {
+            if constexpr (ArgTraits<at<I>>::kw) {
                 constexpr size_t i = keyword_table_index(
-                    hash(Traits<at<I>>::name)
+                    hash(ArgTraits<at<I>>::name)
                 );
                 table[i] = {
-                    Traits<at<I>>::name,
+                    ArgTraits<at<I>>::name,
                     build_mask<I>(),
                     [](PyTypeObject* type) -> bool {
                         int rc = PyObject_IsSubclass(
                             reinterpret_cast<PyObject*>(type),
-                            ptr(Type<typename Traits<at<I>>::type>())
+                            ptr(Type<typename ArgTraits<at<I>>::type>())
                         );
                         if (rc < 0) {
                             Exception::from_python();
@@ -1976,7 +1519,7 @@ namespace impl {
                     },
                     []() -> PyTypeObject* {
                         return reinterpret_cast<PyTypeObject*>(
-                            ptr(Type<typename Traits<at<I>>::type>())
+                            ptr(Type<typename ArgTraits<at<I>>::type>())
                         );
                     }
                 };
@@ -2006,53 +1549,53 @@ namespace impl {
         template <size_t I>
         static Param _key(size_t& hash) {
             PyTypeObject* type = reinterpret_cast<PyTypeObject*>(
-                ptr(Type<typename Traits<at<I>>::type>())
+                ptr(Type<typename ArgTraits<at<I>>::type>())
             );
             hash = hash_combine(
                 hash,
                 fnv1a(
-                    Traits<at<I>>::name,
+                    ArgTraits<at<I>>::name,
                     hash_components.first,
                     hash_components.second
                 ),
                 reinterpret_cast<size_t>(type)
             );
-            return {Traits<at<I>>::name, type, Traits<at<I>>::kind};
+            return {ArgTraits<at<I>>::name, type, ArgTraits<at<I>>::kind};
         }
 
         template <size_t I, typename Container>
         static bool _matches(const Params<Container>& key) {
-            using T = __object__<std::remove_cvref_t<typename Traits<at<I>>::type>>::type;
+            using T = __object__<std::remove_cvref_t<typename ArgTraits<at<I>>::type>>::type;
             if (I < key.size()) {
                 const Param& param = key[I];
-                if constexpr (Traits<at<I>>::kwonly()) {
+                if constexpr (ArgTraits<at<I>>::kwonly()) {
                     return (
-                        (param.kwonly() & (param.opt() == Traits<at<I>>::opt())) &&
-                        (param.name == Traits<at<I>>::name) &&
+                        (param.kwonly() & (param.opt() == ArgTraits<at<I>>::opt())) &&
+                        (param.name == ArgTraits<at<I>>::name) &&
                         (reinterpret_cast<PyObject*>(param.type) == ptr(Type<T>()))
                     );
-                } else if constexpr (Traits<at<I>>::kw()) {
+                } else if constexpr (ArgTraits<at<I>>::kw()) {
                     return (
-                        (param.kw() & (param.opt() == Traits<at<I>>::opt())) &&
-                        (param.name == Traits<at<I>>::name) &&
+                        (param.kw() & (param.opt() == ArgTraits<at<I>>::opt())) &&
+                        (param.name == ArgTraits<at<I>>::name) &&
                         (reinterpret_cast<PyObject*>(param.type) == ptr(Type<T>()))
                     );
-                } else if constexpr (Traits<at<I>>::pos()) {
+                } else if constexpr (ArgTraits<at<I>>::pos()) {
                     return (
-                        (param.posonly() & (param.opt() == Traits<at<I>>::opt())) &&
-                        (param.name == Traits<at<I>>::name) &&
+                        (param.posonly() & (param.opt() == ArgTraits<at<I>>::opt())) &&
+                        (param.name == ArgTraits<at<I>>::name) &&
                         (reinterpret_cast<PyObject*>(param.type) == ptr(Type<T>()))
                     );
-                } else if constexpr (Traits<at<I>>::args()) {
+                } else if constexpr (ArgTraits<at<I>>::args()) {
                     return (
                         param.args() &&
-                        (param.name == Traits<at<I>>::name) &&
+                        (param.name == ArgTraits<at<I>>::name) &&
                         (reinterpret_cast<PyObject*>(param.type) == ptr(Type<T>()))
                     );
-                } else if constexpr (Traits<at<I>>::kwargs()) {
+                } else if constexpr (ArgTraits<at<I>>::kwargs()) {
                     return (
                         param.kwargs() &&
-                        (param.name == Traits<at<I>>::name) &&
+                        (param.name == ArgTraits<at<I>>::name) &&
                         (reinterpret_cast<PyObject*>(param.type) == ptr(Type<T>()))
                     );
                 } else {
@@ -2064,7 +1607,7 @@ namespace impl {
 
         template <size_t I, typename Container>
         static void _assert_matches(const Params<Container>& key) {
-            using T = __object__<std::remove_cvref_t<typename Traits<at<I>>::type>>::type;
+            using T = __object__<std::remove_cvref_t<typename ArgTraits<at<I>>::type>>::type;
 
             constexpr auto description = [](const Param& param) {
                 if (param.kwonly()) {
@@ -2082,38 +1625,38 @@ namespace impl {
                 }
             };
 
-            if constexpr (Traits<at<I>>::kwonly()) {
+            if constexpr (ArgTraits<at<I>>::kwonly()) {
                 if (I >= key.size()) {
                     throw TypeError(
-                        "missing keyword-only argument: '" + Traits<at<I>>::name +
+                        "missing keyword-only argument: '" + ArgTraits<at<I>>::name +
                         "' at index: " + std::to_string(I) 
                     );
                 }
                 const Param& param = key[I];
                 if (!param.kwonly()) {
                     throw TypeError(
-                        "expected argument '" + Traits<at<I>>::name +
+                        "expected argument '" + ArgTraits<at<I>>::name +
                         "' to be keyword-only, not " + description(param)
                     );
                 }
-                if (param.name != Traits<at<I>>::name) {
+                if (param.name != ArgTraits<at<I>>::name) {
                     throw TypeError(
-                        "expected keyword-only argument '" + Traits<at<I>>::name +
+                        "expected keyword-only argument '" + ArgTraits<at<I>>::name +
                         "' at index " + std::to_string(I) + ", not: '" +
                         std::string(param.name) + "'"
                     );
                 }
-                if constexpr (Traits<T>::opt()) {
+                if constexpr (ArgTraits<T>::opt()) {
                     if (!param.opt()) {
                         throw TypeError(
-                            "expected keyword-only argument '" + Traits<at<I>>::name +
+                            "expected keyword-only argument '" + ArgTraits<at<I>>::name +
                             "' to have a default value"
                         );
                     }
                 } else {
                     if (param.opt()) {
                         throw TypeError(
-                            "expected keyword-only argument '" + Traits<at<I>>::name +
+                            "expected keyword-only argument '" + ArgTraits<at<I>>::name +
                             "' to not have a default value"
                         );
                     }
@@ -2127,7 +1670,7 @@ namespace impl {
                     Exception::from_python();
                 } else if (!rc) {
                     throw TypeError(
-                        "expected keyword-only argument '" + Traits<at<I>>::name +
+                        "expected keyword-only argument '" + ArgTraits<at<I>>::name +
                         "' to be a subclass of '" + repr(expected) + "', not: '" +
                         repr(reinterpret_borrow<Object>(
                             reinterpret_cast<PyObject*>(param.type)
@@ -2135,39 +1678,39 @@ namespace impl {
                     );
                 }
 
-            } else if constexpr (Traits<at<I>>::kw()) {
+            } else if constexpr (ArgTraits<at<I>>::kw()) {
                 if (I >= key.size()) {
                     throw TypeError(
                         "missing positional-or-keyword argument: '" +
-                        Traits<at<I>>::name + "' at index: " + std::to_string(I)
+                        ArgTraits<at<I>>::name + "' at index: " + std::to_string(I)
                     );
                 }
                 const Param& param = key[I];
                 if (!param.kw()) {
                     throw TypeError(
-                        "expected argument '" + Traits<at<I>>::name +
+                        "expected argument '" + ArgTraits<at<I>>::name +
                         "' to be positional-or-keyword, not " + description(param)
                     );
                 }
-                if (param.name != Traits<at<I>>::name) {
+                if (param.name != ArgTraits<at<I>>::name) {
                     throw TypeError(
                         "expected positional-or-keyword argument '" +
-                        Traits<at<I>>::name + "' at index " + std::to_string(I) +
+                        ArgTraits<at<I>>::name + "' at index " + std::to_string(I) +
                         ", not: '" + std::string(param.name) + "'"
                     );
                 }
-                if constexpr (Traits<T>::opt()) {
+                if constexpr (ArgTraits<T>::opt()) {
                     if (!param.opt()) {
                         throw TypeError(
                             "expected positional-or-keyword argument '" +
-                            Traits<at<I>>::name + "' to have a default value"
+                            ArgTraits<at<I>>::name + "' to have a default value"
                         );
                     }
                 } else {
                     if (param.opt()) {
                         throw TypeError(
                             "expected positional-or-keyword argument '" +
-                            Traits<at<I>>::name + "' to not have a default value"
+                            ArgTraits<at<I>>::name + "' to not have a default value"
                         );
                     }
                 }
@@ -2181,7 +1724,7 @@ namespace impl {
                 } else if (!rc) {
                     throw TypeError(
                         "expected positional-or-keyword argument '" +
-                        Traits<at<I>>::name + "' to be a subclass of '" +
+                        ArgTraits<at<I>>::name + "' to be a subclass of '" +
                         repr(expected) + "', not: '" + repr(
                             reinterpret_borrow<Object>(
                                 reinterpret_cast<PyObject*>(param.type)
@@ -2190,39 +1733,39 @@ namespace impl {
                     );
                 }
 
-            } else if constexpr (Traits<at<I>>::pos()) {
+            } else if constexpr (ArgTraits<at<I>>::pos()) {
                 if (I >= key.size()) {
                     throw TypeError(
                         "missing positional-only argument: '" +
-                        Traits<at<I>>::name + "' at index: " + std::to_string(I)
+                        ArgTraits<at<I>>::name + "' at index: " + std::to_string(I)
                     );
                 }
                 const Param& param = key[I];
                 if (!param.posonly()) {
                     throw TypeError(
-                        "expected argument '" + Traits<at<I>>::name +
+                        "expected argument '" + ArgTraits<at<I>>::name +
                         "' to be positional-only, not " + description(param)
                     );
                 }
-                if (param.name != Traits<at<I>>::name) {
+                if (param.name != ArgTraits<at<I>>::name) {
                     throw TypeError(
                         "expected positional-only argument '" +
-                        Traits<at<I>>::name + "' at index " + std::to_string(I) +
+                        ArgTraits<at<I>>::name + "' at index " + std::to_string(I) +
                         ", not: '" + std::string(param.name) + "'"
                     );
                 }
-                if constexpr (Traits<T>::opt()) {
+                if constexpr (ArgTraits<T>::opt()) {
                     if (!param.opt()) {
                         throw TypeError(
                             "expected positional-only argument '" +
-                            Traits<at<I>>::name + "' to have a default value"
+                            ArgTraits<at<I>>::name + "' to have a default value"
                         );
                     }
                 } else {
                     if (param.opt()) {
                         throw TypeError(
                             "expected positional-only argument '" +
-                            Traits<at<I>>::name + "' to not have a default value"
+                            ArgTraits<at<I>>::name + "' to not have a default value"
                         );
                     }
                 }
@@ -2236,7 +1779,7 @@ namespace impl {
                 } else if (!rc) {
                     throw TypeError(
                         "expected positional-only argument '" +
-                        Traits<at<I>>::name + "' to be a subclass of '" +
+                        ArgTraits<at<I>>::name + "' to be a subclass of '" +
                         repr(expected) + "', not: '" + repr(
                             reinterpret_borrow<Object>(
                                 reinterpret_cast<PyObject*>(param.type)
@@ -2245,24 +1788,24 @@ namespace impl {
                     );
                 }
 
-            } else if constexpr (Traits<at<I>>::args()) {
+            } else if constexpr (ArgTraits<at<I>>::args()) {
                 if (I >= key.size()) {
                     throw TypeError(
                         "missing variadic positional argument: '" +
-                        Traits<at<I>>::name + "' at index: " + std::to_string(I)
+                        ArgTraits<at<I>>::name + "' at index: " + std::to_string(I)
                     );
                 }
                 const Param& param = key[I];
                 if (!param.args()) {
                     throw TypeError(
-                        "expected argument '" + Traits<at<I>>::name +
+                        "expected argument '" + ArgTraits<at<I>>::name +
                         "' to be variadic positional, not " + description(param)
                     );
                 }
-                if (param.name != Traits<at<I>>::name) {
+                if (param.name != ArgTraits<at<I>>::name) {
                     throw TypeError(
                         "expected variadic positional argument '" +
-                        Traits<at<I>>::name + "' at index " + std::to_string(I) +
+                        ArgTraits<at<I>>::name + "' at index " + std::to_string(I) +
                         ", not: '" + std::string(param.name) + "'"
                     );
                 }
@@ -2276,7 +1819,7 @@ namespace impl {
                 } else if (!rc) {
                     throw TypeError(
                         "expected variadic positional argument '" +
-                        Traits<at<I>>::name + "' to be a subclass of '" +
+                        ArgTraits<at<I>>::name + "' to be a subclass of '" +
                         repr(expected) + "', not: '" + repr(
                             reinterpret_borrow<Object>(
                                 reinterpret_cast<PyObject*>(param.type)
@@ -2285,24 +1828,24 @@ namespace impl {
                     );
                 }
 
-            } else if constexpr (Traits<at<I>>::kwargs()) {
+            } else if constexpr (ArgTraits<at<I>>::kwargs()) {
                 if (I >= key.size()) {
                     throw TypeError(
                         "missing variadic keyword argument: '" +
-                        Traits<at<I>>::name + "' at index: " + std::to_string(I)
+                        ArgTraits<at<I>>::name + "' at index: " + std::to_string(I)
                     );
                 }
                 const Param& param = key[I];
                 if (!param.kwargs()) {
                     throw TypeError(
-                        "expected argument '" + Traits<at<I>>::name +
+                        "expected argument '" + ArgTraits<at<I>>::name +
                         "' to be variadic keyword, not " + description(param)
                     );
                 }
-                if (param.name != Traits<at<I>>::name) {
+                if (param.name != ArgTraits<at<I>>::name) {
                     throw TypeError(
                         "expected variadic keyword argument '" +
-                        Traits<at<I>>::name + "' at index " + std::to_string(I) +
+                        ArgTraits<at<I>>::name + "' at index " + std::to_string(I) +
                         ", not: '" + std::string(param.name) + "'"
                     );
                 }
@@ -2316,7 +1859,7 @@ namespace impl {
                 } else if (!rc) {
                     throw TypeError(
                         "expected variadic keyword argument '" +
-                        Traits<at<I>>::name + "' to be a subclass of '" +
+                        ArgTraits<at<I>>::name + "' to be a subclass of '" +
                         repr(expected) + "', not: '" + repr(
                             reinterpret_borrow<Object>(
                                 reinterpret_cast<PyObject*>(param.type)
@@ -2332,52 +1875,52 @@ namespace impl {
 
         template <size_t I, typename Container>
         static bool _satisfies(const Params<Container>& key, size_t& idx) {
-            using T = __object__<std::remove_cvref_t<typename Traits<at<I>>::type>>::type;
+            using T = __object__<std::remove_cvref_t<typename ArgTraits<at<I>>::type>>::type;
 
             /// NOTE: if the original argument in the enclosing signature is required,
             /// then the new argument cannot be optional.  Otherwise, it can be either
             /// required or optional.
 
-            if constexpr (Traits<at<I>>::kwonly()) {
+            if constexpr (ArgTraits<at<I>>::kwonly()) {
                 if (idx < key.size()) {
                     const Param& param = key[idx];
                     ++idx;
                     return (
-                        (param.kwonly() & (~Traits<at<I>>::opt() | param.opt())) &&
-                        (param.name == Traits<at<I>>::name) &&
+                        (param.kwonly() & (~ArgTraits<at<I>>::opt() | param.opt())) &&
+                        (param.name == ArgTraits<at<I>>::name) &&
                         (issubclass<T>(reinterpret_borrow<Object>(
                             reinterpret_cast<PyObject*>(param.type))
                         ))
                     );
                 }
 
-            } else if constexpr (Traits<at<I>>::kw()) {
+            } else if constexpr (ArgTraits<at<I>>::kw()) {
                 if (idx < key.size()) {
                     const Param& param = key[idx];
                     ++idx;
                     return (
-                        (param.kw() & (~Traits<at<I>>::opt() | param.opt())) &&
-                        (param.name == Traits<at<I>>::name) &&
+                        (param.kw() & (~ArgTraits<at<I>>::opt() | param.opt())) &&
+                        (param.name == ArgTraits<at<I>>::name) &&
                         (issubclass<T>(reinterpret_borrow<Object>(
                             reinterpret_cast<PyObject*>(param.type))
                         ))
                     );
                 }
 
-            } else if constexpr (Traits<at<I>>::pos()) {
+            } else if constexpr (ArgTraits<at<I>>::pos()) {
                 if (idx < key.size()) {
                     const Param& param = key[idx];
                     ++idx;
                     return (
-                        (param.pos() & (~Traits<at<I>>::opt() | param.opt())) &&
-                        (param.name == Traits<at<I>>::name) &&
+                        (param.pos() & (~ArgTraits<at<I>>::opt() | param.opt())) &&
+                        (param.name == ArgTraits<at<I>>::name) &&
                         (issubclass<T>(reinterpret_borrow<Object>(
                             reinterpret_cast<PyObject*>(param.type))
                         ))
                     );
                 }
 
-            } else if constexpr (Traits<at<I>>::args()) {
+            } else if constexpr (ArgTraits<at<I>>::args()) {
                 if (idx < key.size()) {
                     const Param* param = &key[idx];
                     while (param->pos()) {
@@ -2404,7 +1947,7 @@ namespace impl {
                 }
                 return true;
 
-            } else if constexpr (Traits<at<I>>::kwargs()) {
+            } else if constexpr (ArgTraits<at<I>>::kwargs()) {
                 if (idx < key.size()) {
                     const Param* param = &key[idx];
                     while (param->kw()) {
@@ -2439,7 +1982,7 @@ namespace impl {
 
         template <size_t I, typename Container>
         static void _assert_satisfies(const Params<Container>& key, size_t& idx) {
-            using T = __object__<std::remove_cvref_t<typename Traits<at<I>>::type>>::type;
+            using T = __object__<std::remove_cvref_t<typename ArgTraits<at<I>>::type>>::type;
 
             constexpr auto description = [](const Param& param) {
                 if (param.kwonly()) {
@@ -2457,30 +2000,30 @@ namespace impl {
                 }
             };
 
-            if constexpr (Traits<at<I>>::kwonly()) {
+            if constexpr (ArgTraits<at<I>>::kwonly()) {
                 if (idx >= key.size()) {
                     throw TypeError(
-                        "missing keyword-only argument: '" + Traits<at<I>>::name +
+                        "missing keyword-only argument: '" + ArgTraits<at<I>>::name +
                         "' at index: " + std::to_string(idx)
                     );
                 }
                 const Param& param = key[idx];
                 if (!param.kwonly()) {
                     throw TypeError(
-                        "expected argument '" + Traits<at<I>>::name +
+                        "expected argument '" + ArgTraits<at<I>>::name +
                         "' to be keyword-only, not " + description(param)
                     );
                 }
-                if (param.name != Traits<at<I>>::name) {
+                if (param.name != ArgTraits<at<I>>::name) {
                     throw TypeError(
-                        "expected keyword-only argument '" + Traits<at<I>>::name +
+                        "expected keyword-only argument '" + ArgTraits<at<I>>::name +
                         "' at index " + std::to_string(idx) + ", not: '" +
                         std::string(param.name) + "'"
                     );
                 }
-                if (~Traits<at<I>>::opt() & param.opt()) {
+                if (~ArgTraits<at<I>>::opt() & param.opt()) {
                     throw TypeError(
-                        "required keyword-only argument '" + Traits<at<I>>::name +
+                        "required keyword-only argument '" + ArgTraits<at<I>>::name +
                         "' must not have a default value"
                     );
                 }
@@ -2488,7 +2031,7 @@ namespace impl {
                     reinterpret_cast<PyObject*>(param.type))
                 )) {
                     throw TypeError(
-                        "expected keyword-only argument '" + Traits<at<I>>::name +
+                        "expected keyword-only argument '" + ArgTraits<at<I>>::name +
                         "' to be a subclass of '" + repr(Type<T>()) + "', not: '" +
                         repr(reinterpret_borrow<Object>(
                             reinterpret_cast<PyObject*>(param.type)
@@ -2497,31 +2040,31 @@ namespace impl {
                 }
                 ++idx;
 
-            } else if constexpr (Traits<at<I>>::kw()) {
+            } else if constexpr (ArgTraits<at<I>>::kw()) {
                 if (idx >= key.size()) {
                     throw TypeError(
                         "missing positional-or-keyword argument: '" +
-                        Traits<at<I>>::name + "' at index: " + std::to_string(idx)
+                        ArgTraits<at<I>>::name + "' at index: " + std::to_string(idx)
                     );
                 }
                 const Param& param = key[idx];
                 if (!param.kw()) {
                     throw TypeError(
-                        "expected argument '" + Traits<at<I>>::name +
+                        "expected argument '" + ArgTraits<at<I>>::name +
                         "' to be positional-or-keyword, not " + description(param)
                     );
                 }
-                if (param.name != Traits<at<I>>::name) {
+                if (param.name != ArgTraits<at<I>>::name) {
                     throw TypeError(
                         "expected positional-or-keyword argument '" +
-                        Traits<at<I>>::name + "' at index " + std::to_string(idx) +
+                        ArgTraits<at<I>>::name + "' at index " + std::to_string(idx) +
                         ", not: '" + std::string(param.name) + "'"
                     );
                 }
-                if (~Traits<at<I>>::opt() & param.opt()) {
+                if (~ArgTraits<at<I>>::opt() & param.opt()) {
                     throw TypeError(
                         "required positional-or-keyword argument '" +
-                        Traits<at<I>>::name + "' must not have a default value"
+                        ArgTraits<at<I>>::name + "' must not have a default value"
                     );
                 }
                 if (!issubclass<T>(reinterpret_borrow<Object>(
@@ -2529,7 +2072,7 @@ namespace impl {
                 )) {
                     throw TypeError(
                         "expected positional-or-keyword argument '" +
-                        Traits<at<I>>::name + "' to be a subclass of '" +
+                        ArgTraits<at<I>>::name + "' to be a subclass of '" +
                         repr(Type<T>()) + "', not: '" + repr(
                             reinterpret_borrow<Object>(
                                 reinterpret_cast<PyObject*>(param.type)
@@ -2539,30 +2082,30 @@ namespace impl {
                 }
                 ++idx;
 
-            } else if constexpr (Traits<at<I>>::pos()) {
+            } else if constexpr (ArgTraits<at<I>>::pos()) {
                 if (idx >= key.size()) {
                     throw TypeError(
-                        "missing positional argument: '" + Traits<at<I>>::name +
+                        "missing positional argument: '" + ArgTraits<at<I>>::name +
                         "' at index: " + std::to_string(idx)
                     );
                 }
                 const Param& param = key[idx];
                 if (!param.pos()) {
                     throw TypeError(
-                        "expected argument '" + Traits<at<I>>::name +
+                        "expected argument '" + ArgTraits<at<I>>::name +
                         "' to be positional, not " + description(param)
                     );
                 }
-                if (param.name != Traits<at<I>>::name) {
+                if (param.name != ArgTraits<at<I>>::name) {
                     throw TypeError(
-                        "expected positional argument '" + Traits<at<I>>::name +
+                        "expected positional argument '" + ArgTraits<at<I>>::name +
                         "' at index " + std::to_string(idx) + ", not: '" +
                         std::string(param.name) + "'"
                     );
                 }
-                if (~Traits<at<I>>::opt() & param.opt()) {
+                if (~ArgTraits<at<I>>::opt() & param.opt()) {
                     throw TypeError(
-                        "required positional argument '" + Traits<at<I>>::name +
+                        "required positional argument '" + ArgTraits<at<I>>::name +
                         "' must not have a default value"
                     );
                 }
@@ -2570,7 +2113,7 @@ namespace impl {
                     reinterpret_cast<PyObject*>(param.type))
                 )) {
                     throw TypeError(
-                        "expected positional argument '" + Traits<at<I>>::name +
+                        "expected positional argument '" + ArgTraits<at<I>>::name +
                         "' to be a subclass of '" + repr(Type<T>()) + "', not: '" +
                         repr(reinterpret_borrow<Object>(
                             reinterpret_cast<PyObject*>(param.type)
@@ -2579,7 +2122,7 @@ namespace impl {
                 }
                 ++idx;
 
-            } else if constexpr (Traits<at<I>>::args()) {
+            } else if constexpr (ArgTraits<at<I>>::args()) {
                 if (idx < key.size()) {
                     const Param* param = &key[idx];
                     while (param->pos() && idx < key.size()) {
@@ -2620,7 +2163,7 @@ namespace impl {
                     }
                 }
 
-            } else if constexpr (Traits<at<I>>::kwargs()) {
+            } else if constexpr (ArgTraits<at<I>>::kwargs()) {
                 if (idx < key.size()) {
                     const Param* param = &key[idx];
                     while (param->kw() && idx < key.size()) {
@@ -2685,6 +2228,12 @@ namespace impl {
         arguments. */
         static constexpr size_t hash(const char* str) noexcept {
             return fnv1a(str, seed, prime);
+        }
+        static constexpr size_t hash(std::string_view str) noexcept {
+            return fnv1a(str.data(), seed, prime);
+        }
+        static constexpr size_t hash(const std::string& str) noexcept {
+            return fnv1a(str.data(), seed, prime);
         }
 
         /* Look up a positional argument, returning a callback object that can be used
@@ -2947,8 +2496,7 @@ namespace impl {
                     "too many arguments in positional parameter pack: ['" +
                     repr(*iter);
                 while (++iter != end) {
-                    message += "', '";
-                    message += repr(*iter);
+                    message += "', '" + repr(*iter);
                 }
                 message += "']";
                 throw TypeError(message);
@@ -2963,10 +2511,7 @@ namespace impl {
             []<size_t... Is>(std::index_sequence<Is...>, const Map& kwargs) {
                 std::vector<std::string> extra;
                 for (const auto& [key, value] : kwargs) {
-                    if (
-                        key == "" ||
-                        !((key == Traits<typename Outer::template at<Is>>::name) || ...)
-                    ) {
+                    if (!callback(key)) {
                         extra.push_back(key);
                     }
                 }
@@ -2976,8 +2521,7 @@ namespace impl {
                     std::string message =
                         "unexpected keyword arguments: ['" + repr(*iter);
                     while (++iter != end) {
-                        message += "', '";
-                        message += repr(*iter);
+                        message += "', '" + repr(*iter);
                     }
                     message += "']";
                     throw TypeError(message);
@@ -2987,487 +2531,482 @@ namespace impl {
 
     public:
 
-        // /* A tuple holding the default values for each argument in the enclosing
-        // parameter list that is marked as optional. */
-        // struct Defaults {
-        // private:
-        //     using Outer = _Signature;
+        /* A tuple holding the default values for each argument in the enclosing
+        parameter list that is marked as optional. */
+        struct Defaults {
+        private:
+            using Outer = _Signature;
 
-        //     /* The type of a single value in the defaults tuple.  The templated index
-        //     is used to correlate the default value with its corresponding argument in
-        //     the enclosing signature. */
-        //     template <size_t I>
-        //     struct Value  {
-        //         using annotation = Outer::template at<I>;
-        //         using type = Traits<annotation>::type;
-        //         static constexpr StaticStr name = Param<annotation>::name;
-        //         static constexpr size_t index = I;
-        //         std::remove_reference_t<type> value;
+            /* The type of a single value in the defaults tuple.  The templated index
+            is used to correlate the default value with its corresponding argument in
+            the enclosing signature. */
+            template <size_t I>
+            struct Value  {
+                using annotation = Outer::template at<I>;
+                using type = ArgTraits<annotation>::type;
+                static constexpr StaticStr name = ArgTraits<annotation>::name;
+                static constexpr size_t index = I;
+                std::remove_reference_t<type> value;
 
-        //         /* Retrieve the default value as its proper type, including reference
-        //         qualifiers. */
-        //         type get() {
-        //             if constexpr (std::is_rvalue_reference_v<type>) {
-        //                 return std::remove_cvref_t<type>(value);
-        //             } else {
-        //                 return value;
-        //             }
-        //         }
+                /* Retrieve the default value as its proper type, including reference
+                qualifiers. */
+                type get(this auto& self) {
+                    if constexpr (std::is_rvalue_reference_v<type>) {
+                        return std::remove_cvref_t<type>(self.value);
+                    } else {
+                        return self.value;
+                    }
+                }
 
-        //         /* Retrieve the default value as its proper type, including reference
-        //         qualifiers. */
-        //         type get() const {
-        //             if constexpr (std::is_rvalue_reference_v<type>) {
-        //                 return std::remove_cvref_t<type>(value);
-        //             } else {
-        //                 return value;
-        //             }
-        //         }
+            };
 
-        //     };
+            /* Build a sub-signature holding only the arguments marked as optional from
+            the enclosing signature.  This will be a specialization of the enclosing
+            class, which is used to bind arguments to this class's constructor using
+            the same semantics as the function's call operator. */
+            template <typename Sig, typename... Ts>
+            struct _Inner { using type = Sig; };
+            template <typename... Sig, typename T, typename... Ts>
+            struct _Inner<_Signature<Sig...>, T, Ts...> {
+                template <typename U>
+                struct helper {
+                    using type = _Inner<_Signature<Sig...>, Ts...>::type;
+                };
+                template <typename U> requires (ArgTraits<U>::opt())
+                struct helper<U> {
+                    using type =_Inner<
+                        _Signature<Sig..., typename ArgTraits<U>::no_opt>,
+                        Ts...
+                    >::type;
+                };
+                using type = helper<T>::type;
+            };
+            using Inner = _Inner<_Signature<>, Args...>::type;
 
-        //     /* Build a sub-signature holding only the arguments marked as optional from
-        //     the enclosing signature.  This will be a specialization of the enclosing
-        //     class, which is used to bind arguments to this class's constructor using
-        //     the same semantics as the function's call operator. */
-        //     template <typename Sig, typename... Ts>
-        //     struct _Inner { using type = Sig; };
-        //     template <typename... Sig, typename T, typename... Ts>
-        //     struct _Inner<Parameters<Sig...>, T, Ts...> {
-        //         template <typename U>
-        //         struct helper {
-        //             using type = _Inner<Parameters<Sig...>, Ts...>::type;
-        //         };
-        //         template <typename U> requires (Param<U>::opt)
-        //         struct helper<U> {
-        //             using type =_Inner<
-        //                 Parameters<Sig..., typename Param<U>::no_opt>,
-        //                 Ts...
-        //             >::type;
-        //         };
-        //         using type = helper<T>::type;
-        //     };
-        //     using Inner = _Inner<Parameters<>, Args...>::type;
+            /* Build a std::tuple of Value<I> instances to hold the default values
+            themselves. */
+            template <size_t I, typename Tuple, typename... Ts>
+            struct _Tuple { using type = Tuple; };
+            template <size_t I, typename... Partial, typename T, typename... Ts>
+            struct _Tuple<I, std::tuple<Partial...>, T, Ts...> {
+                template <typename U>
+                struct ToValue {
+                    using type = _Tuple<I + 1, std::tuple<Partial...>, Ts...>::type;
+                };
+                template <typename U> requires (ArgTraits<U>::opt())
+                struct ToValue<U> {
+                    using type = _Tuple<I + 1, std::tuple<Partial..., Value<I>>, Ts...>::type;
+                };
+                using type = ToValue<T>::type;
+            };
+            using Tuple = _Tuple<0, std::tuple<>, Args...>::type;
 
-        //     /* Build a std::tuple of Value<I> instances to hold the default values
-        //     themselves. */
-        //     template <size_t I, typename Tuple, typename... Ts>
-        //     struct _Tuple { using type = Tuple; };
-        //     template <size_t I, typename... Partial, typename T, typename... Ts>
-        //     struct _Tuple<I, std::tuple<Partial...>, T, Ts...> {
-        //         template <typename U>
-        //         struct ToValue {
-        //             using type = _Tuple<I + 1, std::tuple<Partial...>, Ts...>::type;
-        //         };
-        //         template <typename U> requires (Param<U>::opt)
-        //         struct ToValue<U> {
-        //             using type = _Tuple<I + 1, std::tuple<Partial..., Value<I>>, Ts...>::type;
-        //         };
-        //         using type = ToValue<T>::type;
-        //     };
-        //     using Tuple = _Tuple<0, std::tuple<>, Args...>::type;
+            template <size_t I, typename... Ts>
+            struct _find { static constexpr size_t value = 0; };
+            template <size_t I, typename T, typename... Ts>
+            struct _find<I, std::tuple<T, Ts...>> { static constexpr size_t value = 
+                (I == T::index) ? 0 : 1 + _find<I, std::tuple<Ts...>>::value;
+            };
 
-        //     template <size_t I, typename... Ts>
-        //     struct _find { static constexpr size_t value = 0; };
-        //     template <size_t I, typename T, typename... Ts>
-        //     struct _find<I, std::tuple<T, Ts...>> { static constexpr size_t value = 
-        //         (I == T::index) ? 0 : 1 + _find<I, std::tuple<Ts...>>::value;
-        //     };
+        public:
+            static constexpr size_t n               = Inner::n;
+            static constexpr size_t n_pos           = Inner::n_pos;
+            static constexpr size_t n_posonly       = Inner::n_posonly;
+            static constexpr size_t n_kw            = Inner::n_kw;
+            static constexpr size_t n_kwonly        = Inner::n_kwonly;
 
-        // public:
-        //     static constexpr size_t n               = Inner::n;
-        //     static constexpr size_t n_pos           = Inner::n_pos;
-        //     static constexpr size_t n_posonly       = Inner::n_posonly;
-        //     static constexpr size_t n_kw            = Inner::n_kw;
-        //     static constexpr size_t n_kwonly        = Inner::n_kwonly;
+            template <StaticStr Name>
+            static constexpr bool has               = Inner::template has<Name>;
+            static constexpr bool has_pos           = Inner::has_pos;
+            static constexpr bool has_posonly       = Inner::has_posonly;
+            static constexpr bool has_kw            = Inner::has_kw;
+            static constexpr bool has_kwonly        = Inner::has_kwonly;
 
-        //     template <StaticStr Name>
-        //     static constexpr bool has               = Inner::template has<Name>;
-        //     static constexpr bool has_pos           = Inner::has_pos;
-        //     static constexpr bool has_posonly       = Inner::has_posonly;
-        //     static constexpr bool has_kw            = Inner::has_kw;
-        //     static constexpr bool has_kwonly        = Inner::has_kwonly;
+            template <StaticStr Name> requires (has<Name>)
+            static constexpr size_t idx             = Inner::template idx<Name>;
+            static constexpr size_t kw_idx          = Inner::kw_idx;
+            static constexpr size_t kwonly_idx      = Inner::kwonly_idx;
 
-        //     template <StaticStr Name> requires (has<Name>)
-        //     static constexpr size_t idx             = Inner::template idx<Name>;
-        //     static constexpr size_t kw_idx          = Inner::kw_idx;
-        //     static constexpr size_t kwonly_idx      = Inner::kwonly_idx;
+            template <size_t I> requires (I < n)
+            using at = Inner::template at<I>;
+            template <size_t I> requires (I < kwonly_idx)
+            using Arg = Inner::template Arg<I>;
+            template <StaticStr Name> requires (has<Name>)
+            using Kwarg = Inner::template Kwarg<Name>;
 
-        //     template <size_t I> requires (I < n)
-        //     using at = Inner::template at<I>;
-        //     template <size_t I> requires (I < kwonly_idx)
-        //     using Arg = Inner::template Arg<I>;
-        //     template <StaticStr Name> requires (has<Name>)
-        //     using Kwarg = Inner::template Kwarg<Name>;
+            /* Bind an argument list to the default values tuple using the
+            sub-signature's normal Bind<> machinery. */
+            template <typename... Values>
+            using Bind = Inner::template Bind<Values...>;
 
-        //     /* Bind an argument list to the default values tuple using the
-        //     sub-signature's normal Bind<> machinery. */
-        //     template <typename... Values>
-        //     using Bind = Inner::template Bind<Values...>;
+            /* Given an index into the enclosing signature, find the corresponding index
+            in the defaults tuple if that index corresponds to a default value. */
+            template <size_t I> requires (ArgTraits<typename Outer::at<I>>::opt())
+            static constexpr size_t find = _find<I, Tuple>::value;
 
-        //     /* Given an index into the enclosing signature, find the corresponding index
-        //     in the defaults tuple if that index corresponds to a default value. */
-        //     template <size_t I> requires (Param<typename Outer::at<I>>::opt)
-        //     static constexpr size_t find = _find<I, Tuple>::value;
+        private:
 
-        // private:
+            template <size_t I, typename... Values>
+            static constexpr decltype(auto) unpack(Values&&... values) {
+                using observed = _Signature<Values...>;
+                using T = Inner::template at<I>;
+                constexpr StaticStr name = ArgTraits<T>::name;
 
-        //     template <size_t I, typename... Values>
-        //     static constexpr decltype(auto) element(Values&&... values) {
-        //         using observed = Parameters<Values...>;
-        //         using T = Inner::template at<I>;
-        //         constexpr StaticStr name = Param<T>::name;
+                if constexpr (ArgTraits<T>::kwonly()) {
+                    constexpr size_t idx = observed::template idx<name>;
+                    return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
 
-        //         if constexpr (Param<T>::kwonly) {
-        //             constexpr size_t idx = observed::template idx<name>;
-        //             return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
+                } else if constexpr (ArgTraits<T>::kw()) {
+                    if constexpr (I < observed::kw_idx) {
+                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
+                    } else {
+                        constexpr size_t idx = observed::template idx<name>;
+                        return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
+                    }
 
-        //         } else if constexpr (Param<T>::kw) {
-        //             if constexpr (I < observed::kw_idx) {
-        //                 return impl::unpack_arg<I>(std::forward<Values>(values)...);
-        //             } else {
-        //                 constexpr size_t idx = observed::template idx<name>;
-        //                 return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
-        //             }
+                } else {
+                    return impl::unpack_arg<I>(std::forward<Values>(values)...);
+                }
+            }
 
-        //         } else {
-        //             return impl::unpack_arg<I>(std::forward<Values>(values)...);
-        //         }
-        //     }
+            template <
+                size_t I,
+                typename... Values,
+                std::input_iterator Iter,
+                std::sentinel_for<Iter> End
+            >
+            static constexpr decltype(auto) unpack(
+                size_t args_size,
+                Iter& iter,
+                const End& end,
+                Values&&... values
+            ) {
+                using observed = _Signature<Values...>;
+                using T = Inner::template at<I>;
+                constexpr StaticStr name = ArgTraits<T>::name;
 
-        //     template <
-        //         size_t I,
-        //         typename... Values,
-        //         std::input_iterator Iter,
-        //         std::sentinel_for<Iter> End
-        //     >
-        //     static constexpr decltype(auto) element(
-        //         size_t args_size,
-        //         Iter& iter,
-        //         const End& end,
-        //         Values&&... values
-        //     ) {
-        //         using observed = Parameters<Values...>;
-        //         using T = Inner::template at<I>;
-        //         constexpr StaticStr name = Param<T>::name;
+                if constexpr (ArgTraits<T>::kwonly()) {
+                    constexpr size_t idx = observed::template idx<name>;
+                    return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
 
-        //         if constexpr (Param<T>::kwonly) {
-        //             constexpr size_t idx = observed::template idx<name>;
-        //             return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
+                } else if constexpr (ArgTraits<T>::kw()) {
+                    if constexpr (I < observed::kw_idx) {
+                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
+                    } else {
+                        if (iter != end) {
+                            if constexpr (observed::template has<name>) {
+                                throw TypeError(
+                                    "conflicting values for parameter '" + name +
+                                    "' at index " + std::to_string(I)
+                                );
+                            } else {
+                                decltype(auto) result = *iter;
+                                ++iter;
+                                return result;
+                            }
 
-        //         } else if constexpr (Param<T>::kw) {
-        //             if constexpr (I < observed::kw_idx) {
-        //                 return impl::unpack_arg<I>(std::forward<Values>(values)...);
-        //             } else {
-        //                 if (iter != end) {
-        //                     if constexpr (observed::template has<name>) {
-        //                         throw TypeError(
-        //                             "conflicting values for parameter '" + name +
-        //                             "' at index " + std::to_string(I)
-        //                         );
-        //                     } else {
-        //                         decltype(auto) result = *iter;
-        //                         ++iter;
-        //                         return result;
-        //                     }
+                        } else {
+                            if constexpr (observed::template has<name>) {
+                                constexpr size_t idx = observed::template idx<name>;
+                                return impl::unpack_arg<idx>(
+                                    std::forward<Values>(values)...
+                                ).value;
+                            } else {
+                                throw TypeError(
+                                    "no match for parameter '" + name +
+                                    "' at index " + std::to_string(I)
+                                );
+                            }
+                        }
+                    }
 
-        //                 } else {
-        //                     if constexpr (observed::template has<name>) {
-        //                         constexpr size_t idx = observed::template idx<name>;
-        //                         return impl::unpack_arg<idx>(
-        //                             std::forward<Values>(values)...
-        //                         ).value;
-        //                     } else {
-        //                         throw TypeError(
-        //                             "no match for parameter '" + name +
-        //                             "' at index " + std::to_string(I)
-        //                         );
-        //                     }
-        //                 }
-        //             }
+                } else {
+                    if constexpr (I < observed::kw_idx) {
+                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
+                    } else {
+                        if (iter != end) {
+                            decltype(auto) result = *iter;
+                            ++iter;
+                            return result;
+                        } else {
+                            throw TypeError(
+                                "no match for positional-only parmater at index " +
+                                std::to_string(I)
+                            );
+                        }
+                    }
+                }
+            }
 
-        //         } else {
-        //             if constexpr (I < observed::kw_idx) {
-        //                 return impl::unpack_arg<I>(std::forward<Values>(values)...);
-        //             } else {
-        //                 if (iter != end) {
-        //                     decltype(auto) result = *iter;
-        //                     ++iter;
-        //                     return result;
-        //                 } else {
-        //                     throw TypeError(
-        //                         "no match for positional-only parmater at index " +
-        //                         std::to_string(I)
-        //                     );
-        //                 }
-        //             }
-        //         }
-        //     }
+            template <
+                size_t I,
+                typename... Values,
+                typename Map
+            >
+            static constexpr decltype(auto) unpack(
+                const Map& map,
+                Values&&... values
+            ) {
+                using observed = _Signature<Values...>;
+                using T = Inner::template at<I>;
+                constexpr StaticStr name = ArgTraits<T>::name;
 
-        //     template <
-        //         size_t I,
-        //         typename... Values,
-        //         typename Map
-        //     >
-        //     static constexpr decltype(auto) element(
-        //         const Map& map,
-        //         Values&&... values
-        //     ) {
-        //         using observed = Parameters<Values...>;
-        //         using T = Inner::template at<I>;
-        //         constexpr StaticStr name = Param<T>::name;
+                if constexpr (ArgTraits<T>::kwonly()) {
+                    auto item = map.find(name);
+                    if constexpr (observed::template has<name>) {
+                        if (item != map.end()) {
+                            throw TypeError(
+                                "conflicting values for parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+                        }
+                        constexpr size_t idx = observed::template idx<name>;
+                        return impl::unpack_arg<idx>(
+                            std::forward<Values>(values)...
+                        ).value;
+                    } else {
+                        if (item != map.end()) {
+                            return item->second;
+                        } else {
+                            throw TypeError(
+                                "no match for parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+                        }
+                    }
 
-        //         if constexpr (Param<T>::kwonly) {
-        //             auto item = map.find(name);
-        //             if constexpr (observed::template has<name>) {
-        //                 if (item != map.end()) {
-        //                     throw TypeError(
-        //                         "conflicting values for parameter '" + name +
-        //                         "' at index " + std::to_string(I)
-        //                     );
-        //                 }
-        //                 constexpr size_t idx = observed::template idx<name>;
-        //                 return impl::unpack_arg<idx>(
-        //                     std::forward<Values>(values)...
-        //                 ).value;
-        //             } else {
-        //                 if (item != map.end()) {
-        //                     return item->second;
-        //                 } else {
-        //                     throw TypeError(
-        //                         "no match for parameter '" + name +
-        //                         "' at index " + std::to_string(I)
-        //                     );
-        //                 }
-        //             }
+                } else if constexpr (ArgTraits<T>::kw()) {
+                    auto item = map.find(name);
+                    if constexpr (I < observed::kw_idx) {
+                        if (item != map.end()) {
+                            throw TypeError(
+                                "conflicting values for parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+                        }
+                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
+                    } else if constexpr (observed::template has<name>) {
+                        if (item != map.end()) {
+                            throw TypeError(
+                                "conflicting values for parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+                        }
+                        constexpr size_t idx = observed::template idx<name>;
+                        return impl::unpack_arg<idx>(
+                            std::forward<Values>(values)...
+                        ).value;
+                    } else {
+                        if (item != map.end()) {
+                            return item->second;
+                        } else {
+                            throw TypeError(
+                                "no match for parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+                        }
+                    }
 
-        //         } else if constexpr (Param<T>::kw) {
-        //             auto item = map.find(name);
-        //             if constexpr (I < observed::kw_idx) {
-        //                 if (item != map.end()) {
-        //                     throw TypeError(
-        //                         "conflicting values for parameter '" + name +
-        //                         "' at index " + std::to_string(I)
-        //                     );
-        //                 }
-        //                 return impl::unpack_arg<I>(std::forward<Values>(values)...);
-        //             } else if constexpr (observed::template has<name>) {
-        //                 if (item != map.end()) {
-        //                     throw TypeError(
-        //                         "conflicting values for parameter '" + name +
-        //                         "' at index " + std::to_string(I)
-        //                     );
-        //                 }
-        //                 constexpr size_t idx = observed::template idx<name>;
-        //                 return impl::unpack_arg<idx>(
-        //                     std::forward<Values>(values)...
-        //                 ).value;
-        //             } else {
-        //                 if (item != map.end()) {
-        //                     return item->second;
-        //                 } else {
-        //                     throw TypeError(
-        //                         "no match for parameter '" + name +
-        //                         "' at index " + std::to_string(I)
-        //                     );
-        //                 }
-        //             }
+                } else {
+                    return impl::unpack_arg<I>(std::forward<Values>(values)...);
+                }
+            }
 
-        //         } else {
-        //             return impl::unpack_arg<I>(std::forward<Values>(values)...);
-        //         }
-        //     }
+            template <
+                size_t I,
+                typename... Values,
+                std::input_iterator Iter,
+                std::sentinel_for<Iter> End,
+                typename Map
+            >
+            static constexpr decltype(auto) unpack(
+                size_t args_size,
+                Iter& iter,
+                const End& end,
+                const Map& map,
+                Values&&... values
+            ) {
+                using observed = _Signature<Values...>;
+                using T = Inner::template at<I>;
+                constexpr StaticStr name = ArgTraits<T>::name;
 
-        //     template <
-        //         size_t I,
-        //         typename... Values,
-        //         std::input_iterator Iter,
-        //         std::sentinel_for<Iter> End,
-        //         typename Map
-        //     >
-        //     static constexpr decltype(auto) element(
-        //         size_t args_size,
-        //         Iter& iter,
-        //         const End& end,
-        //         const Map& map,
-        //         Values&&... values
-        //     ) {
-        //         using observed = Parameters<Values...>;
-        //         using T = Inner::template at<I>;
-        //         constexpr StaticStr name = Param<T>::name;
+                if constexpr (ArgTraits<T>::kwonly()) {
+                    return unpack<I>(
+                        map,
+                        std::forward<Values>(values)...
+                    );
 
-        //         if constexpr (Param<T>::kwonly) {
-        //             return element<I>(
-        //                 map,
-        //                 std::forward<Values>(values)...
-        //             );
+                } else if constexpr (ArgTraits<T>::kw()) {
+                    auto item = map.find(name);
+                    if constexpr (I < observed::kw_idx) {
+                        if (item != map.end()) {
+                            throw TypeError(
+                                "conflicting values for parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+                        }
+                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
+                    } else {
+                        if (iter != end) {
+                            if constexpr (observed::template has<name>) {
+                                throw TypeError(
+                                    "conflicting values for parameter '" + name +
+                                    "' at index " + std::to_string(I)
+                                );
+                            } else {
+                                if (item != map.end()) {
+                                    throw TypeError(
+                                        "conflicting values for parameter '" + name +
+                                        "' at index " + std::to_string(I)
+                                    );
+                                } else {
+                                    decltype(auto) result = *iter;
+                                    ++iter;
+                                    return result;
+                                }
+                            }
+                        } else {
+                            if constexpr (observed::template has<name>) {
+                                if (item != map.end()) {
+                                    throw TypeError(
+                                        "conflicting values for parameter '" + name +
+                                        "' at index " + std::to_string(I)
+                                    );
+                                } else {
+                                    constexpr size_t idx = observed::template idx<name>;
+                                    return impl::unpack_arg<idx>(
+                                        std::forward<Values>(values)...
+                                    ).value;
+                                }
+                            } else {
+                                if (item != map.end()) {
+                                    return item->second;
+                                } else {
+                                    throw TypeError(
+                                        "no match for parameter '" + name +
+                                        "' at index " + std::to_string(I)
+                                    );
+                                }
+                            }
+                        }
+                    }
 
-        //         } else if constexpr (Param<T>::kw) {
-        //             auto item = map.find(name);
-        //             if constexpr (I < observed::kw_idx) {
-        //                 if (item != map.end()) {
-        //                     throw TypeError(
-        //                         "conflicting values for parameter '" + name +
-        //                         "' at index " + std::to_string(I)
-        //                     );
-        //                 }
-        //                 return impl::unpack_arg<I>(std::forward<Values>(values)...);
-        //             } else {
-        //                 if (iter != end) {
-        //                     if constexpr (observed::template has<name>) {
-        //                         throw TypeError(
-        //                             "conflicting values for parameter '" + name +
-        //                             "' at index " + std::to_string(I)
-        //                         );
-        //                     } else {
-        //                         if (item != map.end()) {
-        //                             throw TypeError(
-        //                                 "conflicting values for parameter '" + name +
-        //                                 "' at index " + std::to_string(I)
-        //                             );
-        //                         } else {
-        //                             decltype(auto) result = *iter;
-        //                             ++iter;
-        //                             return result;
-        //                         }
-        //                     }
-        //                 } else {
-        //                     if constexpr (observed::template has<name>) {
-        //                         if (item != map.end()) {
-        //                             throw TypeError(
-        //                                 "conflicting values for parameter '" + name +
-        //                                 "' at index " + std::to_string(I)
-        //                             );
-        //                         } else {
-        //                             constexpr size_t idx = observed::template idx<name>;
-        //                             return impl::unpack_arg<idx>(
-        //                                 std::forward<Values>(values)...
-        //                             ).value;
-        //                         }
-        //                     } else {
-        //                         if (item != map.end()) {
-        //                             return item->second;
-        //                         } else {
-        //                             throw TypeError(
-        //                                 "no match for parameter '" + name +
-        //                                 "' at index " + std::to_string(I)
-        //                             );
-        //                         }
-        //                     }
-        //                 }
-        //             }
+                } else {
+                    return unpack<I>(
+                        args_size,
+                        iter,
+                        end,
+                        std::forward<Values>(values)...
+                    );
+                }
+            }
 
-        //         } else {
-        //             return element<I>(
-        //                 args_size,
-        //                 iter,
-        //                 end,
-        //                 std::forward<Values>(values)...
-        //             );
-        //         }
-        //     }
+            template <size_t... Is, typename... Values>
+            static constexpr Tuple build(
+                std::index_sequence<Is...>,
+                Values&&... values
+            ) {
+                using observed = _Signature<Values...>;
 
-        //     template <size_t... Is, typename... Values>
-        //     static constexpr Tuple build(
-        //         std::index_sequence<Is...>,
-        //         Values&&... values
-        //     ) {
-        //         using observed = Parameters<Values...>;
+                if constexpr (observed::has_args && observed::has_kwargs) {
+                    const auto& kwargs = impl::unpack_arg<observed::kwargs_idx>(
+                        std::forward<Values>(values)...
+                    );
+                    assert_kwargs_are_recognized<Inner, observed>(kwargs);
+                    const auto& args = impl::unpack_arg<observed::args_idx>(
+                        std::forward<Values>(values)...
+                    );
+                    auto iter = std::ranges::begin(args);
+                    auto end = std::ranges::end(args);
+                    Tuple result = {{
+                        unpack<Is>(
+                            std::ranges::size(args),
+                            iter,
+                            end,
+                            kwargs,
+                            std::forward<Values>(values)...
+                        )
+                    }...};
+                    assert_args_are_exhausted(iter, end);
+                    return result;
 
-        //         if constexpr (observed::has_args && observed::has_kwargs) {
-        //             const auto& kwargs = impl::unpack_arg<observed::kwargs_idx>(
-        //                 std::forward<Values>(values)...
-        //             );
-        //             assert_kwargs_are_recognized<Inner, observed>(kwargs);
-        //             const auto& args = impl::unpack_arg<observed::args_idx>(
-        //                 std::forward<Values>(values)...
-        //             );
-        //             auto iter = std::ranges::begin(args);
-        //             auto end = std::ranges::end(args);
-        //             Tuple result = {{
-        //                 element<Is>(
-        //                     std::ranges::size(args),
-        //                     iter,
-        //                     end,
-        //                     kwargs,
-        //                     std::forward<Values>(values)...
-        //                 )
-        //             }...};
-        //             assert_args_are_exhausted(iter, end);
-        //             return result;
+                } else if constexpr (observed::has_args) {
+                    const auto& args = impl::unpack_arg<observed::args_idx>(
+                        std::forward<Values>(values)...
+                    );
+                    auto iter = std::ranges::begin(args);
+                    auto end = std::ranges::end(args);
+                    Tuple result = {{
+                        unpack<Is>(
+                            std::ranges::size(args),
+                            iter,
+                            end,
+                            std::forward<Values>(values)...
+                        )
+                    }...};
+                    assert_args_are_exhausted(iter, end);
+                    return result;
 
-        //         } else if constexpr (observed::has_args) {
-        //             const auto& args = impl::unpack_arg<observed::args_idx>(
-        //                 std::forward<Values>(values)...
-        //             );
-        //             auto iter = std::ranges::begin(args);
-        //             auto end = std::ranges::end(args);
-        //             Tuple result = {{
-        //                 element<Is>(
-        //                     std::ranges::size(args),
-        //                     iter,
-        //                     end,
-        //                     std::forward<Values>(values)...
-        //                 )
-        //             }...};
-        //             assert_args_are_exhausted(iter, end);
-        //             return result;
+                } else if constexpr (observed::has_kwargs) {
+                    const auto& kwargs = impl::unpack_arg<observed::kwargs_idx>(
+                        std::forward<Values>(values)...
+                    );
+                    assert_kwargs_are_recognized<Inner, observed>(kwargs);
+                    return {{unpack<Is>(kwargs, std::forward<Values>(values)...)}...};
 
-        //         } else if constexpr (observed::has_kwargs) {
-        //             const auto& kwargs = impl::unpack_arg<observed::kwargs_idx>(
-        //                 std::forward<Values>(values)...
-        //             );
-        //             assert_kwargs_are_recognized<Inner, observed>(kwargs);
-        //             return {{element<Is>(kwargs, std::forward<Values>(values)...)}...};
+                } else {
+                    return {{unpack<Is>(std::forward<Values>(values)...)}...};
+                }
+            }
 
-        //         } else {
-        //             return {{element<Is>(std::forward<Values>(values)...)}...};
-        //         }
-        //     }
+        public:
+            Tuple values;
 
-        // public:
-        //     Tuple values;
+            /* The default values' constructor takes Python-style arguments just like
+            the call operator, and is only enabled if the call signature is well-formed
+            and all optional arguments have been accounted for. */
+            template <typename... Values> requires (Bind<Values...>::enable)
+            constexpr Defaults(Values&&... values) : values(build(
+                std::make_index_sequence<Inner::n>{},
+                std::forward<Values>(values)...
+            )) {}
+            constexpr Defaults(const Defaults& other) = default;
+            constexpr Defaults(Defaults&& other) = default;
 
-        //     /* The default values' constructor takes Python-style arguments just like
-        //     the call operator, and is only enabled if the call signature is well-formed
-        //     and all optional arguments have been accounted for. */
-        //     template <typename... Values> requires (Bind<Values...>::enable)
-        //     constexpr Defaults(Values&&... values) : values(build(
-        //         std::make_index_sequence<Inner::n>{},
-        //         std::forward<Values>(values)...
-        //     )) {}
-        //     constexpr Defaults(const Defaults& other) = default;
-        //     constexpr Defaults(Defaults&& other) = default;
+            /* Get the default value at index I of the tuple.  Use find<> to correlate
+            an index from the enclosing signature if needed. */
+            template <size_t I> requires (I < n)
+            decltype(auto) get() {
+                return std::get<I>(values).get();
+            }
 
-        //     /* Get the default value at index I of the tuple.  Use find<> to correlate
-        //     an index from the enclosing signature if needed. */
-        //     template <size_t I> requires (I < n)
-        //     decltype(auto) get() {
-        //         return std::get<I>(values).get();
-        //     }
+            /* Get the default value at index I of the tuple.  Use find<> to correlate
+            an index from the enclosing signature if needed. */
+            template <size_t I> requires (I < n)
+            decltype(auto) get() const {
+                return std::get<I>(values).get();
+            }
 
-        //     /* Get the default value at index I of the tuple.  Use find<> to correlate
-        //     an index from the enclosing signature if needed. */
-        //     template <size_t I> requires (I < n)
-        //     decltype(auto) get() const {
-        //         return std::get<I>(values).get();
-        //     }
+            /* Get the default value associated with the named argument, if it is
+            marked as optional. */
+            template <StaticStr Name> requires (has<Name>)
+            decltype(auto) get() {
+                return std::get<idx<Name>>(values).get();
+            }
 
-        //     /* Get the default value associated with the named argument, if it is
-        //     marked as optional. */
-        //     template <StaticStr Name> requires (has<Name>)
-        //     decltype(auto) get() {
-        //         return std::get<idx<Name>>(values).get();
-        //     }
+            /* Get the default value associated with the named argument, if it is
+            marked as optional. */
+            template <StaticStr Name> requires (has<Name>)
+            decltype(auto) get() const {
+                return std::get<idx<Name>>(values).get();
+            }
 
-        //     /* Get the default value associated with the named argument, if it is
-        //     marked as optional. */
-        //     template <StaticStr Name> requires (has<Name>)
-        //     decltype(auto) get() const {
-        //         return std::get<idx<Name>>(values).get();
-        //     }
+        };
 
-        // };
+        /// TODO: add a method to Bind<> that produces a simplified Params list from a valid
+        /// C++ parameter list.  There also needs to be a cousin for Python calls that
+        /// does the same thing from a vectorcall argument array.  Both of the latter
+        /// can apply the simplified logic, since it will be used in the call operator.
 
         // /* A helper that binds C++ arguments to the enclosing signature and performs
         // the necessary translation to invoke a matching C++ or Python function. */
@@ -4886,8 +4425,9 @@ namespace impl {
 
     /* Introspect the proper signature for a py::Function instance from a generic
     function pointer, reference, or object, such as a lambda type. */
-    template <typename R, typename... A>
-    struct Signature<R(*)(A...)> : Parameters<A...> {
+    template <std::convertible_to<Object> R, std::convertible_to<Object>... A>
+        requires (sizeof...(A) <= 64)
+    struct Signature<R(*)(A...)> : _Signature<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = false;
         static constexpr bool has_noexcept = false;
@@ -4895,7 +4435,7 @@ namespace impl {
         static constexpr bool has_rvalue = false;
         using Return = R;
         using Self = void;
-        using Args = Parameters<A...>;
+        using Args = _Signature<Self, A...>;
         using type = R(*)(A...);
         using to_ptr = Signature;
         using to_value = Signature<R(A...)>;
@@ -4909,8 +4449,9 @@ namespace impl {
         static constexpr bool compatible =
             std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, A...>;
     };
-    template <typename R, typename... A>
-    struct Signature<R(*)(A...) noexcept> : Parameters<A...> {
+    template <std::convertible_to<Object> R, std::convertible_to<Object>... A>
+        requires (sizeof...(A) <= 64)
+    struct Signature<R(*)(A...) noexcept> : _Signature<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = false;
         static constexpr bool has_noexcept = true;
@@ -4918,7 +4459,7 @@ namespace impl {
         static constexpr bool has_rvalue = false;
         using Return = R;
         using Self = void;
-        using Args = Parameters<A...>;
+        using Args = _Signature<A...>;
         using type = R(*)(A...) noexcept;
         using to_ptr = Signature;
         using to_value = Signature<R(A...) noexcept>;
@@ -4932,8 +4473,12 @@ namespace impl {
         static constexpr bool compatible =
             std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, A...>;
     };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...)> : Parameters<C&, A...> {
+    template <
+        std::convertible_to<Object> R,
+        std::convertible_to<Object> C,
+        std::convertible_to<Object>... A
+    > requires (sizeof...(A) < 64)
+    struct Signature<R(C::*)(A...)> : _Signature<C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
@@ -4941,7 +4486,7 @@ namespace impl {
         static constexpr bool has_rvalue = false;
         using Return = R;
         using Self = C&;
-        using Args = Parameters<A...>;
+        using Args = _Signature<Self, A...>;
         using type = R(C::*)(A...);
         using to_ptr = Signature<R(*)(Self, A...)>;
         using to_value = Signature<R(Self, A...)>;
@@ -4955,14 +4500,18 @@ namespace impl {
         static constexpr bool compatible =
             std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) noexcept> : Parameters<C&, A...> {
+    template <
+        std::convertible_to<Object> R,
+        std::convertible_to<Object> C,
+        std::convertible_to<Object>... A
+    > requires (sizeof...(A) < 64)
+    struct Signature<R(C::*)(A...) noexcept> : _Signature<C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
         using Return = R;
         using Self = C&;
-        using Args = Parameters<A...>;
+        using Args = _Signature<Self, A...>;
         using type = R(C::*)(A...);
         using to_ptr = Signature<R(*)(Self, A...) noexcept>;
         using to_value = Signature<R(Self, A...) noexcept>;
@@ -4976,8 +4525,12 @@ namespace impl {
         static constexpr bool compatible =
             std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) &> : Parameters<C&, A...> {
+    template <
+        std::convertible_to<Object> R,
+        std::convertible_to<Object> C,
+        std::convertible_to<Object>... A
+    > requires (sizeof...(A) < 64)
+    struct Signature<R(C::*)(A...) &> : _Signature<C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
@@ -4985,7 +4538,7 @@ namespace impl {
         static constexpr bool has_rvalue = false;
         using Return = R;
         using Self = C&;
-        using Args = Parameters<A...>;
+        using Args = _Signature<Self, A...>;
         using type = R(C::*)(A...);
         using to_ptr = Signature<R(*)(Self, A...)>;
         using to_value = Signature<R(Self, A...)>;
@@ -4999,8 +4552,12 @@ namespace impl {
         static constexpr bool compatible =
             std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) & noexcept> : Parameters<C&, A...> {
+    template <
+        std::convertible_to<Object> R,
+        std::convertible_to<Object> C,
+        std::convertible_to<Object>... A
+    > requires (sizeof...(A) < 64)
+    struct Signature<R(C::*)(A...) & noexcept> : _Signature<C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
@@ -5008,7 +4565,7 @@ namespace impl {
         static constexpr bool has_rvalue = false;
         using Return = R;
         using Self = C&;
-        using Args = Parameters<A...>;
+        using Args = _Signature<Self, A...>;
         using type = R(C::*)(A...);
         using to_ptr = Signature<R(*)(Self, A...) noexcept>;
         using to_value = Signature<R(Self, A...) noexcept>;
@@ -5022,8 +4579,12 @@ namespace impl {
         static constexpr bool compatible =
             std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const> : Parameters<const C&, A...> {
+    template <
+        std::convertible_to<Object> R,
+        std::convertible_to<Object> C,
+        std::convertible_to<Object>... A
+    > requires (sizeof...(A) < 64)
+    struct Signature<R(C::*)(A...) const> : _Signature<const C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
@@ -5031,7 +4592,7 @@ namespace impl {
         static constexpr bool has_rvalue = false;
         using Return = R;
         using Self = const C&;
-        using Args = Parameters<A...>;
+        using Args = _Signature<Self, A...>;
         using type = R(C::*)(A...) const;
         using to_ptr = Signature<R(*)(Self, A...)>;
         using to_value = Signature<R(Self, A...)>;
@@ -5045,8 +4606,12 @@ namespace impl {
         static constexpr bool compatible =
             std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const noexcept> : Parameters<const C&, A...> {
+    template <
+        std::convertible_to<Object> R,
+        std::convertible_to<Object> C,
+        std::convertible_to<Object>... A
+    > requires (sizeof...(A) < 64)
+    struct Signature<R(C::*)(A...) const noexcept> : _Signature<const C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
@@ -5054,7 +4619,7 @@ namespace impl {
         static constexpr bool has_rvalue = false;
         using Return = R;
         using Self = const C&;
-        using Args = Parameters<A...>;
+        using Args = _Signature<Self, A...>;
         using type = R(C::*)(A...) const;
         using to_ptr = Signature<R(*)(Self, A...) noexcept>;
         using to_value = Signature<R(Self, A...) noexcept>;
@@ -5068,8 +4633,12 @@ namespace impl {
         static constexpr bool compatible =
             std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const &> : Parameters<const C&, A...> {
+    template <
+        std::convertible_to<Object> R,
+        std::convertible_to<Object> C,
+        std::convertible_to<Object>... A
+    > requires (sizeof...(A) < 64)
+    struct Signature<R(C::*)(A...) const &> : _Signature<const C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
@@ -5077,7 +4646,7 @@ namespace impl {
         static constexpr bool has_rvalue = false;
         using Return = R;
         using Self = const C&;
-        using Args = Parameters<A...>;
+        using Args = _Signature<Self, A...>;
         using type = R(C::*)(A...) const;
         using to_ptr = Signature<R(*)(Self, A...)>;
         using to_value = Signature<R(Self, A...)>;
@@ -5091,8 +4660,12 @@ namespace impl {
         static constexpr bool compatible =
             std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const & noexcept> : Parameters<const C&, A...> {
+    template <
+        std::convertible_to<Object> R,
+        std::convertible_to<Object> C,
+        std::convertible_to<Object>... A
+    > requires (sizeof...(A) < 64)
+    struct Signature<R(C::*)(A...) const & noexcept> : _Signature<const C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
@@ -5100,7 +4673,7 @@ namespace impl {
         static constexpr bool has_rvalue = false;
         using Return = R;
         using Self = const C&;
-        using Args = Parameters<A...>;
+        using Args = _Signature<Self, A...>;
         using type = R(C::*)(A...) const;
         using to_ptr = Signature<R(*)(Self, A...) noexcept>;
         using to_value = Signature<R(Self, A...) noexcept>;
@@ -5114,8 +4687,12 @@ namespace impl {
         static constexpr bool compatible =
             std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile> : Parameters<volatile C&, A...> {
+    template <
+        std::convertible_to<Object> R,
+        std::convertible_to<Object> C,
+        std::convertible_to<Object>... A
+    > requires (sizeof...(A) < 64)
+    struct Signature<R(C::*)(A...) volatile> : _Signature<volatile C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
@@ -5123,7 +4700,7 @@ namespace impl {
         static constexpr bool has_rvalue = false;
         using Return = R;
         using Self = volatile C&;
-        using Args = Parameters<A...>;
+        using Args = _Signature<Self, A...>;
         using type = R(C::*)(A...) volatile;
         using to_ptr = Signature<R(*)(Self, A...)>;
         using to_value = Signature<R(Self, A...)>;
@@ -5137,8 +4714,12 @@ namespace impl {
         static constexpr bool compatible =
             std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile noexcept> : Parameters<volatile C&, A...> {
+    template <
+        std::convertible_to<Object> R,
+        std::convertible_to<Object> C,
+        std::convertible_to<Object>... A
+    > requires (sizeof...(A) < 64)
+    struct Signature<R(C::*)(A...) volatile noexcept> : _Signature<volatile C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
@@ -5146,7 +4727,7 @@ namespace impl {
         static constexpr bool has_rvalue = false;
         using Return = R;
         using Self = volatile C&;
-        using Args = Parameters<A...>;
+        using Args = _Signature<Self, A...>;
         using type = R(C::*)(A...) volatile;
         using to_ptr = Signature<R(*)(Self, A...) noexcept>;
         using to_value = Signature<R(Self, A...) noexcept>;
@@ -5160,8 +4741,12 @@ namespace impl {
         static constexpr bool compatible =
             std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile &> : Parameters<volatile C&, A...> {
+    template <
+        std::convertible_to<Object> R,
+        std::convertible_to<Object> C,
+        std::convertible_to<Object>... A
+    > requires (sizeof...(A) < 64)
+    struct Signature<R(C::*)(A...) volatile &> : _Signature<volatile C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
@@ -5169,7 +4754,7 @@ namespace impl {
         static constexpr bool has_rvalue = false;
         using Return = R;
         using Self = volatile C&;
-        using Args = Parameters<A...>;
+        using Args = _Signature<Self, A...>;
         using type = R(C::*)(A...) volatile;
         using to_ptr = Signature<R(*)(Self, A...)>;
         using to_value = Signature<R(Self, A...)>;
@@ -5183,8 +4768,12 @@ namespace impl {
         static constexpr bool compatible =
             std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile & noexcept> : Parameters<volatile C&, A...> {
+    template <
+        std::convertible_to<Object> R,
+        std::convertible_to<Object> C,
+        std::convertible_to<Object>... A
+    > requires (sizeof...(A) < 64)
+    struct Signature<R(C::*)(A...) volatile & noexcept> : _Signature<volatile C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
@@ -5192,7 +4781,7 @@ namespace impl {
         static constexpr bool has_rvalue = false;
         using Return = R;
         using Self = volatile C&;
-        using Args = impl::Parameters<A...>;
+        using Args = _Signature<Self, A...>;
         using type = R(C::*)(A...) volatile;
         using to_ptr = Signature<R(*)(Self, A...) noexcept>;
         using to_value = Signature<R(Self, A...) noexcept>;
@@ -5206,8 +4795,12 @@ namespace impl {
         static constexpr bool compatible =
             std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile> : Parameters<const volatile C&, A...> {
+    template <
+        std::convertible_to<Object> R,
+        std::convertible_to<Object> C,
+        std::convertible_to<Object>... A
+    > requires (sizeof...(A) < 64)
+    struct Signature<R(C::*)(A...) const volatile> : _Signature<const volatile C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
@@ -5215,7 +4808,7 @@ namespace impl {
         static constexpr bool has_rvalue = false;
         using Return = R;
         using Self = const volatile C&;
-        using Args = impl::Parameters<A...>;
+        using Args = _Signature<Self, A...>;
         using type = R(C::*)(A...) const volatile;
         using to_ptr = Signature<R(*)(Self, A...)>;
         using to_value = Signature<R(Self, A...)>;
@@ -5229,8 +4822,12 @@ namespace impl {
         static constexpr bool compatible =
             std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile noexcept> : Parameters<const volatile C&, A...> {
+    template <
+        std::convertible_to<Object> R,
+        std::convertible_to<Object> C,
+        std::convertible_to<Object>... A
+    > requires (sizeof...(A) < 64)
+    struct Signature<R(C::*)(A...) const volatile noexcept> : _Signature<const volatile C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
@@ -5238,7 +4835,7 @@ namespace impl {
         static constexpr bool has_rvalue = false;
         using Return = R;
         using Self = const volatile C&;
-        using Args = Parameters<A...>;
+        using Args = _Signature<Self, A...>;
         using type = R(C::*)(A...) const volatile;
         using to_ptr = Signature<R(*)(Self, A...) noexcept>;
         using to_value = Signature<R(Self, A...) noexcept>;
@@ -5252,8 +4849,12 @@ namespace impl {
         static constexpr bool compatible =
             std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile &> : Parameters<const volatile C&, A...> {
+    template <
+        std::convertible_to<Object> R,
+        std::convertible_to<Object> C,
+        std::convertible_to<Object>... A
+    > requires (sizeof...(A) < 64)
+    struct Signature<R(C::*)(A...) const volatile &> : _Signature<const volatile C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
@@ -5261,7 +4862,7 @@ namespace impl {
         static constexpr bool has_rvalue = false;
         using Return = R;
         using Self = const volatile C&;
-        using Args = Parameters<A...>;
+        using Args = _Signature<Self, A...>;
         using type = R(C::*)(A...) const volatile;
         using to_ptr = Signature<R(*)(Self, A...)>;
         using to_value = Signature<R(Self, A...)>;
@@ -5275,8 +4876,12 @@ namespace impl {
         static constexpr bool compatible =
             std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile & noexcept> : Parameters<const volatile C&, A...> {
+    template <
+        std::convertible_to<Object> R,
+        std::convertible_to<Object> C,
+        std::convertible_to<Object>... A
+    > requires (sizeof...(A) < 64)
+    struct Signature<R(C::*)(A...) const volatile & noexcept> : _Signature<const volatile C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
@@ -5284,7 +4889,7 @@ namespace impl {
         static constexpr bool has_rvalue = false;
         using Return = R;
         using Self = const volatile C&;
-        using Args = Parameters<A...>;
+        using Args = _Signature<Self, A...>;
         using type = R(C::*)(A...) const volatile;
         using to_ptr = Signature<R(*)(Self, A...) noexcept>;
         using to_value = Signature<R(Self, A...) noexcept>;
@@ -5298,8 +4903,9 @@ namespace impl {
         static constexpr bool compatible =
             std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
-    template <impl::has_call_operator T> requires (Signature<decltype(&T::operator())>::enable)
-    struct Signature<T> : Signature<decltype(&T::operator())>::template with_self<void> {};
+    template <impl::has_call_operator T>
+        requires (Signature<as_member_func<decltype(&T::operator()), void>>::enable)
+    struct Signature<T> : Signature<as_member_func<decltype(&T::operator()), void>> {};
 
     /// TODO: I need a static parent class that serves as the template interface for
     /// all function types, and which implements __class_getitem__ to allow for
@@ -5914,6 +5520,422 @@ struct Interface<Type<Function<F>>> {
     template <impl::inherits<Interface> Self>
     [[nodiscard]] static std::optional<Tuple<Object>> __type_params__(const Self& self);
 };
+
+
+
+
+/// TODO: OverloadKey should be deleted and its methods redistributed to
+/// py::Function.
+
+// /* An overload key consisting of a sequence of parameter annotations, which
+// describe a Python-style call signature.  Keys of this form can be used to search a
+// function's overload trie during calls and other operations. */
+// struct OverloadKey {
+// private:
+//     std::vector<Param> vec;
+//     Py_ssize_t idx = 0;
+//     Py_ssize_t posonly_idx = std::numeric_limits<size_t>::max();
+//     Py_ssize_t kw_idx = std::numeric_limits<size_t>::max();
+//     Py_ssize_t kwonly_idx = std::numeric_limits<size_t>::max();
+//     Py_ssize_t args_idx = std::numeric_limits<size_t>::max();
+//     Py_ssize_t kwargs_idx = std::numeric_limits<size_t>::max();
+//     Py_ssize_t default_idx = std::numeric_limits<size_t>::max();
+
+// public:
+//     size_t hash = 0;
+
+//     explicit OverloadKey(size_t size) {
+//         vec.reserve(size);
+//     }
+
+//     OverloadKey(OverloadKey&& other) noexcept = default;
+//     OverloadKey(const OverloadKey& other) :
+//         vec(other.vec),
+//         idx(other.idx),
+//         posonly_idx(other.posonly_idx),
+//         kw_idx(other.kw_idx),
+//         kwonly_idx(other.kwonly_idx),
+//         args_idx(other.args_idx),
+//         kwargs_idx(other.kwargs_idx),
+//         default_idx(other.default_idx),
+//         hash(other.hash)
+//     {
+//         vec.reserve(other.vec.capacity());
+//     }
+
+//     OverloadKey& operator=(OverloadKey&& other) noexcept = default;
+//     OverloadKey& operator=(const OverloadKey& other) {
+//         vec = other.vec;
+//         idx = other.idx;
+//         posonly_idx = other.posonly_idx;
+//         kw_idx = other.kw_idx;
+//         kwonly_idx = other.kwonly_idx;
+//         args_idx = other.args_idx;
+//         kwargs_idx = other.kwargs_idx;
+//         default_idx = other.default_idx;
+//         hash = other.hash;
+//         vec.reserve(other.vec.capacity());
+//         return *this;
+//     }
+
+//     /* Directly append a parameter to the key and update its hash accordingly. */
+//     void param(Param&& par) {
+//         hash = impl::hash_combine(hash, par.hash());
+//         vec[idx++] = std::move(par);
+//     }
+
+//     /* Append a parameter to the key, parsing it as if it were a hypothetical
+//     argument to a Python function.  This will throw an error if the parameter
+//     does not conform to Python calling conventions. */
+//     void getitem(PyObject* specifier) {
+//         std::string_view name;
+//         Param::Category category;
+//         PyTypeObject* type;
+
+//         // raw types are interpreted as positional arguments
+//         if (PyType_Check(specifier)) {
+//             if (idx > kw_idx) {
+//                 throw TypeError(
+//                     "positional argument cannot follow keyword argument: " +
+//                     repr(reinterpret_borrow<Object>(specifier))
+//                 );
+//             }
+//             category = Param::POS;
+//             type = reinterpret_cast<PyTypeObject*>(specifier);
+
+//         // slices are interpreted as keyword arguments
+//         } else if (PySlice_Check(specifier)) {
+//             PySliceObject* slice = reinterpret_cast<PySliceObject*>(specifier);
+//             if (!PyUnicode_Check(slice->start)) {
+//                 throw TypeError(
+//                     "first element of a slice must be a string representing a "
+//                     "keyword argument name, not: " +
+//                     repr(reinterpret_borrow<Object>(slice->start))
+//                 );
+//             }
+//             if (!PyType_Check(slice->stop)) {
+//                 throw TypeError(
+//                     "second element of a slice must be a type object representing "
+//                     "the hypothetical type of the argument, not: " +
+//                     repr(reinterpret_borrow<Object>(slice->stop))
+//                 );
+//             }
+//             name = Param::get_name(slice->start);
+//             category = Param::KW;
+//             type = reinterpret_cast<PyTypeObject*>(slice->stop);
+//             if (idx < kw_idx) {
+//                 kw_idx = idx;
+//             }
+
+//         // everything else is invalid
+//         } else {
+//             throw TypeError(
+//                 "expected a type for a positional argument or a slice for a "
+//                 "keyword argument, not: " +
+//                 repr(reinterpret_borrow<Object>(specifier))
+//             );
+//         }
+//         param({name, type, category});
+//     }
+
+//     /* Append a parameter to the key, parsing it as it it were provided to the
+//     function's Python-level `__class_getitem__()` method, as used to navigate the
+//     template hierarchy from Python.  This must fully specify the signature of a
+//     Python function, accounting for optional and variadic arguments, as well as
+//     Python-style delimiters.  An error will be raised if any of these are
+//     invalid. */
+//     void class_getitem(PyObject* specifier) {
+//         std::string_view name;
+//         Param::Category category;
+//         PyTypeObject* type;
+
+//         // raw types are interpreted as required, positional-only arguments
+//         if (PyType_Check(specifier)) {
+//             if (idx > posonly_idx) {
+//                 throw TypeError(
+//                     "positional-only argument cannot follow `/` delimiter: " +
+//                     repr(reinterpret_borrow<Object>(specifier))
+//                 );
+//             } else if (idx > kwonly_idx) {
+//                 throw TypeError(
+//                     "positional-only argument cannot follow '*' delimiter: " +
+//                     repr(reinterpret_borrow<Object>(specifier))
+//                 );
+//             } else if (idx > kw_idx) {
+//                 throw TypeError(
+//                     "positional-only argument cannot follow keyword argument: " +
+//                     repr(reinterpret_borrow<Object>(specifier))
+//                 );
+//             } else if (idx > args_idx) {
+//                 throw TypeError(
+//                     "positional-only argument cannot follow variadic positional "
+//                     "arguments " +
+//                     repr(reinterpret_borrow<Object>(specifier))
+//                 );
+//             } else if (idx > default_idx) {
+//                 throw TypeError(
+//                     "parameter without a default value cannot follow a parameter "
+//                     "with a default value: " +
+//                     repr(reinterpret_borrow<Object>(specifier))
+//                 );
+//             }
+//             category = Param::POS;
+//             type = reinterpret_cast<PyTypeObject*>(specifier);
+
+//         // slices are interpreted in several ways depending on their contents
+//         } else if (PySlice_Check(specifier)) {
+//             PySliceObject* slice = reinterpret_cast<PySliceObject*>(specifier);
+
+//             // If the first element is a type, then the second element must be
+//             // an ellipsis signifying a positional-only argument with a default
+//             // value.
+//             if (PyType_Check(slice->start)) {
+//                 if (idx > posonly_idx) {
+//                     throw TypeError(
+//                         "positional-only argument cannot follow `/` delimiter: " +
+//                         repr(reinterpret_borrow<Object>(specifier))
+//                     );
+//                 } else if (idx > kwonly_idx) {
+//                     throw TypeError(
+//                         "positional-only argument cannot follow '*' delimiter: " +
+//                         repr(reinterpret_borrow<Object>(specifier))
+//                     );
+//                 } else if (idx > kw_idx) {
+//                     throw TypeError(
+//                         "positional-only argument cannot follow keyword argument: " +
+//                         repr(reinterpret_borrow<Object>(specifier))
+//                     );
+//                 } else if (idx > args_idx) {
+//                     throw TypeError(
+//                         "positional-only argument cannot follow variadic "
+//                         "positional arguments " +
+//                         repr(reinterpret_borrow<Object>(specifier))
+//                     );
+//                 } else if (slice->stop != Py_Ellipsis) {
+//                     throw TypeError(
+//                         "positional-only argument with a default value must have "
+//                         "an ellipsis as the second element of the slice: " +
+//                         repr(reinterpret_borrow<Object>(specifier))
+//                     );
+//                 }
+//                 category = static_cast<Param::Category>(Param::POS | Param::DEFAULT);
+//                 type = reinterpret_cast<PyTypeObject*>(slice->start);
+//                 if (idx < default_idx) {
+//                     default_idx = idx;
+//                 }
+
+//             // If the first element is a string, then the second element must
+//             // be a type signifying a keyword or keyword-only argument,
+//             // depending on its position with respect to the "*" delimiter.
+//             // These may also have default values provided as an optional
+//             // third element.
+//             } else if (PyUnicode_Check(slice->start)) {
+//                 name = Param::get_name(slice->start);
+//                 if (!PyType_Check(slice->stop)) {
+//                     throw TypeError(
+//                         "argument type for parameter '" + std::string(name) +
+//                         "' must be a type object, not: " +
+//                         repr(reinterpret_borrow<Object>(slice->stop))
+//                     );
+//                 }
+//                 type = reinterpret_cast<PyTypeObject*>(slice->stop);
+
+//                 // if the parameter name starts with "**", then it signifies a
+//                 // variadic keyword argument
+//                 if (name.starts_with("**")) {
+//                     if (idx > kwargs_idx) {
+//                         throw TypeError(
+//                             "variadic keyword arguments appear at multiple "
+//                             "indices: " + std::to_string(kwargs_idx) +
+//                             " and " + std::to_string(idx)
+//                         );
+//                     } else if (slice->step != Py_None) {
+//                         throw TypeError(
+//                             "variadic keyword arguments cannot have default "
+//                             "values: " +
+//                             repr(reinterpret_borrow<Object>(specifier))
+//                         );
+//                     }
+//                     name.remove_prefix(2);
+//                     category = static_cast<Param::Category>(Param::KW | Param::VARIADIC);
+//                     kwargs_idx = idx;
+
+//                 // if the parameter name starts with "*", then it signifies a
+//                 // variadic positional argument
+//                 } else if (name.starts_with("*")) {
+//                     if (idx > args_idx) {
+//                         throw TypeError(
+//                             "variadic positional arguments appear at multiple "
+//                             "indices: " + std::to_string(args_idx) + " and " +
+//                             std::to_string(idx)
+//                         );
+//                     } else if (idx > kwonly_idx) {
+//                         throw TypeError(
+//                             "variadic positional arguments cannot follow "
+//                             "keyword-only argument delimiter '*': " +
+//                             repr(reinterpret_borrow<Object>(specifier))
+//                         );
+//                     } else if (slice->step != Py_None) {
+//                         throw TypeError(
+//                             "variadic positional arguments cannot have default "
+//                             "values: " +
+//                             repr(reinterpret_borrow<Object>(specifier))
+//                         );
+//                     }
+//                     name.remove_prefix(1);
+//                     category = static_cast<Param::Category>(Param::POS | Param::VARIADIC);
+//                     args_idx = idx;
+
+//                 // otherwise, it's a regular keyword argument
+//                 } else {
+//                     if (idx > kwargs_idx) {
+//                         throw TypeError(
+//                             "keyword argument cannot follow variadic keyword "
+//                             "arguments: " +
+//                             repr(reinterpret_borrow<Object>(specifier))
+//                         );
+//                     } else if (slice->step == Py_Ellipsis) {
+//                         if (idx > kwonly_idx) {
+//                             category = static_cast<Param::Category>(
+//                                 Param::KW | Param::DEFAULT
+//                             );
+//                         } else {
+//                             category = static_cast<Param::Category>(
+//                                 Param::POS | Param::KW | Param::DEFAULT
+//                             );
+//                             if (idx < default_idx) {
+//                                 default_idx = idx;
+//                             }
+//                         }
+//                     } else if (slice->step == Py_None) {
+//                         if (idx > kwonly_idx) {
+//                             category = Param::KW;
+//                         } else if (idx > default_idx) {
+//                             throw TypeError(
+//                                 "parameter without a default value cannot follow "
+//                                 "a parameter with a default value: " +
+//                                 repr(reinterpret_borrow<Object>(specifier))
+//                             );
+//                         } else {
+//                             category = static_cast<Param::Category>(
+//                                 Param::POS | Param::KW
+//                             );
+//                         }
+//                     } else {
+//                         throw TypeError(
+//                             "Keyword arguments with default values must use an "
+//                             "ellipsis as the third element, not: " +
+//                             repr(reinterpret_borrow<Object>(slice->step))
+//                         );
+//                     }
+//                     if (idx < kw_idx) {
+//                         kw_idx = idx;
+//                     }
+//                 }
+
+//             // everything else is invalid
+//             } else {
+//                 throw TypeError(
+//                     "expected the first index of a slice to be either a type for "
+//                     "a positional argument or a string for a keyword argument, "
+//                     "not: " + repr(reinterpret_borrow<Object>(specifier))
+//                 );
+//             }
+
+//         // raw strings are reserved for positional-only '/' or keyword-only '*'
+//         // delimiters
+//         } else if (PyUnicode_Check(specifier)) {
+//             Py_ssize_t len;
+//             const char* data = PyUnicode_AsUTF8AndSize(
+//                 specifier,
+//                 &len
+//             );
+//             if (data == nullptr) {
+//                 Exception::from_python();
+//             }
+//             name = {data, static_cast<size_t>(len)};
+
+//             // positional-only delimiter
+//             if (name == "/") {
+//                 if (idx > posonly_idx) {
+//                     throw TypeError(
+//                         "positional-only argument delimiter '/' appears at "
+//                         "multiple indices: " + std::to_string(posonly_idx) +
+//                         " and " + std::to_string(idx)
+//                     );
+//                 } else if (idx > kw_idx) {
+//                     throw TypeError(
+//                         "positional-only argument delimiter '/' cannot follow "
+//                         "keyword arguments at index"
+//                     );
+//                 } else if (idx > args_idx) {
+//                     throw TypeError(
+//                         "positional-only argument delimiter '/' cannot follow "
+//                         "variadic positional arguments"
+//                     );
+//                 } else if (idx > kwargs_idx) {
+//                     throw TypeError(
+//                         "positional-only argument delimiter '/' cannot follow "
+//                         "variadic keyword arguments"
+//                     );
+//                 }
+//                 posonly_idx = idx;
+//                 return;
+
+//             // keyword-only delimiter
+//             } else if (name == "*") {
+//                 if (idx > kwonly_idx) {
+//                     throw TypeError(
+//                         "keyword-only argument delimiter '*' appears at multiple "
+//                         "indices: " + std::to_string(kwonly_idx) + " and " +
+//                         std::to_string(idx)
+//                     );
+//                 } else if (idx > kwargs_idx) {
+//                     throw TypeError(
+//                         "keyword-only argument delimiter '*' cannot follow "
+//                         "variadic keyword arguments"
+//                     );
+//                 }
+//                 kwonly_idx = idx;
+//                 return;
+
+//             // everything else is invalid
+//             } else {
+//                 throw TypeError(
+//                     "raw strings are reserved for the '/' and '*' argument "
+//                     "delimiters, not: '" + std::string(name) + "'"
+//                 );
+//             }
+
+//         // everything else is invalid
+//         } else {
+//             throw TypeError(
+//                 "expected a type for a required positional-only argument; a slice "
+//                 "for a keyword argument, positional-only argument with a default "
+//                 "value, or a variadic parameter pack prefixed with '*' or '**'; "
+//                 "or a string for the '/' or '*' argument delimiters, not: " +
+//                 repr(reinterpret_borrow<Object>(specifier))
+//             );
+//         }
+//         param({name, type, category});
+//     }
+
+//     size_t size() const noexcept { return vec.size(); }
+//     bool empty() const noexcept { return vec.empty(); }
+//     auto& front() noexcept { return vec.front(); }
+//     auto& front() const noexcept { return vec.front(); }
+//     auto& back() noexcept { return vec.back(); }
+//     auto& back() const noexcept { return vec.back(); }
+//     auto& operator[](size_t i) noexcept { return vec[i]; }
+//     auto& operator[](size_t i) const noexcept { return vec[i]; }
+//     auto begin() noexcept { return vec.begin(); }
+//     auto begin() const noexcept { return vec.begin(); }
+//     auto cbegin() const noexcept { return vec.cbegin(); }
+//     auto end() noexcept { return vec.end(); }
+//     auto end() const noexcept { return vec.end(); }
+//     auto cend() const noexcept { return vec.cend(); }
+// };
+
 
 
 /* A universal function wrapper that can represent either a Python function exposed to
@@ -7434,6 +7456,9 @@ struct __call__<Self, Args...> : Returns<typename std::remove_reference_t<Self>:
         }
     }
 };
+
+
+/// TODO: __getitem__, __contains__, __iter__, __len__, __bool__
 
 
 
