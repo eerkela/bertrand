@@ -572,49 +572,51 @@ public:
     Python objects in C++. */
     template <typename Self, typename... Args> requires (__call__<Self, Args...>::enable)
     decltype(auto) operator()(this Self&& self, Args&&... args) {
-        using call = __call__<Self, Args...>;
-        using Return = typename call::type;
-        static_assert(
-            std::is_void_v<Return> || std::derived_from<Return, Object>,
-            "Call operator must return either void or a py::Object subclass.  "
-            "Check your specialization of __call__ for the given arguments and "
-            "ensure that it is derived from py::Object."
-        );
-        if constexpr (impl::has_call_operator<call>) {
-            return call{}(std::forward<Self>(self), std::forward<Args>(args)...);
+        /// TODO: move this to func.h
 
-        /// TODO: maybe all of these special cases can be implemented as specializations
-        /// of their respective control structures in type.h???
-        } else if constexpr (impl::has_cpp<Self>) {
-            static_assert(
-                std::is_invocable_r_v<Return, impl::cpp_type<Self>, Args...>,
-                "__call__<Self, Args...> is enabled for operands whose C++ "
-                "representations have no viable overload for `Self(Args...)`"
-            );
-            /// TODO: this needs to do argument translation similar to below for
-            /// Python functions.  This will necessarily involve some kind of
-            /// unpacking.  Or will it if the C++ call operator only accepts
-            /// positional arguments?  I'll still have to account for variadic
-            /// unpacking one way or another.
-            if constexpr (std::is_void_v<Return>) {
-                unwrap(self)(unwrap(std::forward<Args>(args))...);
-            } else {
-                return unwrap(self)(unwrap(std::forward<Args>(args))...);
-            }
+        // using call = __call__<Self, Args...>;
+        // using Return = typename call::type;
+        // static_assert(
+        //     std::is_void_v<Return> || std::derived_from<Return, Object>,
+        //     "Call operator must return either void or a py::Object subclass.  "
+        //     "Check your specialization of __call__ for the given arguments and "
+        //     "ensure that it is derived from py::Object."
+        // );
+        // if constexpr (impl::has_call_operator<call>) {
+        //     return call{}(std::forward<Self>(self), std::forward<Args>(args)...);
 
-        } else {
-            if constexpr (std::is_void_v<Return>) {
-                Function<Return(*)(Args...)>::template invoke_py<Return>(
-                    ptr(self),
-                    std::forward<Args>(args)...
-                );
-            } else {
-                return Function<Return(*)(Args...)>::template invoke_py<Return>(
-                    ptr(self),
-                    std::forward<Args>(args)...
-                );
-            }
-        }
+        // /// TODO: maybe all of these special cases can be implemented as specializations
+        // /// of their respective control structures in type.h???
+        // } else if constexpr (impl::has_cpp<Self>) {
+        //     static_assert(
+        //         std::is_invocable_r_v<Return, impl::cpp_type<Self>, Args...>,
+        //         "__call__<Self, Args...> is enabled for operands whose C++ "
+        //         "representations have no viable overload for `Self(Args...)`"
+        //     );
+        //     /// TODO: this needs to do argument translation similar to below for
+        //     /// Python functions.  This will necessarily involve some kind of
+        //     /// unpacking.  Or will it if the C++ call operator only accepts
+        //     /// positional arguments?  I'll still have to account for variadic
+        //     /// unpacking one way or another.
+        //     if constexpr (std::is_void_v<Return>) {
+        //         unwrap(self)(unwrap(std::forward<Args>(args))...);
+        //     } else {
+        //         return unwrap(self)(unwrap(std::forward<Args>(args))...);
+        //     }
+
+        // } else {
+        //     if constexpr (std::is_void_v<Return>) {
+        //         Function<Return(*)(Args...)>::template invoke_py<Return>(
+        //             ptr(self),
+        //             std::forward<Args>(args)...
+        //         );
+        //     } else {
+        //         return Function<Return(*)(Args...)>::template invoke_py<Return>(
+        //             ptr(self),
+        //             std::forward<Args>(args)...
+        //         );
+        //     }
+        // }
     }
 
     /* Index operator.  Specific key and element types can be controlled via the

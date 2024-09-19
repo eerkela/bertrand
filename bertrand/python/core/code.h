@@ -13,6 +13,9 @@ namespace py {
 ///////////////////////
 
 
+struct Code;
+
+
 template <>
 struct Interface<Code> {
     [[nodiscard]] static Code compile(const std::string& source);
@@ -400,6 +403,9 @@ namespace impl {
     }
 
 }
+
+
+struct Frame;
 
 
 template <>

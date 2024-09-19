@@ -708,6 +708,10 @@ struct __ior__<L, R> : __ior__<L, impl::lazy_type<R>> {};
 /////////////////////////
 
 
+template <typename Begin, typename End = void, typename Container = void>
+struct Iterator;
+
+
 /// TODO: when an __iter__ method is registered, it must return a specialization of
 /// py::Iterator, whose __export__ method will be invoked to attach the iterator type
 /// to the class.  That's how binding iterators across languages will work.
@@ -1142,41 +1146,44 @@ template <typename T, typename Begin, typename End, typename Container>
 struct __contains__<T, Iterator<Begin, End, Container>> : Returns<bool> {};
 
 
-template <impl::inherits<impl::IterTag> Self>
-struct __getattr__<Self, "__iter__"> : Returns<
-    Function<impl::qualify<Self(std::remove_cvref_t<Self>::*)(), Self>>
-> {};
-template <impl::inherits<impl::IterTag> Self>
-struct __getattr__<Self, "__next__"> : Returns<
-    Function<impl::qualify<
-        std::conditional_t<
-            std::is_void_v<typename std::remove_reference_t<Self>::end_t>,
-            std::remove_reference_t<decltype(
-                *std::declval<typename std::remove_reference_t<Self>::begin_t>()
-            )>,
-            decltype(
-                *std::declval<typename std::remove_reference_t<Self>::begin_t>()
-            )
-        >(std::remove_cvref_t<Self>::*)(),
-        Self
-    >>
-> {};
-template <impl::inherits<impl::IterTag> Self>
-struct __getattr__<Type<Self>, "__iter__"> : Returns<Function<
-    Self(*)(Self)
->> {};
-template <impl::inherits<impl::IterTag> Self>
-struct __getattr__<Type<Self>, "__next__"> : Returns<Function<
-    std::conditional_t<
-        std::is_void_v<typename std::remove_reference_t<Self>::end_t>,
-        std::remove_reference_t<decltype(
-            *std::declval<typename std::remove_reference_t<Self>::begin_t>()
-        )>,
-        decltype(
-            *std::declval<typename std::remove_reference_t<Self>::begin_t>()
-        )
-    >(*)(Self)
->> {};
+/// TODO: the attributes can only be defined after functions are defined
+
+
+// template <impl::inherits<impl::IterTag> Self>
+// struct __getattr__<Self, "__iter__"> : Returns<
+//     Function<impl::qualify<Self(std::remove_cvref_t<Self>::*)(), Self>>
+// > {};
+// template <impl::inherits<impl::IterTag> Self>
+// struct __getattr__<Self, "__next__"> : Returns<
+//     Function<impl::qualify<
+//         std::conditional_t<
+//             std::is_void_v<typename std::remove_reference_t<Self>::end_t>,
+//             std::remove_reference_t<decltype(
+//                 *std::declval<typename std::remove_reference_t<Self>::begin_t>()
+//             )>,
+//             decltype(
+//                 *std::declval<typename std::remove_reference_t<Self>::begin_t>()
+//             )
+//         >(std::remove_cvref_t<Self>::*)(),
+//         Self
+//     >>
+// > {};
+// template <impl::inherits<impl::IterTag> Self>
+// struct __getattr__<Type<Self>, "__iter__"> : Returns<Function<
+//     Self(*)(Self)
+// >> {};
+// template <impl::inherits<impl::IterTag> Self>
+// struct __getattr__<Type<Self>, "__next__"> : Returns<Function<
+//     std::conditional_t<
+//         std::is_void_v<typename std::remove_reference_t<Self>::end_t>,
+//         std::remove_reference_t<decltype(
+//             *std::declval<typename std::remove_reference_t<Self>::begin_t>()
+//         )>,
+//         decltype(
+//             *std::declval<typename std::remove_reference_t<Self>::begin_t>()
+//         )
+//     >(*)(Self)
+// >> {};
 
 
 template <typename Begin, typename End, typename Container>

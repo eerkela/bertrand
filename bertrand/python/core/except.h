@@ -60,6 +60,9 @@ namespace impl {
 }
 
 
+struct Traceback;
+
+
 template <>
 struct Interface<Traceback> {
     [[nodiscard]] std::string to_string(this const auto& self);

@@ -62,8 +62,8 @@ using bertrand::StaticStr;
 
 namespace impl {
     struct BertrandTag {};
-    struct PythonTag : BertrandTag {};
-    struct IterTag : BertrandTag {};
+    struct PythonTag : BertrandTag {};  /// TODO: eliminate this
+    struct IterTag : BertrandTag {};  /// TODO: eliminate this
     struct FunctionTag : BertrandTag {};   /// TODO: eliminate this
     struct TypeTag : BertrandTag {};  /// TODO: eliminate this
     struct ModuleTag;  /// TODO: eliminate this
@@ -77,6 +77,7 @@ namespace impl {
     struct DictTag : BertrandTag {};
     struct MappingProxyTag : BertrandTag {};
 
+    /* Demangle a C++ type name using the compiler's intrinsics. */
     static constexpr std::string demangle(const char* name) {
         #if defined(__GNUC__) || defined(__clang__)
             int status = 0;
@@ -134,7 +135,7 @@ namespace impl {
     template <size_t I, typename... Ts>
     using unpack_type = unpack_type_helper<I, Ts...>::type;
 
-    /* Merges several hashes into a single value.  Based on `boost::hash_combine`:
+    /* Merge several hashes into a single value.  Based on `boost::hash_combine()`:
     https://www.boost.org/doc/libs/1_86_0/libs/container_hash/doc/html/hash.html#notes_hash_combine */
     template <std::convertible_to<size_t>... Hashes>
     size_t hash_combine(size_t first, Hashes... rest) noexcept {
@@ -161,13 +162,6 @@ namespace impl {
         }
         return first;
     }
-
-    /* Introspect the proper signature for a py::Function instance from a generic
-    function pointer, reference, or object, such as a lambda. */
-    template <typename T>
-    struct Signature {
-        static constexpr bool enable = false;
-    };
 
 }
 
@@ -205,26 +199,23 @@ private:
 };
 
 
-/// NOTE: note that std::derived_from<Object> can't be used here because any type
-/// that's incomplete will fail to compile.  As such, I have to use static assertions
-/// within the classes instead, so that this whole Rube Goldberg machine doesn't fall
-/// apart.
+/// TODO: really, what I should do is remove as many of the following forward
+/// declarations as possible, so that I don't restrict the template signatures and
+/// can get good error messages from C++20 concepts
 
 
 struct Object;
-struct Code;
-struct Frame;
-struct Traceback;
-template <StaticStr Name, typename T>
-struct Arg;
-template <typename F> requires (impl::Signature<F>::enable)
-struct Function;
-struct Overload;
+/// TODO: BertrandMeta + Type<T>() should come here (no slots or bindings)
+
+// template <typename Begin = Object, typename End = void, typename Container = void>
+// struct Iterator;
+// template <StaticStr Name, typename T>
+// struct Arg;
+// template <typename F> requires (impl::Signature<F>::enable)
+// struct Function;
 template <typename T = Object>
 struct Type;
 struct BertrandMeta;
-template <typename Begin = Object, typename End = void, typename Container = void>
-struct Iterator;
 template <StaticStr Name>
 struct Module;
 struct NoneType;
@@ -262,58 +253,6 @@ template <typename Map>
 struct ItemView;
 template <typename Map>
 struct MappingProxy;
-
-
-struct Exception;
-struct ArithmeticError;
-    struct FloatingPointError;
-    struct OverflowError;
-    struct ZeroDivisionError;
-struct AssertionError;
-struct AttributeError;
-struct BufferError;
-struct EOFError;
-struct ImportError;
-    struct ModuleNotFoundError;
-struct LookupError;
-    struct IndexError;
-    struct KeyError;
-struct MemoryError;
-struct NameError;
-    struct UnboundLocalError;
-struct OSError;
-    struct BlockingIOError;
-    struct ChildProcessError;
-    struct ConnectionError;
-        struct BrokenPipeError;
-        struct ConnectionAbortedError;
-        struct ConnectionRefusedError;
-        struct ConnectionResetError;
-    struct FileExistsError;
-    struct FileNotFoundError;
-    struct InterruptedError;
-    struct IsADirectoryError;
-    struct NotADirectoryError;
-    struct PermissionError;
-    struct ProcessLookupError;
-    struct TimeoutError;
-struct ReferenceError;
-struct RuntimeError;
-    struct NotImplementedError;
-    struct RecursionError;
-struct StopAsyncIteration;
-struct StopIteration;
-struct SyntaxError;
-    struct IndentationError;
-        struct TabError;
-struct SystemError;
-struct TypeError;
-struct ValueError;
-    struct UnicodeError;
-        struct UnicodeDecodeError;
-        struct UnicodeEncodeError;
-        struct UnicodeTranslateError;
-
 
 
 /* Base class for disabled control structures. */
@@ -730,6 +669,21 @@ namespace impl {
     constexpr bool is_generic_helper<T<Ts...>> = true;
     template <typename T>
     concept is_generic = is_generic_helper<std::remove_cvref_t<T>>;
+
+    template <typename T>
+    struct _respecialize {
+        static constexpr bool enable = false;
+        template <typename... New>
+        using type = T;
+    };
+    template <template <typename...> typename T, typename... Ts>
+    struct _respecialize<T<Ts...>> {
+        static constexpr bool enable = true;
+        template <typename... New>
+        using type = T<New...>;
+    };
+    template <typename T, typename... Ts>
+    using respecialize = _respecialize<std::remove_cvref_t<T>>::template type<Ts...>;
 
     template <typename L, typename R>
     concept is = std::same_as<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;
