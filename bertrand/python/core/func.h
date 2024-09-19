@@ -1335,7 +1335,7 @@ namespace impl {
             std::string_view name;
             uint64_t mask = 0;
             bool(*func)(PyTypeObject*) = nullptr;
-            PyTypeObject*(*type)() = nullptr;  /// TODO: should maybe return a new reference?
+            PyTypeObject*(*type)() = nullptr;
             explicit operator bool() const noexcept { return func != nullptr; }
             bool operator()(PyTypeObject* type) const { return func(type); }
         };
@@ -1703,14 +1703,11 @@ namespace impl {
             the enclosing signature. */
             template <size_t I>
             struct Value  {
-                using annotation = Outer::template at<I>;
-                using type = ArgTraits<annotation>::type;
-                static constexpr StaticStr name = ArgTraits<annotation>::name;
+                using type = ArgTraits<Outer::at<I>>::type;
+                static constexpr StaticStr name = ArgTraits<Outer::at<I>>::name;
                 static constexpr size_t index = I;
                 std::remove_reference_t<type> value;
 
-                /* Retrieve the default value as its proper type, including reference
-                qualifiers. */
                 type get(this auto& self) {
                     if constexpr (std::is_rvalue_reference_v<type>) {
                         return std::remove_cvref_t<type>(self.value);
@@ -1718,7 +1715,6 @@ namespace impl {
                         return self.value;
                     }
                 }
-
             };
 
             /* Build a sub-signature holding only the arguments marked as optional from
@@ -1730,17 +1726,17 @@ namespace impl {
             template <typename... Sig, typename T, typename... Ts>
             struct _Inner<Arguments<Sig...>, T, Ts...> {
                 template <typename U>
-                struct helper {
+                struct sub_signature {
                     using type = _Inner<Arguments<Sig...>, Ts...>::type;
                 };
                 template <typename U> requires (ArgTraits<U>::opt())
-                struct helper<U> {
+                struct sub_signature<U> {
                     using type =_Inner<
                         Arguments<Sig..., typename ArgTraits<U>::no_opt>,
                         Ts...
                     >::type;
                 };
-                using type = helper<T>::type;
+                using type = sub_signature<T>::type;
             };
             using Inner = _Inner<Arguments<>, Args...>::type;
 
@@ -1748,38 +1744,37 @@ namespace impl {
             themselves. */
             template <size_t I, typename Tuple, typename... Ts>
             struct _Tuple { using type = Tuple; };
-            template <size_t I, typename... Partial, typename T, typename... Ts>
-            struct _Tuple<I, std::tuple<Partial...>, T, Ts...> {
+            template <size_t I, typename... Part, typename T, typename... Ts>
+            struct _Tuple<I, std::tuple<Part...>, T, Ts...> {
                 template <typename U>
-                struct ToValue {
-                    using type = _Tuple<I + 1, std::tuple<Partial...>, Ts...>::type;
+                struct tuple {
+                    using type = _Tuple<I + 1, std::tuple<Part...>, Ts...>::type;
                 };
                 template <typename U> requires (ArgTraits<U>::opt())
-                struct ToValue<U> {
-                    using type = _Tuple<I + 1, std::tuple<Partial..., Value<I>>, Ts...>::type;
+                struct tuple<U> {
+                    using type = _Tuple<I + 1, std::tuple<Part..., Value<I>>, Ts...>::type;
                 };
-                using type = ToValue<T>::type;
+                using type = tuple<T>::type;
             };
             using Tuple = _Tuple<0, std::tuple<>, Args...>::type;
 
-            template <size_t I, typename... Ts>
-            struct _find { static constexpr size_t value = 0; };
+            template <size_t I, typename T>
+            static constexpr size_t _find = 0;
             template <size_t I, typename T, typename... Ts>
-            struct _find<I, std::tuple<T, Ts...>> { static constexpr size_t value = 
-                (I == T::index) ? 0 : 1 + _find<I, std::tuple<Ts...>>::value;
-            };
+            static constexpr size_t _find<I, std::tuple<T, Ts...>> =
+                (I == T::index) ? 0 : 1 + _find<I, std::tuple<Ts...>>;
 
         public:
             static constexpr size_t n               = Inner::n;
-            static constexpr size_t n_pos           = Inner::n_pos;
             static constexpr size_t n_posonly       = Inner::n_posonly;
+            static constexpr size_t n_pos           = Inner::n_pos;
             static constexpr size_t n_kw            = Inner::n_kw;
             static constexpr size_t n_kwonly        = Inner::n_kwonly;
 
             template <StaticStr Name>
             static constexpr bool has               = Inner::template has<Name>;
-            static constexpr bool has_pos           = Inner::has_pos;
             static constexpr bool has_posonly       = Inner::has_posonly;
+            static constexpr bool has_pos           = Inner::has_pos;
             static constexpr bool has_kw            = Inner::has_kw;
             static constexpr bool has_kwonly        = Inner::has_kwonly;
 
@@ -1788,11 +1783,16 @@ namespace impl {
             static constexpr size_t kw_idx          = Inner::kw_idx;
             static constexpr size_t kwonly_idx      = Inner::kwonly_idx;
 
+            template <size_t I>
+            static constexpr bool is_positional = Inner::template is_positional<I>;
+            template <size_t I>
+            static constexpr bool is_keyword = Inner::template is_keyword<I>;
+
             template <size_t I> requires (I < n)
             using at = Inner::template at<I>;
-            template <size_t I> requires (I < kwonly_idx)
+            template <size_t I> requires (is_positional<I>)
             using Arg = Inner::template Arg<I>;
-            template <StaticStr Name> requires (has<Name>)
+            template <StaticStr Name> requires (has<Name> && is_keyword<idx<Name>>)
             using Kwarg = Inner::template Kwarg<Name>;
 
             /* Bind an argument list to the default values tuple using the
@@ -1803,7 +1803,7 @@ namespace impl {
             /* Given an index into the enclosing signature, find the corresponding index
             in the defaults tuple if that index corresponds to a default value. */
             template <size_t I> requires (ArgTraits<typename Outer::at<I>>::opt())
-            static constexpr size_t find = _find<I, Tuple>::value;
+            static constexpr size_t find = _find<I, Tuple>;
 
         private:
 
@@ -2168,6 +2168,8 @@ namespace impl {
         /// C++ parameter list.  There also needs to be a cousin for Python calls that
         /// does the same thing from a vectorcall argument array.  Both of the latter
         /// can apply the simplified logic, since it will be used in the call operator.
+        /// -> This key() method will also return a std::array-based Params list,
+        /// similar to the above.
 
         /* A helper that binds C++ arguments to the enclosing signature and performs
         the necessary translation to invoke a matching C++ or Python function. */
@@ -2186,19 +2188,15 @@ namespace impl {
             recursively traverse the remaining source positional arguments and ensure
             that each is convertible to the target type. */
             template <size_t J, typename T>
-            static consteval bool consume_target_args() { return true; }
-            template <size_t J, typename T> requires (J < Inner::kw_idx)
             static consteval bool consume_target_args() {
-                using S = Source<J>;
-                if constexpr (ArgTraits<S>::pos() || ArgTraits<S>::args()) {
-                    if constexpr (!std::convertible_to<
-                        typename ArgTraits<S>::type,
+                if constexpr (J < Inner::kw_idx && J < Inner::kwargs_idx) {
+                    return std::convertible_to<
+                        typename ArgTraits<Source<J>>::type,
                         typename ArgTraits<T>::type
-                    >) {
-                        return false;
-                    }
+                    > && consume_target_args<J + 1, T>();
+                } else {
+                    return true;
                 }
-                return consume_target_args<J + 1, T>();
             }
 
             /* Upon encountering a variadic keyword pack in the target signature,
@@ -2206,53 +2204,33 @@ namespace impl {
             aren't present in the target signature, ensuring they are convertible to
             the target type. */
             template <size_t J, typename T>
-            static consteval bool consume_target_kwargs() { return true; }
-            template <size_t J, typename T> requires (J < Inner::n)
             static consteval bool consume_target_kwargs() {
-                using S = Source<J>;
-                if constexpr (
-                    (ArgTraits<S>::kw() && !Outer::template has<ArgTraits<S>::name>) ||
-                    ArgTraits<S>::kwargs()
-                ) {
-                    if constexpr (!std::convertible_to<
-                        typename ArgTraits<S>::type,
-                        typename ArgTraits<T>::type
-                    >) {
-                        return false;
-                    }
+                if constexpr (J < Inner::n) {
+                    return (
+                        Outer::template has<ArgTraits<Source<J>>::name> ||
+                        std::convertible_to<
+                            typename ArgTraits<Source<J>>::type,
+                            typename ArgTraits<T>::type
+                        >
+                    ) && consume_target_kwargs<J + 1, T>();
+                } else {
+                    return true;
                 }
-                return consume_target_kwargs<J + 1, T>();
             }
 
             /* Upon encountering a variadic positional pack in the source signature,
             recursively traverse the target positional arguments and ensure that the source
             type is convertible to each target type. */
             template <size_t I, typename S>
-            static consteval bool consume_source_args() { return true; }
-            template <size_t I, typename S> requires (I < Outer::n && I <= Outer::args_idx)
             static consteval bool consume_source_args() {
-                using T = Target<I>;
-                if constexpr (ArgTraits<T>::args()) {
-                    if constexpr (!std::convertible_to<
+                if constexpr (I < kwonly_idx && I < kwargs_idx) {
+                    return std::convertible_to<
                         typename ArgTraits<S>::type,
-                        typename ArgTraits<T>::type
-                    >) {
-                        return false;
-                    }
-                } else if constexpr (ArgTraits<T>::pos()) {
-                    if constexpr (
-                        !std::convertible_to<
-                            typename ArgTraits<S>::type,
-                            typename ArgTraits<T>::type
-                        > || (
-                            ArgTraits<T>::name != "" &&
-                            Inner::template has<ArgTraits<T>::name>
-                        )
-                    ) {
-                        return false;
-                    }
+                        typename ArgTraits<Target<I>>::type
+                    > && consume_source_args<I + 1, S>();
+                } else {
+                    return true;
                 }
-                return consume_source_args<I + 1, S>();
             }
 
             /* Upon encountering a variadic keyword pack in the source signature,
@@ -2260,25 +2238,18 @@ namespace impl {
             present in the source signature, ensuring that the source type is convertible
             to each target type. */
             template <size_t I, typename S>
-            static consteval bool consume_source_kwargs() { return true; }
-            template <size_t I, typename S> requires (I < Outer::n)
             static consteval bool consume_source_kwargs() {
-                using T = Target<I>;
-                /// TODO: I should not consider arguments that have already been
-                /// filled by positional arguments, but checking for these might be
-                /// tricky
-                if constexpr (
-                    (ArgTraits<T>::kw() && !Inner::template has<ArgTraits<T>::name>) ||
-                    ArgTraits<T>::kwargs()
-                ) {
-                    if constexpr (!std::convertible_to<
-                        typename ArgTraits<S>::type,
-                        typename ArgTraits<T>::type
-                    >) {
-                        return false;
-                    }
+                if constexpr (I < Outer::n) {
+                    return (
+                        Inner::template has<ArgTraits<Target<I>>::name> ||
+                        std::convertible_to<
+                            typename ArgTraits<S>::type,
+                            typename ArgTraits<Target<I>>::type
+                        >
+                    ) && consume_source_kwargs<I + 1, S>();
+                } else {
+                    return true;
                 }
-                return consume_source_kwargs<I + 1, S>();
             }
 
             /* Recursively check whether the source arguments conform to Python calling
@@ -2334,109 +2305,124 @@ namespace impl {
             Otherwise, the call operator is disabled and the arguments are rejected in
             a way that allows LSPs to provide informative feedback to the user. */
             template <size_t I, size_t J>
-            static consteval bool enable_recursive() { return true; }
-            template <size_t I, size_t J> requires (I < Outer::n && J >= Inner::n)
             static consteval bool enable_recursive() {
-                using T = Target<I>;
-                if constexpr (ArgTraits<T>::opt() || ArgTraits<T>::args()) {
-                    return enable_recursive<I + 1, J>();
-                } else if constexpr (ArgTraits<T>::kwargs()) {
-                    return consume_target_kwargs<Inner::kw_idx, T>();
-                }
-                return false;
-            }
-            template <size_t I, size_t J> requires (I >= Outer::n && J < Inner::n)
-            static consteval bool enable_recursive() { return false; }
-            template <size_t I, size_t J> requires (I < Outer::n && J < Inner::n)
-            static consteval bool enable_recursive() {
-                using T = Target<I>;
-                using S = Source<J>;
+                // both lists are satisfied
+                if constexpr (I >= Outer::n && J >= Inner::n) {
+                    return true;
 
-                // ensure target arguments are present and do not conflict + expand
-                // variadic parameter packs over source arguments
-                if constexpr (ArgTraits<T>::kwonly()) {
-                    if constexpr (
-                        !ArgTraits<T>::opt() &&
-                        (J < Inner::kw_idx || !Inner::template has<ArgTraits<T>::name>)
-                    ) {
-                        return false;
+                // there are extra source arguments
+                } else if constexpr (I >= Outer::n) {
+                    return false;
+
+                // there are extra target arguments
+                } else if constexpr (J >= Inner::n) {
+                    using T = Target<I>;
+                    if constexpr (ArgTraits<T>::opt() || ArgTraits<T>::args()) {
+                        return enable_recursive<I + 1, J>();
+                    } else if constexpr (ArgTraits<T>::kwargs()) {
+                        return consume_target_kwargs<Inner::kw_idx, T>();
                     }
-                } else if constexpr (ArgTraits<T>::kw()) {
-                    if constexpr (
-                        (
-                            J < Inner::kw_idx && Inner::template has<ArgTraits<T>::name>
-                        ) || (
-                            !ArgTraits<T>::opt() &&
-                            J >= Inner::kw_idx &&
-                            !Inner::template has<ArgTraits<T>::name>
-                        )
-                    ) {
-                        return false;
-                    }
-                } else if constexpr (ArgTraits<T>::pos()) {
-                    if constexpr (
-                        (
-                            ArgTraits<T>::name != "" &&
-                            Inner::template has<ArgTraits<T>::name>
-                        ) || (
-                            !ArgTraits<T>::opt() && J >= Inner::kw_idx
-                        )
-                    ) {
-                        return false;
-                    }
-                } else if constexpr (ArgTraits<T>::args()) {
-                    if constexpr (!consume_target_args<J, T>()) {
-                        return false;
-                    }
-                    // skip to source keywords
-                    return enable_recursive<I + 1, Inner::kw_idx>();
-                } else if constexpr (ArgTraits<T>::kwargs()) {
-                    return consume_target_kwargs<Inner::kw_idx, T>();  // end of expression
+                    return false;  // a required argument is missing
+
+                // both lists have arguments remaining
                 } else {
-                    return false;  // not reachable
-                }
+                    using T = Target<I>;
+                    using S = Source<J>;
 
-                // validate source arguments & expand unpacking operators
-                if constexpr (ArgTraits<S>::pos()) {
-                    if constexpr (!std::convertible_to<
-                        typename ArgTraits<S>::type,
-                        typename ArgTraits<T>::type
-                    >) {
-                        return false;
+                    // ensure target arguments are present without conflict + expand
+                    // parameter packs over source arguments
+                    if constexpr (ArgTraits<T>::posonly()) {
+                        if constexpr (
+                            (
+                                ArgTraits<T>::name != "" &&
+                                Inner::template has<ArgTraits<T>::name>
+                            ) || (
+                                !ArgTraits<T>::opt() &&
+                                Inner::template is_keyword<J>
+                            )
+                        ) {
+                            return false;
+                        }
+                    } else if constexpr (ArgTraits<T>::pos()) {
+                        if constexpr (
+                            (
+                                Inner::template is_positional<J> &&
+                                Inner::template has<ArgTraits<T>::name>
+                            ) || (
+                                Inner::template is_keyword<J> &&
+                                !ArgTraits<T>::opt() &&
+                                !Inner::template has<ArgTraits<T>::name>
+                            )
+                        ) {
+                            return false;
+                        }
+                    } else if constexpr (ArgTraits<T>::kwonly()) {
+                        if constexpr (
+                            Inner::template is_positional<J> || (
+                                !ArgTraits<T>::opt() &&
+                                !Inner::template has<ArgTraits<T>::name>
+                            )
+                        ) {
+                            return false;
+                        }
+                    } else if constexpr (ArgTraits<T>::args()) {
+                        return consume_target_args<J, T>() && enable_recursive<
+                            I + 1,
+                            Inner::has_kw ? Inner::kw_idx : Inner::kwargs_idx
+                        >();  // skip ahead to source keywords
+                    } else if constexpr (ArgTraits<T>::kwargs()) {
+                        return consume_target_kwargs<
+                            Inner::has_kw ? Inner::kw_idx : Inner::kwargs_idx,
+                            T
+                        >();  // end of expression
+                    } else {
+                        return false;  // not reachable
                     }
-                } else if constexpr (ArgTraits<S>::kw()) {
-                    if constexpr (Outer::template has<ArgTraits<S>::name>) {
-                        using T2 = Target<Outer::template idx<ArgTraits<S>::name>>;
+
+                    // ensure source arguments match targets & expand parameter packs
+                    if constexpr (ArgTraits<S>::posonly()) {
                         if constexpr (!std::convertible_to<
                             typename ArgTraits<S>::type,
-                            typename ArgTraits<T2>::type
+                            typename ArgTraits<T>::type
                         >) {
                             return false;
                         }
-                    } else if constexpr (!Outer::has_kwargs) {
-                        using T2 = ArgTraits<Target<Outer::kwargs_idx>>::type;
-                        if constexpr (!std::convertible_to<
-                            typename ArgTraits<S>::type,
-                            typename ArgTraits<T2>::type
-                        >) {
+                    } else if constexpr (ArgTraits<S>::kw()) {
+                        if constexpr (Outer::template has<ArgTraits<S>::name>) {
+                            using T2 = Target<Outer::template idx<ArgTraits<S>::name>>;
+                            if constexpr (!std::convertible_to<
+                                typename ArgTraits<S>::type,
+                                typename ArgTraits<T2>::type
+                            >) {
+                                return false;
+                            }
+                        } else if constexpr (Outer::has_kwargs) {
+                            if constexpr (!std::convertible_to<
+                                typename ArgTraits<S>::type,
+                                typename ArgTraits<Target<Outer::kwargs_idx>>::type
+                            >) {
+                                return false;
+                            }
+                        } else {
                             return false;
                         }
+                    } else if constexpr (ArgTraits<S>::args()) {
+                        return consume_source_args<I, S>() && enable_recursive<
+                            Outer::has_kwonly ? Outer::kwonly_idx : Outer::kwargs_idx,
+                            J + 1
+                        >();  // skip to target keywords
+                    } else if constexpr (ArgTraits<S>::kwargs()) {
+                        return consume_source_kwargs<I, S>();  // end of expression
+                    } else {
+                        return false;  // not reachable
                     }
-                } else if constexpr (ArgTraits<S>::args()) {
-                    if constexpr (!consume_source_args<I, S>()) {
-                        return false;
-                    }
-                    // skip to target keywords
-                    return enable_recursive<Outer::args_idx + 1, J + 1>();
-                } else if constexpr (ArgTraits<S>::kwargs()) {
-                    return consume_source_kwargs<I, S>();  // end of expression
-                } else {
-                    return false;  // not reachable
-                }
 
-                // advance to next argument pair
-                return enable_recursive<I + 1, J + 1>();
+                    // advance to next argument pair
+                    return enable_recursive<I + 1, J + 1>();
+                }
             }
+
+            /// TODO: no idea if build_kwargs() is correct or necessary
 
             template <size_t I, typename T>
             static constexpr void build_kwargs(
@@ -3083,26 +3069,34 @@ namespace impl {
             template <StaticStr Name>
             static constexpr bool has               = Inner::template has<Name>;
             static constexpr bool has_pos           = Inner::has_pos;
-            static constexpr bool has_kw            = Inner::has_kw;
             static constexpr bool has_args          = Inner::has_args;
+            static constexpr bool has_kw            = Inner::has_kw;
             static constexpr bool has_kwargs        = Inner::has_kwargs;
 
             template <StaticStr Name> requires (has<Name>)
             static constexpr size_t idx             = Inner::template idx<Name>;
-            static constexpr size_t kw_idx          = Inner::kw_idx;
             static constexpr size_t args_idx        = Inner::args_idx;
+            static constexpr size_t kw_idx          = Inner::kw_idx;
             static constexpr size_t kwargs_idx      = Inner::kwargs_idx;
+
+            template <size_t I>
+            static constexpr bool is_positional = Inner::template is_positional<I>;
+            template <size_t I>
+            static constexpr bool is_keyword = Inner::template is_keyword<I>;
 
             template <size_t I> requires (I < n)
             using at = Inner::template at<I>;
-            template <size_t I> requires (I < kw_idx)
+            template <size_t I> requires (is_positional<I>)
             using Arg = Inner::template Arg<I>;
-            template <StaticStr Name> requires (has<Name>)
+            template <StaticStr Name> requires (has<Name> && is_keyword<idx<Name>>)
             using Kwarg = Inner::template Kwarg<Name>;
 
             /* Call operator is only enabled if source arguments are well-formed and
             match the target signature. */
-            static constexpr bool enable = Inner::valid && enable_recursive<0, 0>();
+            static constexpr bool enable =
+                Inner::proper_argument_order &&
+                Inner::no_duplicate_arguments &&
+                enable_recursive<0, 0>();
 
             /// TODO: both of these call operators need to be updated to handle the
             /// `self` parameter.
@@ -3736,6 +3730,18 @@ namespace impl {
 
     template <typename T>
     concept function_pointer_like = Signature<T>::enable;
+    template <typename T>
+    concept args_fit_within_bitset = Signature<T>::n <= 64;
+    template <typename T>
+    concept args_are_convertible_to_python = Signature<T>::args_are_convertible_to_python;
+    template <typename T>
+    concept return_is_convertible_to_python = Signature<T>::return_is_convertible_to_python;
+    template <typename T>
+    concept proper_argument_order = Signature<T>::proper_argument_order;
+    template <typename T>
+    concept no_duplicate_arguments = Signature<T>::no_duplicate_arguments;
+    template <typename T>
+    concept no_required_after_default = Signature<T>::no_required_after_default;
 
 }
 
@@ -3746,12 +3752,12 @@ template <typename F = Object(*)(
 )>
     requires (
         impl::function_pointer_like<F> &&
-        impl::Signature<F>::n <= 64 &&
-        impl::Signature<F>::args_are_convertible_to_python &&
-        impl::Signature<F>::return_is_convertible_to_python &&
-        impl::Signature<F>::proper_argument_order &&
-        impl::Signature<F>::no_duplicate_arguments &&
-        impl::Signature<F>::no_required_after_default
+        impl::args_fit_within_bitset<F> &&
+        impl::args_are_convertible_to_python<F> &&
+        impl::return_is_convertible_to_python<F> &&
+        impl::proper_argument_order<F> &&
+        impl::no_duplicate_arguments<F> &&
+        impl::no_required_after_default<F>
     )
 struct Function;
 
@@ -5863,12 +5869,12 @@ syntax highlighting and LSP support. */
 template <typename F>
     requires (
         impl::function_pointer_like<F> &&
-        impl::Signature<F>::n <= 64 &&
-        impl::Signature<F>::args_are_convertible_to_python &&
-        impl::Signature<F>::return_is_convertible_to_python &&  // TODO: implement in Signature<...>
-        impl::Signature<F>::proper_argument_order &&
-        impl::Signature<F>::no_duplicate_arguments &&
-        impl::Signature<F>::no_required_after_default
+        impl::args_fit_within_bitset<F> &&
+        impl::args_are_convertible_to_python<F> &&
+        impl::return_is_convertible_to_python<F> &&
+        impl::proper_argument_order<F> &&
+        impl::no_duplicate_arguments<F> &&
+        impl::no_required_after_default<F>
     )
 struct Function : Object, Interface<Function<F>> {
 private:
