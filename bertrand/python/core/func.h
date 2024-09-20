@@ -1637,6 +1637,58 @@ namespace impl {
                 }
             };
 
+            static void validate_positional_arg(
+                const Param& param,
+                const Callback& callback,
+                size_t i
+            ) {
+                if (!callback) {
+                    throw TypeError(
+                        "received unexpected positional argument at index " +
+                        std::to_string(i)
+                    );
+                }
+                if (!callback(param.type)) {
+                    throw TypeError(
+                        "expected positional argument at index " + std::to_string(i) +
+                        " to be a subclass of '" + repr(reinterpret_borrow<Object>(
+                            reinterpret_cast<PyObject*>(callback.type())
+                        )) + "', not: '" + repr(reinterpret_borrow<Object>(
+                            reinterpret_cast<PyObject*>(param.type)
+                        )) + "'"
+                    );
+                }
+            }
+
+            static void validate_keyword_arg(
+                const Param& param,
+                const Callback& callback,
+                uint64_t mask
+            ) {
+                if (!callback) {
+                    throw TypeError(
+                        "received unexpected keyword argument: '" +
+                        std::string(param.name) + "'"
+                    );
+                }
+                if (mask & callback.mask) {
+                    throw TypeError(
+                        "received multiple values for argument '" +
+                        std::string(param.name) + "'"
+                    );
+                }
+                if (!callback(param.type)) {
+                    throw TypeError(
+                        "expected argument '" + std::string(param.name) +
+                        "' to be a subclass of '" + repr(reinterpret_borrow<Object>(
+                            reinterpret_cast<PyObject*>(callback.type())
+                        )) + "', not: '" + repr(reinterpret_borrow<Object>(
+                            reinterpret_cast<PyObject*>(param.type)
+                        )) + "'"
+                    );
+                }
+            }
+
         public:
             struct Node;
 
@@ -1708,23 +1760,7 @@ namespace impl {
 
                     if (param.name.empty()) {
                         const Callback& callback = Arguments::callback(idx);
-                        if (!callback) {
-                            throw TypeError(
-                                "received unexpected positional argument at index " +
-                                std::to_string(idx)
-                            );
-                        }
-                        if (!callback(param.type)) {
-                            throw TypeError(
-                                "expected positional argument at index " +
-                                std::to_string(idx) + "' to be a subclass of '" +
-                                repr(reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(callback.type())
-                                )) + "', not: '" + repr(reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(param.type)
-                                )) + "'"
-                            );
-                        }
+                        validate_positional_arg(param, callback, idx);
                         for (auto&& [type, edge] : positional) {
                             if (Compare{}(type, param.type)) {
                                 const Node* result = edge->search(key, idx + 1, mask);
@@ -1737,29 +1773,7 @@ namespace impl {
 
                     } else {
                         const Callback& callback = Arguments::callback(param.name);
-                        if (!callback) {
-                            throw TypeError(
-                                "received unexpected keyword argument: '" +
-                                std::string(param.name) + "'"
-                            );
-                        }
-                        if ((mask & callback.mask)) {
-                            throw TypeError(
-                                "received multiple values for argument '" +
-                                std::string(param.name) + "'"
-                            );
-                        }
-                        if (!callback(param.type)) {
-                            throw TypeError(
-                                "expected argument '" + std::string(param.name) +
-                                "' to be a subclass of '" +
-                                repr(reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(callback.type())
-                                )) + "', not: '" + repr(reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(param.type)
-                                )) + "'"
-                            );
-                        }
+                        validate_keyword_arg(param, callback, mask);
                         auto it = keyword.find(param.name);
                         if (it != keyword.end()) {
                             for (auto&& [type, edge] : it->second) {
@@ -1780,7 +1794,7 @@ namespace impl {
                 /* Same as Node::search(), except that it returns nullopt rather than
                 throwing errors if the key does not match the signature. */
                 template <typename Container>
-                std::optional<const Node*> search_noerr(
+                std::optional<const Node*> get(
                     const Params<Container>& key,
                     size_t idx,
                     uint64_t& mask
@@ -1798,7 +1812,7 @@ namespace impl {
                         for (auto&& [type, edge] : positional) {
                             if (Compare{}(type, param.type)) {
                                 std::optional<const Node*> result =
-                                    edge->search_noerr(key, idx + 1, mask);
+                                    edge->get(key, idx + 1, mask);
                                 if (!result.has_value()) {
                                     return std::nullopt;
                                 } else if (result.value()) {
@@ -1818,7 +1832,7 @@ namespace impl {
                             for (auto&& [type, edge] : it->second) {
                                 if (Compare{}(type, param.type)) {
                                     std::optional<const Node*> result =
-                                        edge->search_noerr(key, idx + 1, mask);
+                                        edge->get(key, idx + 1, mask);
                                     if (!result.has_value()) {
                                         return std::nullopt;
                                     } else if (result.value()) {
@@ -1844,14 +1858,8 @@ namespace impl {
                 /// -> since parameter lists are immutable, this will require a copy, but
                 /// it has to be done for correctness, is only incurred on insertion, and
                 /// provides an opportunity to ensure that the key satisfies the enclosing
-                /// signature all at the same time.  This class may need to be defined
-                /// within Arguments in order to support that.
-                /// -> luckily, I know the precise container type, so I can just allocate
-                /// a new one and copy the elements over in the proper order, and then pass
-                /// them along as another Params<> wrapper.  Note that the hash will need
-                /// to be recomputed as well.
-                /// -> I actually might not need to allocate the container manually, since
-                /// I can just copy the parameter list and then adjust the copy in-place.
+                /// signature all at the same time.
+                /// -> Note that the hash must be recomputed as well.
 
                 /// TODO: insert() should also insert the final key into the cache?
 
@@ -2040,22 +2048,6 @@ namespace impl {
                 }
             }
 
-            /// TODO: perhaps search() should raise an error if the key does not fully
-            /// satisfy the function signature, regardless of whether a corresponding
-            /// overload is found.  That would potentially reduce overhead by folding
-            /// error handling into the same loop.
-            /// -> This should be handled when the key is actually constructed, so that
-            /// I never have to repeatedly validate something.  I just construct the
-            /// key and then search against it.
-            /// -> Actually, if I fold this class into Arguments, then I can reintroduce
-            /// some of the callable() logic I wrote earlier to make this fairly
-            /// straightforward.  Perhaps all the Python-level call operator has to do is
-            /// create one of these keys and then search the overload trie, which will
-            /// do the validation and find the correct function to call at the same time.
-            /// __getitem__ can do something similar, but without the error handling.
-            /// It would have to return a std::optional<const Node*> to disambiguate
-            /// between a fallback to the default function and an error state.  
-
             /* Search the overload trie for a matching signature.  This will
             recursively backtrack until a matching node is found or the trie is
             exhausted, returning nullptr on a failed search.  The results will be
@@ -2064,28 +2056,36 @@ namespace impl {
             parameter packs must be expanded prior to calling this function.
             
             The Python-level call operator for `py::Function<>` will immediately
-            delegate to this function after constructing the key from the input
-            arguments, so it will be invoked every time a C++ function is called from
+            delegate to this function after constructing a key from the input
+            arguments, so it will be called every time a C++ function is invoked from
             Python.  If it returns null, then the fallback implementation will be
-            invoked instead. */
+            used instead. */
             template <typename Container>
             const Node* search(const Params<Container>& key) const {
-                if (root == nullptr) {
-                    /// TODO: still need to validate the key against the enclosing
-                    /// signature in this case, even if the overload trie is empty.
-                    /// Perhaps this goes after the cache check, in order to avoid
-                    /// this on subsequent calls?
-                    return nullptr;
-                }
-
                 auto it = cache.find(key.hash);
                 if (it != cache.end()) {
                     return it->second;
                 }
 
                 uint64_t mask = 0;
-                const Node* result = root->search(key, 0, mask);
+                if (root == nullptr) {
+                    for (size_t i = 0; i < key.size(); ++i) {
+                        const Param& param = key[i];
+                        if (param.name.empty()) {
+                            const Callback& callback = Arguments::callback(i);
+                            validate_positional_arg(param, callback, i);
+                            mask |= callback.mask;
+                        } else {
+                            const Callback& callback = Arguments::callback(param.name);
+                            validate_keyword_arg(param, callback, mask);
+                            mask |= callback.mask;
+                        }
+                    }
+                    cache[key.hash] = nullptr;
+                    return nullptr;
+                }
 
+                const Node* result = root->search(key, 0, mask);
                 if ((mask & required) != required) {
                     uint64_t missing = required & ~(mask & required);
                     std::string msg = "missing required arguments: [";
@@ -2124,31 +2124,47 @@ namespace impl {
 
             /* Search the overload trie for a matching signature, suppressing errors
             caused by the signature not satisfying the enclosing parameter list.  This
-            is equivalent to calling `search()` in a try/catch, but without any of the
-            error handling overhead.  Errors are converted into a null optionals,
-            separate from the null status of the wrapped pointer, which retains the
-            same semantics as for `search()`.
+            is equivalent to calling `search()` in a try/catch, but without any error
+            handling overhead.  Errors are converted into a null optionals, separate
+            from the null status of the wrapped pointer, which retains the same
+            semantics as `search()`.
 
-            This is used by the Python-level `__getitem__` operator for
-            `py::Function<>` instances, which converts a null optional result into
+            This is used by the Python-level `__getitem__` and `__contains__` operators
+            for `py::Function<>` instances, which converts a null optional result into
             `None` on the Python side.  Otherwise, it will return the function that
             would be invoked if the function were to be called with the given
             arguments, which may be a self-reference if the fallback implementation is
             selected. */
             template <typename Container>
-            std::optional<const Node*> search_noerr(const Params<Container>& key) const {
-                if (root == nullptr) {
-                    /// TODO: same as for search()
-                    return nullptr;
-                }
-
+            std::optional<const Node*> get(const Params<Container>& key) const {
                 auto it = cache.find(key.hash);
                 if (it != cache.end()) {
                     return it->second;
                 }
 
                 uint64_t mask = 0;
-                std::optional<const Node*> result = root->search_noerr(key, 0, mask);
+                if (root == nullptr) {
+                    for (size_t i = 0; i < key.size(); ++i) {
+                        const Param& param = key[i];
+                        if (param.name.empty()) {
+                            const Callback& callback = Arguments::callback(i);
+                            if (!callback || !callback(param.type)) {
+                                return std::nullopt;
+                            }
+                            mask |= callback.mask;
+                        } else {
+                            const Callback& callback = Arguments::callback(param.name);
+                            if (!callback || mask & callback.mask || !callback(param.type)) {
+                                return std::nullopt;
+                            }
+                            mask |= callback.mask;
+                        }
+                    }
+                    cache[key.hash] = nullptr;
+                    return nullptr;
+                }
+
+                std::optional<const Node*> result = root->get(key, 0, mask);
                 if (!result.has_value() || (mask & required) != required) {
                     return std::nullopt;
                 }
@@ -2221,6 +2237,35 @@ namespace impl {
                 return func;
             }
 
+            /* Clear the overload trie, removing all tracked functions. */
+            void clear() {
+                cache.clear();
+                if (root) {
+                    Node* temp = root;
+                    root = nullptr;
+                    delete temp;
+                }
+                funcs.clear();
+            }
+
+            /* Manually reset the function's overload cache, forcing overload paths to
+            be recalculated on subsequent calls. */
+            void flush() {
+                cache.clear();
+            }
+
+            explicit operator bool() const {
+                return root != nullptr;
+            }
+
+            auto size() const { return funcs.size(); }
+            auto empty() const { return funcs.empty(); }
+            auto begin() { return funcs.begin(); }
+            auto begin() const { return funcs.begin(); }
+            auto cbegin() const { return funcs.cbegin(); }
+            auto end() { return funcs.end(); }
+            auto end() const { return funcs.end(); }
+            auto cend() const { return funcs.cend(); }
         };
 
         /// TODO: add a method to Bind<> that produces a simplified Params list from a valid
