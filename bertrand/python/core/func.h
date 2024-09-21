@@ -1637,7 +1637,7 @@ namespace impl {
                 }
             };
 
-            static void validate_positional_arg(
+            static void assert_positional(
                 const Param& param,
                 const Callback& callback,
                 size_t i
@@ -1660,7 +1660,7 @@ namespace impl {
                 }
             }
 
-            static void validate_keyword_arg(
+            static void assert_keyword(
                 const Param& param,
                 const Callback& callback,
                 uint64_t mask
@@ -1686,6 +1686,171 @@ namespace impl {
                             reinterpret_cast<PyObject*>(param.type)
                         )) + "'"
                     );
+                }
+            }
+
+            template <size_t I, typename Container>
+            static void assert_viable_overload(
+                const Params<Container>& key,
+                size_t& idx
+            ) {
+                using T = __object__<std::remove_cvref_t<typename ArgTraits<at<I>>::type>>;
+
+                constexpr auto description = [](const Param& param) {
+                    if (param.kwonly()) {
+                        return "keyword-only";
+                    } else if (param.kw()) {
+                        return "positional-or-keyword";
+                    } else if (param.pos()) {
+                        return "positional";
+                    } else if (param.args()) {
+                        return "variadic positional";
+                    } else if (param.kwargs()) {
+                        return "variadic keyword";
+                    } else {
+                        return "<unknown>";
+                    }
+                };
+
+                if constexpr (ArgTraits<at<I>>::posonly()) {
+                    if (idx >= key.size()) {
+                        if (ArgTraits<at<I>>::name) {
+                            throw TypeError(
+                                "missing positional-only argument '" +
+                                ArgTraits<at<I>>::name + "' at index " +
+                                std::to_string(idx)
+                            );
+                        } else {
+                            throw TypeError(
+                                "missing positional-only argument at index " +
+                                std::to_string(idx)
+                            );
+                        }
+                    }
+                    const Param& param = key[idx];
+                    if (!param.pos()) {
+                        if (ArgTraits<at<I>>::name) {
+                            throw TypeError(
+                                "expected argument '" + ArgTraits<at<I>>::name +
+                                "' at index " + std::to_string(idx) +
+                                " to be positional-only, not " + description(param)
+                            );
+                        } else {
+                            throw TypeError(
+                                "expected positional-only argument at index " +
+                                std::to_string(idx) + ", not " + description(param)
+                            );
+                        }
+                    }
+                    if (ArgTraits<at<I>>::name && param.name != ArgTraits<at<I>>::name) {
+                        throw TypeError(
+                            "expected argument '" + ArgTraits<at<I>>::name +
+                            "' at index " + std::to_string(idx) + ", not '" +
+                            std::string(param.name) + "'"
+                        );
+                    }
+                    if (!ArgTraits<at<I>>::opt() && param.opt()) {
+                        if (ArgTraits<at<I>>::name) {
+                            throw TypeError(
+                                "required positional-only argument '" +
+                                ArgTraits<at<I>>::name + "' at index " +
+                                std::to_string(idx) + " must not have a default "
+                                "value"
+                            );
+                        } else {
+                            throw TypeError(
+                                "required positional-only argument at index " +
+                                std::to_string(idx) + " must not have a default "
+                                "value"
+                            );
+                        }
+                    }
+                    if (!issubclass<T>(reinterpret_borrow<Object>(
+                        reinterpret_cast<PyObject*>(param.type)
+                    ))) {
+                        if (ArgTraits<at<I>>::name) {
+                            throw TypeError(
+                                "expected positional-only argument '" +
+                                ArgTraits<at<I>>::name + "' at index " +
+                                std::to_string(idx) + " to be a subclass of '" +
+                                repr(reinterpret_borrow<Object>(
+                                    reinterpret_cast<PyObject*>(ptr(Type<T>()))
+                                )) + "', not: '" + repr(reinterpret_borrow<Object>(
+                                    reinterpret_cast<PyObject*>(param.type)
+                                )) + "'"
+                            );
+                        } else {
+                            throw TypeError(
+                                "expected positional-only argument at index " +
+                                std::to_string(idx) + " to be a subclass of '" +
+                                repr(reinterpret_borrow<Object>(
+                                    reinterpret_cast<PyObject*>(ptr(Type<T>()))
+                                )) + "', not: '" + repr(reinterpret_borrow<Object>(
+                                    reinterpret_cast<PyObject*>(param.type)
+                                )) + "'"
+                            );
+                        }
+                    }
+                    ++idx;
+
+                } else if constexpr (ArgTraits<at<I>>::pos()) {
+
+
+
+                } else if constexpr (ArgTraits<at<I>>::kw()) {
+                    if (idx >= key.size()) {
+                        throw TypeError(
+                            "missing keyword-only argument '" + ArgTraits<at<I>>::name +
+                            "' at index " + std::to_string(idx)
+                        );
+                    }
+                    const Param& param = key[idx];
+                    if (!param.kw()) {
+                        throw TypeError(
+                            "expected argument '" + ArgTraits<at<I>>::name +
+                            "' at index " + std::to_string(idx) +
+                            " to be keyword-only, not " + description(param)
+                        );
+                    }
+                    if (param.name != ArgTraits<at<I>>::name) {
+                        throw TypeError(
+                            "expected keyword-only argument '" + ArgTraits<at<I>>::name +
+                            "' at index " + std::to_string(idx) + ", not '" +
+                            std::string(param.name) + "'"
+                        );
+                    }
+                    if (!ArgTraits<at<I>>::opt() && param.opt()) {
+                        throw TypeError(
+                            "required keyword-only argument '" + ArgTraits<at<I>>::name +
+                            "' at index " + std::to_string(idx) + " must not have a "
+                            "default value"
+                        );
+                    }
+                    if (!issubclass<T>(reinterpret_borrow<Object>(
+                        reinterpret_cast<PyObject*>(param.type)
+                    ))) {
+                        throw TypeError(
+                            "expected keyword-only argument '" + ArgTraits<at<I>>::name +
+                            "' at index " + std::to_string(idx) +
+                            " to be a subclass of '" + repr(reinterpret_borrow<Object>(
+                                reinterpret_cast<PyObject*>(ptr(Type<T>()))
+                            )) + "', not: '" + repr(reinterpret_borrow<Object>(
+                                reinterpret_cast<PyObject*>(param.type)
+                            )) + "'"
+                        );
+                    }
+                    ++idx;
+
+                } else if constexpr (ArgTraits<at<I>>::args()) {
+
+
+
+                } else if constexpr (ArgTraits<at<I>>::kwargs()) {
+
+
+
+                } else {
+                    static_assert(false, "invalid argument kind");
                 }
             }
 
@@ -1715,6 +1880,143 @@ namespace impl {
                 /// keyword name is simply a view into one of the strings stored here.
                 std::unordered_set<std::string> kwnames;
 
+                /* Consume a positional argument from a parameter list and recur. */
+                template <typename Container>
+                [[gnu::always_inline]] const Node* search_positional(
+                    const Params<Container>& key,
+                    size_t idx,
+                    const Param& param
+                ) const {
+                    // search the topological map, checking `issubclass()` for each
+                    // candidate and recurring on a match with an incremented index
+                    for (auto&& [expected, edge] : positional) {
+                        if (Compare{}(param.type, expected)) {
+                            size_t i = idx;
+                            if constexpr (Arguments::has_args) {
+                                if (edge.kind.variadic()) {
+                                    const Param* curr = &param;
+                                    while (
+                                        curr &&
+                                        curr->pos() &&
+                                        Compare{}(curr->type, expected)
+                                    ) {
+                                        curr = ++i < key.size() ? &key[i] : nullptr;
+                                    }
+                                    if (curr && curr->pos()) {
+                                        return nullptr;  // failed comparison
+                                    }
+                                } else {
+                                    ++i;
+                                }
+                            } else {
+                                ++i;
+                            }
+                            const Node* result = edge->search(key, i);
+                            if (result) {
+                                return result;
+                            }
+                        }
+                    }
+                    return nullptr;
+                }
+
+                /* An optimized recursive search which exploits the fact that only
+                keyword arguments can follow other keyword arguments. */
+                template <typename Container>
+                [[gnu::always_inline]] const Node* search_keyword(
+                    const Params<Container>& key,
+                    size_t idx,
+                    const Param& param
+                ) const {
+                    // look up the argument name in the keyword map
+                    auto it = keyword.find(param.name);
+                    if (it != keyword.end()) {
+                        for (auto&& [expected, edge] : it->second) {
+                            if (Compare{}(param.type, expected)) {
+                                size_t i = idx + 1;
+                                if (i >= key.size()) {
+                                    return edge->func.is(nullptr) ? nullptr : edge.node;
+                                }
+                                const Node* result = edge->search_keyword(
+                                    key,
+                                    i,
+                                    key[i]
+                                );
+                                if (result) {
+                                    return result;
+                                }
+                            }
+                        }
+
+                    // if the keyword name is not recognized, check for a variadic
+                    // keyword argument stored under an empty string, which is not
+                    // valid syntax in any other case
+                    } else {
+                        if constexpr (Arguments::has_kwargs) {
+                            it = keyword.find("");
+                            if (it != keyword.end()) {
+                                for (auto&& [expected, edge] : it->second) {
+                                    if (Compare{}(param.type, expected)) {
+                                        const Node* result = edge->search_kwargs(
+                                            key,
+                                            idx + 1,
+                                            expected
+                                        );
+                                        if (result) {
+                                            return result;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return nullptr;
+                }
+
+                /* A modified keyword search that forces variadic keywords to match a
+                specific type. */
+                template <typename Container>
+                [[gnu::always_inline]] const Node* search_kwargs(
+                    const Params<Container>& key,
+                    size_t idx,
+                    PyTypeObject* kwargs_type
+                ) const {
+                    if (idx >= key.size()) {
+                        return func.is(nullptr) ? nullptr : this;
+                    }
+                    const Param& param = key[idx];
+
+                    // look up the argument name in the keyword map
+                    auto it = keyword.find(param.name);
+                    if (it != keyword.end()) {
+                        for (auto&& [expected, edge] : it->second) {
+                            if (Compare{}(param.type, expected)) {
+                                const Node* result = edge->search_kwargs(
+                                    key,
+                                    idx + 1,
+                                    kwargs_type
+                                );
+                                if (result) {
+                                    return result;
+                                }
+                            }
+                        }
+
+                    // if the keyword name is not recognized, then it must conform to
+                    // the previously-encountered variadic keyword argument type
+                    } else if (Compare{}(param.type, kwargs_type)) {
+                        const Node* result = search_kwargs(
+                            key,
+                            idx + 1,
+                            kwargs_type
+                        );
+                        if (result) {
+                            return result;
+                        }
+                    }
+                    return nullptr;
+                }
+
             public:
                 size_t alive;
                 Object func;
@@ -1741,110 +2043,52 @@ namespace impl {
                     }
                 }
 
+                /// TODO: it might be best to not call the assert helpers within
+                /// search() directly, given the fact that it's recursive and may cause
+                /// callbacks to be invoked unnecessarily.  Instead, I can invoke the
+                /// callbacks when the key is built, separate from the search process,
+                /// which may not even need to access the callbacks at all.  I think
+                /// I might be able to build up the mask at that point as well, which
+                /// would help with this, and would allow for fast errors if a
+                /// required argument is omitted.  That also avoids the issue with
+                /// validation in the case of a null cache path.
+                /// -> Maybe the mask can be built into the key itself, similar to
+                /// the hash.
+
                 /* Recursively search for a matching node in the overload trie, starting
                 from the current node.  Always returns a terminal node in the case of a
-                match, or null if no viable function can be found within this node's
-                subtree, which causes the algorithm to backtrack one level and continue
-                searching.  Throws an error if the key does not satisfy the enclosing
-                parameter list. */
+                match, or null if no match can be found within this node's subtree,
+                which causes the algorithm to backtrack one level and continue
+                searching. */
                 template <typename Container>
-                const Node* search(
+                [[gnu::always_inline]] const Node* search(
                     const Params<Container>& key,
-                    size_t idx,
-                    uint64_t& mask
+                    size_t idx
                 ) const {
                     if (idx >= key.size()) {
                         return func.is(nullptr) ? nullptr : this;
                     }
                     const Param& param = key[idx];
 
-                    if (param.name.empty()) {
-                        const Callback& callback = Arguments::callback(idx);
-                        validate_positional_arg(param, callback, idx);
-                        for (auto&& [type, edge] : positional) {
-                            if (Compare{}(type, param.type)) {
-                                const Node* result = edge->search(key, idx + 1, mask);
-                                if (result) {
-                                    mask |= callback.mask;
-                                    return result;
-                                }
-                            }
+                    /// NOTE: the key is already guaranteed to satisfy the signature
+                    /// before calling this method, so we can compile out the
+                    /// positional check where appropriate, as well as optimize it
+                    /// out when the first keyword argument is encountered.  This
+                    /// branch therefore frequently amortizes to zero.
+                    if constexpr (
+                        (Arguments::has_pos || Arguments::has_args) &&
+                        (Arguments::has_kw || Arguments::has_kwargs)
+                    ) {
+                        if (param.name.empty()) {
+                            return search_positional(key, idx, param);
+                        } else {
+                            return search_keyword(key, idx, param);
                         }
-
+                    } else if constexpr (Arguments::has_pos || Arguments::has_args) {
+                        return search_positional(key, idx, param);
                     } else {
-                        const Callback& callback = Arguments::callback(param.name);
-                        validate_keyword_arg(param, callback, mask);
-                        auto it = keyword.find(param.name);
-                        if (it != keyword.end()) {
-                            for (auto&& [type, edge] : it->second) {
-                                if (Compare{}(type, param.type)) {
-                                    const Node* result = edge->search(key, idx + 1, mask);
-                                    if (result) {
-                                        mask |= callback.mask;
-                                        return result;
-                                    }
-                                }
-                            }
-                        }
+                        return search_keyword(key, idx, param);
                     }
-
-                    return nullptr;
-                }
-
-                /* Same as Node::search(), except that it returns nullopt rather than
-                throwing errors if the key does not match the signature. */
-                template <typename Container>
-                std::optional<const Node*> get(
-                    const Params<Container>& key,
-                    size_t idx,
-                    uint64_t& mask
-                ) const {
-                    if (idx >= key.size()) {
-                        return func.is(nullptr) ? nullptr : this;
-                    }
-                    const Param& param = key[idx];
-
-                    if (param.name.empty()) {
-                        const Callback& callback = Arguments::callback(idx);
-                        if (!callback || !callback(param.type)) {
-                            return std::nullopt;
-                        }
-                        for (auto&& [type, edge] : positional) {
-                            if (Compare{}(type, param.type)) {
-                                std::optional<const Node*> result =
-                                    edge->get(key, idx + 1, mask);
-                                if (!result.has_value()) {
-                                    return std::nullopt;
-                                } else if (result.value()) {
-                                    mask |= callback.mask;
-                                    return result;
-                                }
-                            }
-                        }
-
-                    } else {
-                        const Callback& callback = Arguments::callback(param.name);
-                        if (!callback || mask & callback.mask || !callback(param.type)) {
-                            return std::nullopt;
-                        }
-                        auto it = keyword.find(param.name);
-                        if (it != keyword.end()) {
-                            for (auto&& [type, edge] : it->second) {
-                                if (Compare{}(type, param.type)) {
-                                    std::optional<const Node*> result =
-                                        edge->get(key, idx + 1, mask);
-                                    if (!result.has_value()) {
-                                        return std::nullopt;
-                                    } else if (result.value()) {
-                                        mask |= callback.mask;
-                                        return result;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    return nullptr;
                 }
 
                 /// TODO: perhaps insert returns a bool to indicate whether the next node
@@ -2067,25 +2311,16 @@ namespace impl {
                     return it->second;
                 }
 
+                /// TODO: mask must be handled before search() is called, possibly
+                /// being attached to the key itself, similar to hash
+
                 uint64_t mask = 0;
                 if (root == nullptr) {
-                    for (size_t i = 0; i < key.size(); ++i) {
-                        const Param& param = key[i];
-                        if (param.name.empty()) {
-                            const Callback& callback = Arguments::callback(i);
-                            validate_positional_arg(param, callback, i);
-                            mask |= callback.mask;
-                        } else {
-                            const Callback& callback = Arguments::callback(param.name);
-                            validate_keyword_arg(param, callback, mask);
-                            mask |= callback.mask;
-                        }
-                    }
                     cache[key.hash] = nullptr;
                     return nullptr;
                 }
 
-                const Node* result = root->search(key, 0, mask);
+                const Node* result = root->search(key, 0);
                 if ((mask & required) != required) {
                     uint64_t missing = required & ~(mask & required);
                     std::string msg = "missing required arguments: [";
@@ -2118,6 +2353,8 @@ namespace impl {
                     throw TypeError(msg);
                 }
 
+                /// TODO: the cache should point to non-owning PyObject* results,
+                /// rather than requiring an additional pointer indirection.
                 cache[key.hash] = result;
                 return result;
             }
@@ -2205,14 +2442,61 @@ namespace impl {
             /// need for cyclic-references, and still allows me to model specific behavior
             /// accordingly.
 
-            /* Insert a function into the overload trie, or throw a TypeError if it
-            conflicts with another node and would thus be ambiguous. */
+            /* Insert a function into the overload trie, throwing a TypeError if it
+            does not conform to the enclosing parameter list or if it conflicts with
+            another node in the trie. */
             template <typename Container>
             void insert(const Params<Container>& key, const Object& func) {
+                // assert the key minimally satisfies the enclosing parameter list
+                []<size_t... Is>(std::index_sequence<Is...>, const Params<Container>& key) {
+                    size_t idx = 0;
+                    (assert_viable_overload<Is>(key, idx), ...);
+                }(std::make_index_sequence<Arguments::n>{}, key);
+
+                /// TODO: perhaps this loop can be handled within the recursive insert()
+                /// function directly, and therefore avoid any additional allocations
+                /// or loops.  The `break` statement would be replaced with yet more
+                /// recursion, but I still don't know exactly how that would work.
+                /// -> Actually, is this even necessary at all?  Perhaps all of the
+                /// keyword arguments will store the terminal function, but it will
+                /// only be called if we satisfy the `required` bitmask.
+                /// -> That doesn't work because it interferes with overloads that
+                /// might share the same keyword nodes, but do not conflict.  The
+                /// null pointer check is what ensures we don't find any conflicts.
+                /// -> Perhaps the answer is to modify the recursive logic to treat
+                /// kwonly edges differently from the others, similar to how variadic
+                /// args will need to be treated.  That's probably the real answer,
+                /// provided I can figure out how to incorporate the recursive logic.
+
+                // rearrange the key to ensure that required keyword-only arguments
+                // always come before optional ones within the trie structure.  This is
+                // necessary to ensure that the trie can be traversed correctly,
+                // allowing for early termination once all required arguments have been
+                // consumed.  Thanks to the use of hash tables, this does not change
+                // the semantics of the key itself, only the order in which it is
+                // encoded into the trie.
+                Params<Container> sorted = key;
+                sorted.hash = 0;
+                for (size_t i = 0; i < key.size(); ++i) {
+                    const Param& param = key[i];
+                    if (param.kwonly()) {
+                        /// TODO: break out of the outer loop the first time a kwonly
+                        /// parameter is encountered, and sort the remaining parameters
+                        /// all at once.  This will involve some kind of lookahead to
+                        /// sort the remaining parameters into the correct order.
+                        break;
+                    }
+                    sorted.hash = hash_combine(
+                        sorted.hash,
+                        hash(param.name),
+                        reinterpret_cast<size_t>(param.type)
+                    );
+                }
+
                 if (root == nullptr) {
                     root = new Node(reinterpret_steal<Object>(nullptr));
                 }
-                root->insert(key, 0, func);
+                root->insert(sorted, 0, func);
                 funcs.insert(func);
                 cache.clear();
             }
@@ -4994,9 +5278,10 @@ struct Interface<Type<Function<F>>> {
 ///     strict type safety.  Maybe also in the constructor, which can be
 ///     avoided using CTAD.
 /// -   assert_satisfies() is needed in .overload()
-/// -   callable()/assert_callable() is needed in __getitem__() and __call__()
 
-struct TODO1 {
+
+struct TODO2 {
+
 
     template <size_t I, typename Container>
     static bool _matches(const Params<Container>& key) {
@@ -5727,11 +6012,6 @@ struct TODO1 {
         }
     }
 
-};
-
-
-struct TODO2 {
-
     /* Check to see if a compile-time function signature exactly matches the
     enclosing parameter list. */
     template <typename... Params>
@@ -6443,10 +6723,8 @@ to a corresponding C++ function signature.
         std::string docstring;
         std::function<typename Sig::to_value::type> func;
         Sig::Defaults defaults;
+        Sig::Overloads overloads;
         vectorcallfunc call;
-        Node* root;
-        size_t size;
-        std::unordered_map<size_t, Node*> cache;  // value may be null
 
         PyFunction(
             std::string&& name,
@@ -6457,16 +6735,8 @@ to a corresponding C++ function signature.
             docstring(std::move(docstring)),
             func(std::move(func)),
             defaults(std::move(defaults)),
-            call(&__call__),
-            root(nullptr),
-            size(0)
+            call(&__call__)
         {}
-
-        ~PyFunction() {
-            if (root) {
-                delete root;
-            }
-        }
 
         template <StaticStr ModName>
         static Type<Function> __export__(Module<ModName> bindings) {
@@ -6694,7 +6964,7 @@ to a corresponding C++ function signature.
         /* `len(function)` will get the number of overloads that are currently being
         tracked. */
         static Py_ssize_t __len__(PyFunction* self) {
-            return self->size;
+            return self->overloads.size();
         }
 
         /// TODO: turns out I can make all functions introspectable via Python's

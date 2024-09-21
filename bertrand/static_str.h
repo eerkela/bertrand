@@ -275,6 +275,10 @@ public:
         return N;
     }
 
+    consteval bool empty() const {
+        return N == 0;
+    }
+
     Iterator begin() const {
         return {buffer, 0};
     }
