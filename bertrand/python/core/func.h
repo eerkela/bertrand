@@ -434,7 +434,8 @@ namespace impl {
         requires (has_size<T> && lookup_yields<T, const Param&, size_t>)
     struct Params {
         T value;
-        size_t hash;
+        size_t hash = 0;
+        mutable uint64_t mask = 0;
 
         const Param& operator[](size_t i) const noexcept { return value[i]; }
         size_t size() const noexcept { return std::ranges::size(value); }
@@ -1637,58 +1638,6 @@ namespace impl {
                 }
             };
 
-            static void assert_positional(
-                const Param& param,
-                const Callback& callback,
-                size_t i
-            ) {
-                if (!callback) {
-                    throw TypeError(
-                        "received unexpected positional argument at index " +
-                        std::to_string(i)
-                    );
-                }
-                if (!callback(param.type)) {
-                    throw TypeError(
-                        "expected positional argument at index " + std::to_string(i) +
-                        " to be a subclass of '" + repr(reinterpret_borrow<Object>(
-                            reinterpret_cast<PyObject*>(callback.type())
-                        )) + "', not: '" + repr(reinterpret_borrow<Object>(
-                            reinterpret_cast<PyObject*>(param.type)
-                        )) + "'"
-                    );
-                }
-            }
-
-            static void assert_keyword(
-                const Param& param,
-                const Callback& callback,
-                uint64_t mask
-            ) {
-                if (!callback) {
-                    throw TypeError(
-                        "received unexpected keyword argument: '" +
-                        std::string(param.name) + "'"
-                    );
-                }
-                if (mask & callback.mask) {
-                    throw TypeError(
-                        "received multiple values for argument '" +
-                        std::string(param.name) + "'"
-                    );
-                }
-                if (!callback(param.type)) {
-                    throw TypeError(
-                        "expected argument '" + std::string(param.name) +
-                        "' to be a subclass of '" + repr(reinterpret_borrow<Object>(
-                            reinterpret_cast<PyObject*>(callback.type())
-                        )) + "', not: '" + repr(reinterpret_borrow<Object>(
-                            reinterpret_cast<PyObject*>(param.type)
-                        )) + "'"
-                    );
-                }
-            }
-
             template <size_t I, typename Container>
             static void assert_viable_overload(
                 const Params<Container>& key,
@@ -1855,22 +1804,12 @@ namespace impl {
             }
 
         public:
-            struct Node;
-
-            /* A simple edge connecting two nodes in the overload trie.  Also records
-            the kind of parameter under which the destination node was inserted. */
-            struct Edge {
-                Node* node;
-                ArgKind kind;
-                Node* operator->() { return node; }
-                const Node* operator->() const { return node; }
-            };
 
             /* A node in the overload trie, which allows for topologically-sorted
             traversal, insertion, and deletion of candidate functions. */
             struct Node {
             private:
-                using Map = std::map<PyTypeObject*, Edge, Compare>;
+                using Map = std::map<PyTypeObject*, Node*, Compare>;
 
                 Map positional;
                 std::unordered_map<std::string_view, Map> keyword;
@@ -1893,7 +1832,7 @@ namespace impl {
                         if (Compare{}(param.type, expected)) {
                             size_t i = idx;
                             if constexpr (Arguments::has_args) {
-                                if (edge.kind.variadic()) {
+                                if (edge->kind.variadic()) {
                                     const Param* curr = &param;
                                     while (
                                         curr &&
@@ -1935,7 +1874,7 @@ namespace impl {
                             if (Compare{}(param.type, expected)) {
                                 size_t i = idx + 1;
                                 if (i >= key.size()) {
-                                    return edge->func.is(nullptr) ? nullptr : edge.node;
+                                    return edge->func.is(nullptr) ? nullptr : edge;
                                 }
                                 const Node* result = edge->search_keyword(
                                     key,
@@ -2018,11 +1957,12 @@ namespace impl {
                 }
 
             public:
-                size_t alive;
                 Object func;
+                size_t alive;
+                ArgKind kind;
 
-                Node(const Object& func) : alive(0), func(func) {}
-                Node(Object&& func) : alive(0), func(std::move(func)) {}
+                Node(const Object& func) : func(func), alive(0) {}
+                Node(Object&& func) : func(std::move(func)), alive(0) {}
                 Node(const Node&) = delete;
                 Node(Node&&) = delete;
 
@@ -2042,18 +1982,6 @@ namespace impl {
                         }
                     }
                 }
-
-                /// TODO: it might be best to not call the assert helpers within
-                /// search() directly, given the fact that it's recursive and may cause
-                /// callbacks to be invoked unnecessarily.  Instead, I can invoke the
-                /// callbacks when the key is built, separate from the search process,
-                /// which may not even need to access the callbacks at all.  I think
-                /// I might be able to build up the mask at that point as well, which
-                /// would help with this, and would allow for fast errors if a
-                /// required argument is omitted.  That also avoids the issue with
-                /// validation in the case of a null cache path.
-                /// -> Maybe the mask can be built into the key itself, similar to
-                /// the hash.
 
                 /* Recursively search for a matching node in the overload trie, starting
                 from the current node.  Always returns a terminal node in the case of a
@@ -2284,7 +2212,7 @@ namespace impl {
 
             Node* root;
             std::unordered_set<Object> funcs;
-            mutable std::unordered_map<size_t, const Node*> cache;
+            mutable std::unordered_map<size_t, PyObject*> cache;
 
             ~Overloads() {
                 if (root) {
@@ -2305,24 +2233,66 @@ namespace impl {
             Python.  If it returns null, then the fallback implementation will be
             used instead. */
             template <typename Container>
-            const Node* search(const Params<Container>& key) const {
+            PyObject* search(const Params<Container>& key) const {
+                // check the cache first
                 auto it = cache.find(key.hash);
                 if (it != cache.end()) {
                     return it->second;
                 }
 
-                /// TODO: mask must be handled before search() is called, possibly
-                /// being attached to the key itself, similar to hash
-
-                uint64_t mask = 0;
-                if (root == nullptr) {
-                    cache[key.hash] = nullptr;
-                    return nullptr;
+                // ensure the key satisfies the enclosing parameter list
+                for (size_t i = 0, n = key.size(); i < n; ++i) {
+                    const Param& param = key[i];
+                    if (param.name.empty()) {
+                        const Callback& callback = Arguments::callback(i);
+                        if (!callback) {
+                            throw TypeError(
+                                "received unexpected positional argument at index " +
+                                std::to_string(i)
+                            );
+                        }
+                        if (!callback(param.type)) {
+                            throw TypeError(
+                                "expected positional argument at index " +
+                                std::to_string(i) + " to be a subclass of '" +
+                                repr(reinterpret_borrow<Object>(
+                                    reinterpret_cast<PyObject*>(callback.type())
+                                )) + "', not: '" + repr(reinterpret_borrow<Object>(
+                                    reinterpret_cast<PyObject*>(param.type)
+                                )) + "'"
+                            );
+                        }
+                        key.mask |= callback.mask;
+                    } else if (param.kw()) {
+                        const Callback& callback = Arguments::callback(param.name);
+                        if (!callback) {
+                            throw TypeError(
+                                "received unexpected keyword argument: '" +
+                                std::string(param.name) + "'"
+                            );
+                        }
+                        if (key.mask & callback.mask) {
+                            throw TypeError(
+                                "received multiple values for argument '" +
+                                std::string(param.name) + "'"
+                            );
+                        }
+                        if (!callback(param.type)) {
+                            throw TypeError(
+                                "expected argument '" + std::string(param.name) +
+                                "' to be a subclass of '" +
+                                repr(reinterpret_borrow<Object>(
+                                    reinterpret_cast<PyObject*>(callback.type())
+                                )) + "', not: '" + repr(reinterpret_borrow<Object>(
+                                    reinterpret_cast<PyObject*>(param.type)
+                                )) + "'"
+                            );
+                        }
+                        key.mask |= callback.mask;
+                    }
                 }
-
-                const Node* result = root->search(key, 0);
-                if ((mask & required) != required) {
-                    uint64_t missing = required & ~(mask & required);
+                if ((key.mask & required) != required) {
+                    uint64_t missing = required & ~(key.mask & required);
                     std::string msg = "missing required arguments: [";
                     size_t i = 0;
                     while (i < n) {
@@ -2353,10 +2323,14 @@ namespace impl {
                     throw TypeError(msg);
                 }
 
-                /// TODO: the cache should point to non-owning PyObject* results,
-                /// rather than requiring an additional pointer indirection.
-                cache[key.hash] = result;
-                return result;
+                // search the trie for a matching node
+                if (root == nullptr) {
+                    cache[key.hash] = nullptr;
+                    return nullptr;
+                }
+                const Node* result = root->search(key, 0);
+                cache[key.hash] = ptr(result->func);
+                return ptr(result->func);
             }
 
             /* Search the overload trie for a matching signature, suppressing errors
@@ -2379,35 +2353,37 @@ namespace impl {
                     return it->second;
                 }
 
-                uint64_t mask = 0;
-                if (root == nullptr) {
-                    for (size_t i = 0; i < key.size(); ++i) {
-                        const Param& param = key[i];
-                        if (param.name.empty()) {
-                            const Callback& callback = Arguments::callback(i);
-                            if (!callback || !callback(param.type)) {
-                                return std::nullopt;
-                            }
-                            mask |= callback.mask;
-                        } else {
-                            const Callback& callback = Arguments::callback(param.name);
-                            if (!callback || mask & callback.mask || !callback(param.type)) {
-                                return std::nullopt;
-                            }
-                            mask |= callback.mask;
+                for (size_t i = 0, n = key.size(); i < n; ++i) {
+                    const Param& param = key[i];
+                    if (param.name.empty()) {
+                        const Callback& callback = Arguments::callback(i);
+                        if (!callback || !callback(param.type)) {
+                            return std::nullopt;
                         }
+                        key.mask |= callback.mask;
+                    } else {
+                        const Callback& callback = Arguments::callback(param.name);
+                        if (
+                            !callback ||
+                            (key.mask & callback.mask) ||
+                            !callback(param.type)
+                        ) {
+                            return std::nullopt;
+                        }
+                        key.mask |= callback.mask;
                     }
-                    cache[key.hash] = nullptr;
-                    return nullptr;
                 }
-
-                std::optional<const Node*> result = root->get(key, 0, mask);
-                if (!result.has_value() || (mask & required) != required) {
+                if ((key.mask & required) != required) {
                     return std::nullopt;
                 }
 
-                cache[key.hash] = result;
-                return result;
+                if (root == nullptr) {
+                    cache[key.hash] = nullptr;
+                    return nullptr;
+                }
+                const Node* result = root->search(key, 0);
+                cache[key.hash] = ptr(result->func);
+                return ptr(result->func);
             }
 
             /// TODO: insert() is going to have to be able to account for variadic
