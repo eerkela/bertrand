@@ -435,7 +435,6 @@ namespace impl {
     struct Params {
         T value;
         size_t hash = 0;
-        mutable uint64_t mask = 0;
 
         const Param& operator[](size_t i) const noexcept { return value[i]; }
         size_t size() const noexcept { return std::ranges::size(value); }
@@ -1805,14 +1804,53 @@ namespace impl {
 
         public:
 
-            /* A node in the overload trie, which allows for topologically-sorted
-            traversal, insertion, and deletion of candidate functions. */
+            struct Node;
+
+            struct Edge {
+                Node* node;
+                ArgKind kind;
+                Node* operator->() { return node; }
+                const Node* operator->() const { return node; }
+                operator Node*() { return node; }
+                operator const Node*() const { return node; }
+                bool posonly() const { return kind.posonly(); }
+                bool pos() const { return kind.pos(); }
+                bool args() const { return kind.args(); }
+                bool kw() const { return kind.kw(); }
+                bool kwonly() const { return kind.kwonly(); }
+                bool kwargs() const { return kind.kwargs(); }
+                bool opt() const { return kind.opt(); }
+                bool variadic() const { return kind.variadic(); }
+            };
+
+            /// TODO: maybe the edge masks are all we need?  I can just follow each
+            /// edge like normal, looking up the name in the keyword map, and then
+            /// extract out the node with the largest mask value (so, deepest into the
+            /// trie).  I can then extract a comparison mask from that edge, which
+            /// would be computed when the edge is inserted into the trie, and compare
+            /// against it to see if all required arguments on that path have been
+            /// accounted for.  If they have, then I can either return the function
+            /// directly if it is a terminal node, or iterate along its default path
+            /// until I reach a terminal node.  Note that this would be guaranteed to
+            /// work because of the mask check above, which ensures that the path is
+            /// fully satisfied.  As such, I can maybe also just store the function
+            /// directly on that last required node, and any optional nodes that come
+            /// after it, so that when I find the deepest node and confirm that all
+            /// required arguments on that path have been accounted for, I can just
+            /// return the function directly.  That would avoid any further traversal
+            /// after that point, and may mean I don't need to store a default path
+            /// at all.
+
+            /* A node in the overload trie, with facilities for topologically-sorted,
+            recursive traversal, insertion, and deletion of candidate functions. */
             struct Node {
             private:
-                using Map = std::map<PyTypeObject*, Node*, Compare>;
 
-                Map positional;
-                std::unordered_map<std::string_view, Map> keyword;
+                std::map<PyTypeObject*, Edge, Compare> positional;
+                std::unordered_map<
+                    std::string_view,
+                    std::map<PyTypeObject*, Edge, Compare>
+                > keyword;
 
                 /// NOTE: each node owns the strings used by its keyword map, but does so
                 /// indirectly, so as not to incur extra allocations during lookup.  Each
@@ -1821,18 +1859,24 @@ namespace impl {
 
                 /* Consume a positional argument from a parameter list and recur. */
                 template <typename Container>
-                [[gnu::always_inline]] const Node* search_positional(
+                [[gnu::always_inline]] PyObject* search_positional(
                     const Params<Container>& key,
                     size_t idx,
+                    uint64_t mask,
                     const Param& param
                 ) const {
+                    mask |= this->mask;
+
                     // search the topological map, checking `issubclass()` for each
                     // candidate and recurring on a match with an incremented index
                     for (auto&& [expected, edge] : positional) {
                         if (Compare{}(param.type, expected)) {
                             size_t i = idx;
                             if constexpr (Arguments::has_args) {
-                                if (edge->kind.variadic()) {
+                                // variadic positional arguments will test all
+                                // remaining arguments against the expected type and
+                                // only recur if they all match
+                                if (edge.variadic()) {
                                     const Param* curr = &param;
                                     while (
                                         curr &&
@@ -1850,7 +1894,7 @@ namespace impl {
                             } else {
                                 ++i;
                             }
-                            const Node* result = edge->search(key, i);
+                            PyObject* result = edge->search(key, i, mask);
                             if (result) {
                                 return result;
                             }
@@ -1862,11 +1906,14 @@ namespace impl {
                 /* An optimized recursive search which exploits the fact that only
                 keyword arguments can follow other keyword arguments. */
                 template <typename Container>
-                [[gnu::always_inline]] const Node* search_keyword(
+                [[gnu::always_inline]] PyObject* search_keyword(
                     const Params<Container>& key,
                     size_t idx,
+                    uint64_t mask,
                     const Param& param
                 ) const {
+                    mask |= this->mask;
+
                     // look up the argument name in the keyword map
                     auto it = keyword.find(param.name);
                     if (it != keyword.end()) {
@@ -1874,11 +1921,13 @@ namespace impl {
                             if (Compare{}(param.type, expected)) {
                                 size_t i = idx + 1;
                                 if (i >= key.size()) {
-                                    return edge->func.is(nullptr) ? nullptr : edge;
+                                    return (mask & required) == required ?
+                                        edge->func : nullptr;
                                 }
-                                const Node* result = edge->search_keyword(
+                                PyObject* result = edge->search_keyword(
                                     key,
                                     i,
+                                    mask,
                                     key[i]
                                 );
                                 if (result) {
@@ -1896,9 +1945,10 @@ namespace impl {
                             if (it != keyword.end()) {
                                 for (auto&& [expected, edge] : it->second) {
                                     if (Compare{}(param.type, expected)) {
-                                        const Node* result = edge->search_kwargs(
+                                        PyObject* result = edge->search_kwargs(
                                             key,
                                             idx + 1,
+                                            mask,
                                             expected
                                         );
                                         if (result) {
@@ -1915,24 +1965,27 @@ namespace impl {
                 /* A modified keyword search that forces variadic keywords to match a
                 specific type. */
                 template <typename Container>
-                [[gnu::always_inline]] const Node* search_kwargs(
+                [[gnu::always_inline]] PyObject* search_kwargs(
                     const Params<Container>& key,
                     size_t idx,
+                    uint64_t mask,
                     PyTypeObject* kwargs_type
                 ) const {
                     if (idx >= key.size()) {
-                        return func.is(nullptr) ? nullptr : this;
+                        return (mask & required) == required ? func : nullptr;
                     }
                     const Param& param = key[idx];
+                    mask |= this->mask;  // TODO: kwargs always have a zero mask
 
                     // look up the argument name in the keyword map
                     auto it = keyword.find(param.name);
                     if (it != keyword.end()) {
                         for (auto&& [expected, edge] : it->second) {
                             if (Compare{}(param.type, expected)) {
-                                const Node* result = edge->search_kwargs(
+                                PyObject* result = edge->search_kwargs(
                                     key,
                                     idx + 1,
+                                    mask,
                                     kwargs_type
                                 );
                                 if (result) {
@@ -1944,9 +1997,10 @@ namespace impl {
                     // if the keyword name is not recognized, then it must conform to
                     // the previously-encountered variadic keyword argument type
                     } else if (Compare{}(param.type, kwargs_type)) {
-                        const Node* result = search_kwargs(
+                        PyObject* result = search_kwargs(
                             key,
                             idx + 1,
+                            mask,
                             kwargs_type
                         );
                         if (result) {
@@ -1957,28 +2011,31 @@ namespace impl {
                 }
 
             public:
-                Object func;
-                size_t alive;
-                ArgKind kind;
+                PyObject* func;  // non-owning reference to terminal function
+                size_t alive;  // stores the number of live nodes in the subtrie
+                uint64_t mask;  // stores the depth of this node within the trie
+                uint64_t required;  // stores the required arguments on this path
+                /// TODO: kind can probably stored on the node as well, which would
+                /// eliminate the edge struct.
 
-                Node(const Object& func) : func(func), alive(0) {}
-                Node(Object&& func) : func(std::move(func)), alive(0) {}
+                Node(PyObject* func, uint64_t mask, uint64_t required) :
+                    func(func), alive(0), mask(mask), required(required) {}
                 Node(const Node&) = delete;
                 Node(Node&&) = delete;
 
-                ~Node() {
-                    for (auto&& [type, edge] : positional) {
+                ~Node() noexcept {
+                    for (auto&& [type, node] : positional) {
                         if (Py_IsInitialized()) {
                             Py_DECREF(type);
                         }
-                        delete edge.node;
+                        delete node;
                     }
                     for (auto&& [name, map] : keyword) {
-                        for (auto&& [type, edge] : map) {
+                        for (auto&& [type, node] : map) {
                             if (Py_IsInitialized()) {
                                 Py_DECREF(type);
                             }
-                            delete edge.node;
+                            delete node;
                         }
                     }
                 }
@@ -1989,33 +2046,33 @@ namespace impl {
                 which causes the algorithm to backtrack one level and continue
                 searching. */
                 template <typename Container>
-                [[gnu::always_inline]] const Node* search(
+                [[gnu::always_inline]] PyObject* search(
                     const Params<Container>& key,
-                    size_t idx
+                    size_t idx,
+                    uint64_t mask
                 ) const {
                     if (idx >= key.size()) {
-                        return func.is(nullptr) ? nullptr : this;
+                        return (mask & required) == required ? func : nullptr;
                     }
                     const Param& param = key[idx];
 
                     /// NOTE: the key is already guaranteed to satisfy the signature
                     /// before calling this method, so we can compile out the
                     /// positional check where appropriate, as well as optimize it
-                    /// out when the first keyword argument is encountered.  This
-                    /// branch therefore frequently amortizes to zero.
+                    /// out when the first keyword argument is encountered.
                     if constexpr (
                         (Arguments::has_pos || Arguments::has_args) &&
                         (Arguments::has_kw || Arguments::has_kwargs)
                     ) {
                         if (param.name.empty()) {
-                            return search_positional(key, idx, param);
+                            return search_positional(key, idx, mask, param);
                         } else {
-                            return search_keyword(key, idx, param);
+                            return search_keyword(key, idx, mask, param);
                         }
                     } else if constexpr (Arguments::has_pos || Arguments::has_args) {
-                        return search_positional(key, idx, param);
+                        return search_positional(key, idx, mask, param);
                     } else {
-                        return search_keyword(key, idx, param);
+                        return search_keyword(key, idx, mask, param);
                     }
                 }
 
@@ -2220,6 +2277,8 @@ namespace impl {
                 }
             }
 
+            /// TODO: search() and get() return borrowed references
+
             /* Search the overload trie for a matching signature.  This will
             recursively backtrack until a matching node is found or the trie is
             exhausted, returning nullptr on a failed search.  The results will be
@@ -2241,6 +2300,7 @@ namespace impl {
                 }
 
                 // ensure the key satisfies the enclosing parameter list
+                uint64_t mask = 0;
                 for (size_t i = 0, n = key.size(); i < n; ++i) {
                     const Param& param = key[i];
                     if (param.name.empty()) {
@@ -2262,7 +2322,7 @@ namespace impl {
                                 )) + "'"
                             );
                         }
-                        key.mask |= callback.mask;
+                        mask |= callback.mask;
                     } else if (param.kw()) {
                         const Callback& callback = Arguments::callback(param.name);
                         if (!callback) {
@@ -2271,7 +2331,7 @@ namespace impl {
                                 std::string(param.name) + "'"
                             );
                         }
-                        if (key.mask & callback.mask) {
+                        if (mask & callback.mask) {
                             throw TypeError(
                                 "received multiple values for argument '" +
                                 std::string(param.name) + "'"
@@ -2288,11 +2348,11 @@ namespace impl {
                                 )) + "'"
                             );
                         }
-                        key.mask |= callback.mask;
+                        mask |= callback.mask;
                     }
                 }
-                if ((key.mask & required) != required) {
-                    uint64_t missing = required & ~(key.mask & required);
+                if ((mask & required) != required) {
+                    uint64_t missing = required & ~(mask & required);
                     std::string msg = "missing required arguments: [";
                     size_t i = 0;
                     while (i < n) {
@@ -2328,9 +2388,9 @@ namespace impl {
                     cache[key.hash] = nullptr;
                     return nullptr;
                 }
-                const Node* result = root->search(key, 0);
-                cache[key.hash] = ptr(result->func);
-                return ptr(result->func);
+                PyObject* result = root->search(key, 0, 0);
+                cache[key.hash] = result;
+                return result;
             }
 
             /* Search the overload trie for a matching signature, suppressing errors
@@ -2347,12 +2407,13 @@ namespace impl {
             arguments, which may be a self-reference if the fallback implementation is
             selected. */
             template <typename Container>
-            std::optional<const Node*> get(const Params<Container>& key) const {
+            std::optional<PyObject*> get(const Params<Container>& key) const {
                 auto it = cache.find(key.hash);
                 if (it != cache.end()) {
                     return it->second;
                 }
 
+                uint64_t mask = 0;
                 for (size_t i = 0, n = key.size(); i < n; ++i) {
                     const Param& param = key[i];
                     if (param.name.empty()) {
@@ -2360,20 +2421,20 @@ namespace impl {
                         if (!callback || !callback(param.type)) {
                             return std::nullopt;
                         }
-                        key.mask |= callback.mask;
+                        mask |= callback.mask;
                     } else {
                         const Callback& callback = Arguments::callback(param.name);
                         if (
                             !callback ||
-                            (key.mask & callback.mask) ||
+                            (mask & callback.mask) ||
                             !callback(param.type)
                         ) {
                             return std::nullopt;
                         }
-                        key.mask |= callback.mask;
+                        mask |= callback.mask;
                     }
                 }
-                if ((key.mask & required) != required) {
+                if ((mask & required) != required) {
                     return std::nullopt;
                 }
 
@@ -2381,9 +2442,9 @@ namespace impl {
                     cache[key.hash] = nullptr;
                     return nullptr;
                 }
-                const Node* result = root->search(key, 0);
-                cache[key.hash] = ptr(result->func);
-                return ptr(result->func);
+                PyObject* result = root->search(key, 0);
+                cache[key.hash] = result;
+                return result;
             }
 
             /// TODO: insert() is going to have to be able to account for variadic
@@ -2514,10 +2575,7 @@ namespace impl {
                 cache.clear();
             }
 
-            explicit operator bool() const {
-                return root != nullptr;
-            }
-
+            explicit operator bool() const { return root != nullptr; }
             auto size() const { return funcs.size(); }
             auto empty() const { return funcs.empty(); }
             auto begin() { return funcs.begin(); }
