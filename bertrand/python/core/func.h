@@ -6,6 +6,7 @@
 #include "except.h"
 #include "ops.h"
 #include "access.h"
+#include <cstddef>
 
 namespace py {
 
@@ -1624,7 +1625,7 @@ namespace impl {
             /* Argument maps are topologically sorted according to an `issubclass()` check
             on each type, ensuring that subclasses are always checked before their parent
             classes, and more specific overloads are preferred over more general ones. */
-            struct Compare {
+            struct TopoSort {
                 static bool operator()(PyTypeObject* lhs, PyTypeObject* rhs) {
                     int rc = PyObject_IsSubclass(
                         reinterpret_cast<PyObject*>(lhs),
@@ -1803,239 +1804,83 @@ namespace impl {
             }
 
         public:
-
             struct Node;
 
+            /* A link between two nodes in the trie.  A unique edge will be created for
+            every parameter in a key when it is registered, such that it can be
+            unambiguously reconstructed from a search of the trie itself. */
             struct Edge {
-                Node* node;
+                std::shared_ptr<Node> node;
+                uint64_t mask;
+                size_t hash;
                 ArgKind kind;
-                Node* operator->() { return node; }
-                const Node* operator->() const { return node; }
-                operator Node*() { return node; }
-                operator const Node*() const { return node; }
-                bool posonly() const { return kind.posonly(); }
-                bool pos() const { return kind.pos(); }
-                bool args() const { return kind.args(); }
-                bool kw() const { return kind.kw(); }
-                bool kwonly() const { return kind.kwonly(); }
-                bool kwargs() const { return kind.kwargs(); }
-                bool opt() const { return kind.opt(); }
-                bool variadic() const { return kind.variadic(); }
+
+                bool operator<(const Edge& other) const {
+                    return kind < other.kind || hash < other.hash;
+                }
+                bool operator==(const Edge& other) const {
+                    return node == other.node && hash == other.hash;
+                }
             };
 
-            /// TODO: maybe the edge masks are all we need?  I can just follow each
-            /// edge like normal, looking up the name in the keyword map, and then
-            /// extract out the node with the largest mask value (so, deepest into the
-            /// trie).  I can then extract a comparison mask from that edge, which
-            /// would be computed when the edge is inserted into the trie, and compare
-            /// against it to see if all required arguments on that path have been
-            /// accounted for.  If they have, then I can either return the function
-            /// directly if it is a terminal node, or iterate along its default path
-            /// until I reach a terminal node.  Note that this would be guaranteed to
-            /// work because of the mask check above, which ensures that the path is
-            /// fully satisfied.  As such, I can maybe also just store the function
-            /// directly on that last required node, and any optional nodes that come
-            /// after it, so that when I find the deepest node and confirm that all
-            /// required arguments on that path have been accounted for, I can just
-            /// return the function directly.  That would avoid any further traversal
-            /// after that point, and may mean I don't need to store a default path
-            /// at all.
+            /* An ordered map of key hashes to Edge structs that can be used to
+            traverse the argument map in an unambiguous fashion.  The `order` set
+            effectively sorts the map based on the edge's kind, meaning that variadic
+            edges will always be tested after non-variadic edges when narrowing to a
+            specific key. */
+            struct Edges {
+                struct Hash {
+                    static size_t operator()(const Edge& edge) noexcept {
+                        return edge.hash;
+                    }
+                    static size_t operator()(size_t hash) noexcept {
+                        return hash;
+                    }
+                };
+                std::unordered_set<Edge, Hash> map;
+                std::set<std::reference_wrapper<Edge>> order;
+            };
 
             /* A node in the overload trie, with facilities for topologically-sorted,
             recursive traversal, insertion, and deletion of candidate functions. */
             struct Node {
             private:
 
-                std::map<PyTypeObject*, Edge, Compare> positional;
+                /* A topologically sorted map of outgoing edges for positional
+                arguments that intersect this node.  The keys are sorted pairwise
+                according to a series of `issubclass()` checks, ensuring the most
+                specific types are always checked first. */
+                std::map<PyTypeObject*, Edges, TopoSort> positional;
+
+                /* A map of keyword argument names to topologically sorted argument
+                maps similar to the positional map.  A special empty string key will be
+                used to represent variadic keyword arguments, which can match any
+                keyword name.  Empty argument names are not normally valid syntax, so
+                this will never conflict. */
                 std::unordered_map<
                     std::string_view,
-                    std::map<PyTypeObject*, Edge, Compare>
+                    std::map<PyTypeObject*, Edges, TopoSort>
                 > keyword;
 
-                /// NOTE: each node owns the strings used by its keyword map, but does so
-                /// indirectly, so as not to incur extra allocations during lookup.  Each
-                /// keyword name is simply a view into one of the strings stored here.
-                std::unordered_set<std::string> kwnames;
-
-                /* Consume a positional argument from a parameter list and recur. */
-                template <typename Container>
-                [[gnu::always_inline]] PyObject* search_positional(
-                    const Params<Container>& key,
-                    size_t idx,
-                    uint64_t mask,
-                    const Param& param
-                ) const {
-                    mask |= this->mask;
-
-                    // search the topological map, checking `issubclass()` for each
-                    // candidate and recurring on a match with an incremented index
-                    for (auto&& [expected, edge] : positional) {
-                        if (Compare{}(param.type, expected)) {
-                            size_t i = idx;
-                            if constexpr (Arguments::has_args) {
-                                // variadic positional arguments will test all
-                                // remaining arguments against the expected type and
-                                // only recur if they all match
-                                if (edge.variadic()) {
-                                    const Param* curr = &param;
-                                    while (
-                                        curr &&
-                                        curr->pos() &&
-                                        Compare{}(curr->type, expected)
-                                    ) {
-                                        curr = ++i < key.size() ? &key[i] : nullptr;
-                                    }
-                                    if (curr && curr->pos()) {
-                                        return nullptr;  // failed comparison
-                                    }
-                                } else {
-                                    ++i;
-                                }
-                            } else {
-                                ++i;
-                            }
-                            PyObject* result = edge->search(key, i, mask);
-                            if (result) {
-                                return result;
-                            }
-                        }
-                    }
-                    return nullptr;
-                }
-
-                /* An optimized recursive search which exploits the fact that only
-                keyword arguments can follow other keyword arguments. */
-                template <typename Container>
-                [[gnu::always_inline]] PyObject* search_keyword(
-                    const Params<Container>& key,
-                    size_t idx,
-                    uint64_t mask,
-                    const Param& param
-                ) const {
-                    mask |= this->mask;
-
-                    // look up the argument name in the keyword map
-                    auto it = keyword.find(param.name);
-                    if (it != keyword.end()) {
-                        for (auto&& [expected, edge] : it->second) {
-                            if (Compare{}(param.type, expected)) {
-                                size_t i = idx + 1;
-                                if (i >= key.size()) {
-                                    return (mask & required) == required ?
-                                        edge->func : nullptr;
-                                }
-                                PyObject* result = edge->search_keyword(
-                                    key,
-                                    i,
-                                    mask,
-                                    key[i]
-                                );
-                                if (result) {
-                                    return result;
-                                }
-                            }
-                        }
-
-                    // if the keyword name is not recognized, check for a variadic
-                    // keyword argument stored under an empty string, which is not
-                    // valid syntax in any other case
-                    } else {
-                        if constexpr (Arguments::has_kwargs) {
-                            it = keyword.find("");
-                            if (it != keyword.end()) {
-                                for (auto&& [expected, edge] : it->second) {
-                                    if (Compare{}(param.type, expected)) {
-                                        PyObject* result = edge->search_kwargs(
-                                            key,
-                                            idx + 1,
-                                            mask,
-                                            expected
-                                        );
-                                        if (result) {
-                                            return result;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    return nullptr;
-                }
-
-                /* A modified keyword search that forces variadic keywords to match a
-                specific type. */
-                template <typename Container>
-                [[gnu::always_inline]] PyObject* search_kwargs(
-                    const Params<Container>& key,
-                    size_t idx,
-                    uint64_t mask,
-                    PyTypeObject* kwargs_type
-                ) const {
-                    if (idx >= key.size()) {
-                        return (mask & required) == required ? func : nullptr;
-                    }
-                    const Param& param = key[idx];
-                    mask |= this->mask;  // TODO: kwargs always have a zero mask
-
-                    // look up the argument name in the keyword map
-                    auto it = keyword.find(param.name);
-                    if (it != keyword.end()) {
-                        for (auto&& [expected, edge] : it->second) {
-                            if (Compare{}(param.type, expected)) {
-                                PyObject* result = edge->search_kwargs(
-                                    key,
-                                    idx + 1,
-                                    mask,
-                                    kwargs_type
-                                );
-                                if (result) {
-                                    return result;
-                                }
-                            }
-                        }
-
-                    // if the keyword name is not recognized, then it must conform to
-                    // the previously-encountered variadic keyword argument type
-                    } else if (Compare{}(param.type, kwargs_type)) {
-                        PyObject* result = search_kwargs(
-                            key,
-                            idx + 1,
-                            mask,
-                            kwargs_type
-                        );
-                        if (result) {
-                            return result;
-                        }
-                    }
-                    return nullptr;
-                }
-
             public:
+                std::string name;  // keyword argument name or empty for positional-only
                 PyObject* func;  // non-owning reference to terminal function
-                size_t alive;  // stores the number of live nodes in the subtrie
-                uint64_t mask;  // stores the depth of this node within the trie
-                uint64_t required;  // stores the required arguments on this path
-                /// TODO: kind can probably stored on the node as well, which would
-                /// eliminate the edge struct.
+                size_t alive = 0;  // number of reachable functions within the subtrie
 
-                Node(PyObject* func, uint64_t mask, uint64_t required) :
-                    func(func), alive(0), mask(mask), required(required) {}
+                Node(std::string&& name, PyObject* func) :
+                    name(std::move(name)), func(func)
+                {}
                 Node(const Node&) = delete;
                 Node(Node&&) = delete;
-
                 ~Node() noexcept {
-                    for (auto&& [type, node] : positional) {
-                        if (Py_IsInitialized()) {
+                    if (Py_IsInitialized()) {
+                        for (auto&& [type, _] : positional) {
                             Py_DECREF(type);
                         }
-                        delete node;
-                    }
-                    for (auto&& [name, map] : keyword) {
-                        for (auto&& [type, node] : map) {
-                            if (Py_IsInitialized()) {
+                        for (auto&& [name, map] : keyword) {
+                            for (auto&& [type, _] : map) {
                                 Py_DECREF(type);
                             }
-                            delete node;
                         }
                     }
                 }
@@ -2046,34 +1891,204 @@ namespace impl {
                 which causes the algorithm to backtrack one level and continue
                 searching. */
                 template <typename Container>
-                [[gnu::always_inline]] PyObject* search(
+                PyObject* search(
                     const Params<Container>& key,
                     size_t idx,
-                    uint64_t mask
+                    uint64_t& mask,
+                    size_t& hash
                 ) const {
                     if (idx >= key.size()) {
-                        return (mask & required) == required ? func : nullptr;
+                        return func;
                     }
                     const Param& param = key[idx];
 
-                    /// NOTE: the key is already guaranteed to satisfy the signature
-                    /// before calling this method, so we can compile out the
-                    /// positional check where appropriate, as well as optimize it
-                    /// out when the first keyword argument is encountered.
-                    if constexpr (
-                        (Arguments::has_pos || Arguments::has_args) &&
-                        (Arguments::has_kw || Arguments::has_kwargs)
-                    ) {
-                        if (param.name.empty()) {
-                            return search_positional(key, idx, mask, param);
-                        } else {
-                            return search_keyword(key, idx, mask, param);
+                    // positional arguments have empty names
+                    if (param.name.empty()) {
+                        for (auto&& [expected, edges] : positional) {
+                            if (!TopoSort{}(param.type, expected)) {
+                                continue;
+                            }
+
+                            // if the index is zero, then the hash is ambiguous, and
+                            // we need to check all possible matches
+                            if (!idx) {
+                                for (const Edge& edge : edges.order) {
+                                    size_t i = idx + 1;
+                                    // variadic positional arguments will test all
+                                    // remaining positional args against the expected
+                                    // type and only recur if they all match
+                                    if constexpr (Arguments::has_args) {
+                                        if (edge.kind.variadic()) {
+                                            const Param* curr;
+                                            while (
+                                                i < key.size() &&
+                                                (curr = &key[i])->pos() &&
+                                                TopoSort{}(curr->type, expected)
+                                            ) {
+                                                ++i;
+                                            }
+                                            if (i < key.size() && curr->pos()) {
+                                                continue;  // failed comparison
+                                            }
+                                        }
+                                    }
+                                    size_t temp_hash = edge.hash;
+                                    uint64_t temp_mask = mask | edge.mask;
+                                    PyObject* result = edge.node->search(
+                                        key,
+                                        i,
+                                        temp_mask,
+                                        temp_hash
+                                    );
+                                    if (result) {
+                                        mask = temp_mask;
+                                        hash = temp_hash;
+                                        return result;
+                                    }
+                                }
+
+                            // otherwise, the hash we're testing for was set by the
+                            // first edge we followed, and we just have to check it
+                            } else {
+                                auto it = edges.map.find(hash);
+                                if (it == edges.map.end()) {
+                                    continue;
+                                }
+                                const Edge& edge = *it;
+                                size_t i = idx + 1;
+                                if constexpr (Arguments::has_args) {
+                                    if (edge.kind.variadic()) {
+                                        const Param* curr;
+                                        while (
+                                            i < key.size() &&
+                                            (curr = &key[i])->pos() &&
+                                            TopoSort{}(curr->type, expected)
+                                        ) {
+                                            ++i;
+                                        }
+                                        if (i < key.size() && curr->pos()) {
+                                            continue;  // failed comparison
+                                        }
+                                    }
+                                }
+                                uint64_t temp_mask = mask | edge.mask;
+                                PyObject* result = edge.node->search(
+                                    key,
+                                    i,
+                                    temp_mask,
+                                    hash
+                                );
+                                if (result) {
+                                    mask = temp_mask;
+                                    return result;
+                                }
+                            }
                         }
-                    } else if constexpr (Arguments::has_pos || Arguments::has_args) {
-                        return search_positional(key, idx, mask, param);
+
+                    // keyword argument names must be looked up in the keyword map
                     } else {
-                        return search_keyword(key, idx, mask, param);
+                        auto it = keyword.find(param.name);
+                        if (it != keyword.end()) {
+                            for (auto&& [expected, edges] : it->second) {
+                                if (!TopoSort{}(param.type, expected)) {
+                                    continue;
+                                }
+
+                                // if the index is zero, then we have an ambiguous hash
+                                // just like in the positional case
+                                if (!idx) {
+                                    for (const Edge& edge : edges.order) {
+                                        size_t temp_hash = edge.hash;
+                                        uint64_t temp_mask = mask | edge.mask;
+                                        PyObject* result = edge.node->search(
+                                            key,
+                                            idx + 1,
+                                            temp_mask,
+                                            temp_hash
+                                        );
+                                        if (result) {
+                                            mask = temp_mask;
+                                            hash = temp_hash;
+                                            return result;
+                                        }
+                                    }
+
+                                } else {
+                                    auto it2 = edges.map.find(hash);
+                                    if (it2 == edges.map.end()) {
+                                        continue;
+                                    }
+                                    const Edge& edge = *it2;
+                                    uint64_t temp_mask = mask | edges.mask;
+                                    PyObject* result = edge.node->search(
+                                        key,
+                                        idx + 1,
+                                        temp_mask,
+                                        hash
+                                    );
+                                    if (result) {
+                                        // The return value may not be the deepest node
+                                        // if keywords were supplied out of order.  To
+                                        // consistently find the terminal node, we
+                                        // check if the mask of the current node is
+                                        // greater than the edge we're trying to
+                                        // follow, and if so, return this node instead.
+                                        if (mask > edge.mask) {
+                                            result = this;
+                                        }
+                                        mask = temp_mask;
+                                        return result;
+                                    }
+                                }
+                            }
+
+                        // if the keyword name is not recognized, check for a variadic
+                        // keyword argument under an empty string
+                        } else if ((it = keyword.find("")) != keyword.end()) {
+                            for (auto&& [expected, edges] : it->second) {
+                                if (!TopoSort{}(param.type, expected)) {
+                                    continue;
+                                }
+                                if (!idx) {
+                                    for (const Edge& edge : edges.order) {
+                                        size_t temp_hash = edge.hash;
+                                        uint64_t temp_mask = mask | edge.mask;
+                                        PyObject* result = edge.node->search(
+                                            key,
+                                            idx + 1,
+                                            temp_mask,
+                                            temp_hash
+                                        );
+                                        if (result) {
+                                            mask = temp_mask;
+                                            hash = temp_hash;
+                                            return result;
+                                        }
+                                    }
+                                } else {
+                                    auto it2 = edges.map.find(hash);
+                                    if (it2 == edges.map.end()) {
+                                        continue;
+                                    }
+                                    const Edge& edge = *it2;
+                                    uint64_t temp_mask = mask | edges.mask;
+                                    PyObject* result = edge.node->search(
+                                        key,
+                                        idx + 1,
+                                        temp_mask,
+                                        hash
+                                    );
+                                    if (result) {
+                                        mask = temp_mask;
+                                        return result;
+                                    }
+                                }
+                            }
+                        }
                     }
+
+                    // return nullptr to backtrack
+                    return nullptr;
                 }
 
                 /// TODO: perhaps insert returns a bool to indicate whether the next node
@@ -2222,7 +2237,7 @@ namespace impl {
                     // positional
                     if (param.name.empty()) {
                         for (auto& [type, edge] : positional) {
-                            if (Compare{}(type, param.type)) {
+                            if (TopoSort{}(type, param.type)) {
                                 // if a match is found, recur with incremented index
                                 Object result = edge->remove(key, idx + 1);
                                 if (!result.is(nullptr)) {
@@ -2241,7 +2256,7 @@ namespace impl {
                         auto it = keyword.find(param.name);
                         if (it != keyword.end()) {
                             for (auto& [type, edge] : it->second) {
-                                if (Compare{}(type, param.type)) {
+                                if (TopoSort{}(type, param.type)) {
                                     // if a match is found, recur with incremented index
                                     Object result = edge->remove(key, idx + 1);
                                     if (!result.is(nullptr)) {
@@ -2267,17 +2282,16 @@ namespace impl {
 
             };
 
-            Node* root;
-            std::unordered_set<Object> funcs;
+            /* A function that has been inserted into the overload trie, plus some
+            extra metadata to quickly validate the result of a search operation. */
+            struct Metadata {
+                Object func;
+                uint64_t required;
+            };
+
+            std::unique_ptr<Node> root;
+            std::unordered_map<size_t, Metadata> funcs;
             mutable std::unordered_map<size_t, PyObject*> cache;
-
-            ~Overloads() {
-                if (root) {
-                    delete root;
-                }
-            }
-
-            /// TODO: search() and get() return borrowed references
 
             /* Search the overload trie for a matching signature.  This will
             recursively backtrack until a matching node is found or the trie is
@@ -2290,7 +2304,10 @@ namespace impl {
             delegate to this function after constructing a key from the input
             arguments, so it will be called every time a C++ function is invoked from
             Python.  If it returns null, then the fallback implementation will be
-            used instead. */
+            used instead.
+            
+            Returns a borrowed reference to the terminal function if a match is
+            found. */
             template <typename Container>
             PyObject* search(const Params<Container>& key) const {
                 // check the cache first
@@ -2351,8 +2368,8 @@ namespace impl {
                         mask |= callback.mask;
                     }
                 }
-                if ((mask & required) != required) {
-                    uint64_t missing = required & ~(mask & required);
+                if ((mask & Arguments::required) != Arguments::required) {
+                    uint64_t missing = Arguments::required & ~(mask & Arguments::required);
                     std::string msg = "missing required arguments: [";
                     size_t i = 0;
                     while (i < n) {
@@ -2384,13 +2401,25 @@ namespace impl {
                 }
 
                 // search the trie for a matching node
-                if (root == nullptr) {
-                    cache[key.hash] = nullptr;
-                    return nullptr;
+                if (root) {
+                    mask = 0;
+                    size_t hash;
+                    PyObject* result = root->search(key, 0, mask, hash);
+                    if (result) {
+                        // hash is only initialized if the key has at least one param
+                        if (key.empty()) {
+                            cache[key.hash] = result;  // may be null
+                            return result;
+                        }
+                        const Metadata& data = funcs.at(hash);
+                        if ((mask & data.required) == data.required) {
+                            cache[key.hash] = result;  // may be null
+                            return result;
+                        }
+                    }
                 }
-                PyObject* result = root->search(key, 0, 0);
-                cache[key.hash] = result;
-                return result;
+                cache[key.hash] = nullptr;
+                return nullptr;
             }
 
             /* Search the overload trie for a matching signature, suppressing errors
@@ -2405,7 +2434,10 @@ namespace impl {
             `None` on the Python side.  Otherwise, it will return the function that
             would be invoked if the function were to be called with the given
             arguments, which may be a self-reference if the fallback implementation is
-            selected. */
+            selected.
+            
+            Returns a borrowed reference to the terminal function if a match is
+            found. */
             template <typename Container>
             std::optional<PyObject*> get(const Params<Container>& key) const {
                 auto it = cache.find(key.hash);
@@ -2438,13 +2470,24 @@ namespace impl {
                     return std::nullopt;
                 }
 
-                if (root == nullptr) {
-                    cache[key.hash] = nullptr;
-                    return nullptr;
+                if (root) {
+                    mask = 0;
+                    size_t hash;
+                    PyObject* result = root->search(key, 0, mask, hash);
+                    if (result) {
+                        if (key.empty()) {
+                            cache[key.hash] = result;
+                            return result;
+                        }
+                        const Metadata& data = funcs.at(hash);
+                        if ((mask & data.required) == data.required) {
+                            cache[key.hash] = result;
+                            return result;
+                        }
+                    }
                 }
-                PyObject* result = root->search(key, 0);
-                cache[key.hash] = result;
-                return result;
+                cache[key.hash] = nullptr;
+                return nullptr;
             }
 
             /// TODO: insert() is going to have to be able to account for variadic
