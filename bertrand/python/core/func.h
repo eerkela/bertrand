@@ -1619,12 +1619,17 @@ namespace impl {
         };
 
         /// TODO: Overload tries need linked dicts to efficiently implement ordered
-        /// dictionaries, which are needed for topologically sorted argument maps (by
+        /// maps, which are needed for topologically sorted argument maps (by
         /// type) + edge dicts (by kind) + the path cache (fixed-size, LRU).  
 
         /* A Trie-based data structure that describes a collection of dynamic overloads
         for a `py::Function` object. */
         struct Overloads {
+            struct Node;
+            struct Edge;
+            struct Edges;
+            struct Metadata;
+
         private:
 
             /* Argument maps are topologically sorted according to an `issubclass()` check
@@ -1642,15 +1647,14 @@ namespace impl {
                     return rc || lhs < rhs;
                 }
             };
+            using TopoMap = std::map<PyTypeObject*, Edges, TopoSort>;
 
         public:
-            struct Node;
 
             /* A link between two nodes in the trie.  A unique edge will be created for
             every parameter in a key when it is registered, such that it can be
             unambiguously reconstructed from a search of the trie itself. */
             struct Edge {
-                std::shared_ptr<Node> node;
                 uint64_t mask;
                 size_t hash;
                 ArgKind kind;
@@ -1658,7 +1662,7 @@ namespace impl {
                     return kind < other.kind || hash < other.hash;
                 }
                 bool operator==(const Edge& other) const {
-                    return node == other.node && hash == other.hash;
+                    return hash == other.hash && mask == other.mask;
                 }
             };
 
@@ -1676,6 +1680,7 @@ namespace impl {
                         return hash;
                     }
                 };
+                std::shared_ptr<Node> node;
                 std::unordered_set<Edge, Hash> map;
                 std::set<Edge> order;
             };
@@ -1689,83 +1694,86 @@ namespace impl {
                 arguments that can be given after this node.  The keys are sorted
                 pairwise according to a series of `issubclass()` checks, ensuring that
                 more specific types are always checked first. */
-                std::map<PyTypeObject*, Edges, TopoSort> positional;
+                TopoMap positional;
 
                 /* A map of keyword argument names to topologically sorted type maps
                 similar to the positional map.  A special empty string key will be used
                 to represent variadic keyword arguments, which can match any keyword
                 argument name. */
-                std::unordered_map<
-                    std::string_view,
-                    std::map<PyTypeObject*, Edges, TopoSort>
-                > keyword;
+                std::unordered_map<std::string_view, TopoMap> keyword;
 
             public:
                 std::string name;  // argument name or empty if positional-only
+                PyTypeObject* type;  // owning reference to the argument type
                 PyObject* func;  // borrowed reference to terminal function
-                size_t alive = 0;  // number of reachable functions within the subtrie
+                size_t alive;  // number of reachable functions within the subtrie
 
-                Node(std::string_view name, PyObject* func) :
-                    name(name), func(func)
-                {}
-
-                Node(Node&& other) noexcept = default;
-                Node& operator=(Node&&) noexcept = default;
+                Node(std::string_view name, PyTypeObject* type, PyObject* func) :
+                    name(name), type(type), func(func), alive(0)
+                {
+                    Py_XINCREF(type);
+                }
 
                 Node(const Node& other) noexcept :
                     positional(other.positional),
                     keyword(other.keyword),
                     name(other.name),
+                    type(other.type),
                     func(other.func),
                     alive(other.alive)
                 {
-                    for (auto&& [type, _] : positional) {
-                        Py_INCREF(type);
-                    }
-                    for (auto&& [name, map] : keyword) {
-                        for (auto&& [type, _] : map) {
-                            Py_INCREF(type);
-                        }
-                    }
+                    Py_XINCREF(type);
+                }
+
+                Node(Node&& other) noexcept :
+                    positional(std::move(other.positional)),
+                    keyword(std::move(other.keyword)),
+                    name(std::move(other.name)),
+                    type(other.type),
+                    func(other.func),
+                    alive(other.alive)
+                {
+                    other.type = nullptr;
+                    other.func = nullptr;
+                    other.alive = 0;
                 }
 
                 Node& operator=(const Node& other) noexcept {
                     if (&other != this) {
-                        for (auto&& [type, _] : positional) {
-                            Py_DECREF(type);
-                        }
-                        for (auto&& [name, map] : keyword) {
-                            for (auto&& [type, _] : map) {
-                                Py_DECREF(type);
-                            }
-                        }
                         positional = other.positional;
                         keyword = other.keyword;
                         name = other.name;
+                        PyTypeObject* temp = type;
+                        type = other.type;
+                        Py_XDECREF(temp);
+                        Py_XINCREF(type);
                         func = other.func;
                         alive = other.alive;
-                        for (auto&& [type, _] : positional) {
-                            Py_INCREF(type);
-                        }
-                        for (auto&& [name, map] : keyword) {
-                            for (auto&& [type, _] : map) {
-                                Py_INCREF(type);
-                            }
-                        }
+                    }
+                    return *this;
+                }
+
+                Node& operator=(Node&& other) noexcept {
+                    if (&other != this) {
+                        positional = std::move(other.positional);
+                        keyword = std::move(other.keyword);
+                        name = std::move(other.name);
+                        PyTypeObject* temp = type;
+                        type = other.type;
+                        Py_XDECREF(temp);
+                        Py_XINCREF(type);
+                        func = other.func;
+                        alive = other.alive;
+                        other.type = nullptr;
+                        other.func = nullptr;
+                        other.alive = 0;
                     }
                     return *this;
                 }
 
                 ~Node() noexcept {
                     if (Py_IsInitialized()) {
-                        for (auto&& [type, _] : positional) {
-                            Py_DECREF(type);
-                        }
-                        for (auto&& [name, map] : keyword) {
-                            for (auto&& [type, _] : map) {
-                                Py_DECREF(type);
-                            }
-                        }
+                        Py_XDECREF(type);
                     }
                 }
 
@@ -1817,7 +1825,7 @@ namespace impl {
                                     }
                                     size_t temp_hash = edge.hash;
                                     uint64_t temp_mask = mask | edge.mask;
-                                    PyObject* result = edge.node->search(
+                                    PyObject* result = edges.node->search(
                                         key,
                                         i,
                                         temp_mask,
@@ -1855,7 +1863,7 @@ namespace impl {
                                     }
                                 }
                                 uint64_t temp_mask = mask | edge.mask;
-                                PyObject* result = edge.node->search(
+                                PyObject* result = edges.node->search(
                                     key,
                                     i,
                                     temp_mask,
@@ -1883,7 +1891,7 @@ namespace impl {
                                     for (const Edge& edge : edges.order) {
                                         size_t temp_hash = edge.hash;
                                         uint64_t temp_mask = mask | edge.mask;
-                                        PyObject* result = edge.node->search(
+                                        PyObject* result = edges.node->search(
                                             key,
                                             idx + 1,
                                             temp_mask,
@@ -1903,7 +1911,7 @@ namespace impl {
                                     }
                                     const Edge& edge = *it2;
                                     uint64_t temp_mask = mask | edges.mask;
-                                    PyObject* result = edge.node->search(
+                                    PyObject* result = edges.node->search(
                                         key,
                                         idx + 1,
                                         temp_mask,
@@ -1936,7 +1944,7 @@ namespace impl {
                                     for (const Edge& edge : edges.order) {
                                         size_t temp_hash = edge.hash;
                                         uint64_t temp_mask = mask | edge.mask;
-                                        PyObject* result = edge.node->search(
+                                        PyObject* result = edges.node->search(
                                             key,
                                             idx + 1,
                                             temp_mask,
@@ -1955,7 +1963,7 @@ namespace impl {
                                     }
                                     const Edge& edge = *it2;
                                     uint64_t temp_mask = mask | edges.mask;
-                                    PyObject* result = edge.node->search(
+                                    PyObject* result = edges.node->search(
                                         key,
                                         idx + 1,
                                         temp_mask,
@@ -1972,181 +1980,6 @@ namespace impl {
 
                     // return nullptr to backtrack
                     return nullptr;
-                }
-
-                /* Insert a function into this node's sub-trie, returning true if the
-                incoming edge is terminal.  This causes the function pointer to be
-                populated on the previous node, but only for the last required argument
-                in the signature and any optional or variadic arguments that come after
-                it.  Also updates a `required` bitset encoding the indices of each of
-                the required arguments in the original signature. */
-                template <typename Container>
-                [[maybe_unused]] bool insert(
-                    const Params<Container>& key,
-                    size_t idx,
-                    PyObject* func,
-                    uint64_t& required
-                ) {
-                    if (idx >= key.size()) {
-                        return true;
-                    }
-
-                    /// TODO: optional positional arguments also need to list the
-                    /// keyword arguments as outgoing edges, in order for the trie to
-                    /// be properly constructed.  Basically, this method is going to
-                    /// have to carefully consider the semantics of each argument, and
-                    /// the order in which they can be given.
-
-                    // insert an edge into this node's positional argument map
-                    constexpr auto insert_positional = [](
-                        Node* curr,
-                        const Params<Container>& key,
-                        size_t idx,
-                        PyObject* func,
-                        uint64_t& required,
-                        const Param& param
-                    ) -> bool {
-                        // insert into topologically-sorted positional map
-                        Py_INCREF(param.type);
-                        auto [it, inserted] = curr->positional.try_emplace(param.type, {});
-                        try {
-                            Edge edge = {
-                                .node = std::make_shared<Node>(param.name, func),
-                                .mask = 1ULL << idx,
-                                .hash = key.hash,
-                                .kind = param.kind
-                            };
-                            // insert into the sorted edge map
-                            it->second.map.insert(edge);
-                            try {
-                                it->second.order.insert(edge);
-                            } catch (...) {
-                                it->second.map.erase(edge);
-                                throw;
-                            }
-                            bool result = false;
-                            try {
-                                // if insert() returns true, then the next node is a
-                                // terminal node, and we should set its function.
-                                if (edge.node->insert(key, idx + 1, func, required)) {
-                                    if (edge.node->func) {
-                                        /// TODO: give a much more informative error
-                                        /// message, potentially printing the
-                                        /// conflicting signatures for comparison.
-                                        throw TypeError("overload already exists");
-                                    }
-                                    edge.node->func = func;
-                                    // we propagate the terminal function up the call
-                                    // stack if and only if the node we just inserted
-                                    // was optional or variadic
-                                    result = param.opt() || param.variadic();
-                                }
-                            } catch (...) {
-                                it->second.map.erase(edge);
-                                it->second.order.erase(edge);
-                                throw;
-                            }
-                            ++(edge.node->alive);
-                            if (!param.opt() && !param.variadic()) {
-                                required |= edge.mask;
-                            }
-                            return result;
-
-                        } catch (...) {
-                            if (inserted) {
-                                curr->positional.erase(it);
-                            }
-                            Py_DECREF(param.type);
-                            throw;
-                        }
-                    };
-
-                    /// TODO: inserting keyword arguments has to happen all at once,
-                    /// i.e. I probably need to preprocess them in some way and provide
-                    /// them as a reference here.  I would then just insert all keyword
-                    /// arguments into the trie at every node, copying over the
-                    /// preprocessed map except for the current argument.
-
-                    // insert an edge into this node's keyword argument map
-                    constexpr auto insert_keyword = [](
-                        Node* curr,
-                        const Params<Container>& key,
-                        size_t idx,
-                        PyObject* func,
-                        uint64_t& required,
-                        const Param& param
-                    ) -> bool {
-                        auto [it, inserted] = curr->keyword.try_emplace(param.name, {});
-                        try {
-                            Py_INCREF(param.type);
-                            auto [it2, inserted2] = it->second.try_emplace(param.type, {});
-                            try {
-                                Edge edge = {
-                                    .node = std::make_shared<Node>(param.name, func),
-                                    .mask = 1ULL << idx,
-                                    .hash = key.hash,
-                                    .kind = param.kind
-                                };
-                                it2->second.map.insert(edge);
-                                try {
-                                    it2->second.order.insert(edge);
-                                } catch (...) {
-                                    it2->second.map.erase(edge);
-                                    throw;
-                                }
-                                bool result = false;
-                                try {
-                                    if (edge.node->insert(key, idx + 1, func, required)) {
-                                        if (edge.node->func) {
-                                            throw TypeError("overload already exists");
-                                        }
-                                        edge.node->func = func;
-                                        result = param.opt() || param.variadic();
-                                    }
-                                } catch (...) {
-                                    it2->second.map.erase(edge);
-                                    it2->second.order.erase(edge);
-                                    throw;
-                                }
-                                ++(edge.node->alive);
-                                if (!param.opt() && !param.variadic()) {
-                                    required |= edge.mask;
-                                }
-                                return result;
-
-                            } catch (...) {
-                                if (inserted2) {
-                                    it->second.erase(it2);
-                                }
-                                throw;
-                            }
-
-                        } catch (...) {
-                            if (inserted) {
-                                curr->keyword.erase(it);
-                            }
-                            Py_DECREF(param.type);
-                            throw;
-                        }
-                    };
-
-                    const Param& param = key[idx];
-                    if (param.posonly()) {
-                        return insert_positional(this, key, idx, func, required, param);
-                    } else if (param.pos()) {
-                        return (
-                            insert_positional(this, key, idx, func, required, param) &&
-                            insert_keyword(this, key, idx, func, required, param)
-                        );
-                    } else if (param.kw()) {
-                        return insert_keyword(this, key, idx, func, required, param);
-                    } else if (param.args()) {
-                        return insert_positional(this, key, idx, func, required, param);
-                    } else if (param.kwargs()) {
-                        return insert_keyword(this, key, idx, func, required, param);
-                    } else {
-                        throw ValueError("invalid argument kind");
-                    }
                 }
 
                 /* Remove a function from this node's sub-trie, and prune any dead ends
@@ -2433,14 +2266,154 @@ namespace impl {
                     (assert_viable_overload<Is>(key, idx), ...);
                 }(std::make_index_sequence<Arguments::n>{}, key);
 
-                // construct root node if it doesn't already exist
+                // construct the root node if it doesn't already exist
                 if (root == nullptr) {
-                    root = std::make_unique<Node>(reinterpret_steal<Object>(nullptr));
+                    root = std::make_unique<Node>("root", nullptr, nullptr);
                 }
 
-                // insert the function into the trie
+                // if the key is empty, then the root node is the terminal node
+                if (key.empty()) {
+                    if (root->func) {
+                        throw TypeError("overload already exists");
+                    }
+                    root->func = func;
+                    funcs.emplace(key.hash, {func, 0});
+                    cache.clear();
+                    return;
+                }
+
+                // insert an edge into a node's positional map to reflect a given
+                // parameter
+                constexpr auto insert_positional = [](
+                    const Params<Container>& key,
+                    int i,
+                    const Param& param,
+                    Node* curr
+                ) -> std::shared_ptr<Node> {
+                    auto [it, inserted] = curr->positional.try_emplace(
+                        param.type,
+                        Edges{}
+                    );
+                    if (inserted) {
+                        it->second.node = std::make_shared<Node>(
+                            param.name,
+                            param.type,
+                            nullptr
+                        );
+                    }
+                    Edge edge = {
+                        .mask = 1ULL << i,
+                        .hash = key.hash,
+                        .kind = param.kind
+                    };
+                    it->second.map.insert(edge);
+                    it->second.order.insert(edge);
+                    return it->second.node;
+                };
+
+                /// TODO: whenever I create a new keyword node, I have to copy over all
+                /// the keywords from the current node?  That way, when I backfill
+                /// with the other keywords, each of the existing nodes will always
+                /// have a complete set of keywords, minus the ones I'm adding.
+                /// -> That must also be done for any optional positional arguments
+                /// as well.
+
+                // insert an edge into a node's keyword map to reflect a given
+                // parameter
+                constexpr auto insert_keyword = [](
+                    const Params<Container>& key,
+                    int i,
+                    const Param& param,
+                    Node* curr
+                ) -> std::shared_ptr<Node> {
+                    auto [kw, _] = curr->keyword.try_emplace(param.name, TopoMap{});
+                    auto [it, inserted] = kw->second.try_emplace(
+                        param.type,
+                        Edges{}
+                    );
+                    if (inserted) {
+                        it->second.node = std::make_shared<Node>(
+                            param.name,
+                            param.type,
+                            nullptr
+                        );
+                    }
+                    Edge edge = {
+                        .mask = 1ULL << i,
+                        .hash = key.hash,
+                        .kind = param.kind
+                    };
+                    it->second.map.insert(edge);
+                    it->second.order.insert(edge);
+                    return it->second.node;
+                };
+
+                // insert an edge linking each parameter in the key
+                std::vector<std::shared_ptr<Node>> nodes;
+                std::shared_ptr<Node> curr = root;
+                nodes.reserve(key.size());
+                int first_keyword = -1;
+                int last_required = 0;
                 uint64_t required = 0;
-                root->insert(key, 0, ptr(func), required);
+                for (int i = 0, end = key.size(); i < end; ++i) {
+                    const Param& param = key[i];
+                    if (param.posonly()) {
+                        curr = insert_positional(key, i, param, curr.get());
+                        if (!param.opt()) {
+                            ++first_keyword;
+                            last_required = i;
+                            required |= 1ULL << i;
+                        }
+                    } else if (param.pos()) {
+                        /// TODO: I also need to insert a keyword edge pointing to
+                        /// the same node.  Maybe not the same node, since positional
+                        /// arguments can't follow keywords, and if I used the same
+                        /// node, they would be able to.  So that means I would need
+                        /// a different node for the keyword edge.  That gets me into
+                        /// more hot water though, since now the default argument
+                        /// type will potentially insert multiple nodes into the trie.
+                        curr = insert_positional(key, i, param, curr.get());
+                        if (!param.opt()) {
+                            last_required = i;
+                            required |= 1ULL << i;
+                        }
+                    } else if (param.kw()) {
+                        curr = insert_keyword(key, i, param, curr.get());
+                        if (!param.opt()) {
+                            last_required = i;
+                            required |= 1ULL << i;
+                        }
+                    } else if (param.args()) {
+                        curr = insert_positional(key, i, param, curr.get());
+                    } else if (param.kwargs()) {
+                        curr = insert_keyword(key, i, param, curr.get());
+                    } else {
+                        throw ValueError("invalid argument kind");
+                    }
+                    nodes.push_back(curr);
+                    ++(curr->alive);
+                }
+
+                // backfill the terminal functions and full keyword maps for each node
+                for (int i = key.size() - 1; i > first_keyword; --i) {
+                    std::shared_ptr<Node> node = nodes[i];
+                    if (i >= last_required) {
+                        if (node->func) {
+                            throw TypeError("overload already exists");
+                        }
+                        node->func = func;
+                    }
+                    for (int j = first_keyword; j < key.size(); ++j) {
+                        const Param& param = key[j];
+                        if (param.posonly() || param.args() || node->name == param.name) {
+                            continue;
+                        }
+                        std::shared_ptr<Node> kw = nodes[j];
+                        /// TODO: insert an edge for each keyword name
+                    }
+                }
+
+                // track the function and required arguments for the inserted key.
                 funcs.emplace(key.hash, {func, required});
                 cache.clear();
             }
