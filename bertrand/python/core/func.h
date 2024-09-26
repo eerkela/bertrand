@@ -6,7 +6,6 @@
 #include "except.h"
 #include "ops.h"
 #include "access.h"
-#include <cstddef>
 
 namespace py {
 
@@ -1690,8 +1689,7 @@ namespace impl {
             functions. */
             struct Node {
                 Object type;
-                Object func;
-                size_t alive = 0;
+                PyObject* func;
 
                 /* A sorted map of outgoing edges for positional arguments that can be
                 given immediately after this node. */
@@ -1703,9 +1701,7 @@ namespace impl {
                 unrecognized name. */
                 std::unordered_map<std::string_view, TopoMap> keyword;
 
-                Node(Object&& type, Object&& func) :
-                    type(std::move(type)), func(std::move(func))
-                {}
+                Node(Object&& type, PyObject* func) : type(std::move(type)), func(func) {}
                 Node(const Node& other) noexcept = default;
                 Node(Node&& other) noexcept = default;
                 Node& operator=(const Node& other) noexcept = default;
@@ -1723,7 +1719,7 @@ namespace impl {
                     size_t& hash
                 ) const {
                     if (idx >= key.size()) {
-                        return ptr(func);
+                        return func;
                     }
                     const Param& param = key[idx];
 
@@ -1757,17 +1753,16 @@ namespace impl {
                                             }
                                         }
                                     }
-                                    size_t temp_hash = edge.hash;
                                     uint64_t temp_mask = mask | edge.mask;
                                     PyObject* result = edges.node->search(
                                         key,
                                         i,
                                         temp_mask,
-                                        temp_hash
+                                        edge.hash
                                     );
                                     if (result) {
                                         mask = temp_mask;
-                                        hash = temp_hash;
+                                        hash = edge.hash;
                                         return result;
                                     }
                                 }
@@ -1823,17 +1818,16 @@ namespace impl {
                                 // just like the positional case
                                 if (!idx) {
                                     for (const Edge& edge : edges.order) {
-                                        size_t temp_hash = edge.hash;
                                         uint64_t temp_mask = mask | edge.mask;
                                         PyObject* result = edges.node->search(
                                             key,
                                             idx + 1,
                                             temp_mask,
-                                            temp_hash
+                                            edge.hash
                                         );
                                         if (result) {
                                             mask = temp_mask;
-                                            hash = temp_hash;
+                                            hash = edge.hash;
                                             return result;
                                         }
                                     }
@@ -1876,17 +1870,16 @@ namespace impl {
                                 }
                                 if (!idx) {
                                     for (const Edge& edge : edges.order) {
-                                        size_t temp_hash = edge.hash;
                                         uint64_t temp_mask = mask | edge.mask;
                                         PyObject* result = edges.node->search(
                                             key,
                                             idx + 1,
                                             temp_mask,
-                                            temp_hash
+                                            edge.hash
                                         );
                                         if (result) {
                                             mask = temp_mask;
-                                            hash = temp_hash;
+                                            hash = edge.hash;
                                             return result;
                                         }
                                     }
@@ -1916,67 +1909,6 @@ namespace impl {
                     return nullptr;
                 }
 
-                /* Remove a function from this node's sub-trie, and prune any dead ends
-                that lead to it.  Returns a borrowed reference to the terminal function
-                of the node that was removed, or nullptr if no match was found. */
-                template <typename Container>
-                [[maybe_unused]] PyObject* remove(
-                    const Params<Container>& key,
-                    size_t idx,
-                    uint64_t& mask,
-                    size_t& hash
-                ) {
-                    if (idx >= key.size()) {
-                        return func;
-                    }
-                    const Param& param = key[idx];
-
-                    // positional
-                    if (param.name.empty()) {
-                        for (auto& [type, edge] : positional) {
-                            if (TopoSort{}(type, param.type)) {
-                                // if a match is found, recur with incremented index
-                                Object result = edge->remove(key, idx + 1);
-                                if (!result.is(nullptr)) {
-                                    if (--(edge->alive) == 0) {
-                                        Node* temp = edge.node;
-                                        positional.erase(type);
-                                        delete temp;
-                                    }
-                                    return result;
-                                }
-                            }
-                        }
-
-                    // keyword
-                    } else {
-                        auto it = keyword.find(param.name);
-                        if (it != keyword.end()) {
-                            for (auto& [type, edge] : it->second) {
-                                if (TopoSort{}(type, param.type)) {
-                                    // if a match is found, recur with incremented index
-                                    Object result = edge->remove(key, idx + 1);
-                                    if (!result.is(nullptr)) {
-                                        if (--(edge->alive) == 0) {
-                                            Node* temp = edge.node;
-                                            it->second.erase(type);
-                                            if (it->second.empty()) {
-                                                keyword.erase(it);
-                                                kwnames.erase(std::string(param.name));
-                                            }
-                                            delete temp;
-                                        }
-                                        return result;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // if no match is found, return null to backtrack
-                    return nullptr;
-                }
-
             };
 
             /* A function that has been inserted into the overload trie, plus some
@@ -1984,9 +1916,10 @@ namespace impl {
             struct Metadata {
                 Object func;
                 uint64_t required;
+                std::vector<std::pair<Edge, std::shared_ptr<Node>>> path;
             };
 
-            std::unique_ptr<Node> root;
+            std::shared_ptr<Node> root;
             std::unordered_map<size_t, Metadata> funcs;
             mutable std::unordered_map<size_t, PyObject*> cache;
 
@@ -1996,13 +1929,13 @@ namespace impl {
             cached for subsequent invocations.  An error will be thrown if the key does
             not fully satisfy the enclosing parameter list.  Note that variadic
             parameter packs must be expanded prior to calling this function.
-            
+
             The Python-level call operator for `py::Function<>` will immediately
             delegate to this function after constructing a key from the input
             arguments, so it will be called every time a C++ function is invoked from
             Python.  If it returns null, then the fallback implementation will be
             used instead.
-            
+
             Returns a borrowed reference to the terminal function if a match is
             found within the trie, or null otherwise. */
             template <typename Container>
@@ -2013,93 +1946,12 @@ namespace impl {
                     return it->second;
                 }
 
-                // ensure the key satisfies the enclosing parameter list
-                uint64_t mask = 0;
-                for (size_t i = 0, n = key.size(); i < n; ++i) {
-                    const Param& param = key[i];
-                    if (param.name.empty()) {
-                        const Callback& callback = Arguments::callback(i);
-                        if (!callback) {
-                            throw TypeError(
-                                "received unexpected positional argument at index " +
-                                std::to_string(i)
-                            );
-                        }
-                        if (!callback(param.type)) {
-                            throw TypeError(
-                                "expected positional argument at index " +
-                                std::to_string(i) + " to be a subclass of '" +
-                                repr(reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(callback.type())
-                                )) + "', not: '" + repr(reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(param.type)
-                                )) + "'"
-                            );
-                        }
-                        mask |= callback.mask;
-                    } else if (param.kw()) {
-                        const Callback& callback = Arguments::callback(param.name);
-                        if (!callback) {
-                            throw TypeError(
-                                "received unexpected keyword argument: '" +
-                                std::string(param.name) + "'"
-                            );
-                        }
-                        if (mask & callback.mask) {
-                            throw TypeError(
-                                "received multiple values for argument '" +
-                                std::string(param.name) + "'"
-                            );
-                        }
-                        if (!callback(param.type)) {
-                            throw TypeError(
-                                "expected argument '" + std::string(param.name) +
-                                "' to be a subclass of '" +
-                                repr(reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(callback.type())
-                                )) + "', not: '" + repr(reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(param.type)
-                                )) + "'"
-                            );
-                        }
-                        mask |= callback.mask;
-                    }
-                }
-                if ((mask & Arguments::required) != Arguments::required) {
-                    uint64_t missing = Arguments::required & ~(mask & Arguments::required);
-                    std::string msg = "missing required arguments: [";
-                    size_t i = 0;
-                    while (i < n) {
-                        if (missing & (1ULL << i)) {
-                            const Callback& param = positional_table[i];
-                            if (param.name.empty()) {
-                                msg += "<parameter " + std::to_string(i) + ">";
-                            } else {
-                                msg += "'" + std::string(param.name) + "'";
-                            }
-                            ++i;
-                            break;
-                        }
-                        ++i;
-                    }
-                    while (i < n) {
-                        if (missing & (1ULL << i)) {
-                            const Callback& param = positional_table[i];
-                            if (param.name.empty()) {
-                                msg += ", <parameter " + std::to_string(i) + ">";
-                            } else {
-                                msg += ", '" + std::string(param.name) + "'";
-                            }
-                        }
-                        ++i;
-                    }
-                    msg += "]";
-                    throw TypeError(msg);
-                }
+                // ensure the key minimally satisfies the enclosing parameter list
+                assert_valid_args(key);
 
                 // search the trie for a matching node
                 if (root) {
-                    mask = 0;
+                    uint64_t mask = 0;
                     size_t hash;
                     PyObject* result = root->search(key, 0, mask, hash);
                     if (result) {
@@ -2210,84 +2062,11 @@ namespace impl {
                     if (root->func) {
                         throw TypeError("overload already exists");
                     }
-                    root->func = func;
-                    funcs.emplace(key.hash, {func, 0});
+                    funcs.emplace(key.hash, {func, 0, {}});
+                    root->func = ptr(func);
                     cache.clear();
                     return;
                 }
-
-                // insert an edge into a node's positional map to reflect a given
-                // parameter
-                constexpr auto insert_positional = [](
-                    const Params<Container>& key,
-                    int i,
-                    const Param& param,
-                    Node* curr
-                ) {
-                    auto [it, inserted] = curr->positional.try_emplace(
-                        param.type,
-                        Edges{}
-                    );
-                    if (inserted) {
-                        it->second.node = std::make_shared<Node>(
-                            reinterpret_borrow<Object>(param.type),
-                            reinterpret_steal<Object>(nullptr)
-                        );
-                        if (param.kw() || param.opt() || param.variadic()) {
-                            for (auto& [name, map] : curr->keyword) {
-                                it->second.node->keyword.emplace(name, map);
-                            }
-                        }
-                    }
-                    std::pair<Edge, std::shared_ptr<Node>> result = {
-                        {
-                            .name = param.name,
-                            .mask = 1ULL << i,
-                            .hash = key.hash,
-                            .kind = param.kind
-                        },
-                        it->second.node
-                    };
-                    it->second.map.insert(result.first);
-                    it->second.order.insert(result.first);
-                    return result;
-                };
-
-                // insert an edge into a node's keyword map to reflect a given
-                // parameter
-                constexpr auto insert_keyword = [](
-                    const Params<Container>& key,
-                    int i,
-                    const Param& param,
-                    Node* curr
-                ) {
-                    auto [kw, _] = curr->keyword.try_emplace(param.name, TopoMap{});
-                    auto [it, inserted] = kw->second.try_emplace(
-                        param.type,
-                        Edges{}
-                    );
-                    if (inserted) {
-                        it->second.node = std::make_shared<Node>(
-                            reinterpret_borrow<Object>(param.type),
-                            reinterpret_steal<Object>(nullptr)
-                        );
-                        for (auto& [name, map] : curr->keyword) {
-                            it->second.node->keyword.emplace(name, map);
-                        }
-                    }
-                    std::pair<Edge, std::shared_ptr<Node>> result = {
-                        {
-                            .name = param.name,
-                            .mask = 1ULL << i,
-                            .hash = key.hash,
-                            .kind = param.kind
-                        },
-                        it->second.node
-                    };
-                    it->second.map.insert(result.first);
-                    it->second.order.insert(result.first);
-                    return result;
-                };
 
                 // insert an edge linking each parameter in the key
                 std::vector<std::pair<Edge, std::shared_ptr<Node>>> path;
@@ -2335,8 +2114,9 @@ namespace impl {
                         throw ValueError("invalid argument kind");
                     }
                     curr = path.back().second;
-                    ++(curr->alive);
                 }
+
+                /// TODO: does the backfilling logic cover the root node?
 
                 // backfill the terminal functions and full keyword maps for each node
                 std::optional<std::string_view> name;
@@ -2346,7 +2126,7 @@ namespace impl {
                         if (node->func) {
                             throw TypeError("overload already exists");
                         }
-                        node->func = func;
+                        node->func = ptr(func);
                     }
                     for (int j = first_keyword; j < key.size(); ++j) {
                         const Param& param = key[j];
@@ -2374,28 +2154,90 @@ namespace impl {
                 }
 
                 // track the function and required arguments for the inserted key.
-                funcs.emplace(key.hash, {func, required});
+                funcs.emplace(key.hash, {func, required, path});
                 cache.clear();
             }
 
-            /* Remove a node from the overload trie and prune any dead-ends that lead to
-            it.  Returns the function that was removed, or nullopt if no matching function
-            was found. */
+            /* Remove a node from the overload trie and prune any dead-ends that lead
+            to it.  Returns the function that was removed, or nullopt if no matching
+            function was found. */
             template <typename Container>
             [[maybe_unused]] std::optional<Object> remove(const Params<Container>& key) {
-                if (root == nullptr) {
-                    return std::nullopt;
+                // assert the key minimally satisfies the enclosing parameter list
+                assert_valid_args(key);
+
+                // search the trie for a matching node
+                if (root) {
+                    uint64_t mask = 0;
+                    size_t hash;
+                    Object result = reinterpret_borrow<Object>(
+                        root->search(key, 0, mask, hash)
+                    );
+                    if (!result.is(nullptr)) {
+                        // hash is only initialized if the key has at least one param
+                        if (key.empty()) {
+                            for (auto& [candidate_hash, data] : funcs) {
+                                if (data.func == ptr(result)) {
+                                    hash = candidate_hash;
+                                    break;
+                                }
+                            }
+                        }
+                        const Metadata& data = funcs.at(hash);
+                        if ((mask & data.required) == data.required) {
+
+                            // remove all edges linking to the key's nodes
+                            Node* curr = root.get();
+                            for (auto& [edge, node] : data.path) {
+                                std::vector<PyObject*> pos_dead;
+                                for (auto& [type, edges] : curr->positional) {
+                                    auto it = edges.map.find(edge.hash);
+                                    if (it != edges.map.end()) {
+                                        edges.map.erase(*it);
+                                        edges.order.erase(*it);
+                                        if (edges.map.empty()) {
+                                            pos_dead.push_back(type);
+                                        }
+                                    }
+                                }
+                                for (PyObject* type : pos_dead) {
+                                    curr->positional.erase(type);
+                                }
+                                std::vector<std::string_view> kw_dead;
+                                for (auto& [name, map] : curr->keyword) {
+                                    for (auto& [type, edges] : map) {
+                                        auto it = edges.map.find(edge.hash);
+                                        if (it != edges.map.end()) {
+                                            edges.map.erase(*it);
+                                            edges.order.erase(*it);
+                                            if (edges.map.empty()) {
+                                                kw_dead.push_back(name);
+                                            }
+                                        }
+                                    }
+                                }
+                                for (std::string_view name : kw_dead) {
+                                    curr->keyword.erase(name);
+                                }
+                                if (node->func == ptr(data.func)) {
+                                    node->func = nullptr;
+                                }
+                                curr = node.get();
+                            }
+
+                            // remove the key from the metadata table
+                            if (root->func == ptr(data.func)) {
+                                root->func = nullptr;
+                            }
+                            funcs.erase(hash);
+                            if (funcs.empty()) {
+                                root.reset();
+                            }
+                            return result;
+                        }
+                    }
                 }
-                Object func = root->remove(key, 0);
-                if (func.is(nullptr)) {
-                    return std::nullopt;
-                }
-                cache.clear();
-                funcs.erase(func);
-                if (funcs.empty()) {
-                    root = nullptr;
-                }
-                return func;
+                return std::nullopt;
             }
 
             /* Clear the overload trie, removing all tracked functions. */
@@ -2412,6 +2254,94 @@ namespace impl {
             }
 
         private:
+
+            template <typename Container>
+            static void assert_valid_args(const Params<Container>& key) {
+                uint64_t mask = 0;
+                for (size_t i = 0, n = key.size(); i < n; ++i) {
+                    const Param& param = key[i];
+                    if (param.name.empty()) {
+                        const Callback& callback = Arguments::callback(i);
+                        if (!callback) {
+                            throw TypeError(
+                                "received unexpected positional argument at index " +
+                                std::to_string(i)
+                            );
+                        }
+                        if (!callback(param.type)) {
+                            throw TypeError(
+                                "expected positional argument at index " +
+                                std::to_string(i) + " to be a subclass of '" +
+                                repr(reinterpret_borrow<Object>(
+                                    reinterpret_cast<PyObject*>(callback.type())
+                                )) + "', not: '" + repr(reinterpret_borrow<Object>(
+                                    reinterpret_cast<PyObject*>(param.type)
+                                )) + "'"
+                            );
+                        }
+                        mask |= callback.mask;
+                    } else if (param.kw()) {
+                        const Callback& callback = Arguments::callback(param.name);
+                        if (!callback) {
+                            throw TypeError(
+                                "received unexpected keyword argument: '" +
+                                std::string(param.name) + "'"
+                            );
+                        }
+                        if (mask & callback.mask) {
+                            throw TypeError(
+                                "received multiple values for argument '" +
+                                std::string(param.name) + "'"
+                            );
+                        }
+                        if (!callback(param.type)) {
+                            throw TypeError(
+                                "expected argument '" + std::string(param.name) +
+                                "' to be a subclass of '" +
+                                repr(reinterpret_borrow<Object>(
+                                    reinterpret_cast<PyObject*>(callback.type())
+                                )) + "', not: '" + repr(reinterpret_borrow<Object>(
+                                    reinterpret_cast<PyObject*>(param.type)
+                                )) + "'"
+                            );
+                        }
+                        mask |= callback.mask;
+                    }
+                }
+                if ((mask & Arguments::required) != Arguments::required) {
+                    uint64_t missing = Arguments::required & ~(mask & Arguments::required);
+                    std::string msg = "missing required arguments: [";
+                    size_t i = 0;
+                    while (i < n) {
+                        if (missing & (1ULL << i)) {
+                            const Callback& param = positional_table[i];
+                            if (param.name.empty()) {
+                                msg += "<parameter " + std::to_string(i) + ">";
+                            } else {
+                                msg += "'" + std::string(param.name) + "'";
+                            }
+                            ++i;
+                            break;
+                        }
+                        ++i;
+                    }
+                    while (i < n) {
+                        if (missing & (1ULL << i)) {
+                            const Callback& param = positional_table[i];
+                            if (param.name.empty()) {
+                                msg += ", <parameter " + std::to_string(i) + ">";
+                            } else {
+                                msg += ", '" + std::string(param.name) + "'";
+                            }
+                        }
+                        ++i;
+                    }
+                    msg += "]";
+                    throw TypeError(msg);
+                }
+            }
+
+            /// TODO: complete assert_viable_overload()
 
             template <size_t I, typename Container>
             static void assert_viable_overload(
@@ -2576,6 +2506,77 @@ namespace impl {
                 } else {
                     static_assert(false, "invalid argument kind");
                 }
+            }
+
+            template <typename Container>
+            static std::pair<Edge, std::shared_ptr<Node>> insert_positional(
+                const Params<Container>& key,
+                int i,
+                const Param& param,
+                Node* curr
+            ) {
+                auto [it, inserted] = curr->positional.try_emplace(
+                    param.type,
+                    Edges{}
+                );
+                if (inserted) {
+                    it->second.node = std::make_shared<Node>(
+                        reinterpret_borrow<Object>(param.type),
+                        reinterpret_steal<Object>(nullptr)
+                    );
+                    if (param.kw() || param.opt() || param.variadic()) {
+                        for (auto& [name, map] : curr->keyword) {
+                            it->second.node->keyword.emplace(name, map);
+                        }
+                    }
+                }
+                std::pair<Edge, std::shared_ptr<Node>> result = {
+                    {
+                        .name = param.name,
+                        .mask = 1ULL << i,
+                        .hash = key.hash,
+                        .kind = param.kind
+                    },
+                    it->second.node
+                };
+                it->second.map.insert(result.first);
+                it->second.order.insert(result.first);
+                return result;
+            }
+
+            template <typename Container>
+            static std::pair<Edge, std::shared_ptr<Node>> insert_keyword(
+                const Params<Container>& key,
+                int i,
+                const Param& param,
+                Node* curr
+            ) {
+                auto [kw, _] = curr->keyword.try_emplace(param.name, TopoMap{});
+                auto [it, inserted] = kw->second.try_emplace(
+                    param.type,
+                    Edges{}
+                );
+                if (inserted) {
+                    it->second.node = std::make_shared<Node>(
+                        reinterpret_borrow<Object>(param.type),
+                        reinterpret_steal<Object>(nullptr)
+                    );
+                    for (auto& [name, map] : curr->keyword) {
+                        it->second.node->keyword.emplace(name, map);
+                    }
+                }
+                std::pair<Edge, std::shared_ptr<Node>> result = {
+                    {
+                        .name = param.name,
+                        .mask = 1ULL << i,
+                        .hash = key.hash,
+                        .kind = param.kind
+                    },
+                    it->second.node
+                };
+                it->second.map.insert(result.first);
+                it->second.order.insert(result.first);
+                return result;
             }
 
         };
