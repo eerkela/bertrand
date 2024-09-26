@@ -1017,7 +1017,7 @@ namespace impl {
         }();
 
         template <size_t I>
-        static Param _key(size_t& hash) {
+        static Param _parameters(size_t& hash) {
             constexpr Callback& callback = positional_table[I];
             PyObject* type = callback.type();
             hash = hash_combine(
@@ -1136,18 +1136,18 @@ namespace impl {
         }
 
         /* Produce an overload key that matches the enclosing parameter list. */
-        static Params<std::array<Param, n>> key() {
+        static Params<std::array<Param, n>> parameters() {
             size_t hash = 0;
             return {
                 []<size_t... Is>(std::index_sequence<Is...>, size_t& hash) {
-                    return std::array<Param, n>{_key<Is>(hash)...};
+                    return std::array<Param, n>{_parameters<Is>(hash)...};
                 }(std::make_index_sequence<n>{}, hash),
                 hash
             };
         }
 
-        /* A tuple holding the default values for each argument in the enclosing
-        parameter list marked as optional. */
+        /* A tuple holding the default value for every argument in the enclosing
+        parameter list that is marked as optional. */
         struct Defaults {
         private:
             using Outer = Arguments;
@@ -1618,12 +1618,9 @@ namespace impl {
 
         };
 
-        /// TODO: Overload tries need linked dicts to efficiently implement ordered
-        /// maps, which are needed for topologically sorted argument maps (by
-        /// type) + edge dicts (by kind) + the path cache (fixed-size, LRU).  
-
         /* A Trie-based data structure that describes a collection of dynamic overloads
-        for a `py::Function` object. */
+        for a `py::Function` object, which will be dispatched to when called from
+        either Python or C++. */
         struct Overloads {
             struct Node;
             struct Edge;
@@ -1664,13 +1661,6 @@ namespace impl {
                 bool operator==(const Edge& other) const {
                     return hash == other.hash && mask == other.mask;
                 }
-            };
-
-            /* A collection of edges linking two nodes in the trie.  Each edge is
-            registered under the originating key's unique hash, and are ordered by
-            their argument kind, with required arguments being preferred over optional
-            arguments, which are preferred over variadics, respectively. */
-            struct Edges {
                 struct Hash {
                     static size_t operator()(const Edge& edge) noexcept {
                         return edge.hash;
@@ -1679,8 +1669,15 @@ namespace impl {
                         return hash;
                     }
                 };
+            };
+
+            /* A collection of edges linking two nodes in the trie.  Each edge is
+            registered under the originating key's unique hash, and are ordered by
+            their argument kind, with required arguments being preferred over optional
+            arguments, which are preferred over variadics, respectively. */
+            struct Edges {
                 std::shared_ptr<Node> node;
-                std::unordered_set<Edge, Hash> map;
+                std::unordered_set<Edge, typename Edge::Hash> map;
                 std::set<Edge> order;
             };
 
@@ -1725,57 +1722,22 @@ namespace impl {
 
                     // positional arguments have empty names
                     if (param.name.empty()) {
-                        for (auto&& [expected, edges] : positional) {
-                            if (!TopoSort{}(param.type, expected)) {
-                                continue;
-                            }
-
-                            // if the index is zero, then the hash is ambiguous, and
-                            // we need to check all possible matches
-                            if (!idx) {
-                                for (const Edge& edge : edges.order) {
-                                    size_t i = idx + 1;
-                                    // variadic positional arguments will test all
-                                    // remaining positional args against the expected
-                                    // type and only recur if they all match
-                                    if constexpr (Arguments::has_args) {
-                                        if (edge.kind.variadic()) {
-                                            const Param* curr;
-                                            while (
-                                                i < key.size() &&
-                                                (curr = &key[i])->pos() &&
-                                                TopoSort{}(curr->type, expected)
-                                            ) {
-                                                ++i;
-                                            }
-                                            if (i < key.size() && curr->pos()) {
-                                                continue;  // failed comparison
-                                            }
-                                        }
-                                    }
-                                    uint64_t temp_mask = mask | edge.mask;
-                                    PyObject* result = edges.node->search(
-                                        key,
-                                        i,
-                                        temp_mask,
-                                        edge.hash
-                                    );
-                                    if (result) {
-                                        mask = temp_mask;
-                                        hash = edge.hash;
-                                        return result;
-                                    }
+                        // if the index is nonzero, then the hash is unambiguous, so
+                        // we follow edges by looking up the hash directly
+                        if (idx) {
+                            for (auto& [expected, edges] : positional) {
+                                if (!TopoSort{}(param.type, expected)) {
+                                    continue;
                                 }
-
-                            // otherwise, the hash we're testing for was set by the
-                            // first edge we followed, and we just have to check for it
-                            } else {
                                 auto it = edges.map.find(hash);
                                 if (it == edges.map.end()) {
                                     continue;
                                 }
                                 const Edge& edge = *it;
                                 size_t i = idx + 1;
+                                // variadic positional arguments will test all
+                                // remaining positional args against the expected type
+                                // and only recur if they all match
                                 if constexpr (Arguments::has_args) {
                                     if (edge.kind.variadic()) {
                                         const Param* curr;
@@ -1803,36 +1765,56 @@ namespace impl {
                                     return result;
                                 }
                             }
+
+                        // for the first edge, the hash is ambiguous, so we have to
+                        // test each key in order
+                        } else {
+                            for (auto& [expected, edges] : positional) {
+                                if (!TopoSort{}(param.type, expected)) {
+                                    continue;
+                                }
+                                for (const Edge& edge : edges.order) {
+                                    size_t i = idx + 1;
+                                    if constexpr (Arguments::has_args) {
+                                        if (edge.kind.variadic()) {
+                                            const Param* curr;
+                                            while (
+                                                i < key.size() &&
+                                                (curr = &key[i])->pos() &&
+                                                TopoSort{}(curr->type, expected)
+                                            ) {
+                                                ++i;
+                                            }
+                                            if (i < key.size() && curr->pos()) {
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                    uint64_t temp_mask = mask | edge.mask;
+                                    PyObject* result = edges.node->search(
+                                        key,
+                                        i,
+                                        temp_mask,
+                                        edge.hash
+                                    );
+                                    if (result) {
+                                        mask = temp_mask;
+                                        hash = edge.hash;
+                                        return result;
+                                    }
+                                }
+                            }
                         }
 
                     // keyword argument names must be looked up in the keyword map
                     } else {
                         auto it = keyword.find(param.name);
                         if (it != keyword.end()) {
-                            for (auto&& [expected, edges] : it->second) {
-                                if (!TopoSort{}(param.type, expected)) {
-                                    continue;
-                                }
-
-                                // if the index is zero, then we have an ambiguous hash
-                                // just like the positional case
-                                if (!idx) {
-                                    for (const Edge& edge : edges.order) {
-                                        uint64_t temp_mask = mask | edge.mask;
-                                        PyObject* result = edges.node->search(
-                                            key,
-                                            idx + 1,
-                                            temp_mask,
-                                            edge.hash
-                                        );
-                                        if (result) {
-                                            mask = temp_mask;
-                                            hash = edge.hash;
-                                            return result;
-                                        }
+                            if (idx) {
+                                for (auto&& [expected, edges] : it->second) {
+                                    if (!TopoSort{}(param.type, expected)) {
+                                        continue;
                                     }
-
-                                } else {
                                     auto it2 = edges.map.find(hash);
                                     if (it2 == edges.map.end()) {
                                         continue;
@@ -1859,16 +1841,12 @@ namespace impl {
                                         return result;
                                     }
                                 }
-                            }
 
-                        // if the keyword name is not recognized, check for a variadic
-                        // keyword argument under an empty string
-                        } else if ((it = keyword.find("")) != keyword.end()) {
-                            for (auto&& [expected, edges] : it->second) {
-                                if (!TopoSort{}(param.type, expected)) {
-                                    continue;
-                                }
-                                if (!idx) {
+                            } else {
+                                for (auto&& [expected, edges] : it->second) {
+                                    if (!TopoSort{}(param.type, expected)) {
+                                        continue;
+                                    }
                                     for (const Edge& edge : edges.order) {
                                         uint64_t temp_mask = mask | edge.mask;
                                         PyObject* result = edges.node->search(
@@ -1883,7 +1861,17 @@ namespace impl {
                                             return result;
                                         }
                                     }
-                                } else {
+                                }
+                            }
+
+                        // if the keyword name is not recognized, check for a variadic
+                        // keyword argument under an empty string
+                        } else if ((it = keyword.find("")) != keyword.end()) {
+                            if (idx) {
+                                for (auto&& [expected, edges] : it->second) {
+                                    if (!TopoSort{}(param.type, expected)) {
+                                        continue;
+                                    }
                                     auto it2 = edges.map.find(hash);
                                     if (it2 == edges.map.end()) {
                                         continue;
@@ -1901,6 +1889,27 @@ namespace impl {
                                         return result;
                                     }
                                 }
+
+                            } else {
+                                for (auto&& [expected, edges] : it->second) {
+                                    if (!TopoSort{}(param.type, expected)) {
+                                        continue;
+                                    }
+                                    for (const Edge& edge : edges.order) {
+                                        uint64_t temp_mask = mask | edge.mask;
+                                        PyObject* result = edges.node->search(
+                                            key,
+                                            idx + 1,
+                                            temp_mask,
+                                            edge.hash
+                                        );
+                                        if (result) {
+                                            mask = temp_mask;
+                                            hash = edge.hash;
+                                            return result;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1914,13 +1923,22 @@ namespace impl {
             /* A function that has been inserted into the overload trie, plus some
             extra metadata to quickly validate the result of a search operation. */
             struct Metadata {
+                size_t hash;
                 Object func;
                 uint64_t required;
                 std::vector<std::pair<Edge, std::shared_ptr<Node>>> path;
+                struct Hash {
+                    static size_t operator()(const Metadata& data) noexcept {
+                        return data.hash;
+                    }
+                    static size_t operator()(size_t hash) noexcept {
+                        return hash;
+                    }
+                };
             };
 
             std::shared_ptr<Node> root;
-            std::unordered_map<size_t, Metadata> funcs;
+            std::unordered_set<Metadata, typename Metadata::Hash> funcs;
             mutable std::unordered_map<size_t, PyObject*> cache;
 
             /* Search the overload trie for a matching signature.  This will
@@ -1960,7 +1978,7 @@ namespace impl {
                             cache[key.hash] = result;  // may be null
                             return result;
                         }
-                        const Metadata& data = funcs.at(hash);
+                        const Metadata& data = *(funcs.find(hash));
                         if ((mask & data.required) == data.required) {
                             cache[key.hash] = result;  // may be null
                             return result;
@@ -2030,7 +2048,7 @@ namespace impl {
                             cache[key.hash] = result;
                             return result;
                         }
-                        const Metadata& data = funcs.at(hash);
+                        const Metadata& data = *(funcs.find(hash));
                         if ((mask & data.required) == data.required) {
                             cache[key.hash] = result;
                             return result;
@@ -2054,7 +2072,10 @@ namespace impl {
 
                 // construct the root node if it doesn't already exist
                 if (root == nullptr) {
-                    root = std::make_unique<Node>("root", nullptr, nullptr);
+                    root = std::make_shared<Node>(
+                        reinterpret_steal<Object>(nullptr),
+                        nullptr
+                    );
                 }
 
                 // if the key is empty, then the root node is the terminal node
@@ -2062,30 +2083,30 @@ namespace impl {
                     if (root->func) {
                         throw TypeError("overload already exists");
                     }
-                    funcs.emplace(key.hash, {func, 0, {}});
                     root->func = ptr(func);
+                    funcs.emplace(key.hash, func, 0, {});
                     cache.clear();
                     return;
                 }
 
                 // insert an edge linking each parameter in the key
                 std::vector<std::pair<Edge, std::shared_ptr<Node>>> path;
-                std::shared_ptr<Node> curr = root;
                 path.reserve(key.size());
+                Node* curr = root.get();
                 int first_keyword = -1;
                 int last_required = 0;
                 uint64_t required = 0;
                 for (int i = 0, end = key.size(); i < end; ++i) {
                     const Param& param = key[i];
                     if (param.posonly()) {
-                        path.push_back(insert_positional(key, i, param, curr.get()));
+                        path.push_back(insert_positional(key, i, param, curr));
                         if (!param.opt()) {
                             ++first_keyword;
                             last_required = i;
                             required |= 1ULL << i;
                         }
                     } else if (param.pos()) {
-                        path.push_back(insert_positional(key, i, param, curr.get()));
+                        path.push_back(insert_positional(key, i, param, curr));
                         auto [kw, _] = curr->keyword.try_emplace(param.name, TopoMap{});
                         auto [it, inserted] = kw->second.try_emplace(
                             param.type,
@@ -2101,22 +2122,20 @@ namespace impl {
                             required |= 1ULL << i;
                         }
                     } else if (param.kw()) {
-                        path.push_back(insert_keyword(key, i, param, curr.get()));
+                        path.push_back(insert_keyword(key, i, param, curr));
                         if (!param.opt()) {
                             last_required = i;
                             required |= 1ULL << i;
                         }
                     } else if (param.args()) {
-                        path.push_back(insert_positional(key, i, param, curr.get()));
+                        path.push_back(insert_positional(key, i, param, curr));
                     } else if (param.kwargs()) {
-                        path.push_back(insert_keyword(key, i, param, curr.get()));
+                        path.push_back(insert_keyword(key, i, param, curr));
                     } else {
                         throw ValueError("invalid argument kind");
                     }
-                    curr = path.back().second;
+                    curr = path.back().second.get();
                 }
-
-                /// TODO: does the backfilling logic cover the root node?
 
                 // backfill the terminal functions and full keyword maps for each node
                 std::optional<std::string_view> name;
@@ -2153,8 +2172,19 @@ namespace impl {
                     name = edge.name;
                 }
 
+                /// TODO: backfill keyword map to root node?
+
+                // extend backfill to the root node
+                auto& [edge, node] = path[0];
+                if (edge.kind.opt() || edge.kind.variadic()) {
+                    if (node->func && root->func) {
+                        throw TypeError("overload already exists");
+                    }
+                    root->func = node->func;
+                }
+
                 // track the function and required arguments for the inserted key.
-                funcs.emplace(key.hash, {func, required, path});
+                funcs.emplace(key.hash, func, required, path);
                 cache.clear();
             }
 
@@ -2176,14 +2206,14 @@ namespace impl {
                     if (!result.is(nullptr)) {
                         // hash is only initialized if the key has at least one param
                         if (key.empty()) {
-                            for (auto& [candidate_hash, data] : funcs) {
+                            for (const Metadata& data : funcs) {
                                 if (data.func == ptr(result)) {
-                                    hash = candidate_hash;
+                                    hash = data.hash;
                                     break;
                                 }
                             }
                         }
-                        const Metadata& data = funcs.at(hash);
+                        const Metadata& data = *(funcs.find(hash));
                         if ((mask & data.required) == data.required) {
 
                             // remove all edges linking to the key's nodes
@@ -2522,7 +2552,7 @@ namespace impl {
                 if (inserted) {
                     it->second.node = std::make_shared<Node>(
                         reinterpret_borrow<Object>(param.type),
-                        reinterpret_steal<Object>(nullptr)
+                        nullptr
                     );
                     if (param.kw() || param.opt() || param.variadic()) {
                         for (auto& [name, map] : curr->keyword) {
@@ -2559,7 +2589,7 @@ namespace impl {
                 if (inserted) {
                     it->second.node = std::make_shared<Node>(
                         reinterpret_borrow<Object>(param.type),
-                        reinterpret_steal<Object>(nullptr)
+                        nullptr
                     );
                     for (auto& [name, map] : curr->keyword) {
                         it->second.node->keyword.emplace(name, map);
@@ -4713,7 +4743,7 @@ namespace impl {
 
 
 
-    /// TODO: I need a static parent class that serves as the template interface for
+    /// TODO: I need a static metaclass that serves as the template interface for
     /// all function types, and which implements __class_getitem__ to allow for
     /// similar class subscription syntax as for Python callables:
     ///
@@ -5064,8 +5094,17 @@ struct Interface<Function<F>> : impl::FunctionTag {
     /* Attach the function as a bound method of a Python type. */
     template <typename T>
     void attach(Type<T>& type) {
-
+        /// TODO: separate this into method(), property(), classmethod(), and
+        /// staticmethod()
+        ///
+        /// @func1.method
+        /// @func2.property(set=..., delete=...)
+        /// @func3.classmethod
+        /// @func4.staticmethod
+        /// class Foo:
+        ///     pass
     }
+
 
     /// TODO: index into a Function in order to resolve certain overloads.
 
