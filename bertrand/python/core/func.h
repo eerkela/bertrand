@@ -374,7 +374,7 @@ namespace impl {
     function signature or call site. */
     struct Param {
         std::string_view name;
-        PyTypeObject* type;
+        PyObject* type;
         ArgKind kind;
 
         constexpr bool posonly() const noexcept { return kind.posonly(); }
@@ -789,10 +789,10 @@ namespace impl {
         struct Callback {
             std::string_view name;
             uint64_t mask = 0;
-            bool(*func)(PyTypeObject*) = nullptr;
-            PyTypeObject*(*type)() = nullptr;
+            bool(*func)(PyObject*) = nullptr;
+            PyObject*(*type)() = nullptr;
             explicit operator bool() const noexcept { return func != nullptr; }
-            bool operator()(PyTypeObject* type) const { return func(type); }
+            bool operator()(PyObject* type) const { return func(type); }
         };
 
         /* A bitmask with a 1 in the position of all of the required arguments in the
@@ -824,11 +824,11 @@ namespace impl {
             table[I] = {
                 ArgTraits<at<I>>::name,
                 ArgTraits<at<I>>::variadic() ? 0ULL : 1ULL << I,
-                [](PyTypeObject* type) -> bool {
+                [](PyObject* type) -> bool {
                     using T = typename ArgTraits<at<I>>::type;
                     if constexpr (has_type<T>) {
                         int rc = PyObject_IsSubclass(
-                            reinterpret_cast<PyObject*>(type),
+                            type,
                             ptr(Type<T>())
                         );
                         if (rc < 0) {
@@ -842,10 +842,10 @@ namespace impl {
                         );
                     }
                 },
-                []() -> PyTypeObject* {
+                []() -> PyObject* {
                     using T = typename ArgTraits<at<I>>::type;
                     if constexpr (has_type<T>) {
-                        return reinterpret_cast<PyTypeObject*>(ptr(Type<T>()));
+                        return ptr(Type<T>());
                     } else {
                         throw TypeError(
                             "C++ type has no Python equivalent: " +
@@ -875,7 +875,8 @@ namespace impl {
         /* Take the modulus with respect to the keyword table by exploiting the power
         of 2 table size. */
         static constexpr size_t keyword_table_index(size_t hash) {
-            return hash & (keyword_table_size() - 1);
+            constexpr size_t mask = keyword_table_size() - 1;
+            return hash & mask;
         }
 
         /* Given a precomputed keyword index into the hash table, check to see if any
@@ -962,11 +963,11 @@ namespace impl {
                 table[i] = {
                     ArgTraits<at<I>>::name,
                     ArgTraits<at<I>>::variadic() ? 0ULL : 1ULL << I,
-                    [](PyTypeObject* type) -> bool {
+                    [](PyObject* type) -> bool {
                         using T = typename ArgTraits<at<I>>::type;
                         if constexpr (has_type<T>) {
                             int rc = PyObject_IsSubclass(
-                                reinterpret_cast<PyObject*>(type),
+                                type,
                                 ptr(Type<T>())
                             );
                             if (rc < 0) {
@@ -980,10 +981,10 @@ namespace impl {
                             );
                         }
                     },
-                    []() -> PyTypeObject* {
+                    []() -> PyObject* {
                         using T = typename ArgTraits<at<I>>::type;
                         if constexpr (has_type<T>) {
-                            return reinterpret_cast<PyTypeObject*>(ptr(Type<T>()));
+                            return ptr(Type<T>());
                         } else {
                             throw TypeError(
                                 "C++ type has no Python equivalent: " +
@@ -1019,7 +1020,7 @@ namespace impl {
         template <size_t I>
         static Param _key(size_t& hash) {
             constexpr Callback& callback = positional_table[I];
-            PyTypeObject* type = callback.type();
+            PyObject* type = callback.type();
             hash = hash_combine(
                 hash,
                 fnv1a(
@@ -1636,25 +1637,25 @@ namespace impl {
             on each type, ensuring that subclasses are always checked before their parent
             classes, and more specific overloads are preferred over more general ones. */
             struct TopoSort {
-                static bool operator()(PyTypeObject* lhs, PyTypeObject* rhs) {
-                    int rc = PyObject_IsSubclass(
-                        reinterpret_cast<PyObject*>(lhs),
-                        reinterpret_cast<PyObject*>(rhs)
-                    );
+                static bool operator()(PyObject* lhs, PyObject* rhs) {
+                    int rc = PyObject_IsSubclass(lhs, rhs);
                     if (rc < 0) {
                         Exception::from_python();
                     }
                     return rc || lhs < rhs;
                 }
             };
-            using TopoMap = std::map<PyTypeObject*, Edges, TopoSort>;
+            using TopoMap = std::map<PyObject*, Edges, TopoSort>;
 
         public:
 
-            /* A link between two nodes in the trie.  A unique edge will be created for
-            every parameter in a key when it is registered, such that it can be
-            unambiguously reconstructed from a search of the trie itself. */
+            /* A single link between two nodes in the trie, which describes how to
+            traverse from one to the other.  Multiple edges may share the same target
+            node, and a unique edge will be created for each parameter in a key when it
+            is inserted, such that the original key can be unambiguously identified
+            from a simple search of the trie structure. */
             struct Edge {
+                std::string name;
                 uint64_t mask;
                 size_t hash;
                 ArgKind kind;
@@ -1666,11 +1667,10 @@ namespace impl {
                 }
             };
 
-            /* An ordered map of key hashes to Edge structs that can be used to
-            traverse the argument map in an unambiguous fashion.  The `order` set
-            effectively sorts the map based on the edge's kind, meaning that variadic
-            edges will always be tested after non-variadic edges when narrowing to a
-            specific key. */
+            /* A collection of edges linking two nodes in the trie.  Each edge is
+            registered under the originating key's unique hash, and are ordered by
+            their argument kind, with required arguments being preferred over optional
+            arguments, which are preferred over variadics, respectively. */
             struct Edges {
                 struct Hash {
                     static size_t operator()(const Edge& edge) noexcept {
@@ -1685,97 +1685,31 @@ namespace impl {
                 std::set<Edge> order;
             };
 
-            /* A node in the overload trie, which holds topologically-sorted edge maps
-            for traversal, insertion, and deletion of candidate functions. */
+            /* A node in the overload trie, which holds the topologically-sorted edge
+            maps necessary for traversal, insertion, and deletion of candidate
+            functions. */
             struct Node {
-            private:
+                Object type;
+                Object func;
+                size_t alive = 0;
 
-                /* A topologically sorted map of outgoing edges for positional
-                arguments that can be given after this node.  The keys are sorted
-                pairwise according to a series of `issubclass()` checks, ensuring that
-                more specific types are always checked first. */
+                /* A sorted map of outgoing edges for positional arguments that can be
+                given immediately after this node. */
                 TopoMap positional;
 
-                /* A map of keyword argument names to topologically sorted type maps
-                similar to the positional map.  A special empty string key will be used
-                to represent variadic keyword arguments, which can match any keyword
-                argument name. */
+                /* A map of keyword argument names to sorted maps of outgoing edges for
+                the arguments that can follow this node.  A special empty string will
+                be used to represent variadic keyword arguments, which can match any
+                unrecognized name. */
                 std::unordered_map<std::string_view, TopoMap> keyword;
 
-            public:
-                std::string name;  // argument name or empty if positional-only
-                PyTypeObject* type;  // owning reference to the argument type
-                PyObject* func;  // borrowed reference to terminal function
-                size_t alive;  // number of reachable functions within the subtrie
-
-                Node(std::string_view name, PyTypeObject* type, PyObject* func) :
-                    name(name), type(type), func(func), alive(0)
-                {
-                    Py_XINCREF(type);
-                }
-
-                Node(const Node& other) noexcept :
-                    positional(other.positional),
-                    keyword(other.keyword),
-                    name(other.name),
-                    type(other.type),
-                    func(other.func),
-                    alive(other.alive)
-                {
-                    Py_XINCREF(type);
-                }
-
-                Node(Node&& other) noexcept :
-                    positional(std::move(other.positional)),
-                    keyword(std::move(other.keyword)),
-                    name(std::move(other.name)),
-                    type(other.type),
-                    func(other.func),
-                    alive(other.alive)
-                {
-                    other.type = nullptr;
-                    other.func = nullptr;
-                    other.alive = 0;
-                }
-
-                Node& operator=(const Node& other) noexcept {
-                    if (&other != this) {
-                        positional = other.positional;
-                        keyword = other.keyword;
-                        name = other.name;
-                        PyTypeObject* temp = type;
-                        type = other.type;
-                        Py_XDECREF(temp);
-                        Py_XINCREF(type);
-                        func = other.func;
-                        alive = other.alive;
-                    }
-                    return *this;
-                }
-
-                Node& operator=(Node&& other) noexcept {
-                    if (&other != this) {
-                        positional = std::move(other.positional);
-                        keyword = std::move(other.keyword);
-                        name = std::move(other.name);
-                        PyTypeObject* temp = type;
-                        type = other.type;
-                        Py_XDECREF(temp);
-                        Py_XINCREF(type);
-                        func = other.func;
-                        alive = other.alive;
-                        other.type = nullptr;
-                        other.func = nullptr;
-                        other.alive = 0;
-                    }
-                    return *this;
-                }
-
-                ~Node() noexcept {
-                    if (Py_IsInitialized()) {
-                        Py_XDECREF(type);
-                    }
-                }
+                Node(Object&& type, Object&& func) :
+                    type(std::move(type)), func(std::move(func))
+                {}
+                Node(const Node& other) noexcept = default;
+                Node(Node&& other) noexcept = default;
+                Node& operator=(const Node& other) noexcept = default;
+                Node& operator=(Node&& other) noexcept = default;
 
                 /* Recursively search for a matching function in this node's sub-trie.
                 Returns a borrowed reference to a terminal function in the case of a
@@ -1789,7 +1723,7 @@ namespace impl {
                     size_t& hash
                 ) const {
                     if (idx >= key.size()) {
-                        return func;
+                        return ptr(func);
                     }
                     const Param& param = key[idx];
 
@@ -1886,7 +1820,7 @@ namespace impl {
                                 }
 
                                 // if the index is zero, then we have an ambiguous hash
-                                // just like in the positional case
+                                // just like the positional case
                                 if (!idx) {
                                     for (const Edge& edge : edges.order) {
                                         size_t temp_hash = edge.hash;
@@ -2289,34 +2223,35 @@ namespace impl {
                     int i,
                     const Param& param,
                     Node* curr
-                ) -> std::shared_ptr<Node> {
+                ) {
                     auto [it, inserted] = curr->positional.try_emplace(
                         param.type,
                         Edges{}
                     );
                     if (inserted) {
                         it->second.node = std::make_shared<Node>(
-                            param.name,
-                            param.type,
-                            nullptr
+                            reinterpret_borrow<Object>(param.type),
+                            reinterpret_steal<Object>(nullptr)
                         );
+                        if (param.kw() || param.opt() || param.variadic()) {
+                            for (auto& [name, map] : curr->keyword) {
+                                it->second.node->keyword.emplace(name, map);
+                            }
+                        }
                     }
-                    Edge edge = {
-                        .mask = 1ULL << i,
-                        .hash = key.hash,
-                        .kind = param.kind
+                    std::pair<Edge, std::shared_ptr<Node>> result = {
+                        {
+                            .name = param.name,
+                            .mask = 1ULL << i,
+                            .hash = key.hash,
+                            .kind = param.kind
+                        },
+                        it->second.node
                     };
-                    it->second.map.insert(edge);
-                    it->second.order.insert(edge);
-                    return it->second.node;
+                    it->second.map.insert(result.first);
+                    it->second.order.insert(result.first);
+                    return result;
                 };
-
-                /// TODO: whenever I create a new keyword node, I have to copy over all
-                /// the keywords from the current node?  That way, when I backfill
-                /// with the other keywords, each of the existing nodes will always
-                /// have a complete set of keywords, minus the ones I'm adding.
-                /// -> That must also be done for any optional positional arguments
-                /// as well.
 
                 // insert an edge into a node's keyword map to reflect a given
                 // parameter
@@ -2325,7 +2260,7 @@ namespace impl {
                     int i,
                     const Param& param,
                     Node* curr
-                ) -> std::shared_ptr<Node> {
+                ) {
                     auto [kw, _] = curr->keyword.try_emplace(param.name, TopoMap{});
                     auto [it, inserted] = kw->second.try_emplace(
                         param.type,
@@ -2333,70 +2268,80 @@ namespace impl {
                     );
                     if (inserted) {
                         it->second.node = std::make_shared<Node>(
-                            param.name,
-                            param.type,
-                            nullptr
+                            reinterpret_borrow<Object>(param.type),
+                            reinterpret_steal<Object>(nullptr)
                         );
+                        for (auto& [name, map] : curr->keyword) {
+                            it->second.node->keyword.emplace(name, map);
+                        }
                     }
-                    Edge edge = {
-                        .mask = 1ULL << i,
-                        .hash = key.hash,
-                        .kind = param.kind
+                    std::pair<Edge, std::shared_ptr<Node>> result = {
+                        {
+                            .name = param.name,
+                            .mask = 1ULL << i,
+                            .hash = key.hash,
+                            .kind = param.kind
+                        },
+                        it->second.node
                     };
-                    it->second.map.insert(edge);
-                    it->second.order.insert(edge);
-                    return it->second.node;
+                    it->second.map.insert(result.first);
+                    it->second.order.insert(result.first);
+                    return result;
                 };
 
                 // insert an edge linking each parameter in the key
-                std::vector<std::shared_ptr<Node>> nodes;
+                std::vector<std::pair<Edge, std::shared_ptr<Node>>> path;
                 std::shared_ptr<Node> curr = root;
-                nodes.reserve(key.size());
+                path.reserve(key.size());
                 int first_keyword = -1;
                 int last_required = 0;
                 uint64_t required = 0;
                 for (int i = 0, end = key.size(); i < end; ++i) {
                     const Param& param = key[i];
                     if (param.posonly()) {
-                        curr = insert_positional(key, i, param, curr.get());
+                        path.push_back(insert_positional(key, i, param, curr.get()));
                         if (!param.opt()) {
                             ++first_keyword;
                             last_required = i;
                             required |= 1ULL << i;
                         }
                     } else if (param.pos()) {
-                        /// TODO: I also need to insert a keyword edge pointing to
-                        /// the same node.  Maybe not the same node, since positional
-                        /// arguments can't follow keywords, and if I used the same
-                        /// node, they would be able to.  So that means I would need
-                        /// a different node for the keyword edge.  That gets me into
-                        /// more hot water though, since now the default argument
-                        /// type will potentially insert multiple nodes into the trie.
-                        curr = insert_positional(key, i, param, curr.get());
+                        path.push_back(insert_positional(key, i, param, curr.get()));
+                        auto [kw, _] = curr->keyword.try_emplace(param.name, TopoMap{});
+                        auto [it, inserted] = kw->second.try_emplace(
+                            param.type,
+                            Edges{}
+                        );
+                        if (inserted) {
+                            it->second.node = path.back().second;
+                        }
+                        it->second.map.insert(path.back().first);
+                        it->second.order.insert(path.back().first);
                         if (!param.opt()) {
                             last_required = i;
                             required |= 1ULL << i;
                         }
                     } else if (param.kw()) {
-                        curr = insert_keyword(key, i, param, curr.get());
+                        path.push_back(insert_keyword(key, i, param, curr.get()));
                         if (!param.opt()) {
                             last_required = i;
                             required |= 1ULL << i;
                         }
                     } else if (param.args()) {
-                        curr = insert_positional(key, i, param, curr.get());
+                        path.push_back(insert_positional(key, i, param, curr.get()));
                     } else if (param.kwargs()) {
-                        curr = insert_keyword(key, i, param, curr.get());
+                        path.push_back(insert_keyword(key, i, param, curr.get()));
                     } else {
                         throw ValueError("invalid argument kind");
                     }
-                    nodes.push_back(curr);
+                    curr = path.back().second;
                     ++(curr->alive);
                 }
 
                 // backfill the terminal functions and full keyword maps for each node
+                std::optional<std::string_view> name;
                 for (int i = key.size() - 1; i > first_keyword; --i) {
-                    std::shared_ptr<Node> node = nodes[i];
+                    auto& [edge, node] = path[i];
                     if (i >= last_required) {
                         if (node->func) {
                             throw TypeError("overload already exists");
@@ -2405,12 +2350,27 @@ namespace impl {
                     }
                     for (int j = first_keyword; j < key.size(); ++j) {
                         const Param& param = key[j];
-                        if (param.posonly() || param.args() || node->name == param.name) {
+                        if (
+                            param.posonly() ||
+                            param.args() ||
+                            param.name == edge.name ||  // incoming edge
+                            (name && param.name == name.value())  // outgoing edge
+                        ) {
                             continue;
                         }
-                        std::shared_ptr<Node> kw = nodes[j];
-                        /// TODO: insert an edge for each keyword name
+                        auto& [kw_edge, kw_node] = path[j];
+                        auto [kw, _] = node->keyword.try_emplace(param.name, TopoMap{});
+                        auto [it, inserted] = kw->second.try_emplace(
+                            param.type,
+                            Edges{}
+                        );
+                        if (inserted) {
+                            it->second.node = kw_node;
+                        }
+                        it->second.map.insert(kw_edge);
+                        it->second.order.insert(kw_edge);
                     }
+                    name = edge.name;
                 }
 
                 // track the function and required arguments for the inserted key.
@@ -4319,7 +4279,7 @@ namespace impl {
         /* A callback function to use when parsing inline type hints within a Python
         function declaration. */
         struct Callback {
-            using Func = std::function<bool(Object, std::vector<PyTypeObject*>& result)>;
+            using Func = std::function<bool(Object, std::vector<PyObject*>& result)>;
             std::string id;
             Func callback;
         };
@@ -4328,17 +4288,11 @@ namespace impl {
         hint.  The search stops at the first callback that returns true, otherwise the
         hint is interpreted as either a single type if it is a Python class, or a
         generic `object` type otherwise. */
-        static void parse(Object hint, std::vector<PyTypeObject*>& out) {
+        static void parse(Object hint, std::vector<PyObject*>& out) {
             for (const Callback& cb : callbacks) {
                 if (cb.callback(hint, out)) {
                     return;
                 }
-            }
-
-            // raw types are forwarded directly
-            if (PyType_Check(ptr(hint))) {
-                out.push_back(reinterpret_cast<PyTypeObject*>(ptr(hint)));
-                return;
             }
 
             // Annotated types are unwrapped and reprocessed if not handled by a callback
@@ -4363,8 +4317,8 @@ namespace impl {
                 return;
             }
 
-            // unrecognized hints are treated as Any
-            out.push_back(&PyBaseObject_Type);
+            // unrecognized hints are assumed to implement `issubclass()`
+            out.push_back(ptr(hint));
         }
 
         /* In order to provide custom handlers for Python type hints, each annotation
@@ -4401,7 +4355,7 @@ namespace impl {
                 /// and will require interactions with the global type map, and thus a
                 /// forward declaration here.
                 "types.GenericAlias",
-                [](Object hint, std::vector<PyTypeObject*>& out) -> bool {
+                [](Object hint, std::vector<PyObject*>& out) -> bool {
                     Object types = import_types();
                     if (isinstance(hint, getattr<"GenericAlias">(types))) {
                         Object typing = import_typing();
@@ -4427,7 +4381,7 @@ namespace impl {
             },
             {
                 "types.UnionType",
-                [](Object hint, std::vector<PyTypeObject*>& out) -> bool {
+                [](Object hint, std::vector<PyObject*>& out) -> bool {
                     Object types = import_types();
                     if (isinstance(hint, getattr<"UnionType">(types))) {
                         Object args = reinterpret_steal<Object>(PyObject_CallOneArg(
@@ -4450,7 +4404,7 @@ namespace impl {
                 /// it returns `typing.Union`, meaning that this handler will also
                 /// implicitly cover `Optional` annotations for free.
                 "typing.Union",
-                [](Object hint, std::vector<PyTypeObject*>& out) -> bool {
+                [](Object hint, std::vector<PyObject*>& out) -> bool {
                     Object typing = import_typing();
                     Object origin = reinterpret_steal<Object>(PyObject_CallOneArg(
                         ptr(getattr<"get_origin">(typing)),
@@ -4476,7 +4430,7 @@ namespace impl {
             },
             {
                 "typing.Any",
-                [](Object hint, std::vector<PyTypeObject*>& out) -> bool {
+                [](Object hint, std::vector<PyObject*>& out) -> bool {
                     Object typing = import_typing();
                     Object origin = reinterpret_steal<Object>(PyObject_CallOneArg(
                         ptr(getattr<"get_origin">(typing)),
@@ -4485,7 +4439,14 @@ namespace impl {
                     if (origin.is(nullptr)) {
                         Exception::from_python();
                     } else if (origin.is(getattr<"Any">(typing))) {
-                        out.push_back(&PyBaseObject_Type);
+                        PyObject* type = reinterpret_cast<PyObject*>(&PyBaseObject_Type);
+                        bool contains = false;
+                        for (PyObject* t : out) {
+                            if (t == type) {
+                                contains = true;
+                            }
+                        }
+                        out.push_back(type);
                         return true;
                     }
                     return false;
@@ -4493,7 +4454,7 @@ namespace impl {
             },
             {
                 "typing.TypeAliasType",
-                [](Object hint, std::vector<PyTypeObject*>& out) -> bool {
+                [](Object hint, std::vector<PyObject*>& out) -> bool {
                     Object typing = import_typing();
                     if (isinstance(hint, getattr<"TypeAliasType">(typing))) {
                         parse(getattr<"__value__">(hint), out);
@@ -4504,7 +4465,7 @@ namespace impl {
             },
             {
                 "typing.Literal",
-                [](Object hint, std::vector<PyTypeObject*>& out) -> bool {
+                [](Object hint, std::vector<PyObject*>& out) -> bool {
                     Object typing = import_typing();
                     Object origin = reinterpret_steal<Object>(PyObject_CallOneArg(
                         ptr(getattr<"get_origin">(typing)),
@@ -4522,9 +4483,11 @@ namespace impl {
                         }
                         Py_ssize_t len = PyTuple_GET_SIZE(ptr(args));
                         for (Py_ssize_t i = 0; i < len; ++i) {
-                            PyTypeObject* type = Py_TYPE(PyTuple_GET_ITEM(ptr(args), i));
+                            PyObject* type = reinterpret_cast<PyObject*>(
+                                Py_TYPE(PyTuple_GET_ITEM(ptr(args), i))
+                            );
                             bool contains = false;
-                            for (PyTypeObject* t : out) {
+                            for (PyObject* t : out) {
                                 if (t == type) {
                                     contains = true;
                                 }
@@ -4540,10 +4503,19 @@ namespace impl {
             },
             {
                 "typing.LiteralString",
-                [](Object hint, std::vector<PyTypeObject*>& out) -> bool {
+                [](Object hint, std::vector<PyObject*>& out) -> bool {
                     Object typing = import_typing();
                     if (hint.is(getattr<"LiteralString">(typing))) {
-                        out.push_back(&PyUnicode_Type);
+                        PyObject* type = reinterpret_cast<PyObject*>(&PyUnicode_Type);
+                        bool contains = false;
+                        for (PyObject* t : out) {
+                            if (t == type) {
+                                contains = true;
+                            }
+                        }
+                        if (!contains) {
+                            out.push_back(type);
+                        }
                         return true;
                     }
                     return false;
@@ -4551,11 +4523,26 @@ namespace impl {
             },
             {
                 "typing.AnyStr",
-                [](Object hint, std::vector<PyTypeObject*>& out) -> bool {
+                [](Object hint, std::vector<PyObject*>& out) -> bool {
                     Object typing = import_typing();
                     if (hint.is(getattr<"AnyStr">(typing))) {
-                        out.push_back(&PyUnicode_Type);
-                        out.push_back(&PyBytes_Type);
+                        PyObject* unicode = reinterpret_cast<PyObject*>(&PyUnicode_Type);
+                        PyObject* bytes = reinterpret_cast<PyObject*>(&PyBytes_Type);
+                        bool contains_unicode = false;
+                        bool contains_bytes = false;
+                        for (PyObject* t : out) {
+                            if (t == unicode) {
+                                contains_unicode = true;
+                            } else if (t == bytes) {
+                                contains_bytes = true;
+                            }
+                        }
+                        if (!contains_unicode) {
+                            out.push_back(unicode);
+                        }
+                        if (!contains_bytes) {
+                            out.push_back(bytes);
+                        }
                         return true;
                     }
                     return false;
@@ -4563,7 +4550,7 @@ namespace impl {
             },
             {
                 "typing.NoReturn",
-                [](Object hint, std::vector<PyTypeObject*>& out) -> bool {
+                [](Object hint, std::vector<PyObject*>& out) -> bool {
                     Object typing = import_typing();
                     if (
                         hint.is(getattr<"NoReturn">(typing)) ||
@@ -4578,7 +4565,7 @@ namespace impl {
             },
             {
                 "typing.TypeGuard",
-                [](Object hint, std::vector<PyTypeObject*>& out) -> bool {
+                [](Object hint, std::vector<PyObject*>& out) -> bool {
                     Object typing = import_typing();
                     Object origin = reinterpret_steal<Object>(PyObject_CallOneArg(
                         ptr(getattr<"get_origin">(typing)),
@@ -4587,7 +4574,16 @@ namespace impl {
                     if (origin.is(nullptr)) {
                         Exception::from_python();
                     } else if (origin.is(getattr<"TypeGuard">(typing))) {
-                        out.push_back(&PyBool_Type);
+                        PyObject* type = reinterpret_cast<PyObject*>(&PyBool_Type);
+                        bool contains = false;
+                        for (PyObject* t : out) {
+                            if (t == type) {
+                                contains = true;
+                            }
+                        }
+                        if (!contains) {
+                            out.push_back(type);
+                        }
                         return true;
                     }
                     return false;
@@ -4598,9 +4594,9 @@ namespace impl {
         /* Get the possible return types of the function, using the same callback
         handlers as the parameters.  Note that functions with `typing.NoReturn` or
         `typing.Never` annotations can return an empty vector. */
-        std::vector<PyTypeObject*> returns() const {
+        std::vector<PyObject*> returns() const {
             Object return_annotation = getattr<"return_annotation">(signature);
-            std::vector<PyTypeObject*> keys;
+            std::vector<PyObject*> keys;
             parse(return_annotation, keys);
             return keys;
         }
@@ -4675,7 +4671,7 @@ namespace impl {
                 }
 
                 // parse the annotation for each `inspect.Parameter` object
-                std::vector<PyTypeObject*> types;
+                std::vector<PyObject*> types;
                 parse(param, types);
 
                 // if there is more than one type in the output vector, then the
@@ -4683,7 +4679,7 @@ namespace impl {
                 overload_keys.reserve(types.size() * overload_keys.size());
                 for (size_t i = 1; i < types.size(); ++i) {
                     for (size_t j = 0; j < overload_keys.size(); ++j) {
-                        auto&& key = overload_keys[j];
+                        auto& key = overload_keys[j];
                         overload_keys.push_back(key);
                         overload_keys.back().value.reserve(key.value.capacity());
                     }
@@ -4692,7 +4688,7 @@ namespace impl {
                 // append the types to the overload keys and update their hashes such
                 // that each gives a unique path through a function's overload trie
                 for (size_t i = 0; i < types.size(); ++i) {
-                    PyTypeObject* type = types[i];
+                    PyObject* type = types[i];
                     for (size_t j = 0; j < overload_keys.size(); ++j) {
                         Params& key = overload_keys[i * overload_keys.size() + j];
                         key.value.push_back({
