@@ -103,6 +103,13 @@ template <>
 struct Interface<Object> {};
 
 
+/// TODO: if all C++ types are going to be exposed to Python under the `bertrand`
+/// module (i.e. `bertrand.Int` == `py::Int`), then I'll probably need to define every
+/// type as a subclass of its Python equivalent, and use a shared metaclass to
+/// link them.  This will require a redesign of the internal machinery to place
+/// metaclasses as early as possible in the bootstrap process.
+
+
 /* An owning reference to a dynamically-typed Python object.  More specialized types
 can always be implicitly converted to this type, but doing the opposite incurs a
 runtime `isinstance()` check, and raises a `TypeError` if the check fails. */
