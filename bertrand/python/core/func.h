@@ -81,7 +81,11 @@ namespace impl {
 
         template <typename U> requires (std::convertible_to<type, U>)
         [[nodiscard]] operator U() && {
-            return value;
+            if constexpr (std::is_lvalue_reference_v<type>) {
+                return value;
+            } else {
+                return std::move(value);
+            }
         }
     };
 
@@ -104,7 +108,11 @@ namespace impl {
 
         template <typename U> requires (std::convertible_to<type, U>)
         [[nodiscard]] operator U() && {
-            return value;
+            if constexpr (std::is_lvalue_reference_v<type>) {
+                return value;
+            } else {
+                return std::move(value);
+            }
         }
     };
 
@@ -127,7 +135,11 @@ namespace impl {
 
         template <typename U> requires (std::convertible_to<type, U>)
         [[nodiscard]] operator U() && {
-            return value;
+            if constexpr (std::is_lvalue_reference_v<type>) {
+                return value;
+            } else {
+                return std::move(value);
+            }
         }
     };
 
@@ -292,7 +304,11 @@ struct Arg {
     supports it. */
     template <typename U> requires (std::convertible_to<type, U>)
     [[nodiscard]] operator U() && {
-        return value;
+        if constexpr (std::is_lvalue_reference_v<type>) {
+            return value;
+        } else {
+            return std::move(value);
+        }
     }
 };
 
@@ -4850,143 +4866,141 @@ namespace impl {
     given, cvref-qualified type.  Passing void as the enclosing class will return the
     non-member function pointer as-is. */
     template <typename Func, typename Self>
-    struct _as_member_func {
+    struct as_member_func {
         static constexpr bool enable = false;
     };
     template <typename R, typename... A, typename Self>
         requires (std::is_void_v<std::remove_cvref_t<Self>>)
-    struct _as_member_func<R(*)(A...), Self> {
+    struct as_member_func<R(*)(A...), Self> {
         static constexpr bool enable = true;
         using type = R(*)(A...);
     };
     template <typename R, typename... A, typename Self>
         requires (std::is_void_v<std::remove_cvref_t<Self>>)
-    struct _as_member_func<R(*)(A...) noexcept, Self> {
+    struct as_member_func<R(*)(A...) noexcept, Self> {
         static constexpr bool enable = true;
         using type = R(*)(A...) noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...), Self> {
+    struct as_member_func<R(*)(A...), Self> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...);
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...) noexcept, Self> {
+    struct as_member_func<R(*)(A...) noexcept, Self> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...), Self&> {
+    struct as_member_func<R(*)(A...), Self&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) &;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...) noexcept, Self&> {
+    struct as_member_func<R(*)(A...) noexcept, Self&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) & noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...), Self&&> {
+    struct as_member_func<R(*)(A...), Self&&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) &&;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...) noexcept, Self&&> {
+    struct as_member_func<R(*)(A...) noexcept, Self&&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) && noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...), const Self> {
+    struct as_member_func<R(*)(A...), const Self> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...) noexcept, const Self> {
+    struct as_member_func<R(*)(A...) noexcept, const Self> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...), const Self&> {
+    struct as_member_func<R(*)(A...), const Self&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const &;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...) noexcept, const Self&> {
+    struct as_member_func<R(*)(A...) noexcept, const Self&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const & noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...), const Self&&> {
+    struct as_member_func<R(*)(A...), const Self&&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const &&;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...) noexcept, const Self&&> {
+    struct as_member_func<R(*)(A...) noexcept, const Self&&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const && noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...), volatile Self> {
+    struct as_member_func<R(*)(A...), volatile Self> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...) noexcept, volatile Self> {
+    struct as_member_func<R(*)(A...) noexcept, volatile Self> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...), volatile Self&> {
+    struct as_member_func<R(*)(A...), volatile Self&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile &;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...) noexcept, volatile Self&> {
+    struct as_member_func<R(*)(A...) noexcept, volatile Self&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile & noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...), volatile Self&&> {
+    struct as_member_func<R(*)(A...), volatile Self&&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile &&;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...) noexcept, volatile Self&&> {
+    struct as_member_func<R(*)(A...) noexcept, volatile Self&&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile && noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...), const volatile Self> {
+    struct as_member_func<R(*)(A...), const volatile Self> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...) noexcept, const volatile Self> {
+    struct as_member_func<R(*)(A...) noexcept, const volatile Self> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...), const volatile Self&> {
+    struct as_member_func<R(*)(A...), const volatile Self&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile &;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...) noexcept, const volatile Self&> {
+    struct as_member_func<R(*)(A...) noexcept, const volatile Self&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile & noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...), const volatile Self&&> {
+    struct as_member_func<R(*)(A...), const volatile Self&&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile &&;
     };
     template <typename R, typename... A, typename Self>
-    struct _as_member_func<R(*)(A...) noexcept, const volatile Self&&> {
+    struct as_member_func<R(*)(A...) noexcept, const volatile Self&&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile && noexcept;
     };
-    template <typename Func, typename Self>
-    using as_member_func = _as_member_func<Func, Self>::type;
 
     /* Introspect the proper signature for a py::Function instance from a generic
     function pointer. */
@@ -5011,7 +5025,7 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(*)(A...)>;
         template <typename C> requires (can_make_member<C>)
-        using with_self = Signature<as_member_func<R(*)(A...), C>>;
+        using with_self = Signature<typename as_member_func<R(*)(A...), C>::type>;
         template <typename... A2>
         using with_args = Signature<R(*)(A2...)>;
         template <typename R2, typename... A2>
@@ -5039,7 +5053,7 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...)>;
         template <typename C2> requires (can_make_member<C2>)
-        using with_self = Signature<as_member_func<R(*)(A...), C2>>;
+        using with_self = Signature<typename as_member_func<R(*)(A...), C2>::type>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...)>;
         template <typename R2, typename... A2>
@@ -5071,7 +5085,7 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) const>;
         template <typename C2> requires (can_make_member<C2>)
-        using with_self = Signature<as_member_func<R(*)(A...), C2>>;
+        using with_self = Signature<typename as_member_func<R(*)(A...), C2>::type>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const>;
         template <typename R2, typename... A2>
@@ -5103,7 +5117,7 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) volatile>;
         template <typename C2> requires (can_make_member<C2>)
-        using with_self = Signature<as_member_func<R(*)(A...), C2>>;
+        using with_self = Signature<typename as_member_func<R(*)(A...), C2>::type>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) volatile>;
         template <typename R2, typename... A2>
@@ -5135,7 +5149,7 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) const volatile>;
         template <typename C2> requires (can_make_member<C2>)
-        using with_self = Signature<as_member_func<R(*)(A...), C2>>;
+        using with_self = Signature<typename as_member_func<R(*)(A...), C2>::type>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const volatile>;
         template <typename R2, typename... A2>
@@ -5301,10 +5315,6 @@ properly encode full type information.)doc";
         }
 
     private:
-
-        static Param resolve_scalar(PyObject* item) {
-
-        }
 
         /* Parse a Python-style parameter list into a C++ template signature.  An
         error will be raised if the parameter list is malformed, applying the same
@@ -5900,10 +5910,12 @@ struct Interface<Function<F>> : impl::FunctionTag {
             !impl::inherits<Func, impl::FunctionTag> &&
             impl::has_call_operator<Func>
         )
-    static constexpr bool compatible<Func> = compatible<
-        typename impl::Signature<decltype(&std::remove_reference_t<Func>::operator())>::
-        template with_self<void>::type
-    >;
+    static constexpr bool compatible<Func> = 
+        impl::Signature<decltype(&std::remove_reference_t<Func>::operator())>::enable &&
+        compatible<
+            typename impl::Signature<decltype(&std::remove_reference_t<Func>::operator())>::
+            template with_self<void>::type
+        >;
 
     /* Check whether this function type can be used to invoke an external C++ function.
     This is identical to a `std::is_invocable_r_v<Func, ...>` check against this
@@ -7345,6 +7357,147 @@ public:
 };
 
 
+/* CTAD guides for construction from function pointer types. */
+template <typename Func, typename... Defaults>
+    requires (
+        impl::Signature<Func>::enable &&
+        impl::Signature<Func>::Defaults::template Bind<Defaults...>::enable
+    )
+Function(Func, Defaults&&...)
+    -> Function<typename impl::Signature<Func>::type>;
+template <typename Func, typename... Defaults>
+    requires (
+        impl::Signature<Func>::enable &&
+        impl::Signature<Func>::Defaults::template Bind<Defaults...>::enable
+    )
+Function(std::string, Func, Defaults&&...)
+    -> Function<typename impl::Signature<Func>::type>;
+template <typename Func, typename... Defaults>
+    requires (
+        impl::Signature<Func>::enable &&
+        impl::Signature<Func>::Defaults::template Bind<Defaults...>::enable
+    )
+Function(std::string, std::string, Func, Defaults&&...)
+    -> Function<typename impl::Signature<Func>::type>;
+
+
+/* CTAD guides for construction from function objects implementing a call operator. */
+template <typename Func, typename... Defaults>
+    requires (
+        !impl::Signature<Func>::enable &&
+        !impl::inherits<Func, impl::FunctionTag> &&
+        impl::has_call_operator<Func> &&
+        impl::Signature<decltype(&Func::operator())>::enable &&
+        impl::Signature<decltype(&Func::operator())>::Defaults::
+            template Bind<Defaults...>::enable
+    )
+Function(Func, Defaults&&...)
+    -> Function<typename impl::Signature<decltype(&Func::operator())>::type>;
+template <typename Func, typename... Defaults>
+    requires (
+        !impl::Signature<Func>::enable &&
+        !impl::inherits<Func, impl::FunctionTag> &&
+        impl::has_call_operator<Func> &&
+        impl::Signature<decltype(&Func::operator())>::enable &&
+        impl::Signature<decltype(&Func::operator())>::Defaults::
+            template Bind<Defaults...>::enable
+    )
+Function(std::string, Func, Defaults&&...)
+    -> Function<typename impl::Signature<decltype(&Func::operator())>::type>;
+template <typename Func, typename... Defaults>
+    requires (
+        !impl::Signature<Func>::enable &&
+        !impl::inherits<Func, impl::FunctionTag> &&
+        impl::has_call_operator<Func> &&
+        impl::Signature<decltype(&Func::operator())>::enable &&
+        impl::Signature<decltype(&Func::operator())>::Defaults::
+            template Bind<Defaults...>::enable
+    )
+Function(std::string, std::string, Func, Defaults&&...)
+    -> Function<typename impl::Signature<decltype(&Func::operator())>::type>;
+
+
+
+
+/// TODO: these constructors will have to account for member function pointers, which
+/// will need to wrapped in a capturing lambda to account for the `self` parameter.
+
+
+
+
+template <typename Return, typename... Target, typename Func, typename... Values>
+    requires (
+        !impl::python_like<Func> &&
+        std::is_invocable_r_v<Return, Func, Target...> &&
+        Function<Return(Target...)>::Defaults::template enable<Values...>
+    )
+struct __init__<Function<Return(Target...)>, Func, Values...> {
+    using type = Function<Return(Target...)>;
+    static type operator()(Func&& func, Values&&... defaults) {
+        return reinterpret_steal<type>(py::Type<type>::__python__::__create__(
+            "",
+            "",
+            std::function(std::forward<Func>(func)),
+            typename type::Defaults(std::forward<Values>(defaults)...)
+        ));
+    }
+};
+
+
+template <
+    std::convertible_to<std::string> Name,
+    typename Return,
+    typename... Target,
+    typename Func,
+    typename... Values
+>
+    requires (
+        !impl::python_like<Func> &&
+        std::is_invocable_r_v<Return, Func, Target...> &&
+        Function<Return(Target...)>::Defaults::template enable<Values...>
+    )
+struct __init__<Function<Return(Target...)>, Name, Func, Values...> {
+    using type = Function<Return(Target...)>;
+    static type operator()(Name&& name, Func&& func, Values&&... defaults) {
+        return reinterpret_steal<type>(py::Type<type>::__python__::__create__(
+            std::forward(name),
+            "",
+            std::function(std::forward<Func>(func)),
+            typename type::Defaults(std::forward<Values>(defaults)...)
+        ));
+    }
+};
+
+
+template <
+    std::convertible_to<std::string> Name,
+    std::convertible_to<std::string> Doc,
+    typename Return,
+    typename... Target,
+    typename Func,
+    typename... Values
+>
+    requires (
+        !impl::python_like<Func> &&
+        std::is_invocable_r_v<Return, Func, Target...> &&
+        Function<Return(Target...)>::Defaults::template enable<Values...>
+    )
+struct __init__<Function<Return(Target...)>, Name, Doc, Func, Values...> {
+    using type = Function<Return(Target...)>;
+    static type operator()(Name&& name, Doc&& doc, Func&& func, Values&&... defaults) {
+        return reinterpret_steal<type>(py::Type<type>::__python__::__create__(
+            std::forward(name),
+            std::forward<Doc>(doc),
+            std::function(std::forward<Func>(func)),
+            typename type::Defaults(std::forward<Values>(defaults)...)
+        ));
+    }
+};
+
+
+
+
+
 /// TODO: class methods can be indicated by a member method of Type<T>.  That
 /// would allow this mechanism to scale arbitrarily.
 
@@ -7358,34 +7511,6 @@ public:
 // better to implement it on the constructor side.  Perhaps including it in the
 // isinstance()/issubclass() checks would be sufficient, since those are used
 // during implicit conversion anyways.
-
-
-/// TODO: constructing a function from a callable should normalize to the correct
-/// function pointer type rather than specializing on the callable type.  That will
-/// require me to get the operator() type as a non-member function pointer.
-
-
-template <
-    impl::is_callable_any Func,
-    typename... D
-> requires (!impl::python_like<Func>)
-Function(
-    Func&&,
-    typename impl::Signature<std::remove_reference_t<Func>>::Defaults&&...
-) -> Function<typename impl::Signature<std::remove_reference_t<Func>>::type>;
-
-
-template <impl::is_callable_any F, typename... D> requires (!impl::python_like<F>)
-Function(std::string, F, D...) -> Function<
-    typename impl::Signature<std::decay_t<F>>::type
->;
-
-
-template <impl::is_callable_any F, typename... D> requires (!impl::python_like<F>)
-Function(std::string, std::string, F, D...) -> Function<
-    typename impl::Signature<std::decay_t<F>>::type
->;
-
 
 
 /// TODO: all of these should be moved to their respective methods:
@@ -8305,20 +8430,357 @@ struct TODO3 {
 
 
 
+template <typename T, typename R, typename... A>
+struct __isinstance__<T, Function<R(A...)>> : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if (impl::cpp_like<T>) {
+            return issubclass<T, Function<R(A...)>>();
+
+        } else if constexpr (issubclass<T, Function<R(A...)>>()) {
+            return ptr(obj) != nullptr;
+
+        } else if constexpr (impl::is_object_exact<T>) {
+            return ptr(obj) != nullptr && (
+                PyFunction_Check(ptr(obj)) ||
+                PyMethod_Check(ptr(obj)) ||
+                PyCFunction_Check(ptr(obj))
+            );
+        } else {
+            return false;
+        }
+    }
+};
+
+
+// TODO: if default specialization is given, type checks should be fully generic, right?
+// issubclass<T, Function<>>() should check impl::is_callable_any<T>;
+
+template <typename T, typename R, typename... A>
+struct __issubclass__<T, Function<R(A...)>> : Returns<bool> {
+    static constexpr bool operator()() {
+        return std::is_invocable_r_v<R, T, A...>;
+    }
+    static constexpr bool operator()(const T&) {
+        // TODO: this is going to have to be radically rethought.
+        // Maybe I just forward to an issubclass() check against the type object?
+        // In fact, this could maybe be standard operating procedure for all types.
+        // 
+        return PyType_IsSubtype(
+            reinterpret_cast<PyTypeObject*>(ptr(Type<T>())),
+            reinterpret_cast<PyTypeObject*>(ptr(Type<Function<R(A...)>>()))
+        );
+    }
+};
+
+
+
+
+
+/* Call the function with the given arguments.  If the wrapped function is of the
+coupled Python type, then this will be translated into a raw C++ call, bypassing
+Python entirely. */
+template <impl::inherits<impl::FunctionTag> Self, typename... Args>
+    requires (std::remove_reference_t<Self>::invocable<Args...>)
+struct __call__<Self, Args...> : Returns<typename std::remove_reference_t<Self>::Return> {
+    using Func = std::remove_reference_t<Self>;
+    static decltype(auto) operator()(Self&& self, Args&&... args) {
+        if constexpr (std::is_void_v<typename Func::Return>) {
+            call(ptr(self), std::forward<Source>(args)...);
+        } else {
+            return call(ptr(self), std::forward<Source>(args)...);
+        }
+    }
+};
+
+
+/// TODO: __getitem__, __contains__, __iter__, __len__, __bool__
 
 
 
 
 
 
+/* Get the name of the wrapped function. */
+template <typename Signature> requires (impl::GetSignature<Signature>::enable)
+[[nodiscard]] std::string Interface<Function<Signature>>::_get_name(this const auto& self) {
+    // TODO: get the base type and check against it.
+    if (true) {
+        Type<Function> func_type;
+        if (PyType_IsSubtype(
+            Py_TYPE(ptr(self)),
+            reinterpret_cast<PyTypeObject*>(ptr(func_type))
+        )) {
+            PyFunction* func = reinterpret_cast<PyFunction*>(ptr(self));
+            return func->base.name;
+        }
+        // TODO: print out a detailed error message with both signatures
+        throw TypeError("signature mismatch");
+    }
+
+    PyObject* result = PyObject_GetAttrString(ptr(self), "__name__");
+    if (result == nullptr) {
+        Exception::from_python();
+    }
+    Py_ssize_t length;
+    const char* data = PyUnicode_AsUTF8AndSize(result, &length);
+    Py_DECREF(result);
+    if (data == nullptr) {
+        Exception::from_python();
+    }
+    return std::string(data, length);
+}
 
 
+// // get_default<I>() returns a reference to the default value of the I-th argument
+// // get_default<name>() returns a reference to the default value of the named argument
 
+// // TODO:
+// // .defaults -> MappingProxy<Str, Object>
+// // .annotations -> MappingProxy<Str, Type<Object>>
+// // .posonly -> Tuple<Str>
+// // .kwonly -> Tuple<Str>
 
+// // /* Get a read-only dictionary mapping argument names to their default values. */
+// // __declspec(property(get=_get_defaults)) MappingProxy<Dict<Str, Object>> defaults;
+// // [[nodiscard]] MappingProxy<Dict<Str, Object>> _get_defaults() const {
+// //     // TODO: check for the PyFunction type and extract the defaults directly
+// //     if (true) {
+// //         Type<Function> func_type;
+// //         if (PyType_IsSubtype(
+// //             Py_TYPE(ptr(*this)),
+// //             reinterpret_cast<PyTypeObject*>(ptr(func_type))
+// //         )) {
+// //             // TODO: generate a dictionary using a fold expression over the
+// //             // defaults, then convert to a MappingProxy.
+// //             // Or maybe return a std::unordered_map
+// //             throw NotImplementedError();
+// //         }
+// //         // TODO: print out a detailed error message with both signatures
+// //         throw TypeError("signature mismatch");
+// //     }
 
+// //     // check for positional defaults
+// //     PyObject* pos_defaults = PyFunction_GetDefaults(ptr(*this));
+// //     if (pos_defaults == nullptr) {
+// //         if (code.kwonlyargcount() > 0) {
+// //             Object kwdefaults = attr<"__kwdefaults__">();
+// //             if (kwdefaults.is(None)) {
+// //                 return MappingProxy(Dict<Str, Object>{});
+// //             } else {
+// //                 return MappingProxy(reinterpret_steal<Dict<Str, Object>>(
+// //                     kwdefaults.release())
+// //                 );
+// //             }
+// //         } else {
+// //             return MappingProxy(Dict<Str, Object>{});
+// //         }
+// //     }
+
+// //     // extract positional defaults
+// //     size_t argcount = code.argcount();
+// //     Tuple<Object> defaults = reinterpret_borrow<Tuple<Object>>(pos_defaults);
+// //     Tuple<Str> names = code.varnames()[{argcount - defaults.size(), argcount}];
+// //     Dict result;
+// //     for (size_t i = 0; i < defaults.size(); ++i) {
+// //         result[names[i]] = defaults[i];
+// //     }
+
+// //     // merge keyword-only defaults
+// //     if (code.kwonlyargcount() > 0) {
+// //         Object kwdefaults = attr<"__kwdefaults__">();
+// //         if (!kwdefaults.is(None)) {
+// //             result.update(Dict(kwdefaults));
+// //         }
+// //     }
+// //     return result;
+// // }
+
+// // /* Set the default value for one or more arguments.  If nullopt is provided,
+// // then all defaults will be cleared. */
+// // void defaults(Dict&& dict) {
+// //     Code code = this->code();
+
+// //     // TODO: clean this up.  The logic should go as follows:
+// //     // 1. check for positional defaults.  If found, build a dictionary with the new
+// //     // values and remove them from the input dict.
+// //     // 2. check for keyword-only defaults.  If found, build a dictionary with the
+// //     // new values and remove them from the input dict.
+// //     // 3. if any keys are left over, raise an error and do not update the signature
+// //     // 4. set defaults to Tuple(positional_defaults.values()) and update kwdefaults
+// //     // in-place.
+
+// //     // account for positional defaults
+// //     PyObject* pos_defaults = PyFunction_GetDefaults(self());
+// //     if (pos_defaults != nullptr) {
+// //         size_t argcount = code.argcount();
+// //         Tuple<Object> defaults = reinterpret_borrow<Tuple<Object>>(pos_defaults);
+// //         Tuple<Str> names = code.varnames()[{argcount - defaults.size(), argcount}];
+// //         Dict positional_defaults;
+// //         for (size_t i = 0; i < defaults.size(); ++i) {
+// //             positional_defaults[*names[i]] = *defaults[i];
+// //         }
+
+// //         // merge new defaults with old ones
+// //         for (const Object& key : positional_defaults) {
+// //             if (dict.contains(key)) {
+// //                 positional_defaults[key] = dict.pop(key);
+// //             }
+// //         }
+// //     }
+
+// //     // check for keyword-only defaults
+// //     if (code.kwonlyargcount() > 0) {
+// //         Object kwdefaults = attr<"__kwdefaults__">();
+// //         if (!kwdefaults.is(None)) {
+// //             Dict temp = {};
+// //             for (const Object& key : kwdefaults) {
+// //                 if (dict.contains(key)) {
+// //                     temp[key] = dict.pop(key);
+// //                 }
+// //             }
+// //             if (dict) {
+// //                 throw ValueError("no match for arguments " + Str(List(dict.keys())));
+// //             }
+// //             kwdefaults |= temp;
+// //         } else if (dict) {
+// //             throw ValueError("no match for arguments " + Str(List(dict.keys())));
+// //         }
+// //     } else if (dict) {
+// //         throw ValueError("no match for arguments " + Str(List(dict.keys())));
+// //     }
+
+// //     // TODO: set defaults to Tuple(positional_defaults.values()) and update kwdefaults
+
+// // }
+
+// // /* Get a read-only dictionary holding type annotations for the function. */
+// // [[nodiscard]] MappingProxy<Dict<Str, Object>> annotations() const {
+// //     PyObject* result = PyFunction_GetAnnotations(self());
+// //     if (result == nullptr) {
+// //         return MappingProxy(Dict<Str, Object>{});
+// //     }
+// //     return reinterpret_borrow<MappingProxy<Dict<Str, Object>>>(result);
+// // }
+
+// // /* Set the type annotations for the function.  If nullopt is provided, then the
+// // current annotations will be cleared.  Otherwise, the values in the dictionary will
+// // be used to update the current values in-place. */
+// // void annotations(std::optional<Dict> annotations) {
+// //     if (!annotations.has_value()) {  // clear all annotations
+// //         if (PyFunction_SetAnnotations(self(), Py_None)) {
+// //             Exception::from_python();
+// //         }
+
+// //     } else if (!annotations.value()) {  // do nothing
+// //         return;
+
+// //     } else {  // update annotations in-place
+// //         Code code = this->code();
+// //         Tuple<Str> args = code.varnames()[{0, code.argcount() + code.kwonlyargcount()}];
+// //         MappingProxy existing = this->annotations();
+
+// //         // build new dict
+// //         Dict result = {};
+// //         for (const Object& arg : args) {
+// //             if (annotations.value().contains(arg)) {
+// //                 result[arg] = annotations.value().pop(arg);
+// //             } else if (existing.contains(arg)) {
+// //                 result[arg] = existing[arg];
+// //             }
+// //         }
+
+// //         // account for return annotation
+// //         static const Str s_return = "return";
+// //         if (annotations.value().contains(s_return)) {
+// //             result[s_return] = annotations.value().pop(s_return);
+// //         } else if (existing.contains(s_return)) {
+// //             result[s_return] = existing[s_return];
+// //         }
+
+// //         // check for unmatched keys
+// //         if (annotations.value()) {
+// //             throw ValueError(
+// //                 "no match for arguments " +
+// //                 Str(List(annotations.value().keys()))
+// //             );
+// //         }
+
+// //         // push changes
+// //         if (PyFunction_SetAnnotations(self(), ptr(result))) {
+// //             Exception::from_python();
+// //         }
+// //     }
+// // }
+
+// /* Set the default value for one or more arguments. */
+// template <typename... Values> requires (sizeof...(Values) > 0)  // and all are valid
+// void defaults(Values&&... values);
+
+// /* Get a read-only mapping of argument names to their type annotations. */
+// [[nodiscard]] MappingProxy<Dict<Str, Object>> annotations() const;
+
+// /* Set the type annotation for one or more arguments. */
+// template <typename... Annotations> requires (sizeof...(Annotations) > 0)  // and all are valid
+// void annotations(Annotations&&... annotations);
 
 
 namespace impl {
+
+
+    /* A convenience function that calls a named method of a Python object using
+    C++-style arguments.  Avoids the overhead of creating a temporary Function object. */
+    template <StaticStr Name, typename Self, typename... Args>
+        requires (
+            __getattr__<std::decay_t<Self>, Name>::enable &&
+            std::derived_from<typename __getattr__<std::decay_t<Self>, Name>::type, FunctionTag> &&
+            __getattr__<std::decay_t<Self>, Name>::type::template invocable<Args...>
+        )
+    decltype(auto) call_method(Self&& self, Args&&... args) {
+        using Func = __getattr__<std::decay_t<Self>, Name>::type;
+        Object meth = reinterpret_steal<Object>(PyObject_GetAttr(
+            ptr(self),
+            TemplateString<Name>::ptr
+        ));
+        if (meth.is(nullptr)) {
+            Exception::from_python();
+        }
+        try {
+            return Func::template invoke<typename Func::ReturnType>(
+                meth,
+                std::forward<Args>(args)...
+            );
+        } catch (...) {
+            throw;
+        }
+    }
+
+    /* A convenience function that calls a named method of a Python type object using
+    C++-style arguments.  Avoids the overhead of creating a temporary Function object. */
+    template <typename Self, StaticStr Name, typename... Args>
+        requires (
+            __getattr__<std::decay_t<Self>, Name>::enable &&
+            std::derived_from<typename __getattr__<std::decay_t<Self>, Name>::type, FunctionTag> &&
+            __getattr__<std::decay_t<Self>, Name>::type::template invocable<Args...>
+        )
+    decltype(auto) call_static(Args&&... args) {
+        using Func = __getattr__<std::decay_t<Self>, Name>::type;
+        Object meth = reinterpret_steal<Object>(PyObject_GetAttr(
+            ptr(Self::type),
+            TemplateString<Name>::ptr
+        ));
+        if (meth.is(nullptr)) {
+            Exception::from_python();
+        }
+        try {
+            return Func::template invoke<typename Func::ReturnType>(
+                meth,
+                std::forward<Args>(args)...
+            );
+        } catch (...) {
+            throw;
+        }
+    }
+
     /// NOTE: the type returned by `std::mem_fn()` is implementation-defined, so we
     /// have to do some template magic to trick the compiler into deducing the correct
     /// type during template specializations.
@@ -8326,6 +8788,7 @@ namespace impl {
     using std_mem_fn_type = respecialize<decltype(
         std::mem_fn(std::declval<void(Object::*)()>())
     ), Sig>;
+
 };
 
 
@@ -8773,426 +9236,6 @@ STD_MEM_FN(R(C::*const volatile&&)(A...) const volatile & noexcept, R(C::*)(A...
 #undef NON_MEMBER_FUNC
 #undef MEMBER_FUNC
 #undef STD_MEM_FN
-
-
-template <typename T, typename R, typename... A>
-struct __isinstance__<T, Function<R(A...)>> : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if (impl::cpp_like<T>) {
-            return issubclass<T, Function<R(A...)>>();
-
-        } else if constexpr (issubclass<T, Function<R(A...)>>()) {
-            return ptr(obj) != nullptr;
-
-        } else if constexpr (impl::is_object_exact<T>) {
-            return ptr(obj) != nullptr && (
-                PyFunction_Check(ptr(obj)) ||
-                PyMethod_Check(ptr(obj)) ||
-                PyCFunction_Check(ptr(obj))
-            );
-        } else {
-            return false;
-        }
-    }
-};
-
-
-// TODO: if default specialization is given, type checks should be fully generic, right?
-// issubclass<T, Function<>>() should check impl::is_callable_any<T>;
-
-template <typename T, typename R, typename... A>
-struct __issubclass__<T, Function<R(A...)>> : Returns<bool> {
-    static constexpr bool operator()() {
-        return std::is_invocable_r_v<R, T, A...>;
-    }
-    static constexpr bool operator()(const T&) {
-        // TODO: this is going to have to be radically rethought.
-        // Maybe I just forward to an issubclass() check against the type object?
-        // In fact, this could maybe be standard operating procedure for all types.
-        // 
-        return PyType_IsSubtype(
-            reinterpret_cast<PyTypeObject*>(ptr(Type<T>())),
-            reinterpret_cast<PyTypeObject*>(ptr(Type<Function<R(A...)>>()))
-        );
-    }
-};
-
-
-template <typename Return, typename... Target, typename Func, typename... Values>
-    requires (
-        !impl::python_like<Func> &&
-        std::is_invocable_r_v<Return, Func, Target...> &&
-        Function<Return(Target...)>::Defaults::template enable<Values...>
-    )
-struct __init__<Function<Return(Target...)>, Func, Values...> {
-    using type = Function<Return(Target...)>;
-    static type operator()(Func&& func, Values&&... defaults) {
-        return reinterpret_steal<type>(py::Type<type>::__python__::__create__(
-            "",
-            "",
-            std::function(std::forward<Func>(func)),
-            typename type::Defaults(std::forward<Values>(defaults)...)
-        ));
-    }
-};
-
-
-template <
-    std::convertible_to<std::string> Name,
-    typename Return,
-    typename... Target,
-    typename Func,
-    typename... Values
->
-    requires (
-        !impl::python_like<Func> &&
-        std::is_invocable_r_v<Return, Func, Target...> &&
-        Function<Return(Target...)>::Defaults::template enable<Values...>
-    )
-struct __init__<Function<Return(Target...)>, Name, Func, Values...> {
-    using type = Function<Return(Target...)>;
-    static type operator()(Name&& name, Func&& func, Values&&... defaults) {
-        return reinterpret_steal<type>(py::Type<type>::__python__::__create__(
-            std::forward(name),
-            "",
-            std::function(std::forward<Func>(func)),
-            typename type::Defaults(std::forward<Values>(defaults)...)
-        ));
-    }
-};
-
-
-template <
-    std::convertible_to<std::string> Name,
-    std::convertible_to<std::string> Doc,
-    typename Return,
-    typename... Target,
-    typename Func,
-    typename... Values
->
-    requires (
-        !impl::python_like<Func> &&
-        std::is_invocable_r_v<Return, Func, Target...> &&
-        Function<Return(Target...)>::Defaults::template enable<Values...>
-    )
-struct __init__<Function<Return(Target...)>, Name, Doc, Func, Values...> {
-    using type = Function<Return(Target...)>;
-    static type operator()(Name&& name, Doc&& doc, Func&& func, Values&&... defaults) {
-        return reinterpret_steal<type>(py::Type<type>::__python__::__create__(
-            std::forward(name),
-            std::forward<Doc>(doc),
-            std::function(std::forward<Func>(func)),
-            typename type::Defaults(std::forward<Values>(defaults)...)
-        ));
-    }
-};
-
-
-/* Call the function with the given arguments.  If the wrapped function is of the
-coupled Python type, then this will be translated into a raw C++ call, bypassing
-Python entirely. */
-template <impl::inherits<impl::FunctionTag> Self, typename... Args>
-    requires (std::remove_reference_t<Self>::invocable<Args...>)
-struct __call__<Self, Args...> : Returns<typename std::remove_reference_t<Self>::Return> {
-    using Func = std::remove_reference_t<Self>;
-    static decltype(auto) operator()(Self&& self, Args&&... args) {
-        if constexpr (std::is_void_v<typename Func::Return>) {
-            call(ptr(self), std::forward<Source>(args)...);
-        } else {
-            return call(ptr(self), std::forward<Source>(args)...);
-        }
-    }
-};
-
-
-/// TODO: __getitem__, __contains__, __iter__, __len__, __bool__
-
-
-
-
-
-
-/* Get the name of the wrapped function. */
-template <typename Signature> requires (impl::GetSignature<Signature>::enable)
-[[nodiscard]] std::string Interface<Function<Signature>>::_get_name(this const auto& self) {
-    // TODO: get the base type and check against it.
-    if (true) {
-        Type<Function> func_type;
-        if (PyType_IsSubtype(
-            Py_TYPE(ptr(self)),
-            reinterpret_cast<PyTypeObject*>(ptr(func_type))
-        )) {
-            PyFunction* func = reinterpret_cast<PyFunction*>(ptr(self));
-            return func->base.name;
-        }
-        // TODO: print out a detailed error message with both signatures
-        throw TypeError("signature mismatch");
-    }
-
-    PyObject* result = PyObject_GetAttrString(ptr(self), "__name__");
-    if (result == nullptr) {
-        Exception::from_python();
-    }
-    Py_ssize_t length;
-    const char* data = PyUnicode_AsUTF8AndSize(result, &length);
-    Py_DECREF(result);
-    if (data == nullptr) {
-        Exception::from_python();
-    }
-    return std::string(data, length);
-}
-
-
-// // get_default<I>() returns a reference to the default value of the I-th argument
-// // get_default<name>() returns a reference to the default value of the named argument
-
-// // TODO:
-// // .defaults -> MappingProxy<Str, Object>
-// // .annotations -> MappingProxy<Str, Type<Object>>
-// // .posonly -> Tuple<Str>
-// // .kwonly -> Tuple<Str>
-
-// // /* Get a read-only dictionary mapping argument names to their default values. */
-// // __declspec(property(get=_get_defaults)) MappingProxy<Dict<Str, Object>> defaults;
-// // [[nodiscard]] MappingProxy<Dict<Str, Object>> _get_defaults() const {
-// //     // TODO: check for the PyFunction type and extract the defaults directly
-// //     if (true) {
-// //         Type<Function> func_type;
-// //         if (PyType_IsSubtype(
-// //             Py_TYPE(ptr(*this)),
-// //             reinterpret_cast<PyTypeObject*>(ptr(func_type))
-// //         )) {
-// //             // TODO: generate a dictionary using a fold expression over the
-// //             // defaults, then convert to a MappingProxy.
-// //             // Or maybe return a std::unordered_map
-// //             throw NotImplementedError();
-// //         }
-// //         // TODO: print out a detailed error message with both signatures
-// //         throw TypeError("signature mismatch");
-// //     }
-
-// //     // check for positional defaults
-// //     PyObject* pos_defaults = PyFunction_GetDefaults(ptr(*this));
-// //     if (pos_defaults == nullptr) {
-// //         if (code.kwonlyargcount() > 0) {
-// //             Object kwdefaults = attr<"__kwdefaults__">();
-// //             if (kwdefaults.is(None)) {
-// //                 return MappingProxy(Dict<Str, Object>{});
-// //             } else {
-// //                 return MappingProxy(reinterpret_steal<Dict<Str, Object>>(
-// //                     kwdefaults.release())
-// //                 );
-// //             }
-// //         } else {
-// //             return MappingProxy(Dict<Str, Object>{});
-// //         }
-// //     }
-
-// //     // extract positional defaults
-// //     size_t argcount = code.argcount();
-// //     Tuple<Object> defaults = reinterpret_borrow<Tuple<Object>>(pos_defaults);
-// //     Tuple<Str> names = code.varnames()[{argcount - defaults.size(), argcount}];
-// //     Dict result;
-// //     for (size_t i = 0; i < defaults.size(); ++i) {
-// //         result[names[i]] = defaults[i];
-// //     }
-
-// //     // merge keyword-only defaults
-// //     if (code.kwonlyargcount() > 0) {
-// //         Object kwdefaults = attr<"__kwdefaults__">();
-// //         if (!kwdefaults.is(None)) {
-// //             result.update(Dict(kwdefaults));
-// //         }
-// //     }
-// //     return result;
-// // }
-
-// // /* Set the default value for one or more arguments.  If nullopt is provided,
-// // then all defaults will be cleared. */
-// // void defaults(Dict&& dict) {
-// //     Code code = this->code();
-
-// //     // TODO: clean this up.  The logic should go as follows:
-// //     // 1. check for positional defaults.  If found, build a dictionary with the new
-// //     // values and remove them from the input dict.
-// //     // 2. check for keyword-only defaults.  If found, build a dictionary with the
-// //     // new values and remove them from the input dict.
-// //     // 3. if any keys are left over, raise an error and do not update the signature
-// //     // 4. set defaults to Tuple(positional_defaults.values()) and update kwdefaults
-// //     // in-place.
-
-// //     // account for positional defaults
-// //     PyObject* pos_defaults = PyFunction_GetDefaults(self());
-// //     if (pos_defaults != nullptr) {
-// //         size_t argcount = code.argcount();
-// //         Tuple<Object> defaults = reinterpret_borrow<Tuple<Object>>(pos_defaults);
-// //         Tuple<Str> names = code.varnames()[{argcount - defaults.size(), argcount}];
-// //         Dict positional_defaults;
-// //         for (size_t i = 0; i < defaults.size(); ++i) {
-// //             positional_defaults[*names[i]] = *defaults[i];
-// //         }
-
-// //         // merge new defaults with old ones
-// //         for (const Object& key : positional_defaults) {
-// //             if (dict.contains(key)) {
-// //                 positional_defaults[key] = dict.pop(key);
-// //             }
-// //         }
-// //     }
-
-// //     // check for keyword-only defaults
-// //     if (code.kwonlyargcount() > 0) {
-// //         Object kwdefaults = attr<"__kwdefaults__">();
-// //         if (!kwdefaults.is(None)) {
-// //             Dict temp = {};
-// //             for (const Object& key : kwdefaults) {
-// //                 if (dict.contains(key)) {
-// //                     temp[key] = dict.pop(key);
-// //                 }
-// //             }
-// //             if (dict) {
-// //                 throw ValueError("no match for arguments " + Str(List(dict.keys())));
-// //             }
-// //             kwdefaults |= temp;
-// //         } else if (dict) {
-// //             throw ValueError("no match for arguments " + Str(List(dict.keys())));
-// //         }
-// //     } else if (dict) {
-// //         throw ValueError("no match for arguments " + Str(List(dict.keys())));
-// //     }
-
-// //     // TODO: set defaults to Tuple(positional_defaults.values()) and update kwdefaults
-
-// // }
-
-// // /* Get a read-only dictionary holding type annotations for the function. */
-// // [[nodiscard]] MappingProxy<Dict<Str, Object>> annotations() const {
-// //     PyObject* result = PyFunction_GetAnnotations(self());
-// //     if (result == nullptr) {
-// //         return MappingProxy(Dict<Str, Object>{});
-// //     }
-// //     return reinterpret_borrow<MappingProxy<Dict<Str, Object>>>(result);
-// // }
-
-// // /* Set the type annotations for the function.  If nullopt is provided, then the
-// // current annotations will be cleared.  Otherwise, the values in the dictionary will
-// // be used to update the current values in-place. */
-// // void annotations(std::optional<Dict> annotations) {
-// //     if (!annotations.has_value()) {  // clear all annotations
-// //         if (PyFunction_SetAnnotations(self(), Py_None)) {
-// //             Exception::from_python();
-// //         }
-
-// //     } else if (!annotations.value()) {  // do nothing
-// //         return;
-
-// //     } else {  // update annotations in-place
-// //         Code code = this->code();
-// //         Tuple<Str> args = code.varnames()[{0, code.argcount() + code.kwonlyargcount()}];
-// //         MappingProxy existing = this->annotations();
-
-// //         // build new dict
-// //         Dict result = {};
-// //         for (const Object& arg : args) {
-// //             if (annotations.value().contains(arg)) {
-// //                 result[arg] = annotations.value().pop(arg);
-// //             } else if (existing.contains(arg)) {
-// //                 result[arg] = existing[arg];
-// //             }
-// //         }
-
-// //         // account for return annotation
-// //         static const Str s_return = "return";
-// //         if (annotations.value().contains(s_return)) {
-// //             result[s_return] = annotations.value().pop(s_return);
-// //         } else if (existing.contains(s_return)) {
-// //             result[s_return] = existing[s_return];
-// //         }
-
-// //         // check for unmatched keys
-// //         if (annotations.value()) {
-// //             throw ValueError(
-// //                 "no match for arguments " +
-// //                 Str(List(annotations.value().keys()))
-// //             );
-// //         }
-
-// //         // push changes
-// //         if (PyFunction_SetAnnotations(self(), ptr(result))) {
-// //             Exception::from_python();
-// //         }
-// //     }
-// // }
-
-// /* Set the default value for one or more arguments. */
-// template <typename... Values> requires (sizeof...(Values) > 0)  // and all are valid
-// void defaults(Values&&... values);
-
-// /* Get a read-only mapping of argument names to their type annotations. */
-// [[nodiscard]] MappingProxy<Dict<Str, Object>> annotations() const;
-
-// /* Set the type annotation for one or more arguments. */
-// template <typename... Annotations> requires (sizeof...(Annotations) > 0)  // and all are valid
-// void annotations(Annotations&&... annotations);
-
-
-namespace impl {
-
-    /* A convenience function that calls a named method of a Python object using
-    C++-style arguments.  Avoids the overhead of creating a temporary Function object. */
-    template <StaticStr Name, typename Self, typename... Args>
-        requires (
-            __getattr__<std::decay_t<Self>, Name>::enable &&
-            std::derived_from<typename __getattr__<std::decay_t<Self>, Name>::type, FunctionTag> &&
-            __getattr__<std::decay_t<Self>, Name>::type::template invocable<Args...>
-        )
-    decltype(auto) call_method(Self&& self, Args&&... args) {
-        using Func = __getattr__<std::decay_t<Self>, Name>::type;
-        Object meth = reinterpret_steal<Object>(PyObject_GetAttr(
-            ptr(self),
-            TemplateString<Name>::ptr
-        ));
-        if (meth.is(nullptr)) {
-            Exception::from_python();
-        }
-        try {
-            return Func::template invoke<typename Func::ReturnType>(
-                meth,
-                std::forward<Args>(args)...
-            );
-        } catch (...) {
-            throw;
-        }
-    }
-
-    /* A convenience function that calls a named method of a Python type object using
-    C++-style arguments.  Avoids the overhead of creating a temporary Function object. */
-    template <typename Self, StaticStr Name, typename... Args>
-        requires (
-            __getattr__<std::decay_t<Self>, Name>::enable &&
-            std::derived_from<typename __getattr__<std::decay_t<Self>, Name>::type, FunctionTag> &&
-            __getattr__<std::decay_t<Self>, Name>::type::template invocable<Args...>
-        )
-    decltype(auto) call_static(Args&&... args) {
-        using Func = __getattr__<std::decay_t<Self>, Name>::type;
-        Object meth = reinterpret_steal<Object>(PyObject_GetAttr(
-            ptr(Self::type),
-            TemplateString<Name>::ptr
-        ));
-        if (meth.is(nullptr)) {
-            Exception::from_python();
-        }
-        try {
-            return Func::template invoke<typename Func::ReturnType>(
-                meth,
-                std::forward<Args>(args)...
-            );
-        } catch (...) {
-            throw;
-        }
-    }
-
-}
 
 
 /////////////////////////
