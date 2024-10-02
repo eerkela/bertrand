@@ -5792,6 +5792,278 @@ properly encode full type information.)doc";
     /// identifiers are compatible, possibly requiring an overload of isinstance()/
     /// issubclass() to ensure the same semantics are followed in both Python and C++.
 
+    /* A structural type hint whose `isinstance()`/`issubclass()` operators only return
+    true if ALL of the composite functions are present within a type's interface. */
+    struct FuncIntersect : PyObject {
+        Object lhs;
+        Object rhs;
+
+        explicit FuncIntersect(Object&& lhs, Object&& rhs) :
+            lhs(std::move(lhs)),
+            rhs(std::move(rhs))
+        {}
+
+        static void __dealloc__(FuncIntersect* self) {
+            self->~FuncIntersect();
+        }
+
+        static PyObject* __instancecheck__(FuncIntersect* self, PyObject* instance) {
+            int rc = PyObject_IsInstance(
+                instance,
+                ptr(self->lhs)
+            );
+            if (rc < 0) {
+                return nullptr;
+            } else if (!rc) {
+                Py_RETURN_FALSE;
+            }
+            rc = PyObject_IsInstance(
+                instance,
+                ptr(self->rhs)
+            );
+            if (rc < 0) {
+                return nullptr;
+            } else if (!rc) {
+                Py_RETURN_FALSE;
+            }
+            Py_RETURN_TRUE;
+        }
+
+        static PyObject* __subclasscheck__(FuncIntersect* self, PyObject* cls) {
+            int rc = PyObject_IsSubclass(
+                cls,
+                ptr(self->lhs)
+            );
+            if (rc < 0) {
+                return nullptr;
+            } else if (!rc) {
+                Py_RETURN_FALSE;
+            }
+            rc = PyObject_IsSubclass(
+                cls,
+                ptr(self->rhs)
+            );
+            if (rc < 0) {
+                return nullptr;
+            } else if (!rc) {
+                Py_RETURN_FALSE;
+            }
+            Py_RETURN_TRUE;
+        }
+
+        static PyObject* __and__(PyObject* lhs, PyObject* rhs) {
+            try {
+                /// TODO: do some validation on the inputs, ensuring that they are both
+                /// bertrand functions or structural intersection/union hints.
+
+                FuncIntersect* hint = reinterpret_cast<FuncIntersect*>(
+                    __type__.tp_alloc(&__type__, 0)
+                );
+                if (hint == nullptr) {
+                    return nullptr;
+                }
+                try {
+                    new (hint) FuncIntersect(
+                        reinterpret_borrow<Object>(lhs),
+                        reinterpret_borrow<Object>(rhs)
+                    );
+                } catch (...) {
+                    Py_DECREF(hint);
+                    throw;
+                }
+                return hint;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __repr__(FuncIntersect* self) {
+            try {
+                std::string str =
+                    "(" + repr(self->lhs) + " & " + repr(self->rhs) + ")";
+                return PyUnicode_FromStringAndSize(str.c_str(), str.size());
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyNumberMethods number;
+
+        inline static PyMethodDef methods[] = {
+            {
+                "__instancecheck__",
+                reinterpret_cast<PyCFunction>(&__instancecheck__),
+                METH_O,
+                nullptr
+            },
+            {
+                "__subclasscheck__",
+                reinterpret_cast<PyCFunction>(&__subclasscheck__),
+                METH_O,
+                nullptr
+            },
+            {nullptr}
+        };
+
+        static PyTypeObject __type__;
+
+    };
+
+    /* A structural type hint whose `isinstance()`/`issubclass()` operators only return
+    true if ANY of the composite functions are present within a type's interface. */
+    struct FuncUnion : PyObject {
+        Object lhs;
+        Object rhs;
+
+        explicit FuncUnion(Object&& lhs, Object&& rhs) :
+            lhs(std::move(lhs)),
+            rhs(std::move(rhs))
+        {}
+
+        static void __dealloc__(FuncUnion* self) {
+            self->~FuncUnion();
+        }
+
+        static PyObject* __instancecheck__(FuncUnion* self, PyObject* instance) {
+            int rc = PyObject_IsInstance(
+                instance,
+                ptr(self->lhs)
+            );
+            if (rc < 0) {
+                return nullptr;
+            } else if (rc) {
+                Py_RETURN_TRUE;
+            }
+            rc = PyObject_IsInstance(
+                instance,
+                ptr(self->rhs)
+            );
+            if (rc < 0) {
+                return nullptr;
+            } else if (rc) {
+                Py_RETURN_TRUE;
+            }
+            Py_RETURN_FALSE;
+        }
+
+        static PyObject* __subclasscheck__(FuncUnion* self, PyObject* cls) {
+            int rc = PyObject_IsSubclass(
+                cls,
+                ptr(self->lhs)
+            );
+            if (rc < 0) {
+                return nullptr;
+            } else if (rc) {
+                Py_RETURN_TRUE;
+            }
+            rc = PyObject_IsSubclass(
+                cls,
+                ptr(self->rhs)
+            );
+            if (rc < 0) {
+                return nullptr;
+            } else if (rc) {
+                Py_RETURN_TRUE;
+            }
+            Py_RETURN_FALSE;
+        }
+
+        static PyObject* __or__(PyObject* lhs, PyObject* rhs) {
+            try {
+                /// TODO: do some validation on the inputs, ensuring that they are both
+                /// bertrand functions or structural intersection/union hints.
+
+                FuncUnion* hint = reinterpret_cast<FuncUnion*>(
+                    __type__.tp_alloc(&__type__, 0)
+                );
+                if (hint == nullptr) {
+                    return nullptr;
+                }
+                try {
+                    new (hint) FuncUnion(
+                        reinterpret_borrow<Object>(lhs),
+                        reinterpret_borrow<Object>(rhs)
+                    );
+                } catch (...) {
+                    Py_DECREF(hint);
+                    throw;
+                }
+                return hint;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __repr__(FuncUnion* self) {
+            try {
+                std::string str =
+                    "(" + repr(self->lhs) + " | " + repr(self->rhs) + ")";
+                return PyUnicode_FromStringAndSize(str.c_str(), str.size());
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyNumberMethods number;
+
+        inline static PyMethodDef methods[] = {
+            {
+                "__instancecheck__",
+                reinterpret_cast<PyCFunction>(&__instancecheck__),
+                METH_O,
+                nullptr
+            },
+            {
+                "__subclasscheck__",
+                reinterpret_cast<PyCFunction>(&__subclasscheck__),
+                METH_O,
+                nullptr
+            },
+            {nullptr}
+        };
+
+        static PyTypeObject __type__;
+
+    };
+
+    PyNumberMethods FuncIntersect::number = {
+        .nb_and = reinterpret_cast<binaryfunc>(&FuncIntersect::__and__),
+        .nb_or = reinterpret_cast<binaryfunc>(&FuncUnion::__or__),
+    };
+
+    PyNumberMethods FuncUnion::number = {
+        .nb_and = reinterpret_cast<binaryfunc>(&FuncIntersect::__and__),
+        .nb_or = reinterpret_cast<binaryfunc>(&FuncUnion::__or__),
+    };
+
+    PyTypeObject FuncIntersect::__type__ = {
+        .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+        .tp_name = typeid(FuncIntersect).name(),
+        .tp_basicsize = sizeof(FuncIntersect),
+        .tp_itemsize = 0,
+        .tp_dealloc = reinterpret_cast<destructor>(&FuncIntersect::__dealloc__),
+        .tp_repr = reinterpret_cast<reprfunc>(&FuncIntersect::__repr__),
+        .tp_as_number = &FuncIntersect::number,
+        .tp_flags = Py_TPFLAGS_DEFAULT,
+        .tp_methods = FuncIntersect::methods,
+    };
+
+    PyTypeObject FuncUnion::__type__ = {
+        .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+        .tp_name = typeid(FuncUnion).name(),
+        .tp_basicsize = sizeof(FuncUnion),
+        .tp_itemsize = 0,
+        .tp_dealloc = reinterpret_cast<destructor>(&FuncUnion::__dealloc__),
+        .tp_repr = reinterpret_cast<reprfunc>(&FuncUnion::__repr__),
+        .tp_as_number = &FuncUnion::number,
+        .tp_flags = Py_TPFLAGS_DEFAULT,
+        .tp_methods = FuncUnion::methods,
+    };
+
 }
 
 
@@ -6624,6 +6896,19 @@ template <typename F>
 struct Function : Object, Interface<Function<F>> {
 private:
 
+    /* A common base class shared by both the function type and all of its associated
+    descriptor classes, but not with any other function type or descriptor.  Has no
+    implementation, but allows structural `isinstance()`/`issubclass()` checks against
+    a function type to be both comprehensive and efficient. */
+    struct Identifier : PyObject {};
+    inline static PyTypeObject identifier_type = {
+        .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+        .tp_name = typeid(Identifier).name(),
+        .tp_basicsize = sizeof(Identifier),
+        .tp_itemsize = 0,
+        .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    };
+
     template <typename Sig>
     struct PyFunction : def<PyFunction<Sig>, Function>, PyObject {
         static constexpr StaticStr __doc__ =
@@ -6658,6 +6943,11 @@ TODO: explain how to properly subscript the interface and how arguments are tran
 to a corresponding C++ function signature.
 
 )doc";
+
+        /// TODO: functions may use static types as well for performance reasons.
+        /// They're not meant to be subclassed or dynamically modified, so there's no
+        /// harm in this, and it should cut down on RAM usage somewhat.
+        static PyTypeObject __type__;
 
         vectorcallfunc call = &__call__;
         Object pyfunc = reinterpret_steal<Object>(nullptr);
@@ -6701,15 +6991,13 @@ to a corresponding C++ function signature.
         }
 
         template <StaticStr ModName>
-        static Type<Function> __export__(Module<ModName> bindings) {
-            /// TODO: manually initialize a heap type with a correct vectorcall offset.
-            /// This has to be an instance of the metaclass, which may require a
-            /// forward reference here.
-            /// -> Perhaps this should be a pure static type, which would avoid an
-            /// extra import statement whenever a function is called.  Same for the
-            /// metaclass defined after this, which is used to distinguish between
-            /// operands in the Python slots for binary operators.
-        }
+        static Type<Function> __export__(Module<ModName> bindings);
+
+        /// TODO: only non-member functions can expose the descriptor protocol, or be
+        /// used in isinstance()/issubclass()/&/| constructions.
+        /// -> the overload protocol, including subscription, in, etc. should still
+        /// be implemented for member functions, although that link will be hard to
+        /// establish.
 
         /* Register an overload from Python.  Accepts only a single argument, which
         must be a function or other callable object that can be passed to the
@@ -6741,6 +7029,28 @@ to a corresponding C++ function signature.
                     }
                     throw;
                 }
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        /* Manually clear the function's overload trie from Python. */
+        static PyObject* clear(PyFunction* self) {
+            try {
+                self->overloads.clear();
+                Py_RETURN_NONE;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        /* Manually clear the function's overload cache from Python. */
+        static PyObject* flush(PyFunction* self) {
+            try {
+                self->overloads.flush();
+                Py_RETURN_NONE;
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -6786,21 +7096,18 @@ to a corresponding C++ function signature.
             }
         }
 
+        /// TODO: everything about the descriptors except for their __get__ methods can
+        /// be implemented here, by allocating a new descriptor object and then
+        /// inserting it using a setattr call.
+        /// -> They must implement __getattr__/etc. forwarding to the underlying
+        /// function, for transparent attribute access.
+
         struct ClassMethod : PyObject {
             static PyTypeObject __type__;
 
             PyFunction* func;
 
-            static PyObject* __get__(ClassMethod* self, PyObject* obj, PyObject* type) {
-                try {
-                    /// TODO: as with the enclosing function class, this will need to
-                    /// access the global template instantiations and return the
-                    /// correct type.
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            }
+            static PyObject* __get__(ClassMethod* self, PyObject* obj, PyObject* type);
 
         private:
 
@@ -6845,33 +7152,6 @@ to a corresponding C++ function signature.
             PyObject* kwnames
         ) {
 
-        }
-
-        /// TODO: implement nested descriptor class for method descriptors.  These will
-        /// be wrappers around a static function type, which forward all attribute
-        /// access to it.  For normal functions, this might not be necessary, but it
-        /// will be for class/static methods, and properties.
-
-        /* Manually clear the function's overload trie from Python. */
-        static PyObject* clear(PyFunction* self) {
-            try {
-                self->overloads.clear();
-                Py_RETURN_NONE;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        /* Manually clear the function's overload cache from Python. */
-        static PyObject* flush(PyFunction* self) {
-            try {
-                self->overloads.flush();
-                Py_RETURN_NONE;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
         }
 
         /* Call the function from Python. */
@@ -6986,31 +7266,13 @@ to a corresponding C++ function signature.
             }
         }
 
-        /// TODO: one side effect of this will be that member functions will be treated
-        /// semantically, and will only be generated as a product of the descriptor
-        /// protocol.  So effectively, ALL member functions MUST provide a `self`
-        /// argument when the function is constructed.  That prevents any
-        /// runtime/compile time issues with the descriptor protocol, but it does mean
-        /// that you won't be able to pass a member function to a variable that expects
-        /// a non-member function.  Maybe that can be allowed by generating a NEW
-        /// function that captures the member function with the bound self argument,
-        /// and then forwards arguments to it as if the `self` argument were already
-        /// accounted for, according to C++ style.
-
-        /// TODO: this is probably going to have to be a forward declaration.
+        /// TODO: all __get__ descriptor methods can only be declared after types, so
+        /// that they can access the template instantiation machinery.  After those are
+        /// defined, these methods will get the function's current template key and
+        /// append the attached class using Function[cls::return, [params...]].
 
         /* Implement the descriptor protocol for member functions. */
-        static PyObject* __get__(PyFunction* self, PyObject* obj, PyObject* type) {
-            try {
-                /// TODO: this will have to search the template interface map for a
-                /// matching member function type, and then invoke some kind of
-                /// factory method on the Python side to pass the self argument in
-                /// correctly.
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
+        static PyObject* __get__(PyFunction* self, PyObject* obj, PyObject* type);
 
         /* `len(function)` will get the number of overloads that are currently being
         tracked. */
@@ -7093,53 +7355,35 @@ to a corresponding C++ function signature.
         /* Check whether an object implements this function via the descriptor
         protocol. */
         static PyObject* __instancecheck__(PyFunction* self, PyObject* instance) {
-            try {
-                /// TODO: search for a matching descriptor
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
+            return __subclasscheck__(
+                self,
+                reinterpret_cast<PyObject*>(Py_TYPE(instance))
+            );
         }
 
         /* Check whether a type implements this function via the descriptor
         protocol. */
-        static PyObject* __subclasscheck__(PyFunction* self, PyObject* instance) {
+        static PyObject* __subclasscheck__(PyFunction* self, PyObject* cls) {
             try {
-                /// TODO: search for a matching descriptor
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        struct Intersection : PyObject {
-            static PyTypeObject __type__;
-        };
-
-        /* Produce a structural type hint that checks whether a candidate object
-        implements both of the operand functions via the descriptor protocol.  Either
-        operand may be another structural type to enable chaining. */
-        static PyObject* __and__(PyObject* lhs, PyObject* rhs) {
-            try {
-                /// TODO: produce some sort of structural object that implements
-                /// isinstance()/issubclass() for several functions at once.
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        struct Union : PyObject {
-            static PyTypeObject __type__;
-        };
-
-        /* Produce a structural type hint that checks whether a candidate object
-        implements either of the operand functions via the descriptor protocol.  Either
-        operand may be another structural type to enable chaining. */
-        static PyObject* __or__(PyObject* lhs, PyObject* rhs) {
-            try {
-                /// TODO: produce some sort of structural object that implements
-                /// isinstance()/issubclass() for several functions at once.
+                Object name = reinterpret_steal<Object>(PyUnicode_FromStringAndSize(
+                    self->name.c_str(),
+                    self->name.size()
+                ));
+                if (name.is(nullptr)) {
+                    return nullptr;
+                }
+                if (PyObject_HasAttr(cls, ptr(name))) {
+                    Object attr = reinterpret_steal<Object>(
+                        PyObject_GetAttr(cls, ptr(name))
+                    );
+                    if (attr.is(nullptr)) {
+                        return nullptr;
+                    }
+                    if (PyType_IsSubtype(Py_TYPE(ptr(attr)), &identifier_type)) {
+                        Py_RETURN_TRUE;
+                    }
+                }
+                Py_RETURN_FALSE;
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -7409,8 +7653,69 @@ to a corresponding C++ function signature.
             return result;
         }
 
-        inline static PyMethodDef methods[] = {
+        inline static PyNumberMethods number = {
+            .nb_and = reinterpret_cast<binaryfunc>(&impl::FuncIntersect::__and__),
+            .nb_or = reinterpret_cast<binaryfunc>(&impl::FuncUnion::__or__),
+        };
 
+        inline static PyMethodDef methods[] = {
+            {
+                "overload",
+                reinterpret_cast<PyCFunction>(&overload),
+                METH_O,
+                PyDoc_STR(
+R"doc()doc"
+                )
+            },
+            {
+                "clear",
+                reinterpret_cast<PyCFunction>(&clear),
+                METH_NOARGS,
+                PyDoc_STR(
+R"doc()doc"
+                )
+            },
+            {
+                "flush",
+                reinterpret_cast<PyCFunction>(&flush),
+                METH_NOARGS,
+                PyDoc_STR(
+R"doc()doc"
+                )
+            },
+            {
+                "method",
+                reinterpret_cast<PyCFunction>(&method),
+                METH_O,
+                PyDoc_STR(
+R"doc()doc"
+                )
+            },
+            {
+                "classmethod",
+                reinterpret_cast<PyCFunction>(&classmethod),
+                METH_O,
+                PyDoc_STR(
+R"doc()doc"
+                )
+            },
+            {
+                "staticmethod",
+                reinterpret_cast<PyCFunction>(&staticmethod),
+                METH_O,
+                PyDoc_STR(
+R"doc()doc"
+                )
+            },
+            {
+                "property",
+                reinterpret_cast<PyCFunction>(&property),
+                METH_FASTCALL,  /// TODO: with keywords?
+                PyDoc_STR(
+R"doc()doc"
+                )
+            },
+            {nullptr}
         };
 
         inline static PyGetSetDef getset[] = {
