@@ -5208,6 +5208,9 @@ properly encode full type information.)doc";
 
         Object templates = reinterpret_steal<Object>(nullptr);
 
+        /// TODO: this getitem operator must account for the leading return type +
+        /// member class, using `cls::type` or just `type` syntax.
+
         /* Subscript a function type to navigate its template hierarchy. */
         static PyObject* __getitem__(FunctionMeta* cls, PyObject* specifier) {
             if (PyTuple_Check(specifier)) {
@@ -5775,7 +5778,7 @@ properly encode full type information.)doc";
     /// all function types, and which implements __class_getitem__ to allow for
     /// similar class subscription syntax as for Python callables:
     ///
-    /// Function[Foo: None, [bool, "x": int, "/", "y", "*args": float, "*", "z": str: ..., "**kwargs": type]]
+    /// Function[Foo::None, bool, "x": int, "/", "y", "*args": float, "*", "z": str: ..., "**kwargs": type]
     /// 
     /// This describes a bound method of Foo which returns void and takes a bool and
     /// an int as positional parameters, the second of which is explicitly named "x"
@@ -6916,46 +6919,46 @@ R"doc(A Python wrapper around a C++ function.
 
 Notes
 -----
-This type is not directly instantiable from Python.  Instead, it can only be accessed
-through the `bertrand.Function` template interface, which can be navigated by
-subscripting the interface similar to a `Callable` type hint.
+This type is not directly instantiable from Python.  Instead, it can only be
+accessed through the `bertrand.Function` template interface, which can be
+navigated by subscripting the interface according to a possible function
+signature.
 
 Examples
 --------
 >>> from bertrand import Function
->>> Function[None, [int, str]]
-py::Function<void(*)(py::Int, py::Str)>
->>> Function[int, ["x": int, "y": int]]
-py::Function<py::Int(*)(py::Arg<"x", py::Int>, py::Arg<"y", py::Int>)>
->>> Function[str: str, [str, ["maxsplit": int]]]
-py::Function<py::Str(py::Str::*)(py::Str, py::Arg<"maxsplit", py::Int>::opt)>
+>>> Function[::None, int, str]
+<class 'py::Function<void(*)(py::Int, py::Str)>'>
+>>> Function[::int, "x": int, "y": int]
+<class 'py::Function<py::Int(*)(py::Arg<"x", py::Int>, py::Arg<"y", py::Int>)>'>
+>>> Function[str::str, str, "maxsplit": int: ...]
+<class 'py::Function<py::Str(py::Str::*)(py::Str, py::Arg<"maxsplit", py::Int>::opt)>'>
 
-As long as these types have been instantiated somewhere at the C++ level, then these
-accessors will resolve to a unique Python type that wraps that instantiation.  If no
-C++ instantiation could be found, then a `TypeError` will be raised.
+Each of these accessors will resolve to a unique Python type that wraps a
+specific C++ function signature.  If no existing template instantiation could
+be found for a given signature, then a new instantiation will be JIT-compiled
+on the fly and cached for future use (TODO).)doc";
 
-Because each of these types is unique, they can be used with Python's `isinstance()`
-and `issubclass()` functions to check against the exact template signature.  A global
-check against the interface type will determine whether the function is implemented in
-C++ (True) or Python (False).
-
-TODO: explain how to properly subscript the interface and how arguments are translated
-to a corresponding C++ function signature.
-
-)doc";
-
-        /// TODO: functions may use static types as well for performance reasons.
-        /// They're not meant to be subclassed or dynamically modified, so there's no
-        /// harm in this, and it should cut down on RAM usage somewhat.
         static PyTypeObject __type__;
+
+        /// TODO: store the template key on the metaclass, so that it doesn't require
+        /// any memory, and can be used to efficiently bind the function to a type
+        /// in the __get__ methods.  That will turn it into a tuple allocation,
+        /// dictionary lookup, and then a Python factory method call, which is about
+        /// as good as it gets in terms of performance.  class and static methods
+        /// will be slightly slower than instance methods as a result.
+        /// -> Actually, much of that might be precomputed for the descriptor itself,
+        /// so it can compute the corresponding member function type on construction,
+        /// and then just immediately jump to the Python-level factory method, which
+        /// I would still need to implement for member functions only.
 
         vectorcallfunc call = &__call__;
         Object pyfunc = reinterpret_steal<Object>(nullptr);
         std::function<typename Sig::to_value::type> func;
         Sig::Defaults defaults;
         Sig::Overloads overloads;
-        std::string name;
-        std::string docstring;
+        std::string name;  // TODO: it's actually just more efficient to store python strings
+        std::string docstring;  // TODO: I can get string views from them if necessary
 
         explicit PyFunction(
             std::string&& name,
@@ -7096,48 +7099,90 @@ to a corresponding C++ function signature.
             }
         }
 
-        /// TODO: everything about the descriptors except for their __get__ methods can
-        /// be implemented here, by allocating a new descriptor object and then
-        /// inserting it using a setattr call.
-        /// -> They must implement __getattr__/etc. forwarding to the underlying
-        /// function, for transparent attribute access.
-
-        struct ClassMethod : PyObject {
-            static PyTypeObject __type__;
-
-            PyFunction* func;
-
-            static PyObject* __get__(ClassMethod* self, PyObject* obj, PyObject* type);
-
-        private:
-
-            inline static PyMethodDef methods[] = {
-                {nullptr}
-            };
-
-        };
-
         /* Attach a function to a type as a class method descriptor.  Accepts the type
         to attach to, which can be provided by calling this method as a decorator from
         Python. */
         static PyObject* classmethod(PyFunction* self, PyObject* type) {
-
+            Object name = reinterpret_steal<Object>(PyUnicode_FromStringAndSize(
+                self->name.c_str(),
+                self->name.size()
+            ));
+            if (name.is(nullptr)) {
+                return nullptr;
+            }
+            if (PyObject_HasAttr(type, ptr(name))) {
+                PyErr_Format(
+                    PyExc_AttributeError,
+                    "attribute '%U' already exists on type '%R'",
+                    ptr(name),
+                    type
+                );
+                return nullptr;
+            }
+            ClassMethod* descr = reinterpret_cast<ClassMethod*>(
+                classmethod_type.tp_alloc(&classmethod_type, 0)
+            );
+            if (descr == nullptr) {
+                return nullptr;
+            }
+            try {
+                new (descr) ClassMethod(
+                    reinterpret_borrow<Object>(self),
+                    reinterpret_borrow<Object>(type)
+                );
+            } catch (...) {
+                Py_DECREF(descr);
+                Exception::to_python();
+                return nullptr;
+            }
+            int rc = PyObject_SetAttr(type, ptr(name), descr);
+            Py_DECREF(descr);
+            if (rc) {
+                return nullptr;
+            }
+            Py_RETURN_NONE;
         }
-
-        struct StaticMethod : PyObject {
-            static PyTypeObject __type__;
-        };
 
         /* Attach a function to a type as a static method descriptor.  Accepts the type
         to attach to, which can be provided by calling this method as a decorator from
         Python. */
         static PyObject* staticmethod(PyFunction* self, PyObject* type) {
-
+            Object name = reinterpret_steal<Object>(PyUnicode_FromStringAndSize(
+                self->name.c_str(),
+                self->name.size()
+            ));
+            if (name.is(nullptr)) {
+                return nullptr;
+            }
+            if (PyObject_HasAttr(type, ptr(name))) {
+                PyErr_Format(
+                    PyExc_AttributeError,
+                    "attribute '%U' already exists on type '%R'",
+                    ptr(name),
+                    type
+                );
+                return nullptr;
+            }
+            StaticMethod* descr = reinterpret_cast<StaticMethod*>(
+                staticmethod_type.tp_alloc(&staticmethod_type, 0)
+            );
+            if (descr == nullptr) {
+                return nullptr;
+            }
+            try {
+                new (descr) StaticMethod(reinterpret_borrow<Object>(self));
+            } catch (...) {
+                Py_DECREF(descr);
+                Exception::to_python();
+                return nullptr;
+            }
+            int rc = PyObject_SetAttr(type, ptr(name), descr);
+            Py_DECREF(descr);
+            if (rc) {
+                return nullptr;
+            }
+            Py_RETURN_NONE;
         }
-
-        struct Property : PyObject {
-            static PyTypeObject __type__;
-        };
 
         /* Attach a function to a type as a getset descriptor.  Accepts a type object
         to attach to, which can be provided by calling this method as a decorator from
@@ -7151,7 +7196,41 @@ to a corresponding C++ function signature.
             size_t nargsf,
             PyObject* kwnames
         ) {
+            size_t nargs = PyVectorcall_NARGS(nargsf);
+            if (nargs > 3) {
+                PyErr_SetString(
+                    PyExc_TypeError,
+                    "property() takes at most 3 positional arguments"
+                );
+                return nullptr;
+            }
+            size_t kwcount = kwnames ? PyTuple_GET_SIZE(kwnames) : 0;
 
+            /// TODO: do some more stuff to parse args, etc.
+
+            Property* descr = reinterpret_cast<Property*>(
+                property_type.tp_alloc(&property_type, 0)
+            );
+            if (descr == nullptr) {
+                return nullptr;
+            }
+            try {
+                new (descr) Property(
+                    reinterpret_borrow<Object>(self),
+                    reinterpret_borrow<Object>(setter),
+                    reinterpret_borrow<Object>(deleter)
+                );
+            } catch (...) {
+                Py_DECREF(descr);
+                Exception::to_python();
+                return nullptr;
+            }
+            int rc = PyObject_SetAttr(type, ptr(name), descr);
+            Py_DECREF(descr);
+            if (rc) {
+                return nullptr;
+            }
+            Py_RETURN_NONE;
         }
 
         /* Call the function from Python. */
@@ -7265,11 +7344,6 @@ to a corresponding C++ function signature.
                 return nullptr;
             }
         }
-
-        /// TODO: all __get__ descriptor methods can only be declared after types, so
-        /// that they can access the template instantiation machinery.  After those are
-        /// defined, these methods will get the function's current template key and
-        /// append the attached class using Function[cls::return, [params...]].
 
         /* Implement the descriptor protocol for member functions. */
         static PyObject* __get__(PyFunction* self, PyObject* obj, PyObject* type);
@@ -7653,6 +7727,189 @@ to a corresponding C++ function signature.
             return result;
         }
 
+        /// TODO: the underlying factory function is just the normal Python-side
+        /// constructor, which, for member functions, must accept a self argument
+        /// during construction.
+
+        struct ClassMethod : PyObject {
+            Object func;
+            Object cls;
+            Object target;
+
+            /// TODO: this will have to look up the correct target type from the
+            /// template map, which necessitates a forward declaration here, not
+            /// elsewhere.
+            explicit ClassMethod(Object&& func, const Object& cls);
+
+            static void __dealloc__(ClassMethod* self) {
+                self->~ClassMethod();
+            }
+
+            static PyObject* __get__(ClassMethod* self, PyObject* obj, PyObject* type) {
+                PyObject* const args[] = {
+                    ptr(self->func),
+                    Py_IsNone(type) ? reinterpret_cast<PyObject*>(Py_TYPE(obj)) : type
+                };
+                return PyObject_Vectorcall(
+                    ptr(self->target),
+                    args,
+                    2,
+                    nullptr
+                );
+            }
+
+            /// TODO: these descriptors should also be callable, in which case it would
+            /// just forward to the underlying function without binding.
+
+            /// TODO: __getattr__/__setattr__/__delattr__ forwarding to the underlying
+            /// type, as well as probably indexing, membership tests, etc, but not
+            /// structural type checks, &/|, further descriptors, etc.
+            /// -> These need access to cls in order to filter out the correct
+            /// overloads when subscripting, iterating, membership testing, etc.
+
+            static PyObject* __repr__(ClassMethod* self) {
+                std::string str = "classmethod(" + repr(self->func) + ")";
+                return PyUnicode_FromStringAndSize(str.c_str(), str.size());
+            }
+
+        };
+
+        inline static PyTypeObject classmethod_type = {
+            .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+            .tp_name = typeid(ClassMethod).name(),
+            .tp_basicsize = sizeof(ClassMethod),
+            .tp_itemsize = 0,
+            .tp_dealloc = reinterpret_cast<destructor>(&ClassMethod::__dealloc__),
+            .tp_repr = reinterpret_cast<reprfunc>(&ClassMethod::__repr__),
+            .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
+            .tp_doc = PyDoc_STR(
+R"doc()doc"
+            ),
+            .tp_descr_get = reinterpret_cast<descrgetfunc>(&ClassMethod::__get__),
+        };
+
+        struct StaticMethod : PyObject {
+            Object func;
+
+            explicit StaticMethod(Object&& func);
+
+            static void __dealloc__(StaticMethod* self) {
+                self->~StaticMethod();
+            }
+
+            static PyObject* __get__(StaticMethod* self, PyObject* obj, PyObject* type) {
+                return Py_NewRef(ptr(self->func));
+            }
+
+            /// TODO: all the other bells and whistles
+
+            static PyObject* __repr__(StaticMethod* self) {
+                std::string str = "staticmethod(" + repr(self->func) + ")";
+                return PyUnicode_FromStringAndSize(str.c_str(), str.size());
+            }
+
+        };
+
+        inline static PyTypeObject staticmethod_type = {
+            .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+            .tp_name = typeid(StaticMethod).name(),
+            .tp_basicsize = sizeof(StaticMethod),
+            .tp_itemsize = 0,
+            .tp_dealloc = reinterpret_cast<destructor>(&StaticMethod::__dealloc__),
+            .tp_repr = reinterpret_cast<reprfunc>(&StaticMethod::__repr__),
+            .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
+            .tp_doc = PyDoc_STR(
+R"doc()doc"
+            ),
+            .tp_descr_get = reinterpret_cast<descrgetfunc>(&StaticMethod::__get__),
+        };
+
+        struct Property : PyObject {
+            Object fget;
+            Object fset;
+            Object fdel;
+            Object cls;
+
+            explicit Property(
+                Object&& fget,
+                Object&& fset,
+                Object&& fdel,
+                Object&& cls
+            ) : fget(std::move(fget)),
+                fset(std::move(fset)),
+                fdel(std::move(fdel)),
+                cls(std::move(cls))
+            {}
+
+            static void __dealloc__(Property* self) {
+                self->~Property();
+            }
+
+            static PyObject* __get__(Property* self, PyObject* obj, PyObject* type) {
+                return PyObject_CallOneArg(ptr(self->fget), obj);
+            }
+
+            static PyObject* __set__(Property* self, PyObject* obj, PyObject* value) {
+                if (value == nullptr) {
+                    if (self->fdel.is(nullptr)) {
+                        std::string message =
+                            "property '" +
+                            reinterpret_cast<PyFunction*>(self->fget)->name + "' of " +
+                            repr(self->cls) + " object has no deleter";
+                        PyErr_SetString(
+                            PyExc_AttributeError,
+                            message.c_str()
+                        );
+                        return nullptr;
+                    }
+                    return PyObject_CallOneArg(ptr(self->fdel), obj);
+                }
+
+                if (self->fset.is(nullptr)) {
+                    std::string message =
+                        "property '" +
+                        reinterpret_cast<PyFunction*>(self->fget)->name + "' of " +
+                        repr(self->cls) + " object has no setter";
+                    PyErr_SetString(
+                        PyExc_AttributeError,
+                        message.c_str()
+                    );
+                    return nullptr;
+                }
+                PyObject* const args[] = {obj, value};
+                return PyObject_Vectorcall(
+                    ptr(self->fset),
+                    args,
+                    2,
+                    nullptr
+                );
+            }
+
+            /// TODO: yet more bells and whistles.  I also need to expose the
+            /// get/set/del attributes as properties.
+
+            static PyObject* __repr__(Property* self) {
+                std::string str = "property(" + repr(self->fget) + ")";
+                return PyUnicode_FromStringAndSize(str.c_str(), str.size());
+            }
+
+        };
+
+        inline static PyTypeObject property_type = {
+            .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+            .tp_name = typeid(Property).name(),
+            .tp_basicsize = sizeof(Property),
+            .tp_itemsize = 0,
+            .tp_dealloc = reinterpret_cast<destructor>(&Property::__dealloc__),
+            .tp_repr = reinterpret_cast<reprfunc>(&Property::__repr__),
+            .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
+            .tp_doc = PyDoc_STR(
+R"doc()doc"
+            ),
+            .tp_descr_get = reinterpret_cast<descrgetfunc>(&Property::__get__),
+            .tp_descr_set = reinterpret_cast<descrsetfunc>(&Property::__set__),
+        };
+
         inline static PyNumberMethods number = {
             .nb_and = reinterpret_cast<binaryfunc>(&impl::FuncIntersect::__and__),
             .nb_or = reinterpret_cast<binaryfunc>(&impl::FuncUnion::__or__),
@@ -7710,7 +7967,7 @@ R"doc()doc"
             {
                 "property",
                 reinterpret_cast<PyCFunction>(&property),
-                METH_FASTCALL,  /// TODO: with keywords?
+                METH_FASTCALL | METH_KEYWORDS,
                 PyDoc_STR(
 R"doc()doc"
                 )
