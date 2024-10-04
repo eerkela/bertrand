@@ -8181,10 +8181,20 @@ on the fly and cached for future use (TODO).)doc";
             }
         }
 
-        /* Iterate over all overloads in the same order in which they were
-        registered. */
+        /* Iterate over all overloads stored in the trie. */
         static PyObject* __iter__(PyFunction* self) noexcept {
-            /// TODO: use the iterator types from access.h
+            try {
+                return release(Iterator(
+                    self->overloads.data | std::views::transform(
+                        [](const Sig::Overloads::Metadata& data) -> Object {
+                            return data.func;
+                        }
+                    )
+                ));
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
         }
 
         /* Check whether an object implements this function via the descriptor

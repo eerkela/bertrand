@@ -5,6 +5,7 @@
 #include "object.h"
 #include "except.h"
 #include "ops.h"
+#include <ranges>
 
 
 namespace py {
@@ -737,6 +738,12 @@ struct Interface<Type<Iterator<Begin, End, Container>>> {
 };
 
 
+/// TODO: all of these should use static types in order to save space.  They can
+/// self-ready the first time they are constructed, and the type can just not be
+/// attached to any particular type or module.  These types don't even need to be
+/// accessible from Python.
+
+
 /* A wrapper around a Python iterator that allows it to be used from C++.
 
 This type has no fixed implementation, and can match any kind of Python iterator.  It
@@ -799,44 +806,30 @@ This will instantiate a unique Python type with an appropriate `__next__()` meth
 every combination of C++ iterators, forwarding to their respective `operator*()`,
 `operator++()`, and `operator==()` methods. */
 template <std::input_iterator Begin, std::sentinel_for<Begin> End>
+    requires (std::convertible_to<decltype(*std::declval<Begin>()), Object>)
 struct Iterator<Begin, End, void> : Object, Interface<Iterator<Begin, End, void>> {
     struct __python__ : def<__python__, Iterator>, PyObject {
+        inline static bool initialized = false;
+        static PyTypeObject __type__;
+
         std::remove_reference_t<Begin> begin;
         std::remove_reference_t<End> end;
 
         __python__(auto& container) :
             begin(std::ranges::begin(container)), end(std::ranges::end(container))
-        {}
+        {
+            ready();
+        }
 
         __python__(Begin&& begin, End&& end) :
             begin(std::forward(begin)), end(std::forward(end))
-        {}
+        {
+            ready();
+        }
 
-        template <StaticStr ModName>
-        static Type<Iterator> __export__(Module<ModName> module) {
-            static PyType_Slot slots[] = {
-                {Py_tp_iter, reinterpret_cast<void*>(PyObject_SelfIter)},
-                {Py_tp_iternext, reinterpret_cast<void*>(__next__)},
-                {0, nullptr}
-            };
-            static PyType_Spec spec = {
-                .name = typeid(Iterator).name(),
-                .basicsize = sizeof(__python__),
-                .itemsize = 0,
-                .flags = 
-                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC |
-                    Py_TPFLAGS_IMMUTABLETYPE | Py_TPFLAGS_DISALLOW_INSTANTIATION,
-                .slots = slots 
-            };
-            PyObject* cls = PyType_FromModuleAndSpec(
-                ptr(module),
-                &spec,
-                nullptr
-            );
-            if (cls == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Type<Iterator>>(cls);
+        static Type<Iterator> __import__() {
+            ready();
+            return reinterpret_borrow<Type<Iterator>>(&__type__);
         }
 
         static PyObject* __next__(__python__* self) {
@@ -856,6 +849,26 @@ struct Iterator<Begin, End, void> : Object, Interface<Iterator<Begin, End, void>
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
+            }
+        }
+
+    private:
+
+        static void ready() {
+            if (!initialized) {
+                __type__ = {
+                    .tp_name = typeid(Iterator).name(),
+                    .tp_basicsize = sizeof(__python__),
+                    .tp_itemsize = 0,
+                    .tp_flags = 
+                        Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
+                    .tp_iter = PyObject_SelfIter,
+                    .tp_iternext = reinterpret_cast<iternextfunc>(__next__)
+                };
+                if (PyType_Ready(&__type__) < 0) {
+                    Exception::from_python();
+                }
+                initialized = true;
             }
         }
 
@@ -887,8 +900,12 @@ This will instantiate a unique Python type with an appropriate `__next__()` meth
 every combination of C++ iterators, forwarding to their respective `operator*()`,
 `operator++()`, and `operator==()` methods. */
 template <std::input_iterator Begin, std::sentinel_for<Begin> End, impl::iterable Container>
+    requires (std::convertible_to<decltype(*std::declval<Begin>()), Object>)
 struct Iterator<Begin, End, Container> : Object, Interface<Iterator<Begin, End, Container>> {
     struct __python__ : def<__python__, Iterator>, PyObject {
+        inline static bool initialized = false;
+        static PyTypeObject __type__;
+
         Container container;
         Begin begin;
         End end;
@@ -897,34 +914,17 @@ struct Iterator<Begin, End, Container> : Object, Interface<Iterator<Begin, End, 
             container(std::move(container)),
             begin(std::ranges::begin(this->container)),
             end(std::ranges::end(this->container))
-        {}
-
-        template <StaticStr ModName>
-        static Type<Iterator> __export__(Module<ModName> module) {
-            static PyType_Slot slots[] = {
-                {Py_tp_iter, reinterpret_cast<void*>(PyObject_SelfIter)},
-                {Py_tp_iternext, reinterpret_cast<void*>(__next__)},
-                {0, nullptr}
-            };
-            static PyType_Spec spec = {
-                .name = typeid(Iterator).name(),
-                .basicsize = sizeof(__python__),
-                .itemsize = 0,
-                .flags = 
-                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC |
-                    Py_TPFLAGS_IMMUTABLETYPE | Py_TPFLAGS_DISALLOW_INSTANTIATION,
-                .slots = slots 
-            };
-            PyObject* cls = PyType_FromModuleAndSpec(
-                ptr(module),
-                &spec,
-                nullptr
-            );
-            if (cls == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Type<Iterator>>(cls);
+        {
+            ready();
         }
+
+        static Type<Iterator> __import__() {
+            ready();
+            return reinterpret_borrow<Type<Iterator>>(&__type__);
+        }
+
+        /// TODO: what if the container yields Python objects?  What about references
+        /// to Python objects?
 
         static PyObject* __next__(__python__* self) {
             try {
@@ -946,6 +946,25 @@ struct Iterator<Begin, End, Container> : Object, Interface<Iterator<Begin, End, 
             }
         }
 
+    private:
+
+        static void ready() {
+            if (!initialized) {
+                __type__ = {
+                    .tp_name = typeid(Iterator).name(),
+                    .tp_basicsize = sizeof(__python__),
+                    .tp_itemsize = 0,
+                    .tp_flags = 
+                        Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
+                    .tp_iter = PyObject_SelfIter,
+                    .tp_iternext = reinterpret_cast<iternextfunc>(__next__)
+                };
+                if (PyType_Ready(&__type__) < 0) {
+                    Exception::from_python();
+                }
+                initialized = true;
+            }
+        }
     };
 
     Iterator(PyObject* p, borrowed_t t) : Object(p, t) {}
@@ -969,8 +988,8 @@ namespace impl {
 
     template <typename Container>
     struct IterTraits {
-        using begin = decltype(std::ranges::begin(std::declval<std::remove_reference_t<Container>>()));
-        using end = decltype(std::ranges::end(std::declval<std::remove_reference_t<Container>>()));
+        using begin = decltype(std::ranges::begin(std::declval<std::remove_reference_t<Container>&>()));
+        using end = decltype(std::ranges::end(std::declval<std::remove_reference_t<Container&>&>()));
         using container = std::remove_reference_t<Container>;
     };
 
@@ -986,12 +1005,13 @@ namespace impl {
 
 /* CTAD guide will generate a Python iterator around a pair of raw C++ iterators. */
 template <std::input_iterator Begin, std::sentinel_for<Begin> End>
+    requires (std::convertible_to<decltype(*std::declval<Begin>()), Object>)
 Iterator(Begin, End) -> Iterator<Begin, End, void>;
 
 
 /* CTAD guide will generate a Python iterator from an arbitrary C++ container, with
 correct ownership semantics. */
-template <impl::iterable Container>
+template <impl::iterable Container> requires (impl::yields<Container, Object>)
 Iterator(Container&&) -> Iterator<
     typename impl::IterTraits<Container>::begin,
     typename impl::IterTraits<Container>::end,
@@ -1001,7 +1021,7 @@ Iterator(Container&&) -> Iterator<
 
 /* Implement the CTAD guide for iterable containers.  The container type may be const,
 which will be reflected in the deduced iterator types. */
-template <impl::iterable Container>
+template <impl::iterable Container> requires (impl::yields<Container, Object>)
 struct __init__<
     Iterator<
         typename impl::IterTraits<Container>::begin,
@@ -1009,7 +1029,11 @@ struct __init__<
         typename impl::IterTraits<Container>::container
     >,
     Container
-> {
+> : Returns<Iterator<
+    typename impl::IterTraits<Container>::begin,
+    typename impl::IterTraits<Container>::end,
+    typename impl::IterTraits<Container>::container
+>> {
     static auto operator()(Container&& self) {
         return impl::construct<Iterator<
             typename impl::IterTraits<Container>::begin,
@@ -1022,7 +1046,8 @@ struct __init__<
 
 /* Construct a Python iterator from a pair of C++ iterators. */
 template <std::input_iterator Begin, std::sentinel_for<Begin> End>
-struct __init__<Iterator<Begin, End, void>, Begin, End> {
+    requires (std::convertible_to<decltype(*std::declval<Begin>()), Object>)
+struct __init__<Iterator<Begin, End, void>, Begin, End> : Returns<Iterator<Begin, End, void>> {
     static auto operator()(auto&& begin, auto&& end) {
         return impl::construct<Iterator<Begin, End, void>>(
             std::forward<decltype(begin)>(begin),
@@ -1306,6 +1331,7 @@ template <typename Self> requires (__iter__<Self>::enable)
         );
         if constexpr (impl::has_cpp<Self>) {
             return std::ranges::end(unwrap(std::forward<Self>(self)));
+
         } else {
             auto result = [](Self&& self) {
                 using Return = typename __iter__<Self>::type;
@@ -1363,6 +1389,7 @@ template <typename Self> requires (__reversed__<Self>::enable)
         );
         if constexpr (impl::has_cpp<Self>) {
             return std::ranges::rbegin(unwrap(std::forward<Self>(self)));
+
         } else {
             using Return = typename __reversed__<Self>::type;
             static_assert(
@@ -1418,6 +1445,7 @@ template <typename Self> requires (__reversed__<Self>::enable)
         );
         if constexpr (impl::has_cpp<Self>) {
             return std::ranges::rend(unwrap(std::forward<Self>(self)));
+
         } else {
             using Return = typename __reversed__<Self>::type;
             static_assert(
