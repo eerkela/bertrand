@@ -528,14 +528,14 @@ namespace impl {
             if (signature.is(nullptr)) {
                 Exception::from_python();
             }
-            PyObject* get_type_hints_args[] = {ptr(func), Py_True};
+            PyObject* get_type_hints_args[] = {nullptr, ptr(func), Py_True};
             Object get_type_hints_kwnames = reinterpret_steal<Object>(
                 PyTuple_Pack(1, TemplateString<"include_extras">::ptr)
             );
             Object hints = reinterpret_steal<Object>(PyObject_Vectorcall(
                 ptr(getattr<"get_type_hints">(typing)),
-                get_type_hints_args,
-                1,
+                get_type_hints_args + 1,
+                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                 ptr(get_type_hints_kwnames)
             ));
             if (hints.is(nullptr)) {
@@ -566,7 +566,7 @@ namespace impl {
                             );
                         }
                     }
-                    PyObject* replace_args[] = {ptr(annotation)};
+                    PyObject* replace_args[] = {nullptr, ptr(annotation)};
                     Object replace_kwnames = reinterpret_steal<Object>(PyTuple_Pack(
                         1,
                         TemplateString<"annotation">::ptr
@@ -576,8 +576,8 @@ namespace impl {
                     }
                     param = reinterpret_steal<Object>(PyObject_Vectorcall(
                         ptr(getattr<"replace">(param)),
-                        replace_args,
-                        0,
+                        replace_args + 1,
+                        0 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                         ptr(replace_kwnames)
                     ));
                     if (param.is(nullptr)) {
@@ -595,6 +595,7 @@ namespace impl {
                 return_annotation = empty;
             }
             PyObject* replace_args[] = {
+                nullptr,
                 ptr(return_annotation),
                 ptr(new_params)
             };
@@ -608,8 +609,8 @@ namespace impl {
             }
             signature = reinterpret_steal<Object>(PyObject_Vectorcall(
                 ptr(getattr<"replace">(signature)),
-                replace_args,
-                0,
+                replace_args + 1,
+                0 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                 ptr(replace_kwnames)
             ));
             if (signature.is(nullptr)) {
@@ -2326,6 +2327,7 @@ namespace impl {
             struct Node;
 
         private:
+            struct BoundView;
 
             static bool typecheck(PyObject* lhs, PyObject* rhs) {
                 int rc = PyObject_IsSubclass(
@@ -2387,6 +2389,7 @@ namespace impl {
             `Metadata::path` sequence, which is guaranteed to have a stable address. */
             struct Edges {
             private:
+                friend BoundView;
 
                 /* The topologically-sorted type map needs to store an additional
                 mapping layer to account for overlapping edges and ordering based on
@@ -3021,6 +3024,15 @@ namespace impl {
                 return nullptr;
             }
 
+            /* Filter the overload trie for a given first positional argument, which
+            represents the type of the implicit `self` parameter for a bound member
+            function.  Returns a range adaptor that extracts only the matching
+            functions from the metadata set, with extra information encoding their full
+            path through the overload trie. */
+            [[nodiscard]] BoundView match(PyObject* type) const {
+                return {*this, type};
+            }
+
             /* Insert a function into the overload trie, throwing a TypeError if it
             does not conform to the enclosing parameter list or if it conflicts with
             another node in the trie. */
@@ -3257,6 +3269,88 @@ namespace impl {
             }
 
         private:
+
+            /* A range adaptor that iterates over the space of overloads that follow
+            from a given `self` argument, which is used to prune the trie.  When a
+            bound method is created, it will use one of these views to correctly
+            forward the overload interface. */
+            struct BoundView {
+                const Overloads& self;
+                PyObject* type;
+
+                struct Sentinel;
+
+                struct Iterator {
+                    using iterator_category = std::input_iterator_tag;
+                    using difference_type = std::ptrdiff_t;
+                    using value_type = const Metadata;
+                    using pointer = value_type*;
+                    using reference = value_type&;
+
+                    const Overloads& self;
+                    const Metadata* curr;
+                    Edges::OrderedView view;
+                    std::ranges::iterator_t<typename Edges::OrderedView> it;
+                    std::ranges::sentinel_t<typename Edges::OrderedView> end;
+                    std::unordered_set<size_t> visited;
+
+                    Iterator(const Overloads& self, PyObject* type) :
+                        self(self),
+                        curr(nullptr),
+                        view(self.root->positional.match(type)),
+                        it(std::ranges::begin(this->view)),
+                        end(std::ranges::end(this->view))
+                    {
+                        if (it != end) {
+                            curr = self.data.find((*it)->hash);
+                            visited.insert(curr->hash);
+                        }
+                    }
+
+                    Iterator& operator++() {
+                        while (++it != end) {
+                            const Edge* edge = *it;
+                            auto lookup = visited.find(edge->hash);
+                            if (lookup == visited.end()) {
+                                visited.insert(edge->hash);
+                                curr = &*(self.data.find(edge->hash));
+                                return *this;
+                            }
+                        }
+                        return *this;
+                    }
+
+                    const Metadata& operator*() const {
+                        return *curr;
+                    }
+
+                    bool operator==(const Sentinel& sentinel) const {
+                        return it == end;
+                    }
+
+                    bool operator!=(const Sentinel& sentinel) const {
+                        return it != end;
+                    }
+
+                };
+
+                struct Sentinel {
+                    bool operator==(const Iterator& iter) const {
+                        return iter.it == iter.end;
+                    }
+                    bool operator!=(const Iterator& iter) const {
+                        return iter.it != iter.end;
+                    }
+                };
+
+                Iterator begin() const {
+                    return Iterator{self, type};
+                }
+
+                Sentinel end() const {
+                    return Sentinel{};
+                }
+            };
 
             template <typename Container>
             static void assert_valid_args(const Params<Container>& key) {
@@ -7539,7 +7633,7 @@ on the fly and cached for future use (TODO).)doc";
         /// as good as it gets in terms of performance.  class methods will be only
         /// slightly slower than instance methods as a result.
 
-        vectorcallfunc call = &__call__;
+        vectorcallfunc call = reinterpret_cast<vectorcallfunc>(__call__);
         PyObject* pyfunc = nullptr;
         PyObject* name = nullptr;
         PyObject* docstring = nullptr;
@@ -7708,27 +7802,48 @@ on the fly and cached for future use (TODO).)doc";
         from Python. */
         static PyObject* method(PyFunction* self, PyObject* cls) noexcept {
             try {
-                if (!PyType_Check(cls)) {
-                    PyErr_Format(
+                if constexpr (Sig::n < 1 || !(
+                    impl::ArgTraits<typename Sig::template at<0>>::pos() ||
+                    impl::ArgTraits<typename Sig::template at<0>>::args()
+                )) {
+                    PyErr_SetString(
                         PyExc_TypeError,
-                        "expected a type object, not: %R",
-                        cls
+                        "method() requires a function with at least one "
+                        "positional argument"
                     );
                     return nullptr;
+                } else {
+                    using T = impl::ArgTraits<typename Sig::template at<0>>::type;
+                    if (!PyType_Check(cls)) {
+                        PyErr_Format(
+                            PyExc_TypeError,
+                            "expected a type object, not: %R",
+                            cls
+                        );
+                        return nullptr;
+                    }
+                    if (!issubclass<T>(reinterpret_borrow<Object>(cls))) {
+                        PyErr_Format(
+                            PyExc_TypeError,
+                            "class must be a must be a subclass of %R",
+                            ptr(Type<T>())
+                        );
+                        return nullptr;
+                    }
+                    if (PyObject_HasAttr(cls, self->name)) {
+                        PyErr_Format(
+                            PyExc_TypeError,
+                            "attribute '%U' already exists on type '%R'",
+                            self->name,
+                            cls
+                        );
+                        return nullptr;
+                    }
+                    if (PyObject_SetAttr(cls, self->name, self)) {
+                        return nullptr;
+                    }
+                    return Py_NewRef(cls);
                 }
-                if (PyObject_HasAttr(cls, self->name)) {
-                    PyErr_Format(
-                        PyExc_TypeError,
-                        "attribute '%U' already exists on type '%R'",
-                        self->name,
-                        cls
-                    );
-                    return nullptr;
-                }
-                if (PyObject_SetAttr(cls, self->name, self)) {
-                    return nullptr;
-                }
-                return Py_NewRef(cls);
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -7739,41 +7854,83 @@ on the fly and cached for future use (TODO).)doc";
         to attach to, which can be provided by calling this method as a decorator from
         Python. */
         static PyObject* classmethod(PyFunction* self, PyObject* cls) noexcept {
-            if (PyObject_HasAttr(cls, self->name)) {
-                PyErr_Format(
-                    PyExc_AttributeError,
-                    "attribute '%U' already exists on type '%R'",
-                    self->name,
-                    cls
-                );
-                return nullptr;
-            }
-            using impl::ClassMethod;
-            ClassMethod* descr = reinterpret_cast<ClassMethod*>(
-                ClassMethod::__type__.tp_alloc(&ClassMethod::__type__, 0)
-            );
-            if (descr == nullptr) {
-                return nullptr;
-            }
             try {
-                new (descr) ClassMethod(self, cls);
+                if constexpr (Sig::n < 1 || !(
+                    impl::ArgTraits<typename Sig::template at<0>>::pos() ||
+                    impl::ArgTraits<typename Sig::template at<0>>::args()
+                )) {
+                    PyErr_SetString(
+                        PyExc_TypeError,
+                        "classmethod() requires a function with at least one "
+                        "positional argument"
+                    );
+                    return nullptr;
+                } else {
+                    using T = impl::ArgTraits<typename Sig::template at<0>>::type;
+                    if (!PyType_Check(cls)) {
+                        PyErr_Format(
+                            PyExc_TypeError,
+                            "expected a type object, not: %R",
+                            cls
+                        );
+                        return nullptr;
+                    }
+                    if (!issubclass<T>(reinterpret_borrow<Object>(cls))) {
+                        PyErr_Format(
+                            PyExc_TypeError,
+                            "class must be a must be a subclass of %R",
+                            ptr(Type<T>())
+                        );
+                        return nullptr;
+                    }
+                    if (PyObject_HasAttr(cls, self->name)) {
+                        PyErr_Format(
+                            PyExc_AttributeError,
+                            "attribute '%U' already exists on type '%R'",
+                            self->name,
+                            cls
+                        );
+                        return nullptr;
+                    }
+                    using impl::ClassMethod;
+                    ClassMethod* descr = reinterpret_cast<ClassMethod*>(
+                        ClassMethod::__type__.tp_alloc(&ClassMethod::__type__, 0)
+                    );
+                    if (descr == nullptr) {
+                        return nullptr;
+                    }
+                    try {
+                        new (descr) ClassMethod(self, cls);
+                    } catch (...) {
+                        Py_DECREF(descr);
+                        Exception::to_python();
+                        return nullptr;
+                    }
+                    int rc = PyObject_SetAttr(cls, self->name, descr);
+                    Py_DECREF(descr);
+                    if (rc) {
+                        return nullptr;
+                    }
+                    return Py_NewRef(cls);
+                }
             } catch (...) {
-                Py_DECREF(descr);
                 Exception::to_python();
                 return nullptr;
             }
-            int rc = PyObject_SetAttr(cls, self->name, descr);
-            Py_DECREF(descr);
-            if (rc) {
-                return nullptr;
-            }
-            return Py_NewRef(cls);
         }
 
         /* Attach a function to a type as a static method descriptor.  Accepts the type
         to attach to, which can be provided by calling this method as a decorator from
         Python. */
         static PyObject* staticmethod(PyFunction* self, PyObject* cls) noexcept {
+            if (!PyType_Check(cls)) {
+                PyErr_Format(
+                    PyExc_TypeError,
+                    "expected a type object, not: %R",
+                    cls
+                );
+                return nullptr;
+            }
             if (PyObject_HasAttr(cls, self->name)) {
                 PyErr_Format(
                     PyExc_AttributeError,
@@ -7817,158 +7974,198 @@ on the fly and cached for future use (TODO).)doc";
             size_t nargsf,
             PyObject* kwnames
         ) noexcept {
-            size_t nargs = PyVectorcall_NARGS(nargsf);
-            PyObject* cls;
-            if (nargs == 0) {
-                PyErr_Format(
-                    PyExc_TypeError,
-                    "%U.property() requires a type object as the sole "
-                    "positional argument",
-                    self->name
-                );
-                return nullptr;
-            } else if (nargs == 1) {
-                cls = args[0];
-            } else {
-                PyErr_Format(
-                    PyExc_TypeError,
-                    "%U.property() takes exactly one positional argument",
-                    self->name
-                );
-                return nullptr;
-            }
-
-            PyObject* fset = nullptr;
-            PyObject* fdel = nullptr;
-            if (kwnames) {
-                Py_ssize_t kwcount = PyTuple_GET_SIZE(kwnames);
-                if (kwcount > 2) {
+            try {
+                if constexpr (Sig::n < 1 || !(
+                    impl::ArgTraits<typename Sig::template at<0>>::pos() ||
+                    impl::ArgTraits<typename Sig::template at<0>>::args()
+                )) {
                     PyErr_SetString(
                         PyExc_TypeError,
-                        "property() takes at most 2 keyword arguments"
+                        "property() requires a function with at least one "
+                        "positional argument"
                     );
                     return nullptr;
-                } else if (kwcount > 1) {
-                    PyObject* key = PyTuple_GET_ITEM(kwnames, 0);
-                    int rc = PyObject_RichCompareBool(
-                        key,
-                        impl::TemplateString<"setter">::ptr,
-                        Py_EQ
-                    );
-                    if (rc < 0) {
-                        return nullptr;
-                    } else if (rc) {
-                        fset = args[1];
-                    } else {
-                        rc = PyObject_RichCompareBool(
-                            key,
-                            impl::TemplateString<"deleter">::ptr,
-                            Py_EQ
+                } else {
+                    using T = impl::ArgTraits<typename Sig::template at<0>>::type;
+                    size_t nargs = PyVectorcall_NARGS(nargsf);
+                    PyObject* cls;
+                    if (nargs == 0) {
+                        PyErr_Format(
+                            PyExc_TypeError,
+                            "%U.property() requires a type object as the sole "
+                            "positional argument",
+                            self->name
                         );
-                        if (rc < 0) {
-                            return nullptr;
-                        } else if (rc) {
-                            fdel = args[1];
-                        } else {
-                            PyErr_Format(
-                                PyExc_TypeError,
-                                "unexpected keyword argument '%U'",
-                                key
-                            );
-                            return nullptr;
-                        }
-                    }
-                    key = PyTuple_GET_ITEM(kwnames, 1);
-                    rc = PyObject_RichCompareBool(
-                        key,
-                        impl::TemplateString<"deleter">::ptr,
-                        Py_EQ
-                    );
-                    if (rc < 0) {
                         return nullptr;
-                    } else if (rc) {
-                        fdel = args[2];
+                    } else if (nargs == 1) {
+                        cls = args[0];
                     } else {
-                        rc = PyObject_RichCompareBool(
-                            key,
-                            impl::TemplateString<"setter">::ptr,
-                            Py_EQ
+                        PyErr_Format(
+                            PyExc_TypeError,
+                            "%U.property() takes exactly one positional "
+                            "argument",
+                            self->name
                         );
-                        if (rc < 0) {
-                            return nullptr;
-                        } else if (rc) {
-                            fset = args[2];
-                        } else {
-                            PyErr_Format(
-                                PyExc_TypeError,
-                                "unexpected keyword argument '%U'",
-                                key
-                            );
-                            return nullptr;
-                        }
-                    }
-                } else if (kwcount > 0) {
-                    PyObject* key = PyTuple_GET_ITEM(kwnames, 0);
-                    int rc = PyObject_RichCompareBool(
-                        key,
-                        impl::TemplateString<"setter">::ptr,
-                        Py_EQ
-                    );
-                    if (rc < 0) {
                         return nullptr;
-                    } else if (rc) {
-                        fset = args[1];
-                    } else {
-                        rc = PyObject_RichCompareBool(
-                            key,
-                            impl::TemplateString<"deleter">::ptr,
-                            Py_EQ
-                        );
-                        if (rc < 0) {
-                            return nullptr;
-                        } else if (rc) {
-                            fdel = args[1];
-                        } else {
-                            PyErr_Format(
-                                PyExc_TypeError,
-                                "unexpected keyword argument '%U'",
-                                key
-                            );
-                            return nullptr;
-                        }
                     }
-                }
-            }
+                    if (!PyType_Check(cls)) {
+                        PyErr_Format(
+                            PyExc_TypeError,
+                            "expected a type object, not: %R",
+                            cls
+                        );
+                        return nullptr;
+                    }
+                    if (!issubclass<T>(reinterpret_borrow<Object>(cls))) {
+                        PyErr_Format(
+                            PyExc_TypeError,
+                            "class must be a must be a subclass of %R",
+                            ptr(Type<T>())
+                        );
+                        return nullptr;
+                    }
 
-            if (PyObject_HasAttr(cls, self->name)) {
-                PyErr_Format(
-                    PyExc_AttributeError,
-                    "attribute '%U' already exists on type '%R'",
-                    self->name,
-                    cls
-                );
-                return nullptr;
-            }
-            using Property = impl::Property;
-            Property* descr = reinterpret_cast<Property*>(
-                Property::__type__.tp_alloc(&Property::__type__, 0)
-            );
-            if (descr == nullptr) {
-                return nullptr;
-            }
-            try {
-                new (descr) Property(cls, self, fset, fdel);
+                    PyObject* fset = nullptr;
+                    PyObject* fdel = nullptr;
+                    if (kwnames) {
+                        Py_ssize_t kwcount = PyTuple_GET_SIZE(kwnames);
+                        if (kwcount > 2) {
+                            PyErr_SetString(
+                                PyExc_TypeError,
+                                "property() takes at most 2 keyword arguments"
+                            );
+                            return nullptr;
+                        } else if (kwcount > 1) {
+                            PyObject* key = PyTuple_GET_ITEM(kwnames, 0);
+                            int rc = PyObject_RichCompareBool(
+                                key,
+                                impl::TemplateString<"setter">::ptr,
+                                Py_EQ
+                            );
+                            if (rc < 0) {
+                                return nullptr;
+                            } else if (rc) {
+                                fset = args[1];
+                            } else {
+                                rc = PyObject_RichCompareBool(
+                                    key,
+                                    impl::TemplateString<"deleter">::ptr,
+                                    Py_EQ
+                                );
+                                if (rc < 0) {
+                                    return nullptr;
+                                } else if (rc) {
+                                    fdel = args[1];
+                                } else {
+                                    PyErr_Format(
+                                        PyExc_TypeError,
+                                        "unexpected keyword argument '%U'",
+                                        key
+                                    );
+                                    return nullptr;
+                                }
+                            }
+                            key = PyTuple_GET_ITEM(kwnames, 1);
+                            rc = PyObject_RichCompareBool(
+                                key,
+                                impl::TemplateString<"deleter">::ptr,
+                                Py_EQ
+                            );
+                            if (rc < 0) {
+                                return nullptr;
+                            } else if (rc) {
+                                fdel = args[2];
+                            } else {
+                                rc = PyObject_RichCompareBool(
+                                    key,
+                                    impl::TemplateString<"setter">::ptr,
+                                    Py_EQ
+                                );
+                                if (rc < 0) {
+                                    return nullptr;
+                                } else if (rc) {
+                                    fset = args[2];
+                                } else {
+                                    PyErr_Format(
+                                        PyExc_TypeError,
+                                        "unexpected keyword argument '%U'",
+                                        key
+                                    );
+                                    return nullptr;
+                                }
+                            }
+                        } else if (kwcount > 0) {
+                            PyObject* key = PyTuple_GET_ITEM(kwnames, 0);
+                            int rc = PyObject_RichCompareBool(
+                                key,
+                                impl::TemplateString<"setter">::ptr,
+                                Py_EQ
+                            );
+                            if (rc < 0) {
+                                return nullptr;
+                            } else if (rc) {
+                                fset = args[1];
+                            } else {
+                                rc = PyObject_RichCompareBool(
+                                    key,
+                                    impl::TemplateString<"deleter">::ptr,
+                                    Py_EQ
+                                );
+                                if (rc < 0) {
+                                    return nullptr;
+                                } else if (rc) {
+                                    fdel = args[1];
+                                } else {
+                                    PyErr_Format(
+                                        PyExc_TypeError,
+                                        "unexpected keyword argument '%U'",
+                                        key
+                                    );
+                                    return nullptr;
+                                }
+                            }
+                        }
+                    }
+                    /// TODO: validate fset and fdel are callable with the expected
+                    /// signatures -> This can be done with the Inspect() helper, which
+                    /// will extract all overload keys from the function.  I just have
+                    /// to confirm that at least one path through the overload trie
+                    /// matches the expected signature.
+
+                    if (PyObject_HasAttr(cls, self->name)) {
+                        PyErr_Format(
+                            PyExc_AttributeError,
+                            "attribute '%U' already exists on type '%R'",
+                            self->name,
+                            cls
+                        );
+                        return nullptr;
+                    }
+                    using Property = impl::Property;
+                    Property* descr = reinterpret_cast<Property*>(
+                        Property::__type__.tp_alloc(&Property::__type__, 0)
+                    );
+                    if (descr == nullptr) {
+                        return nullptr;
+                    }
+                    try {
+                        new (descr) Property(cls, self, fset, fdel);
+                    } catch (...) {
+                        Py_DECREF(descr);
+                        Exception::to_python();
+                        return nullptr;
+                    }
+                    int rc = PyObject_SetAttr(cls, self->name, descr);
+                    Py_DECREF(descr);
+                    if (rc) {
+                        return nullptr;
+                    }
+                    return Py_NewRef(cls);
+                }
             } catch (...) {
-                Py_DECREF(descr);
                 Exception::to_python();
                 return nullptr;
             }
-            int rc = PyObject_SetAttr(cls, self->name, descr);
-            Py_DECREF(descr);
-            if (rc) {
-                return nullptr;
-            }
-            return Py_NewRef(cls);
         }
 
         /* Call the function from Python. */
@@ -8273,6 +8470,23 @@ on the fly and cached for future use (TODO).)doc";
                 if (inspect.is(nullptr)) {
                     return nullptr;
                 }
+
+                // if this function captures a Python function, forward to it
+                if (self->pyfunc) {
+                    Object signature = reinterpret_steal<Object>(PyObject_GetAttr(
+                        ptr(inspect),
+                        impl::TemplateString<"signature">::ptr
+                    ));
+                    if (signature.is(nullptr)) {
+                        return nullptr;
+                    }
+                    return PyObject_CallOneArg(
+                        ptr(signature),
+                        self->pyfunc
+                    );
+                }
+
+                // otherwise, we need to build a signature object ourselves
                 Object Signature = getattr<"Signature">(inspect);
                 Object Parameter = getattr<"Parameter">(inspect);
 
@@ -8303,14 +8517,14 @@ on the fly and cached for future use (TODO).)doc";
                 Type<typename Sig::Return> return_type;
 
                 // create the signature object
-                PyObject* args[2] = {ptr(tuple), ptr(return_type)};
+                PyObject* args[] = {nullptr, ptr(tuple), ptr(return_type)};
                 Object kwnames = reinterpret_steal<Object>(
                     PyTuple_Pack(1, impl::TemplateString<"return_annotation">::ptr)
                 );
                 return PyObject_Vectorcall(
                     ptr(Signature),
-                    args,
-                    1,
+                    args + 1,
+                    1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                     ptr(kwnames)
                 );
             } catch (...) {
@@ -8334,6 +8548,56 @@ on the fly and cached for future use (TODO).)doc";
         }
 
     private:
+
+        static PyObject* _subtrie_len(PyFunction* self, PyObject* type) noexcept {
+            try {
+                size_t len = 0;
+                for (const typename Sig::Overloads::Metadata& data :
+                    self->overloads.match(type)
+                ) {
+                    ++len;
+                }
+                return PyLong_FromSize_t(len);
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* _subtrie_iter(PyFunction* self, PyObject* type) noexcept {
+            try {
+                return release(Iterator(
+                    self->overloads.match(type) | std::views::transform(
+                        [](const typename Sig::Overloads::Metadata& data) -> Object {
+                            return data.func;
+                        }
+                    )
+                ));
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* _subtrie_contains(
+            PyFunction* self,
+            PyObject* const* args,
+            Py_ssize_t nargsf
+        ) noexcept {
+            try {
+                for (const typename Sig::Overloads::Metadata& data :
+                    self->overloads.match(args[0])
+                ) {
+                    if (data.func == args[1]) {
+                        Py_RETURN_TRUE;
+                    }
+                }
+                Py_RETURN_FALSE;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
 
         static impl::Params<std::vector<impl::Param>> call_key(
             PyObject* const* args,
@@ -8480,7 +8744,8 @@ on the fly and cached for future use (TODO).)doc";
             Object default_value = self->defaults.template get<I>();
             Type<typename Traits::type> annotation;
 
-            PyObject* args[4] = {
+            PyObject* args[] = {
+                nullptr,
                 ptr(name),
                 ptr(kind),
                 ptr(default_value),
@@ -8496,8 +8761,8 @@ on the fly and cached for future use (TODO).)doc";
             );
             Object result = reinterpret_steal<Object>(PyObject_Vectorcall(
                 ptr(Parameter),
-                args,
-                0,
+                args + 1,
+                0 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                 ptr(kwnames)
             ));
             if (result.is(nullptr)) {
@@ -8568,6 +8833,24 @@ R"doc()doc"
 R"doc()doc"
                 )
             },
+            {
+                "_subtrie_len",
+                reinterpret_cast<PyCFunction>(&_subtrie_len),
+                METH_O,
+                nullptr
+            },
+            {
+                "_subtrie_iter",
+                reinterpret_cast<PyCFunction>(&_subtrie_iter),
+                METH_O,
+                nullptr
+            },
+            {
+                "_subtrie_contains",
+                reinterpret_cast<PyCFunction>(&_subtrie_contains),
+                METH_FASTCALL,
+                nullptr
+            },
             {nullptr}
         };
 
@@ -8631,7 +8914,7 @@ TODO
 
         static PyTypeObject __type__;
 
-        vectorcallfunc call = &__call__;
+        vectorcallfunc call = reinterpret_cast<vectorcallfunc>(__call__);
         PyObject* __wrapped__;
         PyObject* __self__;
 
@@ -8713,8 +8996,19 @@ TODO
         }
 
         static Py_ssize_t __len__(PyFunction* self) noexcept {
-            /// TODO: this will have to only count the subset of the overload trie
-            /// that matches the bound type as the first argument.
+            PyObject* result = PyObject_CallMethodOneArg(
+                self->__wrapped__,
+                impl::TemplateString<"_subtrie_len">::ptr,
+                PyType_Check(self->__self__) ?
+                    self->__self__ :
+                    reinterpret_cast<PyObject*>(Py_TYPE(self->__self__))
+            );
+            if (result == nullptr) {
+                return -1;
+            }
+            Py_ssize_t len = PyLong_AsSsize_t(result);
+            Py_DECREF(result);
+            return len;
         }
 
         /* Subscripting a bound method will forward to the unbound method, prepending
@@ -8791,16 +9085,86 @@ TODO
         }
 
         static int __contains__(PyFunction* self, PyObject* func) noexcept {
-            /// TODO: once again, only count the subset of the overload trie that
-            /// matches the bound type as the first argument.
+            PyObject* args[] = {
+                self->__wrapped__,
+                PyType_Check(self->__self__) ?
+                    self->__self__ :
+                    reinterpret_cast<PyObject*>(Py_TYPE(self->__self__)),
+                func
+            };
+            PyObject* result = PyObject_VectorcallMethod(
+                impl::TemplateString<"_subtrie_contains">::ptr,
+                args,
+                3 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                nullptr
+            );
+            if (result == nullptr) {
+                return -1;
+            }
+            int contains = PyObject_IsTrue(result);
+            Py_DECREF(result);
+            return contains;
         }
 
         static PyObject* __iter__(PyFunction* self) noexcept {
-            /// TODO: use the iterator types from access.h
+            return PyObject_CallMethodOneArg(
+                self->__wrapped__,
+                impl::TemplateString<"_subtrie_iter">::ptr,
+                PyType_Check(self->__self__) ?
+                    self->__self__ :
+                    reinterpret_cast<PyObject*>(Py_TYPE(self->__self__))
+            );
         }
 
         static PyObject* __signature__(PyFunction* self, void*) noexcept {
-            /// TODO: same as underlying function, but strips the `self` parameter.
+            try {
+                Object inspect = reinterpret_steal<Object>(PyImport_Import(
+                    impl::TemplateString<"inspect">::ptr
+                ));
+                if (inspect.is(nullptr)) {
+                    return nullptr;
+                }
+                Object signature = PyObject_CallOneArg(
+                    ptr(getattr<"signature">(inspect)),
+                    self->__wrapped__
+                );
+                if (signature.is(nullptr)) {
+                    return nullptr;
+                }
+                Object values = getattr<"values">(
+                    getattr<"parameters">(signature)
+                );
+                size_t size = len(values);
+                Object parameters = reinterpret_steal<Object>(
+                    PyTuple_New(size - 1)
+                );
+                if (parameters.is(nullptr)) {
+                    return nullptr;
+                }
+                auto it = begin(values);
+                auto stop = end(values);
+                ++it;
+                for (size_t i = 0; it != stop; ++it, ++i) {
+                    PyTuple_SET_ITEM(
+                        ptr(parameters),
+                        i,
+                        Py_NewRef(ptr(*it))
+                    );
+                }
+                PyObject* args[] = {nullptr, ptr(parameters)};
+                Object kwnames = reinterpret_steal<Object>(
+                    PyTuple_Pack(1, impl::TemplateString<"parameters">::ptr)
+                );
+                return PyObject_Vectorcall(
+                    ptr(getattr<"replace">(signature)),
+                    args + 1,
+                    0 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                    ptr(kwnames)
+                );
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
         }
 
         /* Default `repr()` reflects Python conventions for bound methods. */
