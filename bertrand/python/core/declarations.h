@@ -270,122 +270,1972 @@ struct Returns : impl::BertrandTag {
 };
 
 
-template <typename T>
-struct __object__                                        : Disable {};
+/* Enables the `py::getattr<"name">()` helper for any `py::Object` subclass, and
+assigns a corresponding return type.  Disabled by default unless this class is
+explicitly specialized for a given attribute name.  Specializations of this class can
+implement a custom call operator to replace the default behavior, which delegates to a
+normal dotted attribute lookup at the Python level.   */
+template <typename Self, StaticStr Name>
+struct __getattr__                                          : Disable {};
+
+
+/* Enables the `py::setattr<"name">()` helper for any `py::Object` subclass, which must
+return void.  Disabled by default unless this class is explicitly specialized for a
+given attribute name.  Specializations of this class can implement a custom call
+operator to replace the default behavior, which delegates to a normal dotted attribute
+assignment at the Python level. */
+template <typename Self, StaticStr Name, typename Value>
+struct __setattr__                                          : Disable {};
+
+
+/* Enables the `py::delattr<"name">()` helper for any `py::Object` subclass, which must
+return void.  Disabled by default unless this class is explicitly specialized for a
+given attribute name.  Specializations of this class can implement a custom call
+operator to replace the default behavior, which delegates to a normal dotted attribute
+deletion at the Python level. */
+template <typename Self, StaticStr Name>
+struct __delattr__                                          : Disable {};
+
+
+/* Enables the `py::isinstance<...>()` helper for any subclass of `py::Object`, which
+must return a boolean.  Returns false by default unless this class is explicitly
+specialized. */
+/// TODO: maybe I can search for a Type<T>() and then check for an __instancecheck__
+/// method?
 template <typename Derived, typename Base>
 struct __isinstance__                                       : Disable {};
 template <typename Derived, typename Base>
 struct __issubclass__                                       : Disable {};
+
+
+/* Enables the C++ initializer list constructor for any `py::Object` subclass, which
+must return the type that the `std::initializer_list<>` should be templated on when
+constructing instances of this class.  Note that this is NOT the class itself, nor is
+it the full `std::initializer_list<>` specialization as it would ordinarily be given.
+This is due to restrictions in the C++ API around `std::initializer_list` in general.
+
+The initializer list constructor is disabled by default unless this class is explicitly
+specialized to return a particular element type.  Specializations of this class MUST
+implement a custom call operator to define the constructor logic, which should take a
+`const std::initializer_list<>&` as an argument and return an instance of the given
+class.  This is what allows direct initialization of Python container types, analogous
+to Python's built-in `[]`, `()`, and `{}` container syntax. */
+template <typename Self>
+struct __initializer__                                      : Disable {};
+
+
+/* Enables the explicit C++ constructor for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<Self, "__init__">` or
+`__getattr__<Self, "__new__">` in that order, which must return member functions,
+possibly with Python-style argument annotations.  Specializations of this class MUST
+implement a custom call operator to define the constructor logic.
+
+A special case exists for the default constructor for a given type, which accepts no
+arguments.  Such constructors will be demoted to implicit constructors, rather than
+requiring an explicit call. */
 template <typename Self, typename... Args>
-struct __init__                                             : Disable {};
-template <typename Self, typename... Args>
-struct __explicit_init__                                    : Disable {};
-template <typename From, typename To>
+struct __init__ {
+    template <StaticStr name>
+    struct ctor {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    struct ctor<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<Args...>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<Self, name>::type>::enable;
+        using type = inspect<typename __getattr__<Self, name>::type>::type;
+    };
+    static constexpr bool enable = ctor<"__init__">::enable || ctor<"__new__">::enable;
+    using type = std::conditional_t<
+        ctor<"__init__">::enable,
+        typename ctor<"__init__">::type,
+        std::conditional_t<
+            ctor<"__new__">::enable,
+            typename ctor<"__new__">::type,
+            void
+        >
+    >;
+};
+
+
+/* Enables implicit conversions between any `py::Object` subclass and an arbitrary
+type.  This class handles both conversion to and from Python, as well as conversions
+between Python types at the same time.  Specializations of this class MUST implement a
+custom call operator which takes an instance of `From` and returns an instance of `To`
+(both of which can have arbitrary cvref-qualifiers), with the following rules:
+
+1.  If `From` is a C++ type and `To` is a Python type, then `__cast__<From, To>` will
+    enable an implicit constructor on `To` that accepts a `From` object with the
+    given qualifiers.
+2.  If `From` is a Python type and `To` is a C++ type, then `__cast__<From, To>` will
+    enable an implicit conversion operator on `From` that returns a `To` object with
+    the given qualifiers.
+3.  If both `From` and `To` are Python types, then `__cast__<From, To>` will enable
+    an implicit conversion operator similar to (2), but can interact with the CPython
+    API to ensure dynamic type safety.
+4.  If only `From` is supplied, then the return type must be a `py::Object` subclass
+    and `__cast__<From>` will mark it as being convertible to Python.  In this case,
+    the default behavior is to call the return type's constructor with the given
+    `From` argument, which will apply the correct conversion logic according to the
+    previous rules.  The user does not (and should not) need to implement a custom call
+    operator in this case.
+ */
+template <typename From, typename To = void>
 struct __cast__                                             : Disable {};
+
+
+/* Enables explicit conversions between any `py::Object` subclass and an arbitrary
+type.  This class corresponds to the `static_cast<To>()` operator in C++, which is
+similar to, but more restrictive than the ordinary `__cast__` control struct.
+ */
+/// TODO: this should enable both the explicit constructor on To and the explicit
+/// conversion operator on From, for completeness.
 template <typename From, typename To>
 struct __explicit_cast__                                    : Disable {};
+
+
+/* Customizes the `py::repr()` output for an arbitrary type.  Note that `py::repr()` is
+always enabled by default; specializing this struct merely changes the output.  The
+default specialization delegates to Python by introspecting
+`__getattr__<Self, "__repr__">` if possible, which must return a member function,
+possibly with Python-style argument annotations.  If no such attribute exists, then
+the operator will fall back to either C++ stream insertion via the `<<` operator or
+`std::to_string()` for primitive types.  If none of the above are available, then
+`repr()` will return a string containing the demangled typeid. */
+template <typename Self>
+struct __repr__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<Self, name>::type>::enable;
+        using type = inspect<typename __getattr__<Self, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__repr__">::enable;
+    using type = infer<"__repr__">::type;
+};
+
+
+/* Enables the C++ call operator for any `py::Object` subclass, and assigns a
+corresponding return type.  The default specialization delegates to Python by
+introspecting `__getattr__<Self, "__call__">`, which must return a member function,
+possibly with Python-style argument annotations.  Specializations of this class may
+implement a custom call operator to replace the default behavior. */
 template <typename Self, typename... Args>
-struct __call__                                             : Disable {};
-template <typename Self, StaticStr Name>
-struct __getattr__                                          : Disable {};
-template <typename Self, StaticStr Name, typename Value>
-struct __setattr__                                          : Disable {};
-template <typename Self, StaticStr Name>
-struct __delattr__                                          : Disable {};
+struct __call__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<Args...>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<Self, name>::type>::enable;
+        using type = inspect<typename __getattr__<Self, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__call__">::enable;
+    using type = infer<"__call__">::type;
+};
+
+
+/* Enables the C++ subscript operator for any `py::Object` subclass, and assigns a
+corresponding return type.  The default specialization delegates to Python by
+introspecting `__getattr__<Self, "__getitem__">`, which must return a member function,
+possibly with Python-style argument annotations.  Specializations of this class may
+implement a custom call operator to replace the default behavior. */
 template <typename Self, typename... Key>
-struct __getitem__                                          : Disable {};
+struct __getitem__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<Key...>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<Self, name>::type>::enable;
+        using type = inspect<typename __getattr__<Self, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__getitem__">::enable;
+    using type = infer<"__getitem__">::type;
+};
+
+
+/* Enables the C++ subscript assignment operator for any `py::Object` subclass, which
+must return void.  The default specialization delegates to Python by introspecting
+`__getattr__<Self, "__setitem__">`, which must return a member function, possibly with
+Python-style argument annotations.  Specializations of this class may implement a
+custom call operator to replace the default behavior. */
 template <typename Self, typename Value, typename... Key>
-struct __setitem__                                          : Disable {};
+struct __setitem__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<Value, Key...>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<Self, name>::type>::enable;
+        using type = inspect<typename __getattr__<Self, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__setitem__">::enable;
+    using type = infer<"__setitem__">::type;
+};
+
+
+/* Enables the C++ subscript deletion operator for any `py::Object` subclass, which
+must return void.  The default specialization delegates to Python by introspecting
+`__getattr__<Self, "__delitem__">`, which must return a member function, possibly with
+Python-style argument annotations.  Specializations of this class may implement a
+custom call operator to replace the default behavior. */
 template <typename Self, typename... Key>
-struct __delitem__                                          : Disable {};
+struct __delitem__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<Key...>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<Self, name>::type>::enable;
+        using type = inspect<typename __getattr__<Self, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__delitem__">::enable;
+    using type = infer<"__delitem__">::type;
+};
+
+
+/* Enables the C++ size operator for any `py::Object` subclass, which must return
+`size_t` for consistency with the C++ API.  The default specialization delegates to
+Python by introspecting `__getattr__<Self, "__len__">`, which must return a member
+function, possibly with Python-style argument annotations.  Specializations of this
+class may implement a custom call operator to replace the default behavior. */
 template <typename Self>
-struct __len__                                              : Disable {};
+struct __len__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<Self, name>::type>::enable;
+        using type = inspect<typename __getattr__<Self, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__len__">::enable;
+    using type = infer<"__len__">::type;
+};
+
+
+/* Enables the C++ iteration operators for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<Self, "__iter__">`,
+which must return a member function, possibly with Python-style argument annotations.
+Custom specializations of this struct are expected to implement the iteration protocol
+directly inline, as if they were implementing a C++ `std::views` adaptor, which will
+always be initialized with the `Self` argument and nothing else.  From there, it can
+implement its own nested iterator types, which must be returned from a member `begin()`
+and `end()` method within the `__iter__` specialization itself. */
 template <typename Self>
-struct __iter__                                             : Disable {};
+struct __iter__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<Self, name>::type>::enable;
+        using type = inspect<typename __getattr__<Self, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__iter__">::enable;
+    using type = infer<"__iter__">::type;
+};
+
+
+/* Enables the C++ reverse iteration operators for any `py::Object` subclass.  The
+default specialization delegates to Python by introspecting
+`__getattr__<Self, "__reversed__">`, which must return a member function, possibly with
+Python-style argument annotations.  Custom specializations of this struct are expected
+to implement the iteration protocol directly inline, as if they were implementing a C++
+`std::views` adaptor, which will always be initialized with the `Self` argument and
+nothing else.  From there, it can implement its own nested iterator types, which must
+be returned from a member `begin()` and `end()` method within the `__iter__`
+specialization itself. */
 template <typename Self>
-struct __reversed__                                         : Disable {};
+struct __reversed__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<Self, name>::type>::enable;
+        using type = inspect<typename __getattr__<Self, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__reversed__">::enable;
+    using type = infer<"__reversed__">::type;
+};
+
+
+/* Enables the C++ `.in()` method for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<Self, "__contains__">`,
+which must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior.  */
 template <typename Self, typename Key>
-struct __contains__                                         : Disable {};
+struct __contains__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<Key>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<Self, name>::type>::enable;
+        using type = inspect<typename __getattr__<Self, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__contains__">::enable;
+    using type = infer<"__contains__">::type;
+};
+
+
+/* Enables `std::hash<>` for any `py::Object` subclass, which must return `size_t` for
+consistency with the C++ API.  The default specialization delegates to Python by
+introspecting `__getattr__<Self, "__hash__">`, which must return a member function,
+possibly with Python-style argument annotations.  Specializations of this class may
+implement a custom call operator to replace the default behavior. */
 template <typename Self>
-struct __hash__                                             : Disable {};
+struct __hash__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<Self, name>::type>::enable;
+        using type = inspect<typename __getattr__<Self, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__hash__">::enable;
+    using type = infer<"__hash__">::type;
+};
+
+
+/* Enables `std::abs()` for any `py::Object` subclass.  The default specialization
+delegates to Python by introspecting `__getattr__<Self, "__abs__">`, which must return
+a member function, possibly with Python-style argument annotations.  Specializations of
+this class may implement a custom call operator to replace the default behavior. */
 template <typename Self>
-struct __abs__                                              : Disable {};
+struct __abs__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<Self, name>::type>::enable;
+        using type = inspect<typename __getattr__<Self, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__abs__">::enable;
+    using type = infer<"__abs__">::type;
+};
+
+
+/* Enables the C++ unary `~` operator for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<Self, "__invert__">`,
+which must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
 template <typename Self>
-struct __invert__                                           : Disable {};
+struct __invert__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<Self, name>::type>::enable;
+        using type = inspect<typename __getattr__<Self, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__invert__">::enable;
+    using type = infer<"__invert__">::type;
+};
+
+
+/* Enables the C++ unary `+` operator for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<Self, "__pos__">`,
+which must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
 template <typename Self>
-struct __pos__                                              : Disable {};
+struct __pos__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<Self, name>::type>::enable;
+        using type = inspect<typename __getattr__<Self, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__pos__">::enable;
+    using type = infer<"__pos__">::type;
+};
+
+
+/* Enables the C++ unary `-` operator for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<Self, "__neg__">`,
+which must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
 template <typename Self>
-struct __neg__                                              : Disable {};
+struct __neg__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<Self, name>::type>::enable;
+        using type = inspect<typename __getattr__<Self, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__neg__">::enable;
+    using type = infer<"__neg__">::type;
+};
+
+
+/* Enables the C++ prefix `++` operator for any `py::Object` subclass.  Defaults to
+disabled, since there is no equivalent Python operator.  Specializations of this class
+may implement a custom call operator to implement this operator.
+
+Note that postfix `++` is not supported for Python objects, since it would not respect
+C++ copy semantics. */
 template <typename Self>
 struct __increment__                                        : Disable {};
+
+
+/* Enables the C++ prefix `--` operator for any `py::Object` subclass.  Defaults to
+disabled, since there is no equivalent Python operator.  Specializations of this class
+may implement a custom call operator to implement this operator.
+
+Note that postfix `--` is not supported for Python objects, since it would not respect
+C++ copy semantics. */
 template <typename Self>
 struct __decrement__                                        : Disable {};
-template <typename L, typename R>
-struct __lt__                                               : Disable {};
-template <typename L, typename R>
-struct __le__                                               : Disable {};
-template <typename L, typename R>
-struct __eq__                                               : Disable {};
-template <typename L, typename R>
-struct __ne__                                               : Disable {};
-template <typename L, typename R>
-struct __ge__                                               : Disable {};
-template <typename L, typename R>
-struct __gt__                                               : Disable {};
-template <typename L, typename R>
-struct __add__                                              : Disable {};
-template <typename L, typename R>
-struct __iadd__                                             : Disable {};
-template <typename L, typename R>
-struct __sub__                                              : Disable {};
-template <typename L, typename R>
-struct __isub__                                             : Disable {};
-template <typename L, typename R>
-struct __mul__                                              : Disable {};
-template <typename L, typename R>
-struct __imul__                                             : Disable {};
-template <typename L, typename R>
-struct __truediv__                                          : Disable {};
-template <typename L, typename R>
-struct __itruediv__                                         : Disable {};
-template <typename L, typename R>
-struct __floordiv__                                         : Disable {};
-template <typename L, typename R>
-struct __ifloordiv__                                        : Disable {};
-template <typename L, typename R>
-struct __mod__                                              : Disable {};
-template <typename L, typename R>
-struct __imod__                                             : Disable {};
-template <typename L, typename R>
-struct __pow__                                              : Disable {};
-template <typename L, typename R>
-struct __ipow__                                             : Disable {};
-template <typename L, typename R>
-struct __lshift__                                           : Disable {};
-template <typename L, typename R>
-struct __ilshift__                                          : Disable {};
-template <typename L, typename R>
-struct __rshift__                                           : Disable {};
-template <typename L, typename R>
-struct __irshift__                                          : Disable {};
-template <typename L, typename R>
-struct __and__                                              : Disable {};
-template <typename L, typename R>
-struct __iand__                                             : Disable {};
-template <typename L, typename R>
-struct __or__                                               : Disable {};
-template <typename L, typename R>
-struct __ior__                                              : Disable {};
-template <typename L, typename R>
-struct __xor__                                              : Disable {};
-template <typename L, typename R>
-struct __ixor__                                             : Disable {};
 
 
-// auto x = py::obj<Foo>(args...);
+/* Enables the C++ binary `<` operator for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<L, "__lt__">`, which
+must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
+template <typename L, typename R>
+struct __lt__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__lt__">::enable;
+    using type = infer<"__lt__">::type;
+};
 
-template <typename T> requires (__object__<T>::enable)
-using obj = __object__<T>::type;
+
+/* Enables the C++ binary `<=` operator for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<L, "__le__">`, which
+must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
+template <typename L, typename R>
+struct __le__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__le__">::enable;
+    using type = infer<"__le__">::type;
+};
+
+
+/* Enables the C++ binary `==` operator for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<L, "__eq__">`, which
+must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
+template <typename L, typename R>
+struct __eq__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__eq__">::enable;
+    using type = infer<"__eq__">::type;
+};
+
+
+/* Enables the C++ binary `!=` operator for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<L, "__ne__">`, which
+must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
+template <typename L, typename R>
+struct __ne__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__ne__">::enable;
+    using type = infer<"__ne__">::type;
+};
+
+
+/* Enables the C++ binary `>=` operator for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<L, "__ge__">`, which
+must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
+template <typename L, typename R>
+struct __ge__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__ge__">::enable;
+    using type = infer<"__ge__">::type;
+};
+
+
+/* Enables the C++ binary `>` operator for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<L, "__gt__">`, which
+must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
+template <typename L, typename R>
+struct __gt__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__gt__">::enable;
+    using type = infer<"__gt__">::type;
+};
+
+
+/* Enables the C++ binary `+` operator for any `py::Object` subclass.  the default
+specialization delegates to Python by introspecting either `__getattr__<L, "__add__">`
+or `__getattr__<R, "__radd__">` in that order, both of which must return member
+functions, possibly with Python-style argument annotations.  Specializations of this
+class may implement a custom call operator to replace the default behavior. */
+template <typename L, typename R>
+struct __add__ {
+    template <StaticStr name>
+    struct add {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct add<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    template <StaticStr name>
+    struct radd {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    struct radd<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T>
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<L>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<R, name>::type>::enable;
+        using type = inspect<typename __getattr__<R, name>::type>::type;
+    };
+    static constexpr bool enable = add<"__add__">::enable || radd<"__radd__">::enable;
+    using type = std::conditional_t<
+        add<"__add__">::enable,
+        typename add<"__add__">::type,
+        std::conditional_t<
+            radd<"__radd__">::enable,
+            typename radd<"__radd__">::type,
+            void
+        >
+    >;
+};
+
+
+/* Enables the C++ `+=` operator for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<L, "__iadd__">`, which
+must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
+template <typename L, typename R>
+struct __iadd__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__iadd__">::enable;
+    using type = infer<"__iadd__">::type;
+};
+
+
+/* Enables the C++ binary `-` operator for any `py::Object` subclass.  the default
+specialization delegates to Python by introspecting either `__getattr__<L, "__sub__">`
+or `__getattr__<R, "__rsub__">` in that order, both of which must return member
+functions, possibly with Python-style argument annotations.  Specializations of this
+class may implement a custom call operator to replace the default behavior. */
+template <typename L, typename R>
+struct __sub__ {
+    template <StaticStr name>
+    struct sub {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct sub<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    template <StaticStr name>
+    struct rsub {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    struct rsub<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T>
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<L>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<R, name>::type>::enable;
+        using type = inspect<typename __getattr__<R, name>::type>::type;
+    };
+    static constexpr bool enable = sub<"__sub__">::enable || rsub<"__rsub__">::enable;
+    using type = std::conditional_t<
+        sub<"__sub__">::enable,
+        typename sub<"__sub__">::type,
+        std::conditional_t<
+            rsub<"__rsub__">::enable,
+            typename rsub<"__rsub__">::type,
+            void
+        >
+    >;
+};
+
+
+/* Enables the C++ `-=` operator for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<L, "__isub__">`, which
+must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
+template <typename L, typename R>
+struct __isub__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__isub__">::enable;
+    using type = infer<"__isub__">::type;
+};
+
+
+/* Enables the C++ binary `*` operator for any `py::Object` subclass.  the default
+specialization delegates to Python by introspecting either `__getattr__<L, "__mul__">`
+or `__getattr__<R, "__rmul__">` in that order, both of which must return member
+functions, possibly with Python-style argument annotations.  Specializations of this
+class may implement a custom call operator to replace the default behavior. */
+template <typename L, typename R>
+struct __mul__ {
+    template <StaticStr name>
+    struct mul {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct mul<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    template <StaticStr name>
+    struct rmul {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    struct rmul<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T>
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<L>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<R, name>::type>::enable;
+        using type = inspect<typename __getattr__<R, name>::type>::type;
+    };
+    static constexpr bool enable = mul<"__mul__">::enable || rmul<"__rmul__">::enable;
+    using type = std::conditional_t<
+        mul<"__mul__">::enable,
+        typename mul<"__mul__">::type,
+        std::conditional_t<
+            rmul<"__rmul__">::enable,
+            typename rmul<"__rmul__">::type,
+            void
+        >
+    >;
+};
+
+
+/* Enables the C++ `*=` operator for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<L, "__imul__">`, which
+must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
+template <typename L, typename R>
+struct __imul__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__imul__">::enable;
+    using type = infer<"__imul__">::type;
+};
+
+
+/* Enables the C++ binary `/` operator for any `py::Object` subclass.  the default
+specialization delegates to Python by introspecting either
+`__getattr__<L, "__truediv__">` or `__getattr__<R, "__rtruediv__">` in that order, both
+of which must return member functions, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
+template <typename L, typename R>
+struct __truediv__ {
+    template <StaticStr name>
+    struct truediv {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct truediv<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    template <StaticStr name>
+    struct rtruediv {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    struct rtruediv<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T>
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<L>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<R, name>::type>::enable;
+        using type = inspect<typename __getattr__<R, name>::type>::type;
+    };
+    static constexpr bool enable =
+        truediv<"__truediv__">::enable || rtruediv<"__rtruediv__">::enable;
+    using type = std::conditional_t<
+        truediv<"__truediv__">::enable,
+        typename truediv<"__truediv__">::type,
+        std::conditional_t<
+            rtruediv<"__rtruediv__">::enable,
+            typename rtruediv<"__rtruediv__">::type,
+            void
+        >
+    >;
+};
+
+
+/* Enables the C++ `/=` operator for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<L, "__itruediv__">`,
+which must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
+template <typename L, typename R>
+struct __itruediv__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__itruediv__">::enable;
+    using type = infer<"__itruediv__">::type;
+};
+
+
+/* Implements the Python `//` operator logic in C++ for any `py::Object` subclass,
+which has no corresponding C++ operator.  The default specialization delegates to
+Python by introspecting either `__getattr__<L, "__floordiv__">` or
+`__getattr__<R, "__rfloordiv__">` in that order, both of which must return member
+functions, possibly with Python-style argument annotations.  Specializations of this
+class may implement a custom call operator to replace the default behavior.
+
+This is used internally to implement `py::div()`, `py::mod()`, `py::divmod()`, and
+`py::round()`, which have a wide variety of fully customizable rounding strategies
+based on this operator. */
+template <typename L, typename R>
+struct __floordiv__ {
+    template <StaticStr name>
+    struct floordiv {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct floordiv<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    template <StaticStr name>
+    struct rfloordiv {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    struct rfloordiv<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T>
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<L>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<R, name>::type>::enable;
+        using type = inspect<typename __getattr__<R, name>::type>::type;
+    };
+    static constexpr bool enable =
+        floordiv<"__floordiv__">::enable || rfloordiv<"__rfloordiv__">::enable;
+    using type = std::conditional_t<
+        floordiv<"__floordiv__">::enable,
+        typename floordiv<"__floordiv__">::type,
+        std::conditional_t<
+            rfloordiv<"__rfloordiv__">::enable,
+            typename rfloordiv<"__rfloordiv__">::type,
+            void
+        >
+    >;
+};
+
+
+/* Implements the Python `//=` operator logic in C++ for any `py::Object` subclass,
+which has no corresponding C++ operator.  The default specialization delegates to
+Python by introspecting `__getattr__<L, "__ifloordiv__">`, which must return a member
+function, possibly with Python-style argument annotations.  Specializations of this
+class may implement a custom call operator to replace the default behavior.
+
+This is used internally to implement `py::div()`, `py::mod()`, `py::divmod()`, and
+`py::round()`, which have a wide variety of fully customizable rounding strategies
+based on this operator. */
+template <typename L, typename R>
+struct __ifloordiv__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__ifloordiv__">::enable;
+    using type = infer<"__ifloordiv__">::type;
+};
+
+
+/* Enables the C++ binary `%` operator for any `py::Object` subclass.  the default
+specialization delegates to Python by introspecting either `__getattr__<L, "__mod__">`
+or `__getattr__<R, "__rmod__">` in that order, both of which must return member
+functions, possibly with Python-style argument annotations.  Specializations of this
+class may implement a custom call operator to replace the default behavior. */
+template <typename L, typename R>
+struct __mod__ {
+    template <StaticStr name>
+    struct mod {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct mod<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    template <StaticStr name>
+    struct rmod {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    struct rmod<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T>
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<L>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<R, name>::type>::enable;
+        using type = inspect<typename __getattr__<R, name>::type>::type;
+    };
+    static constexpr bool enable = mod<"__mod__">::enable || rmod<"__rmod__">::enable;
+    using type = std::conditional_t<
+        mod<"__mod__">::enable,
+        typename mod<"__mod__">::type,
+        std::conditional_t<
+            rmod<"__rmod__">::enable,
+            typename rmod<"__rmod__">::type,
+            void
+        >
+    >;
+};
+
+
+/* Enables the C++ `%=` operator for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<L, "__imod__">`, which
+must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
+template <typename L, typename R>
+struct __imod__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__imod__">::enable;
+    using type = infer<"__imod__">::type;
+};
+
+
+/* Implements the Python `pow()` operator logic in C++ for any `py::Object` subclass,
+which has no corresponding C++ operator.  The default specialization delegates to
+Python by introspecting either `__getattr__<L, "__pow__">` or
+`__getattr__<R, "__rpow__">` in that order, both of which must return member functions,
+possibly with Python-style argument annotations.  Specializations of this class may
+implement a custom call operator to replace the default behavior.
+
+This is used internally to implement `py::pow()`. */
+template <typename L, typename R>
+struct __pow__ {
+    template <StaticStr name>
+    struct pow {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct pow<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    static constexpr bool enable = pow<"__pow__">::enable || pow<"__rpow__">::enable;
+    using type = std::conditional_t<
+        pow<"__pow__">::enable,
+        typename pow<"__pow__">::type,
+        std::conditional_t<
+            pow<"__rpow__">::enable,
+            typename pow<"__rpow__">::type,
+            void
+        >
+    >;
+};
+
+
+/* Implements the Python `**=` operator logic in C++ for any `py::Object` subclass,
+which has no corresponding C++ operator.  The default specialization delegates to
+Python by introspecting `__getattr__<L, "__ipow__">`, which must return a member
+function, possibly with Python-style argument annotations.  Specializations of this
+class may implement a custom call operator to replace the default behavior.
+
+This is used internally to implement `py::pow()`. */
+template <typename L, typename R>
+struct __ipow__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__ipow__">::enable;
+    using type = infer<"__ipow__">::type;
+};
+
+
+/* Enables the C++ binary `<<` operator for any `py::Object` subclass.  the default
+specialization delegates to Python by introspecting either `__getattr__<L, "__lshift__">`
+or `__getattr__<R, "__rlshift__">` in that order, both of which must return member
+functions, possibly with Python-style argument annotations.  Specializations of this
+class may implement a custom call operator to replace the default behavior. */
+template <typename L, typename R>
+struct __lshift__ {
+    template <StaticStr name>
+    struct lshift {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct lshift<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    template <StaticStr name>
+    struct rlshift {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    struct rlshift<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T>
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<L>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<R, name>::type>::enable;
+        using type = inspect<typename __getattr__<R, name>::type>::type;
+    };
+    static constexpr bool enable =
+        lshift<"__lshift__">::enable || rlshift<"__rlshift__">::enable;
+    using type = std::conditional_t<
+        lshift<"__lshift__">::enable,
+        typename lshift<"__lshift__">::type,
+        std::conditional_t<
+            rlshift<"__rlshift__">::enable,
+            typename rlshift<"__rlshift__">::type,
+            void
+        >
+    >;
+};
+
+
+/* Enables the C++ `<<=` operator for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<L, "__ilshift__">`,
+which must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
+template <typename L, typename R>
+struct __ilshift__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__ilshift__">::enable;
+    using type = infer<"__ilshift__">::type;
+};
+
+
+/* Enables the C++ binary `>>` operator for any `py::Object` subclass.  the default
+specialization delegates to Python by introspecting either `__getattr__<L, "__rshift__">`
+or `__getattr__<R, "__rrshift__">` in that order, both of which must return member
+functions, possibly with Python-style argument annotations.  Specializations of this
+class may implement a custom call operator to replace the default behavior. */
+template <typename L, typename R>
+struct __rshift__ {
+    template <StaticStr name>
+    struct rshift {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct rshift<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    template <StaticStr name>
+    struct rrshift {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    struct rrshift<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T>
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<L>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<R, name>::type>::enable;
+        using type = inspect<typename __getattr__<R, name>::type>::type;
+    };
+    static constexpr bool enable =
+        rshift<"__rshift__">::enable || rrshift<"__rrshift__">::enable;
+    using type = std::conditional_t<
+        rshift<"__rshift__">::enable,
+        typename rshift<"__rshift__">::type,
+        std::conditional_t<
+            rrshift<"__rrshift__">::enable,
+            typename rrshift<"__rrshift__">::type,
+            void
+        >
+    >;
+};
+
+
+/* Enables the C++ `>>=` operator for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<L, "__irshift__">`,
+which must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
+template <typename L, typename R>
+struct __irshift__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__irshift__">::enable;
+    using type = infer<"__irshift__">::type;
+};
+
+
+/* Enables the C++ binary `&` operator for any `py::Object` subclass.  the default
+specialization delegates to Python by introspecting either `__getattr__<L, "__and__">`
+or `__getattr__<R, "__rand__">` in that order, both of which must return member
+functions, possibly with Python-style argument annotations.  Specializations of this
+class may implement a custom call operator to replace the default behavior. */
+template <typename L, typename R>
+struct __and__ {
+    template <StaticStr name>
+    struct _and {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct _and<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    template <StaticStr name>
+    struct rand {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    struct rand<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T>
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<L>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<R, name>::type>::enable;
+        using type = inspect<typename __getattr__<R, name>::type>::type;
+    };
+    static constexpr bool enable = _and<"__and__">::enable || rand<"__rand__">::enable;
+    using type = std::conditional_t<
+        _and<"__and__">::enable,
+        typename _and<"__and__">::type,
+        std::conditional_t<
+            rand<"__rand__">::enable,
+            typename rand<"__rand__">::type,
+            void
+        >
+    >;
+};
+
+
+/* Enables the C++ `&=` operator for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<L, "__iand__">`, which
+must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
+template <typename L, typename R>
+struct __iand__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__iand__">::enable;
+    using type = infer<"__iand__">::type;
+};
+
+
+/* Enables the C++ binary `|` operator for any `py::Object` subclass.  the default
+specialization delegates to Python by introspecting either `__getattr__<L, "__or__">`
+or `__getattr__<R, "__ror__">` in that order, both of which must return member
+functions, possibly with Python-style argument annotations.  Specializations of this
+class may implement a custom call operator to replace the default behavior. */
+template <typename L, typename R>
+struct __or__ {
+    template <StaticStr name>
+    struct _or {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct _or<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    template <StaticStr name>
+    struct ror {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    struct ror<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T>
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<L>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<R, name>::type>::enable;
+        using type = inspect<typename __getattr__<R, name>::type>::type;
+    };
+    static constexpr bool enable = _or<"__or__">::enable || ror<"__ror__">::enable;
+    using type = std::conditional_t<
+        _or<"__or__">::enable,
+        typename _or<"__or__">::type,
+        std::conditional_t<
+            ror<"__ror__">::enable,
+            typename ror<"__ror__">::type,
+            void
+        >
+    >;
+};
+
+
+/* Enables the C++ `|=` operator for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<L, "__ior__">`, which
+must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
+template <typename L, typename R>
+struct __ior__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__ior__">::enable;
+    using type = infer<"__ior__">::type;
+};
+
+
+/* Enables the C++ binary `^` operator for any `py::Object` subclass.  the default
+specialization delegates to Python by introspecting either `__getattr__<L, "__xor__">`
+or `__getattr__<R, "__rxor__">` in that order, both of which must return member
+functions, possibly with Python-style argument annotations.  Specializations of this
+class may implement a custom call operator to replace the default behavior. */
+template <typename L, typename R>
+struct __xor__ {
+    template <StaticStr name>
+    struct _xor {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct _xor<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    template <StaticStr name>
+    struct rxor {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    struct rxor<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T>
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<L>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<R, name>::type>::enable;
+        using type = inspect<typename __getattr__<R, name>::type>::type;
+    };
+    static constexpr bool enable = _xor<"__xor__">::enable || rxor<"__rxor__">::enable;
+    using type = std::conditional_t<
+        _xor<"__xor__">::enable,
+        typename _xor<"__xor__">::type,
+        std::conditional_t<
+            rxor<"__rxor__">::enable,
+            typename rxor<"__rxor__">::type,
+            void
+        >
+    >;
+};
+
+
+/* Enables the C++ `^=` operator for any `py::Object` subclass.  The default
+specialization delegates to Python by introspecting `__getattr__<L, "__ixor__">`, which
+must return a member function, possibly with Python-style argument annotations.
+Specializations of this class may implement a custom call operator to replace the
+default behavior. */
+template <typename L, typename R>
+struct __ixor__ {
+    template <StaticStr name>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    struct infer<name> {
+        template <typename T>
+        struct inspect {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <std::derived_from<impl::FunctionTag> T> 
+        struct inspect<T> {
+            static constexpr bool enable = T::has_self && T::template bind<R>;
+            using type = T::Return;
+        };
+        static constexpr bool enable =
+            inspect<typename __getattr__<L, name>::type>::enable;
+        using type = inspect<typename __getattr__<L, name>::type>::type;
+    };
+    static constexpr bool enable = infer<"__ixor__">::enable;
+    using type = infer<"__ixor__">::type;
+};
+
+
+/* Allows anonymous access to a Python wrapper for a given C++ type, by consulting the
+unary `__cast__` control structure. */
+template <typename T> requires (__cast__<T>::enable)
+using obj = __cast__<T>::type;
 
 
 /* A Python interface mixin which can be used to reflect multiple inheritance within
@@ -1291,60 +3141,60 @@ namespace impl {
 
     template <typename T>
     concept type_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, TypeTag>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, TypeTag>;
 
     template <typename T>
     concept none_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, NoneType>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, NoneType>;
 
     template <typename T>
     concept notimplemented_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, NotImplementedType>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, NotImplementedType>;
 
     template <typename T>
     concept ellipsis_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, EllipsisType>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, EllipsisType>;
 
     template <typename T>
     concept slice_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Slice>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, Slice>;
 
     template <typename T>
     concept module_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, ModuleTag>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, ModuleTag>;
 
     template <typename T>
     concept bool_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Bool>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, Bool>;
 
     template <typename T>
     concept int_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Int>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, Int>;
 
     template <typename T>
     concept float_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Float>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, Float>;
 
     template <typename T>
     concept str_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Str>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, Str>;
 
     template <typename T>
     concept bytes_like = (
         string_literal<T> ||
         std::same_as<std::decay_t<T>, void*> || (
-            __object__<std::remove_cvref_t<T>>::enable &&
-            std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Bytes>
+            __cast__<std::remove_cvref_t<T>>::enable &&
+            std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, Bytes>
         )
     );
 
@@ -1352,8 +3202,8 @@ namespace impl {
     concept bytearray_like = (
         string_literal<T> ||
         std::same_as<std::decay_t<T>, void*> || (
-            __object__<std::remove_cvref_t<T>>::enable &&
-            std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, ByteArray>
+            __cast__<std::remove_cvref_t<T>>::enable &&
+            std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, ByteArray>
         )
     );
 
@@ -1362,66 +3212,66 @@ namespace impl {
 
     template <typename T>
     concept timedelta_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Timedelta>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, Timedelta>;
 
     template <typename T>
     concept timezone_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Timezone>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, Timezone>;
 
     template <typename T>
     concept date_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Date>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, Date>;
 
     template <typename T>
     concept time_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Time>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, Time>;
 
     template <typename T>
     concept datetime_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Datetime>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, Datetime>;
 
     template <typename T>
     concept range_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Range>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, Range>;
 
     template <typename T>
     concept tuple_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, TupleTag>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, TupleTag>;
 
     template <typename T>
     concept list_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, ListTag>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, ListTag>;
 
     template <typename T>
     concept set_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, SetTag>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, SetTag>;
 
     template <typename T>
     concept frozenset_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, FrozenSetTag>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, FrozenSetTag>;
 
     template <typename T>
     concept anyset_like = set_like<T> || frozenset_like<T>;
 
     template <typename T>
     concept dict_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, DictTag>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, DictTag>;
 
     template <typename T>
     concept mappingproxy_like =
-        __object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, MappingProxyTag>;
+        __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, MappingProxyTag>;
 
     template <typename T>
     concept anydict_like = dict_like<T> || mappingproxy_like<T>;

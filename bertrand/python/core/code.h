@@ -208,6 +208,11 @@ struct Code : Object, Interface<Code> {
     Code(PyObject* p, borrowed_t t) : Object(p, t) {}
     Code(PyObject* p, stolen_t t) : Object(p, t) {}
 
+    template <typename T = Code> requires (__initializer__<T>::enable)
+    Code(std::initializer_list<typename __initializer__<T>::type> init) : Object(
+        __initializer__<T>{}(init)
+    ) {}
+
     template <typename... Args> requires (implicit_ctor<Code>::template enable<Args...>)
     Code(Args&&... args) : Object(
         implicit_ctor<Code>{},
@@ -283,7 +288,7 @@ struct __issubclass__<T, Base>                              : Returns<bool> {
 
 /* Implicitly convert a source string into a compiled code object. */
 template <std::convertible_to<std::string> Source>
-struct __init__<Code, Source>                               : Returns<Code> {
+struct __cast__<Source, Code>                               : Returns<Code> {
     static auto operator()(const std::string& path);
 };
 
@@ -444,6 +449,11 @@ struct Frame : Object, Interface<Frame> {
     Frame(PyObject* p, borrowed_t t) : Object(p, t) {}
     Frame(PyObject* p, stolen_t t) : Object(p, t) {}
 
+    template <typename T = Frame> requires (__initializer__<T>::enable)
+    Frame(std::initializer_list<typename __initializer__<T>::type> init) : Object(
+        __initializer__<T>{}(init)
+    ) {}
+
     template <typename... Args> requires (implicit_ctor<Frame>::template enable<Args...>)
     Frame(Args&&... args) : Object(
         implicit_ctor<Frame>{},
@@ -488,10 +498,6 @@ struct Interface<Type<Frame>> {
 };
 
 
-template <impl::is<cpptrace::stacktrace_frame> F>
-struct __object__<F>                                        : Returns<Frame> {};
-
-
 template <typename T, impl::is<Frame> Base>
 struct __isinstance__<T, Base>                              : Returns<bool> {
     static constexpr bool operator()(T&& obj) {
@@ -514,15 +520,29 @@ struct __issubclass__<T, Base>                              : Returns<bool> {
 if one exists.  Note that this frame is guaranteed to have a valid Python bytecode
 object, unlike the C++ frames of a Traceback object. */
 template <>
-struct __init__<Frame> : Returns<Frame> {
+struct __init__<Frame>                                      : Returns<Frame> {
     static auto operator()();
 };
+
+
+/* Providing an explicit integer will skip that number of frames from either the least
+recent Python frame (if positive or zero) or the most recent (if negative).  Like the
+default constructor, this always retrieves a frame with a valid Python bytecode object,
+unlike the C++ frames of a Traceback object. */
+template <std::convertible_to<int> T>
+struct __init__<Frame, T>                                   : Returns<Frame> {
+    static Frame operator()(int skip);
+};
+
+
+template <impl::is<cpptrace::stacktrace_frame> T>
+struct __cast__<T>                                          : Returns<Frame> {};
 
 
 /* Converting a `cpptrace::stacktrace_frame` into a Python frame object will synthesize
 an interpreter frame with an empty bytecode object. */
 template <impl::is<cpptrace::stacktrace_frame> T>
-struct __init__<Frame, T>                                   : Returns<Frame> {
+struct __cast__<T, Frame>                                   : Returns<Frame> {
     static auto operator()(const cpptrace::stacktrace_frame& frame) {
         PyObject* globals = PyDict_New();
         if (globals == nullptr) {
@@ -567,16 +587,6 @@ struct __init__<Frame, T>                                   : Returns<Frame> {
         result->f_lineno = line;
         return reinterpret_steal<Frame>(reinterpret_cast<PyObject*>(result));
     }
-};
-
-
-/* Providing an explicit integer will skip that number of frames from either the least
-recent Python frame (if positive or zero) or the most recent (if negative).  Like the
-default constructor, this always retrieves a frame with a valid Python bytecode object,
-unlike the C++ frames of a Traceback object. */
-template <std::convertible_to<int> T>
-struct __explicit_init__<Frame, T>                          : Returns<Frame> {
-    static Frame operator()(int skip);
 };
 
 

@@ -30,16 +30,16 @@ template <std::derived_from<Object> T>
 
 /* Convert an arbitrary C++ value to an equivalent Python object if it isn't one
 already. */
-template <typename T> requires (__object__<std::remove_cvref_t<T>>::enable)
+template <typename T> requires (__cast__<std::remove_cvref_t<T>>::enable)
 [[nodiscard]] decltype(auto) as_object(T&& value) {
-    using AsObj = __object__<std::remove_cvref_t<T>>;
+    using AsObj = __cast__<std::remove_cvref_t<T>>;
     if constexpr (impl::has_call_operator<AsObj>) {
         return AsObj{}(std::forward<T>(value));
     } else {
         static_assert(
             !std::same_as<typename AsObj::type, Object>,
             "C++ types cannot be converted to py::Object directly.  Check your "
-            "specialization of __object__ for this type and ensure the Return type "
+            "specialization of __cast__ for this type and ensure the Return type "
             "derives from py::Object, and is not py::Object itself."
         );
         return typename AsObj::type(std::forward<T>(value));
@@ -58,11 +58,11 @@ undefined behavior will occur.  It is mostly intended for internal use in order 
 expose shared state to Python, for instance to model exported global variables. */
 template <typename T>
     requires (
-        __object__<T>::enable &&
-        impl::has_cpp<typename __object__<T>::type> &&
-        impl::is<T, impl::cpp_type<typename __object__<T>::type>>
+        __cast__<T>::enable &&
+        impl::has_cpp<typename __cast__<T>::type> &&
+        impl::is<T, impl::cpp_type<typename __cast__<T>::type>>
     )
-[[nodiscard]] auto wrap(T& obj) -> __object__<T>::type;  // defined in ops.h
+[[nodiscard]] auto wrap(T& obj) -> __cast__<T>::type;  // defined in ops.h
 
 
 /* Wrap a non-owning, immutable reference to a C++ object into a `py::Object` proxy
@@ -76,11 +76,11 @@ undefined behavior will occur.  It is mostly intended for internal use in order 
 expose shared state to Python, for instance to model exported global variables. */
 template <typename T>
     requires (
-        __object__<T>::enable &&
-        impl::has_cpp<typename __object__<T>::type> &&
-        impl::is<T, impl::cpp_type<typename __object__<T>::type>>
+        __cast__<T>::enable &&
+        impl::has_cpp<typename __cast__<T>::type> &&
+        impl::is<T, impl::cpp_type<typename __cast__<T>::type>>
     )
-[[nodiscard]] auto wrap(const T& obj) -> __object__<T>::type;  // defined in ops.h
+[[nodiscard]] auto wrap(const T& obj) -> __cast__<T>::type;  // defined in ops.h
 
 
 /* Retrieve a reference to the internal C++ object that backs a `py::Object` wrapper,
@@ -154,42 +154,68 @@ protected:
 
     template <typename T>
     struct implicit_ctor {
+        template <typename... Fs>
+        struct helper { static constexpr bool enable = false; };
+        template <>
+        struct helper<> {
+            static constexpr bool enable = __init__<T>::enable;
+            template <typename... Args>
+            static auto operator()(Args... args) {
+                return __init__<T>{}(std::forward<Args>(args)...);
+            }
+        };
+        template <typename F>
+        struct helper<F> {
+            static constexpr bool enable =
+                __cast__<F, T>::enable &&
+                std::is_invocable_r_v<T, __cast__<F, T>, F>;
+            template <typename... Args>
+            static auto operator()(Args... args) {
+                return __cast__<F, T>{}(std::forward<Args>(args)...);
+            }
+        };
         template <typename... Args>
-        static constexpr bool enable =
-            __init__<T, Args...>::enable &&
-            std::is_invocable_r_v<T, __init__<T, Args...>, Args...>;
+        static constexpr bool enable = helper<Args...>::enable;
+        template <typename... Args>
+        static auto operator()(Args... args) {
+            return helper<Args...>{}(std::forward<Args>(args)...);
+        }
     };
 
     template <typename T>
     struct explicit_ctor {
         template <typename... Args>
         static constexpr bool enable =
-            !__init__<T, Args...>::enable &&
-            __explicit_init__<T, Args...>::enable &&
-            std::is_invocable_r_v<T, __explicit_init__<T, Args...>, Args...>;
+            !implicit_ctor<T>::template enable<Args...> &&
+            __init__<T, Args...>::enable &&
+            std::is_invocable_r_v<T, __init__<T, Args...>, Args...>;
+        template <typename... Args>
+        static auto operator()(Args... args) {
+            return __init__<T, Args...>{}(std::forward<Args>(args)...);
+        }
     };
 
     template <std::derived_from<Object> T, typename... Args>
-    Object(implicit_ctor<T>, Args&&... args) : m_ptr(release((
+    explicit Object(implicit_ctor<T>, Args&&... args) : m_ptr(release((
         Interpreter::init(),  // comma operator
-        __init__<T, Args...>{}(std::forward<Args>(args)...)
+        implicit_ctor<T>{}(std::forward<Args>(args)...)
     ))) {
         using Return = std::invoke_result_t<__init__<T, Args...>, Args...>;
         static_assert(
             std::same_as<Return, T>,
-            "__init__<T, Args...> must return an instance of T."
+            "constructor must return a new instance of T."
         );
     }
 
     template <std::derived_from<Object> T, typename... Args>
-    Object(explicit_ctor<T>, Args&&... args) : m_ptr(release((
+    explicit Object(explicit_ctor<T>, Args&&... args) : m_ptr(release((
         Interpreter::init(),  // comma operator
-        __explicit_init__<T, Args...>{}(std::forward<Args>(args)...)
+        explicit_ctor<T>{}(std::forward<Args>(args)...)
     ))) {
-        using Return = std::invoke_result_t<__explicit_init__<T, Args...>, Args...>;
+        using Return = std::invoke_result_t<explicit_ctor<T>, Args...>;
         static_assert(
             std::same_as<Return, T>,
-            "__explicit_init__<T, Args...> must return an instance of T."
+            "constructor must return a new instance of T."
         );
     }
 
@@ -469,6 +495,13 @@ public:
     /* reinterpret_steal() constructor.  Steals a reference to a raw Python pointer. */
     Object(PyObject* p, stolen_t) : m_ptr(p) {}
 
+    /* Initializer list constructor.  Implemented via the __initializer__ control
+    struct. */
+    template <typename T = Object> requires (__initializer__<T>::enable)
+    Object(const std::initializer_list<typename __initializer__<T>::type>& init) :
+        Object(__initializer__<T>{}(init))
+    {}
+
     /* Universal implicit constructor.  Implemented via the __init__ control struct. */
     template <typename... Args> requires (implicit_ctor<Object>::enable<Args...>)
     Object(Args&&... args) : Object(
@@ -555,6 +588,7 @@ public:
     struct. */
     template <typename Self, typename T>
         requires (
+            !impl::is<Self, T> &&
             __cast__<Self, T>::enable &&
             std::is_invocable_r_v<T, __cast__<Self, T>, Self>
         )
@@ -700,37 +734,11 @@ struct __init__<Object>                                     : Returns<Object> {
 };
 
 
-/* Implicitly convert any C++ value into a py::Object by invoking as_object(). */
-template <impl::cpp_like T> requires (__object__<T>::enable)
-struct __init__<Object, T>                                  : Returns<Object> {
-    static auto operator()(T&& value) {
-        return reinterpret_steal<Object>(
-            release(as_object(std::forward<T>(value)))
-        );
-    }
-};
-
-
-/* Implicitly convert a lazily-evaluated attribute or item wrapper into a normalized
-Object instance. */
-template <impl::inherits<Object> Self, impl::lazily_evaluated T>
-    requires (std::convertible_to<impl::lazy_type<T>, Self>)
-struct __init__<Self, T>                                    : Returns<Self> {
-    static Self operator()(T&& value) {
-        if constexpr (std::is_lvalue_reference_v<T>) {
-            return reinterpret_borrow<impl::lazy_type<T>>(ptr(value));
-        } else {
-            return reinterpret_steal<impl::lazy_type<T>>(release(value));
-        }
-    }
-};
-
-
 /* Explicitly convert a lazily-evaluated attribute or item wrapper into a normalized
 Object instance. */
 template <impl::inherits<Object> Self, impl::lazily_evaluated T>
     requires (std::constructible_from<Self, impl::lazy_type<T>>)
-struct __explicit_init__<Self, T>                           : Returns<Self> {
+struct __init__<Self, T>                           : Returns<Self> {
     static auto operator()(T&& value) {
         if constexpr (std::is_lvalue_reference_v<T>) {
             return Self(reinterpret_borrow<impl::lazy_type<T>>(ptr(value)));
@@ -745,6 +753,32 @@ struct __explicit_init__<Self, T>                           : Returns<Self> {
 /// `__new__()`/`__init__()` are defined in core.h
 
 
+/* Implicitly convert any C++ value into a py::Object by invoking as_object(). */
+template <impl::cpp_like T> requires (__cast__<T>::enable)
+struct __cast__<T, Object>                                  : Returns<Object> {
+    static auto operator()(T&& value) {
+        return reinterpret_steal<Object>(
+            release(as_object(std::forward<T>(value)))
+        );
+    }
+};
+
+
+/* Implicitly convert a lazily-evaluated attribute or item wrapper into a normalized
+Object instance. */
+template <impl::lazily_evaluated T, impl::inherits<Object> Self>
+    requires (std::convertible_to<impl::lazy_type<T>, Self>)
+struct __cast__<T, Self>                                    : Returns<Self> {
+    static Self operator()(T&& value) {
+        if constexpr (std::is_lvalue_reference_v<T>) {
+            return reinterpret_borrow<impl::lazy_type<T>>(ptr(value));
+        } else {
+            return reinterpret_steal<impl::lazy_type<T>>(release(value));
+        }
+    }
+};
+
+
 /* Implicitly convert a Python object into one of its subclasses by applying a runtime
 `isinstance()` check. */
 template <impl::inherits<Object> From, impl::inherits<From> To>
@@ -755,12 +789,12 @@ struct __cast__<From, To>                                   : Returns<To> {
 
 
 /* Implicitly convert a Python object into any recognized C++ type by checking for an
-equivalent Python type via __object__, implicitly converting to that type, and then
+equivalent Python type via __cast__, implicitly converting to that type, and then
 implicitly converting the result to the C++ type in a 2-step process. */
-template <impl::is<Object> From, impl::cpp_like To> requires (__object__<To>::enable)
+template <impl::is<Object> From, impl::cpp_like To> requires (__cast__<To>::enable)
 struct __cast__<From, To>                                   : Returns<To> {
     static auto operator()(From&& self) {
-        using Intermediate = __object__<To>::type;
+        using Intermediate = __cast__<To>::type;
         return impl::implicit_cast<To>(
             impl::implicit_cast<Intermediate>(std::forward<From>(self))
         );
@@ -769,13 +803,12 @@ struct __cast__<From, To>                                   : Returns<To> {
 
 
 /* Explicitly convert a Python object into any C++ type by checking for an equivalent
-Python type via __object__, explicitly converting to that type, and then explicitly
+Python type via __cast__, explicitly converting to that type, and then explicitly
 converting to the C++ type in a 2-step process. */
-template <impl::inherits<Object> From, impl::cpp_like To>
-    requires (__object__<To>::enable)
+template <impl::inherits<Object> From, impl::cpp_like To> requires (__cast__<To>::enable)
 struct __explicit_cast__<From, To>                          : Returns<To> {
     static auto operator()(From&& from) {
-        using Intermediate = __object__<To>::type;
+        using Intermediate = __cast__<To>::type;
         return static_cast<To>(
             static_cast<Intermediate>(std::forward<From>(from))
         );
@@ -786,7 +819,7 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 /* Explicitly convert a Python object into a C++ integer by calling `int(obj)` at the
 Python level. */
 template <impl::inherits<Object> From, impl::cpp_like To>
-    requires (__object__<To>::enable && std::integral<To>)
+    requires (__cast__<To>::enable && std::integral<To>)
 struct __explicit_cast__<From, To>                          : Returns<To> {
     static To operator()(From&& from);  // defined in ops.h
 };
@@ -795,7 +828,7 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 /* Explicitly convert a Python object into a C++ floating-point number by calling
 `float(obj)` at the Python level. */
 template <impl::inherits<Object> From, impl::cpp_like To>
-    requires (__object__<To>::enable && std::floating_point<To>)
+    requires (__cast__<To>::enable && std::floating_point<To>)
 struct __explicit_cast__<From, To>                          : Returns<To> {
     static To operator()(From&& from);  // defined in ops.h
 };
@@ -961,7 +994,7 @@ struct __lshift__<Stream, Self>                             : Returns<Stream&> {
 
 
 template <impl::inherits<Object> T>
-struct __object__<T>                                     : Returns<T> {
+struct __cast__<T>                                          : Returns<T> {
     static T operator()(T value) { return std::forward<T>(value); }
 };
 

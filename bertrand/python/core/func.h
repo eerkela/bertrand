@@ -3443,7 +3443,7 @@ namespace impl {
                 const Params<Container>& key,
                 size_t& idx
             ) {
-                using T = __object__<std::remove_cvref_t<typename ArgTraits<at<I>>::type>>;
+                using T = __cast__<std::remove_cvref_t<typename ArgTraits<at<I>>::type>>;
 
                 constexpr auto description = [](const Param& param) {
                     if (param.kwonly()) {
@@ -9229,6 +9229,11 @@ public:
     Function(PyObject* p, borrowed_t t) : Object(p, t) {}
     Function(PyObject* p, stolen_t t) : Object(p, t) {}
 
+    template <typename T = Function> requires (__initializer__<T>::enable)
+    Function(const std::initializer_list<typename __initializer__<T>::type>& init) :
+        Object(__initializer__<T>{}(init))
+    {}
+
     template <typename... A> requires (implicit_ctor<Function>::template enable<A...>)
     Function(A&&... args) : Object(
         implicit_ctor<Function>{},
@@ -9482,7 +9487,7 @@ struct TODO2 {
 
     template <size_t I, typename Container>
     static bool _matches(const Params<Container>& key) {
-        using T = __object__<std::remove_cvref_t<typename ArgTraits<at<I>>::type>>::type;
+        using T = __cast__<std::remove_cvref_t<typename ArgTraits<at<I>>::type>>::type;
         if (I < key.size()) {
             const Param& param = key[I];
             if constexpr (ArgTraits<at<I>>::kwonly()) {
@@ -9524,7 +9529,7 @@ struct TODO2 {
 
     template <size_t I, typename Container>
     static void _assert_matches(const Params<Container>& key) {
-        using T = __object__<std::remove_cvref_t<typename ArgTraits<at<I>>::type>>::type;
+        using T = __cast__<std::remove_cvref_t<typename ArgTraits<at<I>>::type>>::type;
 
         constexpr auto description = [](const Param& param) {
             if (param.kwonly()) {
@@ -9872,7 +9877,7 @@ struct TODO2 {
 
     template <size_t I, typename Container>
     static bool _satisfies(const Params<Container>& key, size_t& idx) {
-        using T = __object__<std::remove_cvref_t<typename ArgTraits<at<I>>::type>>::type;
+        using T = __cast__<std::remove_cvref_t<typename ArgTraits<at<I>>::type>>::type;
 
         /// NOTE: if the original argument in the enclosing signature is required,
         /// then the new argument cannot be optional.  Otherwise, it can be either
@@ -9982,7 +9987,7 @@ struct TODO2 {
 
     template <size_t I, typename Container>
     static void _assert_satisfies(const Params<Container>& key, size_t& idx) {
-        using T = __object__<std::remove_cvref_t<typename ArgTraits<at<I>>::type>>::type;
+        using T = __cast__<std::remove_cvref_t<typename ArgTraits<at<I>>::type>>::type;
 
         constexpr auto description = [](const Param& param) {
             if (param.kwonly()) {
@@ -10471,15 +10476,15 @@ namespace impl {
 
 #define NON_MEMBER_FUNC(IN, OUT) \
     template <typename R, typename... A> \
-    struct __object__<IN> : Returns<Function<OUT>> {};
+    struct __cast__<IN> : Returns<Function<OUT>> {};
 
 #define MEMBER_FUNC(IN, OUT) \
     template <typename R, typename C, typename... A> \
-    struct __object__<IN> : Returns<Function<OUT>> {};
+    struct __cast__<IN> : Returns<Function<OUT>> {};
 
 #define STD_MEM_FN(IN, OUT) \
     template <typename R, typename C, typename... A> \
-    struct __object__<impl::std_mem_fn_type<IN>> : Returns<Function<OUT>> {};
+    struct __cast__<impl::std_mem_fn_type<IN>> : Returns<Function<OUT>> {};
 
 
 NON_MEMBER_FUNC(R(A...), R(*)(A...))

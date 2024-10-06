@@ -79,6 +79,11 @@ struct Traceback : Object, Interface<Traceback> {
     Traceback(PyObject* p, borrowed_t t) : Object(p, t) {}
     Traceback(PyObject* p, stolen_t t) : Object(p, t) {}
 
+    template <typename T = Traceback> requires (__initializer__<T>::enable)
+    [[clang::noinline]] Traceback(
+        std::initializer_list<typename __initializer__<T>::type> init
+    ) : Object(__initializer__<T>{}(init)) {}
+
     template <typename... Args> requires (implicit_ctor<Traceback>::template enable<Args...>)
     [[clang::noinline]] Traceback(Args&&... args) : Object(
         implicit_ctor<Traceback>{},
@@ -103,13 +108,13 @@ struct Interface<Type<Traceback>> {
 
 
 template <impl::is<cpptrace::stacktrace> T>
-struct __object__<T>                                        : Returns<Traceback> {};
+struct __cast__<T>                                          : Returns<Traceback> {};
 
 
 /* Converting a `cpptrace::stacktrace_frame` into a Python frame object will synthesize
 an interpreter frame with an empty bytecode object. */
 template <impl::is<cpptrace::stacktrace> T>
-struct __init__<Traceback, T>                               : Returns<Traceback> {
+struct __cast__<T, Traceback>                               : Returns<Traceback> {
     static auto operator()(const cpptrace::stacktrace& trace) {
         // Traceback objects are stored in a singly-linked list, with the most recent
         // frame at the end of the list and the least frame at the beginning.  As a
@@ -162,7 +167,7 @@ recent frame (if positive or zero) or the most recent (if negative).  Positive i
 will produce a traceback with at most the given length, and negative integers will
 reduce the length by at most the given value. */
 template <std::convertible_to<int> T>
-struct __explicit_init__<Traceback, T>                      : Returns<Traceback> {
+struct __init__<Traceback, T>                      : Returns<Traceback> {
     static auto operator()(int skip) {
         // if skip is zero, then the result will be empty by definition
         if (skip == 0) {
@@ -453,6 +458,11 @@ public:
     Exception(PyObject* p, borrowed_t t) : Object(p, t) {}
     Exception(PyObject* p, stolen_t t) : Object(p, t) {}
 
+    template <typename T = Exception> requires (__initializer__<T>::enable)
+    [[clang::noinline]] Exception(
+        const std::initializer_list<typename __initializer__<T>::type>& init
+    ) : Object(__initializer__<T>{}(init)) {}
+
     template <typename... Args> requires (implicit_ctor<Exception>::template enable<Args...>)
     [[clang::noinline]] Exception(Args&&... args) : Object(
         implicit_ctor<Exception>{},
@@ -539,7 +549,7 @@ struct Interface<Type<Exception>> {
 
 
 template <std::derived_from<Exception> Exc, std::convertible_to<std::string> Msg>
-struct __explicit_init__<Exc, Msg>                          : Returns<Exc> {
+struct __init__<Exc, Msg>                                   : Returns<Exc> {
     [[clang::noinline]] static auto operator()(const std::string& msg) {
         PyObject* result;
         if constexpr (std::is_invocable_v<impl::builtin_exception_map<Exc>>) {
@@ -637,6 +647,11 @@ inline void Interface<Exception>::to_python() {
                                                                                         \
         CLS(PyObject* p, borrowed_t t) : Exception(p, t) {}                             \
         CLS(PyObject* p, stolen_t t) : Exception(p, t) {}                               \
+                                                                                        \
+        template <typename T = CLS> requires (__initializer__<T>::enable)               \
+        [[clang::noinline]] CLS(                                                        \
+            const std::initializer_list<typename __initializer__<T>::type>& init        \
+        ) : Exception(__initializer__<T>{}(init)) {}                                    \
                                                                                         \
         template <typename... Args>                                                     \
             requires (implicit_ctor<CLS>::template enable<Args...>)                     \
@@ -744,6 +759,11 @@ struct UnicodeDecodeError : Exception, Interface<UnicodeDecodeError> {
     UnicodeDecodeError(PyObject* p, borrowed_t t) : Exception(p, t) {}
     UnicodeDecodeError(PyObject* p, stolen_t t) : Exception(p, t) {}
 
+    template <typename T = UnicodeDecodeError> requires (__initializer__<T>::enable)
+    [[clang::noinline]] UnicodeDecodeError(
+        const std::initializer_list<typename __initializer__<T>::type>& init
+    ) : Object(__initializer__<T>{}(init)) {}
+
     template <typename... Args>
         requires (implicit_ctor<UnicodeDecodeError>::template enable<Args...>)
     [[clang::noinline]] UnicodeDecodeError(Args&&... args) : Exception(
@@ -824,7 +844,7 @@ struct Interface<Type<UnicodeDecodeError>> : Interface<Type<UnicodeError>> {
 template <>
 struct __init__<UnicodeDecodeError>                         : Disable {};
 template <std::convertible_to<std::string> Msg>
-struct __explicit_init__<UnicodeDecodeError, Msg>           : Disable {};
+struct __init__<UnicodeDecodeError, Msg>                    : Disable {};
 
 
 template <
@@ -834,7 +854,7 @@ template <
     std::convertible_to<Py_ssize_t> End,
     std::convertible_to<std::string> Reason
 >
-struct __explicit_init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> :
+struct __init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> :
     Returns<UnicodeDecodeError>
 {
     [[clang::noinline]] static auto operator()(
@@ -993,6 +1013,11 @@ struct UnicodeEncodeError : Exception, Interface<UnicodeEncodeError> {
     UnicodeEncodeError(PyObject* p, borrowed_t t) : Exception(p, t) {}
     UnicodeEncodeError(PyObject* p, stolen_t t) : Exception(p, t) {}
 
+    template <typename T = UnicodeEncodeError> requires (__initializer__<T>::enable)
+    [[clang::noinline]] UnicodeEncodeError(
+        const std::initializer_list<typename __initializer__<T>::type>& init
+    ) : Object(__initializer__<T>{}(init)) {}
+
     template <typename... Args>
         requires (implicit_ctor<UnicodeEncodeError>::template enable<Args...>)
     [[clang::noinline]] UnicodeEncodeError(Args&&... args) : Exception(
@@ -1073,7 +1098,7 @@ struct Interface<Type<UnicodeEncodeError>> : Interface<Type<UnicodeError>> {
 template <>
 struct __init__<UnicodeEncodeError>                         : Disable {};
 template <std::convertible_to<std::string> Msg>
-struct __explicit_init__<UnicodeEncodeError, Msg>           : Disable {};
+struct __init__<UnicodeEncodeError, Msg>           : Disable {};
 
 
 template <
@@ -1083,7 +1108,7 @@ template <
     std::convertible_to<Py_ssize_t> End,
     std::convertible_to<std::string> Reason
 >
-struct __explicit_init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> :
+struct __init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> :
     Returns<UnicodeEncodeError>
 {
     [[clang::noinline]] static auto operator()(
@@ -1240,6 +1265,11 @@ struct UnicodeTranslateError : Exception, Interface<UnicodeTranslateError> {
     UnicodeTranslateError(PyObject* p, borrowed_t t) : Exception(p, t) {}
     UnicodeTranslateError(PyObject* p, stolen_t t) : Exception(p, t) {}
 
+    template <typename T = UnicodeTranslateError> requires (__initializer__<T>::enable)
+    [[clang::noinline]] UnicodeTranslateError(
+        const std::initializer_list<typename __initializer__<T>::type>& init
+    ) : Object(__initializer__<T>{}(init)) {}
+
     template <typename... Args>
         requires (implicit_ctor<UnicodeTranslateError>::template enable<Args...>)
     [[clang::noinline]] UnicodeTranslateError(Args&&... args) : Exception(
@@ -1316,7 +1346,7 @@ struct Interface<Type<UnicodeTranslateError>> : Interface<Type<UnicodeError>> {
 template <>
 struct __init__<UnicodeTranslateError>                      : Disable {};
 template <std::convertible_to<std::string> Msg>
-struct __explicit_init__<UnicodeTranslateError, Msg>        : Disable {};
+struct __init__<UnicodeTranslateError, Msg>        : Disable {};
 
 
 template <
@@ -1326,7 +1356,7 @@ template <
     std::convertible_to<Py_ssize_t> End,
     std::convertible_to<std::string> Reason
 >
-struct __explicit_init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reason> :
+struct __init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reason> :
     Returns<UnicodeTranslateError>
 {
     [[clang::noinline]] static auto operator()(

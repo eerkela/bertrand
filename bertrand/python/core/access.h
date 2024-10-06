@@ -5,7 +5,6 @@
 #include "object.h"
 #include "except.h"
 #include "ops.h"
-#include <ranges>
 
 
 namespace py {
@@ -784,6 +783,11 @@ struct Iterator<Return, void, void> : Object, Interface<Iterator<Return, void, v
     Iterator(PyObject* p, borrowed_t t) : Object(p, t) {}
     Iterator(PyObject* p, stolen_t t) : Object(p, t) {}
 
+    template <typename T = Iterator> requires (__initializer__<T>::enable)
+    Iterator(const std::initializer_list<typename __initializer__<T>::type>& init) :
+        Object(__initializer__<T>{}(init))
+    {}
+
     template <typename... Args> requires (implicit_ctor<Iterator>::template enable<Args...>)
     Iterator(Args&&... args) : Object(
         implicit_ctor<Iterator>{},
@@ -877,6 +881,11 @@ struct Iterator<Begin, End, void> : Object, Interface<Iterator<Begin, End, void>
     Iterator(PyObject* p, borrowed_t t) : Object(p, t) {}
     Iterator(PyObject* p, stolen_t t) : Object(p, t) {}
 
+    template <typename T = Iterator> requires (__initializer__<T>::enable)
+    Iterator(const std::initializer_list<typename __initializer__<T>::type>& init) :
+        Object(__initializer__<T>{}(init))
+    {}
+
     template <typename... Args> requires (implicit_ctor<Iterator>::template enable<Args...>)
     Iterator(Args&&... args) : Object(
         implicit_ctor<Iterator>{},
@@ -969,6 +978,11 @@ struct Iterator<Begin, End, Container> : Object, Interface<Iterator<Begin, End, 
 
     Iterator(PyObject* p, borrowed_t t) : Object(p, t) {}
     Iterator(PyObject* p, stolen_t t) : Object(p, t) {}
+
+    template <typename T = Iterator> requires (__initializer__<T>::enable)
+    Iterator(const std::initializer_list<typename __initializer__<T>::type>& init) :
+        Object(__initializer__<T>{}(init))
+    {}
 
     template <typename... Args> requires (implicit_ctor<Iterator>::template enable<Args...>)
     Iterator(Args&&... args) : Object(
