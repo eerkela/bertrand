@@ -184,14 +184,34 @@ protected:
 
     template <typename T>
     struct explicit_ctor {
+        template <typename... Fs>
+        struct helper {
+            template <typename... Args>
+            static constexpr bool enable =
+                __init__<T, Args...>::enable &&
+                std::is_invocable_r_v<T, __init__<T, Args...>, Args...>;
+            template <typename... Args>
+            static auto operator()(Args... args) {
+                return __init__<T, Args...>{}(std::forward<Args>(args)...);
+            }
+        };
+        template <typename F>
+            requires (!__init__<T, F>::enable && __explicit_cast__<F, T>::enable)
+        struct helper<F> {
+            static constexpr bool enable =
+                std::is_invocable_r_v<T, __explicit_cast__<F, T>, F>;
+            template <typename... Args>
+            static auto operator()(Args... args) {
+                return __explicit_cast__<F, T>{}(std::forward<Args>(args)...);
+            }
+        };
         template <typename... Args>
         static constexpr bool enable =
             !implicit_ctor<T>::template enable<Args...> &&
-            __init__<T, Args...>::enable &&
-            std::is_invocable_r_v<T, __init__<T, Args...>, Args...>;
+            helper<Args...>::template enable<Args...>;
         template <typename... Args>
         static auto operator()(Args... args) {
-            return __init__<T, Args...>{}(std::forward<Args>(args)...);
+            return helper<Args...>{}(std::forward<Args>(args)...);
         }
     };
 
@@ -484,16 +504,16 @@ public:
     };
 
     /* Copy constructor.  Borrows a reference to an existing object. */
-    Object(const Object& other) : m_ptr(Py_XNewRef(ptr(other))) {}
+    Object(const Object& other) noexcept : m_ptr(Py_XNewRef(ptr(other))) {}
 
     /* Move constructor.  Steals a reference to a temporary object. */
-    Object(Object&& other) : m_ptr(release(other)) {}
+    Object(Object&& other) noexcept : m_ptr(release(other)) {}
 
     /* reinterpret_borrow() constructor.  Borrows a reference to a raw Python pointer. */
-    Object(PyObject* p, borrowed_t) : m_ptr(Py_XNewRef(p)) {}
+    Object(PyObject* p, borrowed_t) noexcept : m_ptr(Py_XNewRef(p)) {}
 
     /* reinterpret_steal() constructor.  Steals a reference to a raw Python pointer. */
-    Object(PyObject* p, stolen_t) : m_ptr(p) {}
+    Object(PyObject* p, stolen_t) noexcept : m_ptr(p) {}
 
     /* Initializer list constructor.  Implemented via the __initializer__ control
     struct. */
@@ -519,13 +539,13 @@ public:
 
     /* Destructor.  Allows any object to be stored with static duration. */
     ~Object() noexcept {
-        if (Py_IsInitialized()) {
-            Py_XDECREF(m_ptr);
+        if (m_ptr && Py_IsInitialized()) {
+            Py_DECREF(m_ptr);
         }
     }
 
     /* Copy assignment operator. */
-    Object& operator=(const Object& other) {
+    Object& operator=(const Object& other) noexcept {
         if (this != &other) {
             PyObject* temp = m_ptr;
             m_ptr = Py_XNewRef(ptr(other));
@@ -535,7 +555,7 @@ public:
     }
 
     /* Move assignment operator. */
-    Object& operator=(Object&& other) {
+    Object& operator=(Object&& other) noexcept {
         if (this != &other) {
             PyObject* temp = m_ptr;
             m_ptr = ptr(other);

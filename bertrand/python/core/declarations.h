@@ -272,7 +272,7 @@ struct Returns : impl::BertrandTag {
 
 /* Enables the `py::getattr<"name">()` helper for any `py::Object` subclass, and
 assigns a corresponding return type.  Disabled by default unless this class is
-explicitly specialized for a given attribute name.  Specializations of this class can
+explicitly specialized for a given attribute name.  Specializations of this class may
 implement a custom call operator to replace the default behavior, which delegates to a
 normal dotted attribute lookup at the Python level.   */
 template <typename Self, StaticStr Name>
@@ -281,7 +281,7 @@ struct __getattr__                                          : Disable {};
 
 /* Enables the `py::setattr<"name">()` helper for any `py::Object` subclass, which must
 return void.  Disabled by default unless this class is explicitly specialized for a
-given attribute name.  Specializations of this class can implement a custom call
+given attribute name.  Specializations of this class may implement a custom call
 operator to replace the default behavior, which delegates to a normal dotted attribute
 assignment at the Python level. */
 template <typename Self, StaticStr Name, typename Value>
@@ -290,22 +290,77 @@ struct __setattr__                                          : Disable {};
 
 /* Enables the `py::delattr<"name">()` helper for any `py::Object` subclass, which must
 return void.  Disabled by default unless this class is explicitly specialized for a
-given attribute name.  Specializations of this class can implement a custom call
+given attribute name.  Specializations of this class may implement a custom call
 operator to replace the default behavior, which delegates to a normal dotted attribute
 deletion at the Python level. */
 template <typename Self, StaticStr Name>
 struct __delattr__                                          : Disable {};
 
 
-/* Enables the `py::isinstance<...>()` helper for any subclass of `py::Object`, which
+/* Enables the `py::isinstance<...>()` operator for any subclass of `py::Object`, which
 must return a boolean.  Returns false by default unless this class is explicitly
-specialized. */
-/// TODO: maybe I can search for a Type<T>() and then check for an __instancecheck__
-/// method?
+specialized.  Specializations of this class may implement a custom call operator with
+any of the following forms:
+
+1.  __isinstance__<T, Base>{}(T&& obj) -> bool
+2.  __isinstance__<T, Base>{}(T&& obj, Base&& cls) -> bool
+
+The first corresponds to a `py::isinstance<Base>(obj)` call, which is evaluated at
+compile time if possible.  The second matches a `py::isinstance(obj, cls)` call, which
+is evaluated at runtime and only enabled if the equivalent Python call would be
+well-formed (i.e. `cls` is a type-like object or a union of types for which
+`issubclass()` returns a valid result, etc.).  The first form is preferred in almost
+all cases, while the second form is generally only used when dealing with dynamic
+types. */
 template <typename Derived, typename Base>
 struct __isinstance__                                       : Disable {};
+
+
+/* Enables the `py::issubclass<...>()` operator for any subclass of `py::Object`, which
+must return a boolean.  Returns false by default unless this class is explicitly
+specialized.  Specializations of this class may implement a custom call operator with
+any of the following forms:
+
+1.  __issubclass__<T, Base>{}() -> bool
+2.  __issubclass__<T, Base>{}(T&& obj) -> bool
+3.  __issubclass__<T, Base>{}(T&& obj, Base&& cls) -> bool
+
+Which correspond to the following:
+
+1.  `py::issubclass<Derived, Base>()`, which is always evaluated at compile time.
+2.  `py::issubclass<Base>(obj)`, which is evaluated at compile time if possible.
+3.  `py::issubclass(obj, Base)`, which is evaluated at runtime and only enabled if the
+    equivalent Python call would be well-formed (i.e. `obj` is a type-like object or a
+    dynamic object which can be narrowed to a single type, etc.).
+
+The first form is preferred when dealing with pure static types, since it has no
+runtime overhead, and essentially devolves into a `std::derived_from<>` check.  The
+second form is used when the base type is known at compile time, but the derived type
+is not, and is always valid.  If no custom logic is implemented, it will decay into
+the first form using the derived object's C++ type.  The third form is used when both
+types are dynamic, similar to the two-argument form of `py::isinstance()`. */
 template <typename Derived, typename Base>
 struct __issubclass__                                       : Disable {};
+
+
+/* Customizes the way C++ templates are exposed to Python.  The closest Python
+analogue to this is the `__class_getitem__` method of a custom type, which in
+Bertrand's case allows navigation of the C++ template hierarchy from Python, by
+subscripting a generic type.  Such a subscription directly searches a Python dictionary
+held in the type's metaclass, whose keys are populated by this control struct when the
+type is imported.
+
+This control struct is disabled by default, and must be explicitly specialized for any
+type that implements template parameters.  All specializations MUST implement a custom
+call operator that takes no arguments, and produces a key to be inserted into the
+template dictionary.  A key consisting of multiple, comma-separated parts can be
+encoded as a tuple, which will be accessed idiomatically from Python when the
+multidimensional subscript operator is used.  The only restriction on the contents of
+the returned key is that each element must be hashable, enabling the use of non-type
+template parameters, such as integers or strings, which will be modeled identically on
+the Python side. */
+template <typename Self>
+struct __template__                                         : Disable {};
 
 
 /* Enables the C++ initializer list constructor for any `py::Object` subclass, which
@@ -398,9 +453,21 @@ struct __cast__                                             : Disable {};
 /* Enables explicit conversions between any `py::Object` subclass and an arbitrary
 type.  This class corresponds to the `static_cast<To>()` operator in C++, which is
 similar to, but more restrictive than the ordinary `__cast__` control struct.
- */
-/// TODO: this should enable both the explicit constructor on To and the explicit
-/// conversion operator on From, for completeness.
+Specializations of this class MUST implement a custom call operator which takes an
+instance of `From` and returns an instance of `To` (both of which can have arbitrary
+cvref-qualifiers), with the following rules:
+
+1.  If `From` is a C++ type and `To` is a Python type, then `__explicit_cast__<From,
+    To>` will enable an explicit constructor on `To` that accepts a `From` object with
+    the given qualifiers.  Such a constructor will be also called when performing a
+    functional-style cast in C++ (e.g. `To(from)`).
+2.  If `From` is a Python type and `To` is a C++ type, then `__explicit_cast__<From,
+    To>` will enable an explicit conversion operator on `From` that returns a `To`
+    object with the given qualifiers.
+
+Note that normal `__cast__` specializations will always take precedence over explicit
+casts, so this control struct is only used when no implicit conversion would match, and
+the user explicitly specifies the cast. */
 template <typename From, typename To>
 struct __explicit_cast__                                    : Disable {};
 
@@ -610,10 +677,10 @@ struct __len__ {
 specialization delegates to Python by introspecting `__getattr__<Self, "__iter__">`,
 which must return a member function, possibly with Python-style argument annotations.
 Custom specializations of this struct are expected to implement the iteration protocol
-directly inline, as if they were implementing a C++ `std::views` adaptor, which will
-always be initialized with the `Self` argument and nothing else.  From there, it can
-implement its own nested iterator types, which must be returned from a member `begin()`
-and `end()` method within the `__iter__` specialization itself. */
+directly inline, as if they were implementing a C++ iterator class, which will always
+be initialized with the `Self` argument and nothing else.  Begin iterators are
+differentiated from end iterators by an additional `bool` argument, whose value is
+irrelevant, and is only used to tag the proper constructor(s). */
 template <typename Self>
 struct __iter__ {
     template <StaticStr name>

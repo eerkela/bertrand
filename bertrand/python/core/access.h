@@ -712,11 +712,6 @@ template <typename Begin, typename End = void, typename Container = void>
 struct Iterator;
 
 
-/// TODO: when an __iter__ method is registered, it must return a specialization of
-/// py::Iterator, whose __export__ method will be invoked to attach the iterator type
-/// to the class.  That's how binding iterators across languages will work.
-
-
 template <typename Begin, typename End, typename Container>
 struct Interface<Iterator<Begin, End, Container>> : impl::IterTag {
     using begin_t = Begin;
@@ -735,12 +730,6 @@ struct Interface<Type<Iterator<Begin, End, Container>>> {
     static decltype(auto) __iter__(auto&& self) { return self.__iter__(); }
     static decltype(auto) __next__(auto&& self) { return self.__next__(); }
 };
-
-
-/// TODO: all of these should use static types in order to save space.  They can
-/// self-ready the first time they are constructed, and the type can just not be
-/// attached to any particular type or module.  These types don't even need to be
-/// accessible from Python.
 
 
 /* A wrapper around a Python iterator that allows it to be used from C++.
@@ -1130,8 +1119,8 @@ struct __iter__<Iterator<T, void, void>>                    : Returns<T> {
         iter(std::move(self)), curr(reinterpret_steal<T>(nullptr))
     {}
 
-    __iter__(const Iterator<T>& self, int) : __iter__(self) { ++(*this); }
-    __iter__(Iterator<T>&& self, int) : __iter__(std::move(self)) { ++(*this); }
+    __iter__(const Iterator<T>& self, bool) : __iter__(self) { ++(*this); }
+    __iter__(Iterator<T>&& self, bool) : __iter__(std::move(self)) { ++(*this); }
 
     __iter__(const __iter__&) = delete;
     __iter__(__iter__&& other) :

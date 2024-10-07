@@ -6,6 +6,7 @@
 #include "except.h"
 #include "ops.h"
 #include "access.h"
+#include "pytypedefs.h"
 
 
 namespace py {
@@ -5272,623 +5273,6 @@ namespace impl {
     template <typename T>
     concept no_required_after_default = Signature<T>::no_required_after_default;
 
-    /// TODO: Maybe the Python side of the function classes should be defined after
-    /// types, so that everything can use the same `BertrandMeta` metaclass with a
-    /// single, unified interface.  Every type would therefore support the same level
-    /// of function overloading/custom behavior as everything else, and checks would
-    /// be really easy to implement.  The intervening logic, however, will not be easy.
-    /// -> That might ONLY be necessary for the __export__ function.  Otherwise, I
-    /// should define as much as I possibly can here.  I just won't need anything
-    /// involving metaclasses.
-
-    /// TODO: functions might still need a custom metaclass in order to apply the
-    /// correct key resolution, but that can be a subclass of BertrandMeta, or that
-    /// can be somehow inserted using some kind of function pointer, or something.
-
-    /* A special metaclass for all functions, which enables class-level subscription
-    to navigate the C++ template hierarchy in a manner similar to `typing.Callable`. */
-    struct FunctionMeta : PyTypeObject {
-        static constexpr StaticStr __doc__ =
-R"doc(A common metaclass for all `py::Function` types, which allows class-level
-subscription of the C++ template hierarchy.
-
-Notes
------
-This metaclass is not part of the public interface, but is necessary to form
-`typing.Callable`-like annotations for C++ functions, which require special syntax to
-properly encode full type information.)doc";
-
-        static PyTypeObject __type__;
-
-        Object templates = reinterpret_steal<Object>(nullptr);
-
-        /// TODO: this getitem operator must account for the leading return type +
-        /// member class, using `cls::type` or just `type` syntax.
-
-        /* Subscript a function type to navigate its template hierarchy. */
-        static PyObject* __getitem__(FunctionMeta* cls, PyObject* specifier) {
-            if (PyTuple_Check(specifier)) {
-                Py_INCREF(specifier);
-            } else {
-                specifier = PyTuple_Pack(1, specifier);
-                if (specifier == nullptr) {
-                    return nullptr;
-                }
-            }
-            Object key = reinterpret_steal<Object>(specifier);
-            try {
-                Params<std::vector<Param>> params = resolve(
-                    key,
-                    fnv1a_hash_seed,
-                    fnv1a_hash_prime
-                );
-                Object hash = reinterpret_steal<Object>(PyLong_FromSize_t(
-                    params.hash
-                ));
-                if (hash.is(nullptr)) {
-                    return nullptr;
-                }
-                Object value = reinterpret_steal<Object>(PyDict_GetItemWithError(
-                    ptr(cls->templates),
-                    ptr(hash)
-                ));
-                if (value.is(nullptr)) {
-                    if (PyErr_Occurred()) {
-                        return nullptr;
-                    }
-                    std::string message =
-                        "class template has not been instantiated: Function[";
-                    Object repr = reinterpret_steal<Object>(
-                        PyObject_Repr(ptr(key))
-                    );
-                    if (repr.is(nullptr)) {
-                        return nullptr;
-                    }
-                    Py_ssize_t len;
-                    const char* data = PyUnicode_AsUTF8AndSize(
-                        ptr(repr),
-                        &len
-                    );
-                    if (data == nullptr) {
-                        return nullptr;
-                    }
-                    // strip leading/trailing ()
-                    message += std::string(data + 1, len - 2) + "]";
-                    PyErr_SetString(PyExc_TypeError, message.c_str());
-                    return nullptr;
-                }
-                return release(value);
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        /* `len(Function)` gives the total number of template instantiations that can
-        be reached by subscripting this type. */
-        static Py_ssize_t __len__(FunctionMeta* cls) {
-            return cls->templates.is(nullptr) ?
-                0 : PyDict_Size(ptr(cls->templates));
-        }
-
-        /* `iter(Function)` yields template instantiations of this type in the order
-        in which they were registered. */
-        static PyObject* __iter__(FunctionMeta* cls) {
-            if (cls->templates.is(nullptr)) {
-                PyErr_SetNone(PyExc_StopIteration);
-                return nullptr;
-            }
-            Object values = reinterpret_steal<Object>(PyObject_CallMethodNoArgs(
-                ptr(cls->templates),
-                TemplateString<"values">::ptr
-            ));
-            if (values.is(nullptr)) {
-                return nullptr;
-            }
-            return PyObject_GetIter(ptr(values));
-        }
-
-        /// TODO: maybe the `in` operator should always check for convertibility to the
-        /// given type, rather than strict subclass relationships, or template
-        /// instantiations.
-
-        /* `x in Function` returns true if `x` is a type or instance of a type that can
-        be converted to the given `Function` specialization. */
-        static int __contains__(FunctionMeta* cls, PyObject* item) {
-            PyTypeObject* type = PyType_Check(item) ?
-                reinterpret_cast<PyTypeObject*>(item) :
-                Py_TYPE(item);
-    
-            /// TODO: convertibility will be rather complex to implement.  This
-            /// basically constrains the construction of the overall `bertrand`
-            /// module, since this will necessarily require global configuration.
-            /// -> probably involves looking up the type in the global map, and then
-            /// doing an issubclass check on the type object.
-
-            return PyType_IsSubtype(type, reinterpret_cast<PyTypeObject*>(cls));
-        }
-
-        /* repr(Function) demangles the C++ type name in diagnostics. */
-        static PyObject* __repr__(FunctionMeta* cls) {
-            std::string name = "<class '" + demangle(cls->tp_name) + "'>";
-            return PyUnicode_FromStringAndSize(name.c_str(), name.size());
-        }
-
-    private:
-
-        /// TODO: I can insert the seed and prime as metaclass members, so there's no
-        /// need to pass them here, and we can use the same consistent hash.
-
-        /* Parse a Python-style parameter list into a C++ template signature.  An
-        error will be raised if the parameter list is malformed, applying the same
-        restrictions as a standard Python function definition. */
-        static Params<std::vector<Param>> resolve(
-            const Object& specifier,
-            size_t seed,
-            size_t prime
-        ) {
-            int size = PyList_GET_SIZE(ptr(specifier));
-            std::vector<Param> key;
-            key.reserve(size);
-            std::unordered_set<std::string_view> names;
-
-            int posonly_idx = -1;
-            int kwonly_idx = -1;
-            int args_idx = -1;
-            int kwargs_idx = -1;
-            int default_idx = -1;
-            for (int i = 0; i < size; ++i) {
-                PyObject* item = PyList_GET_ITEM(ptr(specifier), i);
-
-                // raw strings represent either a '/' or '*' delimiter, or an argument
-                // name with a dynamic type, following Python syntax
-                if (PyUnicode_Check(item)) {
-                    Py_ssize_t len;
-                    const char* data = PyUnicode_AsUTF8AndSize(
-                        item,
-                        &len
-                    );
-                    if (data == nullptr) {
-                        Exception::from_python();
-                    }
-                    std::string_view name {data, static_cast<size_t>(len)};
-
-                    // positional-only delimiter
-                    if (name == "/") {
-                        if (i == 0) {
-                            throw TypeError(
-                                "at least one argument must precede positional-only "
-                                "argument delimiter '/'"
-                            );
-                        } else if (posonly_idx != -1) {
-                            throw TypeError(
-                                "positional-only argument delimiter '/' appears at "
-                                "multiple indices: " + std::to_string(posonly_idx) +
-                                " and " + std::to_string(i)
-                            );
-                        } else if (args_idx != -1 && i > args_idx) {
-                            throw TypeError(
-                                "positional-only argument delimiter '/' cannot follow "
-                                "variadic positional arguments"
-                            );
-                        } else if (kwonly_idx != -1 && i > kwonly_idx) {
-                            throw TypeError(
-                                "positional-only argument delimiter '/' cannot follow "
-                                "keyword-only argument delimiter '*': " +
-                                repr(specifier)
-                            );
-                        } else if (kwargs_idx != -1 && i > kwargs_idx) {
-                            throw TypeError(
-                                "positional-only argument delimiter '/' cannot follow "
-                                "variadic keyword arguments"
-                            );
-                        }
-                        posonly_idx = i;
-
-                    // keyword-only delimiter
-                    } else if (name == "*") {
-                        if (kwonly_idx != -1) {
-                            throw TypeError(
-                                "keyword-only argument delimiter '*' appears at "
-                                "multiple indices: " + std::to_string(kwonly_idx) +
-                                " and " + std::to_string(i)
-                            );
-                        } else if (kwargs_idx != -1 && i > kwargs_idx) {
-                            throw TypeError(
-                                "keyword-only argument delimiter '*' cannot follow "
-                                "variadic keyword arguments"
-                            );
-                        }
-                        kwonly_idx = i;
-
-                    // named argument
-                    } else {
-                        name = Param::get_name(name);
-
-                        // variadic keyword arguments
-                        if (name.starts_with("**")) {
-                            if (kwargs_idx != -1) {
-                                throw TypeError(
-                                    "variadic keyword arguments appear at multiple "
-                                    "indices: " + std::to_string(kwargs_idx) +
-                                    " and " + std::to_string(i)
-                                );
-                            }
-                            name.remove_prefix(2);
-                            if (names.contains(name)) {
-                                throw TypeError(
-                                    "duplicate argument name: '" + std::string(name) +
-                                    "'"
-                                );
-                            }
-                            kwargs_idx = i;
-                            names.insert(name);
-                            key.push_back(
-                                {
-                                    name,
-                                    item,
-                                    ArgKind::KW | ArgKind::VARIADIC
-                                }
-                            );
-
-                        // variadic positional arguments
-                        } else if (name.starts_with("*")) {
-                            if (args_idx != -1) {
-                                throw TypeError(
-                                    "variadic positional arguments appear at multiple "
-                                    "indices: " + std::to_string(args_idx) +
-                                    " and " + std::to_string(i)
-                                );
-                            } else if (kwonly_idx != -1 && i > kwonly_idx) {
-                                throw TypeError(
-                                    "variadic positional arguments cannot follow "
-                                    "keyword-only argument delimiter '*': " +
-                                    repr(specifier)
-                                );
-                            } else if (kwargs_idx != -1 && i > kwargs_idx) {
-                                throw TypeError(
-                                    "variadic positional arguments cannot follow "
-                                    "variadic keyword arguments"
-                                );
-                            }
-                            name.remove_prefix(1);
-                            if (names.contains(name)) {
-                                throw TypeError(
-                                    "duplicate argument name: '" + std::string(name) +
-                                    "'"
-                                );
-                            }
-                            args_idx = i;
-                            names.insert(name);
-                            key.push_back(
-                                {
-                                    name,
-                                    item,
-                                    ArgKind::POS | ArgKind::VARIADIC
-                                }
-                            );
-
-                        } else if (names.contains(name)) {
-                            throw TypeError(
-                                "duplicate argument name: '" + std::string(name) + "'"
-                            );
-
-                        // keyword-only argument
-                        } else if (i > kwonly_idx) {
-                            if (kwargs_idx != -1 && i > kwargs_idx) {
-                                throw TypeError(
-                                    "keyword-only argument cannot follow variadic "
-                                    "keyword arguments: " + repr(
-                                        reinterpret_borrow<Object>(item)
-                                    )
-                                );
-                            }
-                            names.insert(name);
-                            key.push_back(
-                                {
-                                    name,
-                                    item,
-                                    ArgKind::KW
-                                }
-                            );
-
-                        // positional-or-keyword argument
-                        } else {
-                            /// NOTE: because we're forward iterating over the
-                            /// tuple, we can't distinguish positional-only
-                            /// arguments from positional-or-keyword arguments at
-                            /// this point.  We have to do that in a separate loop,
-                            /// while we're building the hash
-                            if (kwargs_idx != -1 && i > kwargs_idx) {
-                                throw TypeError(
-                                    "positional-or-keyword argument cannot follow "
-                                    "variadic keyword arguments: " + repr(
-                                        reinterpret_borrow<Object>(item)
-                                    )
-                                );
-                            }
-                            if (default_idx != -1 && i > default_idx) {
-                                throw TypeError(
-                                    "required positional-or-keyword argument cannot "
-                                    "follow argument with a default value: " + repr(
-                                        reinterpret_borrow<Object>(item)
-                                    )
-                                );
-                            }
-                            names.insert(name);
-                            key.push_back(
-                                {
-                                    name,
-                                    item,
-                                    ArgKind::POS | ArgKind::KW
-                                }
-                            );
-                        }
-                    }
-
-                // slices are used to annotate arguments with type constraints and/or
-                // default values
-                } else if (PySlice_Check(item)) {
-                    PySliceObject* slice = reinterpret_cast<PySliceObject*>(item);
-
-                    // a string first element signifies a named argument
-                    if (PyUnicode_Check(slice->start)) {
-                        std::string_view name = Param::get_name(slice->start);
-
-                        // variadic keyword arguments
-                        if (name.starts_with("**")) {
-                            if (kwargs_idx != -1) {
-                                throw TypeError(
-                                    "variadic keyword arguments appear at multiple "
-                                    "indices: " + std::to_string(kwargs_idx) +
-                                    " and " + std::to_string(i)
-                                );
-                            } else if (slice->step != Py_None) {
-                                throw TypeError(
-                                    "variadic keyword argument cannot have default "
-                                    "values: " + repr(specifier)
-                                );
-                            }
-                            name.remove_prefix(2);
-                            if (names.contains(name)) {
-                                throw TypeError(
-                                    "duplicate argument name: '" + std::string(name) +
-                                    "'"
-                                );
-                            }
-                            kwargs_idx = i;
-                            names.insert(name);
-                            key.push_back(
-                                {
-                                    name,
-                                    slice->start,
-                                    ArgKind::KW | ArgKind::VARIADIC
-                                }
-                            );
-
-                        // variadic positional arguments
-                        } else if (name.starts_with("*")) {
-                            if (args_idx != -1) {
-                                throw TypeError(
-                                    "variadic positional arguments appear at multiple "
-                                    "indices: " + std::to_string(args_idx) +
-                                    " and " + std::to_string(i)
-                                );
-                            } else if (kwonly_idx != -1 && i > kwonly_idx) {
-                                throw TypeError(
-                                    "variadic positional arguments cannot follow "
-                                    "keyword-only argument delimiter '*': " +
-                                    repr(specifier)
-                                );
-                            } else if (kwargs_idx != -1 && i > kwargs_idx) {
-                                throw TypeError(
-                                    "variadic positional arguments cannot follow "
-                                    "variadic keyword arguments"
-                                );
-                            } else if (slice->step != Py_None) {
-                                throw TypeError(
-                                    "variadic positional argument cannot have default "
-                                    "values: " + repr(specifier)
-                                );
-                            }
-                            name.remove_prefix(1);
-                            if (names.contains(name)) {
-                                throw TypeError(
-                                    "duplicate argument name: '" + std::string(name) +
-                                    "'"
-                                );
-                            }
-                            args_idx = i;
-                            names.insert(name);
-                            key.push_back(
-                                {
-                                    name,
-                                    slice->start,
-                                    ArgKind::POS | ArgKind::VARIADIC
-                                }
-                            );
-
-                        } else if (names.contains(name)) {
-                            throw TypeError(
-                                "duplicate argument name: '" + std::string(name) + "'"
-                            );
-
-                        // keyword-only argument
-                        } else if (i > kwonly_idx) {
-                            if (kwargs_idx != -1 && i > kwargs_idx) {
-                                throw TypeError(
-                                    "keyword-only argument cannot follow variadic "
-                                    "keyword arguments: " + repr(specifier)
-                                );
-                            }
-                            if (slice->step == Py_Ellipsis) {
-                                key.push_back(
-                                    {
-                                        name,
-                                        slice->start,
-                                        ArgKind::KW | ArgKind::OPT
-                                    }
-                                );
-                            } else if (slice->step != Py_None) {
-                                throw TypeError(
-                                    "keyword-only argument with a default value must "
-                                    "have an ellipsis as the third element of the "
-                                    "slice: " + repr(specifier)
-                                );
-                            } else {
-                                key.push_back(
-                                    {
-                                        name,
-                                        slice->start,
-                                        ArgKind::KW
-                                    }
-                                );
-                            }
-                            names.insert(name);
-
-                        // positional-or-keyword argument
-                        } else {
-                            if (kwargs_idx != -1 && i > kwargs_idx) {
-                                throw TypeError(
-                                    "positional-or-keyword argument cannot follow "
-                                    "variadic keyword arguments: " + repr(specifier)
-                                );
-                            } else if (default_idx != -1 && i > default_idx) {
-                                throw TypeError(
-                                    "required positional-or-keyword argument cannot "
-                                    "follow argument with a default value: " + repr(
-                                        reinterpret_borrow<Object>(item)
-                                    )
-                                );
-                            } else if (slice->step == Py_Ellipsis) {
-                                key.push_back(
-                                    {
-                                        name,
-                                        slice->start,
-                                        ArgKind::POS | ArgKind::KW | ArgKind::OPT
-                                    }
-                                );
-                            } else if (slice->step != Py_None) {
-                                throw TypeError(
-                                    "positional-or-keyword argument with a default "
-                                    "value must have an ellipsis as the third element "
-                                    "of the slice: " + repr(specifier)
-                                );
-                            } else {
-                                key.push_back(
-                                    {
-                                        name,
-                                        slice->start,
-                                        ArgKind::POS | ArgKind::KW
-                                    }
-                                );
-
-                            }
-                            names.insert(name);
-                        }
-
-                    // otherwise, the argument must list an ellipsis as the sole second
-                    // item, signifying an anonymous, positional-only, optional argument
-                    } else {
-                        if (i > posonly_idx) {
-                            throw TypeError(
-                                "positional-only argument cannot follow `/` "
-                                "delimiter: " + repr(specifier)
-                            );
-                        } else if (i > kwonly_idx) {
-                            throw TypeError(
-                                "positional-only argument cannot follow '*' "
-                                "delimiter: " + repr(specifier)
-                            );
-                        } else if (i > args_idx) {
-                            throw TypeError(
-                                "positional-only argument cannot follow variadic "
-                                "positional arguments " + repr(specifier)
-                            );
-                        } else if (slice->stop != Py_Ellipsis) {
-                            throw TypeError(
-                                "positional-only argument with a default value must "
-                                "have an ellipsis as the second element of the "
-                                "slice: " + repr(specifier)
-                            );
-                        } else if (slice->step != Py_None) {
-                            throw TypeError(
-                                "positional-only argument with a default value must "
-                                "not have a third element: " + repr(specifier)
-                            );
-                        }
-                        key.push_back(
-                            {
-                                "",
-                                slice->start,
-                                ArgKind::POS | ArgKind::OPT
-                            }
-                        );
-                    }
-
-                // all other objects are passed along as-is and interpreted as
-                // positional-only arguments.  Generally, these will be type objects,
-                // but they can technically be anything that implements `issubclass()`.
-                } else {
-                    if (i > posonly_idx) {
-                        throw TypeError(
-                            "positional-only argument cannot follow `/` delimiter: " +
-                            repr(specifier)
-                        );
-                    } else if (i > kwonly_idx) {
-                        throw TypeError(
-                            "positional-only argument cannot follow '*' delimiter: " +
-                            repr(specifier)
-                        );
-                    } else if (i > args_idx) {
-                        throw TypeError(
-                            "positional-only argument cannot follow variadic "
-                            "positional arguments " + repr(specifier)
-                        );
-                    } else if (i > default_idx) {
-                        throw TypeError(
-                            "parameter without a default value cannot follow a "
-                            "parameter with a default value: " + repr(specifier)
-                        );
-                    }
-                    key.push_back({"", item, ArgKind::POS});
-                }
-            }
-
-            size_t hash = 0;
-            for (int i = 0, end = key.size(); i < end; ++i) {
-                Param& param = key[i];
-                if (i < posonly_idx) {
-                    param.kind = param.kind & ~ArgKind::KW;
-                }
-                hash = hash_combine(hash, param.hash(seed, prime));
-            }
-            return {std::move(key), hash};
-        }
-
-    };
-
-    /// TODO: I need a static metaclass that serves as the template interface for
-    /// all function types, and which implements __class_getitem__ to allow for
-    /// similar class subscription syntax as for Python callables:
-    ///
-    /// Function[Foo::None, bool, "x": int, "/", "y", "*args": float, "*", "z": str: ..., "**kwargs": type]
-    /// 
-    /// This describes a bound method of Foo which returns void and takes a bool and
-    /// an int as positional parameters, the second of which is explicitly named "x"
-    /// (although this is ignored in the final key as a normalization).  It then
-    /// takes a positional-or-keyword argument named "y" with any type, followed by
-    /// an arbitrary number of positional arguments of type float.  Finally, it takes
-    /// a keyword-only argument named "z" with a default value, and then
-    /// an arbitrary number of keyword arguments pointing to type objects.
-
-    /// TODO: one of these signatures is going to have to be generated for each
-    /// function type, and must include at least a return type and parameter list,
-    /// which may be Function[None, []] for a void function with no arguments.
-    /// TODO: there has to also be some complex logic to make sure that type
-    /// identifiers are compatible, possibly requiring an overload of isinstance()/
-    /// issubclass() to ensure the same semantics are followed in both Python and C++.
-
     /* A structural type hint whose `isinstance()`/`issubclass()` operators only return
     true if ALL of the composite functions are present within a type's interface. */
     struct FuncIntersect : PyObject {
@@ -6262,7 +5646,7 @@ properly encode full type information.)doc";
             PyObject* const args[] = {
                 nullptr,
                 self->__wrapped__,
-                reinterpret_cast<PyObject*>(Py_TYPE(obj))
+                type == Py_None ? reinterpret_cast<PyObject*>(Py_TYPE(obj)) : type,
             };
             return PyObject_Vectorcall(
                 self->target,
@@ -6319,9 +5703,9 @@ properly encode full type information.)doc";
         static PyObject* __repr__(ClassMethod* self) {
             try {
                 std::string str =
-                    "classmethod(" + repr(reinterpret_borrow<Object>(
+                    "<classmethod(" + repr(reinterpret_borrow<Object>(
                         self->__wrapped__
-                    )) + ")";
+                    )) + ")>";
                 return PyUnicode_FromStringAndSize(str.c_str(), str.size());
             } catch (...) {
                 Exception::to_python();
@@ -6497,9 +5881,9 @@ mirrors C++ semantics and enables structural typing via `isinstance()` and
         static PyObject* __repr__(StaticMethod* self) noexcept {
             try {
                 std::string str =
-                    "staticmethod(" + repr(reinterpret_borrow<Object>(
+                    "<staticmethod(" + repr(reinterpret_borrow<Object>(
                         self->__wrapped__
-                    )) + ")";
+                    )) + ")>";
                 return PyUnicode_FromStringAndSize(str.c_str(), str.size());
             } catch (...) {
                 Exception::to_python();
@@ -6691,9 +6075,9 @@ mirrors C++ semantics and enables structural typing via `isinstance()` and
         static PyObject* __repr__(Property* self) noexcept {
             try {
                 std::string str =
-                    "property(" + repr(reinterpret_borrow<Object>(
+                    "<property(" + repr(reinterpret_borrow<Object>(
                         reinterpret_cast<PyObject*>(self->fget))
-                    ) + ")";
+                    ) + ")>";
                 return PyUnicode_FromStringAndSize(str.c_str(), str.size());
             } catch (...) {
                 Exception::to_python();
@@ -7624,8 +7008,6 @@ specific C++ function signature.  If no existing template instantiation could
 be found for a given signature, then a new instantiation will be JIT-compiled
 on the fly and cached for future use (TODO).)doc";
 
-        static PyTypeObject __type__;
-
         /// TODO: store the template key on the metaclass, so that it doesn't require
         /// any memory, and can be used to efficiently bind the function to a type
         /// in the descriptor constructors.  That will turn it into a tuple allocation,
@@ -7722,16 +7104,15 @@ on the fly and cached for future use (TODO).)doc";
         /// TODO: __export__ must also ready the descriptor and identifier types with
         /// a static guard.
 
+        /// TODO: functions should use heap types for consistency with the rest of the
+        /// API, as well as to isolate any mutable state introduced by the metaclass.
+
         template <StaticStr ModName>
         static Type<Function> __export__(Module<ModName> bindings);
 
         /* Importing a function type just borrows a reference to the static type
         object corresponding to this signature. */
-        static Type<Function> __import__() {
-            return reinterpret_borrow<Type<Function>>(
-                reinterpret_cast<PyObject*>(&__type__)
-            );
-        }
+        static Type<Function> __import__();
 
         /* Register an overload from Python.  Accepts only a single argument, which
         must be a function or other callable object that can be passed to the
@@ -8280,21 +7661,80 @@ on the fly and cached for future use (TODO).)doc";
             }
         }
 
-        /// TODO: these forward declarations can potentially be avoided if I take the
-        /// function's type and then subscript it using PyObject_GetItem, which keeps
-        /// everything localized as much as possible.  It does require some adjustment
-        /// in the metaclass type so that subscripting an instantiation would forward
-        /// to the parent template interface.  Basically, this will just be a
-        /// condition in the metaclass's subscript operator that checks if this class's
-        /// template instantiations are null, but the template interface is not, and
-        /// forwards to the interface if that is the case.
-
-        /* Implement the descriptor protocol to generate member functions. */
+        /* Implement the descriptor protocol to generate bound member functions. */
         static PyObject* __get__(
             PyFunction* self,
             PyObject* obj,
             PyObject* type
-        ) noexcept;
+        ) noexcept {
+            try {
+                PyObject* cls = reinterpret_cast<PyObject*>(Py_TYPE(self));
+
+                // get the current function's template key and allocate a copy
+                Object unbound_key = reinterpret_steal<Object>(PyObject_GetAttr(
+                    cls,
+                    impl::TemplateString<"__template__">::ptr
+                ));
+                if (unbound_key.is(nullptr)) {
+                    return nullptr;
+                }
+                size_t len = PyTuple_GET_SIZE(ptr(unbound_key));
+                Object bound_key = reinterpret_steal<Object>(
+                    PyTuple_New(len - 1)
+                );
+                if (bound_key.is(nullptr)) {
+                    return nullptr;
+                }
+
+                // the first element encodes the unbound function's return type.  All
+                // we need to do is replace the first index of the slice with the new
+                // type and exclude the first argument from the unbound key
+                PySliceObject* rtype = reinterpret_cast<PySliceObject*>(
+                    PyTuple_GET_ITEM(ptr(unbound_key), 0)
+                );
+                PyObject* slice = PySlice_New(
+                    type == Py_None ?
+                        reinterpret_cast<PyObject*>(Py_TYPE(obj)) : type,
+                    Py_None,
+                    rtype->step
+                );
+                if (slice == nullptr) {
+                    return nullptr;
+                }
+                PyTuple_SET_ITEM(ptr(bound_key), 0, slice);
+                for (size_t i = 2; i < len; ++i) {  // skip return type and first arg
+                    PyTuple_SET_ITEM(
+                        ptr(bound_key),
+                        i - 1,
+                        Py_NewRef(PyTuple_GET_ITEM(ptr(unbound_key), i))
+                    );
+                }
+
+                // once the new key is built, we can index the unbound function type to
+                // get the corresponding Python class for the bound function
+                Object bound_type = reinterpret_steal<Object>(PyObject_GetItem(
+                    cls,
+                    ptr(bound_key)
+                ));
+                if (bound_type.is(nullptr)) {
+                    return nullptr;
+                }
+
+                // finally, we pass both the unbound function and the `self` argument
+                // to the bound type's normal Python constructor and return the result
+                PyObject* args[] = {self, obj};
+                return PyObject_Vectorcall(
+                    ptr(bound_type),
+                    args,
+                    2,
+                    nullptr
+                );
+
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
 
         /* `len(function)` will get the number of overloads that are currently being
         tracked. */
@@ -8912,8 +8352,6 @@ Examples
 TODO
 .)doc";
 
-        static PyTypeObject __type__;
-
         vectorcallfunc call = reinterpret_cast<vectorcallfunc>(__call__);
         PyObject* __wrapped__;
         PyObject* __self__;
@@ -8941,11 +8379,7 @@ TODO
 
         /* Importing a function type just borrows a reference to the static type
         object corresponding to this signature. */
-        static Type<Function> __import__() {
-            return reinterpret_borrow<Type<Function>>(
-                reinterpret_cast<PyObject*>(&__type__)
-            );
-        }
+        static Type<Function> __import__();
 
         static PyObject* __call__(
             PyFunction* self,
@@ -9381,6 +8815,200 @@ template <typename Func, typename... Defaults>
 Function(std::string, std::string, Func, Defaults&&...)
     -> Function<typename impl::Signature<decltype(&Func::operator())>::type>;
 
+
+template <impl::inherits<impl::FunctionTag> F>
+struct __template__<F> {
+    using Func = std::remove_reference_t<F>;
+
+    template <size_t I, size_t PosOnly, size_t KwOnly>
+    static void get(PyObject* tuple, size_t& offset) {
+        using T = Func::template at<I>;
+        Type<typename impl::ArgTraits<T>::type> type;
+
+        /// NOTE: `/` and `*` argument delimiters must be inserted where necessary to
+        /// model positional-only and keyword-only arguments correctly in Python.
+        if constexpr (
+            (I == PosOnly) ||
+            ((I == Func::n - 1) && impl::ArgTraits<T>::posonly())
+        ) {
+            PyObject* str = PyUnicode_FromStringAndSize("/", 1);
+            if (str == nullptr) {
+                Exception::from_python();
+            }
+            PyTuple_SET_ITEM(tuple, I + offset, str);
+            ++offset;
+
+        } else if constexpr (I == KwOnly) {
+            PyObject* str = PyUnicode_FromStringAndSize("*", 1);
+            if (str == nullptr) {
+                Exception::from_python();
+            }
+            PyTuple_SET_ITEM(tuple, I + offset, str);
+            ++offset;
+        }
+
+        if constexpr (impl::ArgTraits<T>::posonly()) {
+            if constexpr (impl::ArgTraits<T>::name.empty()) {
+                if constexpr (impl::ArgTraits<T>::opt()) {
+                    PyObject* slice = PySlice_New(
+                        Type<typename impl::ArgTraits<T>::type>(),
+                        Py_Ellipsis,
+                        Py_None
+                    );
+                    if (slice == nullptr) {
+                        Exception::from_python();
+                    }
+                    PyTuple_SET_ITEM(tuple, I + offset, slice);
+                } else {
+                    PyTuple_SET_ITEM(tuple, I + offset, ptr(type));
+                }
+            } else {
+                Object name = reinterpret_steal<Object>(
+                    PyUnicode_FromStringAndSize(
+                        impl::ArgTraits<T>::name,
+                        impl::ArgTraits<T>::name.size()
+                    )
+                );
+                if (name.is(nullptr)) {
+                    Exception::from_python();
+                }
+                if constexpr (impl::ArgTraits<T>::opt()) {
+                    PyObject* slice = PySlice_New(
+                        ptr(name),
+                        ptr(type),
+                        Py_Ellipsis
+                    );
+                    if (slice == nullptr) {
+                        Exception::from_python();
+                    }
+                    PyTuple_SET_ITEM(tuple, I + offset, slice);
+                } else {
+                    PyObject* slice = PySlice_New(
+                        ptr(name),
+                        ptr(type),
+                        Py_None
+                    );
+                    if (slice == nullptr) {
+                        Exception::from_python();
+                    }
+                    PyTuple_SET_ITEM(tuple, I + offset, slice);
+                }
+            }
+
+        } else if constexpr (impl::ArgTraits<T>::kw()) {
+            Object name = reinterpret_steal<Object>(
+                PyUnicode_FromStringAndSize(
+                    impl::ArgTraits<T>::name,
+                    impl::ArgTraits<T>::name.size()
+                )
+            );
+            if (name.is(nullptr)) {
+                Exception::from_python();
+            }
+            PyObject* slice = PySlice_New(
+                ptr(name),
+                ptr(type),
+                impl::ArgTraits<T>::opt() ? Py_Ellipsis : Py_None
+            );
+            if (slice == nullptr) {
+                Exception::from_python();
+            }
+            PyTuple_SET_ITEM(tuple, I + offset, slice);
+
+        } else if constexpr (impl::ArgTraits<T>::args()) {
+            Object name = reinterpret_steal<Object>(
+                PyUnicode_FromStringAndSize(
+                    "*" + impl::ArgTraits<T>::name,
+                    impl::ArgTraits<T>::name.size() + 1
+                )
+            );
+            if (name.is(nullptr)) {
+                Exception::from_python();
+            }
+            PyObject* slice = PySlice_New(
+                ptr(name),
+                ptr(type),
+                Py_None
+            );
+            if (slice == nullptr) {
+                Exception::from_python();
+            }
+            PyTuple_SET_ITEM(tuple, I + offset, slice);
+
+        } else if constexpr (impl::ArgTraits<T>::kwargs()) {
+            Object name = reinterpret_steal<Object>(
+                PyUnicode_FromStringAndSize(
+                    "**" + impl::ArgTraits<T>::name,
+                    impl::ArgTraits<T>::name.size() + 2
+                )
+            );
+            if (name.is(nullptr)) {
+                Exception::from_python();
+            }
+            PyObject* slice = PySlice_New(
+                ptr(name),
+                ptr(type),
+                Py_None
+            );
+            if (slice == nullptr) {
+                Exception::from_python();
+            }
+            PyTuple_SET_ITEM(tuple, I + offset, slice);
+
+        } else {
+            static_assert(false, "unrecognized argument kind");
+        }
+    }
+
+    static Object operator()() {
+        Object result = reinterpret_steal<Object>(
+            PyTuple_New(Func::n + 1 + Func::has_posonly + Func::has_kwonly)
+        );
+        if (result.is(nullptr)) {
+            Exception::from_python();
+        }
+
+        Object rtype = std::is_void_v<typename Func::Return> ?
+            reinterpret_borrow<Object>(Py_None) :
+            Object(Type<typename impl::ArgTraits<typename Func::Return>::type>());
+        if constexpr (Func::has_self) {
+            PyObject* slice = PySlice_New(
+                Type<typename impl::ArgTraits<typename Func::Self>::type>(),
+                issubclass<Func::Self, impl::TypeTag>() ?
+                    reinterpret_cast<PyObject*>(&PyType_Type) :
+                    Py_None,
+                ptr(rtype)
+            );
+            if (slice == nullptr) {
+                Exception::from_python();
+            }
+            PyTuple_SET_ITEM(ptr(result), 0, slice);
+        } else {
+            PyObject* slice = PySlice_New(
+                Py_None,
+                Py_None,
+                ptr(rtype)
+            );
+            if (slice == nullptr) {
+                Exception::from_python();
+            }
+            PyTuple_SET_ITEM(ptr(result), 0, slice);
+        }
+
+        constexpr size_t PosOnly = Func::has_posonly ? 
+            std::min({Func::args_idx, Func::kw_idx, Func::kwargs_idx}) :
+            Func::n;
+
+        []<size_t... Is>(
+            std::index_sequence<Is...>,
+            PyObject* list
+        ) {
+            size_t offset = 1;
+            (get<Is, PosOnly, Func::kwonly_idx>(list, offset), ...);
+        }(std::make_index_sequence<Func::n>{}, ptr(result));
+        return result;
+    }
+};
 
 
 
