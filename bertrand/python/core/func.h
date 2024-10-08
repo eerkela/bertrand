@@ -6871,12 +6871,14 @@ parameter is a type object, and thus the method is a class method.)doc";
 
         vectorcallfunc call = reinterpret_cast<vectorcallfunc>(__call__);
         PyObject* pyfunc = nullptr;
+        PyObject* pysignature = nullptr;
         PyObject* name = nullptr;
         PyObject* docstring = nullptr;
         Sig::Defaults defaults;
         std::function<typename Sig::to_value::type> func;
         Sig::Overloads overloads;
 
+        /* Exposes a C++ function to Python */
         explicit PyFunction(
             const std::string& name,
             const std::string& docstring,
@@ -6898,6 +6900,13 @@ parameter is a type object, and thus the method is a class method.)doc";
             }
         }
 
+        /* Exposes a Python function to C++ by generating a capturing lambda wrapper,
+        after a quick signature validation.  The function must exactly match the
+        enclosing signature, including argument names, types, and
+        posonly/kwonly/optional/variadic qualifiers.  If the function lists union types
+        for one or more arguments, then only one path through the parameter list needs
+        to match for the conversion to succeed.  This is called by the narrowing cast
+        operator when converting a dynamic object to this function type. */
         explicit PyFunction(PyObject* pyfunc) :
             pyfunc(pyfunc),
             defaults(validate_signature(pyfunc)),
@@ -6923,6 +6932,7 @@ parameter is a type object, and thus the method is a class method.)doc";
 
         ~PyFunction() noexcept {
             Py_XDECREF(pyfunc);
+            Py_XDECREF(pysignature);
             Py_XDECREF(name);
             Py_XDECREF(docstring);
         }
@@ -6933,11 +6943,23 @@ parameter is a type object, and thus the method is a class method.)doc";
             Py_TYPE(self)->tp_free(self);
         }
 
+        /* Python-level allocation function.  Initializes pointers to null, but
+        otherwise does nothing in order to allow for future re-initialization.  If the
+        initializer function is already an instance of this type, then it is returned
+        as-is so as to avoid unnecessary nesting. */
         static PyObject* __new__(
             PyTypeObject* cls,
             PyObject* args,
             PyObject* kwds
         ) noexcept {
+            // if the initializer is already an instance of this class, return it as-is
+            if (PyTuple_GET_SIZE(args) == 1) {
+                PyObject* arg = PyTuple_GET_ITEM(args, 0);
+                if (Py_TYPE(arg) == cls) {
+                    return Py_NewRef(arg);
+                }
+            }
+
             try {
                 PyFunction* self = reinterpret_cast<PyFunction*>(cls->tp_alloc(cls, 0));
                 if (self == nullptr) {
@@ -6954,11 +6976,46 @@ parameter is a type object, and thus the method is a class method.)doc";
             }
         }
 
+        /* Python-level constructor.  This is called by the `@bertrand` decorator once
+        this template has been deduced from a valid signature.  Additionally, since
+        the `__new__()` method bypasses this constructor when the initializer is
+        already an instance of this type, and C++ narrowing conversions use a dedicated
+        constructor, this method will only be called for Python functions that are
+        explicitly wrapped directly from Python.
+
+        In this case, we need special logic to properly handle union types in the
+        supplied signature, which must be encoded into the overload trie to allow for
+        proper dispatching:
+
+            1.  If one member of the union is a supertype of all the others, then the
+                base function will use that type, and register the others as separate
+                overloads that resolve to the same function.
+            2.  Otherwise, we traverse each type's MRO to find the first common
+                ancestor, and use that for the base function signature, with all of the
+                original paths as overloads.  This eventually terminates at the dynamic
+                `object` type, which is the ultimate base of all Python types.
+            3.  If the common type that describes all elements of the union is not
+                itself an element of the union, then we generate an implicit base
+                function that raises a `TypeError` when called, and register each
+                member of the union as a separate overload that corrects this.  That
+                way, when the function is called, all members of the union will be
+                matched against the observed arguments, falling back to the error case
+                if none of them match.
+            4.  In order to retain accurate static analysis, the resulting function
+                will directly reference the `inspect.Signature` object of the
+                initializer, even if we synthesized a new base function from a
+                supertype.
+         */
         static int __init__(
             PyFunction* self,
             PyObject* args,
             PyObject* kwds
         ) noexcept {
+            // avoid re-initializing if __new__ returns an existing instance
+            if (self->name) {
+                return 0;
+            }
+
             try {
                 size_t nargs = PyTuple_GET_SIZE(args);
                 if (nargs != 1 || kwds != nullptr) {
@@ -6967,9 +7024,12 @@ parameter is a type object, and thus the method is a class method.)doc";
                         "received " + std::to_string(nargs)
                     );
                 }
-                if (self->name) {
-                    self->~PyFunction();
-                }
+
+                /// TODO: this is going to have to implement a whole bunch of custom
+                /// logic, not just delegate to the narrowing constructor.  What I
+                /// probably need to do is add a private constructor that handles
+                /// this case differently.
+
                 new (self) PyFunction(PyTuple_GET_ITEM(args, 0));
                 PyObject_GC_Track(self);
                 return 0;
@@ -7773,6 +7833,10 @@ parameter is a type object, and thus the method is a class method.)doc";
         /* Supplying a __signature__ attribute allows C++ functions to be introspected
         via the `inspect` module, just like their pure-Python equivalents. */
         static PyObject* __signature__(PyFunction* self, void*) noexcept {
+            if (self->pysignature) {
+                return Py_NewRef(self->pysignature);
+            }
+
             try {
                 Object inspect = reinterpret_steal<Object>(PyImport_Import(
                     impl::TemplateString<"inspect">::ptr
@@ -7910,12 +7974,14 @@ parameter is a type object, and thus the method is a class method.)doc";
         }
 
         /// TODO: all this crap also has to be reflected for bound methods.
+        /// -> I also need to completely rethink it in order to allow the __init__
+        /// method to be called.
 
         static PyObject* validate_signature(PyObject* func) {
             impl::Inspect signature = {func, Sig::seed, Sig::prime};
 
-            // ensure at least one possible return type exactly matches the expected
-            // template signature
+            // ensure at least one possible return type exactly matches the
+            // expected template signature
             Object rtype = std::is_void_v<typename Sig::Return> ?
                 reinterpret_borrow<Object>(Py_None) :
                 Object(Type<typename Sig::Return>());
@@ -7934,8 +8000,8 @@ parameter is a type object, and thus the method is a class method.)doc";
                 );
             }
 
-            // ensure at least one complete parameter list exactly matches the expected
-            // template signature
+            // ensure at least one complete parameter list exactly matches the
+            // expected template signature
             constexpr auto validate = []<size_t... Is>(
                 std::index_sequence<Is...>,
                 impl::Inspect& signature,
@@ -7955,9 +8021,9 @@ parameter is a type object, and thus the method is a class method.)doc";
             }
             if (!match) {
                 throw TypeError(
-                    /// TODO: improve this error message by printing out the expected
-                    /// signature.  Maybe I can just get the repr of the current
-                    /// function type?
+                    /// TODO: improve this error message by printing out the
+                    /// expected signature.  Maybe I can just get the repr of the
+                    /// current function type?
                     "no match for parameter list"
                 );
             }
@@ -9172,7 +9238,6 @@ struct __init__<Function<Return(Target...)>, Name, Doc, Func, Values...> {
 
 
 struct TODO2 {
-
 
     template <size_t I, typename Container>
     static bool _matches(const Params<Container>& key) {
