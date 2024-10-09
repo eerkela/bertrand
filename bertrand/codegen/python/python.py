@@ -5,11 +5,19 @@ import importlib
 import sys
 from pathlib import Path
 
-from .base import Module
+
+# TODO: this will eventually be called to produce a C++ module that mirrors a Python
+# import, which will require some complicated work and possibly integration with the
+# Python AST static analyzer, which might be able to generate these implicitly.
+# Otherwise, the only way to do it is to parse the Python module's contents at runtime
+# and generate the C++ module from that.  Maybe it's not that hard though, if I can
+# detect the import within the build system, and then just run the static analyzer on
+# it to generate the C++ module.  It might even just come down to a flag for the Python
+# AST parser, which would output the C++ module to a particular path.  That would be
+# by far the most elegant and flexible solution, if possible.
 
 
-
-class PyModule(Module):
+class PyModule:
     """Given an unresolved C++ import, search for an equivalent Python module and
     generate a corresponding C++ module to resolve the import.  The C++ module will
     be automatically added to the CMakeLists.txt file as a source, which can be

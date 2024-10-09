@@ -1247,11 +1247,6 @@ decltype(auto) Interface<Iterator<Begin, End, Container>>::__next__(this auto&& 
 }
 
 
-/////////////////////////
-////    OPERATORS    ////
-/////////////////////////
-
-
 /* Begin iteration operator.  Both this and the end iteration operator are
 controlled by the __iter__ control struct, whose return type dictates the
 iterator's dereference type. */
@@ -1633,6 +1628,446 @@ template <impl::python_like Self, typename Func>
             std::views::transform(std::forward<Func>(func));
     }
 }
+
+
+////////////////////////
+////    OPTIONAL    ////
+////////////////////////
+
+
+template <std::derived_from<Object> T>
+struct Optional;
+
+
+namespace impl {
+    struct OptionalTag : BertrandTag {};
+}
+
+
+template <typename T>
+struct Interface<Optional<T>> : impl::OptionalTag {
+    using __wrapped__ = T;
+
+    /// TODO: .value(), .value_or()
+
+};
+template <typename T>
+struct Interface<Type<Optional<T>>> : impl::OptionalTag {
+    using __wrapped__ = T;
+
+    /// TODO: .value(), .value_or()
+};
+
+
+template <std::derived_from<Object> T>
+struct Optional : Object, Interface<Optional<T>> {
+    struct __python__ : def<__python__, Optional>, PyObject {
+        static constexpr StaticStr __doc__ =
+R"doc()doc";
+
+        Object m_value;
+
+        __python__(const T& value) : m_value(value) {}
+        __python__(T&& value) : m_value(std::move(value)) {}
+        __python__(const NoneType& value) : m_value(value) {}
+        __python__(NoneType&& value) : m_value(std::move(value)) {}
+
+        template <StaticStr ModName>
+        static Type<Optional> __export__(Module<ModName>& mod);
+        static Type<Optional> __import__();
+
+        /// TODO: Python should forward attribute/item access/assignment/etc. to the
+        /// underlying object in a monadic fashion, just like in C++
+
+        static PyObject* value(__python__* self) {
+            if (self->m_value.is(None)) {
+                throw TypeError("optional is empty");
+            }
+            return Py_NewRef(ptr(self->m_value));
+        }
+
+        static PyObject* value_or(__python__* self, PyObject* default_value) {
+            try {
+                if (!isinstance<T>(reinterpret_borrow<Object>(default_value))) {
+                    throw TypeError(
+                        "default value must be an instance of " + repr(Type<T>())
+                    );
+                }
+                if (self->m_value.is(None)) {
+                    return Py_NewRef(default_value);
+                } else {
+                    return Py_NewRef(ptr(self->m_value));
+                }
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+    private:
+
+        inline static PyMethodDef methods[] = {
+            {
+                "value",
+                reinterpret_cast<PyCFunction>(value),
+                METH_NOARGS,
+                PyDoc_STR(
+R"doc(Get the value stored in the optional, or raise a type error if it
+is empty.
+
+Returns
+-------
+T
+    The value stored in the optional.
+
+Raises
+------
+TypeError
+    If the optional currently holds `None`.
+)doc"
+                )
+            },
+            {
+                "value_or",
+                reinterpret_cast<PyCFunction>(value_or),
+                METH_O,
+                PyDoc_STR(
+R"doc(Get the value stored in the optional, or return a default value if
+it is empty.
+
+Parameters
+----------
+default_value : T
+    The value to return if the optional is empty.
+
+Returns
+-------
+T
+    The value stored in the optional, or the default value if it currently
+    holds `None`.
+
+Raises
+------
+TypeError
+    If the default value is not an instance of `T`.
+)doc"
+                )
+            },
+            {nullptr}
+        };
+
+    };
+
+    Optional(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Optional(PyObject* p, stolen_t t) : Object(p, t) {}
+
+    template <typename Self = Optional> requires (__initializer__<Self>::enable)
+    Optional(const std::initializer_list<typename __initializer__<Self>::type>& init) :
+        Object(__initializer__<Self>{}(init))
+    {}
+
+    template <typename... Args> requires (implicit_ctor<Optional>::template enable<Args...>)
+    Optional(Args&&... args) : Object(
+        implicit_ctor<Optional>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Optional>::template enable<Args...>)
+    explicit Optional(Args&&... args) : Object(
+        explicit_ctor<Optional>{},
+        std::forward<Args>(args)...
+    ) {}
+
+};
+
+
+template <typename T> requires (__initializer__<T>::enable)
+struct __initializer__<Optional<T>>                         : Returns<
+    typename __initializer__<T>::type
+> {
+    using Element = __initializer__<T>::type;
+    static Optional<T> operator()(const std::initializer_list<Element>& init) {
+        return T(init);
+    }
+};
+
+
+template <typename T>
+struct __init__<Optional<T>>                                : Returns<Optional<T>> {
+    static Optional<T> operator()() {
+        return impl::construct<Optional<T>>(None);
+    }
+};
+
+
+template <typename T, typename... Args> requires (std::constructible_from<T, Args...>)
+struct __init__<Optional<T>, Args...>                        : Returns<Optional<T>> {
+    static Optional<T> operator()(Args&&... args) {
+        return impl::construct<Optional<T>>(T(std::forward<Args>(args)...));
+    }
+};
+
+
+template <impl::is_optional T> requires (__cast__<impl::optional_type<T>>::enable)
+struct __cast__<T> : Returns<Optional<typename __cast__<impl::optional_type<T>>::type>> {};
+
+
+template <impl::inherits<impl::OptionalTag> From, typename To>
+    requires (std::convertible_to<typename std::remove_reference_t<From>::__wrapped__, To>)
+struct __cast__<From, std::optional<To>>                    : Returns<std::optional<To>> {
+    static std::optional<To> operator()(From from) {
+        if (from.is(None)) {
+            return std::nullopt;
+        } else {
+            return To(from.value());
+        }
+    }
+};
+
+
+template <impl::is_optional From, typename To>
+    requires (std::convertible_to<impl::optional_type<From>, To>)
+struct __cast__<From, Optional<To>>          : Returns<Optional<To>> {
+    static Optional<To> operator()(From from) {
+        if (!from.has_value()) {
+            return None;
+        } else {
+            return To(from.value());
+        }
+    }
+};
+
+
+template <typename From, typename To> requires (std::convertible_to<From, To>)
+struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
+    static Optional<To> operator()(From&& from) {
+        return impl::construct<Optional<To>>(
+            To(std::forward<From>(from))
+        );
+    }
+};
+
+
+/* `getattr<>()` calls on optional objects are monadic. */
+template <impl::inherits<impl::OptionalTag> Self, StaticStr Name>
+    requires (
+        __getattr__<
+            typename std::remove_reference_t<Self>::__wrapped__,
+            Name
+        >::enable
+    )
+struct __getattr__<Self, Name>                              : Returns<Optional<
+    typename __getattr__<typename std::remove_reference_t<Self>::__wrapped__, Name>::type
+>> {
+    using Wrapped = std::remove_reference_t<Self>::__wrapped__;
+    using Return = __getattr__<Wrapped, Name>::type;
+    static Optional<Return> operator()(Self self) {
+        if (self.is(None)) {
+            return None;
+        } else {
+            return getattr<Name>(self.value());
+        }
+    }
+};
+
+
+/* `setattr<>()` calls on optional objects are monadic. */
+template <impl::inherits<impl::OptionalTag> Self, StaticStr Name, typename Value>
+    requires (
+        __setattr__<
+            typename std::remove_reference_t<Self>::__wrapped__,
+            Name,
+            Value
+        >::enable
+    )
+struct __setattr__<Self, Name, Value>             : Returns<void> {
+    static void operator()(Self self, Value&& value) {
+        if (self.is(None)) {
+            throw TypeError("optional is empty");
+        } else {
+            setattr<Name>(self.value(), std::forward<Value>(value));
+        }
+    }
+};
+
+
+/* `delattr<>()` calls on optional objects are monadic. */
+template <impl::inherits<impl::OptionalTag> Self, StaticStr Name>
+    requires (
+        __delattr__<
+            typename std::remove_reference_t<Self>::__wrapped__,
+            Name
+        >::enable
+    )
+struct __delattr__<Self, Name>                              : Returns<void> {
+    static void operator()(Self self) {
+        if (self.is(None)) {
+            throw TypeError("optional is empty");
+        } else {
+            delattr<Name>(self.value());
+        }
+    }
+};
+
+
+/* Indexing an optional is monadic. */
+template <impl::inherits<impl::OptionalTag> Self, typename... Key>
+    requires (
+        __getitem__<
+            typename std::remove_reference_t<Self>::__wrapped__,
+            Key...
+        >::enable
+    )
+struct __getitem__<Self, Key...>                             : Returns<Optional<
+    typename __getitem__<
+        typename std::remove_reference_t<Self>::__wrapped__,
+        Key...
+    >::type
+>> {
+    using Wrapped = std::remove_reference_t<Self>::__wrapped__;
+    using Return = __getitem__<Wrapped, Key...>::type;
+    static Optional<Return> operator()(Self self, Key&&... key) {
+        if (self.is(None)) {
+            return None;
+        } else {
+            return self.value()[std::forward<Key>(key)...];
+        }
+    }
+};
+
+
+/* Item assignment against an optional is monadic. */
+template <impl::inherits<impl::OptionalTag> Self, typename Value, typename... Key>
+    requires (
+        __setitem__<
+            typename std::remove_reference_t<Self>::__wrapped__,
+            Value,
+            Key...
+        >::enable
+    )
+struct __setitem__<Self, Value, Key...>                         : Returns<void> {
+    static void operator()(Self self, Value&& value, Key&&... key) {
+        if (self.is(None)) {
+            throw TypeError("optional is empty");
+        } else {
+            self.value()[std::forward<Key>(key)...] = std::forward<Value>(value);
+        }
+    }
+};
+
+
+/* Item deletion against an optional is monadic. */
+template <impl::inherits<impl::OptionalTag> Self, typename... Key>
+    requires (
+        __delitem__<
+            typename std::remove_reference_t<Self>::__wrapped__,
+            Key...
+        >::enable
+    )
+struct __delitem__<Self, Key...>                               : Returns<void> {
+    static void operator()(Self self, Key&&... key) {
+        if (self.is(None)) {
+            throw TypeError("optional is empty");
+        } else {
+            del(self.value()[std::forward<Key>(key)...]);
+        }
+    }
+};
+
+
+
+
+/// TODO: all other operations should be forwarded, but raise an exception if the
+/// optional is empty.  Alternatively, I could prevent any operations that can't be
+/// made monadic
+
+
+/// TODO:
+///     isinstance()
+///     issubclass()
+///     template()
+///     __initializer__
+
+
+/////////////////////
+////    UNION    ////
+/////////////////////
+
+
+template <std::derived_from<Object>... Types>
+struct Union;
+
+
+namespace impl {
+    struct UnionTag : BertrandTag {};
+
+    template <typename T>
+    struct VariantToUnion {
+        static constexpr bool enable = false;
+    };
+    template <std::convertible_to<Object>... Ts>
+    struct VariantToUnion<std::variant<Ts...>> {
+        static constexpr bool enable = true;
+        using type = Union<obj<Ts>...>;
+    };
+
+}
+
+
+template <typename... Types>
+struct Interface<Union<Types...>> : impl::UnionTag {
+    using __wrapped__ = std::variant<Types...>;
+};
+template <typename... Types>
+struct Interface<Type<Union<Types...>>> : impl::UnionTag {
+    using __wrapped__ = std::variant<Types...>;
+};
+
+
+template <std::derived_from<Object>... Types>
+struct Union : Object, Interface<Union<Types...>> {
+    struct __python__ : def<__python__, Union>, PyObject {
+        static constexpr StaticStr __doc__ =
+R"doc()doc";
+
+        std::variant<Types...> value;
+
+    };
+
+    Union(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Union(PyObject* p, stolen_t t) : Object(p, t) {}
+
+    template <typename Self = Union> requires (__initializer__<Self>::enable)
+    Union(const std::initializer_list<typename __initializer__<Self>::type>& init) :
+        Object(__initializer__<Self>{}(init))
+    {}
+
+    template <typename... Args> requires (implicit_ctor<Union>::template enable<Args...>)
+    Union(Args&&... args) : Object(
+        implicit_ctor<Union>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Union>::template enable<Args...>)
+    explicit Union(Args&&... args) : Object(
+        explicit_ctor<Union>{},
+        std::forward<Args>(args)...
+    ) {}
+
+};
+
+
+template <impl::is_variant T> requires (impl::VariantToUnion<T>::enable)
+struct __cast__<T> : Returns<typename impl::VariantToUnion<T>::type> {};
+
+
+template <impl::is_variant From, typename... Ts>
+    requires (impl::VariantToUnion<From>::enable)
+struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts...>> {
+    /// TODO: need to assert that the variant types are convertible to the union types
+};
+
+
 
 
 }

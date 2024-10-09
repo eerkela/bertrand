@@ -2656,11 +2656,27 @@ namespace impl {
     };
 
     template <typename T>
-    static constexpr bool is_optional_helper = false;
+    struct is_optional_helper {
+        static constexpr bool value = false;
+    };
     template <typename T>
-    static constexpr bool is_optional_helper<std::optional<T>> = true;
+    struct is_optional_helper<std::optional<T>> {
+        static constexpr bool value = true;
+        using type = T;
+    };
+
     template <typename T>
-    static constexpr bool is_optional = is_optional_helper<std::remove_cvref_t<T>>;
+    concept is_optional = is_optional_helper<std::remove_cvref_t<T>>::value;
+
+    template <typename T>
+    using optional_type = is_optional_helper<std::remove_cvref_t<T>>::type;
+
+    template <typename T>
+    static constexpr bool is_variant_helper = false;
+    template <typename... Ts>
+    static constexpr bool is_variant_helper<std::variant<Ts...>> = false;
+    template <typename T>
+    concept is_variant = is_variant_helper<std::remove_cvref_t<T>>;
 
     template <typename T>
     concept has_size = requires(T t) {

@@ -167,6 +167,7 @@ protected:
         template <typename F>
         struct helper<F> {
             static constexpr bool enable =
+                !impl::inherits<F, Object> &&
                 __cast__<F, T>::enable &&
                 std::is_invocable_r_v<T, __cast__<F, T>, F>;
             template <typename... Args>
@@ -199,6 +200,7 @@ protected:
             requires (!__init__<T, F>::enable && __explicit_cast__<F, T>::enable)
         struct helper<F> {
             static constexpr bool enable =
+                !impl::inherits<F, Object> &&
                 std::is_invocable_r_v<T, __explicit_cast__<F, T>, F>;
             template <typename... Args>
             static auto operator()(Args... args) {
@@ -500,7 +502,7 @@ protected:
 
 public:
     struct __python__ : def<__python__, Object>, PyObject {
-        static Type<Object> __import__();  // defined in type.h
+        static Type<Object> __import__();
     };
 
     /* Copy constructor.  Borrows a reference to an existing object. */
@@ -517,9 +519,9 @@ public:
 
     /* Initializer list constructor.  Implemented via the __initializer__ control
     struct. */
-    template <typename T = Object> requires (__initializer__<T>::enable)
-    Object(const std::initializer_list<typename __initializer__<T>::type>& init) :
-        Object(__initializer__<T>{}(init))
+    template <typename Self = Object> requires (__initializer__<Self>::enable)
+    Object(const std::initializer_list<typename __initializer__<Self>::type>& init) :
+        Object(__initializer__<Self>{}(init))
     {}
 
     /* Universal implicit constructor.  Implemented via the __init__ control struct. */
@@ -601,6 +603,7 @@ public:
 
     /* Contextually convert an Object into a boolean value for use in if/else 
     statements, with the same semantics as in Python. */
+    /// TODO: convert this into an __explicit_cast__ control struct.
     template <typename Self>
     [[nodiscard]] explicit operator bool(this Self&& self);
 
@@ -608,7 +611,6 @@ public:
     struct. */
     template <typename Self, typename T>
         requires (
-            !impl::is<Self, T> &&
             __cast__<Self, T>::enable &&
             std::is_invocable_r_v<T, __cast__<Self, T>, Self>
         )
@@ -1017,6 +1019,302 @@ template <impl::inherits<Object> T>
 struct __cast__<T>                                          : Returns<T> {
     static T operator()(T value) { return std::forward<T>(value); }
 };
+
+
+////////////////////
+////    NONE    ////
+////////////////////
+
+
+struct NoneType;
+
+
+template <>
+struct Interface<NoneType> : impl::BertrandTag {};
+template <>
+struct Interface<Type<NoneType>> : impl::BertrandTag {};
+
+
+/* Represents the type of Python's `None` singleton in C++. */
+struct NoneType : Object, Interface<NoneType> {
+    struct __python__ : def<__python__, NoneType>, PyObject {
+        static Type<NoneType> __import__();  // defined in type.h
+    };
+
+    NoneType(PyObject* p, borrowed_t t) : Object(p, t) {}
+    NoneType(PyObject* p, stolen_t t) : Object(p, t) {}
+
+    template <typename Self = NoneType> requires (__initializer__<Self>::enable)
+    NoneType(const std::initializer_list<typename __initializer__<Self>::type>& init) :
+        Object(__initializer__<Self>{}(init))
+    {}
+
+    template <typename... Args> requires (implicit_ctor<NoneType>::enable<Args...>)
+    NoneType(Args&&... args) : Object(
+        implicit_ctor<NoneType>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<NoneType>::enable<Args...>)
+    explicit NoneType(Args&&... args) : Object(
+        explicit_ctor<NoneType>{},
+        std::forward<Args>(args)...
+    ) {}
+
+};
+
+
+template <>
+struct __cast__<std::nullptr_t>                             : Returns<NoneType> {};
+template <>
+struct __cast__<std::nullopt_t>                             : Returns<NoneType> {};
+
+
+template <typename T, impl::is<NoneType> Self>
+struct __isinstance__<T, Self>                              : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::dynamic_type<T>) {
+            return Py_IsNone(ptr(obj));
+        } else {
+            return issubclass<T, NoneType>();
+        }
+    }
+};
+
+
+template <typename T, impl::is<NoneType> Self>
+struct __issubclass__<T, Self>                              : Returns<bool> {
+    static constexpr bool operator()() {
+        return impl::none_like<T>;  /// TODO: correct?
+    }
+};
+
+
+template <>
+struct __init__<NoneType>                                   : Returns<NoneType> {
+    static auto operator()() {
+        return reinterpret_borrow<NoneType>(Py_None);
+    }
+};
+
+
+template <impl::none_like From>
+struct __cast__<From, NoneType>                             : Returns<NoneType> {
+    static NoneType operator()(const From& value) {
+        return {};
+    }
+};
+
+
+template <impl::is<NoneType> From, impl::none_like To>
+struct __cast__<From, To>                                   : Returns<To> {
+    static To operator()(From value) {
+        return {};
+    }
+};
+
+
+template <impl::is<NoneType> From, typename T>
+struct __cast__<From, std::optional<T>>                     : Returns<std::optional<T>> {
+    static std::optional<T> operator()(From value) {
+        return std::nullopt;
+    }
+};
+
+
+template <impl::is<NoneType> Self>
+struct __hash__<Self>                                       : Returns<size_t> {};
+
+
+inline const NoneType None;
+
+
+//////////////////////////////
+////    NOTIMPLEMENTED    ////
+//////////////////////////////
+
+
+struct NotImplementedType;
+
+
+template <>
+struct Interface<NotImplementedType> : impl::BertrandTag {};
+template <>
+struct Interface<Type<NotImplementedType>> : impl::BertrandTag {};
+
+
+/* Represents the type of Python's `NotImplemented` singleton in C++. */
+struct NotImplementedType : Object, Interface<NotImplementedType> {
+    struct __python__ : def<__python__, NotImplementedType>, PyObject {
+        static Type<NotImplementedType> __import__();  // defined in type.h
+    };
+
+    NotImplementedType(PyObject* p, borrowed_t t) : Object(p, t) {}
+    NotImplementedType(PyObject* p, stolen_t t) : Object(p, t) {}
+
+    template <typename Self = NotImplementedType> requires (__initializer__<Self>::enable)
+    NotImplementedType(const std::initializer_list<typename __initializer__<Self>::type>& init) :
+        Object(__initializer__<Self>{}(init))
+    {}
+
+    template <typename... Args> requires (implicit_ctor<NotImplementedType>::enable<Args...>)
+    NotImplementedType(Args&&... args) : Object(
+        implicit_ctor<NotImplementedType>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<NotImplementedType>::enable<Args...>)
+    explicit NotImplementedType(Args&&... args) : Object(
+        explicit_ctor<NotImplementedType>{},
+        std::forward<Args>(args)...
+    ) {}
+
+};
+
+
+template <typename T, impl::is<NotImplementedType> Self>
+struct __isinstance__<T, Self>                              : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::dynamic_type<T>) {
+            return PyType_IsSubtype(Py_TYPE(ptr(obj)), Py_TYPE(Py_NotImplemented));
+        } else {
+            return issubclass<T, NotImplementedType>();
+        }
+    }
+};
+
+
+template <typename T, impl::is<NotImplementedType> Self>
+struct __issubclass__<T, Self>                              : Returns<bool> {
+    static constexpr bool operator()() {
+        return impl::notimplemented_like<T>;  /// TODO: correct?
+    }
+};
+
+
+template <>
+struct __init__<NotImplementedType>                         : Returns<NotImplementedType> {
+    static auto operator()() {
+        return reinterpret_borrow<NotImplementedType>(Py_NotImplemented);
+    }
+};
+
+
+template <impl::notimplemented_like From>
+struct __cast__<From, NotImplementedType>                   : Returns<NotImplementedType> {
+    static NotImplementedType operator()(const From& value) {
+        return {};
+    }
+};
+
+
+template <impl::is<NotImplementedType> From, impl::notimplemented_like To>
+struct __cast__<From, To>                                   : Returns<To> {
+    static To operator()(From value) {
+        return {};
+    }
+};
+
+
+template <impl::is<NotImplementedType> Self>
+struct __hash__<Self>                                       : Returns<size_t> {};
+
+
+inline const NotImplementedType NotImplemented;
+
+
+////////////////////////
+////    ELLIPSIS    ////
+////////////////////////
+
+
+struct EllipsisType;
+
+
+template <>
+struct Interface<EllipsisType> : impl::BertrandTag {};
+template <>
+struct Interface<Type<EllipsisType>> : impl::BertrandTag {};
+
+
+/* Represents the type of Python's `Ellipsis` singleton in C++. */
+struct EllipsisType : Object, Interface<EllipsisType> {
+    struct __python__ : def<__python__, EllipsisType>, PyObject {
+        static Type<EllipsisType> __import__();  // defined in type.h
+    };
+
+    EllipsisType(PyObject* p, borrowed_t t) : Object(p, t) {}
+    EllipsisType(PyObject* p, stolen_t t) : Object(p, t) {}
+
+    template <typename Self = EllipsisType> requires (__initializer__<Self>::enable)
+    EllipsisType(const std::initializer_list<typename __initializer__<Self>::type>& init) :
+        Object(__initializer__<Self>{}(init))
+    {}
+
+    template <typename... Args> requires (implicit_ctor<EllipsisType>::enable<Args...>)
+    EllipsisType(Args&&... args) : Object(
+        implicit_ctor<EllipsisType>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<EllipsisType>::enable<Args...>)
+    explicit EllipsisType(Args&&... args) : Object(
+        explicit_ctor<EllipsisType>{},
+        std::forward<Args>(args)...
+    ) {}
+
+};
+
+
+template <typename T, impl::is<EllipsisType> Self>
+struct __isinstance__<T, Self>                              : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::dynamic_type<T>) {
+            return PyType_IsSubtype(Py_TYPE(ptr(obj)), Py_TYPE(Py_Ellipsis));
+        } else {
+            return issubclass<T, EllipsisType>();
+        }
+    }
+};
+
+
+template <typename T, impl::is<EllipsisType> Self>
+struct __issubclass__<T, Self>                              : Returns<bool> {
+    static constexpr bool operator()() {
+        return impl::ellipsis_like<T>;  /// TODO: correct?
+    }
+};
+
+
+template <>
+struct __init__<EllipsisType>                               : Returns<EllipsisType> {
+    static auto operator()() {
+        return reinterpret_borrow<EllipsisType>(Py_Ellipsis);
+    }
+};
+
+
+template <impl::ellipsis_like From>
+struct __cast__<From, EllipsisType>                         : Returns<EllipsisType> {
+    static EllipsisType operator()(const From& value) {
+        return {};
+    }
+};
+
+
+template <impl::is<EllipsisType> From, impl::ellipsis_like To>
+struct __cast__<From, To>                                   : Returns<To> {
+    static To operator()(From value) {
+        return {};
+    }
+};
+
+
+template <impl::is<EllipsisType> Self>
+struct __hash__<Self>                                       : Returns<size_t> {};
+
+
+inline const EllipsisType Ellipsis;
 
 
 }  // namespace py

@@ -18,7 +18,7 @@ import setuptools
 from packaging.version import Version
 from setuptools.command.build_ext import build_ext as setuptools_build_ext
 
-from .codegen import PyModule
+from bertrand.codegen.python import PyModule
 from .environment import env
 from .messages import FAIL, WHITE, RED, YELLOW, GREEN, CYAN
 from .package import Package
