@@ -747,7 +747,7 @@ no specialized C++ iterator can be found.  In that case, its value type is set t
 `T` in an `__iter__<Container> : Returns<T> {};` specialization.  If you want to use
 this class and avoid type safety issues, leave the return type set to `Object` (the
 default), which will incur a runtime check on conversion. */
-template <impl::python_like Return>
+template <impl::python Return>
 struct Iterator<Return, void, void> : Object, Interface<Iterator<Return, void, void>> {
     struct __python__ : def<__python__, Iterator>, PyObject {
         static Type<Iterator> __import__() {
@@ -1060,10 +1060,10 @@ struct __init__<Iterator<Begin, End, void>, Begin, End> : Returns<Iterator<Begin
 };
 
 
-template <impl::python_like T, impl::python_like Return>
+template <impl::python T, impl::python Return>
 struct __isinstance__<T, Iterator<Return, void, void>>      : Returns<bool> {
     static constexpr bool operator()(T&& obj) {
-        if constexpr (impl::dynamic_type<T>) {
+        if constexpr (impl::dynamic<T>) {
             return PyIter_Check(ptr(obj));
         } else {
             return issubclass<T, Iterator<Return, void, void>>();
@@ -1072,7 +1072,7 @@ struct __isinstance__<T, Iterator<Return, void, void>>      : Returns<bool> {
 };
 
 
-template <impl::python_like T, impl::python_like Return>
+template <impl::python T, impl::python Return>
 struct __issubclass__<T, Iterator<Return, void, void>>      : Returns<bool> {
     static constexpr bool operator()() {
         return
@@ -1083,7 +1083,7 @@ struct __issubclass__<T, Iterator<Return, void, void>>      : Returns<bool> {
 
 
 template <
-    impl::python_like T,
+    impl::python T,
     std::input_iterator Begin,
     std::sentinel_for<Begin> End,
     typename Container
@@ -1092,7 +1092,7 @@ struct __isinstance__<T, Iterator<Begin, End, Container>>   : Returns<bool> {};
 
 
 template <
-    impl::python_like T,
+    impl::python T,
     std::input_iterator Begin,
     std::sentinel_for<Begin> End,
     typename Container
@@ -1585,7 +1585,7 @@ namespace impl {
 /* Apply a C++ range adaptor to a Python object.  This is similar to the C++-style `|`
 operator for chaining range adaptors, but uses the `->*` operator to avoid conflicts
 with Python and apply higher precedence than typical binary operators. */
-template <impl::python_like Self, std::ranges::view View> requires (impl::iterable<Self>)
+template <impl::python Self, std::ranges::view View> requires (impl::iterable<Self>)
 [[nodiscard]] auto operator->*(Self&& self, View&& view) {
     return std::views::all(std::forward<Self>(self)) | std::forward<View>(view);
 }
@@ -1609,7 +1609,7 @@ Here's an example:
     };
     py::print(new_list);  // [2, 2, 4, 4, 4, 4]
 */
-template <impl::python_like Self, typename Func>
+template <impl::python Self, typename Func>
     requires (
         impl::iterable<Self> &&
         !std::ranges::view<Func> &&
@@ -1635,6 +1635,11 @@ template <impl::python_like Self, typename Func>
 ////////////////////////
 
 
+/// TODO: operators should now be in a state where they can return arbitrary types
+/// from control structures that supply a custom call operator, which means I should
+/// be able to make all operations monadic.
+
+
 template <std::derived_from<Object> T>
 struct Optional;
 
@@ -1648,14 +1653,24 @@ template <typename T>
 struct Interface<Optional<T>> : impl::OptionalTag {
     using __wrapped__ = T;
 
-    /// TODO: .value(), .value_or()
-
+    [[nodiscard]] T value(this auto&& self) {
+        if (self.is(None)) {
+            throw TypeError("optional is empty");
+        }
+        return reinterpret_borrow<T>(ptr(self->m_value));
+    }
 };
 template <typename T>
 struct Interface<Type<Optional<T>>> : impl::OptionalTag {
     using __wrapped__ = T;
 
-    /// TODO: .value(), .value_or()
+    template <impl::inherits<impl::OptionalTag> U>
+    [[nodiscard]] T value(U&& self) {
+        if (self.is(None)) {
+            throw TypeError("optional is empty");
+        }
+        return reinterpret_borrow<T>(ptr(self->m_value));
+    }
 };
 
 
@@ -1686,24 +1701,6 @@ R"doc()doc";
             return Py_NewRef(ptr(self->m_value));
         }
 
-        static PyObject* value_or(__python__* self, PyObject* default_value) {
-            try {
-                if (!isinstance<T>(reinterpret_borrow<Object>(default_value))) {
-                    throw TypeError(
-                        "default value must be an instance of " + repr(Type<T>())
-                    );
-                }
-                if (self->m_value.is(None)) {
-                    return Py_NewRef(default_value);
-                } else {
-                    return Py_NewRef(ptr(self->m_value));
-                }
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
     private:
 
         inline static PyMethodDef methods[] = {
@@ -1712,7 +1709,7 @@ R"doc()doc";
                 reinterpret_cast<PyCFunction>(value),
                 METH_NOARGS,
                 PyDoc_STR(
-R"doc(Get the value stored in the optional, or raise a type error if it
+R"doc(Get the value stored in the optional, or raise an error if it
 is empty.
 
 Returns
@@ -1724,32 +1721,6 @@ Raises
 ------
 TypeError
     If the optional currently holds `None`.
-)doc"
-                )
-            },
-            {
-                "value_or",
-                reinterpret_cast<PyCFunction>(value_or),
-                METH_O,
-                PyDoc_STR(
-R"doc(Get the value stored in the optional, or return a default value if
-it is empty.
-
-Parameters
-----------
-default_value : T
-    The value to return if the optional is empty.
-
-Returns
--------
-T
-    The value stored in the optional, or the default value if it currently
-    holds `None`.
-
-Raises
-------
-TypeError
-    If the default value is not an instance of `T`.
 )doc"
                 )
             },
@@ -1781,10 +1752,75 @@ TypeError
 };
 
 
+template <typename T>
+struct __template__<Optional<T>>                            : Returns<Object> {
+    static Type<T> operator()() { return {}; }
+};
+
+
+template <typename Derived, impl::inherits<impl::OptionalTag> Base>
+struct __isinstance__<Derived, Base>                         : Returns<bool> {
+    using Wrapped = std::remove_reference_t<Base>::__wrapped__;
+    static constexpr bool operator()(Derived&& obj) {
+        if constexpr (impl::dynamic<Derived>) {
+            return
+                obj.is(None) ||
+                isinstance<Wrapped>(std::forward<Derived>(obj));
+        } else {
+            return
+                impl::none_like<Derived> ||
+                isinstance<Wrapped>(std::forward<Derived>(obj));
+        }
+    }
+    template <typename T = Wrapped>
+        requires (std::is_invocable_v<__isinstance__<Derived, T>, Derived, T>)
+    static constexpr bool operator()(Derived&& obj, Base base) {
+        if (base.is(None)) {
+            return false;
+        } else {
+            return isinstance(std::forward<Derived>(obj), base.value());
+        }
+    }
+};
+
+
+template <typename Derived, impl::inherits<impl::OptionalTag> Base>
+struct __issubclass__<Derived, Base>                         : Returns<bool> {
+    using Wrapped = std::remove_reference_t<Base>::__wrapped__;
+    static constexpr bool operator()() {
+        return impl::none_like<Derived> || issubclass<Derived, Wrapped>();
+    }
+    template <typename T = Wrapped>
+        requires (std::is_invocable_v<__issubclass__<Derived, T>, Derived>)
+    static constexpr bool operator()(Derived&& obj) {
+        if constexpr (impl::dynamic<Derived>) {
+            return
+                obj.is(None) ||
+                issubclass<Wrapped>(std::forward<Derived>(obj));
+        } else {
+            return
+                impl::none_like<Derived> ||
+                issubclass<Wrapped>(std::forward<Derived>(obj));
+        }
+    }
+    template <typename T = Wrapped>
+        requires (std::is_invocable_v<__issubclass__<Derived, T>, Derived, T>)
+    static constexpr bool operator()(Derived&& obj, Base base) {
+        if (base.is(None)) {
+            return false;
+        } else {
+            return issubclass(std::forward<Derived>(obj), base.value());
+        }
+    }
+};
+
+
+/// NOTE: constructors are forwarded to the underlying object, except for the default
+/// constructor, which initializes to None
+
+
 template <typename T> requires (__initializer__<T>::enable)
-struct __initializer__<Optional<T>>                         : Returns<
-    typename __initializer__<T>::type
-> {
+struct __initializer__<Optional<T>> : Returns<typename __initializer__<T>::type> {
     using Element = __initializer__<T>::type;
     static Optional<T> operator()(const std::initializer_list<Element>& init) {
         return T(init);
@@ -1808,12 +1844,90 @@ struct __init__<Optional<T>, Args...>                        : Returns<Optional<
 };
 
 
+/* Implicitly cast a non-empty input into the underlying type if possible. */
+template <typename From, typename To> requires (std::convertible_to<From, To>)
+struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
+    static Optional<To> operator()(From&& from) {
+        return impl::construct<Optional<To>>(To(std::forward<From>(from)));
+    }
+};
+
+
+/// NOTE: implicit casts are allowed to and from std::optional, pointers, and smart
+/// pointers, as well as from 
+
+
 template <impl::is_optional T> requires (__cast__<impl::optional_type<T>>::enable)
 struct __cast__<T> : Returns<Optional<typename __cast__<impl::optional_type<T>>::type>> {};
+template <std::convertible_to<Object> T>
+struct __cast__<T*> : Returns<Optional<obj<T>>> {};
+template <impl::is_shared_ptr T> requires (std::convertible_to<impl::shared_ptr_type<T>, Object>)
+struct __cast__<T> : Returns<Optional<obj<impl::shared_ptr_type<T>>>> {};
+template <impl::is_unique_ptr T> requires (std::convertible_to<impl::unique_ptr_type<T>, Object>)
+struct __cast__<T> : Returns<Optional<obj<impl::unique_ptr_type<T>>>> {};
+
+
+template <impl::is_optional From, typename To>
+    requires (std::convertible_to<impl::optional_type<From>, To>)
+struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
+    static Optional<To> operator()(From from) {
+        if (!from.has_value()) {
+            return None;
+        } else {
+            if constexpr (std::is_lvalue_reference_v<From>) {
+                return To(from.value());
+            } else {
+                return To(std::move(from.value()));
+            }
+        }
+    }
+};
+
+
+template <impl::is_ptr From, typename To>
+    requires (std::convertible_to<impl::ptr_type<From>, To>)
+struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
+    static Optional<To> operator()(From from) {
+        if (from == nullptr) {
+            return None;
+        } else {
+            return To(*from);
+        }
+    }
+};
+
+
+template <impl::is_shared_ptr From, typename To>
+    requires (std::convertible_to<impl::shared_ptr_type<From>, To>)
+struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
+    static Optional<To> operator()(From&& from) {
+        if (from == nullptr) {
+            return None;
+        } else {
+            return To(*from);
+        }
+    }
+};
+
+
+template <impl::is_unique_ptr From, typename To>
+    requires (std::convertible_to<impl::unique_ptr_type<From>, To>)
+struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
+    static Optional<To> operator()(From&& from) {
+        if (from == nullptr) {
+            return None;
+        } else {
+            return To(*from);
+        }
+    }
+};
 
 
 template <impl::inherits<impl::OptionalTag> From, typename To>
-    requires (std::convertible_to<typename std::remove_reference_t<From>::__wrapped__, To>)
+    requires (std::convertible_to<
+        typename std::remove_reference_t<From>::__wrapped__,
+        To
+    >)
 struct __cast__<From, std::optional<To>>                    : Returns<std::optional<To>> {
     static std::optional<To> operator()(From from) {
         if (from.is(None)) {
@@ -1825,37 +1939,62 @@ struct __cast__<From, std::optional<To>>                    : Returns<std::optio
 };
 
 
-template <impl::is_optional From, typename To>
-    requires (std::convertible_to<impl::optional_type<From>, To>)
-struct __cast__<From, Optional<To>>          : Returns<Optional<To>> {
-    static Optional<To> operator()(From from) {
-        if (!from.has_value()) {
-            return None;
+template <impl::inherits<impl::OptionalTag> From, typename To>
+    requires (std::same_as<
+        typename std::remove_reference_t<From>::__wrapped__,
+        std::remove_cvref_t<To>
+    >)
+struct __cast__<From, To*>                                  : Returns<To*> {
+    static To* operator()(From from) {
+        if (from.is(None)) {
+            return nullptr;
         } else {
-            return To(from.value());
+            return &from.value();
         }
     }
 };
 
 
-template <typename From, typename To> requires (std::convertible_to<From, To>)
-struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
-    static Optional<To> operator()(From&& from) {
-        return impl::construct<Optional<To>>(
-            To(std::forward<From>(from))
-        );
+template <impl::inherits<impl::OptionalTag> From, typename To>
+    requires (std::convertible_to<
+        typename std::remove_reference_t<From>::__wrapped__,
+        To
+    >)
+struct __cast__<From, std::shared_ptr<To>>                  : Returns<std::shared_ptr<To>> {
+    static std::shared_ptr<To> operator()(From from) {
+        if (from.is(None)) {
+            return nullptr;
+        } else {
+            return std::make_shared<To>(from.value());
+        }
     }
 };
 
 
-/* `getattr<>()` calls on optional objects are monadic. */
+template <impl::inherits<impl::OptionalTag> From, typename To>
+    requires (std::convertible_to<
+        typename std::remove_reference_t<From>::__wrapped__,
+        To
+    >)
+struct __cast__<From, std::unique_ptr<To>>                  : Returns<std::unique_ptr<To>> {
+    static std::unique_ptr<To> operator()(From from) {
+        if (from.is(None)) {
+            return nullptr;
+        } else {
+            return std::make_unique<To>(from.value());
+        }
+    }
+};
+
+
+/// NOTE: all other operations are monadic
+
+
 template <impl::inherits<impl::OptionalTag> Self, StaticStr Name>
-    requires (
-        __getattr__<
-            typename std::remove_reference_t<Self>::__wrapped__,
-            Name
-        >::enable
-    )
+    requires (__getattr__<
+        typename std::remove_reference_t<Self>::__wrapped__,
+        Name
+    >::enable)
 struct __getattr__<Self, Name>                              : Returns<Optional<
     typename __getattr__<typename std::remove_reference_t<Self>::__wrapped__, Name>::type
 >> {
@@ -1871,53 +2010,72 @@ struct __getattr__<Self, Name>                              : Returns<Optional<
 };
 
 
-/* `setattr<>()` calls on optional objects are monadic. */
 template <impl::inherits<impl::OptionalTag> Self, StaticStr Name, typename Value>
-    requires (
-        __setattr__<
-            typename std::remove_reference_t<Self>::__wrapped__,
-            Name,
-            Value
-        >::enable
-    )
+    requires (__setattr__<
+        typename std::remove_reference_t<Self>::__wrapped__,
+        Name,
+        Value
+    >::enable)
 struct __setattr__<Self, Name, Value>             : Returns<void> {
     static void operator()(Self self, Value&& value) {
-        if (self.is(None)) {
-            throw TypeError("optional is empty");
-        } else {
+        if (!self.is(None)) {
             setattr<Name>(self.value(), std::forward<Value>(value));
         }
     }
 };
 
 
-/* `delattr<>()` calls on optional objects are monadic. */
 template <impl::inherits<impl::OptionalTag> Self, StaticStr Name>
-    requires (
-        __delattr__<
-            typename std::remove_reference_t<Self>::__wrapped__,
-            Name
-        >::enable
-    )
+    requires (__delattr__<
+        typename std::remove_reference_t<Self>::__wrapped__,
+        Name
+    >::enable)
 struct __delattr__<Self, Name>                              : Returns<void> {
     static void operator()(Self self) {
-        if (self.is(None)) {
-            throw TypeError("optional is empty");
-        } else {
+        if (!self.is(None)) {
             delattr<Name>(self.value());
         }
     }
 };
 
 
-/* Indexing an optional is monadic. */
+template <impl::inherits<impl::OptionalTag> Self>
+    requires (__repr__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
+struct __repr__<Self>                                       : Returns<Str> {
+    static auto operator()(Self self) {
+        return self.is(None) ? std::string("None") : repr(self.value());
+    }
+};
+
+
+template <impl::inherits<impl::OptionalTag> Self, typename... Args>
+    requires (__call__<
+        typename std::remove_reference_t<Self>::__wrapped__,
+        Args...
+    >::enable)
+struct __call__<Self, Args...>                              : Returns<Optional<
+    typename __call__<
+        typename std::remove_reference_t<Self>::__wrapped__,
+        Args...
+    >::type    
+>> {
+    using Wrapped = std::remove_reference_t<Self>::__wrapped__;
+    using Return = __call__<Wrapped, Args...>::type;
+    static Optional<Return> operator()(Self self, Args&&... args) {
+        if (self.is(None)) {
+            return None;
+        } else {
+            return self.value()(std::forward<Args>(args)...);
+        }
+    }
+};
+
+
 template <impl::inherits<impl::OptionalTag> Self, typename... Key>
-    requires (
-        __getitem__<
-            typename std::remove_reference_t<Self>::__wrapped__,
-            Key...
-        >::enable
-    )
+    requires (__getitem__<
+        typename std::remove_reference_t<Self>::__wrapped__,
+        Key...
+    >::enable)
 struct __getitem__<Self, Key...>                             : Returns<Optional<
     typename __getitem__<
         typename std::remove_reference_t<Self>::__wrapped__,
@@ -1936,40 +2094,148 @@ struct __getitem__<Self, Key...>                             : Returns<Optional<
 };
 
 
-/* Item assignment against an optional is monadic. */
 template <impl::inherits<impl::OptionalTag> Self, typename Value, typename... Key>
-    requires (
-        __setitem__<
-            typename std::remove_reference_t<Self>::__wrapped__,
-            Value,
-            Key...
-        >::enable
-    )
+    requires (__setitem__<
+        typename std::remove_reference_t<Self>::__wrapped__,
+        Value,
+        Key...
+    >::enable)
 struct __setitem__<Self, Value, Key...>                         : Returns<void> {
     static void operator()(Self self, Value&& value, Key&&... key) {
-        if (self.is(None)) {
-            throw TypeError("optional is empty");
-        } else {
+        if (!self.is(None)) {
             self.value()[std::forward<Key>(key)...] = std::forward<Value>(value);
         }
     }
 };
 
 
-/* Item deletion against an optional is monadic. */
 template <impl::inherits<impl::OptionalTag> Self, typename... Key>
-    requires (
-        __delitem__<
-            typename std::remove_reference_t<Self>::__wrapped__,
-            Key...
-        >::enable
-    )
+    requires (__delitem__<
+        typename std::remove_reference_t<Self>::__wrapped__,
+        Key...
+    >::enable)
 struct __delitem__<Self, Key...>                               : Returns<void> {
     static void operator()(Self self, Key&&... key) {
-        if (self.is(None)) {
-            throw TypeError("optional is empty");
-        } else {
+        if (!self.is(None)) {
             del(self.value()[std::forward<Key>(key)...]);
+        }
+    }
+};
+
+
+template <impl::inherits<impl::OptionalTag> Self>
+    requires (__len__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
+struct __len__<Self>                                        : Returns<size_t> {
+    static size_t operator()(Self self) {
+        return self.is(None) ? 0 : len(self.value());
+    }
+};
+
+
+template <impl::inherits<impl::OptionalTag> Self>
+    requires (__iter__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
+struct __iter__<Self>                                       : Returns<Optional<
+    typename __iter__<typename std::remove_reference_t<Self>::__wrapped__>::type
+>> {
+    /// TODO: complicated
+};
+
+
+
+template <impl::inherits<impl::OptionalTag> Self>
+    requires (__reversed__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
+struct __reversed__<Self>                                   : Returns<Optional<
+    typename __reversed__<typename std::remove_reference_t<Self>::__wrapped__>::type
+>> {
+    /// TODO: complicated
+};
+
+
+template <impl::inherits<impl::OptionalTag> Self, typename Key>
+    requires (__contains__<
+        typename std::remove_reference_t<Self>::__wrapped__,
+        Key
+    >::enable)
+struct __contains__<Self, Key>                              : Returns<bool> {
+    static bool operator()(Self self, Key&& key) {
+        return self.is(None) ? false : self.value().contains(std::forward<Key>(key));
+    }
+};
+
+
+template <impl::inherits<impl::OptionalTag> Self>
+    requires (__hash__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
+struct __hash__<Self>                                       : Returns<size_t> {
+    static size_t operator()(Self self) {
+        if (self.is(None)) {
+            return hash(None);
+        } else {
+            return hash(self.value());
+        }
+    }
+};
+
+
+template <impl::inherits<impl::OptionalTag> Self>
+    requires (__abs__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
+struct __abs__<Self>                                        : Returns<Optional<
+    typename __abs__<typename std::remove_reference_t<Self>::__wrapped__>::type
+>> {
+    using Wrapped = std::remove_reference_t<Self>::__wrapped__;
+    using Return = __abs__<Wrapped>::type;
+    static Optional<Return> operator()(Self self) {
+        if (self.is(None)) {
+            return None;
+        } else {
+            return abs(self.value());
+        }
+    }
+};
+
+
+template <impl::inherits<impl::OptionalTag> Self>
+struct __invert__<Self>                                     : Returns<Optional<
+    typename __invert__<typename std::remove_reference_t<Self>::__wrapped__>::type
+>> {
+    using Wrapped = std::remove_reference_t<Self>::__wrapped__;
+    using Return = __invert__<Wrapped>::type;
+    static Optional<Return> operator()(Self self) {
+        if (self.is(None)) {
+            return None;
+        } else {
+            return ~self.value();
+        }
+    }
+};
+
+
+template <impl::inherits<impl::OptionalTag> Self>
+struct __pos__<Self>                                        : Returns<Optional<
+    typename __pos__<typename std::remove_reference_t<Self>::__wrapped__>::type
+>> {
+    using Wrapped = std::remove_reference_t<Self>::__wrapped__;
+    using Return = __pos__<Wrapped>::type;
+    static Optional<Return> operator()(Self self) {
+        if (self.is(None)) {
+            return None;
+        } else {
+            return +self.value();
+        }
+    }
+};
+
+
+template <impl::inherits<impl::OptionalTag> Self>
+struct __neg__<Self>                                        : Returns<Optional<
+    typename __neg__<typename std::remove_reference_t<Self>::__wrapped__>::type
+>> {
+    using Wrapped = std::remove_reference_t<Self>::__wrapped__;
+    using Return = __neg__<Wrapped>::type;
+    static Optional<Return> operator()(Self self) {
+        if (self.is(None)) {
+            return None;
+        } else {
+            return -self.value();
         }
     }
 };
@@ -1977,16 +2243,47 @@ struct __delitem__<Self, Key...>                               : Returns<void> {
 
 
 
-/// TODO: all other operations should be forwarded, but raise an exception if the
-/// optional is empty.  Alternatively, I could prevent any operations that can't be
-/// made monadic
+/// TODO: there's something weird about reference types here.  The same will be true
+/// for inplace operators in the future.
 
 
-/// TODO:
-///     isinstance()
-///     issubclass()
-///     template()
-///     __initializer__
+template <impl::inherits<impl::OptionalTag> Self>
+    requires (__increment__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
+struct __increment__<Self>                                  : Returns<
+    std::remove_reference_t<Self>&
+> {
+    static std::remove_reference_t<Self>& operator()(Self self) {
+        if (!self.is(None)) {
+            ++self.value();
+        }
+        return self;
+    }
+};
+
+
+/// TODO: same as for __increment__
+
+
+template <impl::inherits<impl::OptionalTag> Self>
+    requires (__decrement__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
+struct __decrement__<Self>                                  : Returns<
+    std::remove_reference_t<Self>&
+> {
+    static std::remove_reference_t<Self>& operator()(Self self) {
+        if (!self.is(None)) {
+            --self.value();
+        }
+        return self;
+    }
+};
+
+
+/// TODO: __lt__, etc. should not be constrained to return bool.  Also binary operators
+/// are really hard in this case.
+
+
+/// TODO: all the math operators as monads
+
 
 
 /////////////////////

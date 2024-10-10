@@ -271,7 +271,7 @@ struct Interface<Type<Code>> {
 template <typename T, impl::is<Code> Base>
 struct __isinstance__<T, Base>                              : Returns<bool> {
     static constexpr bool operator()(Base&& obj) {
-        if constexpr (impl::dynamic_type<T>) {
+        if constexpr (impl::dynamic<T>) {
             return PyCode_Check(ptr(obj));
         } else {
             return issubclass<T, Code>();
@@ -501,7 +501,7 @@ struct Interface<Type<Frame>> {
 template <typename T, impl::is<Frame> Base>
 struct __isinstance__<T, Base>                              : Returns<bool> {
     static constexpr bool operator()(T&& obj) {
-        if constexpr (impl::dynamic_type<T>) {
+        if constexpr (impl::dynamic<T>) {
             return PyFrame_Check(ptr(obj));
         } else {
             return issubclass<T, Frame>();

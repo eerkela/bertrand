@@ -7,6 +7,49 @@
 namespace py {
 
 
+namespace impl {
+
+    /* Wrap a non-owning, mutable reference to a C++ object into a `py::Object` proxy that
+    exposes it to Python.  Note that this only works if a corresponding `py::Object`
+    subclass exists, which was declared using the `__python__` CRTP helper, and whose C++
+    type exactly matches the argument. */
+    template <cpp T>
+        requires (
+            has_python<T> &&
+            has_cpp<python_type<T>> &&
+            is<T, cpp_type<python_type<T>>>
+        )
+    [[nodiscard]] auto wrap(T& obj) -> python_type<T>;
+
+    /* Wrap a non-owning, immutable reference to a C++ object into a `py::Object` proxy
+    that exposes it to Python.  Note that this only works if a corresponding `py::Object`
+    subclass exists, which was declared using the `__python__` CRTP helper, and whose C++
+    type exactly matches the argument. */
+    template <cpp T>
+        requires (
+            has_python<T> &&
+            has_cpp<python_type<T>> &&
+            is<T, cpp_type<python_type<T>>>
+        )
+    [[nodiscard]] auto wrap(const T& obj) -> python_type<T>;
+
+    /* Retrieve a reference to the internal C++ object that backs a `py::Object` wrapper,
+    if such an object exists.  Does nothing if called on a pure Python or naked C++
+    object.  If the wrapper does not own the backing object, this method will follow the
+    internal pointer to resolve the reference. */
+    template <python T> requires (has_cpp<T>)
+    [[nodiscard]] auto& unwrap(T& obj);
+
+    /* Retrieve a reference to the internal C++ object that backs a `py::Object` wrapper,
+    if such an object exists.  Does nothing if called on a pure Python or naked C++
+    object.  If the wrapper does not own the backing object, this method will follow the
+    internal pointer to resolve the reference. */
+    template <python T> requires (has_cpp<T>)
+    [[nodiscard]] const auto& unwrap(const T& obj);
+
+}
+
+
 /* Retrieve the raw pointer backing a Python object. */
 template <impl::inherits<Object> T>
 [[nodiscard]] PyObject* ptr(T&& obj);
@@ -28,75 +71,74 @@ template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_borrow(PyObject* obj);
 
 
-/* Convert an arbitrary C++ value to an equivalent Python object if it isn't one
-already. */
-template <typename T> requires (__cast__<std::remove_cvref_t<T>>::enable)
-[[nodiscard]] decltype(auto) as_object(T&& value) {
-    using AsObj = __cast__<std::remove_cvref_t<T>>;
-    if constexpr (impl::has_call_operator<AsObj>) {
-        return AsObj{}(std::forward<T>(value));
+/* Convert an arbitrary value into a Python object if it is not one already.
+
+Note that this method respects reference semantics as closely as possible, meaning that
+if you provide an lvalue that can be directly represented in Python without requiring
+any conversions (i.e. the C++ type and Python type are 1:1 correspondant), then the
+resulting Python object will hold a pointer to the value, without copying.  As a
+result, the caller is responsible for ensuring that the underlying object outlives the
+Python object, otherwise undefined behavior will occur.  This can be prevented either
+by explicitly moving the C++ object when this function is called, or by manually
+generating a copy and passing it as a temporary, both of which will insert the value
+into the Python object directly.
+
+This function is considered to be lower-level than calling a Python constructor
+directly, and is mostly intended for internal use when converting C++ return types to
+Python in a way that respects reference semantics, and in other cases where both Python
+and C++ need to share state.  Always prefer calling `py::obj<T>()` or an equivalent
+Python constructor when the lifetime of the object is uncertain, especially when the
+result is passed up to Python, and may therefore acquire outside references. */
+template <impl::has_python T> requires (!std::same_as<impl::python_type<T>, Object>)
+[[nodiscard]] decltype(auto) to_python(T&& value) {
+    if constexpr (impl::python<T>) {
+        return std::forward<T>(value);
+
+    } else if constexpr (
+        std::is_lvalue_reference_v<T> &&
+        impl::is<T, impl::cpp_type<impl::python_type<T>>>
+    ) {
+        return impl::wrap(std::forward<T>(value));
+
     } else {
-        static_assert(
-            !std::same_as<typename AsObj::type, Object>,
-            "C++ types cannot be converted to py::Object directly.  Check your "
-            "specialization of __cast__ for this type and ensure the Return type "
-            "derives from py::Object, and is not py::Object itself."
-        );
-        return typename AsObj::type(std::forward<T>(value));
+        return impl::python_type<T>(std::forward<T>(value));
     }
 }
 
 
-/* Wrap a non-owning, mutable reference to a C++ object into a `py::Object` proxy that
-exposes it to Python.  Note that this only works if a corresponding `py::Object`
-subclass exists, which was declared using the `__python__` CRTP helper, and whose C++
-type exactly matches the argument.
+/* If the argument is a Python object that wraps around a C++ object, then return a
+reference to that object, otherwise return the argument as-is.
 
-WARNING: This function is unsafe and should be used with caution.  It is the caller's
-responsibility to make sure that the underlying object outlives the wrapper, otherwise
-undefined behavior will occur.  It is mostly intended for internal use in order to
-expose shared state to Python, for instance to model exported global variables. */
+This function is the inverse of `to_python()`, and is used to extract an lvalue
+reference to the underlying C++ value of a Python object when passed as a parameter to
+a C++ function that expects a matching type.  By unwrapping the C++ value directly, we
+can bypass any additional copies or conversions, and allow mutable lvalues to bind to
+Python objects appropriately, without requiring any additional steps.  If the argument
+is already a C++ object or a pure Python type that has no C++ equivalent, then this
+function will return it as-is, in which case conversion operators will be considered
+like normal.
+
+Note that the same lifetime considerations apply to this function as for `to_python()`,
+meaning that if a Python object is unwrapped into a C++ reference, the Python object
+must outlive the reference, otherwise undefined behavior will occur.  Additionally, if
+a mutable reference is returned, it is generally unsafe to move from it, as the Python
+wrapper will be left in an invalid state.  It is safe to modify such an object
+in-place, however, in which case the changes will also be reflected in Python, as long
+as doing so does not violate any immutability guarantees on the Python side.
+
+If the lifetime of the Python object is uncertain, or if the result of this function
+is subsequently stored elsewhere, then it is always preferable to rely on the object's
+implicit conversion operators, which always create copies of the underlying value,
+rather than referencing it directly. */
 template <typename T>
-    requires (
-        __cast__<T>::enable &&
-        impl::has_cpp<typename __cast__<T>::type> &&
-        impl::is<T, impl::cpp_type<typename __cast__<T>::type>>
-    )
-[[nodiscard]] auto wrap(T& obj) -> __cast__<T>::type;  // defined in ops.h
+[[nodiscard]] decltype(auto) from_python(T&& obj) {
+    if constexpr (impl::python<T> && impl::has_cpp<T>) {
+        return impl::unwrap(std::forward<T>(obj));
 
-
-/* Wrap a non-owning, immutable reference to a C++ object into a `py::Object` proxy
-that exposes it to Python.  Note that this only works if a corresponding `py::Object`
-subclass exists, which was declared using the `__python__` CRTP helper, and whose C++
-type exactly matches the argument.
-
-WARNING: This function is unsafe and should be used with caution.  It is the caller's
-responsibility to make sure that the underlying object outlives the wrapper, otherwise
-undefined behavior will occur.  It is mostly intended for internal use in order to
-expose shared state to Python, for instance to model exported global variables. */
-template <typename T>
-    requires (
-        __cast__<T>::enable &&
-        impl::has_cpp<typename __cast__<T>::type> &&
-        impl::is<T, impl::cpp_type<typename __cast__<T>::type>>
-    )
-[[nodiscard]] auto wrap(const T& obj) -> __cast__<T>::type;  // defined in ops.h
-
-
-/* Retrieve a reference to the internal C++ object that backs a `py::Object` wrapper,
-if such an object exists.  Does nothing if called on a pure Python or naked C++
-object.  If the wrapper does not own the backing object, this method will follow the
-internal pointer to resolve the reference. */
-template <typename T>
-[[nodiscard]] auto& unwrap(T& obj);  // defined in ops.h
-
-
-/* Retrieve a reference to the internal C++ object that backs a `py::Object` wrapper,
-if such an object exists.  Does nothing if called on a pure Python or naked C++
-object.  If the wrapper does not own the backing object, this method will follow the
-internal pointer to resolve the reference. */
-template <typename T>
-[[nodiscard]] const auto& unwrap(const T& obj);  // defined in ops.h
+    } else {
+        return std::forward<T>(obj);
+    }
+}
 
 
 template <>
@@ -147,10 +189,10 @@ protected:
     friend T reinterpret_borrow(PyObject*);
     template <std::derived_from<Object> T>
     friend T reinterpret_steal(PyObject*);
-    template <typename T>
-    friend auto& unwrap(T& obj);
-    template <typename T>
-    friend const auto& unwrap(const T& obj);
+    template <impl::python T> requires (impl::has_cpp<T>)
+    friend auto& impl::unwrap(T& obj);
+    template <impl::python T> requires (impl::has_cpp<T>)
+    friend const auto& impl::unwrap(const T& obj);
 
     template <typename T>
     struct implicit_ctor {
@@ -291,9 +333,9 @@ protected:
         static Type<Derived> __import__() {
             /// TODO: this can be defined by default using the global registry held
             /// within the bertrand.python module at the C++ level.
-            // return Module<"bertrand.python">().as_object<Derived>();
-            // return Module<"bertrand.python">().as_object(derived);  // python style
-            // return bertrand.python.as_object(derived);  // in Python
+            // return Module<"bertrand.python">().to_python<Derived>();
+            // return Module<"bertrand.python">().to_python(derived);  // python style
+            // return bertrand.python.to_python(derived);  // in Python
         }
 
         /* Default `tp_dealloc` calls the Python type's C++ destructor. */
@@ -662,9 +704,9 @@ public:
         //     /// positional arguments?  I'll still have to account for variadic
         //     /// unpacking one way or another.
         //     if constexpr (std::is_void_v<Return>) {
-        //         unwrap(self)(unwrap(std::forward<Args>(args))...);
+        //         from_python(self)(from_python(std::forward<Args>(args))...);
         //     } else {
-        //         return unwrap(self)(unwrap(std::forward<Args>(args))...);
+        //         return from_python(self)(from_python(std::forward<Args>(args))...);
         //     }
 
         // } else {
@@ -737,7 +779,7 @@ struct __issubclass__<T, Base>                              : Returns<bool> {
         return std::derived_from<U, Object>;
     }
     static constexpr bool operator()(T&& obj) {
-        if constexpr (impl::dynamic_type<U>) {
+        if constexpr (impl::dynamic<U>) {
             return PyType_Check(ptr(obj));
         } else {
             return impl::type_like<U>;
@@ -775,12 +817,13 @@ struct __init__<Self, T>                           : Returns<Self> {
 /// `__new__()`/`__init__()` are defined in core.h
 
 
-/* Implicitly convert any C++ value into a py::Object by invoking as_object(). */
-template <impl::cpp_like T> requires (__cast__<T>::enable)
+/* Implicitly convert any C++ value into a py::Object by invoking the unary cast type,
+and then reinterpreting as a dynamic object. */
+template <impl::cpp T> requires (impl::has_python<T>)
 struct __cast__<T, Object>                                  : Returns<Object> {
     static auto operator()(T&& value) {
         return reinterpret_steal<Object>(
-            release(as_object(std::forward<T>(value)))
+            release(impl::python_type<T>(std::forward<T>(value)))
         );
     }
 };
@@ -813,7 +856,7 @@ struct __cast__<From, To>                                   : Returns<To> {
 /* Implicitly convert a Python object into any recognized C++ type by checking for an
 equivalent Python type via __cast__, implicitly converting to that type, and then
 implicitly converting the result to the C++ type in a 2-step process. */
-template <impl::is<Object> From, impl::cpp_like To> requires (__cast__<To>::enable)
+template <impl::is<Object> From, impl::cpp To> requires (__cast__<To>::enable)
 struct __cast__<From, To>                                   : Returns<To> {
     static auto operator()(From&& self) {
         using Intermediate = __cast__<To>::type;
@@ -827,7 +870,7 @@ struct __cast__<From, To>                                   : Returns<To> {
 /* Explicitly convert a Python object into any C++ type by checking for an equivalent
 Python type via __cast__, explicitly converting to that type, and then explicitly
 converting to the C++ type in a 2-step process. */
-template <impl::inherits<Object> From, impl::cpp_like To> requires (__cast__<To>::enable)
+template <impl::inherits<Object> From, impl::cpp To> requires (__cast__<To>::enable)
 struct __explicit_cast__<From, To>                          : Returns<To> {
     static auto operator()(From&& from) {
         using Intermediate = __cast__<To>::type;
@@ -840,7 +883,7 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 
 /* Explicitly convert a Python object into a C++ integer by calling `int(obj)` at the
 Python level. */
-template <impl::inherits<Object> From, impl::cpp_like To>
+template <impl::inherits<Object> From, impl::cpp To>
     requires (__cast__<To>::enable && std::integral<To>)
 struct __explicit_cast__<From, To>                          : Returns<To> {
     static To operator()(From&& from);  // defined in ops.h
@@ -849,7 +892,7 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 
 /* Explicitly convert a Python object into a C++ floating-point number by calling
 `float(obj)` at the Python level. */
-template <impl::inherits<Object> From, impl::cpp_like To>
+template <impl::inherits<Object> From, impl::cpp To>
     requires (__cast__<To>::enable && std::floating_point<To>)
 struct __explicit_cast__<From, To>                          : Returns<To> {
     static To operator()(From&& from);  // defined in ops.h
@@ -875,14 +918,18 @@ struct __explicit_cast__<From, std::basic_string<Char>> : Returns<std::basic_str
 template <impl::is<Object> Self, StaticStr Name>
 struct __getattr__<Self, Name>                              : Returns<Object> {};
 template <impl::is<Object> Self, StaticStr Name, std::convertible_to<Object> Value>
+    requires (!impl::is_const<Self>)
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <impl::is<Object> Self, StaticStr Name>
+    requires (!impl::is_const<Self>)
 struct __delattr__<Self, Name>                              : Returns<void> {};
 template <impl::is<Object> Self, std::convertible_to<Object>... Key>
 struct __getitem__<Self, Key...>                            : Returns<Object> {};
 template <impl::is<Object> Self, std::convertible_to<Object> Value, std::convertible_to<Object>... Key>
+    requires (!impl::is_const<Self>)
 struct __setitem__<Self, Value, Key...>                     : Returns<void> {};
 template <impl::is<Object> Self, std::convertible_to<Object>... Key>
+    requires (!impl::is_const<Self>)
 struct __delitem__<Self, Key...>                            : Returns<void> {};
 template <impl::is<Object> Self, std::convertible_to<Object> Key>
 struct __contains__<Self, Key>                              : Returns<bool> {};
@@ -904,9 +951,9 @@ template <impl::is<Object> Self>
 struct __pos__<Self>                                        : Returns<Object> {};
 template <impl::is<Object> Self>
 struct __neg__<Self>                                        : Returns<Object> {};
-template <impl::is<Object> Self>
+template <impl::is<Object> Self> requires (!impl::is_const<Self>)
 struct __increment__<Self>                                  : Returns<Object&> {};
-template <impl::is<Object> Self>
+template <impl::is<Object> Self> requires (!impl::is_const<Self>)
 struct __decrement__<Self>                                  : Returns<Object&> {};
 template <impl::is<Object> L, std::convertible_to<Object> R>
 struct __lt__<L, R>                                         : Returns<bool> {};
@@ -980,29 +1027,29 @@ template <impl::is<Object> L, std::convertible_to<Object> R>
 struct __xor__<L, R>                                        : Returns<Object> {};
 template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
 struct __xor__<L, R>                                        : Returns<Object> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
+template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
 struct __iadd__<L, R>                                       : Returns<Object&> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
+template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
 struct __isub__<L, R>                                       : Returns<Object&> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
+template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
 struct __imul__<L, R>                                       : Returns<Object&> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
+template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
 struct __itruediv__<L, R>                                   : Returns<Object&> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
+template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
 struct __ifloordiv__<L, R>                                  : Returns<Object&> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
+template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
 struct __imod__<L, R>                                       : Returns<Object&> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
+template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
 struct __ipow__<L, R>                                       : Returns<Object&> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
+template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
 struct __ilshift__<L, R>                                    : Returns<Object&> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
+template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
 struct __irshift__<L, R>                                    : Returns<Object&> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
+template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
 struct __iand__<L, R>                                       : Returns<Object&> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
+template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
 struct __ior__<L, R>                                        : Returns<Object&> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
+template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
 struct __ixor__<L, R>                                       : Returns<Object&> {};
 
 
@@ -1073,7 +1120,7 @@ struct __cast__<std::nullopt_t>                             : Returns<NoneType> 
 template <typename T, impl::is<NoneType> Self>
 struct __isinstance__<T, Self>                              : Returns<bool> {
     static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::dynamic_type<T>) {
+        if constexpr (impl::dynamic<T>) {
             return Py_IsNone(ptr(obj));
         } else {
             return issubclass<T, NoneType>();
@@ -1175,7 +1222,7 @@ struct NotImplementedType : Object, Interface<NotImplementedType> {
 template <typename T, impl::is<NotImplementedType> Self>
 struct __isinstance__<T, Self>                              : Returns<bool> {
     static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::dynamic_type<T>) {
+        if constexpr (impl::dynamic<T>) {
             return PyType_IsSubtype(Py_TYPE(ptr(obj)), Py_TYPE(Py_NotImplemented));
         } else {
             return issubclass<T, NotImplementedType>();
@@ -1269,7 +1316,7 @@ struct EllipsisType : Object, Interface<EllipsisType> {
 template <typename T, impl::is<EllipsisType> Self>
 struct __isinstance__<T, Self>                              : Returns<bool> {
     static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::dynamic_type<T>) {
+        if constexpr (impl::dynamic<T>) {
             return PyType_IsSubtype(Py_TYPE(ptr(obj)), Py_TYPE(Py_Ellipsis));
         } else {
             return issubclass<T, EllipsisType>();

@@ -270,31 +270,24 @@ struct Returns : impl::BertrandTag {
 };
 
 
-/* Enables the `py::getattr<"name">()` helper for any `py::Object` subclass, and
-assigns a corresponding return type.  Disabled by default unless this class is
-explicitly specialized for a given attribute name.  Specializations of this class may
-implement a custom call operator to replace the default behavior, which delegates to a
-normal dotted attribute lookup at the Python level.   */
-template <typename Self, StaticStr Name>
-struct __getattr__                                          : Disable {};
+/* Customizes the way C++ templates are exposed to Python.  The closest Python
+analogue to this is the `__class_getitem__` method of a custom type, which in
+Bertrand's case allows navigation of the C++ template hierarchy from Python, by
+subscripting a generic type.  Such a subscription directly searches a Python dictionary
+held in the type's metaclass, whose keys are populated by this control struct when the
+type is imported.
 
-
-/* Enables the `py::setattr<"name">()` helper for any `py::Object` subclass, which must
-return void.  Disabled by default unless this class is explicitly specialized for a
-given attribute name.  Specializations of this class may implement a custom call
-operator to replace the default behavior, which delegates to a normal dotted attribute
-assignment at the Python level. */
-template <typename Self, StaticStr Name, typename Value>
-struct __setattr__                                          : Disable {};
-
-
-/* Enables the `py::delattr<"name">()` helper for any `py::Object` subclass, which must
-return void.  Disabled by default unless this class is explicitly specialized for a
-given attribute name.  Specializations of this class may implement a custom call
-operator to replace the default behavior, which delegates to a normal dotted attribute
-deletion at the Python level. */
-template <typename Self, StaticStr Name>
-struct __delattr__                                          : Disable {};
+This control struct is disabled by default, and must be explicitly specialized for any
+type that implements template parameters.  All specializations MUST implement a custom
+call operator that takes no arguments, and produces a key to be inserted into the
+template dictionary.  A key consisting of multiple, comma-separated parts can be
+encoded as a tuple, which will be accessed idiomatically from Python when the
+multidimensional subscript operator is used.  The only restriction on the contents of
+the returned key is that each element must be hashable, enabling the use of non-type
+template parameters, such as integers or strings, which will be modeled identically on
+the Python side. */
+template <typename Self>
+struct __template__                                         : Disable {};
 
 
 /* Enables the `py::isinstance<...>()` operator for any subclass of `py::Object`, which
@@ -343,24 +336,31 @@ template <typename Derived, typename Base>
 struct __issubclass__                                       : Disable {};
 
 
-/* Customizes the way C++ templates are exposed to Python.  The closest Python
-analogue to this is the `__class_getitem__` method of a custom type, which in
-Bertrand's case allows navigation of the C++ template hierarchy from Python, by
-subscripting a generic type.  Such a subscription directly searches a Python dictionary
-held in the type's metaclass, whose keys are populated by this control struct when the
-type is imported.
+/* Enables the `py::getattr<"name">()` helper for any `py::Object` subclass, and
+assigns a corresponding return type.  Disabled by default unless this class is
+explicitly specialized for a given attribute name.  Specializations of this class may
+implement a custom call operator to replace the default behavior, which delegates to a
+normal dotted attribute lookup at the Python level.   */
+template <typename Self, StaticStr Name>
+struct __getattr__                                          : Disable {};
 
-This control struct is disabled by default, and must be explicitly specialized for any
-type that implements template parameters.  All specializations MUST implement a custom
-call operator that takes no arguments, and produces a key to be inserted into the
-template dictionary.  A key consisting of multiple, comma-separated parts can be
-encoded as a tuple, which will be accessed idiomatically from Python when the
-multidimensional subscript operator is used.  The only restriction on the contents of
-the returned key is that each element must be hashable, enabling the use of non-type
-template parameters, such as integers or strings, which will be modeled identically on
-the Python side. */
-template <typename Self>
-struct __template__                                         : Disable {};
+
+/* Enables the `py::setattr<"name">()` helper for any `py::Object` subclass, which must
+return void.  Disabled by default unless this class is explicitly specialized for a
+given attribute name.  Specializations of this class may implement a custom call
+operator to replace the default behavior, which delegates to a normal dotted attribute
+assignment at the Python level. */
+template <typename Self, StaticStr Name, typename Value>
+struct __setattr__                                          : Disable {};
+
+
+/* Enables the `py::delattr<"name">()` helper for any `py::Object` subclass, which must
+return void.  Disabled by default unless this class is explicitly specialized for a
+given attribute name.  Specializations of this class may implement a custom call
+operator to replace the default behavior, which delegates to a normal dotted attribute
+deletion at the Python level. */
+template <typename Self, StaticStr Name>
+struct __delattr__                                          : Disable {};
 
 
 /* Enables the C++ initializer list constructor for any `py::Object` subclass, which
@@ -2299,12 +2299,6 @@ struct __ixor__ {
 };
 
 
-/* Allows anonymous access to a Python wrapper for a given C++ type, by consulting the
-unary `__cast__` control structure. */
-template <typename T> requires (__cast__<T>::enable)
-using obj = __cast__<T>::type;
-
-
 /* A Python interface mixin which can be used to reflect multiple inheritance within
 the Object hierarchy.
 
@@ -2464,63 +2458,36 @@ namespace impl {
         ));  // NOTE: string will be garbage collected at shutdown
     };
 
-    template <typename Self, StaticStr Name>
-        requires (__getattr__<Self, Name>::enable)
-    struct Attr;
+    template <typename T>
+    concept bertrand = std::derived_from<std::remove_cvref_t<T>, BertrandTag>;
 
     template <typename T>
-    constexpr bool is_attr_helper = false;
-    template <typename Self, StaticStr Name>
-    constexpr bool is_attr_helper<Attr<Self, Name>> = true;
-    template <typename T>
-    concept is_attr = is_attr_helper<std::remove_cvref_t<T>>;
+    concept python = std::derived_from<std::remove_cvref_t<T>, Object>;
 
     template <typename T>
-    struct attr_type_helper {};
-    template <typename Self, StaticStr Name>
-    struct attr_type_helper<Attr<Self, Name>> {
-        using type = __getattr__<Self, Name>::type;
+    concept cpp = !python<T>;
+
+    /// TODO: what about lazy types that evaluate to Object?  Or monads, like
+    /// Optional<T>, Union<T...>?
+    template <typename T>
+    concept dynamic = std::same_as<std::remove_cvref_t<T>, Object>;
+
+    template <typename L, typename R>
+    concept is = std::same_as<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;
+
+    template <typename L, typename R>
+    concept inherits = std::derived_from<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;
+
+    template <typename T>
+    concept is_const = std::is_const_v<std::remove_reference_t<T>>;
+
+    template <typename T>
+    concept is_volatile = std::is_volatile_v<std::remove_reference_t<T>>;
+
+    template <typename From, typename To>
+    concept explicitly_convertible_to = requires(From from) {
+        { static_cast<To>(from) } -> std::same_as<To>;
     };
-    template <is_attr T>
-    using attr_type = attr_type_helper<std::remove_cvref_t<T>>::type;
-
-    template <typename T, StaticStr Name, typename... Args>
-    concept attr_is_callable_with =
-        __getattr__<T, Name>::enable &&
-        std::derived_from<typename __getattr__<T, Name>::type, FunctionTag> &&
-        __getattr__<T, Name>::type::template invocable<Args...>;
-
-    template <typename Container, typename... Key>
-        requires (__getitem__<Container, Key...>::enable)
-    struct Item;
-
-    template <typename T>
-    constexpr bool is_item_helper = false;
-    template <typename Container, typename... Key>
-    constexpr bool is_item_helper<Item<Container, Key...>> = true;
-    template <typename T>
-    concept is_item = is_item_helper<std::remove_cvref_t<T>>;
-
-    template <typename T>
-    struct item_type_helper {};
-    template <typename Container, typename... Key>
-    struct item_type_helper<Item<Container, Key...>> {
-        using type = __getitem__<Container, Key...>::type;
-    };
-    template <is_item T>
-    using item_type = item_type_helper<std::remove_cvref_t<T>>::type;
-
-    template <typename T>
-    concept lazily_evaluated = is_attr<T> || is_item<T>;
-
-    template <typename T>
-    struct lazy_type_helper {};
-    template <is_attr T>
-    struct lazy_type_helper<T> { using type = attr_type<T>; };
-    template <is_item T>
-    struct lazy_type_helper<T> { using type = item_type<T>; };
-    template <lazily_evaluated T>
-    using lazy_type = lazy_type_helper<std::remove_cvref_t<T>>::type;
 
     template <typename T, typename = void>
     constexpr bool has_interface_helper = false;
@@ -2537,85 +2504,176 @@ namespace impl {
     concept has_type = has_type_helper<std::remove_cvref_t<T>>;
 
     template <typename T, typename = void>
-    constexpr bool has_python_helper = false;
-    template <typename T>
-    constexpr bool has_python_helper<T, std::void_t<typename T::__python__::__object__>> =
-        std::same_as<T, typename T::__python__::__object__>;
-    template <typename T>
-    concept has_python = has_python_helper<std::remove_cvref_t<T>>;
-
-    template <typename T>
-    concept has_export = has_python<T> && requires() {
-        { &std::remove_cvref_t<T>::__python__::__export__ };
+    struct python_helper {
+        static constexpr bool enable = __cast__<T>::enable;
+        template <typename U>
+        struct helper { using type = void; };
+        template <typename U> requires (__cast__<U>::enable)
+        struct helper<U> { using type = __cast__<U>::type; };
+        using type = helper<T>::type;
     };
-
-    template <typename T, typename = void>
-    constexpr bool has_cpp_helper = false;
     template <typename T>
-    constexpr bool has_cpp_helper<T, std::void_t<typename T::__python__::__cpp__>> = true;
-    template <typename T>
-    concept has_cpp = has_python<T> && has_cpp_helper<T> && requires() {
-        { &std::remove_cvref_t<T>::__python__::m_cpp };
-    };
-
-    template <typename T>
-    concept bertrand_like = std::derived_from<std::remove_cvref_t<T>, BertrandTag>;
-
-    template <typename T>
-    concept python_like = std::derived_from<std::remove_cvref_t<T>, Object>;
-
-    template <typename... Ts>
-    concept any_are_python_like = (python_like<Ts> || ...);
-
-    template <typename T>
-    concept dynamic_type = std::same_as<std::remove_cvref_t<T>, Object>;
-
-    template <typename T>
-    concept cpp_like = !python_like<T>;
-
-    template <typename T>
-    struct cpp_type_helper { using type = T; };
-    template <has_cpp T>
-    struct cpp_type_helper<T> { using type = T::__python__::__cpp__; };
-    template <typename T> requires (cpp_like<T> || has_cpp<T>)
-    using cpp_type = cpp_type_helper<std::remove_cvref_t<T>>::type;
-
-    template <typename T>
-    constexpr bool is_generic_helper = false;
-    template <template <typename...> typename T, typename... Ts>
-    constexpr bool is_generic_helper<T<Ts...>> = true;
-    template <typename T>
-    concept is_generic = is_generic_helper<std::remove_cvref_t<T>>;
-
-    template <typename T>
-    struct _respecialize {
-        static constexpr bool enable = false;
-        template <typename... New>
+    struct python_helper<T, std::void_t<
+        typename std::remove_cvref_t<T>::__python__::__object__>
+    > {
+        static constexpr bool enable = std::same_as<
+            std::remove_cvref_t<T>,
+            typename std::remove_cvref_t<T>::__python__::__object__
+        >;
         using type = T;
     };
-    template <template <typename...> typename T, typename... Ts>
-    struct _respecialize<T<Ts...>> {
+    template <typename T>
+    concept has_python = python_helper<T>::enable;
+    template <typename T>
+    using python_type = python_helper<T>::type;
+
+    template <typename T, typename = void>
+    constexpr bool has_export_helper = false;
+    template <typename T>
+    constexpr bool has_export_helper<T, std::void_t<decltype(&T::__python__::__export__)>> =
+        std::is_function_v<decltype(T::__python__::__export__)> &&
+        std::is_invocable_v<decltype(T::__python__::__export__)>;
+    template <typename T>
+    concept has_export =
+        python<T> && has_python<T> && has_export_helper<std::remove_cvref_t<T>>;
+
+    template <typename T, typename = void>
+    constexpr bool has_import_helper = false;
+    template <typename T>
+    constexpr bool has_import_helper<T, std::void_t<decltype(&T::__python__::__import__)>> =
+        std::is_function_v<decltype(T::__python__::__import__)> &&
+        std::is_invocable_v<decltype(T::__python__::__import__)>;
+    template <typename T>
+    concept has_import =
+        python<T> && has_python<T> && has_import_helper<std::remove_cvref_t<T>>;
+
+    template <typename T, typename = void>
+    struct cpp_helper {
+        static constexpr bool enable = cpp<T>;
+        using type = T;
+    };
+    template <typename T>
+    struct cpp_helper<T, std::void_t<typename std::remove_cvref_t<T>::__python__::__cpp__>> {
+        static constexpr bool enable = requires() {
+            { &std::remove_cvref_t<T>::__python__::m_cpp };
+        };
+        using type = std::remove_cvref_t<T>::__python__::__cpp__;
+    };
+    template <typename T>
+    concept has_cpp = cpp_helper<T>::enable;
+    template <typename T> requires (cpp_helper<T>::enable)
+    using cpp_type = cpp_helper<T>::type;
+
+    template <typename Self, StaticStr Name>
+        requires (__getattr__<Self, Name>::enable)
+    struct Attr;
+    template <typename T>
+    struct attr_helper { static constexpr bool enable = false; };
+    template <typename Self, StaticStr Name>
+    struct attr_helper<Attr<Self, Name>> {
         static constexpr bool enable = true;
-        template <typename... New>
-        using type = T<New...>;
+        using type = __getattr__<Self, Name>::type;
     };
-    template <typename T, typename... Ts>
-    using respecialize = _respecialize<std::remove_cvref_t<T>>::template type<Ts...>;
+    template <typename T>
+    concept is_attr = attr_helper<std::remove_cvref_t<T>>::enable;
+    template <is_attr T>
+    using attr_type = attr_helper<std::remove_cvref_t<T>>::type;
 
-    template <typename L, typename R>
-    concept is = std::same_as<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;
+    template <typename T, StaticStr Name, typename... Args>
+    concept attr_is_callable_with =
+        __getattr__<T, Name>::enable &&
+        std::is_invocable_v<typename __getattr__<T, Name>::type, Args...>;
 
-    template <typename L, typename R>
-    concept inherits = std::derived_from<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;
-
-    template <typename From, typename To>
-    concept has_conversion_operator = requires(From from) {
-        { from.operator To() };
+    template <typename Container, typename... Key>
+        requires (__getitem__<Container, Key...>::enable)
+    struct Item;
+    template <typename T>
+    struct item_helper { static constexpr bool enable = false; };
+    template <typename Container, typename... Key>
+    struct item_helper<Item<Container, Key...>> {
+        static constexpr bool enable = true;
+        using type = __getitem__<Container, Key...>::type;
     };
+    template <typename T>
+    concept is_item = item_helper<std::remove_cvref_t<T>>::enable;
+    template <is_item T>
+    using item_type = item_helper<std::remove_cvref_t<T>>::type;
 
-    template <typename From, typename To>
-    concept explicitly_convertible_to = requires(From from) {
-        { static_cast<To>(from) };
+    template <typename T>
+    concept lazily_evaluated = is_attr<T> || is_item<T>;
+
+    template <typename T>
+    struct lazy_type_helper {};
+    template <is_attr T>
+    struct lazy_type_helper<T> { using type = attr_type<T>; };
+    template <is_item T>
+    struct lazy_type_helper<T> { using type = item_type<T>; };
+    template <lazily_evaluated T>
+    using lazy_type = lazy_type_helper<std::remove_cvref_t<T>>::type;
+
+    template <typename T>
+    struct optional_helper { static constexpr bool value = false; };
+    template <typename T>
+    struct optional_helper<std::optional<T>> {
+        static constexpr bool value = true;
+        using type = T;
+    };
+    template <typename T>
+    concept is_optional = optional_helper<std::remove_cvref_t<T>>::value;
+    template <is_optional T>
+    using optional_type = optional_helper<std::remove_cvref_t<T>>::type;
+
+    template <typename T>
+    struct variant_helper { static constexpr bool value = false; };
+    template <typename... Ts>
+    struct variant_helper<std::variant<Ts...>> {
+        static constexpr bool value = true;
+        using types = std::tuple<Ts...>;
+    };
+    template <typename T>
+    concept is_variant = variant_helper<std::remove_cvref_t<T>>::value;
+    template <is_variant T>
+    using variant_types = typename variant_helper<std::remove_cvref_t<T>>::types;
+
+    template <typename T>
+    struct ptr_helper { static constexpr bool value = false; };
+    template <typename T>
+    struct ptr_helper<T*> {
+        static constexpr bool value = true;
+        using type = T;
+    };
+    template <typename T>
+    concept is_ptr = ptr_helper<std::remove_cvref_t<T>>::value;
+    template <is_ptr T>
+    using ptr_type = ptr_helper<std::remove_cvref_t<T>>::type;
+
+    template <typename T>
+    struct shared_ptr_helper { static constexpr bool enable = false; };
+    template <typename T>
+    struct shared_ptr_helper<std::shared_ptr<T>> {
+        static constexpr bool enable = true;
+        using type = T;
+    };
+    template <typename T>
+    concept is_shared_ptr = shared_ptr_helper<std::remove_cvref_t<T>>::enable;
+    template <is_shared_ptr T>
+    using shared_ptr_type = shared_ptr_helper<std::remove_cvref_t<T>>::type;
+
+    template <typename T>
+    struct unique_ptr_helper { static constexpr bool enable = false; };
+    template <typename T>
+    struct unique_ptr_helper<std::unique_ptr<T>> {
+        static constexpr bool enable = true;
+        using type = T;
+    };
+    template <typename T>
+    concept is_unique_ptr = unique_ptr_helper<std::remove_cvref_t<T>>::enable;
+    template <is_unique_ptr T>
+    using unique_ptr_type = unique_ptr_helper<std::remove_cvref_t<T>>::type;
+
+    template <typename T>
+    concept string_literal = requires(T t) {
+        { []<size_t N>(const char(&)[N]){}(t) };
     };
 
     template <typename T>
@@ -2648,39 +2706,13 @@ namespace impl {
         reverse_iterable<T> && std::convertible_to<reverse_iter_type<T>, Value>;
 
     template <typename T>
-    concept iterator_like = requires(T begin, T end) {
-        { *begin } -> std::convertible_to<typename std::remove_cvref_t<T>::value_type>;
-        { ++begin } -> std::same_as<std::remove_reference_t<T>&>;
-        { begin == end } -> std::convertible_to<bool>;
-        { begin != end } -> std::convertible_to<bool>;
-    };
-
-    template <typename T>
-    struct is_optional_helper {
-        static constexpr bool value = false;
-    };
-    template <typename T>
-    struct is_optional_helper<std::optional<T>> {
-        static constexpr bool value = true;
-        using type = T;
-    };
-
-    template <typename T>
-    concept is_optional = is_optional_helper<std::remove_cvref_t<T>>::value;
-
-    template <typename T>
-    using optional_type = is_optional_helper<std::remove_cvref_t<T>>::type;
-
-    template <typename T>
-    static constexpr bool is_variant_helper = false;
-    template <typename... Ts>
-    static constexpr bool is_variant_helper<std::variant<Ts...>> = false;
-    template <typename T>
-    concept is_variant = is_variant_helper<std::remove_cvref_t<T>>;
-
-    template <typename T>
     concept has_size = requires(T t) {
         { std::ranges::size(t) } -> std::convertible_to<size_t>;
+    };
+
+    template <typename T>
+    concept has_empty = requires(T t) {
+        { std::ranges::empty(t) } -> std::convertible_to<bool>;
     };
 
     template <typename T>
@@ -2755,25 +2787,9 @@ namespace impl {
     };
 
     template <typename T>
-    concept is_callable_any = 
-        std::is_function_v<std::remove_pointer_t<std::decay_t<T>>> ||
-        std::is_member_function_pointer_v<std::decay_t<T>> ||
-        has_call_operator<T>;
-
-    template <typename T>
-    concept string_literal = requires(T t) {
-        { []<size_t N>(const char(&)[N]){}(t) };
-    };
-
-    template <typename T>
     concept complex_like = requires(T t) {
         { t.real() } -> std::convertible_to<double>;
         { t.imag() } -> std::convertible_to<double>;
-    };
-
-    template <typename T>
-    concept has_empty = requires(T t) {
-        { t.empty() } -> std::convertible_to<bool>;
     };
 
     template <typename T>
@@ -2818,414 +2834,334 @@ namespace impl {
     };
 
     template <typename T>
-    concept has_abs = requires(T t) {
-        { std::abs(t) };
-    };
-
-    template <typename T>
+    concept has_abs = requires(T t) {{ std::abs(t) };};
+    template <has_abs T>
     using abs_type = decltype(std::abs(std::declval<T>()));
-
     template <typename T, typename Return>
     concept abs_returns = requires(T t) {
         { std::abs(t) } -> std::convertible_to<Return>;
     };
 
     template <typename T>
-    concept has_invert = requires(T t) {
-        { ~t };
-    };
-
-    template <typename T>
+    concept has_invert = requires(T t) {{ ~t };};
+    template <has_invert T>
     using invert_type = decltype(~std::declval<T>());
-
     template <typename T, typename Return>
     concept invert_returns = requires(T t) {
         { ~t } -> std::convertible_to<Return>;
     };
 
     template <typename T>
-    concept has_pos = requires(T t) {
-        { +t };
-    };
-
-    template <typename T>
+    concept has_pos = requires(T t) {{ +t };};
+    template <has_pos T>
     using pos_type = decltype(+std::declval<T>());
-
     template <typename T, typename Return>
     concept pos_returns = requires(T t) {
         { +t } -> std::convertible_to<Return>;
     };
 
     template <typename T>
-    concept has_neg = requires(T t) {
-        { -t };
-    };
-
-    template <typename T>
+    concept has_neg = requires(T t) {{ -t };};
+    template <has_neg T>
     using neg_type = decltype(-std::declval<T>());
-
     template <typename T, typename Return>
     concept neg_returns = requires(T t) {
         { -t } -> std::convertible_to<Return>;
     };
 
     template <typename T>
-    concept has_preincrement = requires(T t) {
-        { ++t } -> std::convertible_to<T&>;
-    };
-
-    template <typename T>
+    concept has_preincrement = requires(T t) {{ ++t };};
+    template <has_preincrement T>
     using preincrement_type = decltype(++std::declval<T>());
-
-    template <typename T>
-    concept has_postincrement = requires(T t) {
-        { t++ } -> std::convertible_to<T>;
+    template <typename T, typename Return>
+    concept preincrement_returns = requires(T t) {
+        { ++t } -> std::convertible_to<Return>;
     };
 
     template <typename T>
+    concept has_postincrement = requires(T t) {{ t++ };};
+    template <has_postincrement T>
     using postincrement_type = decltype(std::declval<T>()++);
-
-    template <typename T>
-    concept has_predecrement = requires(T t) {
-        { --t } -> std::convertible_to<T&>;
+    template <typename T, typename Return>
+    concept postincrement_returns = requires(T t) {
+        { t++ } -> std::convertible_to<Return>;
     };
 
     template <typename T>
+    concept has_predecrement = requires(T t) {{ --t };};
+    template <has_predecrement T>
     using predecrement_type = decltype(--std::declval<T>());
-
-    template <typename T>
-    concept has_postdecrement = requires(T t) {
-        { t-- } -> std::convertible_to<T>;
+    template <typename T, typename Return>
+    concept predecrement_returns = requires(T t) {
+        { --t } -> std::convertible_to<Return>;
     };
 
     template <typename T>
+    concept has_postdecrement = requires(T t) {{ t-- };};
+    template <has_postdecrement T>
     using postdecrement_type = decltype(std::declval<T>()--);
-
-    template <typename L, typename R>
-    concept has_lt = requires(L l, R r) {
-        { l < r };
+    template <typename T, typename Return>
+    concept postdecrement_returns = requires(T t) {
+        { t-- } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
+    concept has_lt = requires(L l, R r) {{ l < r };};
+    template <typename L, typename R> requires (has_lt<L, R>)
     using lt_type = decltype(std::declval<L>() < std::declval<R>());
-
     template <typename L, typename R, typename Return>
     concept lt_returns = requires(L l, R r) {
         { l < r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
-    concept has_le = requires(L l, R r) {
-        { l <= r };
-    };
-
-    template <typename L, typename R>
+    concept has_le = requires(L l, R r) {{ l <= r };};
+    template <typename L, typename R> requires (has_le<L, R>)
     using le_type = decltype(std::declval<L>() <= std::declval<R>());
-
     template <typename L, typename R, typename Return>
     concept le_returns = requires(L l, R r) {
         { l <= r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
-    concept has_eq = requires(L l, R r) {
-        { l == r };
-    };
-
-    template <typename L, typename R>
+    concept has_eq = requires(L l, R r) {{ l == r };};
+    template <typename L, typename R> requires (has_eq<L, R>)
     using eq_type = decltype(std::declval<L>() == std::declval<R>());
-
     template <typename L, typename R, typename Return>
     concept eq_returns = requires(L l, R r) {
         { l == r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
-    concept has_ne = requires(L l, R r) {
-        { l != r };
-    };
-
-    template <typename L, typename R>
+    concept has_ne = requires(L l, R r) {{ l != r };};
+    template <typename L, typename R> requires (has_ne<L, R>)
     using ne_type = decltype(std::declval<L>() != std::declval<R>());
-
     template <typename L, typename R, typename Return>
     concept ne_returns = requires(L l, R r) {
         { l != r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
-    concept has_ge = requires(L l, R r) {
-        { l >= r };
-    };
-
-    template <typename L, typename R>
+    concept has_ge = requires(L l, R r) {{ l >= r };};
+    template <typename L, typename R> requires (has_ge<L, R>)
     using ge_type = decltype(std::declval<L>() >= std::declval<R>());
-
     template <typename L, typename R, typename Return>
     concept ge_returns = requires(L l, R r) {
         { l >= r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
-    concept has_gt = requires(L l, R r) {
-        { l > r };
-    };
-
-    template <typename L, typename R>
+    concept has_gt = requires(L l, R r) {{ l > r };};
+    template <typename L, typename R> requires (has_gt<L, R>)
     using gt_type = decltype(std::declval<L>() > std::declval<R>());
-
     template <typename L, typename R, typename Return>
     concept gt_returns = requires(L l, R r) {
         { l > r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
-    concept has_add = requires(L l, R r) {
-        { l + r };
-    };
-
-    template <typename L, typename R>
+    concept has_add = requires(L l, R r) {{ l + r };};
+    template <typename L, typename R> requires (has_add<L, R>)
     using add_type = decltype(std::declval<L>() + std::declval<R>());
-
     template <typename L, typename R, typename Return>
     concept add_returns = requires(L l, R r) {
         { l + r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
-    concept has_iadd = requires(L& l, R r) {
-        { l += r } -> std::convertible_to<L&>;
-    };
-
-    template <typename L, typename R>
+    concept has_iadd = requires(L& l, R r) {{ l += r };};
+    template <typename L, typename R> requires (has_iadd<L, R>)
     using iadd_type = decltype(std::declval<L&>() += std::declval<R>());
-
-    template <typename L, typename R>
-    concept has_sub = requires(L l, R r) {
-        { l - r };
+    template <typename L, typename R, typename Return>
+    concept iadd_returns = requires(L& l, R r) {
+        { l += r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
+    concept has_sub = requires(L l, R r) {{ l - r };};
+    template <typename L, typename R> requires (has_sub<L, R>)
     using sub_type = decltype(std::declval<L>() - std::declval<R>());
-
     template <typename L, typename R, typename Return>
     concept sub_returns = requires(L l, R r) {
         { l - r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
-    concept has_isub = requires(L& l, R r) {
-        { l -= r } -> std::convertible_to<L&>;
-    };
-
-    template <typename L, typename R>
+    concept has_isub = requires(L& l, R r) {{ l -= r };};
+    template <typename L, typename R> requires (has_isub<L, R>)
     using isub_type = decltype(std::declval<L&>() -= std::declval<R>());
-
-    template <typename L, typename R>
-    concept has_mul = requires(L l, R r) {
-        { l * r };
+    template <typename L, typename R, typename Return>
+    concept isub_returns = requires(L& l, R r) {
+        { l -= r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
+    concept has_mul = requires(L l, R r) {{ l * r };};
+    template <typename L, typename R> requires (has_mul<L, R>)
     using mul_type = decltype(std::declval<L>() * std::declval<R>());
-
     template <typename L, typename R, typename Return>
     concept mul_returns = requires(L l, R r) {
         { l * r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
-    concept has_imul = requires(L& l, R r) {
-        { l *= r } -> std::convertible_to<L&>;
-    };
-
-    template <typename L, typename R>
+    concept has_imul = requires(L& l, R r) {{ l *= r };};
+    template <typename L, typename R> requires (has_imul<L, R>)
     using imul_type = decltype(std::declval<L&>() *= std::declval<R>());
-
-    template <typename L, typename R>
-    concept has_truediv = requires(L l, R r) {
-        { l / r };
+    template <typename L, typename R, typename Return>
+    concept imul_returns = requires(L& l, R r) {
+        { l *= r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
+    concept has_truediv = requires(L l, R r) {{ l / r };};
+    template <typename L, typename R> requires (has_truediv<L, R>)
     using truediv_type = decltype(std::declval<L>() / std::declval<R>());
-
     template <typename L, typename R, typename Return>
     concept truediv_returns = requires(L l, R r) {
         { l / r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
-    concept has_itruediv = requires(L& l, R r) {
-        { l /= r } -> std::convertible_to<L&>;
-    };
-
-    template <typename L, typename R>
+    concept has_itruediv = requires(L& l, R r) {{ l /= r };};
+    template <typename L, typename R> requires (has_itruediv<L, R>)
     using itruediv_type = decltype(std::declval<L&>() /= std::declval<R>());
-
-    template <typename L, typename R>
-    concept has_mod = requires(L l, R r) {
-        { l % r };
+    template <typename L, typename R, typename Return>
+    concept itruediv_returns = requires(L& l, R r) {
+        { l /= r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
+    concept has_mod = requires(L l, R r) {{ l % r };};
+    template <typename L, typename R> requires (has_mod<L, R>)
     using mod_type = decltype(std::declval<L>() % std::declval<R>());
-
     template <typename L, typename R, typename Return>
     concept mod_returns = requires(L l, R r) {
         { l % r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
-    concept has_imod = requires(L& l, R r) {
-        { l %= r } -> std::convertible_to<L&>;
-    };
-
-    template <typename L, typename R>
+    concept has_imod = requires(L& l, R r) {{ l %= r };};
+    template <typename L, typename R> requires (has_imod<L, R>)
     using imod_type = decltype(std::declval<L&>() %= std::declval<R>());
-
-    template <typename L, typename R>
-    concept has_pow = requires(L l, R r) {
-        { std::pow(l, r) };
+    template <typename L, typename R, typename Return>
+    concept imod_returns = requires(L& l, R r) {
+        { l %= r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
+    concept has_pow = requires(L l, R r) {{ std::pow(l, r) };};
+    template <typename L, typename R> requires (has_pow<L, R>)
     using pow_type = decltype(std::pow(std::declval<L>(), std::declval<R>()));
-
     template <typename L, typename R, typename Return>
     concept pow_returns = requires(L l, R r) {
         { std::pow(l, r) } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
-    concept has_lshift = requires(L l, R r) {
-        { l << r };
-    };
-
-    template <typename L, typename R>
+    concept has_lshift = requires(L l, R r) {{ l << r };};
+    template <typename L, typename R> requires (has_lshift<L, R>)
     using lshift_type = decltype(std::declval<L>() << std::declval<R>());
-
     template <typename L, typename R, typename Return>
     concept lshift_returns = requires(L l, R r) {
         { l << r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
-    concept has_ilshift = requires(L& l, R r) {
-        { l <<= r } -> std::convertible_to<L&>;
-    };
-
-    template <typename L, typename R>
+    concept has_ilshift = requires(L& l, R r) {{ l <<= r };};
+    template <typename L, typename R> requires (has_ilshift<L, R>)
     using ilshift_type = decltype(std::declval<L&>() <<= std::declval<R>());
-
-    template <typename L, typename R>
-    concept has_rshift = requires(L l, R r) {
-        { l >> r };
+    template <typename L, typename R, typename Return>
+    concept ilshift_returns = requires(L& l, R r) {
+        { l <<= r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
+    concept has_rshift = requires(L l, R r) {{ l >> r };};
+    template <typename L, typename R> requires (has_rshift<L, R>)
     using rshift_type = decltype(std::declval<L>() >> std::declval<R>());
-
     template <typename L, typename R, typename Return>
     concept rhsift_returns = requires(L l, R r) {
         { l >> r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
-    concept has_irshift = requires(L& l, R r) {
-        { l >>= r } -> std::convertible_to<L&>;
-    };
-
-    template <typename L, typename R>
+    concept has_irshift = requires(L& l, R r) {{ l >>= r };};
+    template <typename L, typename R> requires (has_irshift<L, R>)
     using irshift_type = decltype(std::declval<L&>() >>= std::declval<R>());
-
-    template <typename L, typename R>
-    concept has_and = requires(L l, R r) {
-        { l & r };
+    template <typename L, typename R, typename Return>
+    concept irshift_returns = requires(L& l, R r) {
+        { l >>= r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
+    concept has_and = requires(L l, R r) {{ l & r };};
+    template <typename L, typename R> requires (has_and<L, R>)
     using and_type = decltype(std::declval<L>() & std::declval<R>());
-
     template <typename L, typename R, typename Return>
     concept and_returns = requires(L l, R r) {
         { l & r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
-    concept has_iand = requires(L& l, R r) {
-        { l &= r } -> std::convertible_to<L&>;
-    };
-
-    template <typename L, typename R>
+    concept has_iand = requires(L& l, R r) {{ l &= r };};
+    template <typename L, typename R> requires (has_iand<L, R>)
     using iand_type = decltype(std::declval<L&>() &= std::declval<R>());
-
-    template <typename L, typename R>
-    concept has_or = requires(L l, R r) {
-        { l | r };
+    template <typename L, typename R, typename Return>
+    concept iand_returns = requires(L& l, R r) {
+        { l &= r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
+    concept has_or = requires(L l, R r) {{ l | r };};
+    template <typename L, typename R> requires (has_or<L, R>)
     using or_type = decltype(std::declval<L>() | std::declval<R>());
-
     template <typename L, typename R, typename Return>
     concept or_returns = requires(L l, R r) {
         { l | r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
-    concept has_ior = requires(L& l, R r) {
-        { l |= r } -> std::convertible_to<L&>;
-    };
-
-    template <typename L, typename R>
+    concept has_ior = requires(L& l, R r) {{ l |= r };};
+    template <typename L, typename R> requires (has_ior<L, R>)
     using ior_type = decltype(std::declval<L&>() |= std::declval<R>());
-
-    template <typename L, typename R>
-    concept has_xor = requires(L l, R r) {
-        { l ^ r };
+    template <typename L, typename R, typename Return>
+    concept ior_returns = requires(L& l, R r) {
+        { l |= r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
+    concept has_xor = requires(L l, R r) {{ l ^ r };};
+    template <typename L, typename R> requires (has_xor<L, R>)
     using xor_type = decltype(std::declval<L>() ^ std::declval<R>());
-
     template <typename L, typename R, typename Return>
     concept xor_returns = requires(L l, R r) {
         { l ^ r } -> std::convertible_to<Return>;
     };
 
     template <typename L, typename R>
-    concept has_ixor = requires(L& l, R r) {
-        { l ^= r } -> std::convertible_to<L&>;
-    };
-
-    template <typename L, typename R>
+    concept has_ixor = requires(L& l, R r) {{ l ^= r };};
+    template <typename L, typename R> requires (has_ixor<L, R>)
     using ixor_type = decltype(std::declval<L&>() ^= std::declval<R>());
-
-    template <typename T>
-    concept has_concat = requires(const T& lhs, const T& rhs) {
-        { lhs + rhs } -> std::convertible_to<T>;
+    template <typename L, typename R, typename Return>
+    concept ixor_returns = requires(L& l, R r) {
+        { l ^= r } -> std::convertible_to<Return>;
     };
 
-    template <typename T>
-    concept has_inplace_concat = requires(T& lhs, const T& rhs) {
-        { lhs += rhs } -> std::convertible_to<T&>;
-    };
+
+    /// TODO: eventually I should reconsider the following concepts and potentially
+    /// standardize them in some way.
+
+    template <typename T, typename Base>
+    concept converts_to = __cast__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, Base>;
+
+    template <typename T, typename Base>
+    concept converts_exact = __cast__<std::remove_cvref_t<T>>::enable &&
+        std::same_as<typename __cast__<std::remove_cvref_t<T>>::type, Base>;
 
     template <typename T>
-    concept has_repeat = requires(const T& lhs, size_t rhs) {
-        { lhs * rhs } -> std::convertible_to<T>;
-    };
-
-    template <typename T>
-    concept has_inplace_repeat = requires(T& lhs, size_t rhs) {
-        { lhs *= rhs } -> std::convertible_to<T&>;
-    };
-
-    template <typename T>
-    concept type_like =
-        __cast__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, TypeTag>;
+    concept type_like = converts_to<T, TypeTag>;
 
     template <typename T>
     concept none_like =
@@ -3497,6 +3433,13 @@ namespace impl {
     };
 
 }
+
+
+/* Allows anonymous access to a Python wrapper for a given C++ type, assuming it has
+one.  The result always corresponds to the return type of the unary `__cast__` control
+structure. */
+template <impl::has_python T>
+using obj = impl::python_type<T>;
 
 
 template <typename Derived, typename Base>

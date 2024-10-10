@@ -11,76 +11,6 @@
 namespace py {
 
 
-/// TODO: move this stuff to access.h?
-
-
-template <typename T>
-struct Optional;
-
-
-template <typename T>
-struct Interface<Optional<T>> : impl::BertrandTag {
-
-};
-template <typename T>
-struct Interface<Type<Optional<T>>> : impl::BertrandTag {
-
-};
-
-
-template <typename T>
-struct Optional : Object, Interface<Optional<T>> {
-    struct __python__ : def<__python__, Optional>, PyObject {
-        static constexpr StaticStr __doc__ =
-R"doc()doc";
-
-        Object value;
-
-        /// TODO: write all the stuff
-
-    };
-
-    /// TODO: constructors
-
-};
-
-
-template <typename T, StaticStr Name>
-struct __getattr__<Optional<T>, Name>                       : __getattr__<T, Name> {};
-template <typename T, StaticStr Name, typename Value>
-struct __setattr__<Optional<T>, Name, Value>                : __setattr__<T, Name, Value> {};
-template <typename T, StaticStr Name>
-struct __delattr__<Optional<T>, Name>                       : __delattr__<T, Name> {};
-
-/// TODO: forward all underlying operations, raising a type error if the optional is
-/// empty
-
-
-template <typename From, typename To> requires (std::convertible_to<From, To>)
-struct __cast__<Optional<From>, std::optional<To>>          : Returns<std::optional<To>> {
-    static std::optional<To> operator()(const Optional<From>& self) {
-        if (self.is(None)) {
-            return std::nullopt;
-        } else {
-            return impl::implicit_cast<To>(self);
-        }
-    }
-};
-
-
-template <typename From, typename To>
-struct __cast__<std::optional<From>, Optional<To>>          : Returns<Optional<To>> {
-    static Optional<To> operator()(const std::optional<From>& self) {
-        if (self.has_value()) {
-            return Optional<To>{self.value()};
-        } else {
-            return Optional<To>{None};
-        }
-    }
-};
-
-
-
 namespace impl {
 
     struct ArgKind {
@@ -10743,6 +10673,13 @@ struct __isinstance__<T, Function<R(A...)>>                 : Returns<bool> {
 // TODO: if default specialization is given, type checks should be fully generic, right?
 // issubclass<T, Function<>>() should check impl::is_callable_any<T>;
 
+    // template <typename T>
+    // concept is_callable_any = 
+    //     std::is_function_v<std::remove_pointer_t<std::decay_t<T>>> ||
+    //     std::is_member_function_pointer_v<std::decay_t<T>> ||
+    //     has_call_operator<T>;
+
+
 template <typename T, typename R, typename... A>
 struct __issubclass__<T, Function<R(A...)>>                 : Returns<bool> {
     static constexpr bool operator()() {
@@ -10888,10 +10825,19 @@ namespace impl {
     /// NOTE: the type returned by `std::mem_fn()` is implementation-defined, so we
     /// have to do some template magic to trick the compiler into deducing the correct
     /// type during template specializations.
+
+    template <typename T>
+    struct respecialize { static constexpr bool enable = false; };
+    template <template <typename...> typename T, typename... Ts>
+    struct respecialize<T<Ts...>> {
+        static constexpr bool enable = true;
+        template <typename... New>
+        using type = T<New...>;
+    };
     template <typename Sig>
-    using std_mem_fn_type = respecialize<decltype(
-        std::mem_fn(std::declval<void(Object::*)()>())
-    ), Sig>;
+    using std_mem_fn_type = respecialize<
+        decltype(std::mem_fn(std::declval<void(Object::*)()>()))
+    >::template type<Sig>;
 
 };
 
