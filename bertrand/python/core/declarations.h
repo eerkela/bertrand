@@ -62,6 +62,8 @@ using bertrand::StaticStr;
 
 namespace impl {
     struct BertrandTag {};
+    struct OptionalTag : BertrandTag {};
+    struct UnionTag : BertrandTag {};
     struct PythonTag : BertrandTag {};  /// TODO: eliminate this
     struct IterTag : BertrandTag {};  /// TODO: eliminate this
     struct FunctionTag : BertrandTag {};   /// TODO: eliminate this
@@ -206,6 +208,8 @@ private:
 
 struct Object;
 /// TODO: BertrandMeta + Type<T>() should come here (no slots or bindings)
+
+
 
 // template <typename Begin = Object, typename End = void, typename Container = void>
 // struct Iterator;
@@ -2458,6 +2462,18 @@ namespace impl {
         ));  // NOTE: string will be garbage collected at shutdown
     };
 
+    template <typename L, typename R>
+    concept is = std::same_as<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;
+
+    template <typename L, typename R>
+    concept inherits = std::derived_from<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;
+
+    template <typename T>
+    concept is_const = std::is_const_v<std::remove_reference_t<T>>;
+
+    template <typename T>
+    concept is_volatile = std::is_volatile_v<std::remove_reference_t<T>>;
+
     template <typename T>
     concept bertrand = std::derived_from<std::remove_cvref_t<T>, BertrandTag>;
 
@@ -2470,19 +2486,12 @@ namespace impl {
     /// TODO: what about lazy types that evaluate to Object?  Or monads, like
     /// Optional<T>, Union<T...>?
     template <typename T>
-    concept dynamic = std::same_as<std::remove_cvref_t<T>, Object>;
-
-    template <typename L, typename R>
-    concept is = std::same_as<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;
-
-    template <typename L, typename R>
-    concept inherits = std::derived_from<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;
-
-    template <typename T>
-    concept is_const = std::is_const_v<std::remove_reference_t<T>>;
-
-    template <typename T>
-    concept is_volatile = std::is_volatile_v<std::remove_reference_t<T>>;
+    concept dynamic =
+        is<T, Object> ||
+        inherits<T, UnionTag> || (
+            inherits<T, OptionalTag> &&
+            is<typename std::remove_reference_t<T>::__wrapped__, Object>
+        );
 
     template <typename From, typename To>
     concept explicitly_convertible_to = requires(From from) {

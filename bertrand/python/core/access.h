@@ -1635,18 +1635,8 @@ template <impl::python Self, typename Func>
 ////////////////////////
 
 
-/// TODO: operators should now be in a state where they can return arbitrary types
-/// from control structures that supply a custom call operator, which means I should
-/// be able to make all operations monadic.
-
-
 template <std::derived_from<Object> T>
 struct Optional;
-
-
-namespace impl {
-    struct OptionalTag : BertrandTag {};
-}
 
 
 template <typename T>
@@ -1816,7 +1806,7 @@ struct __issubclass__<Derived, Base>                         : Returns<bool> {
 
 
 /// NOTE: constructors are forwarded to the underlying object, except for the default
-/// constructor, which initializes to None
+/// constructor, which initializes to None.
 
 
 template <typename T> requires (__initializer__<T>::enable)
@@ -1844,6 +1834,15 @@ struct __init__<Optional<T>, Args...>                        : Returns<Optional<
 };
 
 
+/* Casting from None is the same as calling the default constructor. */
+template <impl::is<NoneType> From, typename To>
+struct __cast__<From, Optional<To>>                          : Returns<Optional<To>> {
+    static Optional<To> operator()(From&&) {
+        return impl::construct<Optional<To>>(None);
+    }
+};
+
+
 /* Implicitly cast a non-empty input into the underlying type if possible. */
 template <typename From, typename To> requires (std::convertible_to<From, To>)
 struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
@@ -1853,8 +1852,8 @@ struct __cast__<From, Optional<To>>                         : Returns<Optional<T
 };
 
 
-/// NOTE: implicit casts are allowed to and from std::optional, pointers, and smart
-/// pointers, as well as from 
+/// NOTE: implicit casts are also allowed to and from std::optional, pointers, and
+/// smart pointers, as long as the underlying types are convertible. 
 
 
 template <impl::is_optional T> requires (__cast__<impl::optional_type<T>>::enable)
@@ -1990,6 +1989,10 @@ struct __cast__<From, std::unique_ptr<To>>                  : Returns<std::uniqu
 /// NOTE: all other operations are monadic
 
 
+/// TODO: some of these operators probably still need some touchups to make sure that
+/// they always correctly forward all operations to the wrapped type.
+
+
 template <impl::inherits<impl::OptionalTag> Self, StaticStr Name>
     requires (__getattr__<
         typename std::remove_reference_t<Self>::__wrapped__,
@@ -2004,7 +2007,7 @@ struct __getattr__<Self, Name>                              : Returns<Optional<
         if (self.is(None)) {
             return None;
         } else {
-            return getattr<Name>(self.value());
+            return getattr<Name>(std::forward<Self>(self).value());
         }
     }
 };
@@ -2019,7 +2022,10 @@ template <impl::inherits<impl::OptionalTag> Self, StaticStr Name, typename Value
 struct __setattr__<Self, Name, Value>             : Returns<void> {
     static void operator()(Self self, Value&& value) {
         if (!self.is(None)) {
-            setattr<Name>(self.value(), std::forward<Value>(value));
+            setattr<Name>(
+                std::forward<Self>(self).value(),
+                std::forward<Value>(value)
+            );
         }
     }
 };
@@ -2033,7 +2039,7 @@ template <impl::inherits<impl::OptionalTag> Self, StaticStr Name>
 struct __delattr__<Self, Name>                              : Returns<void> {
     static void operator()(Self self) {
         if (!self.is(None)) {
-            delattr<Name>(self.value());
+            delattr<Name>(std::forward<Self>(self).value());
         }
     }
 };
@@ -2042,8 +2048,12 @@ struct __delattr__<Self, Name>                              : Returns<void> {
 template <impl::inherits<impl::OptionalTag> Self>
     requires (__repr__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
 struct __repr__<Self>                                       : Returns<Str> {
-    static auto operator()(Self self) {
-        return self.is(None) ? std::string("None") : repr(self.value());
+    static std::string operator()(Self self) {
+        if (self.is(None)) {
+            return repr(None);
+        } else {
+            return repr(std::forward<Self>(self).value());
+        }
     }
 };
 
@@ -2065,7 +2075,7 @@ struct __call__<Self, Args...>                              : Returns<Optional<
         if (self.is(None)) {
             return None;
         } else {
-            return self.value()(std::forward<Args>(args)...);
+            return std::forward<Self>(self).value()(std::forward<Args>(args)...);
         }
     }
 };
@@ -2088,7 +2098,7 @@ struct __getitem__<Self, Key...>                             : Returns<Optional<
         if (self.is(None)) {
             return None;
         } else {
-            return self.value()[std::forward<Key>(key)...];
+            return std::forward<Self>(self).value()[std::forward<Key>(key)...];
         }
     }
 };
@@ -2103,7 +2113,8 @@ template <impl::inherits<impl::OptionalTag> Self, typename Value, typename... Ke
 struct __setitem__<Self, Value, Key...>                         : Returns<void> {
     static void operator()(Self self, Value&& value, Key&&... key) {
         if (!self.is(None)) {
-            self.value()[std::forward<Key>(key)...] = std::forward<Value>(value);
+            std::forward<Self>(self).value()[std::forward<Key>(key)...] =
+                std::forward<Value>(value);
         }
     }
 };
@@ -2117,7 +2128,7 @@ template <impl::inherits<impl::OptionalTag> Self, typename... Key>
 struct __delitem__<Self, Key...>                               : Returns<void> {
     static void operator()(Self self, Key&&... key) {
         if (!self.is(None)) {
-            del(self.value()[std::forward<Key>(key)...]);
+            del(std::forward<Self>(self).value()[std::forward<Key>(key)...]);
         }
     }
 };
@@ -2126,8 +2137,13 @@ struct __delitem__<Self, Key...>                               : Returns<void> {
 template <impl::inherits<impl::OptionalTag> Self>
     requires (__len__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
 struct __len__<Self>                                        : Returns<size_t> {
-    static size_t operator()(Self self) {
-        return self.is(None) ? 0 : len(self.value());
+    using Return = __len__<typename std::remove_reference_t<Self>::__wrapped__>::type;
+    static Optional<Return> operator()(Self self) {
+        if (self.is(None)) {
+            return None;
+        } else {
+            return len(std::forward<Self>(self).value());
+        }
     }
 };
 
@@ -2158,7 +2174,9 @@ template <impl::inherits<impl::OptionalTag> Self, typename Key>
     >::enable)
 struct __contains__<Self, Key>                              : Returns<bool> {
     static bool operator()(Self self, Key&& key) {
-        return self.is(None) ? false : self.value().contains(std::forward<Key>(key));
+        return
+            !self.is(None) &&
+            std::forward<Self>(self).value().contains(std::forward<Key>(key));
     }
 };
 
@@ -2170,7 +2188,7 @@ struct __hash__<Self>                                       : Returns<size_t> {
         if (self.is(None)) {
             return hash(None);
         } else {
-            return hash(self.value());
+            return hash(std::forward<Self>(self).value());
         }
     }
 };
@@ -2181,13 +2199,12 @@ template <impl::inherits<impl::OptionalTag> Self>
 struct __abs__<Self>                                        : Returns<Optional<
     typename __abs__<typename std::remove_reference_t<Self>::__wrapped__>::type
 >> {
-    using Wrapped = std::remove_reference_t<Self>::__wrapped__;
-    using Return = __abs__<Wrapped>::type;
+    using Return = __abs__<typename std::remove_reference_t<Self>::__wrapped__>::type;
     static Optional<Return> operator()(Self self) {
         if (self.is(None)) {
             return None;
         } else {
-            return abs(self.value());
+            return abs(std::forward<Self>(self).value());
         }
     }
 };
@@ -2197,13 +2214,12 @@ template <impl::inherits<impl::OptionalTag> Self>
 struct __invert__<Self>                                     : Returns<Optional<
     typename __invert__<typename std::remove_reference_t<Self>::__wrapped__>::type
 >> {
-    using Wrapped = std::remove_reference_t<Self>::__wrapped__;
-    using Return = __invert__<Wrapped>::type;
+    using Return = __invert__<typename std::remove_reference_t<Self>::__wrapped__>::type;
     static Optional<Return> operator()(Self self) {
         if (self.is(None)) {
             return None;
         } else {
-            return ~self.value();
+            return ~std::forward<Self>(self).value();
         }
     }
 };
@@ -2213,13 +2229,12 @@ template <impl::inherits<impl::OptionalTag> Self>
 struct __pos__<Self>                                        : Returns<Optional<
     typename __pos__<typename std::remove_reference_t<Self>::__wrapped__>::type
 >> {
-    using Wrapped = std::remove_reference_t<Self>::__wrapped__;
-    using Return = __pos__<Wrapped>::type;
+    using Return = __pos__<typename std::remove_reference_t<Self>::__wrapped__>::type;
     static Optional<Return> operator()(Self self) {
         if (self.is(None)) {
             return None;
         } else {
-            return +self.value();
+            return +std::forward<Self>(self).value();
         }
     }
 };
@@ -2229,61 +2244,262 @@ template <impl::inherits<impl::OptionalTag> Self>
 struct __neg__<Self>                                        : Returns<Optional<
     typename __neg__<typename std::remove_reference_t<Self>::__wrapped__>::type
 >> {
-    using Wrapped = std::remove_reference_t<Self>::__wrapped__;
-    using Return = __neg__<Wrapped>::type;
+    using Return = __neg__<typename std::remove_reference_t<Self>::__wrapped__>::type;
     static Optional<Return> operator()(Self self) {
         if (self.is(None)) {
             return None;
         } else {
-            return -self.value();
+            return -std::forward<Self>(self).value();
         }
     }
 };
-
-
-
-
-/// TODO: there's something weird about reference types here.  The same will be true
-/// for inplace operators in the future.
 
 
 template <impl::inherits<impl::OptionalTag> Self>
     requires (__increment__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
-struct __increment__<Self>                                  : Returns<
-    std::remove_reference_t<Self>&
-> {
-    static std::remove_reference_t<Self>& operator()(Self self) {
+struct __increment__<Self>                                  : Returns<Self> {
+    static Self operator()(Self self) {
         if (!self.is(None)) {
             ++self.value();
         }
-        return self;
+        return std::forward<Self>(self);
     }
 };
-
-
-/// TODO: same as for __increment__
 
 
 template <impl::inherits<impl::OptionalTag> Self>
     requires (__decrement__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
-struct __decrement__<Self>                                  : Returns<
-    std::remove_reference_t<Self>&
-> {
-    static std::remove_reference_t<Self>& operator()(Self self) {
+struct __decrement__<Self>                                  : Returns<Self> {
+    static Self operator()(Self self) {
         if (!self.is(None)) {
             --self.value();
         }
-        return self;
+        return std::forward<Self>(self);
     }
 };
 
 
-/// TODO: __lt__, etc. should not be constrained to return bool.  Also binary operators
-/// are really hard in this case.
+#define BINARY_OPERATOR(STRUCT, OP)                                                     \
+    template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R> \
+        requires (STRUCT<                                                               \
+            typename std::remove_reference_t<L>::__wrapped__,                           \
+            typename std::remove_reference_t<R>::__wrapped__                            \
+        >::enable)                                                                      \
+    struct STRUCT<L, R> : Returns<Optional<                                             \
+        typename STRUCT<                                                                \
+            typename std::remove_reference_t<L>::__wrapped__,                           \
+            typename std::remove_reference_t<R>::__wrapped__                            \
+        >::type                                                                         \
+    >> {                                                                                \
+        using Return = STRUCT<                                                          \
+            typename std::remove_reference_t<L>::__wrapped__,                           \
+            typename std::remove_reference_t<R>::__wrapped__                            \
+        >::type;                                                                        \
+        static Optional<Return> operator()(L lhs, R rhs) {                              \
+            if (lhs.is(None) || rhs.is(None)) {                                         \
+                return None;                                                            \
+            } else {                                                                    \
+                return std::forward<L>(lhs).value() OP std::forward<R>(rhs).value();    \
+            }                                                                           \
+        }                                                                               \
+    };                                                                                  \
+    template <impl::inherits<impl::OptionalTag> L, typename R>                          \
+        requires (!impl::inherits<R, impl::OptionalTag> && STRUCT<                      \
+            typename std::remove_reference_t<L>::__wrapped__,                           \
+            R                                                                           \
+        >::enable)                                                                      \
+    struct STRUCT<L, R> : Returns<Optional<                                             \
+        typename STRUCT<typename std::remove_reference_t<L>::__wrapped__, R>::type      \
+    >> {                                                                                \
+        using Return = STRUCT<typename std::remove_reference_t<L>::__wrapped__, R>::type; \
+        static Optional<Return> operator()(L lhs, R rhs) {                              \
+            if (lhs.is(None)) {                                                         \
+                return None;                                                            \
+            } else {                                                                    \
+                return std::forward<L>(lhs).value() OP std::forward<R>(rhs);            \
+            }                                                                           \
+        }                                                                               \
+    };                                                                                  \
+    template <typename L, impl::inherits<impl::OptionalTag> R>                          \
+        requires (!impl::inherits<L, impl::OptionalTag> && STRUCT<                      \
+            L,                                                                          \
+            typename std::remove_reference_t<R>::__wrapped__                            \
+        >::enable)                                                                      \
+    struct STRUCT<L, R> : Returns<Optional<                                             \
+        typename STRUCT<L, typename std::remove_reference_t<R>::__wrapped__>::type      \
+    >> {                                                                                \
+        using Return = STRUCT<L, typename std::remove_reference_t<R>::__wrapped__>::type; \
+        static Optional<Return> operator()(L lhs, R rhs) {                              \
+            if (rhs.is(None)) {                                                         \
+                return None;                                                            \
+            } else {                                                                    \
+                return std::forward<L>(lhs) OP std::forward<R>(rhs).value();            \
+            }                                                                           \
+        }                                                                               \
+    };
 
 
-/// TODO: all the math operators as monads
+#define INPLACE_OPERATOR(STRUCT, OP)                                                    \
+    template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R> \
+        requires (STRUCT<                                                               \
+            typename std::remove_reference_t<L>::__wrapped__,                           \
+            typename std::remove_reference_t<R>::__wrapped__                            \
+        >::enable)                                                                      \
+    struct STRUCT<L, R> : Returns<L> {                                                  \
+        static L operator()(L lhs, R rhs) {                                             \
+            if (!lhs.is(None) && !rhs.is(None)) {                                       \
+                lhs.value() OP std::forward<R>(rhs).value();                            \
+            }                                                                           \
+            return std::forward<L>(lhs);                                                \
+        }                                                                               \
+    };                                                                                  \
+    template <impl::inherits<impl::OptionalTag> L, typename R>                          \
+        requires (!impl::inherits<R, impl::OptionalTag> && STRUCT<                      \
+            typename std::remove_reference_t<L>::__wrapped__,                           \
+            R                                                                           \
+        >::enable)                                                                      \
+    struct STRUCT<L, R> : Returns<L> {                                                  \
+        static L operator()(L lhs, R rhs) {                                             \
+            if (!lhs.is(None)) {                                                        \
+                lhs.value() OP std::forward<R>(rhs);                                    \
+            }                                                                           \
+            return std::forward<L>(lhs);                                                \
+        }                                                                               \
+    };
 
+
+BINARY_OPERATOR(__lt__, <)
+BINARY_OPERATOR(__le__, <=)
+BINARY_OPERATOR(__eq__, ==)
+BINARY_OPERATOR(__ne__, !=)
+BINARY_OPERATOR(__ge__, >=)
+BINARY_OPERATOR(__gt__, <)
+BINARY_OPERATOR(__add__, +)
+BINARY_OPERATOR(__sub__, -)
+BINARY_OPERATOR(__mul__, *)
+BINARY_OPERATOR(__truediv__, /)
+BINARY_OPERATOR(__mod__, %)
+BINARY_OPERATOR(__lshift__, <<)
+BINARY_OPERATOR(__rshift__, >>)
+BINARY_OPERATOR(__and__, &)
+BINARY_OPERATOR(__or__, |)
+BINARY_OPERATOR(__xor__, ^)
+INPLACE_OPERATOR(__iadd__, +=)
+INPLACE_OPERATOR(__isub__, -=)
+INPLACE_OPERATOR(__imul__, *=)
+INPLACE_OPERATOR(__itruediv__, /=)
+INPLACE_OPERATOR(__imod__, %=)
+INPLACE_OPERATOR(__ilshift__, <<=)
+INPLACE_OPERATOR(__irshift__, >>=)
+INPLACE_OPERATOR(__iand__, &=)
+INPLACE_OPERATOR(__ior__, |=)
+INPLACE_OPERATOR(__ixor__, ^=)
+
+
+#undef BINARY_OPERATOR
+#undef INPLACE_OPERATOR
+
+
+template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R>
+    requires (__floordiv__<
+        typename std::remove_reference_t<L>::__wrapped__,
+        typename std::remove_reference_t<R>::__wrapped__
+    >::enable)
+struct __floordiv__<L, R> : Returns<Optional<
+    typename __floordiv__<
+        typename std::remove_reference_t<L>::__wrapped__,
+        typename std::remove_reference_t<R>::__wrapped__
+    >::type
+>> {
+    using Return = __floordiv__<
+        typename std::remove_reference_t<L>::__wrapped__,
+        typename std::remove_reference_t<R>::__wrapped__
+    >::type;
+    static Optional<Return> operator()(L lhs, R rhs) {
+        if (lhs.is(None) || rhs.is(None)) {
+            return None;
+        } else {
+            return floordiv(
+                std::forward<L>(lhs).value(),
+                std::forward<R>(rhs).value()
+            );
+        }
+    }
+};
+
+
+template <impl::inherits<impl::OptionalTag> L, typename R>
+    requires (
+        !impl::inherits<impl::OptionalTag, R> &&
+        __floordiv__<typename std::remove_reference_t<L>::__wrapped__, R>::enable
+    )
+struct __floordiv__<L, R> : Returns<Optional<
+    typename __floordiv__<typename std::remove_reference_t<L>::__wrapped__, R>::type
+>> {
+    using Return = __floordiv__<typename std::remove_reference_t<L>::__wrapped__, R>::type;
+    static Optional<Return> operator()(L lhs, R rhs) {
+        if (lhs.is(None)) {
+            return None;
+        } else {
+            return floordiv(
+                std::forward<L>(lhs).value(),
+                std::forward<R>(rhs)
+            );
+        }
+    }
+};
+
+
+template <typename L, impl::inherits<impl::OptionalTag> R>
+    requires (
+        !impl::inherits<impl::OptionalTag, L> &&
+        __floordiv__<L, typename std::remove_reference_t<R>::__wrapped__>::enable
+    )
+struct __floordiv__<L, R> : Returns<Optional<
+    typename __floordiv__<L, typename std::remove_reference_t<R>::__wrapped__>::type
+>> {
+    using Return = __floordiv__<L, typename std::remove_reference_t<R>::__wrapped__>::type;
+    static Optional<Return> operator()(L lhs, R rhs) {
+        if (rhs.is(None)) {
+            return None;
+        } else {
+            return floordiv(
+                std::forward<L>(lhs),
+                std::forward<R>(rhs).value()
+            );
+        }
+    }
+};
+
+
+template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R>
+    requires (__ifloordiv__<
+        typename std::remove_reference_t<L>::__wrapped__,
+        typename std::remove_reference_t<R>::__wrapped__
+    >::enable)
+struct __ifloordiv__<L, R> : Returns<L> {
+    static L operator()(L lhs, R rhs) {
+        if (!lhs.is(None) && !rhs.is(None)) {
+            ifloordiv(lhs.value(), std::forward<R>(rhs).value());
+        }
+        return std::forward<L>(lhs);
+    }
+};
+
+
+template <impl::inherits<impl::OptionalTag> L, typename R>
+    requires (
+        !impl::inherits<impl::OptionalTag, R> &&
+        __ifloordiv__<typename std::remove_reference_t<L>::__wrapped__, R>::enable
+    )
+struct __ifloordiv__<L, R> : Returns<L> {
+    static L operator()(L lhs, R rhs) {
+        if (!lhs.is(None)) {
+            ifloordiv(lhs.value(), std::forward<R>(rhs));
+        }
+        return std::forward<L>(lhs);
+    }
+};
 
 
 /////////////////////
@@ -2296,8 +2512,6 @@ struct Union;
 
 
 namespace impl {
-    struct UnionTag : BertrandTag {};
-
     template <typename T>
     struct VariantToUnion {
         static constexpr bool enable = false;
@@ -2327,7 +2541,7 @@ struct Union : Object, Interface<Union<Types...>> {
         static constexpr StaticStr __doc__ =
 R"doc()doc";
 
-        std::variant<Types...> value;
+        Object m_value;
 
     };
 
