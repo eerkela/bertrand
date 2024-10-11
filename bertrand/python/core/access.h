@@ -1664,7 +1664,7 @@ struct Interface<Type<Optional<T>>> : impl::OptionalTag {
 };
 
 
-template <std::derived_from<Object> T>
+template <std::derived_from<Object> T = Object>
 struct Optional : Object, Interface<Optional<T>> {
     struct __python__ : def<__python__, Optional>, PyObject {
         static constexpr StaticStr __doc__ =
@@ -1826,8 +1826,9 @@ struct __init__<Optional<T>>                                : Returns<Optional<T
 };
 
 
-template <typename T, typename... Args> requires (std::constructible_from<T, Args...>)
-struct __init__<Optional<T>, Args...>                        : Returns<Optional<T>> {
+template <typename T, typename... Args>
+    requires ((sizeof...(Args) > 0) && std::constructible_from<T, Args...>)
+struct __init__<Optional<T>, Args...>                       : Returns<Optional<T>> {
     static Optional<T> operator()(Args&&... args) {
         return impl::construct<Optional<T>>(T(std::forward<Args>(args)...));
     }
@@ -1836,7 +1837,7 @@ struct __init__<Optional<T>, Args...>                        : Returns<Optional<
 
 /* Casting from None is the same as calling the default constructor. */
 template <impl::is<NoneType> From, typename To>
-struct __cast__<From, Optional<To>>                          : Returns<Optional<To>> {
+struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
     static Optional<To> operator()(From&&) {
         return impl::construct<Optional<To>>(None);
     }
@@ -1844,7 +1845,8 @@ struct __cast__<From, Optional<To>>                          : Returns<Optional<
 
 
 /* Implicitly cast a non-empty input into the underlying type if possible. */
-template <typename From, typename To> requires (std::convertible_to<From, To>)
+template <typename From, typename To>
+    requires (!impl::is<From, NoneType> && std::convertible_to<From, To>)
 struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
     static Optional<To> operator()(From&& from) {
         return impl::construct<Optional<To>>(To(std::forward<From>(from)));
@@ -1923,10 +1925,7 @@ struct __cast__<From, Optional<To>>                         : Returns<Optional<T
 
 
 template <impl::inherits<impl::OptionalTag> From, typename To>
-    requires (std::convertible_to<
-        typename std::remove_reference_t<From>::__wrapped__,
-        To
-    >)
+    requires (std::convertible_to<typename std::remove_reference_t<From>::__wrapped__, To>)
 struct __cast__<From, std::optional<To>>                    : Returns<std::optional<To>> {
     static std::optional<To> operator()(From from) {
         if (from.is(None)) {
@@ -1955,10 +1954,7 @@ struct __cast__<From, To*>                                  : Returns<To*> {
 
 
 template <impl::inherits<impl::OptionalTag> From, typename To>
-    requires (std::convertible_to<
-        typename std::remove_reference_t<From>::__wrapped__,
-        To
-    >)
+    requires (std::convertible_to<typename std::remove_reference_t<From>::__wrapped__, To>)
 struct __cast__<From, std::shared_ptr<To>>                  : Returns<std::shared_ptr<To>> {
     static std::shared_ptr<To> operator()(From from) {
         if (from.is(None)) {
@@ -1971,10 +1967,7 @@ struct __cast__<From, std::shared_ptr<To>>                  : Returns<std::share
 
 
 template <impl::inherits<impl::OptionalTag> From, typename To>
-    requires (std::convertible_to<
-        typename std::remove_reference_t<From>::__wrapped__,
-        To
-    >)
+    requires (std::convertible_to<typename std::remove_reference_t<From>::__wrapped__, To>)
 struct __cast__<From, std::unique_ptr<To>>                  : Returns<std::unique_ptr<To>> {
     static std::unique_ptr<To> operator()(From from) {
         if (from.is(None)) {
@@ -1989,15 +1982,8 @@ struct __cast__<From, std::unique_ptr<To>>                  : Returns<std::uniqu
 /// NOTE: all other operations are monadic
 
 
-/// TODO: some of these operators probably still need some touchups to make sure that
-/// they always correctly forward all operations to the wrapped type.
-
-
 template <impl::inherits<impl::OptionalTag> Self, StaticStr Name>
-    requires (__getattr__<
-        typename std::remove_reference_t<Self>::__wrapped__,
-        Name
-    >::enable)
+    requires (__getattr__<typename std::remove_reference_t<Self>::__wrapped__, Name>::enable)
 struct __getattr__<Self, Name>                              : Returns<Optional<
     typename __getattr__<typename std::remove_reference_t<Self>::__wrapped__, Name>::type
 >> {
@@ -2014,11 +2000,7 @@ struct __getattr__<Self, Name>                              : Returns<Optional<
 
 
 template <impl::inherits<impl::OptionalTag> Self, StaticStr Name, typename Value>
-    requires (__setattr__<
-        typename std::remove_reference_t<Self>::__wrapped__,
-        Name,
-        Value
-    >::enable)
+    requires (__setattr__<typename std::remove_reference_t<Self>::__wrapped__, Name, Value>::enable)
 struct __setattr__<Self, Name, Value>             : Returns<void> {
     static void operator()(Self self, Value&& value) {
         if (!self.is(None)) {
@@ -2032,10 +2014,7 @@ struct __setattr__<Self, Name, Value>             : Returns<void> {
 
 
 template <impl::inherits<impl::OptionalTag> Self, StaticStr Name>
-    requires (__delattr__<
-        typename std::remove_reference_t<Self>::__wrapped__,
-        Name
-    >::enable)
+    requires (__delattr__<typename std::remove_reference_t<Self>::__wrapped__, Name>::enable)
 struct __delattr__<Self, Name>                              : Returns<void> {
     static void operator()(Self self) {
         if (!self.is(None)) {
@@ -2059,15 +2038,9 @@ struct __repr__<Self>                                       : Returns<Str> {
 
 
 template <impl::inherits<impl::OptionalTag> Self, typename... Args>
-    requires (__call__<
-        typename std::remove_reference_t<Self>::__wrapped__,
-        Args...
-    >::enable)
+    requires (__call__<typename std::remove_reference_t<Self>::__wrapped__,Args...>::enable)
 struct __call__<Self, Args...>                              : Returns<Optional<
-    typename __call__<
-        typename std::remove_reference_t<Self>::__wrapped__,
-        Args...
-    >::type    
+    typename __call__<typename std::remove_reference_t<Self>::__wrapped__, Args...>::type
 >> {
     using Wrapped = std::remove_reference_t<Self>::__wrapped__;
     using Return = __call__<Wrapped, Args...>::type;
@@ -2082,15 +2055,9 @@ struct __call__<Self, Args...>                              : Returns<Optional<
 
 
 template <impl::inherits<impl::OptionalTag> Self, typename... Key>
-    requires (__getitem__<
-        typename std::remove_reference_t<Self>::__wrapped__,
-        Key...
-    >::enable)
+    requires (__getitem__<typename std::remove_reference_t<Self>::__wrapped__, Key...>::enable)
 struct __getitem__<Self, Key...>                             : Returns<Optional<
-    typename __getitem__<
-        typename std::remove_reference_t<Self>::__wrapped__,
-        Key...
-    >::type
+    typename __getitem__<typename std::remove_reference_t<Self>::__wrapped__, Key...>::type
 >> {
     using Wrapped = std::remove_reference_t<Self>::__wrapped__;
     using Return = __getitem__<Wrapped, Key...>::type;
@@ -2105,11 +2072,7 @@ struct __getitem__<Self, Key...>                             : Returns<Optional<
 
 
 template <impl::inherits<impl::OptionalTag> Self, typename Value, typename... Key>
-    requires (__setitem__<
-        typename std::remove_reference_t<Self>::__wrapped__,
-        Value,
-        Key...
-    >::enable)
+    requires (__setitem__<typename std::remove_reference_t<Self>::__wrapped__, Value, Key...>::enable)
 struct __setitem__<Self, Value, Key...>                         : Returns<void> {
     static void operator()(Self self, Value&& value, Key&&... key) {
         if (!self.is(None)) {
@@ -2121,10 +2084,7 @@ struct __setitem__<Self, Value, Key...>                         : Returns<void> 
 
 
 template <impl::inherits<impl::OptionalTag> Self, typename... Key>
-    requires (__delitem__<
-        typename std::remove_reference_t<Self>::__wrapped__,
-        Key...
-    >::enable)
+    requires (__delitem__<typename std::remove_reference_t<Self>::__wrapped__, Key...>::enable)
 struct __delitem__<Self, Key...>                               : Returns<void> {
     static void operator()(Self self, Key&&... key) {
         if (!self.is(None)) {
@@ -2148,30 +2108,26 @@ struct __len__<Self>                                        : Returns<size_t> {
 };
 
 
-template <impl::inherits<impl::OptionalTag> Self>
-    requires (__iter__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
-struct __iter__<Self>                                       : Returns<Optional<
-    typename __iter__<typename std::remove_reference_t<Self>::__wrapped__>::type
->> {
-    /// TODO: complicated
-};
+// template <impl::inherits<impl::OptionalTag> Self>
+//     requires (__iter__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
+// struct __iter__<Self>                                       : Returns<Optional<
+//     typename __iter__<typename std::remove_reference_t<Self>::__wrapped__>::type
+// >> {
+//     /// TODO: complicated
+// };
 
 
-
-template <impl::inherits<impl::OptionalTag> Self>
-    requires (__reversed__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
-struct __reversed__<Self>                                   : Returns<Optional<
-    typename __reversed__<typename std::remove_reference_t<Self>::__wrapped__>::type
->> {
-    /// TODO: complicated
-};
+// template <impl::inherits<impl::OptionalTag> Self>
+//     requires (__reversed__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
+// struct __reversed__<Self>                                   : Returns<Optional<
+//     typename __reversed__<typename std::remove_reference_t<Self>::__wrapped__>::type
+// >> {
+//     /// TODO: complicated
+// };
 
 
 template <impl::inherits<impl::OptionalTag> Self, typename Key>
-    requires (__contains__<
-        typename std::remove_reference_t<Self>::__wrapped__,
-        Key
-    >::enable)
+    requires (__contains__<typename std::remove_reference_t<Self>::__wrapped__, Key>::enable)
 struct __contains__<Self, Key>                              : Returns<bool> {
     static bool operator()(Self self, Key&& key) {
         return
@@ -2211,6 +2167,7 @@ struct __abs__<Self>                                        : Returns<Optional<
 
 
 template <impl::inherits<impl::OptionalTag> Self>
+    requires (__invert__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
 struct __invert__<Self>                                     : Returns<Optional<
     typename __invert__<typename std::remove_reference_t<Self>::__wrapped__>::type
 >> {
@@ -2226,6 +2183,7 @@ struct __invert__<Self>                                     : Returns<Optional<
 
 
 template <impl::inherits<impl::OptionalTag> Self>
+    requires (__pos__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
 struct __pos__<Self>                                        : Returns<Optional<
     typename __pos__<typename std::remove_reference_t<Self>::__wrapped__>::type
 >> {
@@ -2241,6 +2199,7 @@ struct __pos__<Self>                                        : Returns<Optional<
 
 
 template <impl::inherits<impl::OptionalTag> Self>
+    requires (__neg__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
 struct __neg__<Self>                                        : Returns<Optional<
     typename __neg__<typename std::remove_reference_t<Self>::__wrapped__>::type
 >> {
@@ -2519,9 +2478,8 @@ namespace impl {
     template <std::convertible_to<Object>... Ts>
     struct VariantToUnion<std::variant<Ts...>> {
         static constexpr bool enable = true;
-        using type = Union<obj<Ts>...>;
+        using type = Union<python_type<Ts>...>;
     };
-
 }
 
 
@@ -2577,8 +2535,6 @@ template <impl::is_variant From, typename... Ts>
 struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts...>> {
     /// TODO: need to assert that the variant types are convertible to the union types
 };
-
-
 
 
 }
