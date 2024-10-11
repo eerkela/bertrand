@@ -1643,6 +1643,10 @@ template <typename T>
 struct Interface<Optional<T>> : impl::OptionalTag {
     using __wrapped__ = T;
 
+    [[nodiscard]] bool has_value(this auto&& self) {
+        return !self.is(None);
+    }
+
     [[nodiscard]] T value(this auto&& self) {
         if (self.is(None)) {
             throw TypeError("optional is empty");
@@ -1653,6 +1657,11 @@ struct Interface<Optional<T>> : impl::OptionalTag {
 template <typename T>
 struct Interface<Type<Optional<T>>> : impl::OptionalTag {
     using __wrapped__ = T;
+
+    template <impl::inherits<impl::OptionalTag> U>
+    [[nodiscard]] bool has_value(U&& self) {
+        return !self.is(None);
+    }
 
     template <impl::inherits<impl::OptionalTag> U>
     [[nodiscard]] T value(U&& self) {
@@ -1670,12 +1679,25 @@ struct Optional : Object, Interface<Optional<T>> {
         static constexpr StaticStr __doc__ =
 R"doc()doc";
 
+        /// TODO: Python will need to expose a __wrapped__ attribute, which I can
+        /// follow when doing isinstance checks, etc against an optional argument.
+        /// -> This is relevant when doing something like
+        ///     Optional<List<Int>> list;
+        ///     if (isinstance<List<Int>>(list)) {
+        ///         // true if the list contains elements, false otherwise.  The
+        ///         // isinstance check will need to detect the presence of a
+        ///         // __wrapped__ attribute and use that to determine the type,
+        ///         // which can perhaps be rolled into the default control structs.
+        ///     }
+
         Object m_value;
 
         __python__(const T& value) : m_value(value) {}
         __python__(T&& value) : m_value(std::move(value)) {}
         __python__(const NoneType& value) : m_value(value) {}
         __python__(NoneType&& value) : m_value(std::move(value)) {}
+
+        /// TODO: __init__/__new__
 
         template <StaticStr ModName>
         static Type<Optional> __export__(Module<ModName>& mod);
@@ -1684,16 +1706,1057 @@ R"doc()doc";
         /// TODO: Python should forward attribute/item access/assignment/etc. to the
         /// underlying object in a monadic fashion, just like in C++
 
-        static PyObject* value(__python__* self) {
+        static PyObject* has_value(__python__* self) noexcept {
+            return PyBool_FromLong(!self->m_value.is(Py_None));
+        }
+
+        static PyObject* value(__python__* self) noexcept {
             if (self->m_value.is(None)) {
                 throw TypeError("optional is empty");
             }
             return Py_NewRef(ptr(self->m_value));
         }
 
+        static PyObject* __getattr__(__python__* self, PyObject* attr) noexcept {
+            try {
+                Py_ssize_t len;
+                const char* data = PyUnicode_AsUTF8AndSize(attr, &len);
+                if (data == nullptr) {
+                    return nullptr;
+                }
+                std::string_view name = {data, static_cast<size_t>(len)};
+                if (name == "has_value") {
+                    return has_value(self);
+                }
+                if (name == "value") {
+                    return value(self);
+                }
+                return PyObject_GetAttr(ptr(self->m_value), attr);
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static int __setattr__(
+            __python__* self,
+            PyObject* attr,
+            PyObject* value
+        ) noexcept {
+            try {
+                Py_ssize_t len;
+                const char* data = PyUnicode_AsUTF8AndSize(attr, &len);
+                if (data == nullptr) {
+                    return -1;
+                }
+                std::string_view name = {data, static_cast<size_t>(len)};
+                if (name == "has_value") {
+                    if (value == nullptr) {
+                        PyErr_SetString(
+                            PyExc_TypeError,
+                            "cannot delete attribute 'has_value'"
+                        );
+                    } else {
+                        PyErr_SetString(
+                            PyExc_TypeError,
+                            "cannot set attribute 'has_value'"
+                        );
+                    }
+                }
+                if (name == "value") {
+                    if (value == nullptr) {
+                        PyErr_SetString(
+                            PyExc_TypeError,
+                            "cannot delete attribute 'value'"
+                        );
+                    } else {
+                        PyErr_SetString(
+                            PyExc_TypeError,
+                            "cannot set attribute 'value'"
+                        );
+                    }
+                    return -1;
+                }
+                return PyObject_SetAttr(ptr(self->m_value), attr, value);
+            } catch (...) {
+                Exception::to_python();
+                return -1;
+            }
+        }
+
+        /// TODO: the python side of this interface, which forwards all built-in
+        /// slots to the underlying object
+
+        static PyObject* __await__(__python__* self) noexcept {
+            PyAsyncMethods* async = Py_TYPE(ptr(self->m_value))->tp_as_async;
+            if (async && async->am_await) {
+                return async->am_await(ptr(self->m_value));
+            }
+            PyErr_SetString(
+                PyExc_TypeError,
+                "object is not awaitable"
+            );
+            return nullptr;
+        }
+
+        static PyObject* __aiter__(__python__* self) noexcept {
+            PyAsyncMethods* async = Py_TYPE(ptr(self->m_value))->tp_as_async;
+            if (async && async->am_aiter) {
+                return async->am_aiter(ptr(self->m_value));
+            }
+            PyErr_SetString(
+                PyExc_TypeError,
+                "object is not async iterable"
+            );
+            return nullptr;
+        }
+
+        static PyObject* __anext__(__python__* self) noexcept {
+            PyAsyncMethods* async = Py_TYPE(ptr(self->m_value))->tp_as_async;
+            if (async && async->am_anext) {
+                return async->am_anext(ptr(self->m_value));
+            }
+            PyErr_SetString(
+                PyExc_TypeError,
+                "object is not async iterator"
+            );
+            return nullptr;
+        }
+
+        static PySendResult __asend__(
+            __python__* self,
+            PyObject* arg,
+            PyObject** presult
+        ) noexcept {
+            return PyIter_Send(ptr(self->m_value), arg, presult);
+        }
+
+        /// TODO: if all optionals convert the inputs into bertrand objects, then it's
+        /// possible that the underlying operations will return the correct type
+        /// according to the arguments, which means this doesn't need to import or call
+        /// the bertrand module to get the correct type.
+
+        static PyObject* __add__(PyObject* lhs, PyObject* rhs) noexcept {
+            try {
+                Type<Optional> cls;
+                PyObject* result;
+                int rc = PyObject_IsInstance(lhs, ptr(cls));
+                if (rc == -1) {
+                    return nullptr;
+                } else if (rc) {
+                    __python__* self = reinterpret_cast<__python__*>(lhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(lhs);
+                    }
+                    result = PyNumber_Add(ptr(self->m_value), rhs);
+                } else {
+                    __python__* self = reinterpret_cast<__python__*>(rhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(rhs);
+                    }
+                    result = PyNumber_Add(lhs, ptr(self->m_value));
+                }
+                if (result == nullptr) {
+                    return nullptr;
+                }
+                PyObject* monad = wrap(ptr(cls), result);
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __iadd__(__python__* lhs, PyObject* rhs) noexcept {
+            try {
+                if (lhs->m_value.is(None)) {
+                    return Py_NewRef(lhs);
+                }
+                PyObject* result = PyNumber_InPlaceAdd(
+                    ptr(lhs->m_value),
+                    rhs
+                );
+                if (result == nullptr) {
+                    return nullptr;
+                } else if (result == ptr(lhs->m_value)) {
+                    Py_DECREF(result);
+                    return Py_NewRef(lhs);
+                }
+                PyObject* monad = wrap(
+                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
+                    result
+                );
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __sub__(PyObject* lhs, PyObject* rhs) noexcept {
+            try {
+                Type<Optional> cls;
+                PyObject* result;
+                int rc = PyObject_IsInstance(lhs, ptr(cls));
+                if (rc == -1) {
+                    return nullptr;
+                } else if (rc) {
+                    __python__* self = reinterpret_cast<__python__*>(lhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(lhs);
+                    }
+                    result = PyNumber_Subtract(ptr(self->m_value), rhs);
+                } else {
+                    __python__* self = reinterpret_cast<__python__*>(rhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(rhs);
+                    }
+                    result = PyNumber_Subtract(lhs, ptr(self->m_value));
+                }
+                if (result == nullptr) {
+                    return nullptr;
+                }
+                PyObject* monad = wrap(ptr(cls), result);
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __isub__(__python__* lhs, PyObject* rhs) noexcept {
+            try {
+                if (lhs->m_value.is(None)) {
+                    return Py_NewRef(lhs);
+                }
+                PyObject* result = PyNumber_InPlaceSubtract(
+                    ptr(lhs->m_value),
+                    rhs
+                );
+                if (result == nullptr) {
+                    return nullptr;
+                } else if (result == ptr(lhs->m_value)) {
+                    Py_DECREF(result);
+                    return Py_NewRef(lhs);
+                }
+                PyObject* monad = wrap(
+                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
+                    result
+                );
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __mul__(PyObject* lhs, PyObject* rhs) noexcept {
+            try {
+                Type<Optional> cls;
+                PyObject* result;
+                int rc = PyObject_IsInstance(lhs, ptr(cls));
+                if (rc == -1) {
+                    return nullptr;
+                } else if (rc) {
+                    __python__* self = reinterpret_cast<__python__*>(lhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(lhs);
+                    }
+                    result = PyNumber_Multiply(ptr(self->m_value), rhs);
+                } else {
+                    __python__* self = reinterpret_cast<__python__*>(rhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(rhs);
+                    }
+                    result = PyNumber_Multiply(lhs, ptr(self->m_value));
+                }
+                if (result == nullptr) {
+                    return nullptr;
+                }
+                PyObject* monad = wrap(ptr(cls), result);
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __imul__(__python__* lhs, PyObject* rhs) noexcept {
+            try {
+                if (lhs->m_value.is(None)) {
+                    return Py_NewRef(lhs);
+                }
+                PyObject* result = PyNumber_InPlaceMultiply(
+                    ptr(lhs->m_value),
+                    rhs
+                );
+                if (result == nullptr) {
+                    return nullptr;
+                } else if (result == ptr(lhs->m_value)) {
+                    Py_DECREF(result);
+                    return Py_NewRef(lhs);
+                }
+                PyObject* monad = wrap(
+                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
+                    result
+                );
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __mod__(PyObject* lhs, PyObject* rhs) noexcept {
+            try {
+                Type<Optional> cls;
+                PyObject* result;
+                int rc = PyObject_IsInstance(lhs, ptr(cls));
+                if (rc == -1) {
+                    return nullptr;
+                } else if (rc) {
+                    __python__* self = reinterpret_cast<__python__*>(lhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(lhs);
+                    }
+                    result = PyNumber_Remainder(ptr(self->m_value), rhs);
+                } else {
+                    __python__* self = reinterpret_cast<__python__*>(rhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(rhs);
+                    }
+                    result = PyNumber_Remainder(lhs, ptr(self->m_value));
+                }
+                if (result == nullptr) {
+                    return nullptr;
+                }
+                PyObject* monad = wrap(ptr(cls), result);
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __imod__(__python__* lhs, PyObject* rhs) noexcept {
+            try {
+                if (lhs->m_value.is(None)) {
+                    return Py_NewRef(lhs);
+                }
+                PyObject* result = PyNumber_InPlaceRemainder(
+                    ptr(lhs->m_value),
+                    rhs
+                );
+                if (result == nullptr) {
+                    return nullptr;
+                } else if (result == ptr(lhs->m_value)) {
+                    Py_DECREF(result);
+                    return Py_NewRef(lhs);
+                }
+                PyObject* monad = wrap(
+                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
+                    result
+                );
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __divmod__(PyObject* lhs, PyObject* rhs) noexcept {
+            try {
+                Type<Optional> cls;
+                PyObject* result;
+                int rc = PyObject_IsInstance(lhs, ptr(cls));
+                if (rc == -1) {
+                    return nullptr;
+                } else if (rc) {
+                    __python__* self = reinterpret_cast<__python__*>(lhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(lhs);
+                    }
+                    result = PyNumber_Divmod(ptr(self->m_value), rhs);
+                } else {
+                    __python__* self = reinterpret_cast<__python__*>(rhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(rhs);
+                    }
+                    result = PyNumber_Divmod(lhs, ptr(self->m_value));
+                }
+                if (result == nullptr) {
+                    return nullptr;
+                }
+                PyObject* monad = wrap(ptr(cls), result);
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __power__(PyObject* lhs, PyObject* rhs, PyObject* mod) noexcept {
+            try {
+                Type<Optional> cls;
+                PyObject* result;
+                int rc = PyObject_IsInstance(lhs, ptr(cls));
+                if (rc == -1) {
+                    return nullptr;
+                } else if (rc) {
+                    __python__* self = reinterpret_cast<__python__*>(lhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(lhs);
+                    }
+                    result = PyNumber_Power(ptr(self->m_value), rhs, mod);
+                } else {
+                    rc = PyObject_IsInstance(rhs, ptr(cls));
+                    if (rc == -1) {
+                        return nullptr;
+                    } else if (rc) {
+                        __python__* self = reinterpret_cast<__python__*>(rhs);
+                        if (self->m_value.is(None)) {
+                            return Py_NewRef(rhs);
+                        }
+                        result = PyNumber_Power(lhs, ptr(self->m_value), mod);
+                    } else {
+                        __python__* self = reinterpret_cast<__python__*>(mod);
+                        if (self->m_value.is(None)) {
+                            return Py_NewRef(mod);
+                        }
+                        result = PyNumber_Power(lhs, rhs, ptr(self->m_value));
+                    }
+                }
+                if (result == nullptr) {
+                    return nullptr;
+                }
+                PyObject* monad = wrap(ptr(cls), result);
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __ipower__(__python__* lhs, PyObject* rhs, PyObject* mod) noexcept {
+            try {
+                if (lhs->m_value.is(None)) {
+                    return Py_NewRef(lhs);
+                }
+                PyObject* result = PyNumber_InPlacePower(
+                    ptr(lhs->m_value),
+                    rhs,
+                    mod
+                );
+                if (result == nullptr) {
+                    return nullptr;
+                } else if (result == ptr(lhs->m_value)) {
+                    Py_DECREF(result);
+                    return Py_NewRef(lhs);
+                }
+                PyObject* monad = wrap(
+                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
+                    result
+                );
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __neg__(__python__* self) noexcept {
+            if (self->m_value.is(None)) {
+                return Py_NewRef(ptr(self));
+            }
+            PyObject* result = PyNumber_Negative(ptr(self->m_value));
+            if (result == nullptr) {
+                return nullptr;
+            }
+            PyObject* monad = wrap(
+                reinterpret_cast<PyObject*>(Py_TYPE(self)),
+                result
+            );
+            Py_DECREF(result);
+            return monad;
+        }
+
+        static PyObject* __pos__(__python__* self) noexcept {
+            if (self->m_value.is(None)) {
+                return Py_NewRef(ptr(self));
+            }
+            PyObject* result = PyNumber_Positive(ptr(self->m_value));
+            if (result == nullptr) {
+                return nullptr;
+            }
+            PyObject* monad = wrap(
+                reinterpret_cast<PyObject*>(Py_TYPE(self)),
+                result
+            );
+            Py_DECREF(result);
+            return monad;
+        }
+
+        static PyObject* __abs__(__python__* self) noexcept {
+            if (self->m_value.is(None)) {
+                return Py_NewRef(ptr(self));
+            }
+            PyObject* result = PyNumber_Absolute(ptr(self->m_value));
+            if (result == nullptr) {
+                return nullptr;
+            }
+            PyObject* monad = wrap(
+                reinterpret_cast<PyObject*>(Py_TYPE(self)),
+                result
+            );
+            Py_DECREF(result);
+            return monad;
+        }
+
+        static int __bool__(__python__* self) noexcept {
+            return PyObject_IsTrue(ptr(self->m_value));
+        }
+
+        static PyObject* __invert__(__python__* self) noexcept {
+            if (self->m_value.is(None)) {
+                return Py_NewRef(ptr(self));
+            }
+            PyObject* result = PyNumber_Invert(ptr(self->m_value));
+            if (result == nullptr) {
+                return nullptr;
+            }
+            PyObject* monad = wrap(
+                reinterpret_cast<PyObject*>(Py_TYPE(self)),
+                result
+            );
+            Py_DECREF(result);
+            return monad;
+        }
+
+        static PyObject* __lshift__(PyObject* lhs, PyObject* rhs) noexcept {
+            try {
+                Type<Optional> cls;
+                PyObject* result;
+                int rc = PyObject_IsInstance(lhs, ptr(cls));
+                if (rc == -1) {
+                    return nullptr;
+                } else if (rc) {
+                    __python__* self = reinterpret_cast<__python__*>(lhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(lhs);
+                    }
+                    result = PyNumber_Lshift(ptr(self->m_value), rhs);
+                } else {
+                    __python__* self = reinterpret_cast<__python__*>(rhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(rhs);
+                    }
+                    result = PyNumber_Lshift(lhs, ptr(self->m_value));
+                }
+                if (result == nullptr) {
+                    return nullptr;
+                }
+                PyObject* monad = wrap(ptr(cls), result);
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __ilshift__(__python__* lhs, PyObject* rhs) noexcept {
+            try {
+                if (lhs->m_value.is(None)) {
+                    return Py_NewRef(lhs);
+                }
+                PyObject* result = PyNumber_InPlaceLshift(
+                    ptr(lhs->m_value),
+                    rhs
+                );
+                if (result == nullptr) {
+                    return nullptr;
+                } else if (result == ptr(lhs->m_value)) {
+                    Py_DECREF(result);
+                    return Py_NewRef(lhs);
+                }
+                PyObject* monad = wrap(
+                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
+                    result
+                );
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __rshift__(PyObject* lhs, PyObject* rhs) noexcept {
+            try {
+                Type<Optional> cls;
+                PyObject* result;
+                int rc = PyObject_IsInstance(lhs, ptr(cls));
+                if (rc == -1) {
+                    return nullptr;
+                } else if (rc) {
+                    __python__* self = reinterpret_cast<__python__*>(lhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(lhs);
+                    }
+                    result = PyNumber_Rshift(ptr(self->m_value), rhs);
+                } else {
+                    __python__* self = reinterpret_cast<__python__*>(rhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(rhs);
+                    }
+                    result = PyNumber_Rshift(lhs, ptr(self->m_value));
+                }
+                if (result == nullptr) {
+                    return nullptr;
+                }
+                PyObject* monad = wrap(ptr(cls), result);
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __irshift__(__python__* lhs, PyObject* rhs) noexcept {
+            try {
+                if (lhs->m_value.is(None)) {
+                    return Py_NewRef(lhs);
+                }
+                PyObject* result = PyNumber_InPlaceRshift(
+                    ptr(lhs->m_value),
+                    rhs
+                );
+                if (result == nullptr) {
+                    return nullptr;
+                } else if (result == ptr(lhs->m_value)) {
+                    Py_DECREF(result);
+                    return Py_NewRef(lhs);
+                }
+                PyObject* monad = wrap(
+                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
+                    result
+                );
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __and__(PyObject* lhs, PyObject* rhs) noexcept {
+            try {
+                Type<Optional> cls;
+                PyObject* result;
+                int rc = PyObject_IsInstance(lhs, ptr(cls));
+                if (rc == -1) {
+                    return nullptr;
+                } else if (rc) {
+                    __python__* self = reinterpret_cast<__python__*>(lhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(lhs);
+                    }
+                    result = PyNumber_And(ptr(self->m_value), rhs);
+                } else {
+                    __python__* self = reinterpret_cast<__python__*>(rhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(rhs);
+                    }
+                    result = PyNumber_And(lhs, ptr(self->m_value));
+                }
+                if (result == nullptr) {
+                    return nullptr;
+                }
+                PyObject* monad = wrap(ptr(cls), result);
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __iand__(__python__* lhs, PyObject* rhs) noexcept {
+            try {
+                if (lhs->m_value.is(None)) {
+                    return Py_NewRef(lhs);
+                }
+                PyObject* result = PyNumber_InPlaceAnd(
+                    ptr(lhs->m_value),
+                    rhs
+                );
+                if (result == nullptr) {
+                    return nullptr;
+                } else if (result == ptr(lhs->m_value)) {
+                    Py_DECREF(result);
+                    return Py_NewRef(lhs);
+                }
+                PyObject* monad = wrap(
+                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
+                    result
+                );
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __xor__(PyObject* lhs, PyObject* rhs) noexcept {
+            try {
+                Type<Optional> cls;
+                PyObject* result;
+                int rc = PyObject_IsInstance(lhs, ptr(cls));
+                if (rc == -1) {
+                    return nullptr;
+                } else if (rc) {
+                    __python__* self = reinterpret_cast<__python__*>(lhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(lhs);
+                    }
+                    result = PyNumber_Xor(ptr(self->m_value), rhs);
+                } else {
+                    __python__* self = reinterpret_cast<__python__*>(rhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(rhs);
+                    }
+                    result = PyNumber_Xor(lhs, ptr(self->m_value));
+                }
+                if (result == nullptr) {
+                    return nullptr;
+                }
+                PyObject* monad = wrap(ptr(cls), result);
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __ixor__(__python__* lhs, PyObject* rhs) noexcept {
+            try {
+                if (lhs->m_value.is(None)) {
+                    return Py_NewRef(lhs);
+                }
+                PyObject* result = PyNumber_InPlaceXor(ptr(lhs->m_value), rhs);
+                if (result == nullptr) {
+                    return nullptr;
+                } else if (result == ptr(lhs->m_value)) {
+                    Py_DECREF(result);
+                    return Py_NewRef(lhs);
+                }
+                PyObject* monad = wrap(
+                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
+                    result
+                );
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __or__(PyObject* lhs, PyObject* rhs) noexcept {
+            try {
+                Type<Optional> cls;
+                PyObject* result;
+                int rc = PyObject_IsInstance(lhs, ptr(cls));
+                if (rc == -1) {
+                    return nullptr;
+                } else if (rc) {
+                    __python__* self = reinterpret_cast<__python__*>(lhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(lhs);
+                    }
+                    result = PyNumber_Or(ptr(self->m_value), rhs);
+                } else {
+                    __python__* self = reinterpret_cast<__python__*>(rhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(rhs);
+                    }
+                    result = PyNumber_Or(lhs, ptr(self->m_value));
+                }
+                if (result == nullptr) {
+                    return nullptr;
+                }
+                PyObject* monad = wrap(ptr(cls), result);
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __ior__(__python__* lhs, PyObject* rhs) noexcept {
+            try {
+                if (lhs->m_value.is(None)) {
+                    return Py_NewRef(lhs);
+                }
+                PyObject* result = PyNumber_InPlaceOr(ptr(lhs->m_value), rhs);
+                if (result == nullptr) {
+                    return nullptr;
+                } else if (result == ptr(lhs->m_value)) {
+                    Py_DECREF(result);
+                    return Py_NewRef(lhs);
+                }
+                PyObject* monad = wrap(
+                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
+                    result
+                );
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __int__(__python__* self) noexcept {
+            return PyNumber_Long(ptr(self->m_value));
+        }
+
+        static PyObject* __float__(__python__* self) noexcept {
+            return PyNumber_Float(ptr(self->m_value));
+        }
+
+        static PyObject* __floordiv__(PyObject* lhs, PyObject* rhs) noexcept {
+            try {
+                Type<Optional> cls;
+                PyObject* result;
+                int rc = PyObject_IsInstance(lhs, ptr(cls));
+                if (rc == -1) {
+                    return nullptr;
+                } else if (rc) {
+                    __python__* self = reinterpret_cast<__python__*>(lhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(lhs);
+                    }
+                    result = PyNumber_FloorDivide(ptr(self->m_value), rhs);
+                } else {
+                    __python__* self = reinterpret_cast<__python__*>(rhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(rhs);
+                    }
+                    result = PyNumber_FloorDivide(lhs, ptr(self->m_value));
+                }
+                if (result == nullptr) {
+                    return nullptr;
+                }
+                PyObject* monad = wrap(ptr(cls), result);
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __ifloordiv__(__python__* lhs, PyObject* rhs) noexcept {
+            try {
+                if (lhs->m_value.is(None)) {
+                    return Py_NewRef(lhs);
+                }
+                PyObject* result = PyNumber_InPlaceFloorDivide(ptr(lhs->m_value), rhs);
+                if (result == nullptr) {
+                    return nullptr;
+                } else if (result == ptr(lhs->m_value)) {
+                    Py_DECREF(result);
+                    return Py_NewRef(lhs);
+                }
+                PyObject* monad = wrap(
+                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
+                    result
+                );
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __truediv__(PyObject* lhs, PyObject* rhs) noexcept {
+            try {
+                Type<Optional> cls;
+                PyObject* result;
+                int rc = PyObject_IsInstance(lhs, ptr(cls));
+                if (rc == -1) {
+                    return nullptr;
+                } else if (rc) {
+                    __python__* self = reinterpret_cast<__python__*>(lhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(lhs);
+                    }
+                    result = PyNumber_TrueDivide(ptr(self->m_value), rhs);
+                } else {
+                    __python__* self = reinterpret_cast<__python__*>(rhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(rhs);
+                    }
+                    result = PyNumber_TrueDivide(lhs, ptr(self->m_value));
+                }
+                if (result == nullptr) {
+                    return nullptr;
+                }
+                PyObject* monad = wrap(ptr(cls), result);
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __itruediv__(__python__* lhs, PyObject* rhs) noexcept {
+            try {
+                if (lhs->m_value.is(None)) {
+                    return Py_NewRef(lhs);
+                }
+                PyObject* result = PyNumber_InPlaceTrueDivide(ptr(lhs->m_value), rhs);
+                if (result == nullptr) {
+                    return nullptr;
+                } else if (result == ptr(lhs->m_value)) {
+                    Py_DECREF(result);
+                    return Py_NewRef(lhs);
+                }
+                PyObject* monad = wrap(
+                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
+                    result
+                );
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __index__(__python__* self) noexcept {
+            return PyNumber_Index(ptr(self->m_value));
+        }
+
+        static PyObject* __matmul__(PyObject* lhs, PyObject* rhs) noexcept {
+            try {
+                Type<Optional> cls;
+                PyObject* result;
+                int rc = PyObject_IsInstance(lhs, ptr(cls));
+                if (rc == -1) {
+                    return nullptr;
+                } else if (rc) {
+                    __python__* self = reinterpret_cast<__python__*>(lhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(lhs);
+                    }
+                    result = PyNumber_MatrixMultiply(ptr(self->m_value), rhs);
+                } else {
+                    __python__* self = reinterpret_cast<__python__*>(rhs);
+                    if (self->m_value.is(None)) {
+                        return Py_NewRef(rhs);
+                    }
+                    result = PyNumber_MatrixMultiply(lhs, ptr(self->m_value));
+                }
+                if (result == nullptr) {
+                    return nullptr;
+                }
+                PyObject* monad = wrap(ptr(cls), result);
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __imatmul__(__python__* lhs, PyObject* rhs) noexcept {
+            try {
+                if (lhs->m_value.is(None)) {
+                    return Py_NewRef(lhs);
+                }
+                PyObject* result = PyNumber_InPlaceMatrixMultiply(ptr(lhs->m_value), rhs);
+                if (result == nullptr) {
+                    return nullptr;
+                } else if (result == ptr(lhs->m_value)) {
+                    Py_DECREF(result);
+                    return Py_NewRef(lhs);
+                }
+                PyObject* monad = wrap(
+                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
+                    result
+                );
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static Py_ssize_t __len__(__python__* self) noexcept {
+            return PyObject_Length(ptr(self->m_value));
+        }
+
     private:
 
+        static PyObject* wrap(PyObject* cls, PyObject* result) {
+            PyObject* bertrand = PyImport_ImportModule("bertrand");
+            if (bertrand == nullptr) {
+                return nullptr;
+            }
+            PyObject* converted = PyObject_CallOneArg(bertrand, result);
+            Py_DECREF(bertrand);
+            if (converted == nullptr) {
+                return nullptr;
+            }
+            PyObject* type = PyObject_GetItem(
+                cls,
+                reinterpret_cast<PyObject*>(Py_TYPE(converted))
+            );
+            if (type == nullptr) {
+                Py_DECREF(converted);
+                return nullptr;
+            }
+            PyObject* monad = PyObject_CallOneArg(type, converted);
+            Py_DECREF(converted);
+            Py_DECREF(type);
+            return monad;
+        }
+
         inline static PyMethodDef methods[] = {
+            {
+                "has_value",
+                reinterpret_cast<PyCFunction>(has_value),
+                METH_NOARGS,
+                PyDoc_STR(
+R"doc(Check if the optional holds a value.
+
+Returns
+-------
+bool
+    `True` if the optional holds a value, `False` otherwise.
+)doc"
+                )
+            },
             {
                 "value",
                 reinterpret_cast<PyCFunction>(value),
@@ -1715,6 +2778,64 @@ TypeError
                 )
             },
             {nullptr}
+        };
+
+        inline static PyAsyncMethods async = {
+            .am_await = reinterpret_cast<unaryfunc>(__await__),
+            .am_aiter = reinterpret_cast<unaryfunc>(__aiter__),
+            .am_anext = reinterpret_cast<unaryfunc>(__anext__),
+            .am_send = reinterpret_cast<sendfunc>(__asend__),
+        };
+
+        inline static PyNumberMethods number = {
+            .nb_add = reinterpret_cast<binaryfunc>(__add__),
+            .nb_subtract = reinterpret_cast<binaryfunc>(__sub__),
+            .nb_multiply = reinterpret_cast<binaryfunc>(__mul__),
+            .nb_remainder = reinterpret_cast<binaryfunc>(__mod__),
+            .nb_divmod = reinterpret_cast<binaryfunc>(__divmod__),
+            .nb_power = reinterpret_cast<ternaryfunc>(__power__),
+            .nb_negative = reinterpret_cast<unaryfunc>(__neg__),
+            .nb_positive = reinterpret_cast<unaryfunc>(__pos__),
+            .nb_absolute = reinterpret_cast<unaryfunc>(__abs__),
+            .nb_bool = reinterpret_cast<inquiry>(__bool__),
+            .nb_invert = reinterpret_cast<unaryfunc>(__invert__),
+            .nb_lshift = reinterpret_cast<binaryfunc>(__lshift__),
+            .nb_rshift = reinterpret_cast<binaryfunc>(__rshift__),
+            .nb_and = reinterpret_cast<binaryfunc>(__and__),
+            .nb_xor = reinterpret_cast<binaryfunc>(__xor__),
+            .nb_or = reinterpret_cast<binaryfunc>(__or__),
+            .nb_int = reinterpret_cast<unaryfunc>(__int__),
+            .nb_float = reinterpret_cast<unaryfunc>(__float__),
+            .nb_inplace_add = reinterpret_cast<binaryfunc>(__iadd__),
+            .nb_inplace_subtract = reinterpret_cast<binaryfunc>(__isub__),
+            .nb_inplace_multiply = reinterpret_cast<binaryfunc>(__imul__),
+            .nb_inplace_remainder = reinterpret_cast<binaryfunc>(__imod__),
+            .nb_inplace_power = reinterpret_cast<ternaryfunc>(__ipower__),
+            .nb_inplace_lshift = reinterpret_cast<binaryfunc>(__ilshift__),
+            .nb_inplace_rshift = reinterpret_cast<binaryfunc>(__irshift__),
+            .nb_inplace_and = reinterpret_cast<binaryfunc>(__iand__),
+            .nb_inplace_xor = reinterpret_cast<binaryfunc>(__ixor__),
+            .nb_inplace_or = reinterpret_cast<binaryfunc>(__ior__),
+            .nb_floor_divide = reinterpret_cast<binaryfunc>(__floordiv__),
+            .nb_true_divide = reinterpret_cast<binaryfunc>(__truediv__),
+            .nb_inplace_floor_divide = reinterpret_cast<binaryfunc>(__ifloordiv__),
+            .nb_inplace_true_divide = reinterpret_cast<binaryfunc>(__itruediv__),
+            .nb_index = reinterpret_cast<unaryfunc>(__index__),
+            .nb_matrix_multiply = reinterpret_cast<binaryfunc>(__matmul__),
+            .nb_inplace_matrix_multiply = reinterpret_cast<binaryfunc>(__imatmul__),
+        };
+
+        inline static PySequenceMethods sequence = {
+            .sq_length = reinterpret_cast<lenfunc>(__len__),
+            .sq_concat = reinterpret_cast<binaryfunc>(__add__),
+        };
+
+        inline static PyMappingMethods mapping = {
+
+        };
+
+        inline static PyBufferProcs buffer = {
+
         };
 
     };
@@ -2096,7 +3217,9 @@ struct __delitem__<Self, Key...>                               : Returns<void> {
 
 template <impl::inherits<impl::OptionalTag> Self>
     requires (__len__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
-struct __len__<Self>                                        : Returns<size_t> {
+struct __len__<Self>                                        : Returns<Optional<
+    typename __len__<typename std::remove_reference_t<Self>::__wrapped__>::type
+>> {
     using Return = __len__<typename std::remove_reference_t<Self>::__wrapped__>::type;
     static Optional<Return> operator()(Self self) {
         if (self.is(None)) {
@@ -2113,7 +3236,8 @@ struct __len__<Self>                                        : Returns<size_t> {
 // struct __iter__<Self>                                       : Returns<Optional<
 //     typename __iter__<typename std::remove_reference_t<Self>::__wrapped__>::type
 // >> {
-//     /// TODO: complicated
+//     /// TODO: complicated.  Would involve an iterator implementation that initializes
+//     /// to the end iterator if the optional is None.
 // };
 
 
@@ -2122,7 +3246,8 @@ struct __len__<Self>                                        : Returns<size_t> {
 // struct __reversed__<Self>                                   : Returns<Optional<
 //     typename __reversed__<typename std::remove_reference_t<Self>::__wrapped__>::type
 // >> {
-//     /// TODO: complicated
+//     /// TODO: complicated.  Would involve an iterator implementation that initializes
+//     /// to the end iterator if the optional is None.
 // };
 
 
@@ -2139,8 +3264,11 @@ struct __contains__<Self, Key>                              : Returns<bool> {
 
 template <impl::inherits<impl::OptionalTag> Self>
     requires (__hash__<typename std::remove_reference_t<Self>::__wrapped__>::enable)
-struct __hash__<Self>                                       : Returns<size_t> {
-    static size_t operator()(Self self) {
+struct __hash__<Self>                                       : Returns<
+    typename __hash__<typename std::remove_reference_t<Self>::__wrapped__>::type
+> {
+    using Return = __hash__<typename std::remove_reference_t<Self>::__wrapped__>::type;
+    static Return operator()(Self self) {
         if (self.is(None)) {
             return hash(None);
         } else {
@@ -2500,6 +3628,15 @@ struct Union : Object, Interface<Union<Types...>> {
 R"doc()doc";
 
         Object m_value;
+
+        __python__(const Object& value) : m_value(value) {}
+        __python__(Object&& value) : m_value(std::move(value)) {}
+
+        template <StaticStr ModName>
+        static Type<Union> __export__(Module<ModName>& mod);
+        static Type<Union> __import__();
+
+
 
     };
 
