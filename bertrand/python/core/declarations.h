@@ -2573,6 +2573,45 @@ namespace impl {
     template <typename T> requires (cpp_helper<T>::enable)
     using cpp_type = cpp_helper<T>::type;
 
+    template <typename T, typename = void>
+    struct wrapped_helper {
+        static constexpr bool enable = false;
+    };
+    template <typename T>
+    struct wrapped_helper<T, std::void_t<typename std::remove_cvref_t<T>::__wrapped__>> {
+        static constexpr bool enable = true;
+        using wrapped = std::remove_cvref_t<T>::__wrapped__;
+        template <typename U>
+        struct helper { using type = wrapped; };
+        template <typename U>
+        struct helper<U&> { using type = wrapped&; };
+        template <typename U>
+        struct helper<U&&> { using type = wrapped&&; };
+        template <typename U>
+        struct helper<const U> { using type = const wrapped; };
+        template <typename U>
+        struct helper<const U&> { using type = const wrapped&; };
+        template <typename U>
+        struct helper<const U&&> { using type = const wrapped&&; };
+        template <typename U>
+        struct helper<volatile U> { using type = volatile wrapped; };
+        template <typename U>
+        struct helper<volatile U&> { using type = volatile wrapped&; };
+        template <typename U>
+        struct helper<volatile U&&> { using type = volatile wrapped&&; };
+        template <typename U>
+        struct helper<const volatile U> { using type = const volatile wrapped; };
+        template <typename U>
+        struct helper<const volatile U&> { using type = const volatile wrapped&; };
+        template <typename U>
+        struct helper<const volatile U&&> { using type = const volatile wrapped&&; };
+        using type = helper<T>::type;
+    };
+    template <typename T>
+    concept has_wrapped = wrapped_helper<T>::enable;
+    template <typename T> requires (wrapped_helper<T>::enable)
+    using wrapped_type = wrapped_helper<T>::type;
+
     template <typename Self, StaticStr Name>
         requires (__getattr__<Self, Name>::enable)
     struct Attr;
