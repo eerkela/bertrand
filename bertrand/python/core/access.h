@@ -721,6 +721,8 @@ struct Interface<Iterator<Begin, End, Container>> : impl::IterTag {
     decltype(auto) __iter__(this auto&& self);
     decltype(auto) __next__(this auto&& self);
 };
+
+
 template <typename Begin, typename End, typename Container>
 struct Interface<Type<Iterator<Begin, End, Container>>> {
     using begin_t = Begin;
@@ -1724,6 +1726,7 @@ R"doc()doc";
         ///         // which can perhaps be rolled into the default control structs.
         ///     }
 
+        vectorcallfunc vectorcall = reinterpret_cast<vectorcallfunc>(__call__);
         Object m_value;
 
         __python__(const T& value) : m_value(value) {}
@@ -1797,8 +1800,9 @@ R"doc()doc";
         static Type<Optional> __export__(Module<ModName>& mod);
         static Type<Optional> __import__();
 
-        /// TODO: Python should forward attribute/item access/assignment/etc. to the
-        /// underlying object in a monadic fashion, just like in C++
+        static PyObject* __wrapped__(__python__* self) noexcept {
+            return Py_NewRef(ptr(self->m_value));
+        }
 
         static PyObject* has_value(__python__* self) noexcept {
             return PyBool_FromLong(!self->m_value.is(Py_None));
@@ -1818,6 +1822,32 @@ R"doc()doc";
             return Py_NewRef(ptr(self->m_value));
         }
 
+        static PyObject* __repr__(__python__* self) noexcept {
+            return PyObject_Repr(ptr(self->m_value));
+        }
+
+        static PyObject* __hash__(__python__* self) noexcept {
+            return PyObject_Hash(ptr(self->m_value));
+        }
+
+        static PyObject* __call__(
+            __python__* self,
+            PyObject* const* args,
+            Py_ssize_t nargsf,
+            PyObject* kwnames
+        ) noexcept {
+            return PyObject_Vectorcall(
+                ptr(self->m_value),
+                args,
+                nargsf,
+                kwnames
+            );
+        }
+
+        static PyObject* __str__(__python__* self) noexcept {
+            return PyObject_Str(ptr(self->m_value));
+        }
+
         static PyObject* __getattr__(__python__* self, PyObject* attr) noexcept {
             try {
                 Py_ssize_t len;
@@ -1826,22 +1856,10 @@ R"doc()doc";
                     return nullptr;
                 }
                 std::string_view name = {data, static_cast<size_t>(len)};
-                if (name == "has_value") {
-                    return has_value(self);
+                if (name == "has_value" || name == "value" || name == "value_or") {
+                    return PyObject_GenericGetAttr(ptr(self->m_value), attr);
                 }
-                if (name == "value") {
-                    return value(self);
-                }
-                PyObject* result = PyObject_GetAttr(ptr(self->m_value), attr);
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                PyObject* monad = wrap(
-                    reinterpret_cast<PyObject*>(Py_TYPE(self)),
-                    result
-                );
-                Py_DECREF(result);
-                return monad;
+                return PyObject_GetAttr(ptr(self->m_value), attr);
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -1860,31 +1878,15 @@ R"doc()doc";
                     return -1;
                 }
                 std::string_view name = {data, static_cast<size_t>(len)};
-                if (name == "has_value") {
-                    if (value == nullptr) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "cannot delete attribute 'has_value'"
-                        );
+                if (name == "has_value" || name == "value" || name == "value_or") {
+                    std::string message = "cannot ";
+                    if (value) {
+                        message += "set ";
                     } else {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "cannot set attribute 'has_value'"
-                        );
+                        message += "delete ";
                     }
-                }
-                if (name == "value") {
-                    if (value == nullptr) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "cannot delete attribute 'value'"
-                        );
-                    } else {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "cannot set attribute 'value'"
-                        );
-                    }
+                    message += "attribute '" + std::string(name) + "'";
+                    PyErr_SetString(PyExc_TypeError, message.c_str());
                     return -1;
                 }
                 return PyObject_SetAttr(ptr(self->m_value), attr, value);
@@ -1892,6 +1894,134 @@ R"doc()doc";
                 Exception::to_python();
                 return -1;
             }
+        }
+
+        static int __traverse__(
+            __python__* self,
+            visitproc visit,
+            void* arg
+        ) noexcept {
+            PyTypeObject* type = Py_TYPE(ptr(self->m_value));
+            if (type->tp_traverse) {
+                return type->tp_traverse(ptr(self->m_value), visit, arg);
+            }
+            return 0;
+        }
+
+        static int __clear__(__python__* self) noexcept {
+            PyTypeObject* type = Py_TYPE(ptr(self->m_value));
+            if (type->tp_clear) {
+                return type->tp_clear(ptr(self->m_value));
+            }
+            return 0;
+        }
+
+        static int __richcmp__(
+            __python__* lhs,
+            PyObject* rhs,
+            int op
+        ) noexcept {
+            if (lhs->m_value.is(None)) {
+                return 0;
+            }
+            return PyObject_RichCompareBool(ptr(lhs->m_value), rhs, op);
+        }
+
+        static PyObject* __iter__(__python__* self) noexcept {
+            if (self->m_value.is(None)) {
+                PyObject* tuple = PyTuple_New(0);
+                if (tuple == nullptr) {
+                    return nullptr;
+                }
+                PyObject* iter = PyObject_GetIter(tuple);
+                Py_DECREF(tuple);
+                return iter;
+            }
+            return PyObject_GetIter(ptr(self->m_value));
+        }
+
+        static PyObject* __next__(__python__* self) noexcept {
+            if (self->m_value.is(None)) {
+                return nullptr;
+            }
+            return PyIter_Next(ptr(self->m_value));
+        }
+
+        static PyObject* __get__(
+            __python__* self,
+            PyObject* obj,
+            PyObject* type
+        ) noexcept {
+            PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(type);
+            if (cls->tp_descr_get) {
+                return cls->tp_descr_get(ptr(self->m_value), obj, type);
+            }
+            PyErr_SetString(
+                PyExc_TypeError,
+                "object is not a descriptor"
+            );
+            return nullptr;
+        }
+
+        static PyObject* __set__(
+            __python__* self,
+            PyObject* obj,
+            PyObject* value
+        ) noexcept {
+            PyTypeObject* cls = Py_TYPE(ptr(self->m_value));
+            if (cls->tp_descr_set) {
+                return cls->tp_descr_set(ptr(self->m_value), obj, value);
+            }
+            if (value) {
+                PyErr_SetString(
+                    PyExc_TypeError,
+                    "object does not support assignment via descriptor protocol"
+                );
+            } else {
+                PyErr_SetString(
+                    PyExc_TypeError,
+                    "object does not support deletion via descriptor protocol"
+                );
+            }
+            return nullptr;
+        }
+
+        static PyObject* __getitem__(__python__* self, PyObject* key) noexcept {
+            return PyObject_GetItem(ptr(self->m_value), key);
+        }
+
+        static PyObject* __sq_getitem__(__python__* self, Py_ssize_t index) noexcept {
+            return PySequence_GetItem(ptr(self->m_value), index);
+        }
+
+        static int __setitem__(
+            __python__* self,
+            PyObject* key,
+            PyObject* value
+        ) noexcept {
+            return PyObject_SetItem(ptr(self->m_value), key, value);
+        }
+
+        static int __sq_setitem__(
+            __python__* self,
+            Py_ssize_t index,
+            PyObject* value
+        ) noexcept {
+            return PySequence_SetItem(ptr(self->m_value), index, value);
+        }
+
+        static Py_ssize_t __len__(__python__* self) noexcept {
+            if (self->m_value.is(None)) {
+                return 0;
+            }
+            return PyObject_Length(ptr(self->m_value));
+        }
+
+        static int __contains__(__python__* self, PyObject* value) noexcept {
+            if (self->m_value.is(None)) {
+                return 0;
+            }
+            return PySequence_Contains(ptr(self->m_value), value);
         }
 
         /// TODO: the python side of this interface, which forwards all built-in
@@ -2091,6 +2221,27 @@ R"doc()doc";
             }
         }
 
+        static PyObject* __repeat__(__python__* lhs, Py_ssize_t idx) noexcept {
+            try {
+                if (lhs->m_value.is(None)) {
+                    return Py_NewRef(lhs);
+                }
+                PyObject* result = PySequence_Repeat(ptr(lhs->m_value), idx);
+                if (result == nullptr) {
+                    return nullptr;
+                }
+                PyObject* monad = wrap(
+                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
+                    result
+                );
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
         static PyObject* __imul__(__python__* lhs, PyObject* rhs) noexcept {
             try {
                 if (lhs->m_value.is(None)) {
@@ -2099,6 +2250,33 @@ R"doc()doc";
                 PyObject* result = PyNumber_InPlaceMultiply(
                     ptr(lhs->m_value),
                     rhs
+                );
+                if (result == nullptr) {
+                    return nullptr;
+                } else if (result == ptr(lhs->m_value)) {
+                    Py_DECREF(result);
+                    return Py_NewRef(lhs);
+                }
+                PyObject* monad = wrap(
+                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
+                    result
+                );
+                Py_DECREF(result);
+                return monad;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __irepeat__(__python__* lhs, Py_ssize_t idx) noexcept {
+            try {
+                if (lhs->m_value.is(None)) {
+                    return Py_NewRef(lhs);
+                }
+                PyObject* result = PySequence_InPlaceRepeat(
+                    ptr(lhs->m_value),
+                    idx
                 );
                 if (result == nullptr) {
                     return nullptr;
@@ -2282,7 +2460,7 @@ R"doc()doc";
 
         static PyObject* __neg__(__python__* self) noexcept {
             if (self->m_value.is(None)) {
-                return Py_NewRef(ptr(self));
+                return Py_NewRef(ptr(self->m_value));
             }
             PyObject* result = PyNumber_Negative(ptr(self->m_value));
             if (result == nullptr) {
@@ -2298,7 +2476,7 @@ R"doc()doc";
 
         static PyObject* __pos__(__python__* self) noexcept {
             if (self->m_value.is(None)) {
-                return Py_NewRef(ptr(self));
+                return Py_NewRef(ptr(self->m_value));
             }
             PyObject* result = PyNumber_Positive(ptr(self->m_value));
             if (result == nullptr) {
@@ -2314,7 +2492,7 @@ R"doc()doc";
 
         static PyObject* __abs__(__python__* self) noexcept {
             if (self->m_value.is(None)) {
-                return Py_NewRef(ptr(self));
+                return Py_NewRef(ptr(self->m_value));
             }
             PyObject* result = PyNumber_Absolute(ptr(self->m_value));
             if (result == nullptr) {
@@ -2334,7 +2512,7 @@ R"doc()doc";
 
         static PyObject* __invert__(__python__* self) noexcept {
             if (self->m_value.is(None)) {
-                return Py_NewRef(ptr(self));
+                return Py_NewRef(self->m_value);
             }
             PyObject* result = PyNumber_Invert(ptr(self->m_value));
             if (result == nullptr) {
@@ -2817,8 +2995,16 @@ R"doc()doc";
             }
         }
 
-        static Py_ssize_t __len__(__python__* self) noexcept {
-            return PyObject_Length(ptr(self->m_value));
+        static int __buffer__(
+            __python__* exported,
+            Py_buffer* view,
+            int flags
+        ) noexcept {
+            return PyObject_GetBuffer(ptr(exported->m_value), view, flags);
+        }
+
+        static void __release_buffer__(__python__* exported, Py_buffer* view) noexcept {
+            PyBuffer_Release(view);
         }
 
     private:
@@ -2835,6 +3021,10 @@ R"doc()doc";
             Py_DECREF(type);
             return monad;
         }
+
+        /// TODO: these will all be defined on the heap type using slots rather than
+        /// these static structs, but that can't be done until the __export__ method
+        /// can be filled in.
 
         inline static PyMethodDef methods[] = {
             {
@@ -2894,6 +3084,32 @@ T
             {nullptr}
         };
 
+        inline static PyGetSetDef properties[] = {
+            {
+                "__wrapped__",
+                reinterpret_cast<getter>(__wrapped__),
+                nullptr,
+                PyDoc_STR(
+R"doc(The value stored in the optional.
+
+Returns
+-------
+object
+    The value stored in the optional, or None if it is currently empty.
+
+Notes
+-----
+The presence of a `__wrapped__` attribute triggers some special behavior in
+both the Python and Bertrand APIs.  In Python, it allows the `inspect` module
+to unwrap the optional and inspect the internal value, in the same way as
+`functools.partial` and `functools.wraps`.  In Bertrand, some operators
+(like the `isinstance()` operator) will check for the presence of this
+attribute and unwrap the optional if it is present.)doc"
+                )
+            },
+            {nullptr}
+        };
+
         inline static PyAsyncMethods async = {
             .am_await = reinterpret_cast<unaryfunc>(__await__),
             .am_aiter = reinterpret_cast<unaryfunc>(__aiter__),
@@ -2939,17 +3155,26 @@ T
             .nb_inplace_matrix_multiply = reinterpret_cast<binaryfunc>(__imatmul__),
         };
 
+        inline static PyMappingMethods mapping = {
+            .mp_length = reinterpret_cast<lenfunc>(__len__),
+            .mp_subscript = reinterpret_cast<binaryfunc>(__getitem__),
+            .mp_ass_subscript = reinterpret_cast<objobjargproc>(__setitem__)
+        };
+
         inline static PySequenceMethods sequence = {
             .sq_length = reinterpret_cast<lenfunc>(__len__),
             .sq_concat = reinterpret_cast<binaryfunc>(__add__),
-        };
-
-        inline static PyMappingMethods mapping = {
-
+            .sq_repeat = reinterpret_cast<ssizeargfunc>(__repeat__),
+            .sq_item = reinterpret_cast<ssizeargfunc>(__sq_getitem__),
+            .sq_ass_item = reinterpret_cast<ssizeobjargproc>(__sq_setitem__),
+            .sq_contains = reinterpret_cast<objobjproc>(__contains__),
+            .sq_inplace_concat = reinterpret_cast<binaryfunc>(__iadd__),
+            .sq_inplace_repeat = reinterpret_cast<ssizeargfunc>(__irepeat__)
         };
 
         inline static PyBufferProcs buffer = {
-
+            .bf_getbuffer = reinterpret_cast<getbufferproc>(__buffer__),
+            .bf_releasebuffer = reinterpret_cast<releasebufferproc>(__release_buffer__)
         };
 
     };
@@ -3191,7 +3416,7 @@ struct __cast__<From, std::optional<To>>                    : Returns<std::optio
 
 template <impl::inherits<impl::OptionalTag> From, typename To>
     requires (std::same_as<
-        std::remove_cvref_t<To>,
+        std::remove_cv_t<To>,
         typename std::remove_cvref_t<From>::__wrapped__
     >)
 struct __cast__<From, To*>                                  : Returns<To*> {
@@ -3380,16 +3605,15 @@ struct __len__<Self>                                        : Returns<Optional<
     typename __len__<impl::wrapped_type<Self>>::type
 >> {
     using Return = __len__<impl::wrapped_type<Self>>::type;
-    static Optional<Return> operator()(Self self) {
+    static Return operator()(Self self) {
         if (self->m_value.is(None)) {
-            return None;
-        } else {
-            return len(
-                reinterpret_cast<impl::wrapped_type<Self>>(
-                    std::forward<Self>(self)->m_value
-                )
-            );
+            return 0;
         }
+        return len(
+            reinterpret_cast<impl::wrapped_type<Self>>(
+                std::forward<Self>(self)->m_value
+            )
+        );
     }
 };
 
