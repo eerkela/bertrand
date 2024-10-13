@@ -68,10 +68,12 @@ namespace impl {
                         std::forward<Self>(m_self))
                     );
                 } else {
-                    PyObject* result = PyObject_GetAttr(
-                        ptr(m_self),
-                        TemplateString<Name>::ptr
-                    );
+                    PyObject* name = PyUnicode_FromStringAndSize(Name, Name.size());
+                    if (name == nullptr) {
+                        Exception::from_python();
+                    }
+                    PyObject* result = PyObject_GetAttr(ptr(m_self), name);
+                    Py_DECREF(name);
                     if (result == nullptr) {
                         Exception::from_python();
                     }
@@ -117,11 +119,13 @@ namespace impl {
 
             } else {
                 Base::operator=(std::forward<Value>(value));
-                if (PyObject_SetAttr(
-                    ptr(self.m_self),
-                    TemplateString<Name>::ptr,
-                    ptr(self)
-                )) {
+                PyObject* name = PyUnicode_FromStringAndSize(Name, Name.size());
+                if (name == nullptr) {
+                    Exception::from_python();
+                }
+                int rc = PyObject_SetAttr(ptr(self.m_self), name, ptr(self));
+                Py_DECREF(name);
+                if (rc) {
                     Exception::from_python();
                 }
             }
@@ -393,10 +397,13 @@ void del(impl::Attr<Self, Name>&& attr) {
     if constexpr (impl::has_call_operator<delattr>) {
         delattr{}(std::forward<Self>(attr.m_self));
     } else {
-        if (PyObject_DelAttr(
-            ptr(attr.m_self),
-            impl::TemplateString<Name>::ptr
-        )) {
+        PyObject* name = PyUnicode_FromStringAndSize(Name, Name.size());
+        if (name == nullptr) {
+            Exception::from_python();
+        }
+        int rc = PyObject_DelAttr(ptr(attr.m_self), name);
+        Py_DECREF(name);
+        if (rc) {
             Exception::from_python();
         }
     }
@@ -753,21 +760,21 @@ template <impl::python Return>
 struct Iterator<Return, void, void> : Object, Interface<Iterator<Return, void, void>> {
     struct __python__ : def<__python__, Iterator>, PyObject {
         static Type<Iterator> __import__() {
-            PyObject* collections_abc = PyImport_Import(
-                impl::TemplateString<"collections.abc">::ptr
-            );
-            if (collections_abc == nullptr) {
+            constexpr StaticStr str = "collections.abc";
+            PyObject* name = PyUnicode_FromStringAndSize(str, str.size());
+            if (name == nullptr) {
                 Exception::from_python();
             }
-            PyObject* iterator = PyObject_GetAttr(
-                collections_abc,
-                impl::TemplateString<"Iterator">::ptr
+            Object collections_abc = reinterpret_steal<Object>(
+                PyImport_Import(name)
             );
-            Py_DECREF(collections_abc);
-            if (iterator == nullptr) {
+            Py_DECREF(name);
+            if (collections_abc.is(nullptr)) {
                 Exception::from_python();
             }
-            return reinterpret_steal<Type<Iterator>>(iterator);
+            return reinterpret_steal<Type<Iterator>>(
+                release(getattr<"iterator">( collections_abc))
+            );
         }
     };
 
@@ -1398,9 +1405,16 @@ template <typename Self> requires (__reversed__<Self>::enable)
                 "specialization of __reversed__ for this types and ensure the Return "
                 "type is a subclass of py::Object."
             );
+            constexpr StaticStr str = "__reversed__";
+            Object name = reinterpret_steal<Object>(
+                PyUnicode_FromStringAndSize(str, str.size())
+            );
+            if (name.is(nullptr)) {
+                Exception::from_python();
+            }
             PyObject* iter = PyObject_CallMethodNoArgs(
                 ptr(self),
-                impl::TemplateString<"__reversed__">::ptr
+                ptr(name)
             );
             if (iter == nullptr) {
                 Exception::from_python();
@@ -1632,120 +1646,1314 @@ template <impl::python Self, typename Func>
 }
 
 
-////////////////////////
-////    OPTIONAL    ////
-////////////////////////
+/// TODO: maybe argument types are placed here, so they can be reused in structural
+/// types?
 
 
-template <std::derived_from<Object> T>
-struct Optional;
+// ////////////////////////
+// ////    OPTIONAL    ////
+// ////////////////////////
 
 
-template <typename T>
-struct Interface<Optional<T>> : impl::OptionalTag {
-    using __wrapped__ = T;
-
-    [[nodiscard]] bool has_value(this auto&& self) {
-        return !self.is(None);
-    }
-
-    [[nodiscard]] T value(this auto&& self) {
-        if (self.is(None)) {
-            throw TypeError("optional is empty");
-        }
-        return reinterpret_borrow<T>(ptr(self->m_value));
-    }
-
-    [[nodiscard]] T value_or(this auto&& self, const T& default_value) {
-        if (self.is(None)) {
-            return default_value;
-        }
-        return reinterpret_borrow<T>(ptr(self->m_value));
-    }
-
-    [[nodiscard]] T value_or(this auto&& self, T&& default_value) {
-        if (self.is(None)) {
-            return std::move(default_value);
-        }
-        return reinterpret_borrow<T>(ptr(self->m_value));
-    }
-
-};
+// /// TODO: not sure if type checks are being handled correctly, and it might be a good use
+// /// case for specialization of `isinstance<>`, etc. based on the derived class rather
+// /// than (or perhaps in addition to) the base class.  This will require a fair bit of
+// /// thinking to get right, and it has to be applied to Object and other dynamic types
+// /// as well.
 
 
-template <typename T>
-struct Interface<Type<Optional<T>>> : impl::OptionalTag {
-    using __wrapped__ = T;
+// template <impl::inherits<impl::OptionalTag> Derived, typename Base>
+//     requires (__isinstance__<impl::wrapped_type<Derived>, Base>::enable)
+// struct __isinstance__<Derived, Base>                        : Returns<bool> {
+//     static constexpr bool operator()(Derived obj) {
+//         if (obj->m_value.is(None)) {
+//             return impl::is<Base, NoneType>;
+//         } else {
+//             return isinstance<Base>(
+//                 reinterpret_cast<impl::wrapped_type<Derived>>(
+//                     std::forward<Derived>(obj)->m_value
+//                 )
+//             );
+//         }
+//     }
+//     template <typename T = impl::wrapped_type<Derived>>
+//         requires (std::is_invocable_v<__isinstance__<T, Base>, T, Base>)
+//     static constexpr bool operator()(Derived obj, Base&& base) {
+//         if (obj->m_value.is(None)) {
+//             return false;  /// TODO: ???
+//         } else {
+//             return isinstance(
+//                 reinterpret_cast<impl::wrapped_type<Derived>>(
+//                     std::forward<Derived>(obj)->m_value
+//                 ),
+//                 std::forward<Base>(base)
+//             );
+//         }
+//     }
+// };
 
-    template <impl::inherits<impl::OptionalTag> Self>
-    [[nodiscard]] bool has_value(Self&& self) {
-        return !self.is(None);
-    }
 
-    template <impl::inherits<impl::OptionalTag> Self>
-    [[nodiscard]] T value(Self&& self) {
-        if (self.is(None)) {
-            throw TypeError("optional is empty");
-        }
-        return reinterpret_borrow<T>(ptr(self->m_value));
-    }
+// template <typename Derived, impl::inherits<impl::OptionalTag> Base>
+//     requires (
+//         __issubclass__<Derived, impl::wrapped_type<Base>>::enable &&
+//         !impl::inherits<Derived, impl::OptionalTag>
+//     )
+// struct __isinstance__<Derived, Base>                         : Returns<bool> {
+//     static constexpr bool operator()(Derived&& obj) {
+//         if constexpr (impl::dynamic<Derived>) {
+//             return
+//                 obj.is(None) ||
+//                 isinstance<impl::wrapped_type<Base>>(std::forward<Derived>(obj));
+//         } else {
+//             return
+//                 impl::none_like<Derived> ||
+//                 isinstance<impl::wrapped_type<Base>>(std::forward<Derived>(obj));
+//         }
+//     }
+//     template <typename T = impl::wrapped_type<Base>>
+//         requires (std::is_invocable_v<__isinstance__<Derived, T>, Derived, T>)
+//     static constexpr bool operator()(Derived&& obj, Base base) {
+//         if (base->m_value.is(None)) {
+//             return false;  /// TODO: ???
+//         } else {
+//             return isinstance(
+//                 std::forward<Derived>(obj),
+//                 reinterpret_cast<impl::wrapped_type<Derived>>(
+//                     std::forward<Base>(base)->m_value
+//                 )
+//             );
+//         }
+//     }
+// };
 
-    template <impl::inherits<impl::OptionalTag> Self>
-    [[nodiscard]] T value_or(Self&& self, const T& default_value) {
-        if (self.is(None)) {
-            return default_value;
-        }
-        return reinterpret_borrow<T>(ptr(self->m_value));
-    }
 
-    template <impl::inherits<impl::OptionalTag> Self>
-    [[nodiscard]] T value_or(Self&& self, T&& default_value) {
-        if (self.is(None)) {
-            return std::move(default_value);
-        }
-        return reinterpret_borrow<T>(ptr(self->m_value));
-    }
 
-};
 
+
+// template <typename Derived, impl::inherits<impl::OptionalTag> Base>
+// struct __issubclass__<Derived, Base>                         : Returns<bool> {
+//     using Wrapped = std::remove_reference_t<Base>::__wrapped__;
+//     static constexpr bool operator()() {
+//         return impl::none_like<Derived> || issubclass<Derived, Wrapped>();
+//     }
+//     template <typename T = Wrapped>
+//         requires (std::is_invocable_v<__issubclass__<Derived, T>, Derived>)
+//     static constexpr bool operator()(Derived&& obj) {
+//         if constexpr (impl::dynamic<Derived>) {
+//             return
+//                 obj.is(None) ||
+//                 issubclass<Wrapped>(std::forward<Derived>(obj));
+//         } else {
+//             return
+//                 impl::none_like<Derived> ||
+//                 issubclass<Wrapped>(std::forward<Derived>(obj));
+//         }
+//     }
+//     template <typename T = Wrapped>
+//         requires (std::is_invocable_v<__issubclass__<Derived, T>, Derived, T>)
+//     static constexpr bool operator()(Derived&& obj, Base base) {
+//         if (base.is(None)) {
+//             return false;
+//         } else {
+//             return issubclass(std::forward<Derived>(obj), base.value());
+//         }
+//     }
+// };
+
+
+// /// NOTE: constructors are forwarded to the underlying object, except for the default
+// /// constructor, which initializes to None.
+
+
+// template <typename T> requires (__initializer__<T>::enable)
+// struct __initializer__<Optional<T>> : Returns<typename __initializer__<T>::type> {
+//     using Element = __initializer__<T>::type;
+//     static Optional<T> operator()(const std::initializer_list<Element>& init) {
+//         return T(init);
+//     }
+// };
+
+
+// template <typename T>
+// struct __init__<Optional<T>>                                : Returns<Optional<T>> {
+//     static Optional<T> operator()() {
+//         return impl::construct<Optional<T>>(None);
+//     }
+// };
+
+
+// template <typename T, typename... Args>
+//     requires ((sizeof...(Args) > 0) && std::constructible_from<T, Args...>)
+// struct __init__<Optional<T>, Args...>                       : Returns<Optional<T>> {
+//     static Optional<T> operator()(Args&&... args) {
+//         return impl::construct<Optional<T>>(T(std::forward<Args>(args)...));
+//     }
+// };
+
+
+// /* Casting from None is the same as calling the default constructor. */
+// template <impl::is<NoneType> From, typename To>
+// struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
+//     static Optional<To> operator()(From&&) {
+//         return impl::construct<Optional<To>>(None);
+//     }
+// };
+
+
+// /* Implicitly cast a non-empty input into the underlying type if possible. */
+// template <typename From, typename To>
+//     requires (!impl::is<From, NoneType> && std::convertible_to<From, To>)
+// struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
+//     static Optional<To> operator()(From&& from) {
+//         return impl::construct<Optional<To>>(To(std::forward<From>(from)));
+//     }
+// };
+
+
+// /// NOTE: implicit casts are also allowed to and from std::optional, pointers, and
+// /// smart pointers, as long as the underlying types are convertible. 
+
+
+// template <impl::is_optional T> requires (__cast__<impl::optional_type<T>>::enable)
+// struct __cast__<T> : Returns<Optional<typename __cast__<impl::optional_type<T>>::type>> {};
+// template <std::convertible_to<Object> T>
+// struct __cast__<T*> : Returns<Optional<obj<T>>> {};
+// template <impl::is_shared_ptr T> requires (std::convertible_to<impl::shared_ptr_type<T>, Object>)
+// struct __cast__<T> : Returns<Optional<obj<impl::shared_ptr_type<T>>>> {};
+// template <impl::is_unique_ptr T> requires (std::convertible_to<impl::unique_ptr_type<T>, Object>)
+// struct __cast__<T> : Returns<Optional<obj<impl::unique_ptr_type<T>>>> {};
+
+
+// template <impl::is_optional From, typename To>
+//     requires (std::convertible_to<impl::optional_type<From>, To>)
+// struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
+//     static Optional<To> operator()(From from) {
+//         if (!from.has_value()) {
+//             return None;
+//         } else {
+//             if constexpr (std::is_lvalue_reference_v<From>) {
+//                 return To(from.value());
+//             } else {
+//                 return To(std::move(from.value()));
+//             }
+//         }
+//     }
+// };
+
+
+// template <impl::is_ptr From, typename To>
+//     requires (std::convertible_to<impl::ptr_type<From>, To>)
+// struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
+//     static Optional<To> operator()(From from) {
+//         if (from == nullptr) {
+//             return None;
+//         } else {
+//             return To(*from);
+//         }
+//     }
+// };
+
+
+// template <impl::is_shared_ptr From, typename To>
+//     requires (std::convertible_to<impl::shared_ptr_type<From>, To>)
+// struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
+//     static Optional<To> operator()(From&& from) {
+//         if (from == nullptr) {
+//             return None;
+//         } else {
+//             return To(*from);
+//         }
+//     }
+// };
+
+
+// template <impl::is_unique_ptr From, typename To>
+//     requires (std::convertible_to<impl::unique_ptr_type<From>, To>)
+// struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
+//     static Optional<To> operator()(From&& from) {
+//         if (from == nullptr) {
+//             return None;
+//         } else {
+//             return To(*from);
+//         }
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> From, typename To>
+//     requires (std::convertible_to<impl::wrapped_type<From>, To>)
+// struct __cast__<From, std::optional<To>>                    : Returns<std::optional<To>> {
+//     static std::optional<To> operator()(From from) {
+//         if (from->m_value.is(None)) {
+//             return std::nullopt;
+//         } else {
+//             return To(
+//                 reinterpret_cast<impl::wrapped_type<From>>(
+//                     std::forward<From>(from)->m_value
+//                 )
+//             );
+//         }
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> From, typename To>
+//     requires (std::same_as<
+//         std::remove_cv_t<To>,
+//         typename std::remove_cvref_t<From>::__wrapped__
+//     >)
+// struct __cast__<From, To*>                                  : Returns<To*> {
+//     static To* operator()(From from) {
+//         if (from->m_value.is(None)) {
+//             return nullptr;
+//         } else {
+//             return &reinterpret_cast<To&>(from->m_value);
+//         }
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> From, typename To>
+//     requires (std::convertible_to<impl::wrapped_type<From>, To>)
+// struct __cast__<From, std::shared_ptr<To>>                  : Returns<std::shared_ptr<To>> {
+//     static std::shared_ptr<To> operator()(From from) {
+//         if (from->m_value.is(None)) {
+//             return nullptr;
+//         } else {
+//             return std::make_shared<To>(
+//                 reinterpret_cast<impl::wrapped_type<From>>(
+//                     std::forward<From>(from)->m_value
+//                 )
+//             );
+//         }
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> From, typename To>
+//     requires (std::convertible_to<impl::wrapped_type<From>, To>)
+// struct __cast__<From, std::unique_ptr<To>>                  : Returns<std::unique_ptr<To>> {
+//     static std::unique_ptr<To> operator()(From from) {
+//         if (from->m_value.is(None)) {
+//             return nullptr;
+//         } else {
+//             return std::make_unique<To>(
+//                 reinterpret_cast<impl::wrapped_type<From>>(
+//                     std::forward<From>(from)->m_value
+//                 )
+//             );
+//         }
+//     }
+// };
+
+
+// /// NOTE: all other operations are monadic
+
+
+// template <impl::inherits<impl::OptionalTag> Self, StaticStr Name>
+//     requires (__getattr__<impl::wrapped_type<Self>, Name>::enable)
+// struct __getattr__<Self, Name>                              : Returns<Optional<
+//     typename __getattr__<impl::wrapped_type<Self>, Name>::type
+// >> {
+//     using Return = __getattr__<impl::wrapped_type<Self>, Name>::type;
+//     static Optional<Return> operator()(Self self) {
+//         if (self->m_value.is(None)) {
+//             return None;
+//         } else {
+//             return getattr<Name>(
+//                 reinterpret_cast<impl::wrapped_type<Self>>(
+//                     std::forward<Self>(self)->m_value
+//                 )
+//             );
+//         }
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> Self, StaticStr Name, typename Value>
+//     requires (__setattr__<impl::wrapped_type<Self>, Name, Value>::enable)
+// struct __setattr__<Self, Name, Value>             : Returns<void> {
+//     static void operator()(Self self, Value&& value) {
+//         if (!self->m_value.is(None)) {
+//             setattr<Name>(
+//                 reinterpret_cast<impl::wrapped_type<Self>>(
+//                     std::forward<Self>(self)->m_value
+//                 ),
+//                 std::forward<Value>(value)
+//             );
+//         }
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> Self, StaticStr Name>
+//     requires (__delattr__<impl::wrapped_type<Self>, Name>::enable)
+// struct __delattr__<Self, Name>                              : Returns<void> {
+//     static void operator()(Self self) {
+//         if (!self->m_value.is(None)) {
+//             delattr<Name>(
+//                 reinterpret_cast<impl::wrapped_type<Self>>(
+//                     std::forward<Self>(self)->m_value
+//                 )
+//             );
+//         }
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> Self>
+//     requires (__repr__<impl::wrapped_type<Self>>::enable)
+// struct __repr__<Self>                                       : Returns<Str> {
+//     static std::string operator()(Self self) {
+//         if (self->m_value.is(None)) {
+//             return repr(None);
+//         } else {
+//             return repr(
+//                 reinterpret_cast<impl::wrapped_type<Self>>(
+//                     std::forward<Self>(self)->m_value
+//                 )
+//             );
+//         }
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> Self, typename... Args>
+//     requires (__call__<impl::wrapped_type<Self>,Args...>::enable)
+// struct __call__<Self, Args...>                              : Returns<Optional<
+//     typename __call__<impl::wrapped_type<Self>, Args...>::type
+// >> {
+//     using Return = __call__<impl::wrapped_type<Self>, Args...>::type;
+//     static Optional<Return> operator()(Self self, Args&&... args) {
+//         if (self->m_value.is(None)) {
+//             return None;
+//         } else {
+//             return reinterpret_cast<impl::wrapped_type<Self>>(
+//                 std::forward<Self>(self)->m_value
+//             )(std::forward<Args>(args)...);
+//         }
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> Self, typename... Key>
+//     requires (__getitem__<impl::wrapped_type<Self>, Key...>::enable)
+// struct __getitem__<Self, Key...>                             : Returns<Optional<
+//     typename __getitem__<impl::wrapped_type<Self>, Key...>::type
+// >> {
+//     using Return = __getitem__<impl::wrapped_type<Self>, Key...>::type;
+//     static Optional<Return> operator()(Self self, Key&&... key) {
+//         if (self->m_value.is(None)) {
+//             return None;
+//         } else {
+//             return reinterpret_cast<impl::wrapped_type<Self>>(
+//                 std::forward<Self>(self)->m_value
+//             )[std::forward<Key>(key)...];
+//         }
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> Self, typename Value, typename... Key>
+//     requires (__setitem__<impl::wrapped_type<Self>, Value, Key...>::enable)
+// struct __setitem__<Self, Value, Key...>                         : Returns<void> {
+//     static void operator()(Self self, Value&& value, Key&&... key) {
+//         if (!self->m_value.is(None)) {
+//             reinterpret_cast<impl::wrapped_type<Self>>(
+//                 std::forward<Self>(self)->m_value
+//             )[std::forward<Key>(key)...] = std::forward<Value>(value);
+//         }
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> Self, typename... Key>
+//     requires (__delitem__<impl::wrapped_type<Self>, Key...>::enable)
+// struct __delitem__<Self, Key...>                               : Returns<void> {
+//     static void operator()(Self self, Key&&... key) {
+//         if (!self->m_value.is(None)) {
+//             del(
+//                 reinterpret_cast<impl::wrapped_type<Self>>(
+//                     std::forward<Self>(self)->m_value
+//                 )[std::forward<Key>(key)...]
+//             );
+//         }
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> Self>
+//     requires (__len__<impl::wrapped_type<Self>>::enable)
+// struct __len__<Self>                                        : Returns<Optional<
+//     typename __len__<impl::wrapped_type<Self>>::type
+// >> {
+//     using Return = __len__<impl::wrapped_type<Self>>::type;
+//     static Return operator()(Self self) {
+//         if (self->m_value.is(None)) {
+//             return 0;
+//         }
+//         return len(
+//             reinterpret_cast<impl::wrapped_type<Self>>(
+//                 std::forward<Self>(self)->m_value
+//             )
+//         );
+//     }
+// };
+
+
+// // template <impl::inherits<impl::OptionalTag> Self>
+// //     requires (__iter__<impl::wrapped_type<Self>>::enable)
+// // struct __iter__<Self>                                       : Returns<Optional<
+// //     typename __iter__<impl::wrapped_type<Self>>::type
+// // >> {
+// //     /// TODO: complicated.  Would involve an iterator implementation that initializes
+// //     /// to the end iterator if the optional is None.
+// // };
+
+
+// // template <impl::inherits<impl::OptionalTag> Self>
+// //     requires (__reversed__<impl::wrapped_type<Self>>::enable)
+// // struct __reversed__<Self>                                   : Returns<Optional<
+// //     typename __reversed__<impl::wrapped_type<Self>>::type
+// // >> {
+// //     /// TODO: complicated.  Would involve an iterator implementation that initializes
+// //     /// to the end iterator if the optional is None.
+// // };
+
+
+// template <impl::inherits<impl::OptionalTag> Self, typename Key>
+//     requires (__contains__<impl::wrapped_type<Self>, Key>::enable)
+// struct __contains__<Self, Key>                              : Returns<bool> {
+//     static bool operator()(Self self, Key&& key) {
+//         return
+//             !self->m_value.is(None) &&
+//             reinterpret_cast<impl::wrapped_type<Self>>(
+//                 std::forward<Self>(self)->m_value
+//             ).contains(std::forward<Key>(key));
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> Self>
+//     requires (__hash__<impl::wrapped_type<Self>>::enable)
+// struct __hash__<Self>                                       : Returns<
+//     typename __hash__<impl::wrapped_type<Self>>::type
+// > {
+//     using Return = __hash__<impl::wrapped_type<Self>>::type;
+//     static Return operator()(Self self) {
+//         if (self->m_value.is(None)) {
+//             return hash(None);
+//         } else {
+//             return hash(
+//                 reinterpret_cast<impl::wrapped_type<Self>>(
+//                     std::forward<Self>(self)->m_value
+//                 )
+//             );
+//         }
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> Self>
+//     requires (__abs__<impl::wrapped_type<Self>>::enable)
+// struct __abs__<Self>                                        : Returns<Optional<
+//     typename __abs__<impl::wrapped_type<Self>>::type
+// >> {
+//     using Return = __abs__<impl::wrapped_type<Self>>::type;
+//     static Optional<Return> operator()(Self self) {
+//         if (self->m_value.is(None)) {
+//             return None;
+//         } else {
+//             return abs(
+//                 reinterpret_cast<impl::wrapped_type<Self>>(
+//                     std::forward<Self>(self)->m_value
+//                 )
+//             );
+//         }
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> Self>
+//     requires (__invert__<impl::wrapped_type<Self>>::enable)
+// struct __invert__<Self>                                     : Returns<Optional<
+//     typename __invert__<impl::wrapped_type<Self>>::type
+// >> {
+//     using Return = __invert__<impl::wrapped_type<Self>>::type;
+//     static Optional<Return> operator()(Self self) {
+//         if (self->m_value.is(None)) {
+//             return None;
+//         } else {
+//             return ~reinterpret_cast<impl::wrapped_type<Self>>(
+//                 std::forward<Self>(self)->m_value
+//             );
+//         }
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> Self>
+//     requires (__pos__<impl::wrapped_type<Self>>::enable)
+// struct __pos__<Self>                                        : Returns<Optional<
+//     typename __pos__<impl::wrapped_type<Self>>::type
+// >> {
+//     using Return = __pos__<impl::wrapped_type<Self>>::type;
+//     static Optional<Return> operator()(Self self) {
+//         if (self->m_value.is(None)) {
+//             return None;
+//         } else {
+//             return +reinterpret_cast<impl::wrapped_type<Self>>(
+//                 std::forward<Self>(self)->m_value
+//             );
+//         }
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> Self>
+//     requires (__neg__<impl::wrapped_type<Self>>::enable)
+// struct __neg__<Self>                                        : Returns<Optional<
+//     typename __neg__<impl::wrapped_type<Self>>::type
+// >> {
+//     using Return = __neg__<impl::wrapped_type<Self>>::type;
+//     static Optional<Return> operator()(Self self) {
+//         if (self->m_value.is(None)) {
+//             return None;
+//         } else {
+//             return -reinterpret_cast<impl::wrapped_type<Self>>(
+//                 std::forward<Self>(self)->m_value
+//             );
+//         }
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> Self>
+//     requires (__increment__<impl::wrapped_type<Self>>::enable)
+// struct __increment__<Self>                                  : Returns<Self> {
+//     static Self operator()(Self self) {
+//         if (!self->m_value.is(None)) {
+//             ++reinterpret_cast<impl::wrapped_type<Self>>(
+//                 std::forward<Self>(self)->m_value
+//             );
+//         }
+//         return std::forward<Self>(self);
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> Self>
+//     requires (__decrement__<impl::wrapped_type<Self>>::enable)
+// struct __decrement__<Self>                                  : Returns<Self> {
+//     static Self operator()(Self self) {
+//         if (!self->m_value.is(None)) {
+//             --reinterpret_cast<impl::wrapped_type<Self>>(
+//                 std::forward<Self>(self)->m_value
+//             );
+//         }
+//         return std::forward<Self>(self);
+//     }
+// };
+
+
+// #define BINARY_OPERATOR(STRUCT, OP)                                                     \
+//     template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R> \
+//         requires (STRUCT<impl::wrapped_type<L>, impl::wrapped_type<R>>::enable)         \
+//     struct STRUCT<L, R> : Returns<Optional<                                             \
+//         typename STRUCT<impl::wrapped_type<L>, impl::wrapped_type<R>>::type             \
+//     >> {                                                                                \
+//         using Return = STRUCT<impl::wrapped_type<L>, impl::wrapped_type<R>>::type;      \
+//         static Optional<Return> operator()(L lhs, R rhs) {                              \
+//             if (lhs->m_value.is(None) || rhs->m_value.is(None)) {                       \
+//                 return None;                                                            \
+//             } else {                                                                    \
+//                 return reinterpret_cast<impl::wrapped_type<L>>(                         \
+//                     std::forward<L>(lhs)->m_value                                       \
+//                 ) OP reinterpret_cast<impl::wrapped_type<R>>(                           \
+//                     std::forward<R>(rhs)->m_value                                       \
+//                 );                                                                      \
+//             }                                                                           \
+//         }                                                                               \
+//     };                                                                                  \
+//     template <impl::inherits<impl::OptionalTag> L, typename R>                          \
+//         requires (                                                                      \
+//             !impl::inherits<R, impl::OptionalTag> &&                                    \
+//             STRUCT<impl::wrapped_type<L>, R>::enable                                    \
+//         )                                                                               \
+//     struct STRUCT<L, R> : Returns<Optional<                                             \
+//         typename STRUCT<impl::wrapped_type<L>, R>::type                                 \
+//     >> {                                                                                \
+//         using Return = STRUCT<impl::wrapped_type<L>, R>::type;                          \
+//         static Optional<Return> operator()(L lhs, R rhs) {                              \
+//             if (lhs->m_value.is(None)) {                                                \
+//                 return None;                                                            \
+//             } else {                                                                    \
+//                 return reinterpret_cast<impl::wrapped_type<L>>(                         \
+//                     std::forward<L>(lhs)->m_value                                       \
+//                 ) OP std::forward<R>(rhs);                                              \
+//             }                                                                           \
+//         }                                                                               \
+//     };                                                                                  \
+//     template <typename L, impl::inherits<impl::OptionalTag> R>                          \
+//         requires (                                                                      \
+//             !impl::inherits<L, impl::OptionalTag> &&                                    \
+//             STRUCT<L, impl::wrapped_type<R>>::enable                                    \
+//         )                                                                               \
+//     struct STRUCT<L, R> : Returns<Optional<                                             \
+//         typename STRUCT<L, impl::wrapped_type<R>>::type                                 \
+//     >> {                                                                                \
+//         using Return = STRUCT<L, impl::wrapped_type<R>>::type;                          \
+//         static Optional<Return> operator()(L lhs, R rhs) {                              \
+//             if (rhs->m_value.is(None)) {                                                \
+//                 return None;                                                            \
+//             } else {                                                                    \
+//                 return std::forward<L>(lhs) OP reinterpret_cast<impl::wrapped_type<R>>( \
+//                     std::forward<R>(rhs)->m_value                                       \
+//                 );                                                                      \
+//             }                                                                           \
+//         }                                                                               \
+//     };
+
+
+// #define INPLACE_OPERATOR(STRUCT, OP)                                                    \
+//     template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R> \
+//         requires (STRUCT<impl::wrapped_type<L>, impl::wrapped_type<R>>::enable)         \
+//     struct STRUCT<L, R> : Returns<L> {                                                  \
+//         static L operator()(L lhs, R rhs) {                                             \
+//             if (!lhs->m_value.is(None) && !rhs->m_value.is(None)) {                     \
+//                 reinterpret_cast<impl::wrapped_type<L>>(                                \
+//                     std::forward<L>(lhs)->m_value                                       \
+//                 ) OP reinterpret_cast<impl::wrapped_type<R>>(                           \
+//                     std::forward<R>(rhs)->m_value                                       \
+//                 );                                                                      \
+//             }                                                                           \
+//             return std::forward<L>(lhs);                                                \
+//         }                                                                               \
+//     };                                                                                  \
+//     template <impl::inherits<impl::OptionalTag> L, typename R>                          \
+//         requires (                                                                      \
+//             !impl::inherits<R, impl::OptionalTag> &&                                    \
+//             STRUCT<impl::wrapped_type<L>, R>::enable                                    \
+//         )                                                                               \
+//     struct STRUCT<L, R> : Returns<L> {                                                  \
+//         static L operator()(L lhs, R rhs) {                                             \
+//             if (!lhs->m_value.is(None)) {                                               \
+//                 reinterpret_cast<impl::wrapped_type<L>>(                                \
+//                     std::forward<L>(lhs)->m_value                                       \
+//                 ) OP std::forward<R>(rhs);                                              \
+//             }                                                                           \
+//             return std::forward<L>(lhs);                                                \
+//         }                                                                               \
+//     };
+
+
+// BINARY_OPERATOR(__lt__, <)
+// BINARY_OPERATOR(__le__, <=)
+// BINARY_OPERATOR(__eq__, ==)
+// BINARY_OPERATOR(__ne__, !=)
+// BINARY_OPERATOR(__ge__, >=)
+// BINARY_OPERATOR(__gt__, <)
+// BINARY_OPERATOR(__add__, +)
+// BINARY_OPERATOR(__sub__, -)
+// BINARY_OPERATOR(__mul__, *)
+// BINARY_OPERATOR(__truediv__, /)
+// BINARY_OPERATOR(__mod__, %)
+// BINARY_OPERATOR(__lshift__, <<)
+// BINARY_OPERATOR(__rshift__, >>)
+// BINARY_OPERATOR(__and__, &)
+// BINARY_OPERATOR(__or__, |)
+// BINARY_OPERATOR(__xor__, ^)
+// INPLACE_OPERATOR(__iadd__, +=)
+// INPLACE_OPERATOR(__isub__, -=)
+// INPLACE_OPERATOR(__imul__, *=)
+// INPLACE_OPERATOR(__itruediv__, /=)
+// INPLACE_OPERATOR(__imod__, %=)
+// INPLACE_OPERATOR(__ilshift__, <<=)
+// INPLACE_OPERATOR(__irshift__, >>=)
+// INPLACE_OPERATOR(__iand__, &=)
+// INPLACE_OPERATOR(__ior__, |=)
+// INPLACE_OPERATOR(__ixor__, ^=)
+
+
+// #undef BINARY_OPERATOR
+// #undef INPLACE_OPERATOR
+
+
+// template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R>
+//     requires (__floordiv__<impl::wrapped_type<L>, impl::wrapped_type<R>>::enable)
+// struct __floordiv__<L, R> : Returns<Optional<
+//     typename __floordiv__<impl::wrapped_type<L>, impl::wrapped_type<R>>::type
+// >> {
+//     using Return = __floordiv__<impl::wrapped_type<L>, impl::wrapped_type<R>>::type;
+//     static Optional<Return> operator()(L lhs, R rhs) {
+//         if (lhs->m_value.is(None) || rhs->m_value.is(None)) {
+//             return None;
+//         } else {
+//             return floordiv(
+//                 reinterpret_cast<impl::wrapped_type<L>>(
+//                     std::forward<L>(lhs)->m_value
+//                 ),
+//                 reinterpret_cast<impl::wrapped_type<R>>(
+//                     std::forward<R>(rhs)->m_value
+//                 )
+//             );
+//         }
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> L, typename R>
+//     requires (
+//         !impl::inherits<impl::OptionalTag, R> &&
+//         __floordiv__<impl::wrapped_type<L>, R>::enable
+//     )
+// struct __floordiv__<L, R> : Returns<Optional<
+//     typename __floordiv__<impl::wrapped_type<L>, R>::type
+// >> {
+//     using Return = __floordiv__<impl::wrapped_type<L>, R>::type;
+//     static Optional<Return> operator()(L lhs, R rhs) {
+//         if (lhs->m_value.is(None)) {
+//             return None;
+//         } else {
+//             return floordiv(
+//                 reinterpret_cast<impl::wrapped_type<L>>(
+//                     std::forward<L>(lhs)->m_value
+//                 ),
+//                 std::forward<R>(rhs)
+//             );
+//         }
+//     }
+// };
+
+
+// template <typename L, impl::inherits<impl::OptionalTag> R>
+//     requires (
+//         !impl::inherits<impl::OptionalTag, L> &&
+//         __floordiv__<L, impl::wrapped_type<R>>::enable
+//     )
+// struct __floordiv__<L, R> : Returns<Optional<
+//     typename __floordiv__<L, impl::wrapped_type<R>>::type
+// >> {
+//     using Return = __floordiv__<L, impl::wrapped_type<R>>::type;
+//     static Optional<Return> operator()(L lhs, R rhs) {
+//         if (rhs->m_value.is(None)) {
+//             return None;
+//         } else {
+//             return floordiv(
+//                 std::forward<L>(lhs),
+//                 reinterpret_cast<impl::wrapped_type<R>>(
+//                     std::forward<R>(rhs)->m_value
+//                 )
+//             );
+//         }
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R>
+//     requires (__ifloordiv__<impl::wrapped_type<L>, impl::wrapped_type<R>>::enable)
+// struct __ifloordiv__<L, R> : Returns<L> {
+//     static L operator()(L lhs, R rhs) {
+//         if (!lhs->m_value.is(None) && !rhs->m_value.is(None)) {
+//             ifloordiv(
+//                 reinterpret_cast<impl::wrapped_type<L>>(
+//                     std::forward<L>(lhs)->m_value
+//                 ),
+//                 reinterpret_cast<impl::wrapped_type<R>>(
+//                     std::forward<R>(rhs)->m_value
+//                 )
+//             );
+//         }
+//         return std::forward<L>(lhs);
+//     }
+// };
+
+
+// template <impl::inherits<impl::OptionalTag> L, typename R>
+//     requires (
+//         !impl::inherits<impl::OptionalTag, R> &&
+//         __ifloordiv__<impl::wrapped_type<L>, R>::enable
+//     )
+// struct __ifloordiv__<L, R> : Returns<L> {
+//     static L operator()(L lhs, R rhs) {
+//         if (!lhs->m_value.is(None)) {
+//             ifloordiv(
+//                 reinterpret_cast<impl::wrapped_type<L>>(
+//                     std::forward<L>(lhs)->m_value
+//                 ),
+//                 std::forward<R>(rhs)
+//             );
+//         }
+//         return std::forward<L>(lhs);
+//     }
+// };
+
+
+/////////////////////
+////    UNION    ////
+/////////////////////
+
+
+template <std::derived_from<Object>... Types> requires (sizeof...(Types) > 0)
+struct Union;
 
 template <std::derived_from<Object> T = Object>
-struct Optional : Object, Interface<Optional<T>> {
-    struct __python__ : def<__python__, Optional>, PyObject {
+using Optional = Union<T, NoneType>;
+
+template <impl::has_python T>
+Union(T) -> Union<obj<T>, NoneType>;
+
+
+namespace impl {
+    template <typename T>
+    struct VariantToUnion {
+        static constexpr bool enable = false;
+    };
+    template <std::convertible_to<Object>... Ts>
+    struct VariantToUnion<std::variant<Ts...>> {
+        static constexpr bool enable = true;
+        using type = Union<std::remove_cv_t<python_type<Ts>>...>;
+
+        template <size_t I, typename... Us>
+        static constexpr bool _convertible_to = true;
+        template <size_t I, typename... Us> requires (I < sizeof...(Ts))
+        static constexpr bool _convertible_to<I, Us...> =
+            (std::convertible_to<impl::unpack_type<I, Ts...>, Us> || ...) &&
+            _convertible_to<I + 1, Us...>;
+
+        template <typename... Us>
+        static constexpr bool convertible_to = _convertible_to<0, Us...>;
+    };
+}
+
+
+/// TODO: unifying the union and optional types makes implementing the `has_wrapped<T>`
+/// and `wrapped_type<T>` concepts much harder/impossible.
+/// -> Delete them from declarations.h
+
+
+template <typename... Types>
+struct Interface<Union<Types...>> : Interface<Types>..., impl::UnionTag {};
+
+
+template <typename... Types>
+struct Interface<Type<Union<Types...>>> : Interface<Type<Types>>..., impl::UnionTag {};
+
+
+template <std::derived_from<Object>... Types> requires (sizeof...(Types) > 0)
+struct Union : Object, Interface<Union<Types...>> {
+    struct __python__ : def<__python__, Union>, PyObject {
         static constexpr StaticStr __doc__ =
-R"doc()doc";
+R"doc(A simple union type in Python, similar to `std::variant` in C++.
 
-        /// TODO: Python will need to expose a __wrapped__ attribute, which I can
-        /// follow when doing isinstance checks, etc against an optional argument.
-        /// -> This is relevant when doing something like
-        ///     Optional<List<Int>> list;
-        ///     if (isinstance<List<Int>>(list)) {
-        ///         // true if the list contains elements, false otherwise.  The
-        ///         // isinstance check will need to detect the presence of a
-        ///         // __wrapped__ attribute and use that to determine the type,
-        ///         // which can perhaps be rolled into the default control structs.
-        ///     }
+Notes
+-----
+Due to its dynamic nature, all Python objects can technically be unions by
+default, just not in a type-safe manner, and not in a way that can be easily
+translated into C++.  This class is meant to provide a more structured way of
+binding multiple types to a single object, allowing Python variables and
+functions that are annotated with `Union[T1, T2, ...]` or `T1 | T2 | ...`
+to have those same semantics reflected in C++ and enforced at compile time.
 
-        vectorcallfunc vectorcall = reinterpret_cast<vectorcallfunc>(__call__);
+Note that due to the presence of the `Optional[]` type, the union will not
+normally contain `None` as a valid member, and will instead be modeled as a
+nested optional type to represent this case.  So, a Python annotation of
+`T1 | T2 | None` will be transformed into `Optional[Union[T1, T2]]` when
+exposed to C++.  It is still possible to include `None` as an explicit member
+of the union, but doing so requires the user to manually request a matching
+template (i.e. `Union[T1, T2, NoneType]`) in either language.  Bertrand will
+not generate this form of union in any other case.
+
+Additionally, `Union[...]` types are automatically produced whenever a bertrand
+type is used with `|` syntax in Python, and the resulting union type can be
+used in Python-level `isinstance()` and `issubclass()` checks as if it were a
+tuple of its constituent types.
+
+Examples
+--------
+>>> from bertrand import Union
+>>> x = Union[int, str](42)
+>>> x
+42
+>>> x + 15
+57
+>>> x = Union[int, str]("hello")
+>>> x
+'hello'
+>>> x.capitalize()
+'Hello'
+>>> x = Union[int, str](True)  # bool is a subclass of int
+>>> x
+True
+>>> x.capitalize()
+Traceback (most recent call last):
+    ...
+AttributeError: 'bool' object has no attribute 'capitalize'
+>>> x = Union[int, str](1+2j)  # complex is not a member of the union
+Traceback (most recent call last):
+    ...
+TypeError: cannot convert complex to Union[int, str]
+
+Just like other Bertrand types, unions are type-safe and usable in both
+languages with the same interface and semantics.  This allows for seamless
+interoperability across the language barrier, and ensures that the same code
+can be used in both contexts.
+
+```
+export module example;
+export import :bertrand;
+
+export namespace example {
+
+    py::Union<py::Int, py::Str> foo(py::Int x, py::Str y) {
+        if (y % 2) {
+            return x;
+        } else {
+            return y;
+        }
+    }
+
+    py::Str bar(py::Union<py::Int, py::Str> x) {
+        if (std::holds_alternative<py::Int>(x)) {
+            return "int";
+        } else {
+            return "str";
+        }
+    }
+
+}
+```
+
+>>> import example
+>>> example.foo(0, "hello")
+'hello'
+>>> example.foo(1, "hello")
+1
+>>> example.bar(0)
+'int'
+>>> example.bar("hello")
+'str'
+>>> example.bar(1.0)
+Traceback (most recent call last):
+    ...
+TypeError: cannot convert float to Union[int, str]
+
+Additionally, Python functions that accept or return unions using Python-style
+type hints will automatically be translated into C++ functions using the
+corresponding `py::Union<...>` types when bindings are generated.  Note that
+due to the interaction between unions and optionals, a `None` type hint as a
+member of the union in Python syntax will be transformed into a nested optional
+type in C++, as described above.
+
+```
+#example.py
+
+def foo(x: int | str) -> str:
+    if isinstance(x, int):
+        return "int"
+    else:
+        return "str"
+
+def bar(x: int | None = None) -> str:
+    if x is None:
+        return "none"
+    else:
+        return "int"
+
+def baz(x: int | str | None = None) -> str:
+    if x is None:
+        return "none"
+    elif isinstance(x, int):
+        return "int"
+    else:
+        return "str"
+```
+
+```
+import example;
+
+int main() {
+    using namespace py;
+
+    // Str(*example::foo)(Arg<"x", Union<Int, Str>>)
+    example::foo(0);        // "int"
+    example::foo("hello");  // "str"
+
+    // Str(*example::bar)(Arg<"x", Optional<Int>>::opt)
+    example::bar();         // "none"
+    example::bar(None);     // "none"
+    example::bar(0);        // "int"
+
+    // Str(*example::baz)(Arg<"x", Optional<Union<Int, Str>>>::opt)
+    example::baz();         // "none"
+    example::baz(None);     // "none"
+    example::baz(0);        // "int"
+    example::baz("hello");  // "str"
+}
+```)doc";
+
+    struct TODO {
+        static constexpr StaticStr __doc__ =
+R"doc(A monadic optional type in Python, similar to `std::optional` in C++.
+
+Notes
+-----
+Due to its dynamic nature, all Python objects can technically be optional by
+default, just not in a type-safe manner, and not in a way that can be easily
+translated into C++.  This class fixes that, allowing Python variables and
+functions that are annotated with `Optional[T]` or `T | None` types to have
+those same semantics reflected in C++ and enforced at compile time.
+
+Additionally, this class allows some C++ types that have no direct Python
+equivalent, such as pointers (both smart and dumb) and `std::optional` to be
+translated into Python syntax when used as function arguments or return values.
+Null pointers and empty optionals are thus translated to `None` when passed
+up to Python, and vice versa.
+
+Examples
+--------
+>>> from bertrand import Optional
+>>> x = Optional[int]()  # default-initializes to None
+>>> x
+None
+>>> x.has_value()
+False
+>>> x.value()
+Traceback (most recent call last):
+    ...
+TypeError: optional is empty
+>>> x.value_or(42)
+42
+>>> x -= 15  # optionals are monads
+>>> x
+None
+>>> x = Optional(42)  # CTAD deduces to Optional[int] in this case
+>>> x.has_value()
+True
+>>> x.value()
+42
+>>> x.value_or(15)
+42
+>>> x += 15
+>>> x
+57
+>>> x = Optional[str](42)
+Traceback (most recent call last):
+    ...
+TypeError: cannot convert 'int' to 'str'
+
+Just like other Bertrand types, optionals are type-safe and usable in both
+languages with the same interface and semantics.  This allows for seamless
+interoperability across the language barrier, and ensures that the same code
+can be used in both contexts.
+
+```
+export module example;
+export import :bertrand;
+
+export namespace example {
+
+    py::Optional<py::Float> divide(py::Int a, py::Int b) {
+        if (b) {
+            return a / b;
+        }
+        return None;
+    }
+
+    py::List<py::Str> split(py::Optional<py::Str> text = py::None) {
+        if (text.has_value()) {
+            return text.value().split();
+        }
+        return {};
+    }
+
+}
+```
+
+>>> import example
+>>> example.divide(10, 4)
+2.5
+>>> example.divide(10, 0)
+None
+>>> example.split("hello, world")
+['hello,', 'world']
+>>> example.split()
+[]
+
+Additionally, Python functions that accept or return optionals using
+Python-style type hints will automatically be translated into C++ functions
+using the corresponding `py::Optional<T>` types when bindings are generated.
+
+```
+# example.py
+
+def foo(name: str | None = None) -> None:
+    print(f"Hello, {'World' if name is None else name}!")
+
+def bar(x: int) -> int | None:
+    if x % 2:
+        return None
+    return x // 2
+```
+
+```
+import example;
+
+int main() {
+    example::foo();  // Hello, World!
+    example::foo("Bertrand");  // Hello, Bertrand!
+    py::Int x = example::bar(4).value();  // 2
+    py::Optional<py::Int> y = example::bar(5);  // None
+}
+```
+
+Lastly, optionals can also be translated to and from pointers and
+`std::optional` types at the C++ level, allowing such types to be used from
+Python without any additional work.
+
+```
+export module example;
+export import :bertrand;
+
+export namespace example {
+
+    std::optional<int> foo(std::optional<int> x) {
+        if (x.has_value()) {
+            return x.value() * x.value();
+        }
+        return std::nullopt;
+    }
+
+
+    std::unique_ptr<int> bar(std::unique_ptr<int> x) {
+        if (x == nullptr) {
+            return nullptr;
+        }
+        ++(*x);
+        return x;
+    }
+
+}
+```
+
+>>> import example
+>>> example.foo(9)
+81
+>>> example.foo(None)  # None is converted to/from std::nullopt
+None
+>>> example.bar(10)
+11
+>>> example.bar(None)  # None is converted to/from nullptr
+None
+)doc";
+    };
+
+    private:
+
+        template <typename Cls, typename... Ts>
+        static constexpr size_t match_idx = 0;
+        template <typename Cls, typename T, typename... Ts>
+        static constexpr size_t match_idx<Cls, T, Ts...> =
+            std::same_as<std::remove_cvref_t<Cls>, T> ? 0 : match_idx<Cls, Ts...> + 1;
+
+        template <typename T>
+        static constexpr bool is_match =
+            match_idx<T, Types...> < sizeof...(Types);
+
+        template <typename Cls, typename... Ts>
+        static constexpr size_t convertible_idx = 0;
+        template <typename Cls, typename T, typename... Ts>
+        static constexpr size_t convertible_idx<Cls, T, Ts...> =
+            std::convertible_to<Cls, T> ? 0 : convertible_idx<Cls, Ts...> + 1;
+
+        template <typename T>
+        static constexpr bool is_convertible =
+            convertible_idx<T, Types...> < sizeof...(Types);
+
+        template <typename Cls, typename... Ts>
+        static constexpr size_t constructible_idx = 0;
+        template <typename Cls, typename T, typename... Ts>
+        static constexpr size_t constructible_idx<Cls, T, Ts...> =
+            std::constructible_from<Cls, T> ? 0 : constructible_idx<Cls, Ts...> + 1;
+
+        template <typename T>
+        static constexpr bool is_constructible =
+            constructible_idx<T, Types...> < sizeof...(Types);
+
+        template <typename T>
+        struct ctor {
+            static constexpr bool enable = false;
+        };
+        template <typename T> requires (is_match<T>)
+        struct ctor<T> {
+            static constexpr bool enable = true;
+            static constexpr size_t idx = match_idx<T, Types...>;
+            using type = impl::unpack_type<idx, Types...>;
+        };
+        template <typename T> requires (!is_match<T> && is_convertible<T>)
+        struct ctor<T> {
+            static constexpr bool enable = true;
+            static constexpr size_t idx = convertible_idx<T, Types...>;
+            using type = impl::unpack_type<idx, Types...>;
+        };
+        template <typename T>
+            requires (!is_match<T> && !is_convertible<T> && is_constructible<T>)
+        struct ctor<T> {
+            static constexpr bool enable = true;
+            static constexpr size_t idx = constructible_idx<T, Types...>;
+            using type = impl::unpack_type<idx, Types...>;
+        };
+
+        template <size_t I>
+        static size_t find_matching_type(const Object& obj, size_t& first) {
+            Type<impl::unpack_type<I, Types...>> type;
+            if (reinterpret_cast<PyObject*>(Py_TYPE(ptr(obj))) == ptr(type)) {
+                return I;
+            } else if (first == sizeof...(Types)) {
+                int rc = PyObject_IsInstance(
+                    ptr(obj),
+                    ptr(type)
+                );
+                if (rc == -1) {
+                    Exception::to_python();
+                } else if (rc) {
+                    first = I;
+                }
+            }
+            if constexpr (I + 1 >= sizeof...(Types)) {
+                return sizeof...(Types);
+            } else {
+                return find_matching_type<I + 1>(obj, first);
+            }
+        }
+
+    public:
+
         Object m_value;
+        size_t m_index;
+        vectorcallfunc vectorcall = reinterpret_cast<vectorcallfunc>(__call__);
 
-        __python__(const T& value) : m_value(value) {}
-        __python__(T&& value) : m_value(std::move(value)) {}
-        __python__(const NoneType& value) : m_value(value) {}
-        __python__(NoneType&& value) : m_value(std::move(value)) {}
+        /// TODO: I may want to avoid calling the type here, and instead handle it
+        /// in the C++ level __cast__/__init__ structs.
+
+        template <typename T> requires (ctor<T>::enable)
+        explicit __python__(T&& value) :
+            m_value(typename ctor<T>::type(std::forward<T>(value))),
+            m_index(ctor<T>::idx)
+        {}
 
         static PyObject* __new__(
             PyTypeObject* type,
             PyObject* args,
             PyObject* kwargs
-        ) {
+        ) noexcept {
             __python__* self = reinterpret_cast<__python__*>(
                 type->tp_alloc(type, 0)
             );
-            if (self == nullptr) {
-                return nullptr;
+            if (self != nullptr) {
+                new (&self->m_value) Object(None);
+                self->m_index = 0;
             }
-            new (self) __python__(None);
             return self;
         }
 
@@ -1758,38 +2966,52 @@ R"doc()doc";
                 if (kwargs) {
                     PyErr_SetString(
                         PyExc_TypeError,
-                        "optional constructor does not take any keyword arguments"
+                        "Union constructor does not accept keyword arguments"
                     );
                     return -1;
                 }
                 size_t nargs = PyTuple_GET_SIZE(args);
-                if (nargs > 1) {
+                if (nargs != 1) {
                     PyErr_SetString(
                         PyExc_TypeError,
-                        "optional constructor requires at most one argument"
+                        "Union constructor requires exactly one argument"
                     );
                     return -1;
                 }
-                if (nargs == 0) {
-                    self->m_value = None;
-                } else {
-                    Object bertrand = reinterpret_steal<Object>(
-                        PyImport_ImportModule("bertrand")
-                    );
-                    if (bertrand.is(nullptr)) {
-                        return -1;
-                    }
-                    Object converted = reinterpret_steal<Object>(PyObject_CallOneArg(
-                        ptr(bertrand),
-                        PyTuple_GET_ITEM(args, 0)
-                    ));
-                    if (converted.is(nullptr)) {
-                        return -1;
-                    }
-                    self->m_value = converted;
+                constexpr StaticStr str = "bertrand";
+                PyObject* name = PyUnicode_FromStringAndSize(str, str.size());
+                if (name == nullptr) {
+                    return -1;
                 }
-                PyObject_GC_Track(self);
-                return 0;
+                Object bertrand = reinterpret_steal<Object>(PyImport_Import(name));
+                Py_DECREF(name);
+                if (bertrand.is(nullptr)) {
+                    return -1;
+                }
+                Object converted = reinterpret_steal<Object>(PyObject_CallOneArg(
+                    ptr(bertrand),
+                    PyTuple_GET_ITEM(args, 0)
+                ));
+                if (converted.is(nullptr)) {
+                    return -1;
+                }
+                size_t subclass = sizeof...(Types);
+                size_t match = find_matching_type<0>(converted, subclass);
+                if (match == sizeof...(Types)) {
+                    if (subclass == sizeof...(Types)) {
+                        std::string message = "cannot convert object of type '";
+                        message += impl::demangle(Py_TYPE(ptr(converted))->tp_name);
+                        message += "' to '";
+                        message += impl::demangle(ptr(Type<Union<Types...>>())->tp_name);
+                        message += "'";
+                        PyErr_SetString(PyExc_TypeError, message.c_str());
+                        return -1;
+                    } else {
+                        match = subclass;
+                    }
+                }
+                self->m_index = match;
+                self->m_value = std::move(converted);
             } catch (...) {
                 Exception::to_python();
                 return -1;
@@ -1797,34 +3019,20 @@ R"doc()doc";
         }
 
         template <StaticStr ModName>
-        static Type<Optional> __export__(Module<ModName>& mod);
-        static Type<Optional> __import__();
+        static Type<Union> __export__(Module<ModName>& mod);
+        static Type<Union> __import__();
 
         static PyObject* __wrapped__(__python__* self) noexcept {
-            return Py_NewRef(ptr(self->m_value));
-        }
-
-        static PyObject* has_value(__python__* self) noexcept {
-            return PyBool_FromLong(!self->m_value.is(Py_None));
-        }
-
-        static PyObject* value(__python__* self) noexcept {
-            if (self->m_value.is(None)) {
-                throw TypeError("optional is empty");
-            }
-            return Py_NewRef(ptr(self->m_value));
-        }
-
-        static PyObject* value_or(__python__* self, PyObject* default_value) noexcept {
-            if (self->m_value.is(None)) {
-                return Py_NewRef(default_value);
-            }
             return Py_NewRef(ptr(self->m_value));
         }
 
         static PyObject* __repr__(__python__* self) noexcept {
             return PyObject_Repr(ptr(self->m_value));
         }
+
+        /// TODO: these slots should only be enabled if the underlying objects support
+        /// them.  Basically, when I'm exposing the heap type, I'll use a static
+        /// vector and conditionally append all of these slots.
 
         static PyObject* __hash__(__python__* self) noexcept {
             return PyObject_Hash(ptr(self->m_value));
@@ -1833,7 +3041,7 @@ R"doc()doc";
         static PyObject* __call__(
             __python__* self,
             PyObject* const* args,
-            Py_ssize_t nargsf,
+            size_t nargsf,
             PyObject* kwnames
         ) noexcept {
             return PyObject_Vectorcall(
@@ -1856,7 +3064,7 @@ R"doc()doc";
                     return nullptr;
                 }
                 std::string_view name = {data, static_cast<size_t>(len)};
-                if (name == "has_value" || name == "value" || name == "value_or") {
+                if (name == "__wrapped__") {
                     return PyObject_GenericGetAttr(ptr(self->m_value), attr);
                 }
                 return PyObject_GetAttr(ptr(self->m_value), attr);
@@ -1878,24 +3086,25 @@ R"doc()doc";
                     return -1;
                 }
                 std::string_view name = {data, static_cast<size_t>(len)};
-                if (name == "has_value" || name == "value" || name == "value_or") {
+                if (name == "__wrapped__") {
                     std::string message = "cannot ";
-                    if (value) {
-                        message += "set ";
-                    } else {
-                        message += "delete ";
-                    }
-                    message += "attribute '" + std::string(name) + "'";
-                    PyErr_SetString(PyExc_TypeError, message.c_str());
+                    message += value ? "set" : "delete";
+                    message += " attribute '" + std::string(name) + "'";
+                    PyErr_SetString(
+                        PyExc_AttributeError,
+                        message.c_str()
+                    );
                     return -1;
                 }
                 return PyObject_SetAttr(ptr(self->m_value), attr, value);
+
             } catch (...) {
                 Exception::to_python();
                 return -1;
             }
         }
 
+        /// TODO: traverse + clear need to also mark the heap type object
         static int __traverse__(
             __python__* self,
             visitproc visit,
@@ -1917,33 +3126,18 @@ R"doc()doc";
         }
 
         static int __richcmp__(
-            __python__* lhs,
-            PyObject* rhs,
+            __python__* self,
+            PyObject* other,
             int op
         ) noexcept {
-            if (lhs->m_value.is(None)) {
-                return 0;
-            }
-            return PyObject_RichCompareBool(ptr(lhs->m_value), rhs, op);
+            return PyObject_RichCompareBool(ptr(self->m_value), other, op);
         }
 
         static PyObject* __iter__(__python__* self) noexcept {
-            if (self->m_value.is(None)) {
-                PyObject* tuple = PyTuple_New(0);
-                if (tuple == nullptr) {
-                    return nullptr;
-                }
-                PyObject* iter = PyObject_GetIter(tuple);
-                Py_DECREF(tuple);
-                return iter;
-            }
             return PyObject_GetIter(ptr(self->m_value));
         }
 
         static PyObject* __next__(__python__* self) noexcept {
-            if (self->m_value.is(None)) {
-                return nullptr;
-            }
             return PyIter_Next(ptr(self->m_value));
         }
 
@@ -1954,7 +3148,7 @@ R"doc()doc";
         ) noexcept {
             PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(type);
             if (cls->tp_descr_get) {
-                return cls->tp_descr_get(ptr(self->m_value), obj, type);
+                return cls->tp_descr_get(ptr(self), obj, type);
             }
             PyErr_SetString(
                 PyExc_TypeError,
@@ -1968,19 +3162,19 @@ R"doc()doc";
             PyObject* obj,
             PyObject* value
         ) noexcept {
-            PyTypeObject* cls = Py_TYPE(ptr(self->m_value));
+            PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(Py_TYPE(ptr(self)));
             if (cls->tp_descr_set) {
-                return cls->tp_descr_set(ptr(self->m_value), obj, value);
+                return cls->tp_descr_set(ptr(self), obj, value);
             }
             if (value) {
                 PyErr_SetString(
                     PyExc_TypeError,
-                    "object does not support assignment via descriptor protocol"
+                    "object does not support descriptor assignment"
                 );
             } else {
                 PyErr_SetString(
-                    PyExc_TypeError,
-                    "object does not support deletion via descriptor protocol"
+                    PyExc_AttributeError,
+                    "object does not support descriptor deletion"
                 );
             }
             return nullptr;
@@ -1994,7 +3188,7 @@ R"doc()doc";
             return PySequence_GetItem(ptr(self->m_value), index);
         }
 
-        static int __setitem__(
+        static PyObject* __setitem__(
             __python__* self,
             PyObject* key,
             PyObject* value
@@ -2011,26 +3205,17 @@ R"doc()doc";
         }
 
         static Py_ssize_t __len__(__python__* self) noexcept {
-            if (self->m_value.is(None)) {
-                return 0;
-            }
             return PyObject_Length(ptr(self->m_value));
         }
 
-        static int __contains__(__python__* self, PyObject* value) noexcept {
-            if (self->m_value.is(None)) {
-                return 0;
-            }
-            return PySequence_Contains(ptr(self->m_value), value);
+        static int __contains__(__python__* self, PyObject* key) noexcept {
+            return PySequence_Contains(ptr(self->m_value), key);
         }
 
-        /// TODO: the python side of this interface, which forwards all built-in
-        /// slots to the underlying object
-
         static PyObject* __await__(__python__* self) noexcept {
-            PyAsyncMethods* async = Py_TYPE(ptr(self->m_value))->tp_as_async;
+            PyAsyncMethods* async = Py_TYPE(ptr(self))->tp_as_async;
             if (async && async->am_await) {
-                return async->am_await(ptr(self->m_value));
+                return async->am_await(ptr(self));
             }
             PyErr_SetString(
                 PyExc_TypeError,
@@ -2040,25 +3225,25 @@ R"doc()doc";
         }
 
         static PyObject* __aiter__(__python__* self) noexcept {
-            PyAsyncMethods* async = Py_TYPE(ptr(self->m_value))->tp_as_async;
+            PyAsyncMethods* async = Py_TYPE(ptr(self))->tp_as_async;
             if (async && async->am_aiter) {
-                return async->am_aiter(ptr(self->m_value));
+                return async->am_aiter(ptr(self));
             }
             PyErr_SetString(
                 PyExc_TypeError,
-                "object is not async iterable"
+                "object is not an async iterator"
             );
             return nullptr;
         }
 
         static PyObject* __anext__(__python__* self) noexcept {
-            PyAsyncMethods* async = Py_TYPE(ptr(self->m_value))->tp_as_async;
+            PyAsyncMethods* async = Py_TYPE(ptr(self))->tp_as_async;
             if (async && async->am_anext) {
-                return async->am_anext(ptr(self->m_value));
+                return async->am_anext(ptr(self));
             }
             PyErr_SetString(
                 PyExc_TypeError,
-                "object is not async iterator"
+                "object is not an async iterator"
             );
             return nullptr;
         }
@@ -2066,37 +3251,27 @@ R"doc()doc";
         static PySendResult __asend__(
             __python__* self,
             PyObject* arg,
-            PyObject** presult
+            PyObject** prsesult
         ) noexcept {
-            return PyIter_Send(ptr(self->m_value), arg, presult);
+            return PyIter_Send(ptr(self->m_value), arg, prsesult);
         }
 
         static PyObject* __add__(PyObject* lhs, PyObject* rhs) noexcept {
             try {
-                Type<Optional> cls;
-                PyObject* result;
-                int rc = PyObject_IsInstance(lhs, ptr(cls));
-                if (rc == -1) {
-                    return nullptr;
-                } else if (rc) {
-                    __python__* self = reinterpret_cast<__python__*>(lhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(lhs);
-                    }
-                    result = PyNumber_Add(ptr(self->m_value), rhs);
-                } else {
-                    __python__* self = reinterpret_cast<__python__*>(rhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(rhs);
-                    }
-                    result = PyNumber_Add(lhs, ptr(self->m_value));
+                Type<Union> cls;
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
+                ) {
+                    return PyNumber_Add(
+                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+                        rhs
+                    );
                 }
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                PyObject* monad = wrap(ptr(cls), result);
-                Py_DECREF(result);
-                return monad;
+                return PyNumber_Add(
+                    lhs,
+                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -2104,58 +3279,25 @@ R"doc()doc";
         }
 
         static PyObject* __iadd__(__python__* lhs, PyObject* rhs) noexcept {
-            try {
-                if (lhs->m_value.is(None)) {
-                    return Py_NewRef(lhs);
-                }
-                PyObject* result = PyNumber_InPlaceAdd(
-                    ptr(lhs->m_value),
-                    rhs
-                );
-                if (result == nullptr) {
-                    return nullptr;
-                } else if (result == ptr(lhs->m_value)) {
-                    Py_DECREF(result);
-                    return Py_NewRef(lhs);
-                }
-                PyObject* monad = wrap(
-                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
-                    result
-                );
-                Py_DECREF(result);
-                return monad;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
+            return PyNumber_InPlaceAdd(ptr(lhs->m_value), rhs);
         }
 
         static PyObject* __sub__(PyObject* lhs, PyObject* rhs) noexcept {
             try {
-                Type<Optional> cls;
-                PyObject* result;
-                int rc = PyObject_IsInstance(lhs, ptr(cls));
-                if (rc == -1) {
-                    return nullptr;
-                } else if (rc) {
-                    __python__* self = reinterpret_cast<__python__*>(lhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(lhs);
-                    }
-                    result = PyNumber_Subtract(ptr(self->m_value), rhs);
-                } else {
-                    __python__* self = reinterpret_cast<__python__*>(rhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(rhs);
-                    }
-                    result = PyNumber_Subtract(lhs, ptr(self->m_value));
+                Type<Union> cls;
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
+                ) {
+                    return PyNumber_Subtract(
+                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+                        rhs
+                    );
                 }
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                PyObject* monad = wrap(ptr(cls), result);
-                Py_DECREF(result);
-                return monad;
+                return PyNumber_Subtract(
+                    lhs,
+                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -2163,165 +3305,59 @@ R"doc()doc";
         }
 
         static PyObject* __isub__(__python__* lhs, PyObject* rhs) noexcept {
-            try {
-                if (lhs->m_value.is(None)) {
-                    return Py_NewRef(lhs);
-                }
-                PyObject* result = PyNumber_InPlaceSubtract(
-                    ptr(lhs->m_value),
-                    rhs
-                );
-                if (result == nullptr) {
-                    return nullptr;
-                } else if (result == ptr(lhs->m_value)) {
-                    Py_DECREF(result);
-                    return Py_NewRef(lhs);
-                }
-                PyObject* monad = wrap(
-                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
-                    result
-                );
-                Py_DECREF(result);
-                return monad;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
+            return PyNumber_InPlaceSubtract(ptr(lhs->m_value), rhs);
         }
 
         static PyObject* __mul__(PyObject* lhs, PyObject* rhs) noexcept {
             try {
-                Type<Optional> cls;
-                PyObject* result;
-                int rc = PyObject_IsInstance(lhs, ptr(cls));
-                if (rc == -1) {
-                    return nullptr;
-                } else if (rc) {
-                    __python__* self = reinterpret_cast<__python__*>(lhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(lhs);
-                    }
-                    result = PyNumber_Multiply(ptr(self->m_value), rhs);
-                } else {
-                    __python__* self = reinterpret_cast<__python__*>(rhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(rhs);
-                    }
-                    result = PyNumber_Multiply(lhs, ptr(self->m_value));
+                Type<Union> cls;
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
+                ) {
+                    return PyNumber_Multiply(
+                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+                        rhs
+                    );
                 }
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                PyObject* monad = wrap(ptr(cls), result);
-                Py_DECREF(result);
-                return monad;
+                return PyNumber_Multiply(
+                    lhs,
+                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
             }
         }
 
-        static PyObject* __repeat__(__python__* lhs, Py_ssize_t idx) noexcept {
-            try {
-                if (lhs->m_value.is(None)) {
-                    return Py_NewRef(lhs);
-                }
-                PyObject* result = PySequence_Repeat(ptr(lhs->m_value), idx);
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                PyObject* monad = wrap(
-                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
-                    result
-                );
-                Py_DECREF(result);
-                return monad;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
+        static PyObject* __repeat__(__python__* lhs, Py_ssize_t rhs) noexcept {
+            return PySequence_Repeat(ptr(lhs->m_value), rhs);
         }
 
         static PyObject* __imul__(__python__* lhs, PyObject* rhs) noexcept {
-            try {
-                if (lhs->m_value.is(None)) {
-                    return Py_NewRef(lhs);
-                }
-                PyObject* result = PyNumber_InPlaceMultiply(
-                    ptr(lhs->m_value),
-                    rhs
-                );
-                if (result == nullptr) {
-                    return nullptr;
-                } else if (result == ptr(lhs->m_value)) {
-                    Py_DECREF(result);
-                    return Py_NewRef(lhs);
-                }
-                PyObject* monad = wrap(
-                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
-                    result
-                );
-                Py_DECREF(result);
-                return monad;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
+            return PyNumber_InPlaceMultiply(ptr(lhs->m_value), rhs);
         }
 
-        static PyObject* __irepeat__(__python__* lhs, Py_ssize_t idx) noexcept {
-            try {
-                if (lhs->m_value.is(None)) {
-                    return Py_NewRef(lhs);
-                }
-                PyObject* result = PySequence_InPlaceRepeat(
-                    ptr(lhs->m_value),
-                    idx
-                );
-                if (result == nullptr) {
-                    return nullptr;
-                } else if (result == ptr(lhs->m_value)) {
-                    Py_DECREF(result);
-                    return Py_NewRef(lhs);
-                }
-                PyObject* monad = wrap(
-                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
-                    result
-                );
-                Py_DECREF(result);
-                return monad;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
+        static PyObject* __irepeat__(__python__* lhs, Py_ssize_t rhs) noexcept {
+            return PySequence_InPlaceRepeat(ptr(lhs->m_value), rhs);
         }
 
         static PyObject* __mod__(PyObject* lhs, PyObject* rhs) noexcept {
             try {
-                Type<Optional> cls;
-                PyObject* result;
-                int rc = PyObject_IsInstance(lhs, ptr(cls));
-                if (rc == -1) {
-                    return nullptr;
-                } else if (rc) {
-                    __python__* self = reinterpret_cast<__python__*>(lhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(lhs);
-                    }
-                    result = PyNumber_Remainder(ptr(self->m_value), rhs);
-                } else {
-                    __python__* self = reinterpret_cast<__python__*>(rhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(rhs);
-                    }
-                    result = PyNumber_Remainder(lhs, ptr(self->m_value));
+                Type<Union> cls;
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
+                ) {
+                    return PyNumber_Remainder(
+                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+                        rhs
+                    );
                 }
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                PyObject* monad = wrap(ptr(cls), result);
-                Py_DECREF(result);
-                return monad;
+                return PyNumber_Remainder(
+                    lhs,
+                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -2329,58 +3365,25 @@ R"doc()doc";
         }
 
         static PyObject* __imod__(__python__* lhs, PyObject* rhs) noexcept {
-            try {
-                if (lhs->m_value.is(None)) {
-                    return Py_NewRef(lhs);
-                }
-                PyObject* result = PyNumber_InPlaceRemainder(
-                    ptr(lhs->m_value),
-                    rhs
-                );
-                if (result == nullptr) {
-                    return nullptr;
-                } else if (result == ptr(lhs->m_value)) {
-                    Py_DECREF(result);
-                    return Py_NewRef(lhs);
-                }
-                PyObject* monad = wrap(
-                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
-                    result
-                );
-                Py_DECREF(result);
-                return monad;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
+            return PyNumber_InPlaceRemainder(ptr(lhs->m_value), rhs);
         }
 
         static PyObject* __divmod__(PyObject* lhs, PyObject* rhs) noexcept {
             try {
-                Type<Optional> cls;
-                PyObject* result;
-                int rc = PyObject_IsInstance(lhs, ptr(cls));
-                if (rc == -1) {
-                    return nullptr;
-                } else if (rc) {
-                    __python__* self = reinterpret_cast<__python__*>(lhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(lhs);
-                    }
-                    result = PyNumber_Divmod(ptr(self->m_value), rhs);
-                } else {
-                    __python__* self = reinterpret_cast<__python__*>(rhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(rhs);
-                    }
-                    result = PyNumber_Divmod(lhs, ptr(self->m_value));
+                Type<Union> cls;
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
+                ) {
+                    return PyNumber_Divmod(
+                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+                        rhs
+                    );
                 }
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                PyObject* monad = wrap(ptr(cls), result);
-                Py_DECREF(result);
-                return monad;
+                return PyNumber_Divmod(
+                    lhs,
+                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -2389,41 +3392,31 @@ R"doc()doc";
 
         static PyObject* __power__(PyObject* lhs, PyObject* rhs, PyObject* mod) noexcept {
             try {
-                Type<Optional> cls;
-                PyObject* result;
-                int rc = PyObject_IsInstance(lhs, ptr(cls));
-                if (rc == -1) {
-                    return nullptr;
-                } else if (rc) {
-                    __python__* self = reinterpret_cast<__python__*>(lhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(lhs);
-                    }
-                    result = PyNumber_Power(ptr(self->m_value), rhs, mod);
-                } else {
-                    rc = PyObject_IsInstance(rhs, ptr(cls));
-                    if (rc == -1) {
-                        return nullptr;
-                    } else if (rc) {
-                        __python__* self = reinterpret_cast<__python__*>(rhs);
-                        if (self->m_value.is(None)) {
-                            return Py_NewRef(rhs);
-                        }
-                        result = PyNumber_Power(lhs, ptr(self->m_value), mod);
-                    } else {
-                        __python__* self = reinterpret_cast<__python__*>(mod);
-                        if (self->m_value.is(None)) {
-                            return Py_NewRef(mod);
-                        }
-                        result = PyNumber_Power(lhs, rhs, ptr(self->m_value));
-                    }
+                Type<Union> cls;
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
+                ) {
+                    return PyNumber_Power(
+                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+                        rhs,
+                        mod
+                    );
+                } else if (PyType_IsSubtype(
+                    Py_TYPE(rhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
+                ) {
+                    return PyNumber_Power(
+                        lhs,
+                        ptr(reinterpret_cast<__python__*>(rhs)->m_value),
+                        mod
+                    );
                 }
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                PyObject* monad = wrap(ptr(cls), result);
-                Py_DECREF(result);
-                return monad;
+                return PyNumber_Power(
+                    lhs,
+                    rhs,
+                    ptr(reinterpret_cast<__python__*>(mod)->m_value)
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -2431,79 +3424,19 @@ R"doc()doc";
         }
 
         static PyObject* __ipower__(__python__* lhs, PyObject* rhs, PyObject* mod) noexcept {
-            try {
-                if (lhs->m_value.is(None)) {
-                    return Py_NewRef(lhs);
-                }
-                PyObject* result = PyNumber_InPlacePower(
-                    ptr(lhs->m_value),
-                    rhs,
-                    mod
-                );
-                if (result == nullptr) {
-                    return nullptr;
-                } else if (result == ptr(lhs->m_value)) {
-                    Py_DECREF(result);
-                    return Py_NewRef(lhs);
-                }
-                PyObject* monad = wrap(
-                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
-                    result
-                );
-                Py_DECREF(result);
-                return monad;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
+            return PyNumber_InPlacePower(ptr(lhs->m_value), rhs, mod);
         }
 
         static PyObject* __neg__(__python__* self) noexcept {
-            if (self->m_value.is(None)) {
-                return Py_NewRef(ptr(self->m_value));
-            }
-            PyObject* result = PyNumber_Negative(ptr(self->m_value));
-            if (result == nullptr) {
-                return nullptr;
-            }
-            PyObject* monad = wrap(
-                reinterpret_cast<PyObject*>(Py_TYPE(self)),
-                result
-            );
-            Py_DECREF(result);
-            return monad;
+            return PyNumber_Negative(ptr(self->m_value));
         }
 
         static PyObject* __pos__(__python__* self) noexcept {
-            if (self->m_value.is(None)) {
-                return Py_NewRef(ptr(self->m_value));
-            }
-            PyObject* result = PyNumber_Positive(ptr(self->m_value));
-            if (result == nullptr) {
-                return nullptr;
-            }
-            PyObject* monad = wrap(
-                reinterpret_cast<PyObject*>(Py_TYPE(self)),
-                result
-            );
-            Py_DECREF(result);
-            return monad;
+            return PyNumber_Positive(ptr(self->m_value));
         }
 
         static PyObject* __abs__(__python__* self) noexcept {
-            if (self->m_value.is(None)) {
-                return Py_NewRef(ptr(self->m_value));
-            }
-            PyObject* result = PyNumber_Absolute(ptr(self->m_value));
-            if (result == nullptr) {
-                return nullptr;
-            }
-            PyObject* monad = wrap(
-                reinterpret_cast<PyObject*>(Py_TYPE(self)),
-                result
-            );
-            Py_DECREF(result);
-            return monad;
+            return PyNumber_Absolute(ptr(self->m_value));
         }
 
         static int __bool__(__python__* self) noexcept {
@@ -2511,47 +3444,25 @@ R"doc()doc";
         }
 
         static PyObject* __invert__(__python__* self) noexcept {
-            if (self->m_value.is(None)) {
-                return Py_NewRef(self->m_value);
-            }
-            PyObject* result = PyNumber_Invert(ptr(self->m_value));
-            if (result == nullptr) {
-                return nullptr;
-            }
-            PyObject* monad = wrap(
-                reinterpret_cast<PyObject*>(Py_TYPE(self)),
-                result
-            );
-            Py_DECREF(result);
-            return monad;
+            return PyNumber_Invert(ptr(self->m_value));
         }
 
         static PyObject* __lshift__(PyObject* lhs, PyObject* rhs) noexcept {
             try {
-                Type<Optional> cls;
-                PyObject* result;
-                int rc = PyObject_IsInstance(lhs, ptr(cls));
-                if (rc == -1) {
-                    return nullptr;
-                } else if (rc) {
-                    __python__* self = reinterpret_cast<__python__*>(lhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(lhs);
-                    }
-                    result = PyNumber_Lshift(ptr(self->m_value), rhs);
-                } else {
-                    __python__* self = reinterpret_cast<__python__*>(rhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(rhs);
-                    }
-                    result = PyNumber_Lshift(lhs, ptr(self->m_value));
+                Type<Union> cls;
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
+                ) {
+                    return PyNumber_Lshift(
+                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+                        rhs
+                    );
                 }
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                PyObject* monad = wrap(ptr(cls), result);
-                Py_DECREF(result);
-                return monad;
+                return PyNumber_Lshift(
+                    lhs,
+                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -2559,58 +3470,25 @@ R"doc()doc";
         }
 
         static PyObject* __ilshift__(__python__* lhs, PyObject* rhs) noexcept {
-            try {
-                if (lhs->m_value.is(None)) {
-                    return Py_NewRef(lhs);
-                }
-                PyObject* result = PyNumber_InPlaceLshift(
-                    ptr(lhs->m_value),
-                    rhs
-                );
-                if (result == nullptr) {
-                    return nullptr;
-                } else if (result == ptr(lhs->m_value)) {
-                    Py_DECREF(result);
-                    return Py_NewRef(lhs);
-                }
-                PyObject* monad = wrap(
-                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
-                    result
-                );
-                Py_DECREF(result);
-                return monad;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
+            return PyNumber_InPlaceLshift(ptr(lhs->m_value), rhs);
         }
 
         static PyObject* __rshift__(PyObject* lhs, PyObject* rhs) noexcept {
             try {
-                Type<Optional> cls;
-                PyObject* result;
-                int rc = PyObject_IsInstance(lhs, ptr(cls));
-                if (rc == -1) {
-                    return nullptr;
-                } else if (rc) {
-                    __python__* self = reinterpret_cast<__python__*>(lhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(lhs);
-                    }
-                    result = PyNumber_Rshift(ptr(self->m_value), rhs);
-                } else {
-                    __python__* self = reinterpret_cast<__python__*>(rhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(rhs);
-                    }
-                    result = PyNumber_Rshift(lhs, ptr(self->m_value));
+                Type<Union> cls;
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
+                ) {
+                    return PyNumber_Rshift(
+                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+                        rhs
+                    );
                 }
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                PyObject* monad = wrap(ptr(cls), result);
-                Py_DECREF(result);
-                return monad;
+                return PyNumber_Rshift(
+                    lhs,
+                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -2618,58 +3496,25 @@ R"doc()doc";
         }
 
         static PyObject* __irshift__(__python__* lhs, PyObject* rhs) noexcept {
-            try {
-                if (lhs->m_value.is(None)) {
-                    return Py_NewRef(lhs);
-                }
-                PyObject* result = PyNumber_InPlaceRshift(
-                    ptr(lhs->m_value),
-                    rhs
-                );
-                if (result == nullptr) {
-                    return nullptr;
-                } else if (result == ptr(lhs->m_value)) {
-                    Py_DECREF(result);
-                    return Py_NewRef(lhs);
-                }
-                PyObject* monad = wrap(
-                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
-                    result
-                );
-                Py_DECREF(result);
-                return monad;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
+            return PyNumber_InPlaceRshift(ptr(lhs->m_value), rhs);
         }
 
         static PyObject* __and__(PyObject* lhs, PyObject* rhs) noexcept {
             try {
-                Type<Optional> cls;
-                PyObject* result;
-                int rc = PyObject_IsInstance(lhs, ptr(cls));
-                if (rc == -1) {
-                    return nullptr;
-                } else if (rc) {
-                    __python__* self = reinterpret_cast<__python__*>(lhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(lhs);
-                    }
-                    result = PyNumber_And(ptr(self->m_value), rhs);
-                } else {
-                    __python__* self = reinterpret_cast<__python__*>(rhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(rhs);
-                    }
-                    result = PyNumber_And(lhs, ptr(self->m_value));
+                Type<Union> cls;
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
+                ) {
+                    return PyNumber_And(
+                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+                        rhs
+                    );
                 }
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                PyObject* monad = wrap(ptr(cls), result);
-                Py_DECREF(result);
-                return monad;
+                return PyNumber_And(
+                    lhs,
+                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -2677,58 +3522,25 @@ R"doc()doc";
         }
 
         static PyObject* __iand__(__python__* lhs, PyObject* rhs) noexcept {
-            try {
-                if (lhs->m_value.is(None)) {
-                    return Py_NewRef(lhs);
-                }
-                PyObject* result = PyNumber_InPlaceAnd(
-                    ptr(lhs->m_value),
-                    rhs
-                );
-                if (result == nullptr) {
-                    return nullptr;
-                } else if (result == ptr(lhs->m_value)) {
-                    Py_DECREF(result);
-                    return Py_NewRef(lhs);
-                }
-                PyObject* monad = wrap(
-                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
-                    result
-                );
-                Py_DECREF(result);
-                return monad;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
+            return PyNumber_InPlaceAnd(ptr(lhs->m_value), rhs);
         }
 
         static PyObject* __xor__(PyObject* lhs, PyObject* rhs) noexcept {
             try {
-                Type<Optional> cls;
-                PyObject* result;
-                int rc = PyObject_IsInstance(lhs, ptr(cls));
-                if (rc == -1) {
-                    return nullptr;
-                } else if (rc) {
-                    __python__* self = reinterpret_cast<__python__*>(lhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(lhs);
-                    }
-                    result = PyNumber_Xor(ptr(self->m_value), rhs);
-                } else {
-                    __python__* self = reinterpret_cast<__python__*>(rhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(rhs);
-                    }
-                    result = PyNumber_Xor(lhs, ptr(self->m_value));
+                Type<Union> cls;
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
+                ) {
+                    return PyNumber_Xor(
+                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+                        rhs
+                    );
                 }
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                PyObject* monad = wrap(ptr(cls), result);
-                Py_DECREF(result);
-                return monad;
+                return PyNumber_Xor(
+                    lhs,
+                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -2736,55 +3548,25 @@ R"doc()doc";
         }
 
         static PyObject* __ixor__(__python__* lhs, PyObject* rhs) noexcept {
-            try {
-                if (lhs->m_value.is(None)) {
-                    return Py_NewRef(lhs);
-                }
-                PyObject* result = PyNumber_InPlaceXor(ptr(lhs->m_value), rhs);
-                if (result == nullptr) {
-                    return nullptr;
-                } else if (result == ptr(lhs->m_value)) {
-                    Py_DECREF(result);
-                    return Py_NewRef(lhs);
-                }
-                PyObject* monad = wrap(
-                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
-                    result
-                );
-                Py_DECREF(result);
-                return monad;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
+            return PyNumber_InPlaceXor(ptr(lhs->m_value), rhs);
         }
 
         static PyObject* __or__(PyObject* lhs, PyObject* rhs) noexcept {
             try {
-                Type<Optional> cls;
-                PyObject* result;
-                int rc = PyObject_IsInstance(lhs, ptr(cls));
-                if (rc == -1) {
-                    return nullptr;
-                } else if (rc) {
-                    __python__* self = reinterpret_cast<__python__*>(lhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(lhs);
-                    }
-                    result = PyNumber_Or(ptr(self->m_value), rhs);
-                } else {
-                    __python__* self = reinterpret_cast<__python__*>(rhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(rhs);
-                    }
-                    result = PyNumber_Or(lhs, ptr(self->m_value));
+                Type<Union> cls;
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
+                ) {
+                    return PyNumber_Or(
+                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+                        rhs
+                    );
                 }
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                PyObject* monad = wrap(ptr(cls), result);
-                Py_DECREF(result);
-                return monad;
+                return PyNumber_Or(
+                    lhs,
+                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -2792,27 +3574,7 @@ R"doc()doc";
         }
 
         static PyObject* __ior__(__python__* lhs, PyObject* rhs) noexcept {
-            try {
-                if (lhs->m_value.is(None)) {
-                    return Py_NewRef(lhs);
-                }
-                PyObject* result = PyNumber_InPlaceOr(ptr(lhs->m_value), rhs);
-                if (result == nullptr) {
-                    return nullptr;
-                } else if (result == ptr(lhs->m_value)) {
-                    Py_DECREF(result);
-                    return Py_NewRef(lhs);
-                }
-                PyObject* monad = wrap(
-                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
-                    result
-                );
-                Py_DECREF(result);
-                return monad;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
+            return PyNumber_InPlaceOr(ptr(lhs->m_value), rhs);
         }
 
         static PyObject* __int__(__python__* self) noexcept {
@@ -2825,30 +3587,20 @@ R"doc()doc";
 
         static PyObject* __floordiv__(PyObject* lhs, PyObject* rhs) noexcept {
             try {
-                Type<Optional> cls;
-                PyObject* result;
-                int rc = PyObject_IsInstance(lhs, ptr(cls));
-                if (rc == -1) {
-                    return nullptr;
-                } else if (rc) {
-                    __python__* self = reinterpret_cast<__python__*>(lhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(lhs);
-                    }
-                    result = PyNumber_FloorDivide(ptr(self->m_value), rhs);
-                } else {
-                    __python__* self = reinterpret_cast<__python__*>(rhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(rhs);
-                    }
-                    result = PyNumber_FloorDivide(lhs, ptr(self->m_value));
+                Type<Union> cls;
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
+                ) {
+                    return PyNumber_FloorDivide(
+                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+                        rhs
+                    );
                 }
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                PyObject* monad = wrap(ptr(cls), result);
-                Py_DECREF(result);
-                return monad;
+                return PyNumber_FloorDivide(
+                    lhs,
+                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -2856,55 +3608,25 @@ R"doc()doc";
         }
 
         static PyObject* __ifloordiv__(__python__* lhs, PyObject* rhs) noexcept {
-            try {
-                if (lhs->m_value.is(None)) {
-                    return Py_NewRef(lhs);
-                }
-                PyObject* result = PyNumber_InPlaceFloorDivide(ptr(lhs->m_value), rhs);
-                if (result == nullptr) {
-                    return nullptr;
-                } else if (result == ptr(lhs->m_value)) {
-                    Py_DECREF(result);
-                    return Py_NewRef(lhs);
-                }
-                PyObject* monad = wrap(
-                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
-                    result
-                );
-                Py_DECREF(result);
-                return monad;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
+            return PyNumber_InPlaceFloorDivide(ptr(lhs->m_value), rhs);
         }
 
         static PyObject* __truediv__(PyObject* lhs, PyObject* rhs) noexcept {
             try {
-                Type<Optional> cls;
-                PyObject* result;
-                int rc = PyObject_IsInstance(lhs, ptr(cls));
-                if (rc == -1) {
-                    return nullptr;
-                } else if (rc) {
-                    __python__* self = reinterpret_cast<__python__*>(lhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(lhs);
-                    }
-                    result = PyNumber_TrueDivide(ptr(self->m_value), rhs);
-                } else {
-                    __python__* self = reinterpret_cast<__python__*>(rhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(rhs);
-                    }
-                    result = PyNumber_TrueDivide(lhs, ptr(self->m_value));
+                Type<Union> cls;
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
+                ) {
+                    return PyNumber_TrueDivide(
+                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+                        rhs
+                    );
                 }
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                PyObject* monad = wrap(ptr(cls), result);
-                Py_DECREF(result);
-                return monad;
+                return PyNumber_TrueDivide(
+                    lhs,
+                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -2912,27 +3634,7 @@ R"doc()doc";
         }
 
         static PyObject* __itruediv__(__python__* lhs, PyObject* rhs) noexcept {
-            try {
-                if (lhs->m_value.is(None)) {
-                    return Py_NewRef(lhs);
-                }
-                PyObject* result = PyNumber_InPlaceTrueDivide(ptr(lhs->m_value), rhs);
-                if (result == nullptr) {
-                    return nullptr;
-                } else if (result == ptr(lhs->m_value)) {
-                    Py_DECREF(result);
-                    return Py_NewRef(lhs);
-                }
-                PyObject* monad = wrap(
-                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
-                    result
-                );
-                Py_DECREF(result);
-                return monad;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
+            return PyNumber_InPlaceTrueDivide(ptr(lhs->m_value), rhs);
         }
 
         static PyObject* __index__(__python__* self) noexcept {
@@ -2941,30 +3643,20 @@ R"doc()doc";
 
         static PyObject* __matmul__(PyObject* lhs, PyObject* rhs) noexcept {
             try {
-                Type<Optional> cls;
-                PyObject* result;
-                int rc = PyObject_IsInstance(lhs, ptr(cls));
-                if (rc == -1) {
-                    return nullptr;
-                } else if (rc) {
-                    __python__* self = reinterpret_cast<__python__*>(lhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(lhs);
-                    }
-                    result = PyNumber_MatrixMultiply(ptr(self->m_value), rhs);
-                } else {
-                    __python__* self = reinterpret_cast<__python__*>(rhs);
-                    if (self->m_value.is(None)) {
-                        return Py_NewRef(rhs);
-                    }
-                    result = PyNumber_MatrixMultiply(lhs, ptr(self->m_value));
+                Type<Union> cls;
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
+                ) {
+                    return PyNumber_MatrixMultiply(
+                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+                        rhs
+                    );
                 }
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                PyObject* monad = wrap(ptr(cls), result);
-                Py_DECREF(result);
-                return monad;
+                return PyNumber_MatrixMultiply(
+                    lhs,
+                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -2972,27 +3664,7 @@ R"doc()doc";
         }
 
         static PyObject* __imatmul__(__python__* lhs, PyObject* rhs) noexcept {
-            try {
-                if (lhs->m_value.is(None)) {
-                    return Py_NewRef(lhs);
-                }
-                PyObject* result = PyNumber_InPlaceMatrixMultiply(ptr(lhs->m_value), rhs);
-                if (result == nullptr) {
-                    return nullptr;
-                } else if (result == ptr(lhs->m_value)) {
-                    Py_DECREF(result);
-                    return Py_NewRef(lhs);
-                }
-                PyObject* monad = wrap(
-                    reinterpret_cast<PyObject*>(Py_TYPE(lhs)),
-                    result
-                );
-                Py_DECREF(result);
-                return monad;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
+            return PyNumber_InPlaceMatrixMultiply(ptr(lhs->m_value), rhs);
         }
 
         static int __buffer__(
@@ -3008,81 +3680,6 @@ R"doc()doc";
         }
 
     private:
-
-        static PyObject* wrap(PyObject* cls, PyObject* result) {
-            PyObject* type = PyObject_GetItem(
-                cls,
-                reinterpret_cast<PyObject*>(Py_TYPE(result))
-            );
-            if (type == nullptr) {
-                return nullptr;
-            }
-            PyObject* monad = PyObject_CallOneArg(type, result);
-            Py_DECREF(type);
-            return monad;
-        }
-
-        /// TODO: these will all be defined on the heap type using slots rather than
-        /// these static structs, but that can't be done until the __export__ method
-        /// can be filled in.
-
-        inline static PyMethodDef methods[] = {
-            {
-                "has_value",
-                reinterpret_cast<PyCFunction>(has_value),
-                METH_NOARGS,
-                PyDoc_STR(
-R"doc(Check if the optional holds a value.
-
-Returns
--------
-bool
-    `True` if the optional holds a value, `False` otherwise.
-)doc"
-                )
-            },
-            {
-                "value",
-                reinterpret_cast<PyCFunction>(value),
-                METH_NOARGS,
-                PyDoc_STR(
-R"doc(Get the value stored in the optional, or raise an error if it
-is empty.
-
-Returns
--------
-T
-    The value stored in the optional.
-
-Raises
-------
-TypeError
-    If the optional currently holds `None`.
-)doc"
-                )
-            },
-            {
-                "value_or",
-                reinterpret_cast<PyCFunction>(value_or),
-                METH_O,
-                PyDoc_STR(
-R"doc(Get the value stored in the optional, or return a default value if
-it is empty.
-
-Parameters
-----------
-default : T
-    The default value to return if the optional is empty.
-
-Returns
--------
-T
-    The value stored in the optional, or the default value if it is empty.
-)doc"
-                )
-            },
-            {nullptr}
-        };
 
         inline static PyGetSetDef properties[] = {
             {
@@ -3179,884 +3776,6 @@ attribute and unwrap the optional if it is present.)doc"
 
     };
 
-    Optional(PyObject* p, borrowed_t t) : Object(p, t) {}
-    Optional(PyObject* p, stolen_t t) : Object(p, t) {}
-
-    template <typename Self = Optional> requires (__initializer__<Self>::enable)
-    Optional(const std::initializer_list<typename __initializer__<Self>::type>& init) :
-        Object(__initializer__<Self>{}(init))
-    {}
-
-    template <typename... Args> requires (implicit_ctor<Optional>::template enable<Args...>)
-    Optional(Args&&... args) : Object(
-        implicit_ctor<Optional>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    template <typename... Args> requires (explicit_ctor<Optional>::template enable<Args...>)
-    explicit Optional(Args&&... args) : Object(
-        explicit_ctor<Optional>{},
-        std::forward<Args>(args)...
-    ) {}
-
-};
-
-
-template <typename T>
-struct __template__<Optional<T>>                            : Returns<Object> {
-    static Type<T> operator()() { return {}; }
-};
-
-
-/// TODO: not sure if type checks are being handled correctly, and it might be a good use
-/// case for specialization of `isinstance<>`, etc. based on the derived class rather
-/// than (or perhaps in addition to) the base class.  This will require a fair bit of
-/// thinking to get right, and it has to be applied to Object and other dynamic types
-/// as well.
-
-
-template <typename Derived, impl::inherits<impl::OptionalTag> Base>
-struct __isinstance__<Derived, Base>                         : Returns<bool> {
-    using Wrapped = std::remove_reference_t<Base>::__wrapped__;
-    static constexpr bool operator()(Derived&& obj) {
-        if constexpr (impl::inherits<Derived, impl::OptionalTag>) {
-            return
-                obj->m_value.is(None) ||
-                isinstance<Wrapped>(std::forward<Derived>(obj)->m_value);
-
-        } else if constexpr (impl::dynamic<Derived>) {
-            return
-                obj.is(None) ||
-                isinstance<Wrapped>(std::forward<Derived>(obj));
-
-        } else {
-            return
-                impl::none_like<Derived> ||
-                isinstance<Wrapped>(std::forward<Derived>(obj));
-        }
-    }
-    template <typename T = Wrapped>
-        requires (std::is_invocable_v<__isinstance__<Derived, T>, Derived, T>)
-    static constexpr bool operator()(Derived&& obj, Base base) {
-        if (base->m_value.is(None)) {
-            return false;
-        } else {
-            return isinstance(std::forward<Derived>(obj), base->m_value);
-        }
-    }
-};
-
-
-template <typename Derived, impl::inherits<impl::OptionalTag> Base>
-struct __issubclass__<Derived, Base>                         : Returns<bool> {
-    using Wrapped = std::remove_reference_t<Base>::__wrapped__;
-    static constexpr bool operator()() {
-        return impl::none_like<Derived> || issubclass<Derived, Wrapped>();
-    }
-    template <typename T = Wrapped>
-        requires (std::is_invocable_v<__issubclass__<Derived, T>, Derived>)
-    static constexpr bool operator()(Derived&& obj) {
-        if constexpr (impl::dynamic<Derived>) {
-            return
-                obj.is(None) ||
-                issubclass<Wrapped>(std::forward<Derived>(obj));
-        } else {
-            return
-                impl::none_like<Derived> ||
-                issubclass<Wrapped>(std::forward<Derived>(obj));
-        }
-    }
-    template <typename T = Wrapped>
-        requires (std::is_invocable_v<__issubclass__<Derived, T>, Derived, T>)
-    static constexpr bool operator()(Derived&& obj, Base base) {
-        if (base.is(None)) {
-            return false;
-        } else {
-            return issubclass(std::forward<Derived>(obj), base.value());
-        }
-    }
-};
-
-
-/// NOTE: constructors are forwarded to the underlying object, except for the default
-/// constructor, which initializes to None.
-
-
-template <typename T> requires (__initializer__<T>::enable)
-struct __initializer__<Optional<T>> : Returns<typename __initializer__<T>::type> {
-    using Element = __initializer__<T>::type;
-    static Optional<T> operator()(const std::initializer_list<Element>& init) {
-        return T(init);
-    }
-};
-
-
-template <typename T>
-struct __init__<Optional<T>>                                : Returns<Optional<T>> {
-    static Optional<T> operator()() {
-        return impl::construct<Optional<T>>(None);
-    }
-};
-
-
-template <typename T, typename... Args>
-    requires ((sizeof...(Args) > 0) && std::constructible_from<T, Args...>)
-struct __init__<Optional<T>, Args...>                       : Returns<Optional<T>> {
-    static Optional<T> operator()(Args&&... args) {
-        return impl::construct<Optional<T>>(T(std::forward<Args>(args)...));
-    }
-};
-
-
-/* Casting from None is the same as calling the default constructor. */
-template <impl::is<NoneType> From, typename To>
-struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
-    static Optional<To> operator()(From&&) {
-        return impl::construct<Optional<To>>(None);
-    }
-};
-
-
-/* Implicitly cast a non-empty input into the underlying type if possible. */
-template <typename From, typename To>
-    requires (!impl::is<From, NoneType> && std::convertible_to<From, To>)
-struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
-    static Optional<To> operator()(From&& from) {
-        return impl::construct<Optional<To>>(To(std::forward<From>(from)));
-    }
-};
-
-
-/// NOTE: implicit casts are also allowed to and from std::optional, pointers, and
-/// smart pointers, as long as the underlying types are convertible. 
-
-
-template <impl::is_optional T> requires (__cast__<impl::optional_type<T>>::enable)
-struct __cast__<T> : Returns<Optional<typename __cast__<impl::optional_type<T>>::type>> {};
-template <std::convertible_to<Object> T>
-struct __cast__<T*> : Returns<Optional<obj<T>>> {};
-template <impl::is_shared_ptr T> requires (std::convertible_to<impl::shared_ptr_type<T>, Object>)
-struct __cast__<T> : Returns<Optional<obj<impl::shared_ptr_type<T>>>> {};
-template <impl::is_unique_ptr T> requires (std::convertible_to<impl::unique_ptr_type<T>, Object>)
-struct __cast__<T> : Returns<Optional<obj<impl::unique_ptr_type<T>>>> {};
-
-
-template <impl::is_optional From, typename To>
-    requires (std::convertible_to<impl::optional_type<From>, To>)
-struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
-    static Optional<To> operator()(From from) {
-        if (!from.has_value()) {
-            return None;
-        } else {
-            if constexpr (std::is_lvalue_reference_v<From>) {
-                return To(from.value());
-            } else {
-                return To(std::move(from.value()));
-            }
-        }
-    }
-};
-
-
-template <impl::is_ptr From, typename To>
-    requires (std::convertible_to<impl::ptr_type<From>, To>)
-struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
-    static Optional<To> operator()(From from) {
-        if (from == nullptr) {
-            return None;
-        } else {
-            return To(*from);
-        }
-    }
-};
-
-
-template <impl::is_shared_ptr From, typename To>
-    requires (std::convertible_to<impl::shared_ptr_type<From>, To>)
-struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
-    static Optional<To> operator()(From&& from) {
-        if (from == nullptr) {
-            return None;
-        } else {
-            return To(*from);
-        }
-    }
-};
-
-
-template <impl::is_unique_ptr From, typename To>
-    requires (std::convertible_to<impl::unique_ptr_type<From>, To>)
-struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
-    static Optional<To> operator()(From&& from) {
-        if (from == nullptr) {
-            return None;
-        } else {
-            return To(*from);
-        }
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> From, typename To>
-    requires (std::convertible_to<impl::wrapped_type<From>, To>)
-struct __cast__<From, std::optional<To>>                    : Returns<std::optional<To>> {
-    static std::optional<To> operator()(From from) {
-        if (from->m_value.is(None)) {
-            return std::nullopt;
-        } else {
-            return To(
-                reinterpret_cast<impl::wrapped_type<From>>(
-                    std::forward<From>(from)->m_value
-                )
-            );
-        }
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> From, typename To>
-    requires (std::same_as<
-        std::remove_cv_t<To>,
-        typename std::remove_cvref_t<From>::__wrapped__
-    >)
-struct __cast__<From, To*>                                  : Returns<To*> {
-    static To* operator()(From from) {
-        if (from->m_value.is(None)) {
-            return nullptr;
-        } else {
-            return &reinterpret_cast<To&>(from->m_value);
-        }
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> From, typename To>
-    requires (std::convertible_to<impl::wrapped_type<From>, To>)
-struct __cast__<From, std::shared_ptr<To>>                  : Returns<std::shared_ptr<To>> {
-    static std::shared_ptr<To> operator()(From from) {
-        if (from->m_value.is(None)) {
-            return nullptr;
-        } else {
-            return std::make_shared<To>(
-                reinterpret_cast<impl::wrapped_type<From>>(
-                    std::forward<From>(from)->m_value
-                )
-            );
-        }
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> From, typename To>
-    requires (std::convertible_to<impl::wrapped_type<From>, To>)
-struct __cast__<From, std::unique_ptr<To>>                  : Returns<std::unique_ptr<To>> {
-    static std::unique_ptr<To> operator()(From from) {
-        if (from->m_value.is(None)) {
-            return nullptr;
-        } else {
-            return std::make_unique<To>(
-                reinterpret_cast<impl::wrapped_type<From>>(
-                    std::forward<From>(from)->m_value
-                )
-            );
-        }
-    }
-};
-
-
-/// NOTE: all other operations are monadic
-
-
-template <impl::inherits<impl::OptionalTag> Self, StaticStr Name>
-    requires (__getattr__<impl::wrapped_type<Self>, Name>::enable)
-struct __getattr__<Self, Name>                              : Returns<Optional<
-    typename __getattr__<impl::wrapped_type<Self>, Name>::type
->> {
-    using Return = __getattr__<impl::wrapped_type<Self>, Name>::type;
-    static Optional<Return> operator()(Self self) {
-        if (self->m_value.is(None)) {
-            return None;
-        } else {
-            return getattr<Name>(
-                reinterpret_cast<impl::wrapped_type<Self>>(
-                    std::forward<Self>(self)->m_value
-                )
-            );
-        }
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> Self, StaticStr Name, typename Value>
-    requires (__setattr__<impl::wrapped_type<Self>, Name, Value>::enable)
-struct __setattr__<Self, Name, Value>             : Returns<void> {
-    static void operator()(Self self, Value&& value) {
-        if (!self->m_value.is(None)) {
-            setattr<Name>(
-                reinterpret_cast<impl::wrapped_type<Self>>(
-                    std::forward<Self>(self)->m_value
-                ),
-                std::forward<Value>(value)
-            );
-        }
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> Self, StaticStr Name>
-    requires (__delattr__<impl::wrapped_type<Self>, Name>::enable)
-struct __delattr__<Self, Name>                              : Returns<void> {
-    static void operator()(Self self) {
-        if (!self->m_value.is(None)) {
-            delattr<Name>(
-                reinterpret_cast<impl::wrapped_type<Self>>(
-                    std::forward<Self>(self)->m_value
-                )
-            );
-        }
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> Self>
-    requires (__repr__<impl::wrapped_type<Self>>::enable)
-struct __repr__<Self>                                       : Returns<Str> {
-    static std::string operator()(Self self) {
-        if (self->m_value.is(None)) {
-            return repr(None);
-        } else {
-            return repr(
-                reinterpret_cast<impl::wrapped_type<Self>>(
-                    std::forward<Self>(self)->m_value
-                )
-            );
-        }
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> Self, typename... Args>
-    requires (__call__<impl::wrapped_type<Self>,Args...>::enable)
-struct __call__<Self, Args...>                              : Returns<Optional<
-    typename __call__<impl::wrapped_type<Self>, Args...>::type
->> {
-    using Return = __call__<impl::wrapped_type<Self>, Args...>::type;
-    static Optional<Return> operator()(Self self, Args&&... args) {
-        if (self->m_value.is(None)) {
-            return None;
-        } else {
-            return reinterpret_cast<impl::wrapped_type<Self>>(
-                std::forward<Self>(self)->m_value
-            )(std::forward<Args>(args)...);
-        }
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> Self, typename... Key>
-    requires (__getitem__<impl::wrapped_type<Self>, Key...>::enable)
-struct __getitem__<Self, Key...>                             : Returns<Optional<
-    typename __getitem__<impl::wrapped_type<Self>, Key...>::type
->> {
-    using Return = __getitem__<impl::wrapped_type<Self>, Key...>::type;
-    static Optional<Return> operator()(Self self, Key&&... key) {
-        if (self->m_value.is(None)) {
-            return None;
-        } else {
-            return reinterpret_cast<impl::wrapped_type<Self>>(
-                std::forward<Self>(self)->m_value
-            )[std::forward<Key>(key)...];
-        }
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> Self, typename Value, typename... Key>
-    requires (__setitem__<impl::wrapped_type<Self>, Value, Key...>::enable)
-struct __setitem__<Self, Value, Key...>                         : Returns<void> {
-    static void operator()(Self self, Value&& value, Key&&... key) {
-        if (!self->m_value.is(None)) {
-            reinterpret_cast<impl::wrapped_type<Self>>(
-                std::forward<Self>(self)->m_value
-            )[std::forward<Key>(key)...] = std::forward<Value>(value);
-        }
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> Self, typename... Key>
-    requires (__delitem__<impl::wrapped_type<Self>, Key...>::enable)
-struct __delitem__<Self, Key...>                               : Returns<void> {
-    static void operator()(Self self, Key&&... key) {
-        if (!self->m_value.is(None)) {
-            del(
-                reinterpret_cast<impl::wrapped_type<Self>>(
-                    std::forward<Self>(self)->m_value
-                )[std::forward<Key>(key)...]
-            );
-        }
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> Self>
-    requires (__len__<impl::wrapped_type<Self>>::enable)
-struct __len__<Self>                                        : Returns<Optional<
-    typename __len__<impl::wrapped_type<Self>>::type
->> {
-    using Return = __len__<impl::wrapped_type<Self>>::type;
-    static Return operator()(Self self) {
-        if (self->m_value.is(None)) {
-            return 0;
-        }
-        return len(
-            reinterpret_cast<impl::wrapped_type<Self>>(
-                std::forward<Self>(self)->m_value
-            )
-        );
-    }
-};
-
-
-// template <impl::inherits<impl::OptionalTag> Self>
-//     requires (__iter__<impl::wrapped_type<Self>>::enable)
-// struct __iter__<Self>                                       : Returns<Optional<
-//     typename __iter__<impl::wrapped_type<Self>>::type
-// >> {
-//     /// TODO: complicated.  Would involve an iterator implementation that initializes
-//     /// to the end iterator if the optional is None.
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> Self>
-//     requires (__reversed__<impl::wrapped_type<Self>>::enable)
-// struct __reversed__<Self>                                   : Returns<Optional<
-//     typename __reversed__<impl::wrapped_type<Self>>::type
-// >> {
-//     /// TODO: complicated.  Would involve an iterator implementation that initializes
-//     /// to the end iterator if the optional is None.
-// };
-
-
-template <impl::inherits<impl::OptionalTag> Self, typename Key>
-    requires (__contains__<impl::wrapped_type<Self>, Key>::enable)
-struct __contains__<Self, Key>                              : Returns<bool> {
-    static bool operator()(Self self, Key&& key) {
-        return
-            !self->m_value.is(None) &&
-            reinterpret_cast<impl::wrapped_type<Self>>(
-                std::forward<Self>(self)->m_value
-            ).contains(std::forward<Key>(key));
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> Self>
-    requires (__hash__<impl::wrapped_type<Self>>::enable)
-struct __hash__<Self>                                       : Returns<
-    typename __hash__<impl::wrapped_type<Self>>::type
-> {
-    using Return = __hash__<impl::wrapped_type<Self>>::type;
-    static Return operator()(Self self) {
-        if (self->m_value.is(None)) {
-            return hash(None);
-        } else {
-            return hash(
-                reinterpret_cast<impl::wrapped_type<Self>>(
-                    std::forward<Self>(self)->m_value
-                )
-            );
-        }
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> Self>
-    requires (__abs__<impl::wrapped_type<Self>>::enable)
-struct __abs__<Self>                                        : Returns<Optional<
-    typename __abs__<impl::wrapped_type<Self>>::type
->> {
-    using Return = __abs__<impl::wrapped_type<Self>>::type;
-    static Optional<Return> operator()(Self self) {
-        if (self->m_value.is(None)) {
-            return None;
-        } else {
-            return abs(
-                reinterpret_cast<impl::wrapped_type<Self>>(
-                    std::forward<Self>(self)->m_value
-                )
-            );
-        }
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> Self>
-    requires (__invert__<impl::wrapped_type<Self>>::enable)
-struct __invert__<Self>                                     : Returns<Optional<
-    typename __invert__<impl::wrapped_type<Self>>::type
->> {
-    using Return = __invert__<impl::wrapped_type<Self>>::type;
-    static Optional<Return> operator()(Self self) {
-        if (self->m_value.is(None)) {
-            return None;
-        } else {
-            return ~reinterpret_cast<impl::wrapped_type<Self>>(
-                std::forward<Self>(self)->m_value
-            );
-        }
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> Self>
-    requires (__pos__<impl::wrapped_type<Self>>::enable)
-struct __pos__<Self>                                        : Returns<Optional<
-    typename __pos__<impl::wrapped_type<Self>>::type
->> {
-    using Return = __pos__<impl::wrapped_type<Self>>::type;
-    static Optional<Return> operator()(Self self) {
-        if (self->m_value.is(None)) {
-            return None;
-        } else {
-            return +reinterpret_cast<impl::wrapped_type<Self>>(
-                std::forward<Self>(self)->m_value
-            );
-        }
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> Self>
-    requires (__neg__<impl::wrapped_type<Self>>::enable)
-struct __neg__<Self>                                        : Returns<Optional<
-    typename __neg__<impl::wrapped_type<Self>>::type
->> {
-    using Return = __neg__<impl::wrapped_type<Self>>::type;
-    static Optional<Return> operator()(Self self) {
-        if (self->m_value.is(None)) {
-            return None;
-        } else {
-            return -reinterpret_cast<impl::wrapped_type<Self>>(
-                std::forward<Self>(self)->m_value
-            );
-        }
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> Self>
-    requires (__increment__<impl::wrapped_type<Self>>::enable)
-struct __increment__<Self>                                  : Returns<Self> {
-    static Self operator()(Self self) {
-        if (!self->m_value.is(None)) {
-            ++reinterpret_cast<impl::wrapped_type<Self>>(
-                std::forward<Self>(self)->m_value
-            );
-        }
-        return std::forward<Self>(self);
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> Self>
-    requires (__decrement__<impl::wrapped_type<Self>>::enable)
-struct __decrement__<Self>                                  : Returns<Self> {
-    static Self operator()(Self self) {
-        if (!self->m_value.is(None)) {
-            --reinterpret_cast<impl::wrapped_type<Self>>(
-                std::forward<Self>(self)->m_value
-            );
-        }
-        return std::forward<Self>(self);
-    }
-};
-
-
-#define BINARY_OPERATOR(STRUCT, OP)                                                     \
-    template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R> \
-        requires (STRUCT<impl::wrapped_type<L>, impl::wrapped_type<R>>::enable)         \
-    struct STRUCT<L, R> : Returns<Optional<                                             \
-        typename STRUCT<impl::wrapped_type<L>, impl::wrapped_type<R>>::type             \
-    >> {                                                                                \
-        using Return = STRUCT<impl::wrapped_type<L>, impl::wrapped_type<R>>::type;      \
-        static Optional<Return> operator()(L lhs, R rhs) {                              \
-            if (lhs->m_value.is(None) || rhs->m_value.is(None)) {                       \
-                return None;                                                            \
-            } else {                                                                    \
-                return reinterpret_cast<impl::wrapped_type<L>>(                         \
-                    std::forward<L>(lhs)->m_value                                       \
-                ) OP reinterpret_cast<impl::wrapped_type<R>>(                           \
-                    std::forward<R>(rhs)->m_value                                       \
-                );                                                                      \
-            }                                                                           \
-        }                                                                               \
-    };                                                                                  \
-    template <impl::inherits<impl::OptionalTag> L, typename R>                          \
-        requires (                                                                      \
-            !impl::inherits<R, impl::OptionalTag> &&                                    \
-            STRUCT<impl::wrapped_type<L>, R>::enable                                    \
-        )                                                                               \
-    struct STRUCT<L, R> : Returns<Optional<                                             \
-        typename STRUCT<impl::wrapped_type<L>, R>::type                                 \
-    >> {                                                                                \
-        using Return = STRUCT<impl::wrapped_type<L>, R>::type;                          \
-        static Optional<Return> operator()(L lhs, R rhs) {                              \
-            if (lhs->m_value.is(None)) {                                                \
-                return None;                                                            \
-            } else {                                                                    \
-                return reinterpret_cast<impl::wrapped_type<L>>(                         \
-                    std::forward<L>(lhs)->m_value                                       \
-                ) OP std::forward<R>(rhs);                                              \
-            }                                                                           \
-        }                                                                               \
-    };                                                                                  \
-    template <typename L, impl::inherits<impl::OptionalTag> R>                          \
-        requires (                                                                      \
-            !impl::inherits<L, impl::OptionalTag> &&                                    \
-            STRUCT<L, impl::wrapped_type<R>>::enable                                    \
-        )                                                                               \
-    struct STRUCT<L, R> : Returns<Optional<                                             \
-        typename STRUCT<L, impl::wrapped_type<R>>::type                                 \
-    >> {                                                                                \
-        using Return = STRUCT<L, impl::wrapped_type<R>>::type;                          \
-        static Optional<Return> operator()(L lhs, R rhs) {                              \
-            if (rhs->m_value.is(None)) {                                                \
-                return None;                                                            \
-            } else {                                                                    \
-                return std::forward<L>(lhs) OP reinterpret_cast<impl::wrapped_type<R>>( \
-                    std::forward<R>(rhs)->m_value                                       \
-                );                                                                      \
-            }                                                                           \
-        }                                                                               \
-    };
-
-
-#define INPLACE_OPERATOR(STRUCT, OP)                                                    \
-    template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R> \
-        requires (STRUCT<impl::wrapped_type<L>, impl::wrapped_type<R>>::enable)         \
-    struct STRUCT<L, R> : Returns<L> {                                                  \
-        static L operator()(L lhs, R rhs) {                                             \
-            if (!lhs->m_value.is(None) && !rhs->m_value.is(None)) {                     \
-                reinterpret_cast<impl::wrapped_type<L>>(                                \
-                    std::forward<L>(lhs)->m_value                                       \
-                ) OP reinterpret_cast<impl::wrapped_type<R>>(                           \
-                    std::forward<R>(rhs)->m_value                                       \
-                );                                                                      \
-            }                                                                           \
-            return std::forward<L>(lhs);                                                \
-        }                                                                               \
-    };                                                                                  \
-    template <impl::inherits<impl::OptionalTag> L, typename R>                          \
-        requires (                                                                      \
-            !impl::inherits<R, impl::OptionalTag> &&                                    \
-            STRUCT<impl::wrapped_type<L>, R>::enable                                    \
-        )                                                                               \
-    struct STRUCT<L, R> : Returns<L> {                                                  \
-        static L operator()(L lhs, R rhs) {                                             \
-            if (!lhs->m_value.is(None)) {                                               \
-                reinterpret_cast<impl::wrapped_type<L>>(                                \
-                    std::forward<L>(lhs)->m_value                                       \
-                ) OP std::forward<R>(rhs);                                              \
-            }                                                                           \
-            return std::forward<L>(lhs);                                                \
-        }                                                                               \
-    };
-
-
-BINARY_OPERATOR(__lt__, <)
-BINARY_OPERATOR(__le__, <=)
-BINARY_OPERATOR(__eq__, ==)
-BINARY_OPERATOR(__ne__, !=)
-BINARY_OPERATOR(__ge__, >=)
-BINARY_OPERATOR(__gt__, <)
-BINARY_OPERATOR(__add__, +)
-BINARY_OPERATOR(__sub__, -)
-BINARY_OPERATOR(__mul__, *)
-BINARY_OPERATOR(__truediv__, /)
-BINARY_OPERATOR(__mod__, %)
-BINARY_OPERATOR(__lshift__, <<)
-BINARY_OPERATOR(__rshift__, >>)
-BINARY_OPERATOR(__and__, &)
-BINARY_OPERATOR(__or__, |)
-BINARY_OPERATOR(__xor__, ^)
-INPLACE_OPERATOR(__iadd__, +=)
-INPLACE_OPERATOR(__isub__, -=)
-INPLACE_OPERATOR(__imul__, *=)
-INPLACE_OPERATOR(__itruediv__, /=)
-INPLACE_OPERATOR(__imod__, %=)
-INPLACE_OPERATOR(__ilshift__, <<=)
-INPLACE_OPERATOR(__irshift__, >>=)
-INPLACE_OPERATOR(__iand__, &=)
-INPLACE_OPERATOR(__ior__, |=)
-INPLACE_OPERATOR(__ixor__, ^=)
-
-
-#undef BINARY_OPERATOR
-#undef INPLACE_OPERATOR
-
-
-template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R>
-    requires (__floordiv__<impl::wrapped_type<L>, impl::wrapped_type<R>>::enable)
-struct __floordiv__<L, R> : Returns<Optional<
-    typename __floordiv__<impl::wrapped_type<L>, impl::wrapped_type<R>>::type
->> {
-    using Return = __floordiv__<impl::wrapped_type<L>, impl::wrapped_type<R>>::type;
-    static Optional<Return> operator()(L lhs, R rhs) {
-        if (lhs->m_value.is(None) || rhs->m_value.is(None)) {
-            return None;
-        } else {
-            return floordiv(
-                reinterpret_cast<impl::wrapped_type<L>>(
-                    std::forward<L>(lhs)->m_value
-                ),
-                reinterpret_cast<impl::wrapped_type<R>>(
-                    std::forward<R>(rhs)->m_value
-                )
-            );
-        }
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> L, typename R>
-    requires (
-        !impl::inherits<impl::OptionalTag, R> &&
-        __floordiv__<impl::wrapped_type<L>, R>::enable
-    )
-struct __floordiv__<L, R> : Returns<Optional<
-    typename __floordiv__<impl::wrapped_type<L>, R>::type
->> {
-    using Return = __floordiv__<impl::wrapped_type<L>, R>::type;
-    static Optional<Return> operator()(L lhs, R rhs) {
-        if (lhs->m_value.is(None)) {
-            return None;
-        } else {
-            return floordiv(
-                reinterpret_cast<impl::wrapped_type<L>>(
-                    std::forward<L>(lhs)->m_value
-                ),
-                std::forward<R>(rhs)
-            );
-        }
-    }
-};
-
-
-template <typename L, impl::inherits<impl::OptionalTag> R>
-    requires (
-        !impl::inherits<impl::OptionalTag, L> &&
-        __floordiv__<L, impl::wrapped_type<R>>::enable
-    )
-struct __floordiv__<L, R> : Returns<Optional<
-    typename __floordiv__<L, impl::wrapped_type<R>>::type
->> {
-    using Return = __floordiv__<L, impl::wrapped_type<R>>::type;
-    static Optional<Return> operator()(L lhs, R rhs) {
-        if (rhs->m_value.is(None)) {
-            return None;
-        } else {
-            return floordiv(
-                std::forward<L>(lhs),
-                reinterpret_cast<impl::wrapped_type<R>>(
-                    std::forward<R>(rhs)->m_value
-                )
-            );
-        }
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R>
-    requires (__ifloordiv__<impl::wrapped_type<L>, impl::wrapped_type<R>>::enable)
-struct __ifloordiv__<L, R> : Returns<L> {
-    static L operator()(L lhs, R rhs) {
-        if (!lhs->m_value.is(None) && !rhs->m_value.is(None)) {
-            ifloordiv(
-                reinterpret_cast<impl::wrapped_type<L>>(
-                    std::forward<L>(lhs)->m_value
-                ),
-                reinterpret_cast<impl::wrapped_type<R>>(
-                    std::forward<R>(rhs)->m_value
-                )
-            );
-        }
-        return std::forward<L>(lhs);
-    }
-};
-
-
-template <impl::inherits<impl::OptionalTag> L, typename R>
-    requires (
-        !impl::inherits<impl::OptionalTag, R> &&
-        __ifloordiv__<impl::wrapped_type<L>, R>::enable
-    )
-struct __ifloordiv__<L, R> : Returns<L> {
-    static L operator()(L lhs, R rhs) {
-        if (!lhs->m_value.is(None)) {
-            ifloordiv(
-                reinterpret_cast<impl::wrapped_type<L>>(
-                    std::forward<L>(lhs)->m_value
-                ),
-                std::forward<R>(rhs)
-            );
-        }
-        return std::forward<L>(lhs);
-    }
-};
-
-
-/////////////////////
-////    UNION    ////
-/////////////////////
-
-
-template <std::derived_from<Object>... Types>
-struct Union;
-
-
-namespace impl {
-    template <typename T>
-    struct VariantToUnion {
-        static constexpr bool enable = false;
-    };
-    template <std::convertible_to<Object>... Ts>
-    struct VariantToUnion<std::variant<Ts...>> {
-        static constexpr bool enable = true;
-        using type = Union<python_type<Ts>...>;
-    };
-}
-
-
-template <typename... Types>
-struct Interface<Union<Types...>> : impl::UnionTag {
-    using __wrapped__ = std::variant<Types...>;
-};
-template <typename... Types>
-struct Interface<Type<Union<Types...>>> : impl::UnionTag {
-    using __wrapped__ = std::variant<Types...>;
-};
-
-
-template <std::derived_from<Object>... Types>
-struct Union : Object, Interface<Union<Types...>> {
-    struct __python__ : def<__python__, Union>, PyObject {
-        static constexpr StaticStr __doc__ =
-R"doc()doc";
-
-        Object m_value;
-
-        __python__(const Object& value) : m_value(value) {}
-        __python__(Object&& value) : m_value(std::move(value)) {}
-
-        template <StaticStr ModName>
-        static Type<Union> __export__(Module<ModName>& mod);
-        static Type<Union> __import__();
-
-
-
-    };
-
     Union(PyObject* p, borrowed_t t) : Object(p, t) {}
     Union(PyObject* p, stolen_t t) : Object(p, t) {}
 
@@ -4080,15 +3799,207 @@ R"doc()doc";
 };
 
 
+template <typename... Ts>
+struct __template__<Union<Ts...>>                           : Returns<Object> {
+    static Object operator()() {
+        /// TODO: this would need some special handling for argument annotations
+        /// denoting structural fields, as well as a way to instantiate them
+        /// accordingly.
+        Object result = reinterpret_steal<Object>(PyTuple_Pack(
+            sizeof...(Ts),
+            ptr(Type<Ts>())...
+        ));
+        if (result.is(nullptr)) {
+            Exception::to_python();
+        }
+        return result;
+    }
+};
+
+
+/// TODO: __explicit_cast__ for union types.
+
+
+template <typename... Ts> requires (std::is_default_constructible_v<Ts> || ...)
+struct __init__<Union<Ts...>>                               : Returns<Union<Ts...>> {
+    template <size_t I, typename... Us>
+    static constexpr size_t idx = 0;
+    template <size_t I, typename U, typename... Us>
+    static constexpr size_t idx<I, U, Us...> =
+        std::is_default_constructible_v<U> ? 0 : idx<I + 1, Us...> + 1;
+
+    static Union<Ts...> operator()() {
+        return impl::construct<Union<Ts...>>(impl::unpack_type<idx<0, Ts...>>());
+    }
+};
+
+
+template <typename... Ts, typename... Args>
+    requires (sizeof...(Args) > 0 && (std::constructible_from<Ts, Args> || ...))
+struct __init__<Union<Ts...>, Args...>                      : Returns<Union<Ts...>> {
+    template <size_t I, typename... Us>
+    static constexpr size_t idx = 0;
+    template <size_t I, typename U, typename... Us>
+    static constexpr size_t idx<I, U, Us...> =
+        std::constructible_from<U, Args...> ? 0 : idx<I + 1, Us...> + 1;
+
+    static Union<Ts...> operator()(Args&&... args) {
+        return impl::construct<Union<Ts...>>(
+            impl::unpack_type<idx<0, Ts...>>(std::forward<Args>(args)...)
+        );
+    }
+};
+
+
+template <typename T, typename... Ts> requires (std::convertible_to<T, Ts> || ...)
+struct __cast__<T, Union<Ts...>>                            : Returns<Union<Ts...>> {
+    template <size_t I, typename... Us>
+    static constexpr size_t match_idx = 0;
+    template <size_t I, typename U, typename... Us>
+    static constexpr size_t match_idx<I, U, Us...> =
+        std::same_as<std::remove_cvref_t<T>, U> ? 0 : match_idx<I + 1, Us...> + 1;
+
+    template <size_t I, typename... Us>
+    static constexpr size_t convert_idx = 0;
+    template <size_t I, typename U, typename... Us>
+    static constexpr size_t convert_idx<I, U, Us...> =
+        std::convertible_to<T, U> ? 0 : convert_idx<I + 1, Us...> + 1;
+
+    static Union<Ts...> operator()(T value) {
+        if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
+            return impl::construct<Union<Ts...>>(
+                impl::unpack_type<match_idx<0, Ts...>>(std::forward<T>(value))
+            );
+        } else {
+            return impl::construct<Union<Ts...>>(
+                impl::unpack_type<convert_idx<0, Ts...>>(std::forward<T>(value))
+            );
+        }
+    }
+};
+
+
+/// NOTE: implicit casts are also allowed to and from std::variant if all the types
+/// are compatible, as well as std::optional and pointer types if `NoneType` is
+/// present in the union.
+
+
 template <impl::is_variant T> requires (impl::VariantToUnion<T>::enable)
 struct __cast__<T> : Returns<typename impl::VariantToUnion<T>::type> {};
+template <impl::is_optional T> requires (impl::has_python<impl::optional_type<T>>)
+struct __cast__<T> : Returns<
+    Optional<impl::python_type<std::remove_cv_t<impl::optional_type<T>>>>
+> {};
+template <impl::has_python T> requires (impl::python<T> || std::same_as<
+    std::remove_cv_t<T>,
+    impl::cpp_type<impl::python_type<std::remove_cv_t<T>>>
+>)
+struct __cast__<T*> : Returns<
+    Optional<impl::python_type<std::remove_cv_t<T>>>
+> {};
+template <impl::is_shared_ptr T> requires (impl::has_python<impl::shared_ptr_type<T>>)
+struct __cast__<T> : Returns<
+    Optional<impl::python_type<std::remove_cv_t<impl::shared_ptr_type<T>>>>
+> {};
+template <impl::is_unique_ptr T> requires (impl::has_python<impl::unique_ptr_type<T>>)
+struct __cast__<T> : Returns<
+    Optional<impl::python_type<std::remove_cv_t<impl::unique_ptr_type<T>>>>
+> {};
 
 
 template <impl::is_variant From, typename... Ts>
-    requires (impl::VariantToUnion<From>::enable)
+    requires (
+        impl::VariantToUnion<From>::enable &&
+        impl::VariantToUnion<From>::template convertible_to<Ts...>
+    )
 struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts...>> {
-    /// TODO: need to assert that the variant types are convertible to the union types
+    template <typename T>
+    struct convert {
+        static Union<Ts...> operator()(const T& value) {
+            return impl::construct<Union<Ts...>>(
+                impl::python_type<T>(value)
+            );
+        }
+        static Union<Ts...> operator()(T&& value) {
+            return impl::construct<Union<Ts...>>(
+                impl::python_type<T>(std::move(value))
+            );
+        }
+    };
+    struct Visitor : convert<Ts>... { using convert<Ts>::operator()...; };
+    static Union<Ts...> operator()(From value) {
+        return std::visit(Visitor{}, std::forward<From>(value));
+    }
 };
+
+
+template <impl::is_optional From, typename... Ts>
+    requires (
+        (std::same_as<NoneType, Ts> || ...) &&
+        (std::convertible_to<impl::optional_type<From>, Ts> || ...)
+    )
+struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts...>> {
+    using T = impl::optional_type<From>;
+
+    template <size_t I, typename... Us>
+    static constexpr size_t match_idx = 0;
+    template <size_t I, typename U, typename... Us>
+    static constexpr size_t match_idx<I, U, Us...> =
+        std::same_as<std::remove_cv_t<T>, U> ? 0 : match_idx<I + 1, Us...> + 1;
+
+    template <size_t I, typename... Us>
+    static constexpr size_t convert_idx = 0;
+    template <size_t I, typename U, typename... Us>
+    static constexpr size_t convert_idx<I, U, Us...> =
+        std::convertible_to<T, U> ? 0 : convert_idx<I + 1, Us...> + 1;
+
+    static Union<Ts...> operator()(From value) {
+        if (value.has_value()) {
+            if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
+                return impl::construct<Union<Ts...>>(
+                    impl::unpack_type<match_idx<0, Ts...>>(
+                        std::forward<From>(value).value()
+                    )
+                );
+            } else {
+                return impl::construct<Union<Ts...>>(
+                    impl::unpack_type<convert_idx<0, Ts...>>(
+                        std::forward<From>(value).value()
+                    )
+                );
+            }
+        } else {
+            return impl::construct<Union<Ts...>>(None);
+        }
+    }
+};
+
+
+/// TODO: remaining operators should return further variants for all of the constituent
+/// types that support the given operation, with
+
+
+inline void test() {
+    auto y = NotImplemented;
+    Union x = y;
+}
+
+
+
+////////////////////////////
+////    INTERSECTION    ////
+////////////////////////////
+
+
+/// TODO: a class which accepts a variadic number of `py::Arg` objects as template
+/// parameters, and forces the underlying object to implement the corresponding
+/// methods.  It can forward attribute access for that particular method, and is
+/// also used to implement the intersection types that are exposed to python via the
+/// & operator.
+
+
+/// TODO: perhaps this can also accept normal types with the same semantics, and
+/// I would just account for the extra syntax in the template subscription function.
 
 
 }

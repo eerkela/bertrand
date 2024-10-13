@@ -261,7 +261,7 @@ protected:
 
     template <std::derived_from<Object> T, typename... Args>
     explicit Object(implicit_ctor<T>, Args&&... args) : m_ptr(release((
-        Interpreter::init(),  // comma operator
+        impl::Interpreter::init(),  // comma operator
         implicit_ctor<T>{}(std::forward<Args>(args)...)
     ))) {
         using Return = std::invoke_result_t<__init__<T, Args...>, Args...>;
@@ -273,7 +273,7 @@ protected:
 
     template <std::derived_from<Object> T, typename... Args>
     explicit Object(explicit_ctor<T>, Args&&... args) : m_ptr(release((
-        Interpreter::init(),  // comma operator
+        impl::Interpreter::init(),  // comma operator
         explicit_ctor<T>{}(std::forward<Args>(args)...)
     ))) {
         using Return = std::invoke_result_t<explicit_ctor<T>, Args...>;

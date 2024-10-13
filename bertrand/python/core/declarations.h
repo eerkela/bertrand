@@ -165,40 +165,39 @@ namespace impl {
         return first;
     }
 
+    /* A static RAII guard that initializes the Python interpreter the first time a Python
+    object is created and finalizes it when the program exits. */
+    struct Interpreter : impl::BertrandTag {
+
+        /* Ensure that the interpreter is active within the given context.  This is
+        called internally whenever a Python object is created from pure C++ inputs, and is
+        not called in any other context in order to avoid unnecessary overhead.  It must be
+        implemented as a function in order to avoid C++'s static initialization order
+        fiasco. */
+        static const Interpreter& init() {
+            static Interpreter instance{};
+            return instance;
+        }
+
+        Interpreter(const Interpreter&) = delete;
+        Interpreter(Interpreter&&) = delete;
+
+    private:
+
+        Interpreter() {
+            if (!Py_IsInitialized()) {
+                Py_Initialize();
+            }
+        }
+
+        ~Interpreter() {
+            if (Py_IsInitialized()) {
+                Py_Finalize();
+            }
+        }
+    };
+
 }
-
-
-/* A static RAII guard that initializes the Python interpreter the first time a Python
-object is created and finalizes it when the program exits. */
-struct Interpreter : impl::BertrandTag {
-
-    /* Ensure that the interpreter is active within the given context.  This is
-    called internally whenever a Python object is created from pure C++ inputs, and is
-    not called in any other context in order to avoid unnecessary overhead.  It must be
-    implemented as a function in order to avoid C++'s static initialization order
-    fiasco. */
-    static const Interpreter& init() {
-        static Interpreter instance{};
-        return instance;
-    }
-
-    Interpreter(const Interpreter&) = delete;
-    Interpreter(Interpreter&&) = delete;
-
-private:
-
-    Interpreter() {
-        if (!Py_IsInitialized()) {
-            Py_Initialize();
-        }
-    }
-
-    ~Interpreter() {
-        if (Py_IsInitialized()) {
-            Py_Finalize();
-        }
-    }
-};
 
 
 /// TODO: really, what I should do is remove as many of the following forward
@@ -2450,17 +2449,6 @@ namespace impl {
     decltype(auto) implicit_cast(U&& value) {
         return std::forward<U>(value);
     }
-
-    /* A convenience class that stores a static Python string for use during attr
-    lookups.  Using this class ensures that only one string is allocated per attribute
-    name, even if that name is repeated across multiple contexts. */
-    template <StaticStr name>
-    struct TemplateString : BertrandTag {
-        inline static PyObject* ptr = (Interpreter::init(), PyUnicode_FromStringAndSize(
-            name,
-            name.size()
-        ));  // NOTE: string will be garbage collected at shutdown
-    };
 
     template <typename L, typename R>
     concept is = std::same_as<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;

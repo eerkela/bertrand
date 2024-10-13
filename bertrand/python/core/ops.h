@@ -190,10 +190,15 @@ template <StaticStr Name, typename Self>
         return __getattr__<Self, Name>{}(std::forward<Self>(self));
 
     } else {
+        PyObject* name = PyUnicode_FromStringAndSize(Name, Name.size());
+        if (name == nullptr) {
+            Exception::from_python();
+        }
         PyObject* result = PyObject_GetAttr(
             ptr(to_python(std::forward<Self>(self))),
-            impl::TemplateString<Name>::ptr
+            name
         );
+        Py_DECREF(name);
         if (result == nullptr) {
             Exception::from_python();
         }
@@ -222,10 +227,15 @@ template <StaticStr Name, typename Self>
         return __getattr__<Self, Name>{}(std::forward<Self>(self), default_value);
 
     } else {
+        PyObject* name = PyUnicode_FromStringAndSize(Name, Name.size());
+        if (name == nullptr) {
+            Exception::from_python();
+        }
         PyObject* result = PyObject_GetAttr(
             ptr(to_python(std::forward<Self>(self))),
-            impl::TemplateString<Name>::ptr
+            name
         );
+        Py_DECREF(name);
         if (result == nullptr) {
             PyErr_Clear();
             return default_value;
@@ -248,11 +258,17 @@ void setattr(Self&& self, Value&& value) {
         );
 
     } else {
-        if (PyObject_SetAttr(
+        PyObject* name = PyUnicode_FromStringAndSize(Name, Name.size());
+        if (name == nullptr) {
+            Exception::from_python();
+        }
+        int rc = PyObject_SetAttr(
             ptr(to_python(std::forward<Self>(self))),
-            impl::TemplateString<Name>::ptr,
+            name,
             ptr(to_python(std::forward<Value>(value)))
-        ) < 0) {
+        );
+        Py_DECREF(name);
+        if (rc) {
             Exception::from_python();
         }
     }
@@ -269,10 +285,16 @@ void delattr(Self&& self) {
         __delattr__<Self, Name>{}(std::forward<Self>(self));
 
     } else {
-        if (PyObject_DelAttr(
+        PyObject* name = PyUnicode_FromStringAndSize(Name, Name.size());
+        if (name == nullptr) {
+            Exception::from_python();
+        }
+        int rc = PyObject_DelAttr(
             ptr(to_python(std::forward<Self>(self))),
-            impl::TemplateString<Name>::ptr) < 0
-        ) {
+            name
+        );
+        Py_DECREF(name);
+        if (rc) {
             Exception::from_python();
         }
     }
