@@ -1650,843 +1650,384 @@ template <impl::python Self, typename Func>
 /// types?
 
 
-// ////////////////////////
-// ////    OPTIONAL    ////
-// ////////////////////////
-
-
-// /// TODO: not sure if type checks are being handled correctly, and it might be a good use
-// /// case for specialization of `isinstance<>`, etc. based on the derived class rather
-// /// than (or perhaps in addition to) the base class.  This will require a fair bit of
-// /// thinking to get right, and it has to be applied to Object and other dynamic types
-// /// as well.
-
-
-// template <impl::inherits<impl::OptionalTag> Derived, typename Base>
-//     requires (__isinstance__<impl::wrapped_type<Derived>, Base>::enable)
-// struct __isinstance__<Derived, Base>                        : Returns<bool> {
-//     static constexpr bool operator()(Derived obj) {
-//         if (obj->m_value.is(None)) {
-//             return impl::is<Base, NoneType>;
-//         } else {
-//             return isinstance<Base>(
-//                 reinterpret_cast<impl::wrapped_type<Derived>>(
-//                     std::forward<Derived>(obj)->m_value
-//                 )
-//             );
-//         }
-//     }
-//     template <typename T = impl::wrapped_type<Derived>>
-//         requires (std::is_invocable_v<__isinstance__<T, Base>, T, Base>)
-//     static constexpr bool operator()(Derived obj, Base&& base) {
-//         if (obj->m_value.is(None)) {
-//             return false;  /// TODO: ???
-//         } else {
-//             return isinstance(
-//                 reinterpret_cast<impl::wrapped_type<Derived>>(
-//                     std::forward<Derived>(obj)->m_value
-//                 ),
-//                 std::forward<Base>(base)
-//             );
-//         }
-//     }
-// };
-
-
-// template <typename Derived, impl::inherits<impl::OptionalTag> Base>
-//     requires (
-//         __issubclass__<Derived, impl::wrapped_type<Base>>::enable &&
-//         !impl::inherits<Derived, impl::OptionalTag>
-//     )
-// struct __isinstance__<Derived, Base>                         : Returns<bool> {
-//     static constexpr bool operator()(Derived&& obj) {
-//         if constexpr (impl::dynamic<Derived>) {
-//             return
-//                 obj.is(None) ||
-//                 isinstance<impl::wrapped_type<Base>>(std::forward<Derived>(obj));
-//         } else {
-//             return
-//                 impl::none_like<Derived> ||
-//                 isinstance<impl::wrapped_type<Base>>(std::forward<Derived>(obj));
-//         }
-//     }
-//     template <typename T = impl::wrapped_type<Base>>
-//         requires (std::is_invocable_v<__isinstance__<Derived, T>, Derived, T>)
-//     static constexpr bool operator()(Derived&& obj, Base base) {
-//         if (base->m_value.is(None)) {
-//             return false;  /// TODO: ???
-//         } else {
-//             return isinstance(
-//                 std::forward<Derived>(obj),
-//                 reinterpret_cast<impl::wrapped_type<Derived>>(
-//                     std::forward<Base>(base)->m_value
-//                 )
-//             );
-//         }
-//     }
-// };
-
-
-
-
-
-// template <typename Derived, impl::inherits<impl::OptionalTag> Base>
-// struct __issubclass__<Derived, Base>                         : Returns<bool> {
-//     using Wrapped = std::remove_reference_t<Base>::__wrapped__;
-//     static constexpr bool operator()() {
-//         return impl::none_like<Derived> || issubclass<Derived, Wrapped>();
-//     }
-//     template <typename T = Wrapped>
-//         requires (std::is_invocable_v<__issubclass__<Derived, T>, Derived>)
-//     static constexpr bool operator()(Derived&& obj) {
-//         if constexpr (impl::dynamic<Derived>) {
-//             return
-//                 obj.is(None) ||
-//                 issubclass<Wrapped>(std::forward<Derived>(obj));
-//         } else {
-//             return
-//                 impl::none_like<Derived> ||
-//                 issubclass<Wrapped>(std::forward<Derived>(obj));
-//         }
-//     }
-//     template <typename T = Wrapped>
-//         requires (std::is_invocable_v<__issubclass__<Derived, T>, Derived, T>)
-//     static constexpr bool operator()(Derived&& obj, Base base) {
-//         if (base.is(None)) {
-//             return false;
-//         } else {
-//             return issubclass(std::forward<Derived>(obj), base.value());
-//         }
-//     }
-// };
-
-
-// /// NOTE: constructors are forwarded to the underlying object, except for the default
-// /// constructor, which initializes to None.
-
-
-// template <typename T> requires (__initializer__<T>::enable)
-// struct __initializer__<Optional<T>> : Returns<typename __initializer__<T>::type> {
-//     using Element = __initializer__<T>::type;
-//     static Optional<T> operator()(const std::initializer_list<Element>& init) {
-//         return T(init);
-//     }
-// };
-
-
-// template <typename T>
-// struct __init__<Optional<T>>                                : Returns<Optional<T>> {
-//     static Optional<T> operator()() {
-//         return impl::construct<Optional<T>>(None);
-//     }
-// };
-
-
-// template <typename T, typename... Args>
-//     requires ((sizeof...(Args) > 0) && std::constructible_from<T, Args...>)
-// struct __init__<Optional<T>, Args...>                       : Returns<Optional<T>> {
-//     static Optional<T> operator()(Args&&... args) {
-//         return impl::construct<Optional<T>>(T(std::forward<Args>(args)...));
-//     }
-// };
-
-
-// /* Casting from None is the same as calling the default constructor. */
-// template <impl::is<NoneType> From, typename To>
-// struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
-//     static Optional<To> operator()(From&&) {
-//         return impl::construct<Optional<To>>(None);
-//     }
-// };
-
-
-// /* Implicitly cast a non-empty input into the underlying type if possible. */
-// template <typename From, typename To>
-//     requires (!impl::is<From, NoneType> && std::convertible_to<From, To>)
-// struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
-//     static Optional<To> operator()(From&& from) {
-//         return impl::construct<Optional<To>>(To(std::forward<From>(from)));
-//     }
-// };
-
-
-// /// NOTE: implicit casts are also allowed to and from std::optional, pointers, and
-// /// smart pointers, as long as the underlying types are convertible. 
-
-
-// template <impl::is_optional T> requires (__cast__<impl::optional_type<T>>::enable)
-// struct __cast__<T> : Returns<Optional<typename __cast__<impl::optional_type<T>>::type>> {};
-// template <std::convertible_to<Object> T>
-// struct __cast__<T*> : Returns<Optional<obj<T>>> {};
-// template <impl::is_shared_ptr T> requires (std::convertible_to<impl::shared_ptr_type<T>, Object>)
-// struct __cast__<T> : Returns<Optional<obj<impl::shared_ptr_type<T>>>> {};
-// template <impl::is_unique_ptr T> requires (std::convertible_to<impl::unique_ptr_type<T>, Object>)
-// struct __cast__<T> : Returns<Optional<obj<impl::unique_ptr_type<T>>>> {};
-
-
-// template <impl::is_optional From, typename To>
-//     requires (std::convertible_to<impl::optional_type<From>, To>)
-// struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
-//     static Optional<To> operator()(From from) {
-//         if (!from.has_value()) {
-//             return None;
-//         } else {
-//             if constexpr (std::is_lvalue_reference_v<From>) {
-//                 return To(from.value());
-//             } else {
-//                 return To(std::move(from.value()));
-//             }
-//         }
-//     }
-// };
-
-
-// template <impl::is_ptr From, typename To>
-//     requires (std::convertible_to<impl::ptr_type<From>, To>)
-// struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
-//     static Optional<To> operator()(From from) {
-//         if (from == nullptr) {
-//             return None;
-//         } else {
-//             return To(*from);
-//         }
-//     }
-// };
-
-
-// template <impl::is_shared_ptr From, typename To>
-//     requires (std::convertible_to<impl::shared_ptr_type<From>, To>)
-// struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
-//     static Optional<To> operator()(From&& from) {
-//         if (from == nullptr) {
-//             return None;
-//         } else {
-//             return To(*from);
-//         }
-//     }
-// };
-
-
-// template <impl::is_unique_ptr From, typename To>
-//     requires (std::convertible_to<impl::unique_ptr_type<From>, To>)
-// struct __cast__<From, Optional<To>>                         : Returns<Optional<To>> {
-//     static Optional<To> operator()(From&& from) {
-//         if (from == nullptr) {
-//             return None;
-//         } else {
-//             return To(*from);
-//         }
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> From, typename To>
-//     requires (std::convertible_to<impl::wrapped_type<From>, To>)
-// struct __cast__<From, std::optional<To>>                    : Returns<std::optional<To>> {
-//     static std::optional<To> operator()(From from) {
-//         if (from->m_value.is(None)) {
-//             return std::nullopt;
-//         } else {
-//             return To(
-//                 reinterpret_cast<impl::wrapped_type<From>>(
-//                     std::forward<From>(from)->m_value
-//                 )
-//             );
-//         }
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> From, typename To>
-//     requires (std::same_as<
-//         std::remove_cv_t<To>,
-//         typename std::remove_cvref_t<From>::__wrapped__
-//     >)
-// struct __cast__<From, To*>                                  : Returns<To*> {
-//     static To* operator()(From from) {
-//         if (from->m_value.is(None)) {
-//             return nullptr;
-//         } else {
-//             return &reinterpret_cast<To&>(from->m_value);
-//         }
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> From, typename To>
-//     requires (std::convertible_to<impl::wrapped_type<From>, To>)
-// struct __cast__<From, std::shared_ptr<To>>                  : Returns<std::shared_ptr<To>> {
-//     static std::shared_ptr<To> operator()(From from) {
-//         if (from->m_value.is(None)) {
-//             return nullptr;
-//         } else {
-//             return std::make_shared<To>(
-//                 reinterpret_cast<impl::wrapped_type<From>>(
-//                     std::forward<From>(from)->m_value
-//                 )
-//             );
-//         }
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> From, typename To>
-//     requires (std::convertible_to<impl::wrapped_type<From>, To>)
-// struct __cast__<From, std::unique_ptr<To>>                  : Returns<std::unique_ptr<To>> {
-//     static std::unique_ptr<To> operator()(From from) {
-//         if (from->m_value.is(None)) {
-//             return nullptr;
-//         } else {
-//             return std::make_unique<To>(
-//                 reinterpret_cast<impl::wrapped_type<From>>(
-//                     std::forward<From>(from)->m_value
-//                 )
-//             );
-//         }
-//     }
-// };
-
-
-// /// NOTE: all other operations are monadic
-
-
-// template <impl::inherits<impl::OptionalTag> Self, StaticStr Name>
-//     requires (__getattr__<impl::wrapped_type<Self>, Name>::enable)
-// struct __getattr__<Self, Name>                              : Returns<Optional<
-//     typename __getattr__<impl::wrapped_type<Self>, Name>::type
-// >> {
-//     using Return = __getattr__<impl::wrapped_type<Self>, Name>::type;
-//     static Optional<Return> operator()(Self self) {
-//         if (self->m_value.is(None)) {
-//             return None;
-//         } else {
-//             return getattr<Name>(
-//                 reinterpret_cast<impl::wrapped_type<Self>>(
-//                     std::forward<Self>(self)->m_value
-//                 )
-//             );
-//         }
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> Self, StaticStr Name, typename Value>
-//     requires (__setattr__<impl::wrapped_type<Self>, Name, Value>::enable)
-// struct __setattr__<Self, Name, Value>             : Returns<void> {
-//     static void operator()(Self self, Value&& value) {
-//         if (!self->m_value.is(None)) {
-//             setattr<Name>(
-//                 reinterpret_cast<impl::wrapped_type<Self>>(
-//                     std::forward<Self>(self)->m_value
-//                 ),
-//                 std::forward<Value>(value)
-//             );
-//         }
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> Self, StaticStr Name>
-//     requires (__delattr__<impl::wrapped_type<Self>, Name>::enable)
-// struct __delattr__<Self, Name>                              : Returns<void> {
-//     static void operator()(Self self) {
-//         if (!self->m_value.is(None)) {
-//             delattr<Name>(
-//                 reinterpret_cast<impl::wrapped_type<Self>>(
-//                     std::forward<Self>(self)->m_value
-//                 )
-//             );
-//         }
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> Self>
-//     requires (__repr__<impl::wrapped_type<Self>>::enable)
-// struct __repr__<Self>                                       : Returns<Str> {
-//     static std::string operator()(Self self) {
-//         if (self->m_value.is(None)) {
-//             return repr(None);
-//         } else {
-//             return repr(
-//                 reinterpret_cast<impl::wrapped_type<Self>>(
-//                     std::forward<Self>(self)->m_value
-//                 )
-//             );
-//         }
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> Self, typename... Args>
-//     requires (__call__<impl::wrapped_type<Self>,Args...>::enable)
-// struct __call__<Self, Args...>                              : Returns<Optional<
-//     typename __call__<impl::wrapped_type<Self>, Args...>::type
-// >> {
-//     using Return = __call__<impl::wrapped_type<Self>, Args...>::type;
-//     static Optional<Return> operator()(Self self, Args&&... args) {
-//         if (self->m_value.is(None)) {
-//             return None;
-//         } else {
-//             return reinterpret_cast<impl::wrapped_type<Self>>(
-//                 std::forward<Self>(self)->m_value
-//             )(std::forward<Args>(args)...);
-//         }
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> Self, typename... Key>
-//     requires (__getitem__<impl::wrapped_type<Self>, Key...>::enable)
-// struct __getitem__<Self, Key...>                             : Returns<Optional<
-//     typename __getitem__<impl::wrapped_type<Self>, Key...>::type
-// >> {
-//     using Return = __getitem__<impl::wrapped_type<Self>, Key...>::type;
-//     static Optional<Return> operator()(Self self, Key&&... key) {
-//         if (self->m_value.is(None)) {
-//             return None;
-//         } else {
-//             return reinterpret_cast<impl::wrapped_type<Self>>(
-//                 std::forward<Self>(self)->m_value
-//             )[std::forward<Key>(key)...];
-//         }
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> Self, typename Value, typename... Key>
-//     requires (__setitem__<impl::wrapped_type<Self>, Value, Key...>::enable)
-// struct __setitem__<Self, Value, Key...>                         : Returns<void> {
-//     static void operator()(Self self, Value&& value, Key&&... key) {
-//         if (!self->m_value.is(None)) {
-//             reinterpret_cast<impl::wrapped_type<Self>>(
-//                 std::forward<Self>(self)->m_value
-//             )[std::forward<Key>(key)...] = std::forward<Value>(value);
-//         }
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> Self, typename... Key>
-//     requires (__delitem__<impl::wrapped_type<Self>, Key...>::enable)
-// struct __delitem__<Self, Key...>                               : Returns<void> {
-//     static void operator()(Self self, Key&&... key) {
-//         if (!self->m_value.is(None)) {
-//             del(
-//                 reinterpret_cast<impl::wrapped_type<Self>>(
-//                     std::forward<Self>(self)->m_value
-//                 )[std::forward<Key>(key)...]
-//             );
-//         }
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> Self>
-//     requires (__len__<impl::wrapped_type<Self>>::enable)
-// struct __len__<Self>                                        : Returns<Optional<
-//     typename __len__<impl::wrapped_type<Self>>::type
-// >> {
-//     using Return = __len__<impl::wrapped_type<Self>>::type;
-//     static Return operator()(Self self) {
-//         if (self->m_value.is(None)) {
-//             return 0;
-//         }
-//         return len(
-//             reinterpret_cast<impl::wrapped_type<Self>>(
-//                 std::forward<Self>(self)->m_value
-//             )
-//         );
-//     }
-// };
-
-
-// // template <impl::inherits<impl::OptionalTag> Self>
-// //     requires (__iter__<impl::wrapped_type<Self>>::enable)
-// // struct __iter__<Self>                                       : Returns<Optional<
-// //     typename __iter__<impl::wrapped_type<Self>>::type
-// // >> {
-// //     /// TODO: complicated.  Would involve an iterator implementation that initializes
-// //     /// to the end iterator if the optional is None.
-// // };
-
-
-// // template <impl::inherits<impl::OptionalTag> Self>
-// //     requires (__reversed__<impl::wrapped_type<Self>>::enable)
-// // struct __reversed__<Self>                                   : Returns<Optional<
-// //     typename __reversed__<impl::wrapped_type<Self>>::type
-// // >> {
-// //     /// TODO: complicated.  Would involve an iterator implementation that initializes
-// //     /// to the end iterator if the optional is None.
-// // };
-
-
-// template <impl::inherits<impl::OptionalTag> Self, typename Key>
-//     requires (__contains__<impl::wrapped_type<Self>, Key>::enable)
-// struct __contains__<Self, Key>                              : Returns<bool> {
-//     static bool operator()(Self self, Key&& key) {
-//         return
-//             !self->m_value.is(None) &&
-//             reinterpret_cast<impl::wrapped_type<Self>>(
-//                 std::forward<Self>(self)->m_value
-//             ).contains(std::forward<Key>(key));
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> Self>
-//     requires (__hash__<impl::wrapped_type<Self>>::enable)
-// struct __hash__<Self>                                       : Returns<
-//     typename __hash__<impl::wrapped_type<Self>>::type
-// > {
-//     using Return = __hash__<impl::wrapped_type<Self>>::type;
-//     static Return operator()(Self self) {
-//         if (self->m_value.is(None)) {
-//             return hash(None);
-//         } else {
-//             return hash(
-//                 reinterpret_cast<impl::wrapped_type<Self>>(
-//                     std::forward<Self>(self)->m_value
-//                 )
-//             );
-//         }
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> Self>
-//     requires (__abs__<impl::wrapped_type<Self>>::enable)
-// struct __abs__<Self>                                        : Returns<Optional<
-//     typename __abs__<impl::wrapped_type<Self>>::type
-// >> {
-//     using Return = __abs__<impl::wrapped_type<Self>>::type;
-//     static Optional<Return> operator()(Self self) {
-//         if (self->m_value.is(None)) {
-//             return None;
-//         } else {
-//             return abs(
-//                 reinterpret_cast<impl::wrapped_type<Self>>(
-//                     std::forward<Self>(self)->m_value
-//                 )
-//             );
-//         }
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> Self>
-//     requires (__invert__<impl::wrapped_type<Self>>::enable)
-// struct __invert__<Self>                                     : Returns<Optional<
-//     typename __invert__<impl::wrapped_type<Self>>::type
-// >> {
-//     using Return = __invert__<impl::wrapped_type<Self>>::type;
-//     static Optional<Return> operator()(Self self) {
-//         if (self->m_value.is(None)) {
-//             return None;
-//         } else {
-//             return ~reinterpret_cast<impl::wrapped_type<Self>>(
-//                 std::forward<Self>(self)->m_value
-//             );
-//         }
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> Self>
-//     requires (__pos__<impl::wrapped_type<Self>>::enable)
-// struct __pos__<Self>                                        : Returns<Optional<
-//     typename __pos__<impl::wrapped_type<Self>>::type
-// >> {
-//     using Return = __pos__<impl::wrapped_type<Self>>::type;
-//     static Optional<Return> operator()(Self self) {
-//         if (self->m_value.is(None)) {
-//             return None;
-//         } else {
-//             return +reinterpret_cast<impl::wrapped_type<Self>>(
-//                 std::forward<Self>(self)->m_value
-//             );
-//         }
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> Self>
-//     requires (__neg__<impl::wrapped_type<Self>>::enable)
-// struct __neg__<Self>                                        : Returns<Optional<
-//     typename __neg__<impl::wrapped_type<Self>>::type
-// >> {
-//     using Return = __neg__<impl::wrapped_type<Self>>::type;
-//     static Optional<Return> operator()(Self self) {
-//         if (self->m_value.is(None)) {
-//             return None;
-//         } else {
-//             return -reinterpret_cast<impl::wrapped_type<Self>>(
-//                 std::forward<Self>(self)->m_value
-//             );
-//         }
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> Self>
-//     requires (__increment__<impl::wrapped_type<Self>>::enable)
-// struct __increment__<Self>                                  : Returns<Self> {
-//     static Self operator()(Self self) {
-//         if (!self->m_value.is(None)) {
-//             ++reinterpret_cast<impl::wrapped_type<Self>>(
-//                 std::forward<Self>(self)->m_value
-//             );
-//         }
-//         return std::forward<Self>(self);
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> Self>
-//     requires (__decrement__<impl::wrapped_type<Self>>::enable)
-// struct __decrement__<Self>                                  : Returns<Self> {
-//     static Self operator()(Self self) {
-//         if (!self->m_value.is(None)) {
-//             --reinterpret_cast<impl::wrapped_type<Self>>(
-//                 std::forward<Self>(self)->m_value
-//             );
-//         }
-//         return std::forward<Self>(self);
-//     }
-// };
-
-
-// #define BINARY_OPERATOR(STRUCT, OP)                                                     \
-//     template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R> \
-//         requires (STRUCT<impl::wrapped_type<L>, impl::wrapped_type<R>>::enable)         \
-//     struct STRUCT<L, R> : Returns<Optional<                                             \
-//         typename STRUCT<impl::wrapped_type<L>, impl::wrapped_type<R>>::type             \
-//     >> {                                                                                \
-//         using Return = STRUCT<impl::wrapped_type<L>, impl::wrapped_type<R>>::type;      \
-//         static Optional<Return> operator()(L lhs, R rhs) {                              \
-//             if (lhs->m_value.is(None) || rhs->m_value.is(None)) {                       \
-//                 return None;                                                            \
-//             } else {                                                                    \
-//                 return reinterpret_cast<impl::wrapped_type<L>>(                         \
-//                     std::forward<L>(lhs)->m_value                                       \
-//                 ) OP reinterpret_cast<impl::wrapped_type<R>>(                           \
-//                     std::forward<R>(rhs)->m_value                                       \
-//                 );                                                                      \
-//             }                                                                           \
-//         }                                                                               \
-//     };                                                                                  \
-//     template <impl::inherits<impl::OptionalTag> L, typename R>                          \
-//         requires (                                                                      \
-//             !impl::inherits<R, impl::OptionalTag> &&                                    \
-//             STRUCT<impl::wrapped_type<L>, R>::enable                                    \
-//         )                                                                               \
-//     struct STRUCT<L, R> : Returns<Optional<                                             \
-//         typename STRUCT<impl::wrapped_type<L>, R>::type                                 \
-//     >> {                                                                                \
-//         using Return = STRUCT<impl::wrapped_type<L>, R>::type;                          \
-//         static Optional<Return> operator()(L lhs, R rhs) {                              \
-//             if (lhs->m_value.is(None)) {                                                \
-//                 return None;                                                            \
-//             } else {                                                                    \
-//                 return reinterpret_cast<impl::wrapped_type<L>>(                         \
-//                     std::forward<L>(lhs)->m_value                                       \
-//                 ) OP std::forward<R>(rhs);                                              \
-//             }                                                                           \
-//         }                                                                               \
-//     };                                                                                  \
-//     template <typename L, impl::inherits<impl::OptionalTag> R>                          \
-//         requires (                                                                      \
-//             !impl::inherits<L, impl::OptionalTag> &&                                    \
-//             STRUCT<L, impl::wrapped_type<R>>::enable                                    \
-//         )                                                                               \
-//     struct STRUCT<L, R> : Returns<Optional<                                             \
-//         typename STRUCT<L, impl::wrapped_type<R>>::type                                 \
-//     >> {                                                                                \
-//         using Return = STRUCT<L, impl::wrapped_type<R>>::type;                          \
-//         static Optional<Return> operator()(L lhs, R rhs) {                              \
-//             if (rhs->m_value.is(None)) {                                                \
-//                 return None;                                                            \
-//             } else {                                                                    \
-//                 return std::forward<L>(lhs) OP reinterpret_cast<impl::wrapped_type<R>>( \
-//                     std::forward<R>(rhs)->m_value                                       \
-//                 );                                                                      \
-//             }                                                                           \
-//         }                                                                               \
-//     };
-
-
-// #define INPLACE_OPERATOR(STRUCT, OP)                                                    \
-//     template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R> \
-//         requires (STRUCT<impl::wrapped_type<L>, impl::wrapped_type<R>>::enable)         \
-//     struct STRUCT<L, R> : Returns<L> {                                                  \
-//         static L operator()(L lhs, R rhs) {                                             \
-//             if (!lhs->m_value.is(None) && !rhs->m_value.is(None)) {                     \
-//                 reinterpret_cast<impl::wrapped_type<L>>(                                \
-//                     std::forward<L>(lhs)->m_value                                       \
-//                 ) OP reinterpret_cast<impl::wrapped_type<R>>(                           \
-//                     std::forward<R>(rhs)->m_value                                       \
-//                 );                                                                      \
-//             }                                                                           \
-//             return std::forward<L>(lhs);                                                \
-//         }                                                                               \
-//     };                                                                                  \
-//     template <impl::inherits<impl::OptionalTag> L, typename R>                          \
-//         requires (                                                                      \
-//             !impl::inherits<R, impl::OptionalTag> &&                                    \
-//             STRUCT<impl::wrapped_type<L>, R>::enable                                    \
-//         )                                                                               \
-//     struct STRUCT<L, R> : Returns<L> {                                                  \
-//         static L operator()(L lhs, R rhs) {                                             \
-//             if (!lhs->m_value.is(None)) {                                               \
-//                 reinterpret_cast<impl::wrapped_type<L>>(                                \
-//                     std::forward<L>(lhs)->m_value                                       \
-//                 ) OP std::forward<R>(rhs);                                              \
-//             }                                                                           \
-//             return std::forward<L>(lhs);                                                \
-//         }                                                                               \
-//     };
-
-
-// BINARY_OPERATOR(__lt__, <)
-// BINARY_OPERATOR(__le__, <=)
-// BINARY_OPERATOR(__eq__, ==)
-// BINARY_OPERATOR(__ne__, !=)
-// BINARY_OPERATOR(__ge__, >=)
-// BINARY_OPERATOR(__gt__, <)
-// BINARY_OPERATOR(__add__, +)
-// BINARY_OPERATOR(__sub__, -)
-// BINARY_OPERATOR(__mul__, *)
-// BINARY_OPERATOR(__truediv__, /)
-// BINARY_OPERATOR(__mod__, %)
-// BINARY_OPERATOR(__lshift__, <<)
-// BINARY_OPERATOR(__rshift__, >>)
-// BINARY_OPERATOR(__and__, &)
-// BINARY_OPERATOR(__or__, |)
-// BINARY_OPERATOR(__xor__, ^)
-// INPLACE_OPERATOR(__iadd__, +=)
-// INPLACE_OPERATOR(__isub__, -=)
-// INPLACE_OPERATOR(__imul__, *=)
-// INPLACE_OPERATOR(__itruediv__, /=)
-// INPLACE_OPERATOR(__imod__, %=)
-// INPLACE_OPERATOR(__ilshift__, <<=)
-// INPLACE_OPERATOR(__irshift__, >>=)
-// INPLACE_OPERATOR(__iand__, &=)
-// INPLACE_OPERATOR(__ior__, |=)
-// INPLACE_OPERATOR(__ixor__, ^=)
-
-
-// #undef BINARY_OPERATOR
-// #undef INPLACE_OPERATOR
-
-
-// template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R>
-//     requires (__floordiv__<impl::wrapped_type<L>, impl::wrapped_type<R>>::enable)
-// struct __floordiv__<L, R> : Returns<Optional<
-//     typename __floordiv__<impl::wrapped_type<L>, impl::wrapped_type<R>>::type
-// >> {
-//     using Return = __floordiv__<impl::wrapped_type<L>, impl::wrapped_type<R>>::type;
-//     static Optional<Return> operator()(L lhs, R rhs) {
-//         if (lhs->m_value.is(None) || rhs->m_value.is(None)) {
-//             return None;
-//         } else {
-//             return floordiv(
-//                 reinterpret_cast<impl::wrapped_type<L>>(
-//                     std::forward<L>(lhs)->m_value
-//                 ),
-//                 reinterpret_cast<impl::wrapped_type<R>>(
-//                     std::forward<R>(rhs)->m_value
-//                 )
-//             );
-//         }
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> L, typename R>
-//     requires (
-//         !impl::inherits<impl::OptionalTag, R> &&
-//         __floordiv__<impl::wrapped_type<L>, R>::enable
-//     )
-// struct __floordiv__<L, R> : Returns<Optional<
-//     typename __floordiv__<impl::wrapped_type<L>, R>::type
-// >> {
-//     using Return = __floordiv__<impl::wrapped_type<L>, R>::type;
-//     static Optional<Return> operator()(L lhs, R rhs) {
-//         if (lhs->m_value.is(None)) {
-//             return None;
-//         } else {
-//             return floordiv(
-//                 reinterpret_cast<impl::wrapped_type<L>>(
-//                     std::forward<L>(lhs)->m_value
-//                 ),
-//                 std::forward<R>(rhs)
-//             );
-//         }
-//     }
-// };
-
-
-// template <typename L, impl::inherits<impl::OptionalTag> R>
-//     requires (
-//         !impl::inherits<impl::OptionalTag, L> &&
-//         __floordiv__<L, impl::wrapped_type<R>>::enable
-//     )
-// struct __floordiv__<L, R> : Returns<Optional<
-//     typename __floordiv__<L, impl::wrapped_type<R>>::type
-// >> {
-//     using Return = __floordiv__<L, impl::wrapped_type<R>>::type;
-//     static Optional<Return> operator()(L lhs, R rhs) {
-//         if (rhs->m_value.is(None)) {
-//             return None;
-//         } else {
-//             return floordiv(
-//                 std::forward<L>(lhs),
-//                 reinterpret_cast<impl::wrapped_type<R>>(
-//                     std::forward<R>(rhs)->m_value
-//                 )
-//             );
-//         }
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R>
-//     requires (__ifloordiv__<impl::wrapped_type<L>, impl::wrapped_type<R>>::enable)
-// struct __ifloordiv__<L, R> : Returns<L> {
-//     static L operator()(L lhs, R rhs) {
-//         if (!lhs->m_value.is(None) && !rhs->m_value.is(None)) {
-//             ifloordiv(
-//                 reinterpret_cast<impl::wrapped_type<L>>(
-//                     std::forward<L>(lhs)->m_value
-//                 ),
-//                 reinterpret_cast<impl::wrapped_type<R>>(
-//                     std::forward<R>(rhs)->m_value
-//                 )
-//             );
-//         }
-//         return std::forward<L>(lhs);
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> L, typename R>
-//     requires (
-//         !impl::inherits<impl::OptionalTag, R> &&
-//         __ifloordiv__<impl::wrapped_type<L>, R>::enable
-//     )
-// struct __ifloordiv__<L, R> : Returns<L> {
-//     static L operator()(L lhs, R rhs) {
-//         if (!lhs->m_value.is(None)) {
-//             ifloordiv(
-//                 reinterpret_cast<impl::wrapped_type<L>>(
-//                     std::forward<L>(lhs)->m_value
-//                 ),
-//                 std::forward<R>(rhs)
-//             );
-//         }
-//         return std::forward<L>(lhs);
-//     }
-// };
+////////////////////////
+////    OPTIONAL    ////
+////////////////////////
+
+
+/// TODO: not sure if type checks are being handled correctly, and it might be a good use
+/// case for specialization of `isinstance<>`, etc. based on the derived class rather
+/// than (or perhaps in addition to) the base class.  This will require a fair bit of
+/// thinking to get right, and it has to be applied to Object and other dynamic types
+/// as well.
+
+
+template <impl::inherits<impl::OptionalTag> Derived, typename Base>
+    requires (__isinstance__<impl::wrapped_type<Derived>, Base>::enable)
+struct __isinstance__<Derived, Base>                        : Returns<bool> {
+    static constexpr bool operator()(Derived obj) {
+        if (obj->m_value.is(None)) {
+            return impl::is<Base, NoneType>;
+        } else {
+            return isinstance<Base>(
+                reinterpret_cast<impl::wrapped_type<Derived>>(
+                    std::forward<Derived>(obj)->m_value
+                )
+            );
+        }
+    }
+    template <typename T = impl::wrapped_type<Derived>>
+        requires (std::is_invocable_v<__isinstance__<T, Base>, T, Base>)
+    static constexpr bool operator()(Derived obj, Base&& base) {
+        if (obj->m_value.is(None)) {
+            return false;  /// TODO: ???
+        } else {
+            return isinstance(
+                reinterpret_cast<impl::wrapped_type<Derived>>(
+                    std::forward<Derived>(obj)->m_value
+                ),
+                std::forward<Base>(base)
+            );
+        }
+    }
+};
+
+
+template <typename Derived, impl::inherits<impl::OptionalTag> Base>
+    requires (
+        __issubclass__<Derived, impl::wrapped_type<Base>>::enable &&
+        !impl::inherits<Derived, impl::OptionalTag>
+    )
+struct __isinstance__<Derived, Base>                         : Returns<bool> {
+    static constexpr bool operator()(Derived&& obj) {
+        if constexpr (impl::dynamic<Derived>) {
+            return
+                obj.is(None) ||
+                isinstance<impl::wrapped_type<Base>>(std::forward<Derived>(obj));
+        } else {
+            return
+                impl::none_like<Derived> ||
+                isinstance<impl::wrapped_type<Base>>(std::forward<Derived>(obj));
+        }
+    }
+    template <typename T = impl::wrapped_type<Base>>
+        requires (std::is_invocable_v<__isinstance__<Derived, T>, Derived, T>)
+    static constexpr bool operator()(Derived&& obj, Base base) {
+        if (base->m_value.is(None)) {
+            return false;  /// TODO: ???
+        } else {
+            return isinstance(
+                std::forward<Derived>(obj),
+                reinterpret_cast<impl::wrapped_type<Derived>>(
+                    std::forward<Base>(base)->m_value
+                )
+            );
+        }
+    }
+};
+
+
+
+
+
+template <typename Derived, impl::inherits<impl::OptionalTag> Base>
+struct __issubclass__<Derived, Base>                         : Returns<bool> {
+    using Wrapped = std::remove_reference_t<Base>::__wrapped__;
+    static constexpr bool operator()() {
+        return impl::none_like<Derived> || issubclass<Derived, Wrapped>();
+    }
+    template <typename T = Wrapped>
+        requires (std::is_invocable_v<__issubclass__<Derived, T>, Derived>)
+    static constexpr bool operator()(Derived&& obj) {
+        if constexpr (impl::dynamic<Derived>) {
+            return
+                obj.is(None) ||
+                issubclass<Wrapped>(std::forward<Derived>(obj));
+        } else {
+            return
+                impl::none_like<Derived> ||
+                issubclass<Wrapped>(std::forward<Derived>(obj));
+        }
+    }
+    template <typename T = Wrapped>
+        requires (std::is_invocable_v<__issubclass__<Derived, T>, Derived, T>)
+    static constexpr bool operator()(Derived&& obj, Base base) {
+        if (base.is(None)) {
+            return false;
+        } else {
+            return issubclass(std::forward<Derived>(obj), base.value());
+        }
+    }
+};
+
+
+
+
+
+/// TODO: inplace operators need some special consideration when it comes to types
+
+
+
+
+template <impl::inherits<impl::OptionalTag> Self>
+    requires (__increment__<impl::wrapped_type<Self>>::enable)
+struct __increment__<Self>                                  : Returns<Self> {
+    static Self operator()(Self self) {
+        if (!self->m_value.is(None)) {
+            ++reinterpret_cast<impl::wrapped_type<Self>>(
+                std::forward<Self>(self)->m_value
+            );
+        }
+        return std::forward<Self>(self);
+    }
+};
+
+
+template <impl::inherits<impl::OptionalTag> Self>
+    requires (__decrement__<impl::wrapped_type<Self>>::enable)
+struct __decrement__<Self>                                  : Returns<Self> {
+    static Self operator()(Self self) {
+        if (!self->m_value.is(None)) {
+            --reinterpret_cast<impl::wrapped_type<Self>>(
+                std::forward<Self>(self)->m_value
+            );
+        }
+        return std::forward<Self>(self);
+    }
+};
+
+
+#define BINARY_OPERATOR(STRUCT, OP)                                                     \
+    template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R> \
+        requires (STRUCT<impl::wrapped_type<L>, impl::wrapped_type<R>>::enable)         \
+    struct STRUCT<L, R> : Returns<Optional<                                             \
+        typename STRUCT<impl::wrapped_type<L>, impl::wrapped_type<R>>::type             \
+    >> {                                                                                \
+        using Return = STRUCT<impl::wrapped_type<L>, impl::wrapped_type<R>>::type;      \
+        static Optional<Return> operator()(L lhs, R rhs) {                              \
+            if (lhs->m_value.is(None) || rhs->m_value.is(None)) {                       \
+                return None;                                                            \
+            } else {                                                                    \
+                return reinterpret_cast<impl::wrapped_type<L>>(                         \
+                    std::forward<L>(lhs)->m_value                                       \
+                ) OP reinterpret_cast<impl::wrapped_type<R>>(                           \
+                    std::forward<R>(rhs)->m_value                                       \
+                );                                                                      \
+            }                                                                           \
+        }                                                                               \
+    };                                                                                  \
+    template <impl::inherits<impl::OptionalTag> L, typename R>                          \
+        requires (                                                                      \
+            !impl::inherits<R, impl::OptionalTag> &&                                    \
+            STRUCT<impl::wrapped_type<L>, R>::enable                                    \
+        )                                                                               \
+    struct STRUCT<L, R> : Returns<Optional<                                             \
+        typename STRUCT<impl::wrapped_type<L>, R>::type                                 \
+    >> {                                                                                \
+        using Return = STRUCT<impl::wrapped_type<L>, R>::type;                          \
+        static Optional<Return> operator()(L lhs, R rhs) {                              \
+            if (lhs->m_value.is(None)) {                                                \
+                return None;                                                            \
+            } else {                                                                    \
+                return reinterpret_cast<impl::wrapped_type<L>>(                         \
+                    std::forward<L>(lhs)->m_value                                       \
+                ) OP std::forward<R>(rhs);                                              \
+            }                                                                           \
+        }                                                                               \
+    };                                                                                  \
+    template <typename L, impl::inherits<impl::OptionalTag> R>                          \
+        requires (                                                                      \
+            !impl::inherits<L, impl::OptionalTag> &&                                    \
+            STRUCT<L, impl::wrapped_type<R>>::enable                                    \
+        )                                                                               \
+    struct STRUCT<L, R> : Returns<Optional<                                             \
+        typename STRUCT<L, impl::wrapped_type<R>>::type                                 \
+    >> {                                                                                \
+        using Return = STRUCT<L, impl::wrapped_type<R>>::type;                          \
+        static Optional<Return> operator()(L lhs, R rhs) {                              \
+            if (rhs->m_value.is(None)) {                                                \
+                return None;                                                            \
+            } else {                                                                    \
+                return std::forward<L>(lhs) OP reinterpret_cast<impl::wrapped_type<R>>( \
+                    std::forward<R>(rhs)->m_value                                       \
+                );                                                                      \
+            }                                                                           \
+        }                                                                               \
+    };
+
+
+#define INPLACE_OPERATOR(STRUCT, OP)                                                    \
+    template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R> \
+        requires (STRUCT<impl::wrapped_type<L>, impl::wrapped_type<R>>::enable)         \
+    struct STRUCT<L, R> : Returns<L> {                                                  \
+        static L operator()(L lhs, R rhs) {                                             \
+            if (!lhs->m_value.is(None) && !rhs->m_value.is(None)) {                     \
+                reinterpret_cast<impl::wrapped_type<L>>(                                \
+                    std::forward<L>(lhs)->m_value                                       \
+                ) OP reinterpret_cast<impl::wrapped_type<R>>(                           \
+                    std::forward<R>(rhs)->m_value                                       \
+                );                                                                      \
+            }                                                                           \
+            return std::forward<L>(lhs);                                                \
+        }                                                                               \
+    };                                                                                  \
+    template <impl::inherits<impl::OptionalTag> L, typename R>                          \
+        requires (                                                                      \
+            !impl::inherits<R, impl::OptionalTag> &&                                    \
+            STRUCT<impl::wrapped_type<L>, R>::enable                                    \
+        )                                                                               \
+    struct STRUCT<L, R> : Returns<L> {                                                  \
+        static L operator()(L lhs, R rhs) {                                             \
+            if (!lhs->m_value.is(None)) {                                               \
+                reinterpret_cast<impl::wrapped_type<L>>(                                \
+                    std::forward<L>(lhs)->m_value                                       \
+                ) OP std::forward<R>(rhs);                                              \
+            }                                                                           \
+            return std::forward<L>(lhs);                                                \
+        }                                                                               \
+    };
+
+
+BINARY_OPERATOR(__lt__, <)
+BINARY_OPERATOR(__le__, <=)
+BINARY_OPERATOR(__eq__, ==)
+BINARY_OPERATOR(__ne__, !=)
+BINARY_OPERATOR(__ge__, >=)
+BINARY_OPERATOR(__gt__, <)
+BINARY_OPERATOR(__add__, +)
+BINARY_OPERATOR(__sub__, -)
+BINARY_OPERATOR(__mul__, *)
+BINARY_OPERATOR(__truediv__, /)
+BINARY_OPERATOR(__mod__, %)
+BINARY_OPERATOR(__lshift__, <<)
+BINARY_OPERATOR(__rshift__, >>)
+BINARY_OPERATOR(__and__, &)
+BINARY_OPERATOR(__or__, |)
+BINARY_OPERATOR(__xor__, ^)
+INPLACE_OPERATOR(__iadd__, +=)
+INPLACE_OPERATOR(__isub__, -=)
+INPLACE_OPERATOR(__imul__, *=)
+INPLACE_OPERATOR(__itruediv__, /=)
+INPLACE_OPERATOR(__imod__, %=)
+INPLACE_OPERATOR(__ilshift__, <<=)
+INPLACE_OPERATOR(__irshift__, >>=)
+INPLACE_OPERATOR(__iand__, &=)
+INPLACE_OPERATOR(__ior__, |=)
+INPLACE_OPERATOR(__ixor__, ^=)
+
+
+#undef BINARY_OPERATOR
+#undef INPLACE_OPERATOR
+
+
+template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R>
+    requires (__floordiv__<impl::wrapped_type<L>, impl::wrapped_type<R>>::enable)
+struct __floordiv__<L, R> : Returns<Optional<
+    typename __floordiv__<impl::wrapped_type<L>, impl::wrapped_type<R>>::type
+>> {
+    using Return = __floordiv__<impl::wrapped_type<L>, impl::wrapped_type<R>>::type;
+    static Optional<Return> operator()(L lhs, R rhs) {
+        if (lhs->m_value.is(None) || rhs->m_value.is(None)) {
+            return None;
+        } else {
+            return floordiv(
+                reinterpret_cast<impl::wrapped_type<L>>(
+                    std::forward<L>(lhs)->m_value
+                ),
+                reinterpret_cast<impl::wrapped_type<R>>(
+                    std::forward<R>(rhs)->m_value
+                )
+            );
+        }
+    }
+};
+
+
+template <impl::inherits<impl::OptionalTag> L, typename R>
+    requires (
+        !impl::inherits<impl::OptionalTag, R> &&
+        __floordiv__<impl::wrapped_type<L>, R>::enable
+    )
+struct __floordiv__<L, R> : Returns<Optional<
+    typename __floordiv__<impl::wrapped_type<L>, R>::type
+>> {
+    using Return = __floordiv__<impl::wrapped_type<L>, R>::type;
+    static Optional<Return> operator()(L lhs, R rhs) {
+        if (lhs->m_value.is(None)) {
+            return None;
+        } else {
+            return floordiv(
+                reinterpret_cast<impl::wrapped_type<L>>(
+                    std::forward<L>(lhs)->m_value
+                ),
+                std::forward<R>(rhs)
+            );
+        }
+    }
+};
+
+
+template <typename L, impl::inherits<impl::OptionalTag> R>
+    requires (
+        !impl::inherits<impl::OptionalTag, L> &&
+        __floordiv__<L, impl::wrapped_type<R>>::enable
+    )
+struct __floordiv__<L, R> : Returns<Optional<
+    typename __floordiv__<L, impl::wrapped_type<R>>::type
+>> {
+    using Return = __floordiv__<L, impl::wrapped_type<R>>::type;
+    static Optional<Return> operator()(L lhs, R rhs) {
+        if (rhs->m_value.is(None)) {
+            return None;
+        } else {
+            return floordiv(
+                std::forward<L>(lhs),
+                reinterpret_cast<impl::wrapped_type<R>>(
+                    std::forward<R>(rhs)->m_value
+                )
+            );
+        }
+    }
+};
+
+
+template <impl::inherits<impl::OptionalTag> L, impl::inherits<impl::OptionalTag> R>
+    requires (__ifloordiv__<impl::wrapped_type<L>, impl::wrapped_type<R>>::enable)
+struct __ifloordiv__<L, R> : Returns<L> {
+    static L operator()(L lhs, R rhs) {
+        if (!lhs->m_value.is(None) && !rhs->m_value.is(None)) {
+            ifloordiv(
+                reinterpret_cast<impl::wrapped_type<L>>(
+                    std::forward<L>(lhs)->m_value
+                ),
+                reinterpret_cast<impl::wrapped_type<R>>(
+                    std::forward<R>(rhs)->m_value
+                )
+            );
+        }
+        return std::forward<L>(lhs);
+    }
+};
+
+
+template <impl::inherits<impl::OptionalTag> L, typename R>
+    requires (
+        !impl::inherits<impl::OptionalTag, R> &&
+        __ifloordiv__<impl::wrapped_type<L>, R>::enable
+    )
+struct __ifloordiv__<L, R> : Returns<L> {
+    static L operator()(L lhs, R rhs) {
+        if (!lhs->m_value.is(None)) {
+            ifloordiv(
+                reinterpret_cast<impl::wrapped_type<L>>(
+                    std::forward<L>(lhs)->m_value
+                ),
+                std::forward<R>(rhs)
+            );
+        }
+        return std::forward<L>(lhs);
+    }
+};
 
 
 /////////////////////
@@ -2494,21 +2035,20 @@ template <impl::python Self, typename Func>
 /////////////////////
 
 
-template <std::derived_from<Object>... Types> requires (sizeof...(Types) > 0)
+template <std::derived_from<Object>... Types>
+    requires (sizeof...(Types) > 1 && types_are_unique<Types...>)
 struct Union;
 
 template <std::derived_from<Object> T = Object>
 using Optional = Union<T, NoneType>;
 
-template <impl::has_python T>
+template <impl::has_python T> requires (!std::same_as<T, NoneType>)
 Union(T) -> Union<obj<T>, NoneType>;
 
 
 namespace impl {
     template <typename T>
-    struct VariantToUnion {
-        static constexpr bool enable = false;
-    };
+    struct VariantToUnion { static constexpr bool enable = false; };
     template <std::convertible_to<Object>... Ts>
     struct VariantToUnion<std::variant<Ts...>> {
         static constexpr bool enable = true;
@@ -2524,6 +2064,425 @@ namespace impl {
         template <typename... Us>
         static constexpr bool convertible_to = _convertible_to<0, Us...>;
     };
+
+    template <typename T>
+    struct UnionToType { static constexpr bool enable = false; };
+    template <typename... Ts>
+    struct UnionToType<Union<Ts...>> {
+        static constexpr bool enable = true;
+
+        template <size_t I, typename T>
+        static constexpr bool _convertible_to = true;
+        template <size_t I, typename T> requires (I < sizeof...(Ts))
+        static constexpr bool _convertible_to<I, T> =
+            std::convertible_to<impl::unpack_type<I, Ts...>, T> &&
+            _convertible_to<I + 1, T>;
+
+        template <typename T>
+        static constexpr bool convertible_to = _convertible_to<0, T>;
+    };
+
+    /// TODO: all operators must return python types except for:
+    ///     - __isinstance__ (bool)
+    ///     - __issubclass__ (bool)
+    ///     - __repr__ (std::string)
+    ///     - __setattr__ (void)
+    ///     - __delattr__ (void)
+    ///     - __setitem__ (void)
+    ///     - __delitem__ (void)
+    ///     - __len__ (size_t)
+    ///     - __contains__ (bool)
+    ///     - __hash__ (size_t)
+
+    /// TODO: inplace operators must always return a mutable lvalue reference to the
+    /// left operand.
+
+    template <typename T, StaticStr Name>
+    struct UnionGetAttr { static constexpr bool enable = false; };
+    template <typename... Ts, StaticStr Name>
+        requires (__getattr__<Ts, Name>::enable || ...)
+    struct UnionGetAttr<Union<Ts...>, Name> {
+        static constexpr bool enable = true;
+
+        template <typename tuple, typename... Us>
+        struct extract { using type = tuple; };
+        template <typename... Matches, typename U, typename... Us>
+        struct extract<std::tuple<Matches...>, U, Us...> {
+            template <typename V>
+            struct helper { using type = extract<std::tuple<Matches...>, Us...>::type; };
+            template <typename V> requires (__getattr__<V, Name>::enable)
+            struct helper<V> {
+                using type = extract<
+                    std::tuple<Matches..., typename __getattr__<V, Name>::type>,
+                    Us...
+                >::type;
+            };
+            using type = helper<U>::type;
+        };
+        using tuple = extract<std::tuple<>, Ts...>::type;
+
+        template <typename T>
+        struct to_union {};
+        template <typename... Ts>
+        struct to_union<std::tuple<Ts...>> { using type = Union<Ts...>; };
+
+        using type = std::conditional_t<
+            std::tuple_size_v<tuple> == 1,
+            std::tuple_element_t<0, tuple>,
+            typename to_union<tuple>::type
+        >;
+    };
+
+    template <typename T, StaticStr Name, typename Value>
+    struct UnionSetAttr { static constexpr bool enable = false; };
+    template <typename... Ts, StaticStr Name, typename Value>
+        requires (__setattr__<Ts, Name, Value>::enable || ...)
+    struct UnionSetAttr<Union<Ts...>, Name, Value> {
+        static constexpr bool enable = true;
+    };
+
+    template <typename T, StaticStr Name>
+    struct UnionDelAttr { static constexpr bool enable = false; };
+    template <typename... Ts, StaticStr Name>
+        requires (__delattr__<Ts, Name>::enable || ...)
+    struct UnionDelAttr<Union<Ts...>, Name> {
+        static constexpr bool enable = true;
+    };
+
+    template <typename T, typename... Args>
+    struct UnionCall { static constexpr bool enable = false; };
+    template <typename... Ts, typename... Args>
+        requires (__call__<Ts, Args...>::enable || ...)
+    struct UnionCall<Union<Ts...>, Args...> {
+        static constexpr bool enable = true;
+
+        template <typename tuple, typename... Us>
+        struct extract { using type = tuple; };
+        template <typename... Matches, typename U, typename... Us>
+        struct extract<std::tuple<Matches...>, U, Us...> {
+            template <typename V>
+            struct helper { using type = extract<std::tuple<Matches...>, Us...>::type; };
+            template <typename V> requires (__call__<V, Args...>::enable)
+            struct helper<V> {
+                using type = extract<
+                    std::tuple<Matches..., typename __call__<V, Args...>::type>,
+                    Us...
+                >::type;
+            };
+            using type = helper<U>::type;
+        };
+
+        using tuple = extract<std::tuple<>, Ts...>::type;
+
+        template <typename T>
+        struct to_union {};
+        template <typename... Ts>
+        struct to_union<std::tuple<Ts...>> { using type = Union<Ts...>; };
+
+        using type = std::conditional_t<
+            std::tuple_size_v<tuple> == 1,
+            std::tuple_element_t<0, tuple>,
+            typename to_union<tuple>::type
+        >;
+    };
+
+    template <typename T, typename... Key>
+    struct UnionGetItem { static constexpr bool enable = false; };
+    template <typename... Ts, typename... Key>
+        requires (__getitem__<Ts, Key...>::enable || ...)
+    struct UnionGetItem<Union<Ts...>, Key...> {
+        static constexpr bool enable = true;
+
+        template <typename tuple, typename... Us>
+        struct extract { using type = tuple; };
+        template <typename... Matches, typename U, typename... Us>
+        struct extract<std::tuple<Matches...>, U, Us...> {
+            template <typename V>
+            struct helper { using type = extract<std::tuple<Matches...>, Us...>::type; };
+            template <typename V> requires (__getitem__<V, Key...>::enable)
+            struct helper<V> {
+                using type = extract<
+                    std::tuple<Matches..., typename __getitem__<V, Key...>::type>,
+                    Us...
+                >::type;
+            };
+            using type = helper<U>::type;
+        };
+        using tuple = extract<std::tuple<>, Ts...>::type;
+
+        template <typename T>
+        struct to_union {};
+        template <typename... Ts>
+        struct to_union<std::tuple<Ts...>> { using type = Union<Ts...>; };
+
+        using type = std::conditional_t<
+            std::tuple_size_v<tuple> == 1,
+            std::tuple_element_t<0, tuple>,
+            typename to_union<tuple>::type
+        >;
+    };
+
+    template <typename T, typename Value, typename... Key>
+    struct UnionSetItem { static constexpr bool enable = false; };
+    template <typename... Ts, typename Value, typename... Key>
+        requires (__setitem__<Ts, Value, Key...>::enable || ...)
+    struct UnionSetItem<Union<Ts...>, Value, Key...> {
+        static constexpr bool enable = true;
+    };
+
+    template <typename T, typename... Key>
+    struct UnionDelItem { static constexpr bool enable = false; };
+    template <typename... Ts, typename... Key>
+        requires (__delitem__<Ts, Key...>::enable || ...)
+    struct UnionDelItem<Union<Ts...>, Key...> {
+        static constexpr bool enable = true;
+    };
+
+    template <typename T>
+    struct UnionLen { static constexpr bool enable = false; };
+    template <typename... Ts>
+        requires (__len__<Ts>::enable || ...)
+    struct UnionLen<Union<Ts...>> {
+        static constexpr bool enable = true;
+    };
+
+    template <typename T>
+    struct UnionIter { static constexpr bool enable = false; };
+    template <typename... Ts>
+        requires (__iter__<Ts>::enable || ...)
+    struct UnionIter<Union<Ts...>> {
+        static constexpr bool enable = true;
+
+        template <typename tuple, typename... Us>
+        struct extract { using type = tuple; };
+        template <typename... Matches, typename U, typename... Us>
+        struct extract<std::tuple<Matches...>, U, Us...> {
+            template <typename V>
+            struct helper { using type = extract<std::tuple<Matches...>, Us...>::type; };
+            template <typename V> requires (__iter__<V>::enable)
+            struct helper<V> {
+                using type = extract<
+                    std::tuple<Matches..., typename __iter__<V>::type>,
+                    Us...
+                >::type;
+            };
+            using type = helper<U>::type;
+        };
+
+        using tuple = extract<std::tuple<>, Ts...>::type;
+
+        template <typename T>
+        struct to_union {};
+        template <typename... Ts>
+        struct to_union<std::tuple<Ts...>> { using type = Union<Ts...>; };
+
+        using type = std::conditional_t<
+            std::tuple_size_v<tuple> == 1,
+            std::tuple_element_t<0, tuple>,
+            typename to_union<tuple>::type
+        >;
+    };
+
+    template <typename T>
+    struct UnionReversed { static constexpr bool enable = false; };
+    template <typename... Ts>
+        requires (__reversed__<Ts>::enable || ...)
+    struct UnionReversed<Union<Ts...>> {
+        static constexpr bool enable = true;
+
+        template <typename tuple, typename... Us>
+        struct extract { using type = tuple; };
+        template <typename... Matches, typename U, typename... Us>
+        struct extract<std::tuple<Matches...>, U, Us...> {
+            template <typename V>
+            struct helper { using type = extract<std::tuple<Matches...>, Us...>::type; };
+            template <typename V> requires (__reversed__<V>::enable)
+            struct helper<V> {
+                using type = extract<
+                    std::tuple<Matches..., typename __reversed__<V>::type>,
+                    Us...
+                >::type;
+            };
+            using type = helper<U>::type;
+        };
+
+        using tuple = extract<std::tuple<>, Ts...>::type;
+
+        template <typename T>
+        struct to_union {};
+        template <typename... Ts>
+        struct to_union<std::tuple<Ts...>> { using type = Union<Ts...>; };
+
+        using type = std::conditional_t<
+            std::tuple_size_v<tuple> == 1,
+            std::tuple_element_t<0, tuple>,
+            typename to_union<tuple>::type
+        >;
+    };
+
+    template <typename T, typename Key>
+    struct UnionContains { static constexpr bool enable = false; };
+    template <typename... Ts, typename Key>
+        requires (__contains__<Ts, Key>::enable || ...)
+    struct UnionContains<Union<Ts...>, Key> {
+        static constexpr bool enable = true;
+    };
+
+    template <typename T>
+    struct UnionHash { static constexpr bool enable = false; };
+    template <typename... Ts>
+        requires (__hash__<Ts>::enable || ...)
+    struct UnionHash<Union<Ts...>> {
+        static constexpr bool enable = true;
+    };
+
+    template <typename T>
+    struct UnionAbs { static constexpr bool enable = false; };
+    template <typename... Ts>
+        requires (__abs__<Ts>::enable || ...)
+    struct UnionAbs<Union<Ts...>> {
+        static constexpr bool enable = true;
+
+        template <typename tuple, typename... Us>
+        struct extract { using type = tuple; };
+        template <typename... Matches, typename U, typename... Us>
+        struct extract<std::tuple<Matches...>, U, Us...> {
+            template <typename V>
+            struct helper { using type = extract<std::tuple<Matches...>, Us...>::type; };
+            template <typename V> requires (__abs__<V>::enable)
+            struct helper<V> {
+                using type = extract<
+                    std::tuple<Matches..., typename __abs__<V>::type>,
+                    Us...
+                >::type;
+            };
+            using type = helper<U>::type;
+        };
+
+        using tuple = extract<std::tuple<>, Ts...>::type;
+
+        template <typename T>
+        struct to_union {};
+        template <typename... Ts>
+        struct to_union<std::tuple<Ts...>> { using type = Union<Ts...>; };
+
+        using type = std::conditional_t<
+            std::tuple_size_v<tuple> == 1,
+            std::tuple_element_t<0, tuple>,
+            typename to_union<tuple>::type
+        >;
+    };
+
+    template <typename T>
+    struct UnionInvert { static constexpr bool enable = false; };
+    template <typename... Ts>
+        requires (__invert__<Ts>::enable || ...)
+    struct UnionInvert<Union<Ts...>> {
+        static constexpr bool enable = true;
+
+        template <typename tuple, typename... Us>
+        struct extract { using type = tuple; };
+        template <typename... Matches, typename U, typename... Us>
+        struct extract<std::tuple<Matches...>, U, Us...> {
+            template <typename V>
+            struct helper { using type = extract<std::tuple<Matches...>, Us...>::type; };
+            template <typename V> requires (__invert__<V>::enable)
+            struct helper<V> {
+                using type = extract<
+                    std::tuple<Matches..., typename __invert__<V>::type>,
+                    Us...
+                >::type;
+            };
+            using type = helper<U>::type;
+        };
+
+        using tuple = extract<std::tuple<>, Ts...>::type;
+
+        template <typename T>
+        struct to_union {};
+        template <typename... Ts>
+        struct to_union<std::tuple<Ts...>> { using type = Union<Ts...>; };
+
+        using type = std::conditional_t<
+            std::tuple_size_v<tuple> == 1,
+            std::tuple_element_t<0, tuple>,
+            typename to_union<tuple>::type
+        >;
+    };
+
+    template <typename T>
+    struct UnionPos { static constexpr bool enable = false; };
+    template <typename... Ts>
+        requires (__pos__<Ts>::enable || ...)
+    struct UnionPos<Union<Ts...>> {
+        static constexpr bool enable = true;
+
+        template <typename tuple, typename... Us>
+        struct extract { using type = tuple; };
+        template <typename... Matches, typename U, typename... Us>
+        struct extract<std::tuple<Matches...>, U, Us...> {
+            template <typename V>
+            struct helper { using type = extract<std::tuple<Matches...>, Us...>::type; };
+            template <typename V> requires (__pos__<V>::enable)
+            struct helper<V> {
+                using type = extract<
+                    std::tuple<Matches..., typename __pos__<V>::type>,
+                    Us...
+                >::type;
+            };
+        };
+
+        using tuple = extract<std::tuple<>, Ts...>::type;
+
+        template <typename T>
+        struct to_union {};
+        template <typename... Ts>
+        struct to_union<std::tuple<Ts...>> { using type = Union<Ts...>; };
+
+        using type = std::conditional_t<
+            std::tuple_size_v<tuple> == 1,
+            std::tuple_element_t<0, tuple>,
+            typename to_union<tuple>::type
+        >;
+    };
+
+    template <typename T>
+    struct UnionNeg { static constexpr bool enable = false; };
+    template <typename... Ts>
+        requires (__neg__<Ts>::enable || ...)
+    struct UnionNeg<Union<Ts...>> {
+        static constexpr bool enable = true;
+
+        template <typename tuple, typename... Us>
+        struct extract { using type = tuple; };
+        template <typename... Matches, typename U, typename... Us>
+        struct extract<std::tuple<Matches...>, U, Us...> {
+            template <typename V>
+            struct helper { using type = extract<std::tuple<Matches...>, Us...>::type; };
+            template <typename V> requires (__neg__<V>::enable)
+            struct helper<V> {
+                using type = extract<
+                    std::tuple<Matches..., typename __neg__<V>::type>,
+                    Us...
+                >::type;
+            };
+        };
+
+        using tuple = extract<std::tuple<>, Ts...>::type;
+
+        template <typename T>
+        struct to_union {};
+        template <typename... Ts>
+        struct to_union<std::tuple<Ts...>> { using type = Union<Ts...>; };
+
+        using type = std::conditional_t<
+            std::tuple_size_v<tuple> == 1,
+            std::tuple_element_t<0, tuple>,
+            typename to_union<tuple>::type
+        >;
+    };
+
+
 }
 
 
@@ -2540,7 +2499,8 @@ template <typename... Types>
 struct Interface<Type<Union<Types...>>> : Interface<Type<Types>>..., impl::UnionTag {};
 
 
-template <std::derived_from<Object>... Types> requires (sizeof...(Types) > 0)
+template <std::derived_from<Object>... Types>
+    requires (sizeof...(Types) > 1 && types_are_unique<Types...>)
 struct Union : Object, Interface<Union<Types...>> {
     struct __python__ : def<__python__, Union>, PyObject {
         static constexpr StaticStr __doc__ =
@@ -3820,8 +3780,29 @@ struct __template__<Union<Ts...>>                           : Returns<Object> {
 /// TODO: __explicit_cast__ for union types.
 
 
+/* Initializer list constructor is only enabled for `Optional<T>`, and not for any
+other form of union, where such a call might be ambiguous. */
+template <typename T> requires (__initializer__<T>::enable)
+struct __initializer__<Optional<T>>                        : Returns<Optional<T>> {
+    using Element = __initializer__<T>::type;
+    static Optional<T> operator()(const std::initializer_list<Element>& init) {
+        return impl::construct<Optional<T>>(T(init));
+    }
+};
+
+
+/* Default constructor is enabled as long as at least one of the member types is
+default constructible, in which case the first such type is initialized.  If NoneType
+is present in the union, it is preferred over any other type. */
 template <typename... Ts> requires (std::is_default_constructible_v<Ts> || ...)
 struct __init__<Union<Ts...>>                               : Returns<Union<Ts...>> {
+    template <size_t I, typename... Us>
+    static constexpr size_t none_idx = 0;
+    template <size_t I, typename U, typename... Us>
+    static constexpr size_t none_idx<I, U, Us...> =
+        std::same_as<std::remove_cvref_t<U>, NoneType> ?
+            0 : none_idx<I + 1, Us...> + 1;
+
     template <size_t I, typename... Us>
     static constexpr size_t idx = 0;
     template <size_t I, typename U, typename... Us>
@@ -3829,59 +3810,92 @@ struct __init__<Union<Ts...>>                               : Returns<Union<Ts..
         std::is_default_constructible_v<U> ? 0 : idx<I + 1, Us...> + 1;
 
     static Union<Ts...> operator()() {
-        return impl::construct<Union<Ts...>>(impl::unpack_type<idx<0, Ts...>>());
-    }
-};
-
-
-template <typename... Ts, typename... Args>
-    requires (sizeof...(Args) > 0 && (std::constructible_from<Ts, Args> || ...))
-struct __init__<Union<Ts...>, Args...>                      : Returns<Union<Ts...>> {
-    template <size_t I, typename... Us>
-    static constexpr size_t idx = 0;
-    template <size_t I, typename U, typename... Us>
-    static constexpr size_t idx<I, U, Us...> =
-        std::constructible_from<U, Args...> ? 0 : idx<I + 1, Us...> + 1;
-
-    static Union<Ts...> operator()(Args&&... args) {
-        return impl::construct<Union<Ts...>>(
-            impl::unpack_type<idx<0, Ts...>>(std::forward<Args>(args)...)
-        );
-    }
-};
-
-
-template <typename T, typename... Ts> requires (std::convertible_to<T, Ts> || ...)
-struct __cast__<T, Union<Ts...>>                            : Returns<Union<Ts...>> {
-    template <size_t I, typename... Us>
-    static constexpr size_t match_idx = 0;
-    template <size_t I, typename U, typename... Us>
-    static constexpr size_t match_idx<I, U, Us...> =
-        std::same_as<std::remove_cvref_t<T>, U> ? 0 : match_idx<I + 1, Us...> + 1;
-
-    template <size_t I, typename... Us>
-    static constexpr size_t convert_idx = 0;
-    template <size_t I, typename U, typename... Us>
-    static constexpr size_t convert_idx<I, U, Us...> =
-        std::convertible_to<T, U> ? 0 : convert_idx<I + 1, Us...> + 1;
-
-    static Union<Ts...> operator()(T value) {
-        if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
-            return impl::construct<Union<Ts...>>(
-                impl::unpack_type<match_idx<0, Ts...>>(std::forward<T>(value))
-            );
+        if constexpr (none_idx<0, Ts...> < sizeof...(Ts)) {
+            return impl::construct<Union<Ts...>>(None);
         } else {
             return impl::construct<Union<Ts...>>(
-                impl::unpack_type<convert_idx<0, Ts...>>(std::forward<T>(value))
+                impl::unpack_type<idx<0, Ts...>>()
             );
         }
     }
 };
 
 
-/// NOTE: implicit casts are also allowed to and from std::variant if all the types
-/// are compatible, as well as std::optional and pointer types if `NoneType` is
-/// present in the union.
+/* Explicit constructor calls are only allowed for `Optional<T>`, and not for any
+other form of union, where such a call might be ambiguous. */
+template <typename T, typename... Args>
+    requires (sizeof...(Args) > 0 && std::constructible_from<T, Args...>)
+struct __init__<Optional<T>, Args...>                : Returns<Optional<T>> {
+    static Optional<T> operator()(Args&&... args) {
+        return impl::construct<Optional<T>>(T(std::forward<Args>(args)...));
+    }
+};
+
+
+/* Universal conversion from any type that is convertible to one or more types within
+the union.  Prefers exact matches (and therefore copy/move semantics) over secondary
+conversions, and always converts to the first matching type within the union */
+template <typename From, typename... Ts> requires (std::convertible_to<From, Ts> || ...)
+struct __cast__<From, Union<Ts...>>                            : Returns<Union<Ts...>> {
+    template <size_t I, typename... Us>
+    static constexpr size_t match_idx = 0;
+    template <size_t I, typename U, typename... Us>
+    static constexpr size_t match_idx<I, U, Us...> =
+        std::same_as<std::remove_cvref_t<From>, U> ? 0 : match_idx<I + 1, Us...> + 1;
+
+    template <size_t I, typename... Us>
+    static constexpr size_t convert_idx = 0;
+    template <size_t I, typename U, typename... Us>
+    static constexpr size_t convert_idx<I, U, Us...> =
+        std::convertible_to<From, U> ? 0 : convert_idx<I + 1, Us...> + 1;
+
+    static Union<Ts...> operator()(From from) {
+        if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
+            return impl::construct<Union<Ts...>>(
+                impl::unpack_type<match_idx<0, Ts...>>(std::forward<From>(from))
+            );
+        } else {
+            return impl::construct<Union<Ts...>>(
+                impl::unpack_type<convert_idx<0, Ts...>>(std::forward<From>(from))
+            );
+        }
+    }
+};
+
+
+/* Universal conversion from a union to any type for which each element of the union is
+convertible.  This covers conversions to `std::variant` provided all types are
+accounted for, as well as to `std::optional` and pointer types whereby `NoneType` is
+convertible to `std::nullopt` and `nullptr`, respectively. */
+template <impl::inherits<impl::UnionTag> From, typename To>
+    requires (impl::UnionToType<std::remove_cvref_t<From>>::template convertible_to<To>)
+struct __cast__<From, To>                                   : Returns<To> {
+    template <typename T>
+    struct context {};
+    template <typename... Types>
+    struct context<Union<Types...>> {
+        template <size_t I> requires (I < sizeof...(Types))
+        static To get(From from) {
+            return reinterpret_cast<impl::unpack_type<I, Types...>&>(
+                std::forward<From>(from)->m_value
+            );
+        }
+    };
+
+    template <size_t I>
+    static To get(From from) {
+        using F = std::remove_cvref_t<From>;
+        if (I == from->m_index) {
+            return context<F>::template get<I>(std::forward<From>(from));
+        } else {
+            return get<I + 1>(std::forward<From>(from));
+        }
+    }
+
+    static To operator()(From from) {
+        return get<0>(std::forward<From>(from));
+    }
+};
 
 
 template <impl::is_variant T> requires (impl::VariantToUnion<T>::enable)
@@ -3908,10 +3922,7 @@ struct __cast__<T> : Returns<
 
 
 template <impl::is_variant From, typename... Ts>
-    requires (
-        impl::VariantToUnion<From>::enable &&
-        impl::VariantToUnion<From>::template convertible_to<Ts...>
-    )
+    requires (impl::VariantToUnion<From>::template convertible_to<Ts...>)
 struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts...>> {
     template <typename T>
     struct convert {
@@ -3953,18 +3964,18 @@ struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts..
     static constexpr size_t convert_idx<I, U, Us...> =
         std::convertible_to<T, U> ? 0 : convert_idx<I + 1, Us...> + 1;
 
-    static Union<Ts...> operator()(From value) {
+    static Union<Ts...> operator()(From from) {
         if (value.has_value()) {
             if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
                 return impl::construct<Union<Ts...>>(
                     impl::unpack_type<match_idx<0, Ts...>>(
-                        std::forward<From>(value).value()
+                        std::forward<From>(from).value()
                     )
                 );
             } else {
                 return impl::construct<Union<Ts...>>(
                     impl::unpack_type<convert_idx<0, Ts...>>(
-                        std::forward<From>(value).value()
+                        std::forward<From>(from).value()
                     )
                 );
             }
@@ -3975,14 +3986,811 @@ struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts..
 };
 
 
-/// TODO: remaining operators should return further variants for all of the constituent
-/// types that support the given operation, with
+template <impl::is_ptr From, typename... Ts>
+    requires (
+        (std::same_as<NoneType, Ts> || ...) &&
+        (std::convertible_to<impl::ptr_type<From>, Ts> || ...)
+    )
+struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts...>> {
+    template <size_t I, typename... Us>
+    static constexpr size_t match_idx = 0;
+    template <size_t I, typename U, typename... Us>
+    static constexpr size_t match_idx<I, U, Us...> =
+        std::same_as<std::remove_cv_t<impl::ptr_type<From>>, U> ?
+            0 : match_idx<I + 1, Us...> + 1;
+
+    template <size_t I, typename... Us>
+    static constexpr size_t convert_idx = 0;
+    template <size_t I, typename U, typename... Us>
+    static constexpr size_t convert_idx<I, U, Us...> =
+        std::convertible_to<impl::ptr_type<From>, U> ?
+            0 : convert_idx<I + 1, Us...> + 1;
+
+    static Union<Ts...> operator()(From from) {
+        if (value) {
+            if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
+                return impl::construct<Union<Ts...>>(
+                    impl::unpack_type<match_idx<0, Ts...>>(*from)
+                );
+            } else {
+                return impl::construct<Union<Ts...>>(
+                    impl::unpack_type<convert_idx<0, Ts...>>(*from)
+                );
+            }
+        } else {
+            return impl::construct<Union<Ts...>>(None);
+        }
+    }
+};
 
 
-inline void test() {
-    auto y = NotImplemented;
-    Union x = y;
-}
+template <impl::is_shared_ptr From, typename... Ts>
+    requires (
+        (std::same_as<NoneType, Ts> || ...) &&
+        (std::convertible_to<impl::shared_ptr_type<From>, Ts> || ...)
+    )
+struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts...>> {
+    template <size_t I, typename... Us>
+    static constexpr size_t match_idx = 0;
+    template <size_t I, typename U, typename... Us>
+    static constexpr size_t match_idx<I, U, Us...> =
+        std::same_as<std::remove_cv_t<impl::shared_ptr_type<From>>, U> ?
+            0 : match_idx<I + 1, Us...> + 1;
+
+    template <size_t I, typename... Us>
+    static constexpr size_t convert_idx = 0;
+    template <size_t I, typename U, typename... Us>
+    static constexpr size_t convert_idx<I, U, Us...> =
+        std::convertible_to<impl::shared_ptr_type<From>, U> ?
+            0 : convert_idx<I + 1, Us...> + 1;
+
+    static Union<Ts...> operator()(From from) {
+        if (value) {
+            if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
+                return impl::construct<Union<Ts...>>(
+                    impl::unpack_type<match_idx<0, Ts...>>(*from)
+                );
+            } else {
+                return impl::construct<Union<Ts...>>(
+                    impl::unpack_type<convert_idx<0, Ts...>>(*from)
+                );
+            }
+        } else {
+            return impl::construct<Union<Ts...>>(None);
+        }
+    }
+};
+
+
+template <impl::is_unique_ptr From, typename... Ts>
+    requires (
+        (std::same_as<NoneType, Ts> || ...) &&
+        (std::convertible_to<impl::unique_ptr_type<From>, Ts> || ...)
+    )
+struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts...>> {
+    template <size_t I, typename... Us>
+    static constexpr size_t match_idx = 0;
+    template <size_t I, typename U, typename... Us>
+    static constexpr size_t match_idx<I, U, Us...> =
+        std::same_as<std::remove_cv_t<impl::unique_ptr_type<From>>, U> ?
+            0 : match_idx<I + 1, Us...> + 1;
+
+    template <size_t I, typename... Us>
+    static constexpr size_t convert_idx = 0;
+    template <size_t I, typename U, typename... Us>
+    static constexpr size_t convert_idx<I, U, Us...> =
+        std::convertible_to<impl::unique_ptr_type<From>, U> ?
+            0 : convert_idx<I + 1, Us...> + 1;
+
+    static Union<Ts...> operator()(From from) {
+        if (value) {
+            if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
+                return impl::construct<Union<Ts...>>(
+                    impl::unpack_type<match_idx<0, Ts...>>(*from)
+                );
+            } else {
+                return impl::construct<Union<Ts...>>(
+                    impl::unpack_type<convert_idx<0, Ts...>>(*from)
+                );
+            }
+        } else {
+            return impl::construct<Union<Ts...>>(None);
+        }
+    }
+};
+
+
+/// NOTE: all other operations are only enabled if one or more members of the union
+/// support them, and will return a new union type holding all of the valid results,
+/// or a standard type if the resulting union would be a singleton.
+
+
+template <impl::inherits<impl::UnionTag> Self, StaticStr Name>
+    requires (impl::UnionGetAttr<std::remove_cvref_t<Self>, Name>::enable)
+struct __getattr__<Self, Name>                              : Returns<
+    typename impl::UnionGetAttr<std::remove_cvref_t<Self>, Name>::type
+> {
+    using type = impl::UnionGetAttr<std::remove_cvref_t<Self>, Name>::type;
+
+    template <typename T>
+    struct context {};
+    template <typename... Types>
+    struct context<Union<Types...>> {
+        template <size_t I> requires (I < sizeof...(Types))
+        static type get(From from) {
+            using T = impl::unpack_type<I, Types...>;
+            if constexpr (__getattr__<T, Name>::enable) {
+                return py::getattr<Name>(
+                    reinterpret_cast<T&>(std::forward<From>(from)->m_value)
+                );
+            } else {
+                throw AttributeError(
+                    "'" + impl::demangle(typeid(T).name()) + "' object has no "
+                    "attribute '" + Name + "'"
+                );
+            }
+        }
+    };
+
+    template <size_t I>
+    static type get(Self self) {
+        using S = std::remove_cvref_t<Self>;
+        if (I == self->m_index) {
+            return context<S>::template get<I>(std::forward<Self>(self));
+        } else {
+            return get<I + 1>(std::forward<Self>(self));
+        }
+    }
+
+    static type operator()(Self self) {
+        return get<0>(std::forward<Self>(self));
+    }
+};
+
+
+template <impl::inherits<impl::UnionTag> Self, StaticStr Name, typename Value>
+    requires (impl::UnionSetAttr<std::remove_cvref_t<Self>, Name, Value>::enable)
+struct __setattr__<Self, Name, Value>                        : Returns<void> {
+    template <typename T>
+    struct context {};
+    template <typename... Types>
+    struct context<Union<Types...>> {
+        template <size_t I> requires (I < sizeof...(Types))
+        static void set(Self self, Value&& value) {
+            using T = impl::unpack_type<I, Types...>;
+            if constexpr (__setattr__<T, Name, Value>::enable) {
+                py::setattr<Name>(
+                    reinterpret_cast<T&>(std::forward<Self>(self)->m_value),
+                    std::forward<Value>(value)
+                );
+            } else {
+                throw AttributeError(
+                    "cannot set attribute '" + Name + "' on object of type '" +
+                    impl::demangle(typeid(T).name()) + "'"
+                );
+            }
+        }
+    };
+
+    template <size_t I>
+    static void set(Self self, Value&& value) {
+        using S = std::remove_cvref_t<Self>;
+        if (I == self->m_index) {
+            context<S>::template set<I>(
+                std::forward<Self>(self),
+                std::forward<Value>(value)
+            );
+        } else {
+            set<I + 1>(std::forward<Self>(self), std::forward<Value>(value));
+        }
+    }
+
+    static void operator()(Self self, Value&& value) {
+        set<0>(std::forward<Self>(self), std::forward<Value>(value));
+    }
+};
+
+
+template <impl::inherits<impl::UnionTag> Self, StaticStr Name>
+    requires (impl::UnionDelAttr<std::remove_cvref_t<Self>, Name>::enable)
+struct __delattr__<Self, Name>                              : Returns<void> {
+    template <typename T>
+    struct context {};
+    template <typename... Types>
+    struct context<Union<Types...>> {
+        template <size_t I> requires (I < sizeof...(Types))
+        static void del(Self self) {
+            using T = impl::unpack_type<I, Types...>;
+            if constexpr (__delattr__<T, Name>::enable) {
+                py::delattr<Name>(
+                    reinterpret_cast<T&>(std::forward<Self>(self)->m_value)
+                );
+            } else {
+                throw AttributeError(
+                    "cannot delete attribute '" + Name + "' on object of type '" +
+                    impl::demangle(typeid(T).name()) + "'"
+                );
+            }
+        }
+    };
+
+    template <size_t I>
+    static void del(Self self) {
+        using S = std::remove_cvref_t<Self>;
+        if (I == self->m_index) {
+            context<S>::template del<I>(std::forward<Self>(self));
+        } else {
+            del<I + 1>(std::forward<Self>(self));
+        }
+    }
+
+    static void operator()(Self self) {
+        del<0>(std::forward<Self>(self));
+    }
+};
+
+
+template <impl::inherits<impl::UnionTag> Self>
+struct __repr__<Self>                                       : Returns<std::string> {
+    template <typename T>
+    struct context {};
+    template <typename... Types>
+    struct context<Union<Types...>> {
+        template <size_t I> requires (I < sizeof...(Types))
+        static std::string repr(Self self) {
+            using T = impl::unpack_type<I, Types...>;
+            if constexpr (__repr__<T>::enable) {
+                return py::repr(reinterpret_cast<T&>(std::forward<Self>(self)->m_value));
+            } else {
+                return py::repr(std::forward<Self>(self)->m_value);
+            }
+        }
+    };
+
+    template <size_t I>
+    static std::string repr(Self self) {
+        using S = std::remove_cvref_t<Self>;
+        if (I == self->m_index) {
+            return context<S>::template repr<I>(std::forward<Self>(self));
+        } else {
+            return repr<I + 1>(std::forward<Self>(self));
+        }
+    }
+
+    static std::string operator()(Self self) {
+        return repr<0>(std::forward<Self>(self));
+    }
+};
+
+
+template <impl::inherits<impl::UnionTag> Self, typename... Args>
+    requires (impl::UnionCall<std::remove_cvref_t<Self>, Args...>::enable)
+struct __call__<Self, Args...>                               : Returns<
+    typename impl::UnionCall<std::remove_cvref_t<Self>, Args...>::type
+> {
+    using type = impl::UnionCall<std::remove_cvref_t<Self>, Args...>::type;
+
+    template <typename T>
+    struct context {};
+    template <typename... Types>
+    struct context<Union<Types...>> {
+        template <size_t I> requires (I < sizeof...(Types))
+        static type call(Self self, Args&&... args) {
+            using T = impl::unpack_type<I, Types...>;
+            if constexpr (__call__<T, Args...>::enable) {
+                return reinterpret_cast<T&>(std::forward<Self>(self)->m_value)(
+                    std::forward<Args>(args)...
+                );
+            } else {
+                throw TypeError(
+                    "'" + impl::demangle(typeid(T).name()) + "' object is not "
+                    "callable with the given arguments"
+                );
+            }
+        }
+    };
+
+    template <size_t I>
+    static type call(Self self, Args&&... args) {
+        using S = std::remove_cvref_t<Self>;
+        if (I == self->m_index) {
+            return context<S>::template call<I>(
+                std::forward<Self>(self),
+                std::forward<Args>(args)...
+            );
+        } else {
+            return call<I + 1>(
+                std::forward<Self>(self),
+                std::forward<Args>(args)...
+            );
+        }
+    }
+
+    static type operator()(Self self, Args&&... args) {
+        return call<0>(std::forward<Self>(self), std::forward<Args>(args)...);
+    }
+};
+
+
+template <impl::inherits<impl::UnionTag> Self, typename... Key>
+    requires (impl::UnionGetItem<std::remove_cvref_t<Self>, Key...>::enable)
+struct __getitem__<Self, Key...>                            : Returns<
+    typename impl::UnionGetItem<std::remove_cvref_t<Self>, Key...>::type
+> {
+    using type = impl::UnionGetItem<std::remove_cvref_t<Self>, Key...>::type;
+
+    template <typename T>
+    struct context {};
+    template <typename... Types>
+    struct context<Union<Types...>> {
+        template <size_t I> requires (I < sizeof...(Types))
+        static type get(Self self, Key&&... key) {
+            using T = impl::unpack_type<I, Types...>;
+            if constexpr (__getitem__<T, Key...>::enable) {
+                return reinterpret_cast<T&>(
+                    std::forward<Self>(self)->m_value
+                )[std::forward<Key>(key)...];
+            } else {
+                throw KeyError(
+                    "'" + impl::demangle(typeid(T).name()) + "' object cannot be "
+                    "subscripted with the given key(s)"
+                );
+            }
+        }
+    };
+
+    template <size_t I>
+    static type get(Self self, Key&&... key) {
+        using S = std::remove_cvref_t<Self>;
+        if (I == self->m_index) {
+            return context<S>::template get<I>(
+                std::forward<Self>(self),
+                std::forward<Key>(key)...
+            );
+        } else {
+            return get<I + 1>(
+                std::forward<Self>(self),
+                std::forward<Key>(key)...
+            );
+        }
+    }
+
+    static type operator()(Self self, Key&&... key) {
+        return get<0>(std::forward<Self>(self), std::forward<Key>(key)...);
+    }
+};
+
+
+template <impl::inherits<impl::UnionTag> Self, typename... Key, typename Value>
+    requires (impl::UnionSetItem<std::remove_cvref_t<Self>, Key..., Value>::enable)
+struct __setitem__<Self, Key..., Value>                      : Returns<void> {
+    template <typename T>
+    struct context {};
+    template <typename... Types>
+    struct context<Union<Types...>> {
+        template <size_t I> requires (I < sizeof...(Types))
+        static void set(Self self, Value&& value, Key&&... key) {
+            using T = impl::unpack_type<I, Types...>;
+            if constexpr (__setitem__<T, Key..., Value>::enable) {
+                reinterpret_cast<T&>(
+                    std::forward<Self>(self)->m_value
+                )[std::forward<Key>(key)...] = std::forward<Value>(value);
+            } else {
+                throw KeyError(
+                    "'" + impl::demangle(typeid(T).name()) + "' object does not "
+                    "support item assignment with the given key(s)"
+                );
+            }
+        }
+    };
+
+    template <size_t I>
+    static void set(Self self, Value&& value, Key&&... key) {
+        using S = std::remove_cvref_t<Self>;
+        if (I == self->m_index) {
+            context<S>::template set<I>(
+                std::forward<Self>(self),
+                std::forward<Value>(value),
+                std::forward<Key>(key)...
+            );
+        } else {
+            set<I + 1>(
+                std::forward<Self>(self),
+                std::forward<Value>(value),
+                std::forward<Key>(key)...
+            );
+        }
+    }
+
+    static void operator()(Self self, Key&&... key, Value&& value) {
+        set<0>(
+            std::forward<Self>(self),
+            std::forward<Value>(value),
+            std::forward<Key>(key)...
+        );
+    }
+};
+
+
+template <impl::inherits<impl::UnionTag> Self, typename... Key>
+    requires (impl::UnionDelItem<std::remove_cvref_t<Self>, Key...>::enable)
+struct __delitem__<Self, Key...>                            : Returns<void> {
+    template <typename T>
+    struct context {};
+    template <typename... Types>
+    struct context<Union<Types...>> {
+        template <size_t I> requires (I < sizeof...(Types))
+        static void del(Self self, Key&&... key) {
+            using T = impl::unpack_type<I, Types...>;
+            if constexpr (__delitem__<T, Key...>::enable) {
+                py::del(
+                    reinterpret_cast<T&>(
+                        std::forward<Self>(self)->m_value
+                    )[std::forward<Key>(key)...]
+                );
+            } else {
+                throw KeyError(
+                    "'" + impl::demangle(typeid(T).name()) + "' object does not "
+                    "support item deletion with the given key(s)"
+                );
+            }
+        }
+    };
+
+    template <size_t I>
+    static void del(Self self, Key&&... key) {
+        using S = std::remove_cvref_t<Self>;
+        if (I == self->m_index) {
+            context<S>::template del<I>(
+                std::forward<Self>(self),
+                std::forward<Key>(key)...
+            );
+        } else {
+            del<I + 1>(
+                std::forward<Self>(self),
+                std::forward<Key>(key)...
+            );
+        }
+    }
+
+    static void operator()(Self self, Key&&... key) {
+        del<0>(std::forward<Self>(self), std::forward<Key>(key)...);
+    }
+};
+
+
+template <impl::inherits<impl::UnionTag> Self>
+    requires (impl::UnionLen<std::remove_cvref_t<Self>>::enable)
+struct __len__<Self>                                        : Returns<size_t> {
+    template <typename T>
+    struct context {};
+    template <typename... Types>
+    struct context<Union<Types...>> {
+        template <size_t I> requires (I < sizeof...(Types))
+        static size_t len(Self self) {
+            using T = impl::unpack_type<I, Types...>;
+            if constexpr (__len__<T>::enable) {
+                return py::len(
+                    reinterpret_cast<T&>(std::forward<Self>(self)->m_value)
+                );
+            } else {
+                throw TypeError(
+                    "'" + impl::demangle(typeid(T).name()) + "' object does not "
+                    "have a length"
+                );
+            }
+        }
+    };
+
+    template <size_t I>
+    static size_t len(Self self) {
+        using S = std::remove_cvref_t<Self>;
+        if (I == self->m_index) {
+            return context<S>::template len<I>(std::forward<Self>(self));
+        } else {
+            return len<I + 1>(std::forward<Self>(self));
+        }
+    }
+
+    static size_t operator()(Self self) {
+        return len<0>(std::forward<Self>(self));
+    }
+};
+
+
+template <impl::inherits<impl::UnionTag> Self>
+    requires (impl::UnionIter<std::remove_cvref_t<Self>>::enable)
+struct __iter__<Self>                                       : Returns<
+    typename impl::UnionIter<std::remove_cvref_t<Self>>::type
+> {
+    /// NOTE: default implementation delegates to Python, which reinterprets each value
+    /// as the given type(s).  That handles all cases appropriately, with a small
+    /// performance hit for the extra interpreter overhead that isn't present for
+    /// static types.
+};
+
+
+template <impl::inherits<impl::UnionTag> Self>
+    requires (impl::UnionReversed<std::remove_cvref_t<Self>>::enable)
+struct __reversed__<Self>                                   : Returns<
+    typename impl::UnionReversed<std::remove_cvref_t<Self>>::type
+> {
+    /// NOTE: same as `__iter__`, but returns a reverse iterator instead.
+};
+
+
+template <impl::inherits<impl::UnionTag> Self, typename Key>
+    requires (impl::UnionContains<std::remove_cvref_t<Self>, Key>::enable)
+struct __contains__<Self>                                   : Returns<bool> {
+    template <typename T>
+    struct context {};
+    template <typename... Types>
+    struct context<Union<Types...>> {
+        template <size_t I> requires (I < sizeof...(Types))
+        static bool contains(Self self, Key&& key) {
+            using T = impl::unpack_type<I, Types...>;
+            if constexpr (__contains__<T, Key>::enable) {
+                return reinterpret_cast<T&>(
+                    std::forward<Self>(self)->m_value
+                ).contains(std::forward<Key>(key));
+            } else {
+                throw TypeError(
+                    "'" + impl::demangle(typeid(T).name()) + "' object does not "
+                    "support contains checks"
+                );
+            }
+        }
+    };
+
+    template <size_t I>
+    static bool contains(Self self, Key&& key) {
+        using S = std::remove_cvref_t<Self>;
+        if (I == self->m_index) {
+            return context<S>::template contains<I>(
+                std::forward<Self>(self),
+                std::forward<Key>(key)
+            );
+        } else {
+            return contains<I + 1>(
+                std::forward<Self>(self),
+                std::forward<Key>(key)
+            );
+        }
+    }
+
+    static bool operator()(Self self, Key&& key) {
+        return contains<0>(std::forward<Self>(self), std::forward<Key>(key));
+    }
+};
+
+
+template <impl::inherits<impl::UnionTag> Self>
+    requires (impl::UnionHash<std::remove_cvref_t<Self>>::enable)
+struct __hash__<Self>                                       : Returns<size_t> {
+    template <typename T>
+    struct context {};
+    template <typename... Types>
+    struct context<Union<Types...>> {
+        template <size_t I> requires (I < sizeof...(Types))
+        static size_t hash(Self self) {
+            using T = impl::unpack_type<I, Types...>;
+            if constexpr (__hash__<T>::enable) {
+                return py::hash(
+                    reinterpret_cast<T&>(std::forward<Self>(self)->m_value)
+                );
+            } else {
+                throw TypeError(
+                    "'" + impl::demangle(typeid(T).name()) + "' object is not "
+                    "hashable"
+                );
+            }
+        }
+    };
+
+    template <size_t I>
+    static size_t hash(Self self) {
+        using S = std::remove_cvref_t<Self>;
+        if (I == self->m_index) {
+            return context<S>::template hash<I>(std::forward<Self>(self));
+        } else {
+            return hash<I + 1>(std::forward<Self>(self));
+        }
+    }
+
+    static size_t operator()(Self self) {
+        return hash<0>(std::forward<Self>(self));
+    }
+};
+
+
+/// TODO: need to cast to the correct type.
+
+
+template <impl::inherits<impl::UnionTag> Self>
+    requires (impl::UnionAbs<std::remove_cvref_t<Self>>::enable)
+struct __abs__<Self>                                        : Returns<
+    typename impl::UnionAbs<std::remove_cvref_t<Self>>::type
+> {
+    using type = impl::UnionAbs<std::remove_cvref_t<Self>>::type;
+
+    template <typename T>
+    struct context {};
+    template <typename... Types>
+    struct context<Union<Types...>> {
+        template <size_t I> requires (I < sizeof...(Types))
+        static type abs(Self self) {
+            using T = impl::unpack_type<I, Types...>;
+            if constexpr (__abs__<T>::enable) {
+                return py::abs(
+                    reinterpret_cast<T&>(std::forward<Self>(self)->m_value)
+                );
+            } else {
+                throw TypeError(
+                    "'" + impl::demangle(typeid(T).name()) + "' object does not "
+                    "have an absolute value"
+                );
+            }
+        }
+    };
+
+    template <size_t I>
+    static type abs(Self self) {
+        using S = std::remove_cvref_t<Self>;
+        if (I == self->m_index) {
+            return context<S>::template abs<I>(std::forward<Self>(self));
+        } else {
+            return abs<I + 1>(std::forward<Self>(self));
+        }
+    }
+
+    static type operator()(Self self) {
+        return abs<0>(std::forward<Self>(self));
+    }
+};
+
+
+template <impl::inherits<impl::UnionTag> Self>
+    requires (impl::UnionInvert<std::remove_cvref_t<Self>>::enable)
+struct __invert__<Self>                                     : Returns<
+    typename impl::UnionInvert<std::remove_cvref_t<Self>>::type
+> {
+    using type = impl::UnionInvert<std::remove_cvref_t<Self>>::type;
+
+    template <typename T>
+    struct context {};
+    template <typename... Types>
+    struct context<Union<Types...>> {
+        template <size_t I> requires (I < sizeof...(Types))
+        static type invert(Self self) {
+            using T = impl::unpack_type<I, Types...>;
+            if constexpr (__invert__<T>::enable) {
+                return ~reinterpret_cast<T&>(std::forward<Self>(self)->m_value);
+            } else {
+                throw TypeError(
+                    "'" + impl::demangle(typeid(T).name()) + "' object does not "
+                    "support bitwise inversion"
+                );
+            }
+        }
+    };
+
+    template <size_t I>
+    static type invert(Self self) {
+        using S = std::remove_cvref_t<Self>;
+        if (I == self->m_index) {
+            return context<S>::template invert<I>(std::forward<Self>(self));
+        } else {
+            return invert<I + 1>(std::forward<Self>(self));
+        }
+    }
+
+    static type operator()(Self self) {
+        return invert<0>(std::forward<Self>(self));
+    }
+};
+
+
+template <impl::inherits<impl::UnionTag> Self>
+    requires (impl::UnionPos<std::remove_cvref_t<Self>>::enable)
+struct __pos__<Self>                                        : Returns<
+    typename impl::UnionPos<std::remove_cvref_t<Self>>::type
+> {
+    using type = impl::UnionPos<std::remove_cvref_t<Self>>::type;
+
+    template <typename T>
+    struct context {};
+    template <typename... Types>
+    struct context<Union<Types...>> {
+        template <size_t I> requires (I < sizeof...(Types))
+        static type pos(Self self) {
+            using T = impl::unpack_type<I, Types...>;
+            if constexpr (__pos__<T>::enable) {
+                return +reinterpret_cast<T&>(std::forward<Self>(self)->m_value);
+            } else {
+                throw TypeError(
+                    "'" + impl::demangle(typeid(T).name()) + "' object does not "
+                    "support unary positive"
+                );
+            }
+        }
+    };
+
+    template <size_t I>
+    static type pos(Self self) {
+        using S = std::remove_cvref_t<Self>;
+        if (I == self->m_index) {
+            return context<S>::template pos<I>(std::forward<Self>(self));
+        } else {
+            return pos<I + 1>(std::forward<Self>(self));
+        }
+    }
+
+    static type operator()(Self self) {
+        return pos<0>(std::forward<Self>(self));
+    }
+};
+
+
+template <impl::inherits<impl::UnionTag> Self>
+    requires (impl::UnionNeg<std::remove_cvref_t<Self>>::enable)
+struct __neg__<Self>                                        : Returns<
+    typename impl::UnionNeg<std::remove_cvref_t<Self>>::type
+> {
+    using type = impl::UnionNeg<std::remove_cvref_t<Self>>::type;
+
+    template <typename T>
+    struct context {};
+    template <typename... Types>
+    struct context<Union<Types...>> {
+        template <size_t I> requires (I < sizeof...(Types))
+        static type neg(Self self) {
+            using T = impl::unpack_type<I, Types...>;
+            if constexpr (__neg__<T>::enable) {
+                return -reinterpret_cast<T&>(std::forward<Self>(self)->m_value);
+            } else {
+                throw TypeError(
+                    "'" + impl::demangle(typeid(T).name()) + "' object does not "
+                    "support unary negation"
+                );
+            }
+        }
+    };
+
+    template <size_t I>
+    static type neg(Self self) {
+        using S = std::remove_cvref_t<Self>;
+        if (I == self->m_index) {
+            return context<S>::template neg<I>(std::forward<Self>(self));
+        } else {
+            return neg<I + 1>(std::forward<Self>(self));
+        }
+    }
+
+    static type operator()(Self self) {
+        return neg<0>(std::forward<Self>(self));
+    }
+};
+
+
+// template <impl::inherits<impl::UnionTag> Self>
+//     requires (impl::UnionIncrement<std::remove_cvref_t<Self>>::enable)
+// struct __increment__<Self>                                 : Returns<
+//     std::remove_reference_t<Self>&
+// > {
+//     static std::remove_reference_t<Self>& operator()(Self self) {
+//         ++std::forward<Self>(self)->m_value;
+//         return self;
+//     }
+// };
+
+
+
+/// TODO: remaining operators should return further unions for all of the constituent
+/// types that support the given operation, with 
+
+
+/// TODO: remember to specialize std::variant_size, std::variant_alternative, and
+/// possibly std::get, std::get_if, std::visit, and std::holds_alternative
 
 
 

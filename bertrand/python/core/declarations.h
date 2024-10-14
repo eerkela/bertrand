@@ -62,7 +62,6 @@ using bertrand::StaticStr;
 
 namespace impl {
     struct BertrandTag {};
-    struct OptionalTag : BertrandTag {};
     struct UnionTag : BertrandTag {};
     struct PythonTag : BertrandTag {};  /// TODO: eliminate this
     struct IterTag : BertrandTag {};  /// TODO: eliminate this
@@ -2472,19 +2471,21 @@ namespace impl {
     concept cpp = !python<T>;
 
     /// TODO: what about lazy types that evaluate to Object?  Or monads, like
-    /// Optional<T>, Union<T...>?
+    /// Optional<T>, Union<T...>?  These have now been replaced with `Union<...>`,
+    /// which does not (and cannot) have a __wrapped__ type.
     template <typename T>
-    concept dynamic =
-        is<T, Object> ||
-        inherits<T, UnionTag> || (
-            inherits<T, OptionalTag> &&
-            is<typename std::remove_reference_t<T>::__wrapped__, Object>
-        );
+    concept dynamic = is<T, Object>;
 
     template <typename From, typename To>
     concept explicitly_convertible_to = requires(From from) {
         { static_cast<To>(from) } -> std::same_as<To>;
     };
+
+    template <typename... Ts>
+    constexpr bool types_are_unique = true;
+    template <typename T, typename... Ts>
+    constexpr bool types_are_unique<T, Ts...> =
+        !(std::same_as<T, Ts> || ...) && types_are_unique<Ts...>;
 
     template <typename T, typename = void>
     constexpr bool has_interface_helper = false;
@@ -2560,45 +2561,6 @@ namespace impl {
     concept has_cpp = cpp_helper<T>::enable;
     template <typename T> requires (cpp_helper<T>::enable)
     using cpp_type = cpp_helper<T>::type;
-
-    template <typename T, typename = void>
-    struct wrapped_helper {
-        static constexpr bool enable = false;
-    };
-    template <typename T>
-    struct wrapped_helper<T, std::void_t<typename std::remove_cvref_t<T>::__wrapped__>> {
-        static constexpr bool enable = true;
-        using wrapped = std::remove_cvref_t<T>::__wrapped__;
-        template <typename U>
-        struct helper { using type = wrapped; };
-        template <typename U>
-        struct helper<U&> { using type = wrapped&; };
-        template <typename U>
-        struct helper<U&&> { using type = wrapped&&; };
-        template <typename U>
-        struct helper<const U> { using type = const wrapped; };
-        template <typename U>
-        struct helper<const U&> { using type = const wrapped&; };
-        template <typename U>
-        struct helper<const U&&> { using type = const wrapped&&; };
-        template <typename U>
-        struct helper<volatile U> { using type = volatile wrapped; };
-        template <typename U>
-        struct helper<volatile U&> { using type = volatile wrapped&; };
-        template <typename U>
-        struct helper<volatile U&&> { using type = volatile wrapped&&; };
-        template <typename U>
-        struct helper<const volatile U> { using type = const volatile wrapped; };
-        template <typename U>
-        struct helper<const volatile U&> { using type = const volatile wrapped&; };
-        template <typename U>
-        struct helper<const volatile U&&> { using type = const volatile wrapped&&; };
-        using type = helper<T>::type;
-    };
-    template <typename T>
-    concept has_wrapped = wrapped_helper<T>::enable;
-    template <typename T> requires (wrapped_helper<T>::enable)
-    using wrapped_type = wrapped_helper<T>::type;
 
     template <typename Self, StaticStr Name>
         requires (__getattr__<Self, Name>::enable)

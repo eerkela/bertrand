@@ -609,11 +609,16 @@ public:
         return *this;
     }
 
+    /// TODO: make sure that the return type respects cvref qualifiers, so that these
+    /// can be passed on to any nested types.  Basically a bunch of constexpr branches
+    /// that check for the presence of cvref qualifiers and then apply them to the
+    /// result
+
     /* Access an internal member of the underlying PyObject* pointer. */
     template <impl::has_python Self>
-    [[nodiscard]] std::remove_cvref_t<Self>::__python__* operator->(this Self&& self) {
+    [[nodiscard]] decltype(auto) operator->(this Self&& self) {
         using Ptr = std::remove_cvref_t<Self>::__python__;
-        return reinterpret_cast<Ptr*>(ptr(self));
+        return reinterpret_cast<Ptr*>(ptr(std::forward<Self>(self)));
     }
 
     /* Check for exact pointer identity. */
@@ -789,6 +794,12 @@ struct __issubclass__<T, Base>                              : Returns<bool> {
 };
 
 
+template <impl::inherits<Object> T>
+struct __cast__<T>                                          : Returns<T> {
+    static T operator()(T value) { return std::forward<T>(value); }
+};
+
+
 /* Default initialize py::Object to None. */
 template <>
 struct __init__<Object>                                     : Returns<Object> {
@@ -862,6 +873,49 @@ struct __cast__<From, To>                                   : Returns<To> {
         using Intermediate = __cast__<To>::type;
         return impl::implicit_cast<To>(
             impl::implicit_cast<Intermediate>(std::forward<From>(self))
+        );
+    }
+};
+
+
+/* Implicitly convert a Python object that wraps around a C++ type into a pointer to
+that type, which directly references the internal data. */
+template <impl::inherits<Object> From, typename To>
+    requires (
+        impl::has_cpp<From> &&
+        std::same_as<impl::cpp_type<std::remove_cvref_t<From>>, std::remove_cv_t<To>>
+    )
+struct __cast__<From, To*>                                  : Returns<To*> {
+    static To* operator()(From from) {
+        if constexpr (std::same_as<std::remove_cvref_t<From>, std::remove_cv_t<To>>) {
+            return &std::forward<From>(from);
+        } else {
+            return &from_python(std::forward<From>(from));
+        }
+    }
+};
+
+
+/* Implicitly convert a Python object into a shared pointer as long as the underlying
+types are convertible. */
+template <impl::inherits<Object> From, typename To> requires (std::convertible_to<From, To>)
+struct __cast__<From, std::shared_ptr<To>>                  : Returns<std::shared_ptr<To>> {
+    static std::shared_ptr<To> operator()(From value) {
+        return std::make_shared<To>(
+            impl::implicit_cast<To>(std::forward<From>(value))
+        );
+    }
+};
+
+
+/* Implicitly convert a Python object into a unique pointer as long as the underlying
+types are convertible. */
+template <impl::inherits<Object> From, typename To>
+    requires (std::convertible_to<From, To>)
+struct __cast__<From, std::unique_ptr<To>>                  : Returns<std::unique_ptr<To>> {
+    static std::unique_ptr<To> operator()(From value) {
+        return std::make_unique<To>(
+            impl::implicit_cast<To>(std::forward<From>(value))
         );
     }
 };
@@ -1058,13 +1112,7 @@ Python level. */
 template <std::derived_from<std::ostream> Stream, impl::inherits<Object> Self>
 struct __lshift__<Stream, Self>                             : Returns<Stream&> {
     /// TODO: Str, Bytes, ByteArray should specialize this to write to the stream directly.
-    static Stream& operator()(Stream& stream, Self&& self);  // defined in ops.h
-};
-
-
-template <impl::inherits<Object> T>
-struct __cast__<T>                                          : Returns<T> {
-    static T operator()(T value) { return std::forward<T>(value); }
+    static Stream& operator()(Stream& stream, Self self);  // defined in ops.h
 };
 
 
@@ -1161,10 +1209,34 @@ struct __cast__<From, To>                                   : Returns<To> {
 };
 
 
-template <impl::is<NoneType> From, typename T>
-struct __cast__<From, std::optional<T>>                     : Returns<std::optional<T>> {
-    static std::optional<T> operator()(From value) {
+template <impl::is<NoneType> From, typename To> requires (!std::convertible_to<From, To>)
+struct __cast__<From, std::optional<To>>                    : Returns<std::optional<To>> {
+    static std::optional<To> operator()(From value) {
         return std::nullopt;
+    }
+};
+
+
+template <impl::is<NoneType> From, typename To>
+struct __cast__<From, To*>                                  : Returns<To*> {
+    static To* operator()(From value) {
+        return nullptr;
+    }
+};
+
+
+template <impl::is<NoneType> From, typename To> requires (!std::convertible_to<From, To>)
+struct __cast__<From, std::shared_ptr<To>>                  : Returns<std::shared_ptr<To>> {
+    static std::shared_ptr<To> operator()(From value) {
+        return nullptr;
+    }
+};
+
+
+template <impl::is<NoneType> From, typename To> requires (!std::convertible_to<From, To>)
+struct __cast__<From, std::unique_ptr<To>>                  : Returns<std::unique_ptr<To>> {
+    static std::unique_ptr<To> operator()(From value) {
+        return nullptr;
     }
 };
 

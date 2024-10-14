@@ -1974,7 +1974,7 @@ auto __explicit_cast__<From, std::basic_string<Char>>::operator()(From&& from) {
 
 
 template <std::derived_from<std::ostream> Stream, impl::inherits<Object> Self>
-Stream& __lshift__<Stream, Self>::operator()(Stream& stream, Self&& self) {
+Stream& __lshift__<Stream, Self>::operator()(Stream& stream, Self self) {
     PyObject* repr = PyObject_Str(ptr(self));
     if (repr == nullptr) {
         Exception::from_python();
