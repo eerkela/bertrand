@@ -145,13 +145,6 @@ template <>
 struct Interface<Object> {};
 
 
-/// TODO: if all C++ types are going to be exposed to Python under the `bertrand`
-/// module (i.e. `bertrand.Int` == `py::Int`), then I'll probably need to define every
-/// type as a subclass of its Python equivalent, and use a shared metaclass to
-/// link them.  This will require a redesign of the internal machinery to place
-/// metaclasses as early as possible in the bootstrap process.
-
-
 /* An owning reference to a dynamically-typed Python object.  More specialized types
 can always be implicitly converted to this type, but doing the opposite incurs a
 runtime `isinstance()` check, and raises a `TypeError` if the check fails. */
@@ -291,7 +284,7 @@ protected:
     members.  It should only implement the `__export__()` script, which uses the
     binding helpers to expose the C++ type's interface to Python. */
     template <typename CRTP, typename Derived, typename CppType = void>
-    struct def : PyObject, impl::PythonTag {
+    struct def : PyObject, impl::BertrandTag {
     protected:
 
         template <typename... Ts>
@@ -395,7 +388,7 @@ protected:
     methods as they see fit.  Bertrand will ensure that these hooks are called whenever
     the Python object is created, destroyed, or otherwise manipulated from Python. */
     template <typename CRTP, typename Derived>
-    struct def<CRTP, Derived, void> : impl::PythonTag {
+    struct def<CRTP, Derived, void> : impl::BertrandTag {
     protected:
 
         template <StaticStr ModName>
@@ -489,7 +482,7 @@ protected:
     and are therefore safe to access from multiple threads, provided that the user
     ensures that the data they reference is thread-safe. */
     template <typename CRTP, StaticStr Name>
-    struct def<CRTP, Module<Name>, void> : impl::PythonTag {
+    struct def<CRTP, Module<Name>, void> : impl::BertrandTag {
     protected:
 
         template <StaticStr ModName>
@@ -609,16 +602,13 @@ public:
         return *this;
     }
 
-    /// TODO: make sure that the return type respects cvref qualifiers, so that these
-    /// can be passed on to any nested types.  Basically a bunch of constexpr branches
-    /// that check for the presence of cvref qualifiers and then apply them to the
-    /// result
-
     /* Access an internal member of the underlying PyObject* pointer. */
     template <impl::has_python Self>
     [[nodiscard]] decltype(auto) operator->(this Self&& self) {
         using Ptr = std::remove_cvref_t<Self>::__python__;
-        return reinterpret_cast<Ptr*>(ptr(std::forward<Self>(self)));
+        return reinterpret_cast<Ptr*>(
+            ptr(std::forward<Self>(self))
+        );
     }
 
     /* Check for exact pointer identity. */
@@ -744,7 +734,7 @@ struct Interface<Type<Object>> {};
 
 template <impl::inherits<Object> T>
 [[nodiscard]] PyObject* ptr(T&& obj) {
-    return obj.m_ptr;
+    return std::forward<T>(obj).m_ptr;
 }
 
 

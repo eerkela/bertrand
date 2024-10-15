@@ -1098,7 +1098,7 @@ struct Interface<Type<UnicodeEncodeError>> : Interface<Type<UnicodeError>> {
 template <>
 struct __init__<UnicodeEncodeError>                         : Disable {};
 template <std::convertible_to<std::string> Msg>
-struct __init__<UnicodeEncodeError, Msg>           : Disable {};
+struct __init__<UnicodeEncodeError, Msg>                    : Disable {};
 
 
 template <
@@ -1346,7 +1346,7 @@ struct Interface<Type<UnicodeTranslateError>> : Interface<Type<UnicodeError>> {
 template <>
 struct __init__<UnicodeTranslateError>                      : Disable {};
 template <std::convertible_to<std::string> Msg>
-struct __init__<UnicodeTranslateError, Msg>        : Disable {};
+struct __init__<UnicodeTranslateError, Msg>                 : Disable {};
 
 
 template <

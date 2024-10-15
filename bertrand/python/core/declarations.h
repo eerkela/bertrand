@@ -63,7 +63,6 @@ using bertrand::StaticStr;
 namespace impl {
     struct BertrandTag {};
     struct UnionTag : BertrandTag {};
-    struct PythonTag : BertrandTag {};  /// TODO: eliminate this
     struct IterTag : BertrandTag {};  /// TODO: eliminate this
     struct FunctionTag : BertrandTag {};   /// TODO: eliminate this
     struct TypeTag : BertrandTag {};  /// TODO: eliminate this
@@ -124,14 +123,15 @@ namespace impl {
     }
 
     template <size_t I, typename... Ts>
-    struct unpack_type_helper {
-        static_assert(false, "index out of range for parameter pack");
-    };
+    struct unpack_type_helper;
     template <size_t I, typename T, typename... Ts>
     struct unpack_type_helper<I, T, Ts...> {
-        using type = std::conditional_t<
-            (I > 0), typename unpack_type_helper<I - 1, Ts...>::type, T
-        >;
+        template <size_t J>
+        struct helper { using type = unpack_type_helper<J - 1, Ts...>::type;
+        };
+        template <size_t J> requires (J == 0)
+        struct helper<J> { using type = T; };
+        using type = helper<I>::type;
     };
     template <size_t I, typename... Ts>
     using unpack_type = unpack_type_helper<I, Ts...>::type;
@@ -205,7 +205,6 @@ namespace impl {
 
 
 struct Object;
-/// TODO: BertrandMeta + Type<T>() should come here (no slots or bindings)
 
 
 
@@ -2470,9 +2469,6 @@ namespace impl {
     template <typename T>
     concept cpp = !python<T>;
 
-    /// TODO: what about lazy types that evaluate to Object?  Or monads, like
-    /// Optional<T>, Union<T...>?  These have now been replaced with `Union<...>`,
-    /// which does not (and cannot) have a __wrapped__ type.
     template <typename T>
     concept dynamic = is<T, Object>;
 
