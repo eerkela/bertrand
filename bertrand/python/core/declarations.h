@@ -2487,6 +2487,57 @@ namespace impl {
     constexpr bool types_are_unique<T, Ts...> =
         !(std::same_as<T, Ts> || ...) && types_are_unique<Ts...>;
 
+    template <typename T, typename Self>
+    struct _qualify { using type = T; };
+    template <typename T, typename Self>
+    struct _qualify<T, const Self> { using type = const T; };
+    template <typename T, typename Self>
+    struct _qualify<T, volatile Self> { using type = volatile T; };
+    template <typename T, typename Self>
+    struct _qualify<T, const volatile Self> { using type = const volatile T; };
+    template <typename T, typename Self>
+    struct _qualify<T, Self&> { using type = T&; };
+    template <typename T, typename Self>
+    struct _qualify<T, const Self&> { using type = const T&; };
+    template <typename T, typename Self>
+    struct _qualify<T, volatile Self&> { using type = volatile T&; };
+    template <typename T, typename Self>
+    struct _qualify<T, const volatile Self&> { using type = const volatile T&; };
+    template <typename T, typename Self>
+    struct _qualify<T, Self&&> { using type = T&&; };
+    template <typename T, typename Self>
+    struct _qualify<T, const Self&&> { using type = const T&&; };
+    template <typename T, typename Self>
+    struct _qualify<T, volatile Self&&> { using type = volatile T&&; };
+    template <typename T, typename Self>
+    struct _qualify<T, const volatile Self&&> { using type = const volatile T&&; };
+    template <typename Self>
+    struct _qualify<void, Self> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, const Self> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, volatile Self> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, const volatile Self> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, Self&> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, const Self&> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, volatile Self&> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, const volatile Self&> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, Self&&> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, const Self&&> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, volatile Self&&> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, const volatile Self&&> { using type = void; };
+    template <typename T, typename Self>
+    using qualify = _qualify<T, Self>::type;
+
     template <typename T, typename = void>
     constexpr bool has_interface_helper = false;
     template <typename T>

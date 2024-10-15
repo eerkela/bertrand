@@ -768,12 +768,12 @@ template <std::derived_from<Object> T>
 }
 
 
-template <typename T, impl::is<Object> Base>
-struct __isinstance__<T, Base>                              : Returns<bool> {
-    static constexpr bool operator()(T&& obj) {
-        return std::derived_from<std::remove_cvref_t<T>, Object>;
+template <typename Derived, impl::is<Object> Base>
+struct __isinstance__<Derived, Base>                        : Returns<bool> {
+    static constexpr bool operator()(Derived obj) {
+        return impl::inherits<Derived, Object>;
     }
-    static constexpr bool operator()(T&& obj, Base&& cls);  // defined in ops.h
+    static constexpr bool operator()(Derived obj, Base cls);
 };
 
 
