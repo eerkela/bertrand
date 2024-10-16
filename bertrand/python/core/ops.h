@@ -623,6 +623,7 @@ decltype(auto) ifloordiv(L& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__ifloordiv__<L, R>>) {
         return __ifloordiv__<L, R>{}(lhs, std::forward<R>(rhs));
     } else {
+        using Return = std::remove_cvref_t<typename __ifloordiv__<L, R>::type>;
         PyObject* result = PyNumber_InPlaceFloorDivide(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
@@ -632,7 +633,7 @@ decltype(auto) ifloordiv(L& lhs, R&& rhs) {
         } else if (result == ptr(lhs)) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<typename __ifloordiv__<L, R>::type>(result);
+            lhs = reinterpret_steal<Return>(result);
         }
         return lhs;
     }
@@ -738,13 +739,14 @@ decltype(auto) operator++(Self& self) {
         return ++from_python(self);
 
     } else {
+        using Return = std::remove_cvref_t<typename __increment__<Self>::type>;
         PyObject* result = PyNumber_InPlaceAdd(ptr(self), impl::one);
         if (result == nullptr) {
             Exception::from_python();
         } else if (result == ptr(self)) {
             Py_DECREF(result);
         } else {
-            self = reinterpret_steal<typename __increment__<Self>::type>(result);
+            self = reinterpret_steal<Return>(result);
         }
         return self;
     }
@@ -769,13 +771,14 @@ decltype(auto) operator--(Self& self) {
         return --from_python(self);
 
     } else {
+        using Return = std::remove_cvref_t<typename __decrement__<Self>::type>;
         PyObject* result = PyNumber_InPlaceSubtract(ptr(self), impl::one);
         if (result == nullptr) {
             Exception::from_python();
         } else if (result == ptr(self)) {
             Py_DECREF(result);
         } else {
-            self = reinterpret_steal<typename __decrement__<Self>::type>(result);
+            self = reinterpret_steal<Return>(result);
         }
         return self;
     }
@@ -1039,7 +1042,7 @@ decltype(auto) operator+=(L& lhs, R&& rhs) {
         return from_python(lhs) += from_python(std::forward<R>(rhs));
 
     } else {
-        using Return = std::remove_reference_t<typename __iadd__<L, R>::type>;
+        using Return = std::remove_cvref_t<typename __iadd__<L, R>::type>;
         PyObject* result = PyNumber_InPlaceAdd(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
@@ -1109,6 +1112,7 @@ decltype(auto) operator-=(L& lhs, R&& rhs) {
         return from_python(lhs) -= from_python(std::forward<R>(rhs));
 
     } else {
+        using Return = std::remove_cvref_t<typename __isub__<L, R>::type>;
         PyObject* result = PyNumber_InPlaceSubtract(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
@@ -1118,7 +1122,7 @@ decltype(auto) operator-=(L& lhs, R&& rhs) {
         } else if (result == ptr(lhs)) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<typename __isub__<L, R>::type>(result);
+            lhs = reinterpret_steal<Return>(result);
         }
         return lhs;
     }
@@ -1178,6 +1182,7 @@ decltype(auto) operator*=(L& lhs, R&& rhs) {
         return from_python(lhs) *= from_python(std::forward<R>(rhs));
 
     } else {
+        using Return = std::remove_cvref_t<typename __imul__<L, R>::type>;
         PyObject* result = PyNumber_InPlaceMultiply(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
@@ -1187,7 +1192,7 @@ decltype(auto) operator*=(L& lhs, R&& rhs) {
         } else if (result == ptr(lhs)) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<typename __imul__<L, R>::type>(result);
+            lhs = reinterpret_steal<Return>(result);
         }
         return lhs;
     }
@@ -1247,6 +1252,7 @@ decltype(auto) operator/=(L& lhs, R&& rhs) {
         return from_python(lhs) /= from_python(std::forward<R>(rhs));
 
     } else {
+        using Return = std::remove_cvref_t<typename __itruediv__<L, R>::type>;
         PyObject* result = PyNumber_InPlaceTrueDivide(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
@@ -1256,7 +1262,7 @@ decltype(auto) operator/=(L& lhs, R&& rhs) {
         } else if (result == ptr(lhs)) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<typename __itruediv__<L, R>::type>(result);
+            lhs = reinterpret_steal<Return>(result);
         }
         return lhs;
     }
@@ -1316,6 +1322,7 @@ decltype(auto) operator%=(L& lhs, R&& rhs) {
         return from_python(lhs) %= from_python(std::forward<R>(rhs));
 
     } else {
+        using Return = std::remove_cvref_t<typename __imod__<L, R>::type>;
         PyObject* result = PyNumber_InPlaceRemainder(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
@@ -1325,7 +1332,7 @@ decltype(auto) operator%=(L& lhs, R&& rhs) {
         } else if (result == ptr(lhs)) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<typename __imod__<L, R>::type>(result);
+            lhs = reinterpret_steal<Return>(result);
         }
         return lhs;
     }
@@ -1385,6 +1392,7 @@ decltype(auto) operator<<=(L& lhs, R&& rhs) {
         return from_python(lhs) <<= from_python(std::forward<R>(rhs));
 
     } else {
+        using Return = std::remove_cvref_t<typename __ilshift__<L, R>::type>;
         PyObject* result = PyNumber_InPlaceLshift(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
@@ -1394,7 +1402,7 @@ decltype(auto) operator<<=(L& lhs, R&& rhs) {
         } else if (result == ptr(lhs)) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<typename __ilshift__<L, R>::type>(result);
+            lhs = reinterpret_steal<Return>(result);
         }
         return lhs;
     }
@@ -1454,6 +1462,7 @@ decltype(auto) operator>>=(L& lhs, R&& rhs) {
         return from_python(lhs) >>= from_python(std::forward<R>(rhs));
 
     } else {
+        using Return = std::remove_cvref_t<typename __irshift__<L, R>::type>;
         PyObject* result = PyNumber_InPlaceRshift(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
@@ -1463,7 +1472,7 @@ decltype(auto) operator>>=(L& lhs, R&& rhs) {
         } else if (result == ptr(lhs)) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<typename __irshift__<L, R>::type>(result);
+            lhs = reinterpret_steal<Return>(result);
         }
         return lhs;
     }
@@ -1523,6 +1532,7 @@ decltype(auto) operator&=(L& lhs, R&& rhs) {
         return from_python(lhs) &= from_python(std::forward<R>(rhs));
 
     } else {
+        using Return = std::remove_cvref_t<typename __iand__<L, R>::type>;
         PyObject* result = PyNumber_InPlaceAnd(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
@@ -1532,7 +1542,7 @@ decltype(auto) operator&=(L& lhs, R&& rhs) {
         } else if (result == ptr(lhs)) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<typename __iand__<L, R>::type>(result);
+            lhs = reinterpret_steal<Return>(result);
         }
         return lhs;
     }
@@ -1592,6 +1602,7 @@ decltype(auto) operator|=(L& lhs, R&& rhs) {
         return from_python(lhs) |= from_python(std::forward<R>(rhs));
 
     } else {
+        using Return = std::remove_cvref_t<typename __ior__<L, R>::type>;
         PyObject* result = PyNumber_InPlaceOr(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
@@ -1601,7 +1612,7 @@ decltype(auto) operator|=(L& lhs, R&& rhs) {
         } else if (result == ptr(lhs)) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<typename __ior__<L, R>::type>(result);
+            lhs = reinterpret_steal<Return>(result);
         }
         return lhs;
     }
@@ -1661,6 +1672,7 @@ decltype(auto) operator^=(L& lhs, R&& rhs) {
         return from_python(lhs) ^= from_python(std::forward<R>(rhs));
 
     } else {
+        using Return = std::remove_cvref_t<typename __ixor__<L, R>::type>;
         PyObject* result = PyNumber_InPlaceXor(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
@@ -1670,7 +1682,7 @@ decltype(auto) operator^=(L& lhs, R&& rhs) {
         } else if (result == ptr(lhs)) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<typename __ixor__<L, R>::type>(result);
+            lhs = reinterpret_steal<Return>(result);
         }
         return lhs;
     }

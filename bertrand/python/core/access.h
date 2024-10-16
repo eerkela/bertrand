@@ -1910,6 +1910,21 @@ namespace impl {
     template <typename T>
     concept py_union = _py_union<std::remove_cvref_t<T>>;
 
+    template <typename T, typename>
+    struct holds_alternative {
+        static constexpr bool enable = false;
+        template <typename Self>
+        static bool operator()(Self&&) { return false; }
+    };
+    template <typename T, typename... Types>
+    struct holds_alternative<T, Union<Types...>> {
+        static constexpr bool enable = (std::same_as<T, Types> || ...);
+        template <typename Self>
+        static bool operator()(Self&& self) {
+            return index_of<T, Types...> == self->m_index;
+        }
+    };
+
     template <typename... Ts>
     struct Placeholder {};
 
@@ -2039,7 +2054,7 @@ namespace impl {
             using type = void;
         };
         template <typename... Types>
-            requires (__getattr__<qualify<Types, Self>, Name>::enable || ...)
+            requires (__getattr__<qualify_lvalue<Types, Self>, Name>::enable || ...)
         struct traits<Union<Types...>> {
             template <typename result, typename... Ts>
             struct unary { using type = result; };
@@ -2048,11 +2063,11 @@ namespace impl {
                 template <typename>
                 struct conditional { using type = Placeholder<Matches...>; };
                 template <typename T2>
-                    requires (__getattr__<qualify<T2, Self>, Name>::enable)
+                    requires (__getattr__<qualify_lvalue<T2, Self>, Name>::enable)
                 struct conditional<T2> {
                     using type = Placeholder<
                         Matches...,
-                        typename __getattr__<qualify<T2, Self>, Name>::type
+                        typename __getattr__<qualify_lvalue<T2, Self>, Name>::type
                     >;
                 };
                 using type = unary<typename conditional<T>::type, Ts...>::type;
@@ -2073,7 +2088,7 @@ namespace impl {
             static constexpr bool enable = false;
         };
         template <typename... Types>
-            requires (__setattr__<qualify<Types, Self>, Name, Value>::enable || ...)
+            requires (__setattr__<qualify_lvalue<Types, Self>, Name, Value>::enable || ...)
         struct traits<Union<Types...>> {
             static constexpr bool enable = true;
         };
@@ -2090,7 +2105,7 @@ namespace impl {
             static constexpr bool enable = false;
         };
         template <typename... Types>
-            requires (__delattr__<qualify<Types, Self>, Name>::enable || ...)
+            requires (__delattr__<qualify_lvalue<Types, Self>, Name>::enable || ...)
         struct traits<Union<Types...>> {
             static constexpr bool enable = true;
         };
@@ -2108,7 +2123,7 @@ namespace impl {
             using type = void;
         };
         template <typename... Types>
-            requires (__call__<qualify<Types, Self>, Args...>::enable || ...)
+            requires (__call__<qualify_lvalue<Types, Self>, Args...>::enable || ...)
         struct traits<Union<Types...>> {
             template <typename result, typename... Ts>
             struct unary { using type = result; };
@@ -2117,11 +2132,11 @@ namespace impl {
                 template <typename>
                 struct conditional { using type = Placeholder<Matches...>; };
                 template <typename T2>
-                    requires (__call__<qualify<T2, Self>, Args...>::enable)
+                    requires (__call__<qualify_lvalue<T2, Self>, Args...>::enable)
                 struct conditional<T2> {
                     using type = Placeholder<
                         Matches...,
-                        typename __call__<qualify<T2, Self>, Args...>::type
+                        typename __call__<qualify_lvalue<T2, Self>, Args...>::type
                     >;
                 };
                 using type = unary<typename conditional<T>::type, Ts...>::type;
@@ -2143,7 +2158,7 @@ namespace impl {
             using type = void;
         };
         template <typename... Types>
-            requires (__getitem__<qualify<Types, Self>, Key...>::enable || ...)
+            requires (__getitem__<qualify_lvalue<Types, Self>, Key...>::enable || ...)
         struct traits<Union<Types...>> {
             template <typename result, typename... Ts>
             struct unary { using type = result; };
@@ -2152,11 +2167,11 @@ namespace impl {
                 template <typename>
                 struct conditional { using type = Placeholder<Matches...>; };
                 template <typename T2>
-                    requires (__getitem__<qualify<T2, Self>, Key...>::enable)
+                    requires (__getitem__<qualify_lvalue<T2, Self>, Key...>::enable)
                 struct conditional<T2> {
                     using type = Placeholder<
                         Matches...,
-                        typename __getitem__<qualify<T2, Self>, Key...>::type
+                        typename __getitem__<qualify_lvalue<T2, Self>, Key...>::type
                     >;
                 };
                 using type = unary<typename conditional<T>::type, Ts...>::type;
@@ -2177,7 +2192,7 @@ namespace impl {
             static constexpr bool enable = false;
         };
         template <typename... Types>
-            requires (__setitem__<qualify<Types, Self>, Value, Key...>::enable || ...)
+            requires (__setitem__<qualify_lvalue<Types, Self>, Value, Key...>::enable || ...)
         struct traits<Union<Types...>> {
             static constexpr bool enable = true;
         };
@@ -2194,7 +2209,7 @@ namespace impl {
             static constexpr bool enable = false;
         };
         template <typename... Types>
-            requires (__delitem__<qualify<Types, Self>, Key...>::enable || ...)
+            requires (__delitem__<qualify_lvalue<Types, Self>, Key...>::enable || ...)
         struct traits<Union<Types...>> {
             static constexpr bool enable = true;
         };
@@ -2211,7 +2226,7 @@ namespace impl {
             static constexpr bool enable = false;
         };
         template <typename... Types>
-            requires (__len__<qualify<Types, Self>>::enable || ...)
+            requires (__len__<qualify_lvalue<Types, Self>>::enable || ...)
         struct traits<Union<Types...>> {
             static constexpr bool enable = true;
         };
@@ -2228,7 +2243,7 @@ namespace impl {
             static constexpr bool enable = false;
         };
         template <typename... Types>
-            requires (__contains__<qualify<Types, Self>, Key>::enable || ...)
+            requires (__contains__<qualify_lvalue<Types, Self>, Key>::enable || ...)
         struct traits<Union<Types...>> {
             static constexpr bool enable = true;
         };
@@ -2245,7 +2260,7 @@ namespace impl {
             static constexpr bool enable = false;
         };
         template <typename... Types>
-            requires (__hash__<qualify<Types, Self>>::enable || ...)
+            requires (__hash__<qualify_lvalue<Types, Self>>::enable || ...)
         struct traits<Union<Types...>> {
             static constexpr bool enable = true;
         };
@@ -2255,13 +2270,6 @@ namespace impl {
 
     template <template <typename> typename control>
     struct union_unary_operator {
-        template <typename T>
-        struct ref { using type = T&; };
-        template <typename T>
-        struct ref<T&> { using type = T&; };
-        template <typename T>
-        struct ref<T&&> { using type = T&&; };
-
         template <typename>
         struct op { static constexpr bool enable = false; };
         template <py_union Self>
@@ -2272,7 +2280,7 @@ namespace impl {
                 using type = void;
             };
             template <typename... Types>
-                requires (control<qualify<Types, Self>>::enable || ...)
+                requires (control<qualify_lvalue<Types, Self>>::enable || ...)
             struct traits<Union<Types...>> {
                 template <typename result, typename... Ts>
                 struct unary { using type = result; };
@@ -2281,11 +2289,11 @@ namespace impl {
                     template <typename>
                     struct conditional { using type = Placeholder<Matches...>; };
                     template <typename T2>
-                        requires (control<qualify<T2, Self>>::enable)
+                        requires (control<qualify_lvalue<T2, Self>>::enable)
                     struct conditional<T2> {
                         using type = Placeholder<
                             Matches...,
-                            typename control<qualify<T2, Self>>::type
+                            typename control<qualify_lvalue<T2, Self>>::type
                         >;
                     };
                     using type = unary<typename conditional<T>::type, Ts...>::type;
@@ -2309,7 +2317,7 @@ namespace impl {
                     OnSuccess&& success,
                     OnFailure&& failure
                 ) {
-                    using S = ref<impl::qualify<impl::unpack_type<I, Types...>, Self>>::type;
+                    using S = qualify_lvalue<unpack_type<I, Types...>, Self>;
                     if constexpr (control<S>::enable) {
                         return success(reinterpret_cast<S>(
                             std::forward<Self>(self)->m_value
@@ -2376,13 +2384,6 @@ namespace impl {
 
     template <template <typename> typename control>
     struct union_unary_inplace_operator {
-        template <typename T>
-        struct ref { using type = T&; };
-        template <typename T>
-        struct ref<T&> { using type = T&; };
-        template <typename T>
-        struct ref<T&&> { using type = T&&; };
-
         template <typename>
         struct op { static constexpr bool enable = false; };
         template <py_union Self>
@@ -2390,7 +2391,7 @@ namespace impl {
             template <typename>
             static constexpr bool match = false;
             template <typename... Types>
-                requires (control<qualify<Types, Self>>::enable || ...)
+                requires (control<qualify_lvalue<Types, Self>>::enable || ...)
             static constexpr bool match<Union<Types...>> = true;
             static constexpr bool enable = match<std::remove_cvref_t<Self>>;
             using type = Self;
@@ -2408,7 +2409,7 @@ namespace impl {
                     OnSuccess&& success,
                     OnFailure&& failure
                 ) {
-                    using S = ref<impl::qualify<impl::unpack_type<I, Types...>, Self>>::type;
+                    using S = qualify_lvalue<unpack_type<I, Types...>, Self>;
                     if constexpr (control<S>::enable) {
                         success(reinterpret_cast<S>(
                             std::forward<Self>(self)->m_value
@@ -2469,13 +2470,6 @@ namespace impl {
 
     template <template <typename, typename> typename control>
     struct union_binary_operator {
-        template <typename T>
-        struct ref { using type = T&; };
-        template <typename T>
-        struct ref<T&> { using type = T&; };
-        template <typename T>
-        struct ref<T&&> { using type = T&&; };
-
         template <typename, typename>
         struct op { static constexpr bool enable = false; };
         template <py_union L, py_union R>
@@ -2485,7 +2479,7 @@ namespace impl {
             template <typename L2, typename R2, typename... R2s>
             struct any_match<L2, R2, R2s...> {
                 static constexpr bool enable =
-                    control<qualify<L2, L>, qualify<R2, R>>::enable ||
+                    control<qualify_lvalue<L2, L>, qualify_lvalue<R2, R>>::enable ||
                     any_match<L2, R2s...>::enable;
             };
             template <typename, typename>
@@ -2507,11 +2501,11 @@ namespace impl {
                         template <typename>
                         struct conditional { using type = Placeholder<Ms...>; };
                         template <typename R3>
-                            requires (control<qualify<L3, L>, qualify<R3, R>>::enable)
+                            requires (control<qualify_lvalue<L3, L>, qualify_lvalue<R3, R>>::enable)
                         struct conditional<R3> {
                             using type = Placeholder<
                                 Ms...,
-                                typename control<qualify<L3, L>, qualify<R3, R>>::type
+                                typename control<qualify_lvalue<L3, L>, qualify_lvalue<R3, R>>::type
                             >;
                         };
                         using type = right<
@@ -2552,8 +2546,8 @@ namespace impl {
                     OnSuccess&& success,
                     OnFailure&& failure
                 ) {
-                    using L2 = ref<impl::qualify<impl::unpack_type<I, Ls...>, L>>::type;
-                    using R2 = ref<impl::qualify<impl::unpack_type<J, Rs...>, R>>::type;
+                    using L2 = qualify_lvalue<unpack_type<I, Ls...>, L>;
+                    using R2 = qualify_lvalue<unpack_type<J, Rs...>, R>;
                     if constexpr (control<L2, R2>::enable) {
                         return success(
                             reinterpret_cast<L2>(std::forward<L>(lhs)->m_value),
@@ -2639,7 +2633,7 @@ namespace impl {
                 using type = void;
             };
             template <typename... Ls>
-                requires (control<qualify<Ls, L>, R>::enable || ...)
+                requires (control<qualify_lvalue<Ls, L>, R>::enable || ...)
             struct traits<Union<Ls...>> {
                 template <typename result, typename... L2s>
                 struct left { using type = result; };
@@ -2648,11 +2642,11 @@ namespace impl {
                     template <typename>
                     struct conditional { using type = Placeholder<Matches...>; };
                     template <typename L3>
-                        requires (control<qualify<L3, L>, R>::enable)
+                        requires (control<qualify_lvalue<L3, L>, R>::enable)
                     struct conditional<L3> {
                         using type = Placeholder<
                             Matches...,
-                            typename control<qualify<L3, L>, R>::type
+                            typename control<qualify_lvalue<L3, L>, R>::type
                         >;
                     };
                     using type = left<typename conditional<L2>::type, L2s...>::type;
@@ -2677,7 +2671,7 @@ namespace impl {
                     OnSuccess&& success,
                     OnFailure&& failure
                 ) {
-                    using L2 = ref<impl::qualify<impl::unpack_type<I, Ls...>, L>>::type;
+                    using L2 = qualify_lvalue<unpack_type<I, Ls...>, L>;
                     if constexpr (control<L2, R>::enable) {
                         return success(
                             reinterpret_cast<L2>(std::forward<L>(lhs)->m_value),
@@ -2742,7 +2736,7 @@ namespace impl {
                 using type = void;
             };
             template <typename... Rs>
-                requires (control<L, qualify<Rs, R>>::enable || ...)
+                requires (control<L, qualify_lvalue<Rs, R>>::enable || ...)
             struct traits<Union<Rs...>> {
                 template <typename result, typename... R2s>
                 struct right { using type = result; };
@@ -2751,11 +2745,11 @@ namespace impl {
                     template <typename>
                     struct conditional { using type = Placeholder<Matches...>; };
                     template <typename R3>
-                        requires (control<L, qualify<R3, R>>::enable)
+                        requires (control<L, qualify_lvalue<R3, R>>::enable)
                     struct conditional<R3> {
                         using type = Placeholder<
                             Matches...,
-                            typename control<L, qualify<R3, R>>::type
+                            typename control<L, qualify_lvalue<R3, R>>::type
                         >;
                     };
                     using type = right<typename conditional<R2>::type, R2s...>::type;
@@ -2780,7 +2774,7 @@ namespace impl {
                     OnSuccess&& success,
                     OnFailure&& failure
                 ) {
-                    using R2 = ref<impl::qualify<impl::unpack_type<J, Rs...>, R>>::type;
+                    using R2 = qualify_lvalue<unpack_type<J, Rs...>, R>;
                     if constexpr (control<L, R2>::enable) {
                         return success(
                             std::forward<L>(lhs),
@@ -2878,13 +2872,6 @@ namespace impl {
 
     template <template <typename, typename> typename control>
     struct union_inplace_binary_operator {
-        template <typename T>
-        struct ref { using type = T&; };
-        template <typename T>
-        struct ref<T&> { using type = T&; };
-        template <typename T>
-        struct ref<T&&> { using type = T&&; };
-
         template <typename, typename>
         struct op { static constexpr bool enable = false; };
         template <py_union L, py_union R>
@@ -2894,7 +2881,7 @@ namespace impl {
             template <typename L2, typename R2, typename... R2s>
             struct any_match<L2, R2, R2s...> {
                 static constexpr bool enable =
-                    control<qualify<L2, L>, qualify<R2, R>>::enable ||
+                    control<qualify_lvalue<L2, L>, qualify_lvalue<R2, R>>::enable ||
                     any_match<L2, R2s...>::enable;
             };
             template <typename, typename>
@@ -2923,8 +2910,8 @@ namespace impl {
                     OnSuccess&& success,
                     OnFailure&& failure
                 ) {
-                    using L2 = ref<impl::qualify<impl::unpack_type<I, Ls...>, L>>::type;
-                    using R2 = ref<impl::qualify<impl::unpack_type<J, Rs...>, R>>::type;
+                    using L2 = qualify_lvalue<unpack_type<I, Ls...>, L>;
+                    using R2 = qualify_lvalue<unpack_type<J, Rs...>, R>;
                     if constexpr (control<L2, R2>::enable) {
                         success(
                             reinterpret_cast<L2>(std::forward<L>(lhs)->m_value),
@@ -3009,7 +2996,7 @@ namespace impl {
             template <typename>
             static constexpr bool match = false;
             template <typename... Ls>
-                requires (control<qualify<Ls, L>, R>::enable || ...)
+                requires (control<qualify_lvalue<Ls, L>, R>::enable || ...)
             static constexpr bool match<Union<Ls...>> = true;
             static constexpr bool enable = match<std::remove_cvref_t<L>>;
             using type = L;
@@ -3028,7 +3015,7 @@ namespace impl {
                     OnSuccess&& success,
                     OnFailure&& failure
                 ) {
-                    using L2 = ref<impl::qualify<impl::unpack_type<I, Ls...>, L>>::type;
+                    using L2 = qualify_lvalue<unpack_type<I, Ls...>, L>;
                     if constexpr (control<L2, R>::enable) {
                         success(
                             reinterpret_cast<L2>(std::forward<L>(lhs)->m_value),
@@ -3092,7 +3079,7 @@ namespace impl {
             template <typename>
             static constexpr bool match = false;
             template <typename... Rs>
-                requires (control<L, qualify<Rs, R>>::enable || ...)
+                requires (control<L, qualify_lvalue<Rs, R>>::enable || ...)
             static constexpr bool match<Union<Rs...>> = true;
             static constexpr bool enable = match<std::remove_cvref_t<R>>;
             using type = L;
@@ -3111,7 +3098,7 @@ namespace impl {
                     OnSuccess&& success,
                     OnFailure&& failure
                 ) {
-                    using R2 = ref<impl::qualify<impl::unpack_type<J, Rs...>, R>>::type;
+                    using R2 = qualify_lvalue<unpack_type<J, Rs...>, R>;
                     if constexpr (control<L, R2>::enable) {
                         success(
                             std::forward<L>(lhs),
@@ -4850,7 +4837,7 @@ struct __getattr__<Self, Name> : Returns<typename impl::UnionGetAttr<Self, Name>
     struct context<Union<Types...>> {
         template <size_t I> requires (I < sizeof...(Types))
         static type exec(Self self) {
-            using T = impl::qualify<impl::unpack_type<I, Types...>, Self>;
+            using T = impl::qualify_lvalue<impl::unpack_type<I, Types...>, Self>;
             if constexpr (__getattr__<T, Name>::enable) {
                 return getattr<Name>(
                     reinterpret_cast<T>(std::forward<Self>(self)->m_value)
@@ -4889,7 +4876,7 @@ struct __setattr__<Self, Name, Value> : Returns<void> {
     struct context<Union<Types...>> {
         template <size_t I> requires (I < sizeof...(Types))
         static void exec(Self self, Value&& value) {
-            using T = impl::qualify<impl::unpack_type<I, Types...>, Self>;
+            using T = impl::qualify_lvalue<impl::unpack_type<I, Types...>, Self>;
             if constexpr (__setattr__<T, Name, Value>::enable) {
                 setattr<Name>(
                     reinterpret_cast<T>(std::forward<Self>(self)->m_value),
@@ -4932,7 +4919,7 @@ struct __delattr__<Self, Name> : Returns<void> {
     struct context<Union<Types...>> {
         template <size_t I> requires (I < sizeof...(Types))
         static void exec(Self self) {
-            using T = impl::qualify<impl::unpack_type<I, Types...>, Self>;
+            using T = impl::qualify_lvalue<impl::unpack_type<I, Types...>, Self>;
             if constexpr (__delattr__<T, Name>::enable) {
                 delattr<Name>(
                     reinterpret_cast<T>(std::forward<Self>(self)->m_value)
@@ -4970,7 +4957,7 @@ struct __repr__<Self> : Returns<std::string> {
     struct context<Union<Types...>> {
         template <size_t I> requires (I < sizeof...(Types))
         static std::string exec(Self self) {
-            using T = impl::qualify<impl::unpack_type<I, Types...>, Self>;
+            using T = impl::qualify_lvalue<impl::unpack_type<I, Types...>, Self>;
             if constexpr (__repr__<T>::enable) {
                 return repr(reinterpret_cast<T>(std::forward<Self>(self)->m_value));
             } else {
@@ -5006,7 +4993,7 @@ struct __call__<Self, Args...> : Returns<typename impl::UnionCall<Self, Args...>
     struct context<Union<Types...>> {
         template <size_t I> requires (I < sizeof...(Types))
         static type exec(Self self, Args&&... args) {
-            using T = impl::qualify<impl::unpack_type<I, Types...>, Self>;
+            using T = impl::qualify_lvalue<impl::unpack_type<I, Types...>, Self>;
             if constexpr (__call__<T, Args...>::enable) {
                 return reinterpret_cast<T>(std::forward<Self>(self)->m_value)(
                     std::forward<Args>(args)...
@@ -5053,7 +5040,7 @@ struct __getitem__<Self, Key...> : Returns<typename impl::UnionGetItem<Self, Key
     struct context<Union<Types...>> {
         template <size_t I> requires (I < sizeof...(Types))
         static type exec(Self self, Key&&... key) {
-            using T = impl::qualify<impl::unpack_type<I, Types...>, Self>;
+            using T = impl::qualify_lvalue<impl::unpack_type<I, Types...>, Self>;
             if constexpr (__getitem__<T, Key...>::enable) {
                 return reinterpret_cast<T>(
                     std::forward<Self>(self)->m_value
@@ -5098,7 +5085,7 @@ struct __setitem__<Self, Value, Key...> : Returns<void> {
     struct context<Union<Types...>> {
         template <size_t I> requires (I < sizeof...(Types))
         static void exec(Self self, Value&& value, Key&&... key) {
-            using T = impl::qualify<impl::unpack_type<I, Types...>, Self>;
+            using T = impl::qualify_lvalue<impl::unpack_type<I, Types...>, Self>;
             if constexpr (__setitem__<T, Key..., Value>::enable) {
                 reinterpret_cast<T>(
                     std::forward<Self>(self)->m_value
@@ -5149,7 +5136,7 @@ struct __delitem__<Self, Key...> : Returns<void> {
     struct context<Union<Types...>> {
         template <size_t I> requires (I < sizeof...(Types))
         static void exec(Self self, Key&&... key) {
-            using T = impl::qualify<impl::unpack_type<I, Types...>, Self>;
+            using T = impl::qualify_lvalue<impl::unpack_type<I, Types...>, Self>;
             if constexpr (__delitem__<T, Key...>::enable) {
                 del(
                     reinterpret_cast<T>(
@@ -5195,7 +5182,7 @@ struct __len__<Self> : Returns<size_t> {
     struct context<Union<Types...>> {
         template <size_t I> requires (I < sizeof...(Types))
         static size_t exec(Self self) {
-            using T = impl::qualify<impl::unpack_type<I, Types...>, Self>;
+            using T = impl::qualify_lvalue<impl::unpack_type<I, Types...>, Self>;
             if constexpr (__len__<T>::enable) {
                 return len(
                     reinterpret_cast<T>(std::forward<Self>(self)->m_value)
@@ -5248,7 +5235,7 @@ struct __contains__<Self, Key> : Returns<bool> {
     struct context<Union<Types...>> {
         template <size_t I> requires (I < sizeof...(Types))
         static bool exec(Self self, Key&& key) {
-            using T = impl::qualify<impl::unpack_type<I, Types...>, Self>;
+            using T = impl::qualify_lvalue<impl::unpack_type<I, Types...>, Self>;
             if constexpr (__contains__<T, Key>::enable) {
                 return reinterpret_cast<T>(
                     std::forward<Self>(self)->m_value
@@ -5292,7 +5279,7 @@ struct __hash__<Self> : Returns<size_t> {
     struct context<Union<Types...>> {
         template <size_t I> requires (I < sizeof...(Types))
         static size_t exec(Self self) {
-            using T = impl::qualify<impl::unpack_type<I, Types...>, Self>;
+            using T = impl::qualify_lvalue<impl::unpack_type<I, Types...>, Self>;
             if constexpr (__hash__<T>::enable) {
                 return hash(
                     reinterpret_cast<T>(std::forward<Self>(self)->m_value)
@@ -6075,11 +6062,6 @@ struct __ior__<L, R> : Returns<L> {
 };
 
 
-/// TODO: remember to specialize std::variant_size, std::variant_alternative, and
-/// possibly std::get, std::get_if, std::visit, and std::holds_alternative
-
-
-
 ////////////////////////////
 ////    INTERSECTION    ////
 ////////////////////////////
@@ -6101,12 +6083,111 @@ inline void test() {
     Optional<Object> x;
     auto y = x + None;
     // auto z = len(x);
+    if (x.is(None)) {
+        x = Ellipsis;
+    }
     ++x;
-    x += None;
+    if (x <= Ellipsis) {
+        x += NotImplemented;
+    };
     // std::optional<EllipsisType> z = x;
 }
 
 
+}
+
+
+namespace std {
+
+    template <typename... Types>
+    struct variant_size<py::Union<Types...>> :
+        std::integral_constant<size_t, sizeof...(Types)>
+    {};
+
+    template <size_t I, typename... Types>
+    struct variant_alternative<I, py::Union<Types...>> {
+        using type = py::impl::unpack_type<I, Types...>;
+    };
+
+    template <typename T, py::impl::py_union Self>
+        requires (py::impl::holds_alternative<T, std::remove_cvref_t<Self>>::enable)
+    bool holds_alternative(Self&& self) {
+        return py::impl::holds_alternative<T, std::remove_cvref_t<Self>>{}(
+            std::forward<Self>(self)
+        );
+    }
+
+    template <typename T, py::impl::py_union Self>
+        requires (py::impl::holds_alternative<T, std::remove_cvref_t<Self>>::enable)
+    auto get(Self&& self) -> py::impl::qualify_lvalue<T, Self> {
+        using Return = py::impl::qualify_lvalue<T, Self>;
+        if (holds_alternative<T>(self)) {
+            return reinterpret_cast<Return>(std::forward<Self>(self)->m_value);
+        } else {
+            throw py::TypeError(
+                "bad union access: '" + py::impl::demangle(typeid(T).name()) +
+                "' is not the active type"
+            );
+        }
+    }
+
+    template <size_t I, py::impl::py_union Self>
+        requires (py::impl::holds_alternative<
+            typename std::variant_alternative_t<I, std::remove_cvref_t<Self>>,
+            std::remove_cvref_t<Self>
+        >::enable)
+    auto get(Self&& self) -> py::impl::qualify_lvalue<
+        typename std::variant_alternative_t<I, std::remove_cvref_t<Self>>,
+        Self
+    > {
+        using Return = py::impl::qualify_lvalue<
+            typename std::variant_alternative_t<I, std::remove_cvref_t<Self>>,
+            Self
+        >;
+        if (I == self->m_index) {
+            return reinterpret_cast<Return>(self->m_value);
+        } else {
+            throw py::TypeError(
+                "bad union access: '" +
+                py::impl::demangle(typeid(std::remove_cvref_t<Return>).name()) +
+                "' is not the active type"
+            );
+        }
+    }
+
+    template <typename T, py::impl::py_union Self>
+        requires (py::impl::holds_alternative<T, std::remove_cvref_t<Self>>::enable)
+    auto get_if(Self&& self) -> py::impl::qualify_pointer<T, Self> {
+        return holds_alternative<T>(self) ?
+            reinterpret_cast<py::impl::qualify_pointer<T, Self>>(&self->m_value) :
+            nullptr;
+    }
+
+    template <size_t I, py::impl::py_union Self>
+        requires (py::impl::holds_alternative<
+            typename std::variant_alternative_t<I, std::remove_cvref_t<Self>>,
+            std::remove_cvref_t<Self>
+        >::enable)
+    auto get_if(Self&& self) -> py::impl::qualify_pointer<
+        typename std::variant_alternative_t<I, std::remove_cvref_t<Self>>,
+        Self
+    > {
+        return I == self->m_index ?
+            reinterpret_cast<py::impl::qualify_pointer<
+                typename std::variant_alternative_t<I, std::remove_cvref_t<Self>>,
+                Self
+            >>(&self->m_value) :
+            nullptr;
+    }
+
+    /// TODO: std::visit?
+
+}
+
+
+inline void test() {
+    volatile py::Optional<py::EllipsisType> x;
+    auto& y = std::get<py::NoneType>(x);
 }
 
 

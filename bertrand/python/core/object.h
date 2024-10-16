@@ -964,8 +964,7 @@ struct __getattr__<Self, Name>                              : Returns<Object> {}
 template <impl::is<Object> Self, StaticStr Name, std::convertible_to<Object> Value>
     requires (!impl::is_const<Self>)
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
-template <impl::is<Object> Self, StaticStr Name>
-    requires (!impl::is_const<Self>)
+template <impl::is<Object> Self, StaticStr Name> requires (!impl::is_const<Self>)
 struct __delattr__<Self, Name>                              : Returns<void> {};
 template <impl::is<Object> Self, std::convertible_to<Object>... Key>
 struct __getitem__<Self, Key...>                            : Returns<Object> {};
@@ -996,33 +995,33 @@ struct __pos__<Self>                                        : Returns<Object> {}
 template <impl::is<Object> Self>
 struct __neg__<Self>                                        : Returns<Object> {};
 template <impl::is<Object> Self> requires (!impl::is_const<Self>)
-struct __increment__<Self>                                  : Returns<Object&> {};
+struct __increment__<Self>                                  : Returns<std::add_lvalue_reference_t<Object>> {};
 template <impl::is<Object> Self> requires (!impl::is_const<Self>)
-struct __decrement__<Self>                                  : Returns<Object&> {};
+struct __decrement__<Self>                                  : Returns<std::add_lvalue_reference_t<Object>> {};
 template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __lt__<L, R>                                         : Returns<bool> {};
+struct __lt__<L, R>                                         : Returns<Object> {};
 template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __lt__<L, R>                                         : Returns<bool> {};
+struct __lt__<L, R>                                         : Returns<Object> {};
 template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __le__<L, R>                                         : Returns<bool> {};
+struct __le__<L, R>                                         : Returns<Object> {};
 template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __le__<L, R>                                         : Returns<bool> {};
+struct __le__<L, R>                                         : Returns<Object> {};
 template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __eq__<L, R>                                         : Returns<bool> {};
+struct __eq__<L, R>                                         : Returns<Object> {};
 template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __eq__<L, R>                                         : Returns<bool> {};
+struct __eq__<L, R>                                         : Returns<Object> {};
 template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __ne__<L, R>                                         : Returns<bool> {};
+struct __ne__<L, R>                                         : Returns<Object> {};
 template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __ne__<L, R>                                         : Returns<bool> {};
+struct __ne__<L, R>                                         : Returns<Object> {};
 template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __ge__<L, R>                                         : Returns<bool> {};
+struct __ge__<L, R>                                         : Returns<Object> {};
 template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __ge__<L, R>                                         : Returns<bool> {};
+struct __ge__<L, R>                                         : Returns<Object> {};
 template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __gt__<L, R>                                         : Returns<bool> {};
+struct __gt__<L, R>                                         : Returns<Object> {};
 template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __gt__<L, R>                                         : Returns<bool> {};
+struct __gt__<L, R>                                         : Returns<Object> {};
 template <impl::is<Object> L, std::convertible_to<Object> R>
 struct __add__<L, R>                                        : Returns<Object> {};
 template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
@@ -1072,29 +1071,29 @@ struct __xor__<L, R>                                        : Returns<Object> {}
 template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
 struct __xor__<L, R>                                        : Returns<Object> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __iadd__<L, R>                                       : Returns<L> {};
+struct __iadd__<L, R>                                       : Returns<std::add_lvalue_reference_t<Object>> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __isub__<L, R>                                       : Returns<L> {};
+struct __isub__<L, R>                                       : Returns<std::add_lvalue_reference_t<Object>> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __imul__<L, R>                                       : Returns<L> {};
+struct __imul__<L, R>                                       : Returns<std::add_lvalue_reference_t<Object>> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __itruediv__<L, R>                                   : Returns<L> {};
+struct __itruediv__<L, R>                                   : Returns<std::add_lvalue_reference_t<Object>> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __ifloordiv__<L, R>                                  : Returns<L> {};
+struct __ifloordiv__<L, R>                                  : Returns<std::add_lvalue_reference_t<Object>> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __imod__<L, R>                                       : Returns<L> {};
+struct __imod__<L, R>                                       : Returns<std::add_lvalue_reference_t<Object>> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __ipow__<L, R>                                       : Returns<L> {};
+struct __ipow__<L, R>                                       : Returns<std::add_lvalue_reference_t<Object>> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __ilshift__<L, R>                                    : Returns<L> {};
+struct __ilshift__<L, R>                                    : Returns<std::add_lvalue_reference_t<Object>> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __irshift__<L, R>                                    : Returns<L> {};
+struct __irshift__<L, R>                                    : Returns<std::add_lvalue_reference_t<Object>> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __iand__<L, R>                                       : Returns<L> {};
+struct __iand__<L, R>                                       : Returns<std::add_lvalue_reference_t<Object>> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __ior__<L, R>                                        : Returns<L> {};
+struct __ior__<L, R>                                        : Returns<std::add_lvalue_reference_t<Object>> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __ixor__<L, R>                                       : Returns<L> {};
+struct __ixor__<L, R>                                       : Returns<std::add_lvalue_reference_t<Object>> {};
 
 
 /* Inserting an object into an output stream corresponds to a `str()` call at the

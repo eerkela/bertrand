@@ -123,18 +123,26 @@ namespace impl {
     }
 
     template <size_t I, typename... Ts>
-    struct unpack_type_helper;
+    struct _unpack_type;
     template <size_t I, typename T, typename... Ts>
-    struct unpack_type_helper<I, T, Ts...> {
+    struct _unpack_type<I, T, Ts...> {
         template <size_t J>
-        struct helper { using type = unpack_type_helper<J - 1, Ts...>::type;
+        struct helper { using type = _unpack_type<J - 1, Ts...>::type;
         };
         template <size_t J> requires (J == 0)
         struct helper<J> { using type = T; };
         using type = helper<I>::type;
     };
     template <size_t I, typename... Ts>
-    using unpack_type = unpack_type_helper<I, Ts...>::type;
+    using unpack_type = _unpack_type<I, Ts...>::type;
+
+    template <typename Search, size_t I, typename... Ts>
+    static constexpr size_t _index_of = 0;
+    template <typename Search, size_t I, typename T, typename... Ts>
+    static constexpr size_t _index_of<Search, I, T, Ts...> =
+        std::same_as<Search, T> ? 0 : _index_of<Search, I + 1, Ts...> + 1;
+    template <typename Search, typename... Ts>
+    static constexpr size_t index_of = _index_of<Search, 0, Ts...>;
 
     /* Merge several hashes into a single value.  Based on `boost::hash_combine()`:
     https://www.boost.org/doc/libs/1_86_0/libs/container_hash/doc/html/hash.html#notes_hash_combine */
@@ -2533,6 +2541,10 @@ namespace impl {
     struct _qualify<void, const volatile Self&&> { using type = void; };
     template <typename T, typename Self>
     using qualify = _qualify<T, Self>::type;
+    template <typename T, typename Self>
+    using qualify_lvalue = std::add_lvalue_reference_t<qualify<T, Self>>;
+    template <typename T, typename Self>
+    using qualify_pointer = std::add_pointer_t<std::remove_reference_t<qualify<T, Self>>>;
 
     template <typename T, typename = void>
     constexpr bool has_interface_helper = false;
