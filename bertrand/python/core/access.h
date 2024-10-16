@@ -2219,76 +2219,6 @@ namespace impl {
         using type = size_t;
     };
 
-    template <typename>
-    struct UnionIter { static constexpr bool enable = false; };
-    template <py_union Self>
-    struct UnionIter<Self> {
-        template <typename>
-        struct traits {
-            static constexpr bool enable = false;
-            using type = void;
-        };
-        template <typename... Types>
-            requires (__iter__<qualify<Types, Self>>::enable || ...)
-        struct traits<Union<Types...>> {
-            template <typename result, typename... Ts>
-            struct unary { using type = result; };
-            template <typename... Matches, typename T, typename... Ts>
-            struct unary<Placeholder<Matches...>, T, Ts...> {
-                template <typename>
-                struct conditional { using type = Placeholder<Matches...>; };
-                template <typename T2>
-                    requires (__iter__<qualify<T2, Self>>::enable)
-                struct conditional<T2> {
-                    using type = Placeholder<
-                        Matches...,
-                        typename __iter__<qualify<T2, Self>>::type
-                    >;
-                };
-                using type = unary<typename conditional<T>::type, Ts...>::type;
-            };
-            static constexpr bool enable = true;
-            using type = to_union<typename unary<Placeholder<>, Types...>::type>::type;
-        };
-        static constexpr bool enable = traits<std::remove_cvref_t<Self>>::enable;
-        using type = traits<std::remove_cvref_t<Self>>::type;
-    };
-
-    template <typename>
-    struct UnionReversed { static constexpr bool enable = false; };
-    template <py_union Self>
-    struct UnionReversed<Self> {
-        template <typename>
-        struct traits {
-            static constexpr bool enable = false;
-            using type = void;
-        };
-        template <typename... Types>
-            requires (__reversed__<qualify<Types, Self>>::enable || ...)
-        struct traits<Union<Types...>> {
-            template <typename result, typename... Ts>
-            struct unary { using type = result; };
-            template <typename... Matches, typename T, typename... Ts>
-            struct unary<Placeholder<Matches...>, T, Ts...> {
-                template <typename>
-                struct conditional { using type = Placeholder<Matches...>; };
-                template <typename T2>
-                    requires (__reversed__<qualify<T2, Self>>::enable)
-                struct conditional<T2> {
-                    using type = Placeholder<
-                        Matches...,
-                        typename __reversed__<qualify<T2, Self>>::type
-                    >;
-                };
-                using type = unary<typename conditional<T>::type, Ts...>::type;
-            };
-            static constexpr bool enable = true;
-            using type = to_union<typename unary<Placeholder<>, Types...>::type>::type;
-        };
-        static constexpr bool enable = traits<std::remove_cvref_t<Self>>::enable;
-        using type = traits<std::remove_cvref_t<Self>>::type;
-    };
-
     template <typename, typename>
     struct UnionContains { static constexpr bool enable = false; };
     template <py_union Self, typename Key>
@@ -2325,6 +2255,13 @@ namespace impl {
 
     template <template <typename> typename control>
     struct union_unary_operator {
+        template <typename T>
+        struct ref { using type = T&; };
+        template <typename T>
+        struct ref<T&> { using type = T&; };
+        template <typename T>
+        struct ref<T&&> { using type = T&&; };
+
         template <typename>
         struct op { static constexpr bool enable = false; };
         template <py_union Self>
@@ -2372,7 +2309,7 @@ namespace impl {
                     OnSuccess&& success,
                     OnFailure&& failure
                 ) {
-                    using S = impl::qualify<impl::unpack_type<I, Types...>, Self>;
+                    using S = ref<impl::qualify<impl::unpack_type<I, Types...>, Self>>::type;
                     if constexpr (control<S>::enable) {
                         return success(reinterpret_cast<S>(
                             std::forward<Self>(self)->m_value
@@ -2425,6 +2362,10 @@ namespace impl {
     };
 
     template <typename T>
+    using UnionIter = union_unary_operator<__iter__>::template op<T>;
+    template <typename T>
+    using UnionReversed = union_unary_operator<__reversed__>::template op<T>;
+    template <typename T>
     using UnionAbs = union_unary_operator<__abs__>::template op<T>;
     template <typename T>
     using UnionInvert = union_unary_operator<__invert__>::template op<T>;
@@ -2435,6 +2376,13 @@ namespace impl {
 
     template <template <typename> typename control>
     struct union_unary_inplace_operator {
+        template <typename T>
+        struct ref { using type = T&; };
+        template <typename T>
+        struct ref<T&> { using type = T&; };
+        template <typename T>
+        struct ref<T&&> { using type = T&&; };
+
         template <typename>
         struct op { static constexpr bool enable = false; };
         template <py_union Self>
@@ -2460,7 +2408,7 @@ namespace impl {
                     OnSuccess&& success,
                     OnFailure&& failure
                 ) {
-                    using S = impl::qualify<impl::unpack_type<I, Types...>, Self>;
+                    using S = ref<impl::qualify<impl::unpack_type<I, Types...>, Self>>::type;
                     if constexpr (control<S>::enable) {
                         success(reinterpret_cast<S>(
                             std::forward<Self>(self)->m_value
@@ -2494,7 +2442,8 @@ namespace impl {
                         std::forward<OnFailure>(failure)
                     );
                 } else {
-                    return failure(std::forward<Self>(self));
+                    failure(std::forward<Self>(self));
+                    return std::forward<Self>(self);
                 }
             }
 
@@ -2520,6 +2469,13 @@ namespace impl {
 
     template <template <typename, typename> typename control>
     struct union_binary_operator {
+        template <typename T>
+        struct ref { using type = T&; };
+        template <typename T>
+        struct ref<T&> { using type = T&; };
+        template <typename T>
+        struct ref<T&&> { using type = T&&; };
+
         template <typename, typename>
         struct op { static constexpr bool enable = false; };
         template <py_union L, py_union R>
@@ -2596,8 +2552,8 @@ namespace impl {
                     OnSuccess&& success,
                     OnFailure&& failure
                 ) {
-                    using L2 = impl::qualify<impl::unpack_type<I, Ls...>, L>;
-                    using R2 = impl::qualify<impl::unpack_type<J, Rs...>, R>;
+                    using L2 = ref<impl::qualify<impl::unpack_type<I, Ls...>, L>>::type;
+                    using R2 = ref<impl::qualify<impl::unpack_type<J, Rs...>, R>>::type;
                     if constexpr (control<L2, R2>::enable) {
                         return success(
                             reinterpret_cast<L2>(std::forward<L>(lhs)->m_value),
@@ -2642,10 +2598,7 @@ namespace impl {
                             std::forward<OnFailure>(failure)
                         );
                     } else {
-                        return failure(
-                            std::forward<L>(lhs),
-                            std::forward<R>(rhs)
-                        );
+                        return failure(std::forward<L>(lhs), std::forward<R>(rhs));
                     }
                 }
                 if constexpr (call<
@@ -2659,10 +2612,7 @@ namespace impl {
                         std::forward<OnFailure>(failure)
                     );
                 } else {
-                    return failure(
-                        std::forward<L>(lhs),
-                        std::forward<R>(rhs)
-                    );
+                    return failure(std::forward<L>(lhs), std::forward<R>(rhs));
                 }
             }
 
@@ -2727,7 +2677,7 @@ namespace impl {
                     OnSuccess&& success,
                     OnFailure&& failure
                 ) {
-                    using L2 = impl::qualify<impl::unpack_type<I, Ls...>, L>;
+                    using L2 = ref<impl::qualify<impl::unpack_type<I, Ls...>, L>>::type;
                     if constexpr (control<L2, R>::enable) {
                         return success(
                             reinterpret_cast<L2>(std::forward<L>(lhs)->m_value),
@@ -2765,10 +2715,7 @@ namespace impl {
                         std::forward<OnFailure>(failure)
                     );
                 } else {
-                    return failure(
-                        std::forward<L>(lhs),
-                        std::forward<R>(rhs)
-                    );
+                    return failure(std::forward<L>(lhs), std::forward<R>(rhs));
                 }
             }
 
@@ -2833,7 +2780,7 @@ namespace impl {
                     OnSuccess&& success,
                     OnFailure&& failure
                 ) {
-                    using R2 = impl::qualify<impl::unpack_type<J, Rs...>, R>;
+                    using R2 = ref<impl::qualify<impl::unpack_type<J, Rs...>, R>>::type;
                     if constexpr (control<L, R2>::enable) {
                         return success(
                             std::forward<L>(lhs),
@@ -2871,10 +2818,7 @@ namespace impl {
                         std::forward<OnFailure>(failure)
                     );
                 } else {
-                    return failure(
-                        std::forward<L>(lhs),
-                        std::forward<R>(rhs)
-                    );
+                    return failure(std::forward<L>(lhs), std::forward<R>(rhs));
                 }
             }
 
@@ -2934,6 +2878,13 @@ namespace impl {
 
     template <template <typename, typename> typename control>
     struct union_inplace_binary_operator {
+        template <typename T>
+        struct ref { using type = T&; };
+        template <typename T>
+        struct ref<T&> { using type = T&; };
+        template <typename T>
+        struct ref<T&&> { using type = T&&; };
+
         template <typename, typename>
         struct op { static constexpr bool enable = false; };
         template <py_union L, py_union R>
@@ -2972,8 +2923,8 @@ namespace impl {
                     OnSuccess&& success,
                     OnFailure&& failure
                 ) {
-                    using L2 = impl::qualify<impl::unpack_type<I, Ls...>, L>;
-                    using R2 = impl::qualify<impl::unpack_type<J, Rs...>, R>;
+                    using L2 = ref<impl::qualify<impl::unpack_type<I, Ls...>, L>>::type;
+                    using R2 = ref<impl::qualify<impl::unpack_type<J, Rs...>, R>>::type;
                     if constexpr (control<L2, R2>::enable) {
                         success(
                             reinterpret_cast<L2>(std::forward<L>(lhs)->m_value),
@@ -3019,10 +2970,7 @@ namespace impl {
                             std::forward<OnFailure>(failure)
                         );
                     } else {
-                        return failure(
-                            std::forward<L>(lhs),
-                            std::forward<R>(rhs)
-                        );
+                        failure(std::forward<L>(lhs), std::forward<R>(rhs));
                     }
                 }
                 if constexpr (call<
@@ -3036,10 +2984,8 @@ namespace impl {
                         std::forward<OnFailure>(failure)
                     );
                 } else {
-                    return failure(
-                        std::forward<L>(lhs),
-                        std::forward<R>(rhs)
-                    );
+                    failure(std::forward<L>(lhs), std::forward<R>(rhs));
+                    return std::forward<L>(lhs);
                 }
             }
 
@@ -3082,7 +3028,7 @@ namespace impl {
                     OnSuccess&& success,
                     OnFailure&& failure
                 ) {
-                    using L2 = impl::qualify<impl::unpack_type<I, Ls...>, L>;
+                    using L2 = ref<impl::qualify<impl::unpack_type<I, Ls...>, L>>::type;
                     if constexpr (control<L2, R>::enable) {
                         success(
                             reinterpret_cast<L2>(std::forward<L>(lhs)->m_value),
@@ -3121,10 +3067,8 @@ namespace impl {
                         std::forward<OnFailure>(failure)
                     );
                 } else {
-                    return failure(
-                        std::forward<L>(lhs),
-                        std::forward<R>(rhs)
-                    );
+                    failure(std::forward<L>(lhs), std::forward<R>(rhs));
+                    return std::forward<L>(lhs);
                 }
             }
 
@@ -3167,7 +3111,7 @@ namespace impl {
                     OnSuccess&& success,
                     OnFailure&& failure
                 ) {
-                    using R2 = impl::qualify<impl::unpack_type<J, Rs...>, R>;
+                    using R2 = ref<impl::qualify<impl::unpack_type<J, Rs...>, R>>::type;
                     if constexpr (control<L, R2>::enable) {
                         success(
                             std::forward<L>(lhs),
@@ -3206,10 +3150,8 @@ namespace impl {
                         std::forward<OnFailure>(failure)
                     );
                 } else {
-                    return failure(
-                        std::forward<L>(lhs),
-                        std::forward<R>(rhs)
-                    );
+                    failure(std::forward<L>(lhs), std::forward<R>(rhs));
+                    return std::forward<L>(lhs);
                 }
             }
 
@@ -4623,7 +4565,8 @@ struct __init__<Optional<T>, Args...>                : Returns<Optional<T>> {
 /* Universal conversion from any type that is convertible to one or more types within
 the union.  Prefers exact matches (and therefore copy/move semantics) over secondary
 conversions, and always converts to the first matching type within the union */
-template <typename From, typename... Ts> requires (std::convertible_to<From, Ts> || ...)
+template <typename From, typename... Ts>
+    requires (!impl::py_union<From> && (std::convertible_to<From, Ts> || ...))
 struct __cast__<From, Union<Ts...>>                            : Returns<Union<Ts...>> {
     template <size_t I, typename... Us>
     static constexpr size_t match_idx = 0;
@@ -4656,7 +4599,10 @@ convertible.  This covers conversions to `std::variant` provided all types are
 accounted for, as well as to `std::optional` and pointer types whereby `NoneType` is
 convertible to `std::nullopt` and `nullptr`, respectively. */
 template <impl::py_union From, typename To>
-    requires (impl::UnionToType<std::remove_cvref_t<From>>::template convertible_to<To>)
+    requires (
+        !impl::py_union<To> &&
+        impl::UnionToType<std::remove_cvref_t<From>>::template convertible_to<To>
+    )
 struct __cast__<From, To>                                   : Returns<To> {
     template <typename>
     struct context {};
@@ -5895,7 +5841,7 @@ struct __iadd__<L, R> : Returns<L> {
             std::forward<L>(lhs),
             std::forward<R>(rhs),
             []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
-                std::forward<L2>(lhs) += std::forward<L2>(rhs);
+                std::forward<L2>(lhs) += std::forward<R2>(rhs);
             },
             []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
                 throw TypeError(
@@ -6152,9 +6098,12 @@ struct __ior__<L, R> : Returns<L> {
 
 
 inline void test() {
-    Optional<EllipsisType> x;
-    // auto y = Ellipsis;
-    std::optional<EllipsisType> z = x;
+    Optional<Object> x;
+    auto y = x + None;
+    // auto z = len(x);
+    ++x;
+    x += None;
+    // std::optional<EllipsisType> z = x;
 }
 
 

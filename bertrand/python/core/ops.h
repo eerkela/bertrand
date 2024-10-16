@@ -1825,19 +1825,6 @@ template <typename Self, typename Key> requires (__contains__<Self, Key>::enable
 }
 
 
-template <impl::is<Object> Derived, impl::is<Object> Base>
-constexpr bool __isinstance__<Derived, Base>::operator()(Derived obj, Base cls) {
-    int result = PyObject_IsInstance(
-        ptr(obj),
-        ptr(cls)
-    );
-    if (result < 0) {
-        Exception::from_python();
-    }
-    return result;
-}
-
-
 template <typename Derived, impl::is<Object> Base>
 constexpr bool __isinstance__<Derived, Base>::operator()(Derived obj, Base cls) {
     if constexpr (impl::python<Derived>) {
@@ -1853,27 +1840,6 @@ constexpr bool __isinstance__<Derived, Base>::operator()(Derived obj, Base cls) 
         return false;
     }
 }
-
-
-template <impl::is<Object> Derived, typename Base>
-constexpr bool __isinstance__<Derived, Base>::operator()(Derived obj) {
-    int result = PyObject_IsInstance(
-        ptr(obj),
-        ptr(Type<Base>())
-    );
-    if (result < 0) {
-        Exception::from_python();
-    }
-    return result;
-}
-
-
-template <impl::is<Object> Derived, typename Base>
-constexpr bool __isinstance__<Derived, Base>::operator()(Derived obj, Base cls) {
-
-}
-
-
 
 
 template <typename T, impl::is<Object> Base>

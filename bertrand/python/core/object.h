@@ -1072,29 +1072,29 @@ struct __xor__<L, R>                                        : Returns<Object> {}
 template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
 struct __xor__<L, R>                                        : Returns<Object> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __iadd__<L, R>                                       : Returns<Object&> {};
+struct __iadd__<L, R>                                       : Returns<L> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __isub__<L, R>                                       : Returns<Object&> {};
+struct __isub__<L, R>                                       : Returns<L> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __imul__<L, R>                                       : Returns<Object&> {};
+struct __imul__<L, R>                                       : Returns<L> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __itruediv__<L, R>                                   : Returns<Object&> {};
+struct __itruediv__<L, R>                                   : Returns<L> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __ifloordiv__<L, R>                                  : Returns<Object&> {};
+struct __ifloordiv__<L, R>                                  : Returns<L> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __imod__<L, R>                                       : Returns<Object&> {};
+struct __imod__<L, R>                                       : Returns<L> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __ipow__<L, R>                                       : Returns<Object&> {};
+struct __ipow__<L, R>                                       : Returns<L> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __ilshift__<L, R>                                    : Returns<Object&> {};
+struct __ilshift__<L, R>                                    : Returns<L> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __irshift__<L, R>                                    : Returns<Object&> {};
+struct __irshift__<L, R>                                    : Returns<L> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __iand__<L, R>                                       : Returns<Object&> {};
+struct __iand__<L, R>                                       : Returns<L> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __ior__<L, R>                                        : Returns<Object&> {};
+struct __ior__<L, R>                                        : Returns<L> {};
 template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __ixor__<L, R>                                       : Returns<Object&> {};
+struct __ixor__<L, R>                                       : Returns<L> {};
 
 
 /* Inserting an object into an output stream corresponds to a `str()` call at the
