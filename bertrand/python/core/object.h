@@ -604,7 +604,7 @@ public:
 
     /* Access an internal member of the underlying PyObject* pointer. */
     template <impl::has_python Self>
-    [[nodiscard]] decltype(auto) operator->(this Self&& self) {
+    [[nodiscard]] auto operator->(this Self&& self) {
         using Ptr = std::remove_cvref_t<Self>::__python__;
         return reinterpret_cast<Ptr*>(
             ptr(std::forward<Self>(self))

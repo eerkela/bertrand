@@ -1752,6 +1752,10 @@ struct __imod__ {
 };
 
 
+/// TODO: __pow__ needs to accept an optional third argument that defaults to void in
+/// order to support the ternary form of the pow() function.  This is not currently
+
+
 /* Implements the Python `pow()` operator logic in C++ for any `py::Object` subclass,
 which has no corresponding C++ operator.  The default specialization delegates to
 Python by introspecting either `__getattr__<L, "__pow__">` or
