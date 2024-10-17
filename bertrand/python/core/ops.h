@@ -301,6 +301,9 @@ void delattr(Self&& self) {
 }
 
 
+/// TODO: repr() always returns a std::string, len() always returns size_t, same with
+/// hash().
+
 /* Equivalent to Python `repr(obj)`, but returns a std::string and attempts to
 represent C++ types using the stream insertion operator (<<) or std::to_string.  If all
 else fails, falls back to demangling the result of typeid(obj).name(). */
@@ -442,6 +445,9 @@ template <impl::has_abs T> requires (!__abs__<T>::enable && impl::has_abs<T>)
 [[nodiscard]] decltype(auto) abs(T&& value) {
     return std::abs(std::forward<T>(value));
 }
+
+
+/// TODO: ipow(), plus ternary form of pow() using __pow__ control struct
 
 
 /* Equivalent to Python `base ** exp` (exponentiation). */

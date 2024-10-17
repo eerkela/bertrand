@@ -1764,14 +1764,14 @@ possibly with Python-style argument annotations.  Specializations of this class 
 implement a custom call operator to replace the default behavior.
 
 This is used internally to implement `py::pow()`. */
-template <typename L, typename R>
+template <typename Base, typename Exp, typename Mod = void>
 struct __pow__ {
     template <StaticStr name>
     struct pow {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <StaticStr name> requires (__getattr__<Base, name>::enable)
     struct pow<name> {
         template <typename T>
         struct inspect {
@@ -1780,12 +1780,13 @@ struct __pow__ {
         };
         template <std::derived_from<impl::FunctionTag> T> 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
+            /// TODO: this needs to be updated to support the ternary form of pow()
+            static constexpr bool enable = T::has_self && T::template bind<Exp>;
             using type = T::Return;
         };
         static constexpr bool enable =
-            inspect<typename __getattr__<L, name>::type>::enable;
-        using type = inspect<typename __getattr__<L, name>::type>::type;
+            inspect<typename __getattr__<Base, name>::type>::enable;
+        using type = inspect<typename __getattr__<Base, name>::type>::type;
     };
     static constexpr bool enable = pow<"__pow__">::enable || pow<"__rpow__">::enable;
     using type = std::conditional_t<
@@ -1806,15 +1807,15 @@ Python by introspecting `__getattr__<L, "__ipow__">`, which must return a member
 function, possibly with Python-style argument annotations.  Specializations of this
 class may implement a custom call operator to replace the default behavior.
 
-This is used internally to implement `py::pow()`. */
-template <typename L, typename R>
+This is used internally to implement `py::ipow()`. */
+template <typename Base, typename Exp, typename Mod = void>
 struct __ipow__ {
     template <StaticStr name>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <StaticStr name> requires (__getattr__<Base, name>::enable)
     struct infer<name> {
         template <typename T>
         struct inspect {
@@ -1823,12 +1824,13 @@ struct __ipow__ {
         };
         template <std::derived_from<impl::FunctionTag> T> 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
+            /// TODO: same as for ternary form of pow()
+            static constexpr bool enable = T::has_self && T::template bind<Exp>;
             using type = T::Return;
         };
         static constexpr bool enable =
-            inspect<typename __getattr__<L, name>::type>::enable;
-        using type = inspect<typename __getattr__<L, name>::type>::type;
+            inspect<typename __getattr__<Base, name>::type>::enable;
+        using type = inspect<typename __getattr__<Base, name>::type>::type;
     };
     static constexpr bool enable = infer<"__ipow__">::enable;
     using type = infer<"__ipow__">::type;
@@ -2738,28 +2740,28 @@ namespace impl {
     };
 
     template <typename T>
-    concept iterable = requires(T t) {
+    concept iterable = requires(T& t) {
         { std::ranges::begin(t) } -> std::input_or_output_iterator;
-        { std::ranges::end(t) } -> std::input_or_output_iterator;
+        { std::ranges::end(t) } -> std::sentinel_for<decltype(std::ranges::begin(t))>;
     };
 
-    template <typename T>
+    template <iterable T>
     using iter_type = decltype(*std::ranges::begin(
-        std::declval<std::remove_reference_t<T>&>()
+        std::declval<std::add_lvalue_reference_t<T>>()
     ));
 
     template <typename T, typename Value>
     concept yields = iterable<T> && std::convertible_to<iter_type<T>, Value>;
 
     template <typename T>
-    concept reverse_iterable = requires(T t) {
+    concept reverse_iterable = requires(T& t) {
         { std::ranges::rbegin(t) } -> std::input_or_output_iterator;
-        { std::ranges::rend(t) } -> std::input_or_output_iterator;
+        { std::ranges::rend(t) } -> std::sentinel_for<decltype(std::ranges::rbegin(t))>;
     };
 
-    template <typename T>
+    template <reverse_iterable T>
     using reverse_iter_type = decltype(*std::ranges::rbegin(
-        std::declval<std::remove_reference_t<T>&>()
+        std::declval<std::add_lvalue_reference_t<T>>()
     ));
 
     template <typename T, typename Value>
@@ -2797,7 +2799,7 @@ namespace impl {
             { t[key...] };
         };
 
-    template <typename T, typename... Key>
+    template <typename T, typename... Key> requires (supports_lookup<T, Key...>)
     using lookup_type = decltype(std::declval<T>()[std::declval<Key>()...]);
 
     template <typename T, typename Value, typename... Key>
@@ -3211,7 +3213,8 @@ namespace impl {
 
 
     /// TODO: eventually I should reconsider the following concepts and potentially
-    /// standardize them in some way.
+    /// standardize them in some way.  Ideally, I can fully remove them and replace
+    /// the logic with converts_to and converts_exact.
 
     template <typename T, typename Base>
     concept converts_to = __cast__<std::remove_cvref_t<T>>::enable &&
@@ -3238,11 +3241,6 @@ namespace impl {
     concept ellipsis_like =
         __cast__<std::remove_cvref_t<T>>::enable &&
         std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, EllipsisType>;
-
-    template <typename T>
-    concept slice_like =
-        __cast__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, Slice>;
 
     template <typename T>
     concept module_like =
@@ -3498,23 +3496,10 @@ namespace impl {
 
 /* Allows anonymous access to a Python wrapper for a given C++ type, assuming it has
 one.  The result always corresponds to the return type of the unary `__cast__` control
-structure. */
+structure, and reflects the Python type that would be constructed if an instance of `T`
+were converted to `Object`. */
 template <impl::has_python T>
 using obj = impl::python_type<T>;
-
-
-template <typename Derived, typename Base>
-[[nodiscard]] constexpr bool issubclass();
-template <typename Base, typename Derived>
-[[nodiscard]] constexpr bool issubclass(Derived&& obj);
-template <typename Derived, typename Base>
-    requires (std::is_invocable_v<__issubclass__<Derived, Base>, Derived, Base>)
-[[nodiscard]] constexpr bool issubclass(Derived&& obj, Base&& base);
-template <typename Base, typename Derived>
-[[nodiscard]] constexpr bool isinstance(Derived&& obj);
-template <typename Derived, typename Base>
-    requires (std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, Derived, Base>)
-[[nodiscard]] constexpr bool isinstance(Derived&& obj, Base&& base);
 
 
 }  // namespace py
