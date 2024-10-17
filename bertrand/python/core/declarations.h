@@ -682,14 +682,20 @@ struct __len__ {
 };
 
 
+/// TODO: fallback behavior for __iter__ and __reversed__ cannot extract the return
+/// value of the method, since that will be another iterator type.  Instead, it needs
+/// to assert that the return type is an iterator, and then extract its value type
+/// and forward that instead.
+
+
 /* Enables the C++ iteration operators for any `py::Object` subclass.  The default
 specialization delegates to Python by introspecting `__getattr__<Self, "__iter__">`,
 which must return a member function, possibly with Python-style argument annotations.
 Custom specializations of this struct are expected to implement the iteration protocol
-directly inline, as if they were implementing a C++ iterator class, which will always
-be initialized with the `Self` argument and nothing else.  Begin iterators are
-differentiated from end iterators by an additional `bool` argument, whose value is
-irrelevant, and is only used to tag the proper constructor(s). */
+directly inline, as if they were implementing a C++ `begin` iterator class, which will
+always be initialized with the `Self` argument and nothing else.  The end iterator is
+always given as `py::impl::Sentinel`, which is an empty struct against which the
+`__iter__` specialization must be comparable. */
 template <typename Self>
 struct __iter__ {
     template <StaticStr name>
