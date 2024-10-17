@@ -134,7 +134,7 @@ struct Iterator<Return, void, void> : Object, Interface<Iterator<Return, void, v
 };
 
 
-/* A wrapper around a non-ownding C++ range that allows them to be iterated over from
+/* A wrapper around a non-owning C++ range that allows them to be iterated over from
 Python.
 
 This will instantiate a unique Python type with an appropriate `__next__()` method for
@@ -471,8 +471,8 @@ struct __iter__<Iterator<T, void, void>>                    : Returns<T> {
         ++(*this);
     }
 
-    /// NOTE: python iterators cannot be copied due to their stateful nature through
-    /// the shared PyObject* pointer.
+    /// NOTE: python iterators cannot be copied due to their stateful nature via the
+    /// shared PyObject* pointer.
 
     __iter__(const __iter__&) = delete;
     __iter__(__iter__&& other) :
@@ -488,8 +488,6 @@ struct __iter__<Iterator<T, void, void>>                    : Returns<T> {
         return *this;
     }
 
-    [[nodiscard]] T& operator*() { return curr; }
-    [[nodiscard]] T* operator->() { return &curr; }
     [[nodiscard]] const T& operator*() const { return curr; }
     [[nodiscard]] const T* operator->() const { return &curr; }
 
@@ -587,7 +585,7 @@ template <impl::python Self>
         (impl::has_cpp<Self> && impl::iterable<impl::cpp_type<Self>>) ||
         (!impl::has_cpp<Self> && std::derived_from<typename __iter__<Self>::type, Object>)
     ))
-[[nodiscard]] auto begin(Self&& self) {
+[[nodiscard]] auto begin(Self& self) {
     if constexpr (std::is_constructible_v<__iter__<Self>, Self>) {
         return __iter__<Self>(std::forward<Self>(self));
 
@@ -626,7 +624,7 @@ template <impl::python Self>
         (impl::has_cpp<Self> && impl::iterable<impl::cpp_type<Self>>) ||
         (!impl::has_cpp<Self> && std::derived_from<typename __iter__<Self>::type, Object>)
     ) && std::is_const_v<std::remove_reference_t<Self>>)
-[[nodiscard]] auto cbegin(Self&& self) {
+[[nodiscard]] auto cbegin(Self& self) {
     return begin(std::forward<Self>(self));
 }
 
@@ -639,7 +637,7 @@ template <impl::python Self>
         (impl::has_cpp<Self> && impl::iterable<impl::cpp_type<Self>>) ||
         (!impl::has_cpp<Self> && std::derived_from<typename __iter__<Self>::type, Object>)
     ))
-[[nodiscard]] auto end(Self&& self) {
+[[nodiscard]] auto end(Self& self) {
     if constexpr (std::is_constructible_v<__iter__<Self>, Self>) {
         return py::impl::Sentinel{};
 
@@ -666,7 +664,7 @@ template <impl::python Self>
         (impl::has_cpp<Self> && impl::iterable<impl::cpp_type<Self>>) ||
         (!impl::has_cpp<Self> && std::derived_from<typename __iter__<Self>::type, Object>)
     ) && std::is_const_v<std::remove_reference_t<Self>>)
-[[nodiscard]] auto cend(Self&& self) {
+[[nodiscard]] auto cend(Self& self) {
     return end(std::forward<Self>(self));
 }
 
@@ -680,7 +678,7 @@ template <impl::python Self>
         (impl::has_cpp<Self> && impl::reverse_iterable<impl::cpp_type<Self>>) ||
         (!impl::has_cpp<Self> && std::derived_from<typename __reversed__<Self>::type, Object>)
     ))
-[[nodiscard]] auto rbegin(Self&& self) {
+[[nodiscard]] auto rbegin(Self& self) {
     if constexpr (std::is_constructible_v<__reversed__<Self>, Self>) {
         return __reversed__<Self>(std::forward<Self>(self));
 
@@ -726,7 +724,7 @@ and immutable iterators, so this is fundamentally the same as the ordinary
 rbegin() method.  Some libraries assume the existence of this method. */
 template <impl::python Self>
     requires (__reversed__<Self>::enable && std::is_const_v<std::remove_reference_t<Self>>)
-[[nodiscard]] auto crbegin(Self&& self) {
+[[nodiscard]] auto crbegin(Self& self) {
     return rbegin(std::forward<Self>(self));
 }
 
@@ -739,7 +737,7 @@ template <impl::python Self>
         (impl::has_cpp<Self> && impl::reverse_iterable<impl::cpp_type<Self>>) ||
         (!impl::has_cpp<Self> && std::derived_from<typename __reversed__<Self>::type, Object>)
     ))
-[[nodiscard]] auto rend(Self&& self) {
+[[nodiscard]] auto rend(Self& self) {
     if constexpr (std::is_constructible_v<__reversed__<Self>, Self>) {
         return py::impl::Sentinel{};
 
@@ -760,7 +758,7 @@ template <impl::python Self>
         (impl::has_cpp<Self> && impl::reverse_iterable<impl::cpp_type<Self>>) ||
         (!impl::has_cpp<Self> && std::derived_from<typename __reversed__<Self>::type, Object>)
     ) && std::is_const_v<std::remove_reference_t<Self>>)
-[[nodiscard]] auto crend(Self&& self) {
+[[nodiscard]] auto crend(Self& self) {
     return rend(std::forward<Self>(self));
 }
 
@@ -770,18 +768,13 @@ namespace impl {
     /* A range adaptor that concatenates a sequence of subranges into a single view.
     Every element in the input range must yield another range, which will be flattened
     into a single output range. */
-    template <std::ranges::input_range View>
-        requires (
-            std::ranges::view<View> &&
-            std::ranges::input_range<std::ranges::range_value_t<View>>
-        )
+    template <std::ranges::view View>
+        requires (std::ranges::view<std::ranges::range_value_t<View>>)
     struct Comprehension : BertrandTag, std::ranges::view_base {
     private:
         using InnerView = std::ranges::range_value_t<View>;
 
         View m_view;
-
-        struct Sentinel;
 
         struct Iterator {
         private:
@@ -791,8 +784,9 @@ namespace impl {
                     if (++outer_begin == outer_end) {
                         break;
                     }
-                    inner_begin = std::ranges::begin(*outer_begin);
-                    inner_end = std::ranges::end(*outer_begin);
+                    curr = *outer_begin;
+                    inner_begin = std::ranges::begin(curr);
+                    inner_end = std::ranges::end(curr);
                 }
             }
 
@@ -804,19 +798,21 @@ namespace impl {
             using reference = value_type&;
 
             std::ranges::iterator_t<View> outer_begin;
-            std::ranges::iterator_t<View> outer_end;
+            std::ranges::sentinel_t<View> outer_end;
+            InnerView curr;
             std::ranges::iterator_t<InnerView> inner_begin;
-            std::ranges::iterator_t<InnerView> inner_end;
+            std::ranges::sentinel_t<InnerView> inner_end;
 
             Iterator() = default;
             Iterator(
                 std::ranges::iterator_t<View>&& outer_begin,
-                std::ranges::iterator_t<View>&& outer_end
+                std::ranges::sentinel_t<View>&& outer_end
             ) : outer_begin(std::move(outer_begin)), outer_end(std::move(outer_end))
             {
-                if (outer_begin != outer_end) {
-                    inner_begin = std::ranges::begin(*outer_begin);
-                    inner_end = std::ranges::end(*outer_begin);
+                if (this->outer_begin != this->outer_end) {
+                    curr = *(this->outer_begin);
+                    inner_begin = std::ranges::begin(curr);
+                    inner_end = std::ranges::end(curr);
                     skip_empty_views();
                 }
             }
@@ -824,8 +820,9 @@ namespace impl {
             Iterator& operator++() {
                 if (++inner_begin == inner_end) {
                     if (++outer_begin != outer_end) {
-                        inner_begin = std::ranges::begin(*outer_begin);
-                        inner_end = std::ranges::end(*outer_begin);
+                        curr = *outer_begin;
+                        inner_begin = std::ranges::begin(curr);
+                        inner_end = std::ranges::end(curr);
                         skip_empty_views();
                     }
                 }
@@ -836,23 +833,22 @@ namespace impl {
                 return *inner_begin;
             }
 
-            bool operator==(const Sentinel&) const {
-                return outer_begin == outer_end;
+            friend bool operator==(const Iterator& self, const Sentinel&) {
+                return self.outer_begin == self.outer_end;
             }
 
-            bool operator!=(const Sentinel&) const {
-                return outer_begin != outer_end;
+            friend bool operator==(const Sentinel&, const Iterator& self) {
+                return self.outer_begin == self.outer_end;
             }
 
-        };
+            friend bool operator!=(const Iterator& self, const Sentinel&) {
+                return self.outer_begin != self.outer_end;
+            }
 
-        struct Sentinel {
-            bool operator==(const Iterator& iter) const {
-                return iter.outer_begin == iter.outer_end;
+            friend bool operator!=(const Sentinel&, const Iterator& self) {
+                return self.outer_begin != self.outer_end;
             }
-            bool operator!=(const Iterator& iter) const {
-                return iter.outer_begin != iter.outer_end;
-            }
+
         };
 
     public:
@@ -872,7 +868,8 @@ namespace impl {
 
     };
 
-    template <typename View>
+    template <std::ranges::view View>
+        requires (std::ranges::view<std::ranges::range_value_t<View>>)
     Comprehension(View&&) -> Comprehension<std::remove_cvref_t<View>>;
 
 }
@@ -915,8 +912,8 @@ template <impl::python Self, typename Func>
     using Return = std::invoke_result_t<Func, impl::iter_type<Self>>;
     if constexpr (std::ranges::view<Return>) {
         return impl::Comprehension(
-            std::views::all(std::forward<Self>(self))) |
-            std::views::transform(std::forward<Func>(func)
+            std::views::all(std::forward<Self>(self)) |
+            std::views::transform(std::forward<Func>(func))
         );
     } else {
         return
