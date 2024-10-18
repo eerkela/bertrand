@@ -293,9 +293,6 @@ namespace impl {
                 "specialization of __setitem__ for these types and ensure the Return "
                 "type is set to void."
             );
-            /// TODO: all custom __setitem__ operators must reverse the order of the
-            /// value and keys.  Also, they will only ever be called with the
-            /// value as a python object.
             if constexpr (sizeof...(Key) == 1) {
                 if constexpr (has_call_operator<setitem>) {
                     setitem{}(

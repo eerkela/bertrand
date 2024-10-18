@@ -8,9 +8,9 @@
 namespace py {
 
 
-///////////////////////
-////   BYTECODE    ////
-///////////////////////
+///////////////////
+////   CODE    ////
+///////////////////
 
 
 struct Code;
@@ -21,39 +21,39 @@ struct Interface<Code> {
     [[nodiscard]] static Code compile(const std::string& source);
 
     __declspec(property(get = _get_line_number)) Py_ssize_t line_number;
-    [[nodiscard]] Py_ssize_t _get_line_number(this const auto& self) noexcept;
+    [[nodiscard]] Py_ssize_t _get_line_number(this auto&& self) noexcept;
     __declspec(property(get = _get_argcount)) Py_ssize_t argcount;
-    [[nodiscard]] Py_ssize_t _get_argcount(this const auto& self) noexcept;
+    [[nodiscard]] Py_ssize_t _get_argcount(this auto&& self) noexcept;
     __declspec(property(get = _get_posonlyargcount)) Py_ssize_t posonlyargcount;
-    [[nodiscard]] Py_ssize_t _get_posonlyargcount(this const auto& self) noexcept;
+    [[nodiscard]] Py_ssize_t _get_posonlyargcount(this auto&& self) noexcept;
     __declspec(property(get = _get_kwonlyargcount)) Py_ssize_t kwonlyargcount;
-    [[nodiscard]] Py_ssize_t _get_kwonlyargcount(this const auto& self) noexcept;
+    [[nodiscard]] Py_ssize_t _get_kwonlyargcount(this auto&& self) noexcept;
     __declspec(property(get = _get_nlocals)) Py_ssize_t nlocals;
-    [[nodiscard]] Py_ssize_t _get_nlocals(this const auto& self) noexcept;
+    [[nodiscard]] Py_ssize_t _get_nlocals(this auto&& self) noexcept;
     __declspec(property(get = _get_stacksize)) Py_ssize_t stacksize;
-    [[nodiscard]] Py_ssize_t _get_stacksize(this const auto& self) noexcept;
+    [[nodiscard]] Py_ssize_t _get_stacksize(this auto&& self) noexcept;
     __declspec(property(get = _get_flags)) int flags;
-    [[nodiscard]] int _get_flags(this const auto& self) noexcept;
+    [[nodiscard]] int _get_flags(this auto&& self) noexcept;
 
     /// NOTE: these are defined in __init__.h
     __declspec(property(get = _get_filename)) Str filename;
-    [[nodiscard]] Str _get_filename(this const auto& self);
+    [[nodiscard]] Str _get_filename(this auto&& self);
     __declspec(property(get = _get_name)) Str name;
-    [[nodiscard]] Str _get_name(this const auto& self);
+    [[nodiscard]] Str _get_name(this auto&& self);
     __declspec(property(get = _get_qualname)) Str qualname;
-    [[nodiscard]] Str _get_qualname(this const auto& self);
+    [[nodiscard]] Str _get_qualname(this auto&& self);
     __declspec(property(get = _get_varnames)) Tuple<Str> varnames;
-    [[nodiscard]] Tuple<Str> _get_varnames(this const auto& self);
+    [[nodiscard]] Tuple<Str> _get_varnames(this auto&& self);
     __declspec(property(get = _get_cellvars)) Tuple<Str> cellvars;
-    [[nodiscard]] Tuple<Str> _get_cellvars(this const auto& self);
+    [[nodiscard]] Tuple<Str> _get_cellvars(this auto&& self);
     __declspec(property(get = _get_freevars)) Tuple<Str> freevars;
-    [[nodiscard]] Tuple<Str> _get_freevars(this const auto& self);
+    [[nodiscard]] Tuple<Str> _get_freevars(this auto&& self);
     __declspec(property(get = _get_bytecode)) Bytes bytecode;
-    [[nodiscard]] Bytes _get_bytecode(this const auto& self);
+    [[nodiscard]] Bytes _get_bytecode(this auto&& self);
     __declspec(property(get = _consts)) Tuple<Object> consts;
-    [[nodiscard]] Tuple<Object> _get_consts(this const auto& self);
+    [[nodiscard]] Tuple<Object> _get_consts(this auto&& self);
     __declspec(property(get = _get_names)) Tuple<Str> names;
-    [[nodiscard]] Tuple<Str> _get_names(this const auto& self);
+    [[nodiscard]] Tuple<Str> _get_names(this auto&& self);
 };
 
 
@@ -233,38 +233,55 @@ struct Interface<Type<Code>> {
     [[nodiscard]] static Code compile(const std::string& source) {
         return Code::compile(source);
     }
-    [[nodiscard]] static Py_ssize_t line_number(const auto& self) noexcept {
-        return self.line_number;
+
+    template <impl::inherits<Interface<Code>> Self>
+    [[nodiscard]] static Py_ssize_t line_number(Self&& self) noexcept {
+        return std::forward<Self>(self).line_number;
     }
-    [[nodiscard]] static Py_ssize_t argcount(const auto& self) noexcept {
-        return self.argcount;
+    template <impl::inherits<Interface<Code>> Self>
+    [[nodiscard]] static Py_ssize_t argcount(Self&& self) noexcept {
+        return std::forward<Self>(self).argcount;
     }
-    [[nodiscard]] static Py_ssize_t posonlyargcount(const auto& self) noexcept {
-        return self.posonlyargcount;
+    template <impl::inherits<Interface<Code>> Self>
+    [[nodiscard]] static Py_ssize_t posonlyargcount(Self&& self) noexcept {
+        return std::forward<Self>(self).posonlyargcount;
     }
-    [[nodiscard]] static Py_ssize_t kwonlyargcount(const auto& self) noexcept {
-        return self.kwonlyargcount;
+    template <impl::inherits<Interface<Code>> Self>
+    [[nodiscard]] static Py_ssize_t kwonlyargcount(Self&& self) noexcept {
+        return std::forward<Self>(self).kwonlyargcount;
     }
-    [[nodiscard]] static Py_ssize_t nlocals(const auto& self) noexcept {
-        return self.nlocals;
+    template <impl::inherits<Interface<Code>> Self>
+    [[nodiscard]] static Py_ssize_t nlocals(Self&& self) noexcept {
+        return std::forward<Self>(self).nlocals;
     }
-    [[nodiscard]] static Py_ssize_t stacksize(const auto& self) noexcept {
-        return self.stacksize;
+    template <impl::inherits<Interface<Code>> Self>
+    [[nodiscard]] static Py_ssize_t stacksize(Self&& self) noexcept {
+        return std::forward<Self>(self).stacksize;
     }
-    [[nodiscard]] static int flags(const auto& self) noexcept {
-        return self.flags;
+    template <impl::inherits<Interface<Code>> Self>
+    [[nodiscard]] static int flags(Self&& self) noexcept {
+        return std::forward<Self>(self).flags;
     }
 
     /// NOTE: these are defined in __init__.h
-    [[nodiscard]] static Str filename(const auto& self);
-    [[nodiscard]] static Str name(const auto& self);
-    [[nodiscard]] static Str qualname(const auto& self);
-    [[nodiscard]] static Tuple<Str> varnames(const auto& self);
-    [[nodiscard]] static Tuple<Str> cellvars(const auto& self);
-    [[nodiscard]] static Tuple<Str> freevars(const auto& self);
-    [[nodiscard]] static Bytes bytecode(const auto& self);
-    [[nodiscard]] static Tuple<Object> consts(const auto& self);
-    [[nodiscard]] static Tuple<Str> names(const auto& self);
+    template <impl::inherits<Interface<Code>> Self>
+    [[nodiscard]] static Str filename(Self&& self);
+    template <impl::inherits<Interface<Code>> Self>
+    [[nodiscard]] static Str name(Self&& self);
+    template <impl::inherits<Interface<Code>> Self>
+    [[nodiscard]] static Str qualname(Self&& self);
+    template <impl::inherits<Interface<Code>> Self>
+    [[nodiscard]] static Tuple<Str> varnames(Self&& self);
+    template <impl::inherits<Interface<Code>> Self>
+    [[nodiscard]] static Tuple<Str> cellvars(Self&& self);
+    template <impl::inherits<Interface<Code>> Self>
+    [[nodiscard]] static Tuple<Str> freevars(Self&& self);
+    template <impl::inherits<Interface<Code>> Self>
+    [[nodiscard]] static Bytes bytecode(Self&& self);
+    template <impl::inherits<Interface<Code>> Self>
+    [[nodiscard]] static Tuple<Object> consts(Self&& self);
+    template <impl::inherits<Interface<Code>> Self>
+    [[nodiscard]] static Tuple<Str> names(Self&& self);
 };
 
 
@@ -310,20 +327,20 @@ struct __call__<Self, Context>                              : Returns<Dict<Str, 
 
 
 /* Get the first line number of the function. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_line_number(this const auto& self) noexcept {
+[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_line_number(this auto&& self) noexcept {
     return self->co_firstlineno;
 }
 
 
 /* Get the number of positional arguments for the function. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_argcount(this const auto& self) noexcept {
+[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_argcount(this auto&& self) noexcept {
     return self->co_argcount;
 }
 
 
 /* Get the number of positional-only arguments for the function, including those with
 default values.  Does not include variable positional or keyword arguments. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_posonlyargcount(this const auto& self) noexcept {
+[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_posonlyargcount(this auto&& self) noexcept {
     return self->co_posonlyargcount;
 }
 
@@ -331,25 +348,25 @@ default values.  Does not include variable positional or keyword arguments. */
 /* Get the number of keyword-only arguments for the function, including those with
 default values.  Does not include positional-only or variable positional/keyword
 arguments. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_kwonlyargcount(this const auto& self) noexcept {
+[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_kwonlyargcount(this auto&& self) noexcept {
     return self->co_kwonlyargcount;
 }
 
 
 /* Get the number of local variables used by the function (including all parameters). */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_nlocals(this const auto& self) noexcept {
+[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_nlocals(this auto&& self) noexcept {
     return self->co_nlocals;
 }
 
 
 /* Get the required stack space for the code object. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_stacksize(this const auto& self) noexcept {
+[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_stacksize(this auto&& self) noexcept {
     return self->co_stacksize;
 }
 
 
 /* Get an integer encoding flags for the Python interpreter. */
-[[nodiscard]] inline int Interface<Code>::_get_flags(this const auto& self) noexcept {
+[[nodiscard]] inline int Interface<Code>::_get_flags(this auto&& self) noexcept {
     return self->co_flags;
 }
 
@@ -418,24 +435,24 @@ struct Interface<Frame> {
     [[nodiscard]] std::string to_string(this const auto& self);
 
     __declspec(property(get = _get_code)) std::optional<Code> code;
-    [[nodiscard]] std::optional<Code> _get_code(this const auto& self);
+    [[nodiscard]] std::optional<Code> _get_code(this auto&& self);
     __declspec(property(get = _get_back)) std::optional<Frame> back;
-    [[nodiscard]] std::optional<Frame> _get_back(this const auto& self);
+    [[nodiscard]] std::optional<Frame> _get_back(this auto&& self);
     __declspec(property(get = _get_line_number)) size_t line_number;
-    [[nodiscard]] size_t _get_line_number(this const auto& self);
+    [[nodiscard]] size_t _get_line_number(this auto&& self);
     __declspec(property(get = _get_last_instruction)) size_t last_instruction;
-    [[nodiscard]] size_t _get_last_instruction(this const auto& self);
+    [[nodiscard]] size_t _get_last_instruction(this auto&& self);
     __declspec(property(get = _get_generator)) std::optional<Object> generator;
-    [[nodiscard]] std::optional<Object> _get_generator(this const auto& self);
+    [[nodiscard]] std::optional<Object> _get_generator(this auto&& self);
 
     /// NOTE: these are defined in __init__.h
-    [[nodiscard]] Object get(this const auto& self, const Str& name);
+    [[nodiscard]] Object get(this auto&& self, const Str& name);
     __declspec(property(get = _get_builtins)) Dict<Str, Object> builtins;
-    [[nodiscard]] Dict<Str, Object> _get_builtins(this const auto& self);
+    [[nodiscard]] Dict<Str, Object> _get_builtins(this auto&& self);
     __declspec(property(get = _get_globals)) Dict<Str, Object> globals;
-    [[nodiscard]] Dict<Str, Object> _get_globals(this const auto& self);
+    [[nodiscard]] Dict<Str, Object> _get_globals(this auto&& self);
     __declspec(property(get = _get_locals)) Dict<Str, Object> locals;
-    [[nodiscard]] Dict<Str, Object> _get_locals(this const auto& self);
+    [[nodiscard]] Dict<Str, Object> _get_locals(this auto&& self);
 };
 
 
@@ -471,30 +488,40 @@ struct Frame : Object, Interface<Frame> {
 
 template <>
 struct Interface<Type<Frame>> {
-    [[nodiscard]] static std::string to_string(const auto& self) {
-        return self.to_string();
+    template <impl::inherits<Interface<Frame>> Self>
+    [[nodiscard]] static std::string to_string(Self&& self) {
+        return std::forward<Self>(self).to_string();
     }
-    [[nodiscard]] static std::optional<Code> code(const auto& self) {
-        return self.code;
+    template <impl::inherits<Interface<Frame>> Self>
+    [[nodiscard]] static std::optional<Code> code(Self&& self) {
+        return std::forward<Self>(self).code;
     }
-    [[nodiscard]] static std::optional<Frame> back(const auto& self) {
-        return self.back;
+    template <impl::inherits<Interface<Frame>> Self>
+    [[nodiscard]] static std::optional<Frame> back(Self&& self) {
+        return std::forward<Self>(self).back;
     }
-    [[nodiscard]] static size_t line_number(const auto& self) {
-        return self.line_number;
+    template <impl::inherits<Interface<Frame>> Self>
+    [[nodiscard]] static size_t line_number(Self&& self) {
+        return std::forward<Self>(self).line_number;
     }
-    [[nodiscard]] static size_t last_instruction(const auto& self) {
-        return self.last_instruction;
+    template <impl::inherits<Interface<Frame>> Self>
+    [[nodiscard]] static size_t last_instruction(Self&& self) {
+        return std::forward<Self>(self).last_instruction;
     }
-    [[nodiscard]] static std::optional<Object> generator(const auto& self) {
-        return self.generator;
+    template <impl::inherits<Interface<Frame>> Self>
+    [[nodiscard]] static std::optional<Object> generator(Self&& self) {
+        return std::forward<Self>(self).generator;
     }
 
     /// NOTE: these are defined in __init__.h
-    [[nodiscard]] static Object get(const auto& self, const Str& name);
-    [[nodiscard]] static Dict<Str, Object> builtins(const auto& self);
-    [[nodiscard]] static Dict<Str, Object> globals(const auto& self);
-    [[nodiscard]] static Dict<Str, Object> locals(const auto& self);
+    template <impl::inherits<Interface<Frame>> Self>
+    [[nodiscard]] static Object get(Self&& self, const Str& name);
+    template <impl::inherits<Interface<Frame>> Self>
+    [[nodiscard]] static Dict<Str, Object> builtins(Self&& self);
+    template <impl::inherits<Interface<Frame>> Self>
+    [[nodiscard]] static Dict<Str, Object> globals(Self&& self);
+    template <impl::inherits<Interface<Frame>> Self>
+    [[nodiscard]] static Dict<Str, Object> locals(Self&& self);
 };
 
 

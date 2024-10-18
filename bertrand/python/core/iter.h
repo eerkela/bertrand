@@ -10,20 +10,34 @@
 namespace py {
 
 
-namespace impl {
-    struct Sentinel {};
-}
-
-
 template <typename Begin, typename End = void, typename Container = void>
 struct Iterator;
 
 
 template <typename Begin, typename End, typename Container>
 struct Interface<Iterator<Begin, End, Container>> : impl::IterTag {
-    using begin_t = Begin;
-    using end_t = End;
-    using container_t = Container;
+private:
+
+    template <typename B, typename E, typename C>
+    struct traits {
+        using begin_type = B;
+        using end_type = E;
+        using container_type = C;
+        using value_type = decltype(*std::declval<B>());
+    };
+    template <typename R>
+    struct traits<R, void, void> {
+        using begin_type = __iter__<Iterator<R>>;
+        using end_type = impl::Sentinel;
+        using container_type = void;
+        using value_type = R;
+    };
+
+public:
+    using begin_type = traits<Begin, End, Container>::begin_type;
+    using end_type = traits<Begin, End, Container>::end_type;
+    using container_type = traits<Begin, End, Container>::container_type;
+    using value_type = traits<Begin, End, Container>::value_type;
 
     decltype(auto) __iter__(this auto&& self) {
         return std::forward<decltype(self)>(self);
@@ -56,9 +70,10 @@ struct Interface<Iterator<Begin, End, Container>> : impl::IterTag {
 
 template <typename Begin, typename End, typename Container>
 struct Interface<Type<Iterator<Begin, End, Container>>> {
-    using begin_t = Begin;
-    using end_t = End;
-    using container_t = Container;
+    using begin_type = Interface<Iterator<Begin, End, Container>>::begin_type;
+    using end_type = Interface<Iterator<Begin, End, Container>>::end_type;
+    using container_type = Interface<Iterator<Begin, End, Container>>::container_type;
+    using value_type = Interface<Iterator<Begin, End, Container>>::value_type;
 
     template <impl::inherits<Interface<Iterator<Begin, End, Container>>> Self>
     static decltype(auto) __iter__(Self&& self) {
@@ -495,19 +510,19 @@ struct __iter__<Iterator<T, void, void>>                    : Returns<T> {
         return ++(*this);
     }
 
-    friend bool operator==(const __iter__& self, py::impl::Sentinel) {
+    [[nodiscard]] friend bool operator==(const __iter__& self, py::impl::Sentinel) {
         return ptr(self.curr) == nullptr;
     }
 
-    friend bool operator==(py::impl::Sentinel, const __iter__& self) {
+    [[nodiscard]] friend bool operator==(py::impl::Sentinel, const __iter__& self) {
         return ptr(self.curr) == nullptr;
     }
 
-    friend bool operator!=(const __iter__& self, py::impl::Sentinel) {
+    [[nodiscard]] friend bool operator!=(const __iter__& self, py::impl::Sentinel) {
         return ptr(self.curr) != nullptr;
     }
 
-    friend bool operator!=(py::impl::Sentinel, const __iter__& self) {
+    [[nodiscard]] friend bool operator!=(py::impl::Sentinel, const __iter__& self) {
         return ptr(self.curr) != nullptr;
     }
 
@@ -538,12 +553,12 @@ struct __contains__<T, Iterator<Begin, End, Container>> : Returns<bool> {};
 // struct __getattr__<Self, "__next__"> : Returns<
 //     Function<impl::qualify<
 //         std::conditional_t<
-//             std::is_void_v<typename std::remove_reference_t<Self>::end_t>,
+//             std::is_void_v<typename std::remove_reference_t<Self>::end_type>,
 //             std::remove_reference_t<decltype(
-//                 *std::declval<typename std::remove_reference_t<Self>::begin_t>()
+//                 *std::declval<typename std::remove_reference_t<Self>::begin_type>()
 //             )>,
 //             decltype(
-//                 *std::declval<typename std::remove_reference_t<Self>::begin_t>()
+//                 *std::declval<typename std::remove_reference_t<Self>::begin_type>()
 //             )
 //         >(std::remove_cvref_t<Self>::*)(),
 //         Self
@@ -556,12 +571,12 @@ struct __contains__<T, Iterator<Begin, End, Container>> : Returns<bool> {};
 // template <impl::inherits<impl::IterTag> Self>
 // struct __getattr__<Type<Self>, "__next__"> : Returns<Function<
 //     std::conditional_t<
-//         std::is_void_v<typename std::remove_reference_t<Self>::end_t>,
+//         std::is_void_v<typename std::remove_reference_t<Self>::end_type>,
 //         std::remove_reference_t<decltype(
-//             *std::declval<typename std::remove_reference_t<Self>::begin_t>()
+//             *std::declval<typename std::remove_reference_t<Self>::begin_type>()
 //         )>,
 //         decltype(
-//             *std::declval<typename std::remove_reference_t<Self>::begin_t>()
+//             *std::declval<typename std::remove_reference_t<Self>::begin_type>()
 //         )
 //     >(*)(Self)
 // >> {};
@@ -584,7 +599,7 @@ template <impl::python Self>
         return std::ranges::begin(from_python(self));
 
     } else if constexpr (impl::inherits<Self, impl::IterTag>) {
-        if constexpr (!std::is_void_v<typename std::remove_reference_t<Self>::end_t>) {
+        if constexpr (!std::is_void_v<typename std::remove_reference_t<Self>::end_type>) {
             return self->begin;
         } else {
             using T = __iter__<Self>::type;
@@ -644,7 +659,7 @@ template <impl::python Self>
         return std::ranges::end(from_python(std::forward<Self>(self)));
 
     } else if constexpr (impl::inherits<Self, impl::IterTag>) {
-        if constexpr (!std::is_void_v<typename std::remove_reference_t<Self>::end_t>) {
+        if constexpr (!std::is_void_v<typename std::remove_reference_t<Self>::end_type>) {
             return self->end;
         } else {
             return py::impl::Sentinel{};

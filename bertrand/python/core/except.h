@@ -254,14 +254,14 @@ struct __iter__<Self>                                       : Returns<Frame> {
     Traceback traceback;
     PyTracebackObject* curr;
 
-    __iter__(const Traceback& self) : traceback(self), curr(nullptr) {}
-    __iter__(Traceback&& self) : traceback(std::move(self)), curr(nullptr) {}
-    __iter__(const Traceback& self, int) : traceback(self), curr(
-        reinterpret_cast<PyTracebackObject*>(ptr(traceback))
-    ) {}
-    __iter__(Traceback&& self, int) : traceback(std::move(self)), curr(
-        reinterpret_cast<PyTracebackObject*>(ptr(traceback))
-    ) {}
+    __iter__(const Traceback& self) :
+        traceback(self),
+        curr(reinterpret_cast<PyTracebackObject*>(ptr(traceback)))
+    {}
+    __iter__(Traceback&& self) :
+        traceback(std::move(self)),
+        curr(reinterpret_cast<PyTracebackObject*>(ptr(traceback)))
+    {}
     __iter__(const __iter__& other) : traceback(other.traceback), curr(other.curr) {}
     __iter__(__iter__&& other) : traceback(std::move(other.traceback)), curr(other.curr) {
         other.curr = nullptr;
@@ -284,7 +284,7 @@ struct __iter__<Self>                                       : Returns<Frame> {
         return *this;
     }
 
-    [[nodiscard]] value_type operator*() const;
+    [[nodiscard]] Frame operator*() const;
 
     __iter__& operator++() {
         if (curr != nullptr) {
@@ -301,12 +301,12 @@ struct __iter__<Self>                                       : Returns<Frame> {
         return copy;
     }
 
-    [[nodiscard]] bool operator==(const __iter__& other) const {
-        return ptr(traceback) == ptr(other.traceback) && curr == other.curr;
+    [[nodiscard]] friend bool operator==(const __iter__& self, impl::Sentinel) {
+        return self.curr == nullptr;
     }
 
-    [[nodiscard]] bool operator!=(const __iter__& other) const {
-        return ptr(traceback) != ptr(other.traceback) || curr != other.curr;
+    [[nodiscard]] friend bool operator!=(const __iter__& self, impl::Sentinel) {
+        return self.curr != nullptr;
     }
 };
 
@@ -324,10 +324,7 @@ struct __reversed__<Self>                                   : Returns<Traceback>
     std::vector<PyTracebackObject*> frames;
     Py_ssize_t index;
 
-    __reversed__(const Traceback& self) : traceback(self), index(-1) {}
-    __reversed__(Traceback&& self) : traceback(std::move(self)), index(-1) {}
-
-    __reversed__(const Traceback& self, int) : traceback(self) {
+    __reversed__(const Traceback& self) : traceback(self) {
         PyTracebackObject* curr = reinterpret_cast<PyTracebackObject*>(
             ptr(traceback)
         );
@@ -338,7 +335,7 @@ struct __reversed__<Self>                                   : Returns<Traceback>
         index = std::ssize(frames) - 1;
     }
 
-    __reversed__(Traceback&& self, int) : traceback(std::move(self)) {
+    __reversed__(Traceback&& self) : traceback(std::move(self)) {
         PyTracebackObject* curr = reinterpret_cast<PyTracebackObject*>(
             ptr(traceback)
         );
@@ -399,12 +396,20 @@ struct __reversed__<Self>                                   : Returns<Traceback>
         return copy;
     }
 
-    [[nodiscard]] bool operator==(const __reversed__& other) const {
-        return ptr(traceback) == ptr(other.traceback) && index == other.index;
+    [[nodiscard]] friend bool operator==(const __reversed__& self, impl::Sentinel) {
+        return self.index == -1;
     }
 
-    [[nodiscard]] bool operator!=(const __reversed__& other) const {
-        return ptr(traceback) != ptr(other.traceback) || index != other.index;
+    [[nodiscard]] friend bool operator==(impl::Sentinel, const __reversed__& self) {
+        return self.index == -1;
+    }
+
+    [[nodiscard]] friend bool operator!=(const __reversed__& self, impl::Sentinel) {
+        return self.index != -1;
+    }
+
+    [[nodiscard]] friend bool operator!=(impl::Sentinel, const __reversed__& self) {
+        return self.index != -1;
     }
 };
 

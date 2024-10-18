@@ -63,10 +63,10 @@ using bertrand::StaticStr;
 namespace impl {
     struct BertrandTag {};
     struct UnionTag : BertrandTag {};
-    struct IterTag : BertrandTag {};  /// TODO: eliminate this
-    struct FunctionTag : BertrandTag {};   /// TODO: eliminate this
-    struct TypeTag : BertrandTag {};  /// TODO: eliminate this
-    struct ModuleTag;  /// TODO: eliminate this
+    struct IterTag : BertrandTag {};
+    struct FunctionTag : BertrandTag {};
+    struct TypeTag : BertrandTag {};
+    struct ModuleTag : BertrandTag {};
     struct TupleTag : BertrandTag {};
     struct ListTag : BertrandTag{};
     struct SetTag : BertrandTag {};
@@ -203,6 +203,8 @@ namespace impl {
             }
         }
     };
+
+    struct Sentinel {};
 
 }
 
@@ -494,26 +496,19 @@ struct __repr__ {
     template <StaticStr name>
     struct infer {
         static constexpr bool enable = false;
-        using type = void;
     };
     template <StaticStr name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
-        template <typename T>
-        struct inspect {
-            static constexpr bool enable = false;
-            using type = void;
-        };
-        template <std::derived_from<impl::FunctionTag> T> 
-        struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<>;
-            using type = T::Return;
-        };
-        static constexpr bool enable =
-            inspect<typename __getattr__<Self, name>::type>::enable;
-        using type = inspect<typename __getattr__<Self, name>::type>::type;
+        template <typename>
+        static constexpr bool _enable = false;
+        template <std::derived_from<impl::FunctionTag> T>
+            requires (T::has_self && T::template bind<>)
+        static constexpr bool _enable<T> =
+            std::convertible_to<typename T::Return, std::string>;
+        static constexpr bool enable = _enable<typename __getattr__<Self, name>::type>;
     };
     static constexpr bool enable = infer<"__repr__">::enable;
-    using type = infer<"__repr__">::type;
+    using type = std::string;
 };
 
 
@@ -682,12 +677,6 @@ struct __len__ {
 };
 
 
-/// TODO: fallback behavior for __iter__ and __reversed__ cannot extract the return
-/// value of the method, since that will be another iterator type.  Instead, it needs
-/// to assert that the return type is an iterator, and then extract its value type
-/// and forward that instead.
-
-
 /* Enables the C++ iteration operators for any `py::Object` subclass.  The default
 specialization delegates to Python by introspecting `__getattr__<Self, "__iter__">`,
 which must return a member function, possibly with Python-style argument annotations.
@@ -710,10 +699,13 @@ struct __iter__ {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <std::derived_from<impl::FunctionTag> T> requires (
+            T::has_self && T::template bind<> &&
+            std::derived_from<typename T::Return, impl::IterTag>
+        )
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = T::Return::value_type;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<Self, name>::type>::enable;
@@ -747,10 +739,13 @@ struct __reversed__ {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <std::derived_from<impl::FunctionTag> T> requires (
+            T::has_self && T::template bind<> &&
+            std::derived_from<typename T::Return, impl::IterTag>
+        )
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = T::Return::value_type;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<Self, name>::type>::enable;
@@ -3150,7 +3145,7 @@ namespace impl {
     template <typename L, typename R> requires (has_rshift<L, R>)
     using rshift_type = decltype(std::declval<L>() >> std::declval<R>());
     template <typename L, typename R, typename Return>
-    concept rhsift_returns = requires(L l, R r) {
+    concept rshift_returns = requires(L l, R r) {
         { l >> r } -> std::convertible_to<Return>;
     };
 
