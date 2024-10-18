@@ -55,13 +55,6 @@ namespace impl {
 }
 
 
-/// TODO: remove all remaining static assertions from this file, and update the
-/// template constraints for member operators that can't be removed from Object.
-
-
-/// TODO: all ops should return py::Object subclasses for consistency with Union<...>
-
-
 /// TODO: implement the extra overloads for Object, BertrandMeta, Type, and Tuple of
 /// types/generic objects
 
@@ -483,8 +476,7 @@ template <typename Self>
                 impl::has_size<impl::cpp_type<Self>>
             ) || (
                 !impl::has_call_operator<__len__<Self>> &&
-                !impl::has_cpp<Self> &&
-                std::convertible_to<Py_ssize_t, typename __len__<Self>::type>
+                !impl::has_cpp<Self>
             )
         )
     )
@@ -526,13 +518,14 @@ template <typename Self>
         return std::abs(from_python(std::forward<Self>(self)));
 
     } else {
+        using Return = std::remove_cvref_t<typename __abs__<Self>::type>;
         PyObject* result = PyNumber_Absolute(
             ptr(to_python(std::forward<Self>(self)))
         );
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __abs__<Self>::type>(result);
+        return reinterpret_steal<Return>(result);
     }
 }
 
@@ -543,214 +536,6 @@ template <impl::has_abs Self>
     requires (!__abs__<Self>::enable && impl::abs_returns<Self, Object>)
 [[nodiscard]] decltype(auto) abs(Self&& value) {
     return std::abs(std::forward<Self>(value));
-}
-
-
-
-
-
-
-/// TODO: ipow(), plus ternary form of pow() using __pow__ control struct
-
-
-/* Equivalent to Python `base ** exp` (exponentiation). */
-template <typename Base, typename Exp>
-    requires (__pow__<Base, Exp>::enable && (
-        impl::has_call_operator<__pow__<Base, Exp>> ||
-        (
-            (impl::has_cpp<Base> && impl::has_cpp<Exp>) &&
-            impl::has_pow<impl::cpp_type<Base>, impl::cpp_type<Exp>>
-        ) || (
-            !(impl::has_cpp<Base> && impl::has_cpp<Exp>) &&
-            std::derived_from<typename __pow__<Base, Exp>::type, Object>
-        )
-    ))
-[[nodiscard]] decltype(auto) pow(Base&& base, Exp&& exp) {
-    if constexpr (impl::has_call_operator<__pow__<Base, Exp>>) {
-        return __pow__<Base, Exp>{}(
-            std::forward<Base>(base),
-            std::forward<Exp>(exp)
-        );
-
-    } else if constexpr (
-        (impl::cpp<Base> || impl::has_cpp<Base>) &&
-        (impl::cpp<Exp> || impl::has_cpp<Exp>)
-    ) {
-        if constexpr (
-            impl::complex_like<impl::cpp_type<Base>> &&
-            impl::complex_like<impl::cpp_type<Exp>>
-        ) {
-            return std::common_type_t<impl::cpp_type<Base>, impl::cpp_type<Exp>>(
-                pow(from_python(base).real(), from_python(exp).real()),
-                pow(from_python(base).imag(), from_python(exp).imag())
-            );
-        } else if constexpr (impl::complex_like<impl::cpp_type<Base>>) {
-            return Base(
-                pow(from_python(base).real(), from_python(exp)),
-                pow(from_python(base).real(), from_python(exp))
-            );
-        } else if constexpr (impl::complex_like<impl::cpp_type<Exp>>) {
-            return Exp(
-                pow(from_python(base), from_python(exp).real()),
-                pow(from_python(base), from_python(exp).imag())
-            );
-        } else {
-            return std::pow(
-                from_python(std::forward<Base>(base)),
-                from_python(std::forward<Exp>(exp))
-            );
-        }
-
-    } else {
-        PyObject* result = PyNumber_Power(
-            ptr(to_python(std::forward<Base>(base))),
-            ptr(to_python(std::forward<Exp>(exp))),
-            Py_None
-        );
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return reinterpret_steal<typename __pow__<Base, Exp>::type>(result);
-    }
-}
-
-
-/* Equivalent to Python `pow(base, exp)`, except that it takes a C++ value and applies
-std::pow() for identical semantics. */
-template <impl::cpp Base, impl::cpp Exp>
-    requires (!__pow__<Base, Exp>::enable && (
-        impl::complex_like<Base> ||
-        impl::complex_like<Exp> ||
-        impl::has_pow<Base, Exp>
-    ))
-[[nodiscard]] decltype(auto) pow(Base&& base, Exp&& exp) {
-    if constexpr (impl::complex_like<Base> && impl::complex_like<Exp>) {
-        return std::common_type_t<std::remove_cvref_t<Base>, std::remove_cvref_t<Exp>>(
-            pow(base.real(), exp.real()),
-            pow(base.imag(), exp.imag())
-        );
-    } else if constexpr (impl::complex_like<Base>) {
-        return Base(
-            pow(base.real(), exp),
-            pow(base.imag(), exp)
-        );
-    } else if constexpr (impl::complex_like<Exp>) {
-        return Exp(
-            pow(base, exp.real()),
-            pow(base, exp.imag())
-        );
-    } else {
-        return std::pow(base, exp);
-    }
-}
-
-
-/* Equivalent to Python `pow(base, exp, mod)`. */
-template <impl::int_like Base, impl::int_like Exp, impl::int_like Mod>
-    requires (__pow__<Base, Exp>::enable)
-decltype(auto) pow(Base&& base, Exp&& exp, Mod&& mod) {
-    if constexpr (std::is_invocable_v<__pow__<Base, Exp>, Base, Exp, Mod>) {
-        return __pow__<Base, Exp>{}(
-            std::forward<Base>(base),
-            std::forward<Exp>(exp),
-            std::forward<Mod>(mod)
-        );
-
-    } else if constexpr (impl::has_cpp<Base> && impl::has_cpp<Exp> && impl::has_cpp<Mod>) {
-        return pow(
-            from_python(std::forward<Base>(base)),
-            from_python(std::forward<Exp>(exp)),
-            from_python(std::forward<Mod>(mod))
-        );
-
-    } else {
-        using Return = typename __pow__<Base, Exp>::type;
-        static_assert(
-            std::derived_from<Return, Object>,
-            "Default pow() operator must return a py::Object subclass.  Check your "
-            "specialization of __pow__ for this type and ensure the Return type "
-            "derives from py::Object, or define a custom call operator to override "
-            "this behavior."
-        );
-        PyObject* result = PyNumber_Power(
-            ptr(to_python(std::forward<Base>(base))),
-            ptr(to_python(std::forward<Exp>(exp))),
-            ptr(to_python(std::forward<Mod>(mod)))
-        );
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return reinterpret_steal<Return>(result);
-    }
-}
-
-
-/* Equivalent to Python `pow(base, exp, mod)`, but works on C++ integers with identical
-semantics. */
-template <std::integral Base, std::integral Exp, std::integral Mod>
-[[nodiscard]] decltype(auto) pow(Base base, Exp exp, Mod mod) {
-    std::common_type_t<Base, Exp, Mod> result = 1;
-    base = base % mod;
-    while (exp > 0) {
-        if (exp % 2) {
-            result = (result * base) % mod;
-        }
-        exp >>= 1;
-        base = (base * base) % mod;
-    }
-    return result;
-}
-
-
-/// TODO: revise template constraints to ensure that all operators return a type that
-/// is convertible to Python (but does not necessarily need to be a python object
-/// itself)
-
-
-template <typename L, typename R>
-    requires (__floordiv__<L, R>::enable && (
-        impl::has_call_operator<__floordiv__<L, R>> ||
-        std::derived_from<typename __floordiv__<L, R>::type, Object>
-    ))
-decltype(auto) floordiv(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__floordiv__<L, R>>) {
-        return __floordiv__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
-    } else {
-        PyObject* result = PyNumber_FloorDivide(
-            ptr(to_python(std::forward<L>(lhs))),
-            ptr(to_python(std::forward<R>(lhs)))
-        );
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return reinterpret_steal<typename __floordiv__<L, R>::type>(result);
-    }
-}
-
-
-template <impl::python L, typename R>
-    requires (__ifloordiv__<L, R>::enable && (
-        impl::has_call_operator<__ifloordiv__<L, R>> ||
-        std::same_as<typename __ifloordiv__<L, R>::type, L&>
-    ))
-decltype(auto) ifloordiv(L& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__ifloordiv__<L, R>>) {
-        return __ifloordiv__<L, R>{}(lhs, std::forward<R>(rhs));
-    } else {
-        using Return = std::remove_cvref_t<typename __ifloordiv__<L, R>::type>;
-        PyObject* result = PyNumber_InPlaceFloorDivide(
-            ptr(lhs),
-            ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
-            Exception::from_python();
-        } else if (result == ptr(lhs)) {
-            Py_DECREF(result);
-        } else {
-            lhs = reinterpret_steal<Return>(result);
-        }
-        return lhs;
-    }
 }
 
 
@@ -869,23 +654,24 @@ decltype(auto) operator++(Self&& self) = delete;
 template <impl::python Self>
     requires (
         __increment__<Self>::enable &&
-        std::same_as<typename __increment__<Self>::type, Self&> && (
-            std::is_invocable_r_v<Self&, __increment__<Self>, Self> || (
+        std::convertible_to<typename __increment__<Self>::type, Object> && (
+            std::is_invocable_r_v<typename __increment__<Self>::type, __increment__<Self>, Self> || (
                 !impl::has_call_operator<__increment__<Self>> &&
                 impl::has_cpp<Self> &&
-                impl::preincrement_returns<impl::cpp_type<Self>, Object>
+                impl::preincrement_returns<impl::cpp_type<Self>, typename __increment__<Self>::type>
             ) || (
                 !impl::has_call_operator<__increment__<Self>> &&
-                !impl::has_cpp<Self>
+                !impl::has_cpp<Self> &&
+                std::same_as<typename __increment__<Self>::type, Self>
             )
         )
     )
-Self& operator++(Self& self) {
+decltype(auto) operator++(Self&& self) {
     if constexpr (impl::has_call_operator<__increment__<Self>>) {
-        return __increment__<Self>{}(self);
+        return __increment__<Self>{}(std::forward<Self>(self));
 
     } else if constexpr (impl::has_cpp<Self>) {
-        ++from_python(self);
+        return ++from_python(std::forward<Self>(self));
 
     } else {
         using Return = std::remove_cvref_t<typename __increment__<Self>::type>;
@@ -902,8 +688,8 @@ Self& operator++(Self& self) {
         } else {
             self = reinterpret_steal<Return>(result);
         }
+        return std::forward<Self>(self);
     }
-    return self;
 }
 
 
@@ -914,23 +700,24 @@ decltype(auto) operator--(Self& self) = delete;
 template <impl::python Self>
     requires (
         __decrement__<Self>::enable &&
-        std::same_as<typename __decrement__<Self>::type, Self&> && (
-            std::is_invocable_r_v<Self&, __decrement__<Self>, Self> || (
+        std::convertible_to<typename __decrement__<Self>::type, Object> && (
+            std::is_invocable_r_v<typename __decrement__<Self>::type, __decrement__<Self>, Self> || (
                 !impl::has_call_operator<__decrement__<Self>> &&
                 impl::has_cpp<Self> &&
-                impl::predecrement_returns<impl::cpp_type<Self>, Object>
+                impl::predecrement_returns<impl::cpp_type<Self>, typename __decrement__<Self>::type>
             ) || (
                 !impl::has_call_operator<__decrement__<Self>> &&
-                !impl::has_cpp<Self>
+                !impl::has_cpp<Self> &&
+                std::same_as<typename __decrement__<Self>::type, Self>
             )
         )
     )
-Self& operator--(Self& self) {
+decltype(auto) operator--(Self&& self) {
     if constexpr (impl::has_call_operator<__decrement__<Self>>) {
-        return __decrement__<Self>{}(self);
+        return __decrement__<Self>{}(std::forward<Self>(self));
 
     } else if constexpr (impl::has_cpp<Self>) {
-        --from_python(self);
+        return --from_python(std::forward<Self>(self));
 
     } else {
         using Return = std::remove_cvref_t<typename __decrement__<Self>::type>;
@@ -947,8 +734,8 @@ Self& operator--(Self& self) {
         } else {
             self = reinterpret_steal<Return>(result);
         }
+        return std::forward<Self>(self);
     }
-    return self;
 }
 
 
@@ -1229,23 +1016,25 @@ decltype(auto) operator+=(L& lhs, R&& rhs) = delete;
 template <impl::python L, typename R>
     requires (
         __iadd__<L, R>::enable &&
-        std::same_as<typename __iadd__<L, R>::type, L&> && (
-            std::is_invocable_r_v<L&, __iadd__<L, R>, L, R> || (
+        std::convertible_to<typename __iadd__<L, R>::type, Object> && (
+            std::is_invocable_r_v<typename __iadd__<L, R>::type, __iadd__<L, R>, L, R> || (
                 !impl::has_call_operator<__iadd__<L, R>> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
-                impl::iadd_returns<impl::cpp_type<L>, impl::cpp_type<R>, Object>
+                impl::iadd_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __iadd__<L, R>::type>
             ) || (
                 !impl::has_call_operator<__iadd__<L, R>> &&
-                !(impl::has_cpp<L> && impl::has_cpp<R>)
+                !(impl::has_cpp<L> && impl::has_cpp<R>) &&
+                std::same_as<typename __iadd__<L, R>::type, L>
             )
         )
     )
-decltype(auto) operator+=(L& lhs, R&& rhs) {
+decltype(auto) operator+=(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__iadd__<L, R>>) {
-        return __iadd__<L, R>{}(lhs, std::forward<R>(rhs));
+        return __iadd__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
-        return from_python(lhs) += from_python(std::forward<R>(rhs));
+        return from_python(std::forward<L>(lhs)) +=
+            from_python(std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __iadd__<L, R>::type>;
@@ -1260,7 +1049,7 @@ decltype(auto) operator+=(L& lhs, R&& rhs) {
         } else {
             lhs = reinterpret_steal<Return>(result);
         }
-        return lhs;
+        return std::forward<L>(lhs);
     }
 }
 
@@ -1308,23 +1097,25 @@ decltype(auto) operator-=(L& lhs, R&& rhs) = delete;
 template <impl::python L, typename R>
     requires (
         __isub__<L, R>::enable &&
-        std::same_as<typename __isub__<L, R>::type, L&> && (
-            std::is_invocable_r_v<L&, __isub__<L, R>, L, R> || (
+        std::convertible_to<typename __isub__<L, R>::type, Object> && (
+            std::is_invocable_r_v<typename __isub__<L, R>::type, __isub__<L, R>, L, R> || (
                 !impl::has_call_operator<__isub__<L, R>> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
-                impl::isub_returns<impl::cpp_type<L>, impl::cpp_type<R>, Object>
+                impl::isub_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __isub__<L, R>::type>
             ) || (
                 !impl::has_call_operator<__isub__<L, R>> &&
-                !(impl::has_cpp<L> && impl::has_cpp<R>)
+                !(impl::has_cpp<L> && impl::has_cpp<R>) &&
+                std::same_as<typename __isub__<L, R>::type, L>
             )
         )
     )
-decltype(auto) operator-=(L& lhs, R&& rhs) {
+decltype(auto) operator-=(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__isub__<L, R>>) {
-        return __isub__<L, R>{}(lhs, std::forward<R>(rhs));
+        return __isub__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
-        return from_python(lhs) -= from_python(std::forward<R>(rhs));
+        return from_python(std::forward<L>(lhs)) -=
+            from_python(std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __isub__<L, R>::type>;
@@ -1339,7 +1130,7 @@ decltype(auto) operator-=(L& lhs, R&& rhs) {
         } else {
             lhs = reinterpret_steal<Return>(result);
         }
-        return lhs;
+        return std::forward<L>(lhs);
     }
 }
 
@@ -1387,23 +1178,25 @@ decltype(auto) operator*=(L& lhs, R&& rhs) = delete;
 template <impl::python L, typename R>
     requires (
         __imul__<L, R>::enable &&
-        std::same_as<__imul__<L, R>, L&> && (
-            std::is_invocable_r_v<L&, __imul__<L, R>, L, R> || (
+        std::convertible_to<typename __imul__<L, R>::type, Object> && (
+            std::is_invocable_r_v<typename __imul__<L, R>::type, __imul__<L, R>, L, R> || (
                 !impl::has_call_operator<__imul__<L, R>> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
-                impl::imul_returns<impl::cpp_type<L>, impl::cpp_type<R>, Object>
+                impl::imul_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __imul__<L, R>::type>
             ) || (
                 !impl::has_call_operator<__imul__<L, R>> &&
-                !(impl::has_cpp<L> && impl::has_cpp<R>)
+                !(impl::has_cpp<L> && impl::has_cpp<R>) &&
+                std::same_as<typename __imul__<L, R>::type, L>
             )
         )
     )
-decltype(auto) operator*=(L& lhs, R&& rhs) {
+decltype(auto) operator*=(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__imul__<L, R>>) {
-        return __imul__<L, R>{}(lhs, std::forward<R>(rhs));
+        return __imul__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
-        return from_python(lhs) *= from_python(std::forward<R>(rhs));
+        return from_python(std::forward<L>(lhs)) *=
+            from_python(std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __imul__<L, R>::type>;
@@ -1418,9 +1211,162 @@ decltype(auto) operator*=(L& lhs, R&& rhs) {
         } else {
             lhs = reinterpret_steal<Return>(result);
         }
-        return lhs;
+        return std::forward<L>(lhs);
     }
 }
+
+
+/* Equivalent to Python `base ** exp` (exponentiation). */
+template <typename Base, typename Exp>
+    requires (
+        __pow__<Base, Exp>::enable &&
+        std::convertible_to<typename __pow__<Base, Exp>::type, Object> && (
+            std::is_invocable_r_v<typename __pow__<Base, Exp>::type, __pow__<Base, Exp>, Base, Exp> || (
+                !impl::has_call_operator<__pow__<Base, Exp>> &&
+                (impl::has_cpp<Base> && impl::has_cpp<Exp>) &&
+                impl::pow_returns<impl::cpp_type<Base>, impl::cpp_type<Exp>, typename __pow__<Base, Exp>::type>
+            ) && (
+                !impl::has_call_operator<__pow__<Base, Exp>> &&
+                !(impl::has_cpp<Base> && impl::has_cpp<Exp>) &&
+                std::derived_from<typename __pow__<Base, Exp>::type, Object>
+            )
+        )
+    )
+decltype(auto) pow(Base&& base, Exp&& exp) {
+    if constexpr (impl::has_call_operator<__pow__<Base, Exp>>) {
+        return __pow__<Base, Exp>{}(std::forward<Base>(base), std::forward<Exp>(exp));
+
+    } else if constexpr (impl::has_cpp<Base> && impl::has_cpp<Exp>) {
+        if constexpr (
+            impl::complex_like<impl::cpp_type<Base>> &&
+            impl::complex_like<impl::cpp_type<Exp>>
+        ) {
+            return std::common_type_t<impl::cpp_type<Base>, impl::cpp_type<Exp>>(
+                pow(from_python(base).real(), from_python(exp).real()),
+                pow(from_python(base).imag(), from_python(exp).imag())
+            );
+        } else if constexpr (impl::complex_like<impl::cpp_type<Base>>) {
+            return Base(
+                pow(from_python(base).real(), from_python(exp)),
+                pow(from_python(base).real(), from_python(exp))
+            );
+        } else if constexpr (impl::complex_like<impl::cpp_type<Exp>>) {
+            return Exp(
+                pow(from_python(base), from_python(exp).real()),
+                pow(from_python(base), from_python(exp).imag())
+            );
+        } else {
+            return std::pow(
+                from_python(std::forward<Base>(base)),
+                from_python(std::forward<Exp>(exp))
+            );
+        }
+
+    } else {
+        PyObject* result = PyNumber_Power(
+            ptr(to_python(std::forward<Base>(base))),
+            ptr(to_python(std::forward<Exp>(exp))),
+            Py_None
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<typename __pow__<Base, Exp>::type>(result);
+    }
+}
+
+
+/* Equivalent to Python `pow(base, exp)`, except that it takes a C++ value and applies
+std::pow() for identical semantics. */
+template <impl::cpp Base, impl::cpp Exp>
+    requires (!__pow__<Base, Exp>::enable && (
+        impl::complex_like<Base> ||
+        impl::complex_like<Exp> ||
+        impl::has_pow<Base, Exp>
+    ))
+decltype(auto) pow(Base&& base, Exp&& exp) {
+    if constexpr (impl::complex_like<Base> && impl::complex_like<Exp>) {
+        return std::common_type_t<std::remove_cvref_t<Base>, std::remove_cvref_t<Exp>>(
+            pow(base.real(), exp.real()),
+            pow(base.imag(), exp.imag())
+        );
+    } else if constexpr (impl::complex_like<Base>) {
+        return Base(
+            pow(base.real(), exp),
+            pow(base.imag(), exp)
+        );
+    } else if constexpr (impl::complex_like<Exp>) {
+        return Exp(
+            pow(base, exp.real()),
+            pow(base, exp.imag())
+        );
+    } else {
+        return std::pow(base, exp);
+    }
+}
+
+
+/* Equivalent to Python `pow(base, exp, mod)`. */
+template <typename Base, typename Exp, typename Mod>
+    requires (
+        __pow__<Base, Exp, Mod>::enable &&
+        std::convertible_to<typename __pow__<Base, Exp, Mod>::type, Object> && (
+            std::is_invocable_r_v<
+                typename __pow__<Base, Exp, Mod>::type,
+                __pow__<Base, Exp, Mod>,
+                Base,
+                Exp,
+                Mod
+            > || (
+                !impl::has_call_operator<__pow__<Base, Exp, Mod>> &&
+                std::derived_from<typename __pow__<Base, Exp, Mod>::type, Object>
+            )
+        )
+    )
+decltype(auto) pow(Base&& base, Exp&& exp, Mod&& mod) {
+    if constexpr (impl::has_call_operator<__pow__<Base, Exp>>) {
+        return __pow__<Base, Exp>{}(
+            std::forward<Base>(base),
+            std::forward<Exp>(exp),
+            std::forward<Mod>(mod)
+        );
+
+    } else {
+        PyObject* result = PyNumber_Power(
+            ptr(to_python(std::forward<Base>(base))),
+            ptr(to_python(std::forward<Exp>(exp))),
+            ptr(to_python(std::forward<Mod>(mod)))
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<typename __pow__<Base, Exp, Mod>::type>(result);
+    }
+}
+
+
+/* Equivalent to Python `pow(base, exp, mod)`, but works on C++ integers with identical
+semantics. */
+template <std::integral Base, std::integral Exp, std::integral Mod>
+auto pow(Base base, Exp exp, Mod mod) {
+    std::common_type_t<Base, Exp, Mod> result = 1;
+    base = base % mod;
+    while (exp > 0) {
+        if (exp % 2) {
+            result = (result * base) % mod;
+        }
+        exp >>= 1;
+        base = (base * base) % mod;
+    }
+    return result;
+}
+
+
+
+
+
+
+/// TODO: maybe py::round() and py::div() can be moved here?
 
 
 template <typename L, typename R>
@@ -1466,23 +1412,25 @@ decltype(auto) operator/=(L& lhs, R&& rhs) = delete;
 template <impl::python L, typename R>
     requires (
         __itruediv__<L, R>::enable &&
-        std::same_as<typename __itruediv__<L, R>::type, L&> && (
-            std::is_invocable_r_v<L&, __itruediv__<L, R>, L, R> || (
+        std::convertible_to<typename __itruediv__<L, R>::type, Object> && (
+            std::is_invocable_r_v<typename __itruediv__<L, R>::type, __itruediv__<L, R>, L, R> || (
                 !impl::has_call_operator<__itruediv__<L, R>> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
-                impl::itruediv_returns<impl::cpp_type<L>, impl::cpp_type<R>, Object>
+                impl::itruediv_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __itruediv__<L, R>::type>
             ) || (
                 !impl::has_call_operator<__itruediv__<L, R>> &&
-                !(impl::has_cpp<L> && impl::has_cpp<R>)
+                !(impl::has_cpp<L> && impl::has_cpp<R>) &&
+                std::same_as<typename __itruediv__<L, R>::type, L>
             )
         )
     )
-decltype(auto) operator/=(L& lhs, R&& rhs) {
+decltype(auto) operator/=(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__itruediv__<L, R>>) {
-        return __itruediv__<L, R>{}(lhs, std::forward<R>(rhs));
+        return __itruediv__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
-        return from_python(lhs) /= from_python(std::forward<R>(rhs));
+        return from_python(std::forward<L>(lhs)) /=
+            from_python(std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __itruediv__<L, R>::type>;
@@ -1497,7 +1445,65 @@ decltype(auto) operator/=(L& lhs, R&& rhs) {
         } else {
             lhs = reinterpret_steal<Return>(result);
         }
-        return lhs;
+        return std::forward<L>(lhs);
+    }
+}
+
+
+template <typename L, typename R>
+    requires (
+        __floordiv__<L, R>::enable &&
+        std::convertible_to<typename __floordiv__<L, R>::type, Object> && (
+            std::is_invocable_r_v<typename __floordiv__<L, R>::type, __floordiv__<L, R>, L, R> || (
+                !impl::has_call_operator<__floordiv__<L, R>> &&
+                std::derived_from<typename __floordiv__<L, R>::type, Object>
+            )
+        )
+    )
+decltype(auto) floordiv(L&& lhs, R&& rhs) {
+    if constexpr (impl::has_call_operator<__floordiv__<L, R>>) {
+        return __floordiv__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
+    } else {
+        PyObject* result = PyNumber_FloorDivide(
+            ptr(to_python(std::forward<L>(lhs))),
+            ptr(to_python(std::forward<R>(lhs)))
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<typename __floordiv__<L, R>::type>(result);
+    }
+}
+
+
+template <impl::python L, typename R>
+    requires (
+        __ifloordiv__<L, R>::enable &&
+        std::convertible_to<typename __ifloordiv__<L, R>::type, Object> && (
+            std::is_invocable_r_v<typename __ifloordiv__<L, R>::type, __ifloordiv__<L, R>, L, R> || (
+                !impl::has_call_operator<__ifloordiv__<L, R>> &&
+                std::same_as<typename __ifloordiv__<L, R>::type, L>
+            )
+        )
+    )
+decltype(auto) ifloordiv(L&& lhs, R&& rhs) {
+    if constexpr (impl::has_call_operator<__ifloordiv__<L, R>>) {
+        return __ifloordiv__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
+
+    } else {
+        using Return = std::remove_cvref_t<typename __ifloordiv__<L, R>::type>;
+        PyObject* result = PyNumber_InPlaceFloorDivide(
+            ptr(lhs),
+            ptr(to_python(std::forward<R>(rhs)))
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == ptr(lhs)) {
+            Py_DECREF(result);
+        } else {
+            lhs = reinterpret_steal<Return>(result);
+        }
+        return std::forward<L>(lhs);
     }
 }
 
@@ -1545,23 +1551,25 @@ decltype(auto) operator%=(L& lhs, R&& rhs) = delete;
 template <impl::python L, typename R>
     requires (
         __imod__<L, R>::enable &&
-        std::same_as<typename __imod__<L, R>::type, L&> && (
-            std::is_invocable_r_v<L&, __imod__<L, R>, L, R> || (
+        std::convertible_to<typename __imod__<L, R>::type, Object> && (
+            std::is_invocable_r_v<typename __imod__<L, R>::type, __imod__<L, R>, L, R> || (
                 !impl::has_call_operator<__imod__<L, R>> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
-                impl::imod_returns<impl::cpp_type<L>, impl::cpp_type<R>, Object>
+                impl::imod_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __imod__<L, R>::type>
             ) || (
                 !impl::has_call_operator<__imod__<L, R>> &&
-                !(impl::has_cpp<L> && impl::has_cpp<R>)
+                !(impl::has_cpp<L> && impl::has_cpp<R>) &&
+                std::same_as<typename __imod__<L, R>::type, L>
             )
         )
     )
-decltype(auto) operator%=(L& lhs, R&& rhs) {
+decltype(auto) operator%=(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__imod__<L, R>>) {
-        return __imod__<L, R>{}(lhs, std::forward<R>(rhs));
+        return __imod__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
-        return from_python(lhs) %= from_python(std::forward<R>(rhs));
+        return from_python(std::forward<L>(lhs)) %=
+            from_python(std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __imod__<L, R>::type>;
@@ -1576,7 +1584,7 @@ decltype(auto) operator%=(L& lhs, R&& rhs) {
         } else {
             lhs = reinterpret_steal<Return>(result);
         }
-        return lhs;
+        return std::forward<L>(lhs);
     }
 }
 
@@ -1624,23 +1632,25 @@ decltype(auto) operator<<=(L& lhs, R&& rhs) = delete;
 template <impl::python L, typename R>
     requires (
         __ilshift__<L, R>::enable &&
-        std::same_as<typename __ilshift__<L, R>::type, L&> && (
-            std::is_invocable_r_v<L&, __ilshift__<L, R>, L, R> || (
+        std::convertible_to<typename __ilshift__<L, R>::type, Object> && (
+            std::is_invocable_r_v<typename __ilshift__<L, R>::type, __ilshift__<L, R>, L, R> || (
                 !impl::has_call_operator<__ilshift__<L, R>> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
-                impl::ilshift_returns<impl::cpp_type<L>, impl::cpp_type<R>, Object>
+                impl::ilshift_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __ilshift__<L, R>::type>
             ) || (
                 !impl::has_call_operator<__ilshift__<L, R>> &&
-                !(impl::has_cpp<L> && impl::has_cpp<R>)
+                !(impl::has_cpp<L> && impl::has_cpp<R>) &&
+                std::same_as<typename __ilshift__<L, R>::type, L>
             )
         )
     )
-decltype(auto) operator<<=(L& lhs, R&& rhs) {
+decltype(auto) operator<<=(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__ilshift__<L, R>>) {
-        return __ilshift__<L, R>{}(lhs, std::forward<R>(rhs));
+        return __ilshift__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
-        return from_python(lhs) <<= from_python(std::forward<R>(rhs));
+        return from_python(std::forward<L>(lhs)) <<=
+            from_python(std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __ilshift__<L, R>::type>;
@@ -1655,7 +1665,7 @@ decltype(auto) operator<<=(L& lhs, R&& rhs) {
         } else {
             lhs = reinterpret_steal<Return>(result);
         }
-        return lhs;
+        return std::forward<L>(lhs);
     }
 }
 
@@ -1703,23 +1713,25 @@ decltype(auto) operator>>=(L& lhs, R&& rhs) = delete;
 template <impl::python L, typename R>
     requires (
         __irshift__<L, R>::enable &&
-        std::same_as<typename __irshift__<L, R>::type, L&> && (
-            std::is_invocable_r_v<L&, __irshift__<L, R>, L, R> || (
+        std::convertible_to<typename __irshift__<L, R>::type, Object> && (
+            std::is_invocable_r_v<typename __irshift__<L, R>::type, __irshift__<L, R>, L, R> || (
                 !impl::has_call_operator<__irshift__<L, R>> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
-                impl::irshift_returns<impl::cpp_type<L>, impl::cpp_type<R>, Object>
+                impl::irshift_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __irshift__<L, R>::type>
             ) || (
                 !impl::has_call_operator<__irshift__<L, R>> &&
-                !(impl::has_cpp<L> && impl::has_cpp<R>)
+                !(impl::has_cpp<L> && impl::has_cpp<R>) &&
+                std::same_as<typename __irshift__<L, R>::type, L>
             )
         )
     )
-decltype(auto) operator>>=(L& lhs, R&& rhs) {
+decltype(auto) operator>>=(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__irshift__<L, R>>) {
-        return __irshift__<L, R>{}(lhs, std::forward<R>(rhs));
+        return __irshift__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
-        return from_python(lhs) >>= from_python(std::forward<R>(rhs));
+        return from_python(std::forward<L>(lhs)) >>=
+            from_python(std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __irshift__<L, R>::type>;
@@ -1734,7 +1746,7 @@ decltype(auto) operator>>=(L& lhs, R&& rhs) {
         } else {
             lhs = reinterpret_steal<Return>(result);
         }
-        return lhs;
+        return std::forward<L>(lhs);
     }
 }
 
@@ -1782,23 +1794,25 @@ decltype(auto) operator&=(L& lhs, R&& rhs) = delete;
 template <impl::python L, typename R>
     requires (
         __iand__<L, R>::enable &&
-        std::same_as<typename __iand__<L, R>::type, L&> && (
-            std::is_invocable_r_v<L&, __iand__<L, R>, L, R> || (
+        std::convertible_to<typename __iand__<L, R>::type, Object> && (
+            std::is_invocable_r_v<typename __iand__<L, R>::type, __iand__<L, R>, L, R> || (
                 !impl::has_call_operator<__iand__<L, R>> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
-                impl::iand_returns<impl::cpp_type<L>, impl::cpp_type<R>, Object>
+                impl::iand_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __iand__<L, R>::type>
             ) || (
                 !impl::has_call_operator<__iand__<L, R>> &&
-                !(impl::has_cpp<L> && impl::has_cpp<R>)
+                !(impl::has_cpp<L> && impl::has_cpp<R>) &&
+                std::same_as<typename __iand__<L, R>::type, L>
             )
         )
     )
-decltype(auto) operator&=(L& lhs, R&& rhs) {
+decltype(auto) operator&=(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__iand__<L, R>>) {
-        return __iand__<L, R>{}(lhs, std::forward<R>(rhs));
+        return __iand__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
-        return from_python(lhs) &= from_python(std::forward<R>(rhs));
+        return from_python(std::forward<L>(lhs)) &=
+            from_python(std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __iand__<L, R>::type>;
@@ -1813,7 +1827,7 @@ decltype(auto) operator&=(L& lhs, R&& rhs) {
         } else {
             lhs = reinterpret_steal<Return>(result);
         }
-        return lhs;
+        return std::forward<L>(lhs);
     }
 }
 
@@ -1861,23 +1875,25 @@ decltype(auto) operator|=(L& lhs, R&& rhs) = delete;
 template <impl::python L, typename R>
     requires (
         __ior__<L, R>::enable &&
-        std::same_as<typename __ior__<L, R>::type, L&> && (
-            std::is_invocable_r_v<L&, __ior__<L, R>, L, R> || (
+        std::convertible_to<typename __ior__<L, R>::type, Object> && (
+            std::is_invocable_r_v<typename __ior__<L, R>::type, __ior__<L, R>, L, R> || (
                 !impl::has_call_operator<__ior__<L, R>> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
-                impl::ior_returns<impl::cpp_type<L>, impl::cpp_type<R>, Object>
+                impl::ior_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __ior__<L, R>::type>
             ) || (
                 !impl::has_call_operator<__ior__<L, R>> &&
-                !(impl::has_cpp<L> && impl::has_cpp<R>)
+                !(impl::has_cpp<L> && impl::has_cpp<R>) &&
+                std::same_as<typename __ior__<L, R>::type, L>
             )
         )
     )
-decltype(auto) operator|=(L& lhs, R&& rhs) {
+decltype(auto) operator|=(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__ior__<L, R>>) {
-        return __ior__<L, R>{}(lhs, std::forward<R>(rhs));
+        return __ior__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
-        return from_python(lhs) |= from_python(std::forward<R>(rhs));
+        return from_python(std::forward<L>(lhs)) |=
+            from_python(std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __ior__<L, R>::type>;
@@ -1892,7 +1908,7 @@ decltype(auto) operator|=(L& lhs, R&& rhs) {
         } else {
             lhs = reinterpret_steal<Return>(result);
         }
-        return lhs;
+        return std::forward<L>(lhs);
     }
 }
 
@@ -1940,23 +1956,25 @@ decltype(auto) operator^=(L& lhs, R&& rhs) = delete;
 template <impl::python L, typename R>
     requires (
         __ixor__<L, R>::enable &&
-        std::same_as<typename __ixor__<L, R>::type, L&> && (
-            std::is_invocable_r_v<L&, __ixor__<L, R>, L, R> || (
+        std::convertible_to<typename __ixor__<L, R>::type, Object> && (
+            std::is_invocable_r_v<typename __ixor__<L, R>::type, __ixor__<L, R>, L, R> || (
                 !impl::has_call_operator<__ixor__<L, R>> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
-                impl::ixor_returns<impl::cpp_type<L>, impl::cpp_type<R>, Object>
+                impl::ixor_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __ixor__<L, R>::type>
             ) || (
                 !impl::has_call_operator<__ixor__<L, R>> &&
-                !(impl::has_cpp<L> && impl::has_cpp<R>)
+                !(impl::has_cpp<L> && impl::has_cpp<R>) &&
+                std::same_as<typename __ixor__<L, R>::type, L>
             )
         )
     )
-decltype(auto) operator^=(L& lhs, R&& rhs) {
+decltype(auto) operator^=(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__ixor__<L, R>>) {
-        return __ixor__<L, R>{}(lhs, std::forward<R>(rhs));
+        return __ixor__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
-        return from_python(lhs) ^= from_python(std::forward<R>(rhs));
+        return from_python(std::forward<L>(lhs)) ^=
+            from_python(std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __ixor__<L, R>::type>;
@@ -1971,7 +1989,7 @@ decltype(auto) operator^=(L& lhs, R&& rhs) {
         } else {
             lhs = reinterpret_steal<Return>(result);
         }
-        return lhs;
+        return std::forward<L>(lhs);
     }
 }
 
