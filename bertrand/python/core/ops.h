@@ -18,7 +18,7 @@ namespace py {
 ///     - __setitem__       (void)
 ///     - __delitem__       (void)
 ///     - __len__           (size_t)        (x)
-///     - __contains__      (bool)
+///     - __contains__      (bool)          (x)
 ///     - __hash__          (size_t)        (x)
 
 
@@ -55,8 +55,8 @@ namespace impl {
 }
 
 
-/// TODO: implement the extra overloads for Object, BertrandMeta, Type, and Tuple of
-/// types/generic objects
+/// TODO: implement the extra overloads for Object, Type, and Tuple of types/generic
+/// objects
 
 
 /* Does a compile-time check to see if the derived type inherits from the base type.
@@ -326,6 +326,69 @@ void delattr(Self&& self) {
 }
 
 
+/* Contains operator.  Equivalent to Python's `in` keyword, but as a freestanding
+non-member function (i.e. `x in y` -> `py::in(x, y)`).  A member equivalent is defined
+for all subclasses of `Object` (i.e. `x.in(y)`), which delegates to this function. */
+template <typename Key, typename Container>
+    requires (
+        __contains__<Container, Key>::enable &&
+        std::same_as<typename __contains__<Container, Key>::type, bool> && (
+            std::is_invocable_r_v<bool, __contains__<Container, Key>, Container, Key> || (
+                !impl::has_call_operator<__contains__<Container, Key>> &&
+                impl::has_cpp<Container> &&
+                impl::has_contains<impl::cpp_type<Container>, impl::cpp_type<Key>>
+            ) || (
+                !impl::has_call_operator<__contains__<Container, Key>> &&
+                !impl::has_cpp<Container>
+            )
+        )
+    )
+[[nodiscard]] bool in(Key&& key, Container&& container) {
+    if constexpr (impl::has_call_operator<__contains__<Container, Key>>) {
+        return __contains__<Container, Key>{}(
+            std::forward<Container>(container),
+            std::forward<Key>(key)
+        );
+
+    } else if constexpr (impl::has_cpp<Container>) {
+        return from_python(std::forward<Container>(container)).contains(
+            from_python(std::forward<Key>(key))
+        );
+
+    } else {
+        int result = PySequence_Contains(
+            ptr(to_python(std::forward<Container>(container))),
+            ptr(to_python(std::forward<Key>(key)))
+        );
+        if (result == -1) {
+            Exception::from_python();
+        }
+        return result;
+    }
+}
+
+
+/* Member equivalent for `py::in()` function, which simplifies the syntax if the
+key is already a Python object */
+template <typename Self, typename Key>
+    requires (
+        __contains__<Self, Key>::enable &&
+        std::same_as<typename __contains__<Self, Key>::type, bool> && (
+            std::is_invocable_r_v<bool, __contains__<Self, Key>, Self, Key> || (
+                !impl::has_call_operator<__contains__<Self, Key>> &&
+                impl::has_cpp<Self> &&
+                impl::has_contains<impl::cpp_type<Self>, impl::cpp_type<Key>>
+            ) || (
+                !impl::has_call_operator<__contains__<Self, Key>> &&
+                !impl::has_cpp<Self>
+            )
+        )
+    )
+[[nodiscard]] inline bool Object::in(this Self&& self, Key&& key) {
+    return py::in(std::forward<Key>(key), std::forward<Self>(self));
+}
+
+
 /* Equivalent to Python `repr(obj)`, but returns a std::string and attempts to
 represent C++ types using the stream insertion operator (<<) or std::to_string.  If all
 else fails, falls back to demangling the result of typeid(obj).name(). */
@@ -382,52 +445,12 @@ template <impl::hashable T>
 }
 
 
-/// TODO: replace this with a py::in() function, which might delegate to
-/// std::ranges::contains() as a fallback
-template <typename Self, typename Key> requires (__contains__<Self, Key>::enable)
-[[nodiscard]] bool Object::contains(this Self&& self, Key&& key) {
-    using Return = typename __contains__<Self, Key>::type;
-    static_assert(
-        std::same_as<Return, bool>,
-        "contains() operator must return a boolean value.  Check your "
-        "specialization of __contains__ for these types and ensure the Return "
-        "type is set to bool."
-    );
-    if constexpr (impl::has_call_operator<__contains__<Self, Key>>) {
-        return __contains__<Self, Key>{}(
-            std::forward<Self>(self),
-            std::forward<Key>(key)
-        );
-
-    } else if constexpr (impl::has_cpp<Self>) {
-        static_assert(
-            impl::has_contains<impl::cpp_type<Self>, impl::cpp_type<Key>>,
-            "__contains__<Self, Key> is enabled for operands whose C++ "
-            "representations have no viable overload for `Self.contains(Key)`"
-        );
-        return from_python(std::forward<Self>(self)).contains(
-            from_python(std::forward<Key>(key))
-        );
-
-    } else {
-        int result = PySequence_Contains(
-            ptr(self),
-            ptr(to_python(std::forward<Key>(key)))
-        );
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
-    }
-}
-
-
 /* Equivalent to Python `len(obj)`. */
 template <typename Self>
     requires (
         __len__<Self>::enable &&
         std::convertible_to<typename __len__<Self>::type, size_t> && (
-            std::is_invocable_r_v<size_t , __len__<Self>, Self> || (
+            std::is_invocable_r_v<size_t, __len__<Self>, Self> || (
                 !impl::has_call_operator<__len__<Self>> &&
                 impl::has_cpp<Self> &&
                 impl::has_size<impl::cpp_type<Self>>
@@ -1360,13 +1383,6 @@ auto pow(Base base, Exp exp, Mod mod) {
     }
     return result;
 }
-
-
-
-
-
-
-/// TODO: maybe py::round() and py::div() can be moved here?
 
 
 template <typename L, typename R>

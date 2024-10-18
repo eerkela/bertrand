@@ -143,6 +143,8 @@ template <typename T>
 
 template <>
 struct Interface<Object> {};
+template <>
+struct Interface<Type<Object>> {};
 
 
 /* An owning reference to a dynamically-typed Python object.  More specialized types
@@ -308,7 +310,7 @@ protected:
         This method must end with a call to `bind.finalize<Bases...>()`, which will
         instantiate a unique heap type for each module. */
         template <StaticStr ModName>
-        static Type<Derived> __export__(Bindings<ModName> bind);  // defined in type.h {
+        static Type<Derived> __export__(Bindings<ModName> bind);  // {
         //     // bind.var<"foo">(&CppType::foo);
         //     // bind.method<"bar">("an example method", &CppType::bar);
         //     // bind.type<"Baz", CppType::Baz, Bases...>();
@@ -412,7 +414,7 @@ protected:
         `__export__()` method if the module was not previously loaded.  If the user is
         exposing an existing Python type, this method should simply borrow a reference
         to the existing type object. */
-        static Type<Derived> __import__();  // defined in except.h {
+        static Type<Derived> __import__();  // {
         //     throw NotImplementedError(
         //         "the __import__() method must be defined for all Python types: "
         //         + impl::demangle(typeid(CRTP).name())
@@ -494,7 +496,7 @@ protected:
 
         /// TODO: docs
         template <StaticStr ModName>
-        static Module<Name> __export__(Bindings<ModName> bind);  // defined in type.h {
+        static Module<Name> __export__(Bindings<ModName> bind);  // {
         //     return CRTP::__import__();
         // }
 
@@ -623,26 +625,24 @@ public:
         return ptr(self) == other;
     }
 
-    /* Contains operator.  Equivalent to Python's `in` keyword, but with reversed
-    operands (i.e. `x in y` -> `y.contains(x)`).  This is consistent with other STL
-    container types, and the allowable key types can be specified via the __contains__
-    control struct. */
-    template <typename Self, typename Key> requires (__contains__<Self, Key>::enable)
-    [[nodiscard]] bool contains(this Self&& self, Key&& key);
-
     /* Python-style contains operator.  Equivalent to Python's `in` keyword, but
     expects the argument to have a `.contains()` method that can be called with this
     type, order to support membership testing in both directions. */
-    template <typename Self, impl::has_contains<Self> T>
-    [[nodiscard]] bool in(this Self&& self, T&& other) {
-        return std::forward<T>(other).contains(std::forward<Self>(self));
-    }
-
-    /* Contextually convert an Object into a boolean value for use in if/else 
-    statements, with the same semantics as in Python. */
-    /// TODO: convert this into an __explicit_cast__ control struct.
-    template <typename Self>
-    [[nodiscard]] explicit operator bool(this Self&& self);
+    template <typename Self, typename Key>
+        requires (
+            __contains__<Self, Key>::enable &&
+            std::same_as<typename __contains__<Self, Key>::type, bool> && (
+                std::is_invocable_r_v<bool, __contains__<Self, Key>, Self, Key> || (
+                    !impl::has_call_operator<__contains__<Self, Key>> &&
+                    impl::has_cpp<Self> &&
+                    impl::has_contains<impl::cpp_type<Self>, impl::cpp_type<Key>>
+                ) || (
+                    !impl::has_call_operator<__contains__<Self, Key>> &&
+                    !impl::has_cpp<Self>
+                )
+            )
+        )
+    [[nodiscard]] bool in(this Self&& self, Key&& other);
 
     /* Universal implicit conversion operator.  Implemented via the __cast__ control
     struct. */
@@ -666,6 +666,12 @@ public:
     [[nodiscard]] explicit operator T(this Self&& self) {
         return __explicit_cast__<Self, T>{}(std::forward<Self>(self));
     }
+
+    /* Index operator.  Specific key and element types can be controlled via the
+    __getitem__, __setitem__, and __delitem__ control structs. */
+    template <typename Self, typename... Key>
+        requires (__getitem__<Self, Key...>::enable)
+    decltype(auto) operator[](this Self&& self, Key&&... key);
 
     /* Call operator.  This can be enabled for specific argument signatures and return
     types via the __call__ control struct, enabling static type safety for callable
@@ -719,17 +725,7 @@ public:
         // }
     }
 
-    /* Index operator.  Specific key and element types can be controlled via the
-    __getitem__, __setitem__, and __delitem__ control structs. */
-    template <typename Self, typename... Key>
-        requires (__getitem__<Self, Key...>::enable)
-    decltype(auto) operator[](this Self&& self, Key&&... key);
-
 };
-
-
-template <>
-struct Interface<Type<Object>> {};
 
 
 template <impl::inherits<Object> T>
@@ -780,7 +776,7 @@ struct __issubclass__<T, Base>                              : Returns<bool> {
             return impl::type_like<U>;
         }
     }
-    static bool operator()(T&& obj, Base&& cls);  // defined in ops.h
+    static bool operator()(T&& obj, Base&& cls);
 };
 
 
@@ -850,7 +846,7 @@ struct __cast__<T, Self>                                    : Returns<Self> {
 template <impl::inherits<Object> From, impl::inherits<From> To>
     requires (!impl::is<From, To>)
 struct __cast__<From, To>                                   : Returns<To> {
-    static auto operator()(From&& from);  // defined in ops.h
+    static auto operator()(From&& from);
 };
 
 
@@ -914,32 +910,39 @@ struct __cast__<From, std::unique_ptr<To>>                  : Returns<std::uniqu
 /* Explicitly convert a Python object into any C++ type by checking for an equivalent
 Python type via __cast__, explicitly converting to that type, and then explicitly
 converting to the C++ type in a 2-step process. */
-template <impl::inherits<Object> From, impl::cpp To> requires (__cast__<To>::enable)
+template <impl::inherits<Object> From, impl::cpp To> requires (impl::has_python<To>)
 struct __explicit_cast__<From, To>                          : Returns<To> {
     static auto operator()(From&& from) {
-        using Intermediate = __cast__<To>::type;
         return static_cast<To>(
-            static_cast<Intermediate>(std::forward<From>(from))
+            static_cast<impl::python_type<To>>(std::forward<From>(from))
         );
     }
+};
+
+
+/* Contextually convert an Object into a boolean value for use in if/else  statements,
+with the same semantics as Python. */
+template <impl::inherits<Object> From>
+struct __explicit_cast__<From, bool>                         : Returns<bool> {
+    static bool operator()(From&& from);
 };
 
 
 /* Explicitly convert a Python object into a C++ integer by calling `int(obj)` at the
 Python level. */
 template <impl::inherits<Object> From, impl::cpp To>
-    requires (__cast__<To>::enable && std::integral<To>)
+    requires (impl::has_python<To> && std::integral<To>)
 struct __explicit_cast__<From, To>                          : Returns<To> {
-    static To operator()(From&& from);  // defined in ops.h
+    static To operator()(From&& from);
 };
 
 
 /* Explicitly convert a Python object into a C++ floating-point number by calling
 `float(obj)` at the Python level. */
 template <impl::inherits<Object> From, impl::cpp To>
-    requires (__cast__<To>::enable && std::floating_point<To>)
+    requires (impl::has_python<To> && std::floating_point<To>)
 struct __explicit_cast__<From, To>                          : Returns<To> {
-    static To operator()(From&& from);  // defined in ops.h
+    static To operator()(From&& from);
 };
 
 
@@ -947,7 +950,7 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 `complex(obj)` at the Python level. */
 template <impl::inherits<Object> From, typename Float>
 struct __explicit_cast__<From, std::complex<Float>> : Returns<std::complex<Float>> {
-    static auto operator()(From&& from);  // defined in ops.h
+    static auto operator()(From&& from);
 };
 
 
@@ -955,7 +958,7 @@ struct __explicit_cast__<From, std::complex<Float>> : Returns<std::complex<Float
 `str(obj)` at the Python level. */
 template <impl::inherits<Object> From, typename Char>
 struct __explicit_cast__<From, std::basic_string<Char>> : Returns<std::basic_string<Char>> {
-    static auto operator()(From&& from);  // defined in ops.h
+    static auto operator()(From&& from);
 };
 
 
@@ -995,9 +998,9 @@ struct __pos__<Self>                                        : Returns<Object> {}
 template <impl::is<Object> Self>
 struct __neg__<Self>                                        : Returns<Object> {};
 template <impl::is<Object> Self> requires (!impl::is_const<Self>)
-struct __increment__<Self>                                  : Returns<std::add_lvalue_reference_t<Object>> {};
+struct __increment__<Self>                                  : Returns<Self> {};
 template <impl::is<Object> Self> requires (!impl::is_const<Self>)
-struct __decrement__<Self>                                  : Returns<std::add_lvalue_reference_t<Object>> {};
+struct __decrement__<Self>                                  : Returns<Self> {};
 template <impl::is<Object> L, std::convertible_to<Object> R>
 struct __lt__<L, R>                                         : Returns<Object> {};
 template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
@@ -1101,7 +1104,7 @@ Python level. */
 template <std::derived_from<std::ostream> Stream, impl::inherits<Object> Self>
 struct __lshift__<Stream, Self>                             : Returns<Stream&> {
     /// TODO: Str, Bytes, ByteArray should specialize this to write to the stream directly.
-    static Stream& operator()(Stream& stream, Self self);  // defined in ops.h
+    static Stream& operator()(Stream& stream, Self self);
 };
 
 
@@ -1122,7 +1125,7 @@ struct Interface<Type<NoneType>> : impl::BertrandTag {};
 /* Represents the type of Python's `None` singleton in C++. */
 struct NoneType : Object, Interface<NoneType> {
     struct __python__ : def<__python__, NoneType>, PyObject {
-        static Type<NoneType> __import__();  // defined in type.h
+        static Type<NoneType> __import__();
     };
 
     NoneType(PyObject* p, borrowed_t t) : Object(p, t) {}
@@ -1254,7 +1257,7 @@ struct Interface<Type<NotImplementedType>> : impl::BertrandTag {};
 /* Represents the type of Python's `NotImplemented` singleton in C++. */
 struct NotImplementedType : Object, Interface<NotImplementedType> {
     struct __python__ : def<__python__, NotImplementedType>, PyObject {
-        static Type<NotImplementedType> __import__();  // defined in type.h
+        static Type<NotImplementedType> __import__();
     };
 
     NotImplementedType(PyObject* p, borrowed_t t) : Object(p, t) {}
@@ -1348,7 +1351,7 @@ struct Interface<Type<EllipsisType>> : impl::BertrandTag {};
 /* Represents the type of Python's `Ellipsis` singleton in C++. */
 struct EllipsisType : Object, Interface<EllipsisType> {
     struct __python__ : def<__python__, EllipsisType>, PyObject {
-        static Type<EllipsisType> __import__();  // defined in type.h
+        static Type<EllipsisType> __import__();
     };
 
     EllipsisType(PyObject* p, borrowed_t t) : Object(p, t) {}

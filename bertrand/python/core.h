@@ -141,19 +141,20 @@ namespace impl {
 }
 
 
-template <typename Self>
-[[nodiscard]] Object::operator bool(this Self&& self) {
+template <impl::inherits<Object> From>
+inline bool __explicit_cast__<From, bool>::operator()(From&& from) {
     if constexpr (
         impl::has_cpp<Self> &&
         impl::has_operator_bool<impl::cpp_type<Self>>
     ) {
-        return static_cast<bool>(from_python(std::forward<Self>(self)));
+        return static_cast<bool>(from_python(std::forward<From>(from)));
+
     } else {
-        int result = PyObject_IsTrue(ptr(self));
+        int result = PyObject_IsTrue(ptr(from));
         if (result == -1) {
             Exception::from_python();
         }
-        return result;   
+        return result;
     }
 }
 
