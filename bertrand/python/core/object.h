@@ -670,7 +670,29 @@ public:
     /* Index operator.  Specific key and element types can be controlled via the
     __getitem__, __setitem__, and __delitem__ control structs. */
     template <typename Self, typename... Key>
-        requires (__getitem__<Self, Key...>::enable)
+        requires (
+            __getitem__<Self, Key...>::enable &&
+            std::convertible_to<typename __getitem__<Self, Key...>::type, Object> && (
+                std::is_invocable_r_v<
+                    typename __getitem__<Self, Key...>::type,
+                    __getitem__<Self, Key...>,
+                    Self,
+                    Key...
+                > || (
+                    !impl::has_call_operator<__getitem__<Self, Key...>> &&
+                    impl::has_cpp<Self> &&
+                    impl::lookup_yields<
+                        impl::cpp_type<Self>&,
+                        typename __getitem__<Self, Key...>::type,
+                        Key...
+                    >
+                ) || (
+                    !impl::has_call_operator<__getitem__<Self, Key...>> &&
+                    !impl::has_cpp<Self> &&
+                    std::derived_from<typename __getitem__<Self, Key...>::type, Object>
+                )
+            )
+        )
     decltype(auto) operator[](this Self&& self, Key&&... key);
 
     /* Call operator.  This can be enabled for specific argument signatures and return
@@ -752,6 +774,10 @@ template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_steal(PyObject* ptr) {
     return T(ptr, Object::stolen_t{});
 }
+
+
+/// TODO: __isinstance__ and __issubclass__ for dynamic objects can include the
+/// appropriate runtime delegation?
 
 
 template <typename Derived, impl::is<Object> Base>
@@ -1157,26 +1183,6 @@ template <>
 struct __cast__<std::nullopt_t>                             : Returns<NoneType> {};
 
 
-template <typename T, impl::is<NoneType> Self>
-struct __isinstance__<T, Self>                              : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::dynamic<T>) {
-            return Py_IsNone(ptr(obj));
-        } else {
-            return issubclass<T, NoneType>();
-        }
-    }
-};
-
-
-template <typename T, impl::is<NoneType> Self>
-struct __issubclass__<T, Self>                              : Returns<bool> {
-    static constexpr bool operator()() {
-        return impl::none_like<T>;  /// TODO: correct?
-    }
-};
-
-
 template <>
 struct __init__<NoneType>                                   : Returns<NoneType> {
     static auto operator()() {
@@ -1283,26 +1289,6 @@ struct NotImplementedType : Object, Interface<NotImplementedType> {
 };
 
 
-template <typename T, impl::is<NotImplementedType> Self>
-struct __isinstance__<T, Self>                              : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::dynamic<T>) {
-            return PyType_IsSubtype(Py_TYPE(ptr(obj)), Py_TYPE(Py_NotImplemented));
-        } else {
-            return issubclass<T, NotImplementedType>();
-        }
-    }
-};
-
-
-template <typename T, impl::is<NotImplementedType> Self>
-struct __issubclass__<T, Self>                              : Returns<bool> {
-    static constexpr bool operator()() {
-        return impl::notimplemented_like<T>;  /// TODO: correct?
-    }
-};
-
-
 template <>
 struct __init__<NotImplementedType>                         : Returns<NotImplementedType> {
     static auto operator()() {
@@ -1374,26 +1360,6 @@ struct EllipsisType : Object, Interface<EllipsisType> {
         std::forward<Args>(args)...
     ) {}
 
-};
-
-
-template <typename T, impl::is<EllipsisType> Self>
-struct __isinstance__<T, Self>                              : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::dynamic<T>) {
-            return PyType_IsSubtype(Py_TYPE(ptr(obj)), Py_TYPE(Py_Ellipsis));
-        } else {
-            return issubclass<T, EllipsisType>();
-        }
-    }
-};
-
-
-template <typename T, impl::is<EllipsisType> Self>
-struct __issubclass__<T, Self>                              : Returns<bool> {
-    static constexpr bool operator()() {
-        return impl::ellipsis_like<T>;  /// TODO: correct?
-    }
 };
 
 

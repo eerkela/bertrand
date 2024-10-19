@@ -2628,53 +2628,6 @@ namespace impl {
     template <typename T> requires (cpp_helper<T>::enable)
     using cpp_type = cpp_helper<T>::type;
 
-    template <typename Self, StaticStr Name>
-        requires (__getattr__<Self, Name>::enable)
-    struct Attr;
-    template <typename T>
-    struct attr_helper { static constexpr bool enable = false; };
-    template <typename Self, StaticStr Name>
-    struct attr_helper<Attr<Self, Name>> {
-        static constexpr bool enable = true;
-        using type = __getattr__<Self, Name>::type;
-    };
-    template <typename T>
-    concept is_attr = attr_helper<std::remove_cvref_t<T>>::enable;
-    template <is_attr T>
-    using attr_type = attr_helper<std::remove_cvref_t<T>>::type;
-
-    template <typename T, StaticStr Name, typename... Args>
-    concept attr_is_callable_with =
-        __getattr__<T, Name>::enable &&
-        std::is_invocable_v<typename __getattr__<T, Name>::type, Args...>;
-
-    template <typename Container, typename... Key>
-        requires (__getitem__<Container, Key...>::enable)
-    struct Item;
-    template <typename T>
-    struct item_helper { static constexpr bool enable = false; };
-    template <typename Container, typename... Key>
-    struct item_helper<Item<Container, Key...>> {
-        static constexpr bool enable = true;
-        using type = __getitem__<Container, Key...>::type;
-    };
-    template <typename T>
-    concept is_item = item_helper<std::remove_cvref_t<T>>::enable;
-    template <is_item T>
-    using item_type = item_helper<std::remove_cvref_t<T>>::type;
-
-    template <typename T>
-    concept lazily_evaluated = is_attr<T> || is_item<T>;
-
-    template <typename T>
-    struct lazy_type_helper {};
-    template <is_attr T>
-    struct lazy_type_helper<T> { using type = attr_type<T>; };
-    template <is_item T>
-    struct lazy_type_helper<T> { using type = item_type<T>; };
-    template <lazily_evaluated T>
-    using lazy_type = lazy_type_helper<std::remove_cvref_t<T>>::type;
-
     template <typename T>
     struct optional_helper { static constexpr bool value = false; };
     template <typename T>
@@ -3211,6 +3164,85 @@ namespace impl {
     concept ixor_returns = requires(L& l, R r) {
         { l ^= r } -> std::convertible_to<Return>;
     };
+
+    template <typename Self, StaticStr Name>
+        requires (
+            __getattr__<Self, Name>::enable &&
+            std::derived_from<typename __getattr__<Self, Name>::type, Object> && (
+                !std::is_invocable_v<__getattr__<Self, Name>, Self> ||
+                std::is_invocable_r_v<
+                    typename __getattr__<Self, Name>::type,
+                    __getattr__<Self, Name>,
+                    Self
+                >
+            )
+        )
+    struct Attr;
+    template <typename T>
+    struct attr_helper { static constexpr bool enable = false; };
+    template <typename Self, StaticStr Name>
+    struct attr_helper<Attr<Self, Name>> {
+        static constexpr bool enable = true;
+        using type = __getattr__<Self, Name>::type;
+    };
+    template <typename T>
+    concept is_attr = attr_helper<std::remove_cvref_t<T>>::enable;
+    template <is_attr T>
+    using attr_type = attr_helper<std::remove_cvref_t<T>>::type;
+
+    template <typename T, StaticStr Name, typename... Args>
+    concept attr_is_callable_with =
+        __getattr__<T, Name>::enable &&
+        std::is_invocable_v<typename __getattr__<T, Name>::type, Args...>;
+
+    template <typename Self, typename... Key>
+        requires (
+            __getitem__<Self, Key...>::enable &&
+            std::convertible_to<typename __getitem__<Self, Key...>::type, Object> && (
+                std::is_invocable_r_v<
+                    typename __getitem__<Self, Key...>::type,
+                    __getitem__<Self, Key...>,
+                    Self,
+                    Key...
+                > || (
+                    !has_call_operator<__getitem__<Self, Key...>> &&
+                    has_cpp<Self> &&
+                    lookup_yields<
+                        cpp_type<Self>&,
+                        typename __getitem__<Self, Key...>::type,
+                        Key...
+                    >
+                ) || (
+                    !has_call_operator<__getitem__<Self, Key...>> &&
+                    !has_cpp<Self> &&
+                    std::derived_from<typename __getitem__<Self, Key...>::type, Object>
+                )
+            )
+        )
+    struct Item;
+    template <typename T>
+    struct item_helper { static constexpr bool enable = false; };
+    template <typename Self, typename... Key>
+    struct item_helper<Item<Self, Key...>> {
+        static constexpr bool enable = true;
+        using type = __getitem__<Self, Key...>::type;
+    };
+    template <typename T>
+    concept is_item = item_helper<std::remove_cvref_t<T>>::enable;
+    template <is_item T>
+    using item_type = item_helper<std::remove_cvref_t<T>>::type;
+
+    template <typename T>
+    concept lazily_evaluated = is_attr<T> || is_item<T>;
+
+    template <typename T>
+    struct lazy_type_helper {};
+    template <is_attr T>
+    struct lazy_type_helper<T> { using type = attr_type<T>; };
+    template <is_item T>
+    struct lazy_type_helper<T> { using type = item_type<T>; };
+    template <lazily_evaluated T>
+    using lazy_type = lazy_type_helper<std::remove_cvref_t<T>>::type;
 
 
     /// TODO: eventually I should reconsider the following concepts and potentially

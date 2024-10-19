@@ -9,19 +9,6 @@
 namespace py {
 
 
-/// TODO: all operators must return python objects except for:
-///     - __isinstance__    (bool)
-///     - __issubclass__    (bool)
-///     - __repr__          (std::string)   (x)
-///     - __setattr__       (void)          (x)
-///     - __delattr__       (void)          (x)
-///     - __setitem__       (void)
-///     - __delitem__       (void)
-///     - __len__           (size_t)        (x)
-///     - __contains__      (bool)          (x)
-///     - __hash__          (size_t)        (x)
-
-
 namespace impl {
 
     /* Construct a new instance of an inner `Type<Wrapper>::__python__` type using
@@ -73,12 +60,6 @@ template <typename Derived, typename Base>
     if constexpr (std::is_invocable_v<__issubclass__<Derived, Base>>) {
         return __issubclass__<Derived, Base>{}();
 
-    } else if constexpr (impl::has_interface<Derived> && impl::has_interface<Base>) {
-        return impl::inherits<Interface<Derived>, Interface<Base>>;
-
-    } else if constexpr (impl::has_interface<Derived>) {
-        return impl::inherits<Interface<Derived>, Base>;
-
     } else if constexpr (impl::has_interface<Base>) {
         return impl::inherits<Derived, Interface<Base>>;
 
@@ -107,7 +88,7 @@ template <typename Base, typename Derived>
         );
 
     } else {
-        return impl::type_like<Derived> && issubclass<Derived, Base>();
+        return impl::converts_to<Derived, impl::TypeTag> && issubclass<Derived, Base>();
     }
 }
 
@@ -267,8 +248,14 @@ template <StaticStr Name, impl::python Self, typename Value>
     requires (
         __setattr__<Self, Name, Value>::enable &&
         std::is_void_v<typename __setattr__<Self, Name, Value>::type> && (
-            !impl::has_call_operator<__setattr__<Self, Name, Value>> ||
-            std::is_invocable_r_v<void, __setattr__<Self, Name, Value>, Self, Value>
+            std::is_invocable_r_v<void, __setattr__<Self, Name, Value>, Self, Value> || (
+                !impl::has_call_operator<__setattr__<Self, Name, Value>> &&
+                impl::has_cpp<typename std::remove_cvref_t<typename __getattr__<Self, Name>::type>> &&
+                std::is_assignable_v<typename std::remove_cvref_t<typename __getattr__<Self, Name>::type>&, Value>
+            ) || (
+                !impl::has_call_operator<__setattr__<Self, Name, Value>> &&
+                !impl::has_cpp<typename std::remove_cvref_t<typename __getattr__<Self, Name>::type>>
+            )
         )
     )
 void setattr(Self&& self, Value&& value) {
@@ -301,8 +288,8 @@ template <StaticStr Name, impl::python Self>
     requires (
         __delattr__<Self, Name>::enable && 
         std::is_void_v<typename __delattr__<Self, Name>::type> && (
-            !impl::has_call_operator<__delattr__<Self, Name>> ||
-            std::is_invocable_r_v<void, __delattr__<Self, Name>, Self>
+            std::is_invocable_r_v<void, __delattr__<Self, Name>, Self> ||
+            !impl::has_call_operator<__delattr__<Self, Name>>
         )
     )
 void delattr(Self&& self) {
