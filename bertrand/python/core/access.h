@@ -4,7 +4,6 @@
 #include "declarations.h"
 #include "object.h"
 #include "except.h"
-#include "ops.h"
 
 
 namespace py {
@@ -292,11 +291,26 @@ namespace impl {
                             std::forward<Key>(key)...
                         ));
 
-                    } else {
+                    } else if constexpr (sizeof...(Key) == 1) {
                         PyObject* result = PyObject_GetItem(
                             ptr(m_self),
                             ptr(to_python(std::forward<Key>(key)))...
                         );
+                        if (result == nullptr) {
+                            Exception::from_python();
+                        }
+                        return result;
+
+                    } else {
+                        PyObject* tuple = PyTuple_Pack(
+                            sizeof...(Key),
+                            ptr(to_python(std::forward<Key>(key)))...
+                        );
+                        if (tuple == nullptr) {
+                            Exception::from_python();
+                        }
+                        PyObject* result = PyObject_GetItem(ptr(m_self), tuple);
+                        Py_DECREF(tuple);
                         if (result == nullptr) {
                             Exception::from_python();
                         }
@@ -345,6 +359,16 @@ namespace impl {
                 } else if constexpr (has_cpp<Base>) {
                     from_python(std::forward<Self>(m_self))[std::forward<Key>(key)...] =
                         std::forward<Value>(value);
+
+                } else if constexpr (sizeof...(Key) == 1) {
+                    Base::operator=(std::forward<Value>(value));
+                    if (PyObject_SetItem(
+                        ptr(m_self),
+                        ptr(to_python(key))...,
+                        ptr(*this)
+                    )) {
+                        Exception::from_python();
+                    }
 
                 } else {
                     Base::operator=(std::forward<Value>(value));
@@ -462,6 +486,14 @@ void del(impl::Item<Self, Key...>&& item) {
                 std::forward<Self>(item.m_self),
                 std::forward<Key>(key)...
             );
+
+        } else if constexpr (sizeof...(Key) == 1) {
+            if (PyObject_DelItem(
+                ptr(item.m_self),
+                ptr(to_python(key))...)
+            ) {
+                Exception::from_python();
+            }
 
         } else {
             PyObject* tuple = PyTuple_Pack(
