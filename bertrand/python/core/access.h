@@ -15,6 +15,28 @@ namespace py {
 ////////////////////////////////
 
 
+template <typename Self, StaticStr Name>
+    requires (
+        __delattr__<Self, Name>::enable &&
+        std::is_void_v<typename __delattr__<Self, Name>::type> && (
+            std::is_invocable_r_v<void, __delattr__<Self, Name>, Self> ||
+            !impl::has_call_operator<__delattr__<Self, Name>>
+        )
+    )
+void del(impl::Attr<Self, Name>&& attr);
+
+
+template <typename Self, typename... Key>
+    requires (
+        __delitem__<Self, Key...>::enable &&
+        std::is_void_v<typename __delitem__<Self, Key...>::type> && (
+            std::is_invocable_r_v<void, __delitem__<Self, Key...>, Self, Key...> ||
+            !impl::has_call_operator<__delitem__<Self, Key...>>
+        )
+    )
+void del(impl::Item<Self, Key...>&& item);
+
+
 namespace impl {
 
     template <typename... Ts>
@@ -98,7 +120,7 @@ namespace impl {
                     !impl::has_call_operator<__delattr__<S, N>>
                 )
             )
-        friend void del(Attr<S, N>&& item);
+        friend void py::del(Attr<S, N>&& item);
         template <impl::inherits<Object> T>
         friend PyObject* ptr(T&&);
         template <impl::inherits<Object> T>
@@ -236,7 +258,7 @@ namespace impl {
                     !impl::has_call_operator<__delitem__<S, K...>>
                 )
             )
-        friend void del(Item<S, K...>&& item);
+        friend void py::del(Item<S, K...>&& item);
         template <impl::inherits<Object> T>
         friend PyObject* ptr(T&&);
         template <impl::inherits<Object> T> requires (!std::is_const_v<std::remove_reference_t<T>>)
@@ -289,8 +311,8 @@ namespace impl {
 
         Item(Self&& self, Key&&... key) :
             Base(nullptr, Object::stolen_t{}),
-            KeyStorage<Key...>(std::forward<Key>(key)...),
-            m_self(std::forward<Self>(self))
+            m_self(std::forward<Self>(self)),
+            m_key(std::forward<Key>(key)...)
         {}
         Item(const Item& other) = delete;
         Item(Item&& other) = delete;
