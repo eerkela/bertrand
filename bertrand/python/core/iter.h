@@ -413,44 +413,36 @@ struct __init__<Iterator<Begin, End, void>, Begin, End> : Returns<Iterator<Begin
 };
 
 
-template <impl::python T, impl::python Return>
-struct __isinstance__<T, Iterator<Return, void, void>>      : Returns<bool> {
-    static constexpr bool operator()(T&& obj) {
-        if constexpr (impl::dynamic<T>) {
-            return PyIter_Check(ptr(obj));
+template <impl::is<Object> Derived, typename Return>
+struct __isinstance__<Derived, Iterator<Return, void, void>> : Returns<bool> {
+    static constexpr bool operator()(Derived obj) {
+        return PyIter_Check(ptr(obj));
+    }
+};
+
+
+template <typename Derived, typename Return>
+struct __issubclass__<Derived, Iterator<Return, void, void>> : Returns<bool> {
+    static constexpr bool operator()() {
+        return
+            impl::inherits<Derived, impl::IterTag> &&
+            std::convertible_to<impl::iter_type<Derived>, Return>;
+    }
+    static constexpr bool operator()(Derived obj) {
+        if constexpr (impl::is<Derived, Object>) {
+            int rc = PyObject_IsSubclass(
+                ptr(obj),
+                ptr(Type<Iterator<Return, void, void>>())
+            );
+            if (rc == -1) {
+                Exception::from_python();
+            }
+            return rc;
         } else {
-            return issubclass<T, Iterator<Return, void, void>>();
+            return operator()();
         }
     }
 };
-
-
-template <impl::python T, impl::python Return>
-struct __issubclass__<T, Iterator<Return, void, void>>      : Returns<bool> {
-    static constexpr bool operator()() {
-        return
-            impl::inherits<T, impl::IterTag> &&
-            std::convertible_to<impl::iter_type<T>, Return>;
-    }
-};
-
-
-template <
-    impl::python T,
-    std::input_or_output_iterator Begin,
-    std::sentinel_for<Begin> End,
-    typename Container
->
-struct __isinstance__<T, Iterator<Begin, End, Container>>   : Returns<bool> {};
-
-
-template <
-    impl::python T,
-    std::input_or_output_iterator Begin,
-    std::sentinel_for<Begin> End,
-    typename Container
->
-struct __issubclass__<T, Iterator<Begin, End, Container>>   : Returns<bool> {};
 
 
 /* Traversing a Python iterator requires a customized C++ iterator type. */

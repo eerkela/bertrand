@@ -13,6 +13,7 @@
 #include "core/func.h"
 #include "core/type.h"
 #include "core/module.h"
+#include "pytypedefs.h"
 
 
 namespace py {
@@ -141,6 +142,101 @@ namespace impl {
 }
 
 
+template <impl::is<Object> Derived, impl::is<Object> Base>
+bool __isinstance__<Derived, Base>::operator()(Derived obj, Base cls) {
+    int rc = PyObject_IsInstance(ptr(obj), ptr(cls));
+    if (rc < 0) {
+        Exception::from_python();
+    }
+    return rc;
+}
+
+
+template <impl::is<Object> Derived, typename Base>
+bool __isinstance__<Derived, Base>::operator()(Derived obj) {
+    int rc = PyObject_IsInstance(
+        ptr(obj),
+        ptr(Type<std::remove_cvref_t<Base>>())
+    );
+    if (rc < 0) {
+        Exception::from_python();
+    }
+    return rc;
+}
+
+
+template <typename Derived, impl::is<Object> Base>
+bool __isinstance__<Derived, Base>::operator()(Derived obj, Base cls) {
+    int rc = PyObject_IsInstance(ptr(obj), ptr(cls));
+    if (rc < 0) {
+        Exception::from_python();
+    }
+    return rc;
+}
+
+
+template <impl::is<Object> Derived, impl::is<Object> Base>
+bool __issubclass__<Derived, Base>::operator()(Derived obj) {
+    if (!PyType_Check(ptr(obj))) {
+        throw TypeError("issubclass() arg 1 must be a class");
+    }
+    return true;
+}
+
+
+template <impl::is<Object> Derived, impl::is<Object> Base>
+bool __issubclass__<Derived, Base>::operator()(Derived subclass, Base cls) {
+    int rc = PyObject_IsSubclass(ptr(subclass), ptr(cls));
+    if (rc < 0) {
+        Exception::from_python();
+    }
+    return rc;
+}
+
+
+template <impl::is<Object> Derived, typename Base>
+bool __issubclass__<Derived, Base>::operator()(Derived subclass) {
+    int rc = PyObject_IsSubclass(
+        ptr(subclass),
+        ptr(Type<std::remove_cvref_t<Base>>())
+    );
+    if (rc < 0) {
+        Exception::from_python();
+    }
+    return rc;
+}
+
+
+template <typename Derived, impl::is<Object> Base>
+bool __issubclass__<Derived, Base>::operator()(Derived subclass) {
+    if (!PyType_Check(ptr(subclass))) {
+        throw TypeError("issubclass() arg 1 must be a class");
+    }
+    return true;
+}
+
+
+template <typename Derived, impl::is<Object> Base>
+bool __issubclass__<Derived, Base>::operator()(Derived subclass, Base cls) {
+    int rc = PyObject_IsSubclass(ptr(subclass), ptr(cls));
+    if (rc < 0) {
+        Exception::from_python();
+    }
+    return rc;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
 template <impl::inherits<Object> From>
 inline bool __explicit_cast__<From, bool>::operator()(From&& from) {
     if constexpr (
@@ -159,34 +255,10 @@ inline bool __explicit_cast__<From, bool>::operator()(From&& from) {
 }
 
 
-template <typename Derived, impl::is<Object> Base>
-constexpr bool __isinstance__<Derived, Base>::operator()(Derived obj, Base cls) {
-    if constexpr (impl::python<Derived>) {
-        int result = PyObject_IsInstance(
-            ptr(to_python(std::forward<Derived>(obj))),
-            ptr(std::forward<Base>(cls))
-        );
-        if (result < 0) {
-            Exception::from_python();
-        }
-        return result;
-    } else {
-        return false;
-    }
-}
 
 
-template <typename T, impl::is<Object> Base>
-bool __issubclass__<T, Base>::operator()(T&& obj, Base&& cls) {
-    int result = PyObject_IsSubclass(
-        ptr(to_python(std::forward<T>(obj))),
-        ptr(cls)
-    );
-    if (result == -1) {
-        Exception::from_python();
-    }
-    return result;
-}
+
+
 
 
 template <impl::inherits<Object> From, impl::inherits<From> To>

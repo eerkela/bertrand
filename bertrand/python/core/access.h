@@ -896,7 +896,7 @@ template <std::derived_from<Slice> Self>
 struct __getattr__<Self, "step">                            : Returns<Object> {};
 
 
-template <impl::dynamic Derived, impl::is<Slice> Base>
+template <impl::is<Object> Derived, impl::is<Slice> Base>
 struct __isinstance__<Derived, Base>                        : Returns<bool> {
     static constexpr bool operator()(Derived obj) {
         return PySlice_Check(ptr(obj));

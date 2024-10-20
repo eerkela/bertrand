@@ -42,8 +42,8 @@ namespace impl {
 }
 
 
-/// TODO: implement the extra overloads for Object, Type, and Tuple of types/generic
-/// objects
+/// TODO: implement the extra overloads for Object, Union, Type, and Tuple of
+/// any of the above.
 
 
 /* Does a compile-time check to see if the derived type inherits from the base type.
@@ -53,16 +53,23 @@ logic is allowed by defining a zero-argument call operator in a specialization o
 in a way that allows for multiple inheritance. */
 template <typename Derived, typename Base>
     requires (
-        std::is_invocable_r_v<bool, __issubclass__<Derived, Base>> ||
-        !std::is_invocable_v<__issubclass__<Derived, Base>>
+        !std::is_reference_v<Derived> &&
+        !std::is_reference_v<Base> &&
+        !std::is_const_v<Derived> &&
+        !std::is_const_v<Base> &&
+        !std::is_volatile_v<Derived> &&
+        !std::is_volatile_v<Base> &&
+        impl::inherits<Base, Object> &&
+        impl::inherits<Derived, Object> && (
+            std::is_invocable_r_v<bool, __issubclass__<Derived, Base>> ||
+            !std::is_invocable_v<__issubclass__<Derived, Base>>
+        )
     )
 [[nodiscard]] constexpr bool issubclass() {
     if constexpr (std::is_invocable_v<__issubclass__<Derived, Base>>) {
         return __issubclass__<Derived, Base>{}();
-
     } else if constexpr (impl::has_interface<Base>) {
         return impl::inherits<Derived, Interface<Base>>;
-
     } else {
         return impl::inherits<Derived, Base>;
     }
@@ -74,21 +81,25 @@ a dynamic object which may be narrowed to a single type, or a one-argument call
 operator is defined in a specialization of `__issubclass__`. */
 template <typename Base, typename Derived>
     requires (
-        std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, Derived> ||
-        !std::is_invocable_v<__issubclass__<Derived, Base>>
+        !std::is_reference_v<Base> &&
+        !std::is_const_v<Base> &&
+        !std::is_volatile_v<Base> &&
+        impl::inherits<Base, Object> &&
+        impl::inherits<Derived, Object> && (
+            std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, Derived> || (
+                !std::is_invocable_v<__issubclass__<Derived, Base>> &&
+                impl::inherits<Derived, impl::TypeTag>
+            )
+        )
     )
 [[nodiscard]] constexpr bool issubclass(Derived&& obj) {
     if constexpr (std::is_invocable_v<__issubclass__<Derived, Base>, Derived>) {
         return __issubclass__<Derived, Base>{}(std::forward<Derived>(obj));
-
-    } else if constexpr (impl::has_type<Base> && impl::dynamic<Derived>) {
-        return PyType_Check(ptr(obj)) && PyObject_IsSubclass(
-            ptr(obj),
-            ptr(Type<Base>())
-        );
-
     } else {
-        return impl::converts_to<Derived, impl::TypeTag> && issubclass<Derived, Base>();
+        /// TODO: how is Type<Object> handled here?  Maybe it needs a specialized
+        /// control structure?  Maybe at that point, this control structure is
+        /// only enabled explicitly?
+        return issubclass<Derived, Base>();
     }
 }
 
@@ -99,7 +110,11 @@ enabled by defining a two-argument call operator in a specialization of
 be narrowed to a single type, and the base must be type-like, a union of types, or a
 dynamic object which can be narrowed to such. */
 template <typename Derived, typename Base>
-    requires (std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, Derived, Base>)
+    requires (
+        impl::inherits<Base, Object> &&
+        impl::inherits<Derived, Object> &&
+        std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, Derived, Base>
+    )
 [[nodiscard]] constexpr bool issubclass(Derived&& obj, Base&& base) {
     return __issubclass__<Derived, Base>{}(
         std::forward<Derived>(obj),
@@ -113,23 +128,18 @@ is automatically called whenever a Python object is narrowed from a parent type 
 of its subclasses. */
 template <typename Base, typename Derived>
     requires (
-        std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, Derived> ||
-        !std::is_invocable_v<__isinstance__<Derived, Base>>
+        !std::is_reference_v<Base> &&
+        !std::is_const_v<Base> &&
+        !std::is_volatile_v<Base> &&
+        impl::inherits<Base, Object> &&
+        impl::inherits<Derived, Object> && (
+            std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, Derived> ||
+            !std::is_invocable_v<__isinstance__<Derived, Base>>
+        )
     )
 [[nodiscard]] constexpr bool isinstance(Derived&& obj) {
     if constexpr (std::is_invocable_v<__isinstance__<Derived, Base>, Derived>) {
         return __isinstance__<Derived, Base>{}(std::forward<Derived>(obj));
-
-    } else if constexpr (impl::has_type<Base> && impl::dynamic<Derived>) {
-        int result = PyObject_IsInstance(
-            ptr(obj),
-            ptr(Type<Base>())
-        );
-        if (result < 0) {
-            Exception::from_python();
-        }
-        return result;
-
     } else {
         return issubclass<Derived, Base>();
     }
@@ -141,7 +151,11 @@ enabled by defining a two-argument call operator in a specialization of
 `__isinstance__`.  By default, this is only done for bases which are type-like, a union
 of types, or a dynamic object which can be narrowed to either of the above. */
 template <typename Derived, typename Base>
-    requires (std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, Derived, Base>)
+    requires (
+        impl::inherits<Base, Object> &&
+        impl::inherits<Derived, Object> &&
+        std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, Derived, Base>
+    )
 [[nodiscard]] constexpr bool isinstance(Derived&& obj, Base&& base) {
     return __isinstance__<Derived, Base>{}(
         std::forward<Derived>(obj),

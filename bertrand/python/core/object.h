@@ -776,33 +776,54 @@ template <std::derived_from<Object> T>
 }
 
 
-/// TODO: __isinstance__ and __issubclass__ for dynamic objects can include the
-/// appropriate runtime delegation?
+template <impl::is<Object> Derived, impl::is<Object> Base>
+struct __isinstance__<Derived, Base>                        : Returns<bool> {
+    static constexpr bool operator()(Derived obj) { return true; }
+    static bool operator()(Derived obj, Base cls);
+};
+
+
+template <impl::is<Object> Derived, typename Base>
+struct __isinstance__<Derived, Base>                        : Returns<bool> {
+    static bool operator()(Derived obj);
+    /// NOTE: 2-argument form disabled by default unless explicitly enabled in a
+    /// downstream specialization.
+};
 
 
 template <typename Derived, impl::is<Object> Base>
 struct __isinstance__<Derived, Base>                        : Returns<bool> {
-    static constexpr bool operator()(Derived obj) {
-        return impl::inherits<Derived, Object>;
-    }
-    static constexpr bool operator()(Derived obj, Base cls);
+    static constexpr bool operator()(Derived obj) { return true; }
+    static bool operator()(Derived obj, Base cls);
 };
 
 
-template <typename T, impl::is<Object> Base>
-struct __issubclass__<T, Base>                              : Returns<bool> {
-    using U = std::remove_cvref_t<T>;
+template <impl::is<Object> Derived, impl::is<Object> Base>
+struct __issubclass__<Derived, Base>                        : Returns<bool> {
+    static constexpr bool operator()() { return true; }
+    static bool operator()(Derived subclass);
+    static bool operator()(Derived subclass, Base cls);
+};
+
+
+template <impl::is<Object> Derived, typename Base>
+struct __issubclass__<Derived, Base>                        : Returns<bool> {
     static constexpr bool operator()() {
-        return std::derived_from<U, Object>;
+        return impl::inherits<Derived, Base>;
     }
-    static constexpr bool operator()(T&& obj) {
-        if constexpr (impl::dynamic<U>) {
-            return PyType_Check(ptr(obj));
-        } else {
-            return impl::type_like<U>;
-        }
+    static bool operator()(Derived subclass);
+    /// NOTE: 2-argument form disabled by default unless explicitly enabled in a
+    /// downstream specialization.
+};
+
+
+template <typename Derived, impl::is<Object> Base>
+struct __issubclass__<Derived, Base>                        : Returns<bool> {
+    static constexpr bool operator()() {
+        return impl::inherits<Derived, Base>;
     }
-    static bool operator()(T&& obj, Base&& cls);
+    static bool operator()(Derived subclass);
+    static bool operator()(Derived subclass, Base cls);
 };
 
 

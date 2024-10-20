@@ -285,21 +285,11 @@ struct Interface<Type<Code>> {
 };
 
 
-template <typename T, impl::is<Code> Base>
-struct __isinstance__<T, Base>                              : Returns<bool> {
-    static constexpr bool operator()(Base&& obj) {
-        if constexpr (impl::dynamic<T>) {
-            return PyCode_Check(ptr(obj));
-        } else {
-            return issubclass<T, Code>();
-        }
+template <impl::is<Object> Derived, impl::is<Code> Base>
+struct __isinstance__<Derived, Base>                        : Returns<bool> {
+    static constexpr bool operator()(Derived obj) {
+        return PyCode_Check(ptr(obj));
     }
-};
-
-
-template <typename T, impl::is<Code> Base>
-struct __issubclass__<T, Base>                              : Returns<bool> {
-    static constexpr bool operator()() { return impl::inherits<T, Interface<Code>>; }
 };
 
 
@@ -525,21 +515,11 @@ struct Interface<Type<Frame>> {
 };
 
 
-template <typename T, impl::is<Frame> Base>
-struct __isinstance__<T, Base>                              : Returns<bool> {
-    static constexpr bool operator()(T&& obj) {
-        if constexpr (impl::dynamic<T>) {
-            return PyFrame_Check(ptr(obj));
-        } else {
-            return issubclass<T, Frame>();
-        }
+template <impl::is<Object> Derived, impl::is<Frame> Base>
+struct __isinstance__<Derived, Base>                        : Returns<bool> {
+    static constexpr bool operator()(Derived obj) {
+        return PyFrame_Check(ptr(obj));
     }
-};
-
-
-template <typename T, impl::is<Frame> Base>
-struct __issubclass__<T, Base>                              : Returns<bool> {
-    static constexpr bool operator()() { return impl::inherits<T, Interface<Frame>>; }
 };
 
 
