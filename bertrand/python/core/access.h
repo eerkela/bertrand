@@ -38,57 +38,6 @@ void del(impl::Item<Self, Key...>&& item);
 
 namespace impl {
 
-    template <typename... Ts>
-    struct KeyStorageBase {};
-    template <typename T, typename... Ts>
-    struct KeyStorageBase<T, Ts...> : KeyStorageBase<Ts...> {
-        std::conditional_t<
-            std::is_lvalue_reference_v<T>,
-            T,
-            std::remove_reference_t<T>
-        > value;
-        KeyStorageBase(T value, Ts... ts) :
-            KeyStorageBase<Ts...>(std::forward<Ts>(ts)...), value(std::forward<T>(value))
-        {}
-    };
-
-    /* A `std::tuple`-like container for a set of types, which will be perfectly
-    forwarded to a compatible function when the `apply()` method is called.  The types
-    may be references, in which case they will be stored as such and forwarded
-    according to their original value category, without any extra copies/moves. */
-    template <typename... Key>
-    struct KeyStorage : KeyStorageBase<Key...> {
-    private:
-
-        template <typename result, size_t I>
-        struct _get { using type = result; };
-        template <typename... Ts, size_t I> requires (I < sizeof...(Key))
-        struct _get<KeyStorageBase<Ts...>, I> {
-            using type = _get<KeyStorageBase<Ts..., unpack_type<I, Key...>>, I + 1>::type;
-        };
-        template <size_t I> requires (I < sizeof...(Key))
-        using get = _get<KeyStorageBase<>, I>::type;
-
-        template <size_t I> requires (I < sizeof...(Key))
-        decltype(auto) forward() {
-            if constexpr (std::is_lvalue_reference_v<unpack_type<I, Key...>>) {
-                return get<I>::value;
-            } else {
-                return std::move(get<I>::value);
-            }
-        }
-
-    public:
-        KeyStorage(Key... ts) : KeyStorageBase<Key...>(std::forward<Key>(ts)...) {}
-
-        template <typename Func> requires (std::is_invocable_v<Func, Key...>)
-        decltype(auto) apply(Func&& func) && {
-            return [&]<size_t... Is>(std::index_sequence<Is...>) {
-                return func(forward<Is>()...);
-            }(std::index_sequence_for<Key...>{});
-        }
-    };
-
     /* A proxy for the result of an attribute lookup that is controlled by the
     `__getattr__`, `__setattr__`, and `__delattr__` control structs.
 
@@ -275,7 +224,7 @@ namespace impl {
         object, and the keys are stored directly as members, retaining their original
         value categories without any extra copies/moves. */
         Self m_self;
-        KeyStorage<Key...> m_key;
+        Pack<Key...> m_key;
 
         /* The wrapper's `m_ptr` member is lazily evaluated to avoid repeated lookups.
         Replacing it with a computed property will trigger a __getitem__ lookup the
@@ -284,7 +233,7 @@ namespace impl {
         void _set_ptr(PyObject* value) { Base::m_ptr = value; }
         PyObject* _get_ptr() {
             if (Base::m_ptr == nullptr) {
-                Base::m_ptr = std::move(m_key).apply([&](Key... key) {
+                Base::m_ptr = std::move(m_key)([&](Key... key) {
                     if constexpr (has_call_operator<__getitem__<Self, Key...>>) {
                         return release(__getitem__<Self, Key...>{}(
                             std::forward<Self>(m_self),
@@ -348,7 +297,7 @@ namespace impl {
                 )
             )
         Item& operator=(Value&& value) && {
-            std::move(m_key).apply([&](Key... key) {
+            std::move(m_key)([&](Key... key) {
                 if constexpr (has_call_operator<__setitem__<Self, Value, Key...>>) {
                     __setitem__<Self, Value, Key...>{}(
                         std::forward<Self>(m_self),
@@ -480,7 +429,7 @@ template <typename Self, typename... Key>
         )
     )
 void del(impl::Item<Self, Key...>&& item) {
-    std::move(item.m_key).apply([&](Key... key) {
+    std::move(item.m_key)([&](Key... key) {
         if constexpr (impl::has_call_operator<__delitem__<Self, Key...>>) {
             __delitem__<Self, Key...>{}(
                 std::forward<Self>(item.m_self),

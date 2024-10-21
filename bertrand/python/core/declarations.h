@@ -108,8 +108,8 @@ namespace impl {
         #endif
     }
 
-    template <size_t I>
-    static void unpack_arg() {
+    template <size_t I, typename... Ts>
+    static void unpack_arg(Ts&&...) {
         static_assert(false, "index out of range for parameter pack");
     }
 
@@ -121,6 +121,24 @@ namespace impl {
             return unpack_arg<I - 1>(std::forward<Ts>(next)...);
         }
     }
+
+    template <typename... Ts>
+    struct Pack;
+
+    template <typename T>
+    constexpr bool _is_pack = false;
+    template <typename... Ts>
+    constexpr bool _is_pack<Pack<Ts...>> = true;
+    template <typename T>
+    concept is_pack = _is_pack<T>;
+
+    template <typename Search, size_t I, typename... Ts>
+    static constexpr size_t _index_of = 0;
+    template <typename Search, size_t I, typename T, typename... Ts>
+    static constexpr size_t _index_of<Search, I, T, Ts...> =
+        std::same_as<Search, T> ? 0 : _index_of<Search, I + 1, Ts...> + 1;
+    template <typename Search, typename... Ts>
+    static constexpr size_t index_of = _index_of<Search, 0, Ts...>;
 
     template <size_t I, typename... Ts>
     struct _unpack_type;
@@ -136,13 +154,250 @@ namespace impl {
     template <size_t I, typename... Ts>
     using unpack_type = _unpack_type<I, Ts...>::type;
 
-    template <typename Search, size_t I, typename... Ts>
-    static constexpr size_t _index_of = 0;
-    template <typename Search, size_t I, typename T, typename... Ts>
-    static constexpr size_t _index_of<Search, I, T, Ts...> =
-        std::same_as<Search, T> ? 0 : _index_of<Search, I + 1, Ts...> + 1;
-    template <typename Search, typename... Ts>
-    static constexpr size_t index_of = _index_of<Search, 0, Ts...>;
+    template <typename... Ts>
+    struct PackBase {};
+    template <typename T, typename... Ts>
+    struct PackBase<T, Ts...> : PackBase<Ts...> {
+        std::conditional_t<
+            std::is_lvalue_reference_v<T>,
+            T,
+            std::remove_reference_t<T>
+        > value;
+        PackBase(T value, Ts... ts) :
+            PackBase<Ts...>(std::forward<Ts>(ts)...), value(std::forward<T>(value))
+        {}
+    };
+
+    /* A generic container for an arbitrary set of types, capable of storing references
+    and perfectly forwarding them to a consuming function, without any extra
+    copies/moves.  Also provides utilities for compile-time argument manipulation where
+    lists of types may be necessary. */
+    template <typename... Ts>
+    struct Pack : PackBase<Ts...> {
+    private:
+
+        template <typename>
+        struct _concat;
+        template <typename... Us>
+        struct _concat<Pack<Us...>> { using type = Pack<Ts..., Us...>; };
+
+        template <typename... Packs>
+        struct _product {
+            /* permute<> iterates from left to right along the packs. */
+            template <typename permuted, typename...>
+            struct permute { using type = permuted; };
+            template <typename... permuted, typename... types, typename... rest>
+            struct permute<Pack<permuted...>, Pack<types...>, rest...> {
+
+                /* accumulate<> iterates over the prior permutations and updates them
+                with the types at this index. */
+                template <typename accumulated, typename...>
+                struct accumulate { using type = accumulated; };
+                template <typename... accumulated, typename permutation, typename... others>
+                struct accumulate<Pack<accumulated...>, permutation, others...> {
+
+                    /* append<> iterates from top to bottom for each type. */
+                    template <typename appended, typename...>
+                    struct append { using type = appended; };
+                    template <typename... appended, typename U, typename... Us>
+                    struct append<Pack<appended...>, U, Us...> {
+                        using type = append<
+                            Pack<appended..., typename permutation::template append<U>>,
+                            Us...
+                        >::type;
+                    };
+
+                    /* append<> extends the accumulated output at this index. */
+                    using type = accumulate<
+                        typename append<Pack<accumulated...>, types...>::type,
+                        others...
+                    >::type;
+                };
+
+                /* accumulate<> has to rebuild the output pack at each iteration. */
+                using type = permute<
+                    typename accumulate<Pack<>, permuted...>::type,
+                    rest...
+                >::type;
+            };
+
+            /* This pack is converted to a 2D pack to initialize the recursion. */
+            using type = permute<Pack<Pack<Ts>...>, Packs...>::type;
+        };
+
+        template <typename out, typename...>
+        struct _unique { using type = out; };
+        template <typename... Vs, typename U, typename... Us>
+        struct _unique<Pack<Vs...>, U, Us...> {
+            template <typename>
+            struct helper { using type = Pack<Vs...>; };
+            template <typename U2> requires (!(std::same_as<U2, Us> || ...))
+            struct helper<U2> { using type = Pack<Vs..., U>; };
+            using type = _unique<typename helper<U>::type, Us...>::type;
+        };
+
+        template <typename>
+        struct _deduplicate;
+        template <typename... Us>
+        struct _deduplicate<Pack<Us...>> {
+            template <typename out, typename...>
+            struct filter { using type = out; };
+            template <typename... Ws, typename V, typename... Vs>
+            struct filter<Pack<Ws...>, V, Vs...> {
+                template <typename>
+                struct helper { using type = Pack<Ws...>; };
+                template <typename V2>
+                    requires (!(std::same_as<std::remove_cvref_t<V2>, Ws> || ...))
+                struct helper<V2> {
+                    using type = Pack<Ws..., std::conditional_t<
+                        (std::same_as<
+                            std::remove_cvref_t<V2>,
+                            std::remove_cvref_t<Vs>
+                        > || ...),
+                        std::remove_cvref_t<V2>,
+                        V2
+                    >>;
+                };
+                using type = filter<typename helper<V>::type, Vs...>::type;
+            };
+            using type = filter<Pack<>, Us...>::type;
+        };
+
+        template <typename result, size_t I>
+        struct _get { using type = result; };
+        template <typename... Us, size_t I> requires (I < sizeof...(Ts))
+        struct _get<PackBase<Us...>, I> {
+            using type = _get<PackBase<Us..., unpack_type<I, Ts...>>, I + 1>::type;
+        };
+        template <size_t I> requires (I < sizeof...(Ts))
+        using get = _get<PackBase<>, I>::type;
+
+        template <size_t I> requires (I < sizeof...(Ts))
+        decltype(auto) forward() {
+            if constexpr (std::is_lvalue_reference_v<unpack_type<I, Ts...>>) {
+                return get<I>::value;
+            } else {
+                return std::move(get<I>::value);
+            }
+        }
+
+    public:
+        static constexpr size_t n = sizeof...(Ts);
+        template <typename T>
+        static constexpr size_t index_of = impl::index_of<T, Ts...>;
+        template <typename T>
+        static constexpr bool contains = index_of<T> != n;
+
+        /* Evaluate a control structure's `::enable` state by inserting this pack's
+        template parameters. */
+        template <template <typename...> class Control>
+        static constexpr bool enable = Control<Ts...>::enable;
+
+        /* Evaluate a control structure's `::type` state by inserting this pack's
+        template parameters, assuming they are valid. */
+        template <template <typename...> class Control> requires (enable<Control>)
+        using type = Control<Ts...>::type;
+
+        /* Get the type at index I. */
+        template <size_t I> requires (I < n)
+        using at = impl::unpack_type<I, Ts...>;
+
+        /* Get a new pack with the type appended. */
+        template <typename T>
+        using append = Pack<Ts..., T>;
+
+        /* Get a new pack that combines the contents of this pack with another. */
+        template <is_pack T>
+        using concat = _concat<T>::type;
+
+        // /* Get a pack of packs containing all unique permutations of the types in this
+        // parameter pack and all others, returning their Cartesian product.  */
+        template <is_pack... Packs> requires (n > 0 && ((Packs::n > 0) && ...))
+        using product = _product<Packs...>::type;
+
+        /* Get a new pack with exact duplicates filtered out, accounting for cvref
+        qualifications. */
+        using unique = _unique<Pack<>, Ts...>::type;
+
+        /* Get a new pack with duplicates filtered out, replacing any types that differ
+        only in cvref qualifications with an unqualified equivalent, thereby forcing a
+        copy/move. */
+        using deduplicate = _deduplicate<unique>::type;
+
+        Pack(Ts... ts) : PackBase<Ts...>(std::forward<Ts>(ts)...) {}
+
+        /* Calling a pack as an rvalue will perfectly forward the input arguments to an
+        input function that is templated to accept them. */
+        template <typename Func> requires (std::is_invocable_v<Func, Ts...>)
+        decltype(auto) operator()(Func&& func) && {
+            return [&]<size_t... Is>(std::index_sequence<Is...>) {
+                return func(forward<Is>()...);
+            }(std::index_sequence_for<Ts...>{});
+        }
+    };
+
+
+
+    template <is_pack First, is_pack... Packs>
+        requires (First::n > 0 && ((Packs::n > 0) && ...))
+    struct _CartesianProduct {
+    private:
+
+        /* First pack gets expanded into a pack of packs of length 1 to initialize
+        recursion. */
+        template <typename>
+        struct nest;
+        template <typename... Ts>
+        struct nest<Pack<Ts...>> { using type = Pack<Pack<Ts>...>; };
+
+        /* permute<> iterates from left to right along the packs, starting with the
+        nested first pack. */
+        template <typename permuted, typename...>
+        struct permute { using type = permuted; };
+        template <typename... permuted, typename... types, typename... rest>
+        struct permute<Pack<permuted...>, Pack<types...>, rest...> {
+
+            /* accumulate<> iterates over the prior premutations and updates them with
+            the types at this index. */
+            template <typename accumulated, typename...>
+            struct accumulate { using type = accumulated; };
+            template <typename... accumulated, typename permutation, typename... others>
+            struct accumulate<Pack<accumulated...>, permutation, others...> {
+
+                /* append<> iterates from top to bottom for each type. */
+                template <typename appended, typename...>
+                struct append { using type = appended; };
+                template <typename... appended, typename T, typename... Ts>
+                struct append<Pack<appended...>, T, Ts...> {
+                    using type = append<
+                        Pack<appended..., typename permutation::template append<T>>,
+                        Ts...
+                    >::type;
+                };
+
+                /* append<> extends the accumulated output at this index. */
+                using type = accumulate<
+                    typename append<Pack<accumulated...>, types...>::type,
+                    others...
+                >::type;
+            };
+
+            /* accumulate<> has to rebuild the output pack at each iteration. */
+            using type = permute<
+                typename accumulate<Pack<>, permuted...>::type,
+                rest...
+            >::type;
+        };
+
+    public:
+        using type = permute<typename nest<First>::type, Packs...>::type;
+    };
+
+    /* Get a flat list of permutations for all the types in the given parameter packs,
+    returning their cartesian product. */
+    template <is_pack First, is_pack... Packs>
+        requires (First::n > 0 && ((Packs::n > 0) && ...))
+    using CartesianProduct = _CartesianProduct<First, Packs...>::type;
 
     /* Merge several hashes into a single value.  Based on `boost::hash_combine()`:
     https://www.boost.org/doc/libs/1_86_0/libs/container_hash/doc/html/hash.html#notes_hash_combine */
@@ -1753,10 +2008,6 @@ struct __imod__ {
 };
 
 
-/// TODO: __pow__ needs to accept an optional third argument that defaults to void in
-/// order to support the ternary form of the pow() function.  This is not currently
-
-
 /* Implements the Python `pow()` operator logic in C++ for any `py::Object` subclass,
 which has no corresponding C++ operator.  The default specialization delegates to
 Python by introspecting either `__getattr__<L, "__pow__">` or
@@ -1779,10 +2030,11 @@ struct __pow__ {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <std::derived_from<impl::FunctionTag> T>
+            requires (T::has_self && T::template bind<Exp>)
         struct inspect<T> {
             /// TODO: this needs to be updated to support the ternary form of pow()
-            static constexpr bool enable = T::has_self && T::template bind<Exp>;
+            static constexpr bool enable = true;
             using type = T::Return;
         };
         static constexpr bool enable =

@@ -43,86 +43,30 @@ namespace impl {
     template <typename T>
     concept py_union = _py_union<std::remove_cvref_t<T>>;
 
-    template <typename... Ts>
-    struct Placeholder {
-        static constexpr size_t n = sizeof...(Ts);
-        template <size_t I> requires (I < n)
-        using at = impl::unpack_type<I, Ts...>;
-        template <typename T>
-        static constexpr size_t index_of = impl::index_of<T, Ts...>;
-        template <typename T>
-        static constexpr bool contains = index_of<T> != n;
-    };
+    /// TODO: use the variadic parameter pack class I just declared to generalize these
+    /// helpers.  All of them will compute the cartesian product of the types in the
+    /// union(s), then check if a corresponding control structure is enabled and get
+    /// the resulting type(s), then deduplicate and call to_union<>.
 
     template <typename>
     struct to_union;
     template <typename... Matches>
-    struct to_union<Placeholder<Matches...>> {
-        // remove exact duplicates
-        template <typename value, typename... Ts>
-        struct extract { using type = value; };
-        template <typename... Ms, typename T, typename... Ts>
-        struct extract<Placeholder<Ms...>, T, Ts...> {
-            template <typename>
-            struct helper { using type = Placeholder<Ms...>; };
-            template <typename T2> requires (!(std::same_as<T2, Ts> || ...))
-            struct helper<T2> { using type = Placeholder<Ms..., T2>; };
-            using type = extract<typename helper<T>::type, Ts...>::type;
-        };
-
-        // remove duplicates that differ only in qualifiers, replacing them with a
-        // stripped version that forces a copy/move
-        template <typename value>
-        struct filter;
-        template <typename... Ms>
-        struct filter<Placeholder<Ms...>> {
-            template <typename filtered, typename... Ts>
-            struct do_filter { using type = filtered; };
-            template <typename... filtered, typename T, typename... Ts>
-            struct do_filter<Placeholder<filtered...>, T, Ts...> {
-                template <typename>
-                struct helper {
-                    using type = Placeholder<filtered...>;
-                };
-                template <typename T2>
-                    requires (!(std::same_as<std::remove_cvref_t<T2>, filtered> || ...))
-                struct helper<T2> {
-                    using type = Placeholder<filtered..., std::conditional_t<
-                        (std::same_as<
-                            std::remove_cvref_t<T2>,
-                            std::remove_cvref_t<Ts>
-                        > || ...),
-                        std::remove_cvref_t<T2>,
-                        T2
-                    >>;
-                };
-                using type = do_filter<typename helper<T>::type, Ts...>::type;
-            };
-            using type = do_filter<Placeholder<>, Ms...>::type;
-        };
-
-        // unwrap singletons with correct reference semantics or return a new union
+    struct to_union<Pack<Matches...>> {
         template <typename>
         struct convert;
         template <typename M>
-        struct convert<Placeholder<M>> { using type = M; };
+        struct convert<Pack<M>> { using type = M; };
         template <typename M, typename... Ms>
-        struct convert<Placeholder<M, Ms...>> {
+        struct convert<Pack<M, Ms...>> {
             using type = Union<std::remove_cvref_t<M>, std::remove_cvref_t<Ms>...>;
         };
-
-        // apply the above transformations to get the final return type
-        using type = convert<
-            typename filter<
-                typename extract<Placeholder<>, Matches...>::type
-            >::type
-        >::type;
+        using type = convert<typename Pack<Matches...>::deduplicate>::type;
     };
 
     template <typename T>
     struct UnionTraits {
         using type = T;
-        using types = Placeholder<T>;
+        using types = Pack<T>;
         static constexpr size_t n = types::n;
         template <size_t I> requires (I < n)
         using at = types::template at<I>;
@@ -141,7 +85,7 @@ namespace impl {
         struct _types;
         template <typename... Types>
         struct _types<Union<Types...>> {
-            using type = Placeholder<Types...>;
+            using type = Pack<Types...>;
         };
 
     public:
@@ -165,7 +109,7 @@ namespace impl {
         struct _types;
         template <typename... Types>
         struct _types<std::variant<Types...>> {
-            using type = to_union<Placeholder<Types...>>;
+            using type = to_union<Pack<Types...>>;
         };
 
     public:
@@ -219,18 +163,6 @@ namespace impl {
         static constexpr bool convertible_to = _convertible_to<Out, Types...>;
     };
 
-    /// TODO: all operators must return python objects except for:
-    ///     - __isinstance__ (bool)
-    ///     - __issubclass__ (bool)
-    ///     - __repr__ (std::string)
-    ///     - __setattr__ (void)
-    ///     - __delattr__ (void)
-    ///     - __setitem__ (void)
-    ///     - __delitem__ (void)
-    ///     - __len__ (size_t)
-    ///     - __contains__ (bool)
-    ///     - __hash__ (size_t)
-
     template <typename, StaticStr>
     struct UnionGetAttr { static constexpr bool enable = false; };
     template <py_union Self, StaticStr Name>
@@ -246,13 +178,13 @@ namespace impl {
             template <typename result, typename... Ts>
             struct unary { using type = result; };
             template <typename... Matches, typename T, typename... Ts>
-            struct unary<Placeholder<Matches...>, T, Ts...> {
+            struct unary<Pack<Matches...>, T, Ts...> {
                 template <typename>
-                struct conditional { using type = Placeholder<Matches...>; };
+                struct conditional { using type = Pack<Matches...>; };
                 template <typename T2>
                     requires (__getattr__<qualify_lvalue<T2, Self>, Name>::enable)
                 struct conditional<T2> {
-                    using type = Placeholder<
+                    using type = Pack<
                         Matches...,
                         typename __getattr__<qualify_lvalue<T2, Self>, Name>::type
                     >;
@@ -260,7 +192,7 @@ namespace impl {
                 using type = unary<typename conditional<T>::type, Ts...>::type;
             };
             static constexpr bool enable = true;
-            using type = to_union<typename unary<Placeholder<>, Types...>::type>::type;
+            using type = to_union<typename unary<Pack<>, Types...>::type>::type;
         };
         static constexpr bool enable = traits<std::remove_cvref_t<Self>>::enable;
         using type = traits<std::remove_cvref_t<Self>>::type;
@@ -307,13 +239,13 @@ namespace impl {
             template <typename result, typename... Ts>
             struct unary { using type = result; };
             template <typename... Matches, typename T, typename... Ts>
-            struct unary<Placeholder<Matches...>, T, Ts...> {
+            struct unary<Pack<Matches...>, T, Ts...> {
                 template <typename>
-                struct conditional { using type = Placeholder<Matches...>; };
+                struct conditional { using type = Pack<Matches...>; };
                 template <typename T2>
                     requires (__call__<qualify_lvalue<T2, Self>, Args...>::enable)
                 struct conditional<T2> {
-                    using type = Placeholder<
+                    using type = Pack<
                         Matches...,
                         typename __call__<qualify_lvalue<T2, Self>, Args...>::type
                     >;
@@ -321,7 +253,7 @@ namespace impl {
                 using type = unary<typename conditional<T>::type, Ts...>::type;
             };
             static constexpr bool enable = true;
-            using type = to_union<typename unary<Placeholder<>, Types...>::type>::type;
+            using type = to_union<typename unary<Pack<>, Types...>::type>::type;
         };
         static constexpr bool enable = traits<std::remove_cvref_t<Self>>::enable;
         using type = traits<std::remove_cvref_t<Self>>::type;
@@ -410,13 +342,13 @@ namespace impl {
             template <typename result, typename... Ts>
             struct unary { using type = result; };
             template <typename... Matches, typename T, typename... Ts>
-            struct unary<Placeholder<Matches...>, T, Ts...> {
+            struct unary<Pack<Matches...>, T, Ts...> {
                 template <typename>
-                struct conditional { using type = Placeholder<Matches...>; };
+                struct conditional { using type = Pack<Matches...>; };
                 template <typename T2>
                     requires (__getitem__<qualify_lvalue<T2, Self>, Key...>::enable)
                 struct conditional<T2> {
-                    using type = Placeholder<
+                    using type = Pack<
                         Matches...,
                         typename __getitem__<qualify_lvalue<T2, Self>, Key...>::type
                     >;
@@ -424,7 +356,7 @@ namespace impl {
                 using type = unary<typename conditional<T>::type, Ts...>::type;
             };
             static constexpr bool enable = true;
-            using type = to_union<typename unary<Placeholder<>, Types...>::type>::type;
+            using type = to_union<typename unary<Pack<>, Types...>::type>::type;
         };
         static constexpr bool enable = traits<std::remove_cvref_t<Self>>::enable;
         using type = traits<std::remove_cvref_t<Self>>::type;
@@ -916,13 +848,13 @@ namespace impl {
                 template <typename result, typename... Ts>
                 struct unary { using type = result; };
                 template <typename... Matches, typename T, typename... Ts>
-                struct unary<Placeholder<Matches...>, T, Ts...> {
+                struct unary<Pack<Matches...>, T, Ts...> {
                     template <typename>
-                    struct conditional { using type = Placeholder<Matches...>; };
+                    struct conditional { using type = Pack<Matches...>; };
                     template <typename T2>
                         requires (control<qualify_lvalue<T2, Self>>::enable)
                     struct conditional<T2> {
-                        using type = Placeholder<
+                        using type = Pack<
                             Matches...,
                             typename control<qualify_lvalue<T2, Self>>::type
                         >;
@@ -930,7 +862,7 @@ namespace impl {
                     using type = unary<typename conditional<T>::type, Ts...>::type;
                 };
                 static constexpr bool enable = true;
-                using type = to_union<typename unary<Placeholder<>, Types...>::type>::type;
+                using type = to_union<typename unary<Pack<>, Types...>::type>::type;
             };
             static constexpr bool enable = traits<std::remove_cvref_t<Self>>::enable;
             using type = traits<std::remove_cvref_t<Self>>::type;
@@ -1118,17 +1050,17 @@ namespace impl {
                 template <typename result, typename... L2s>
                 struct left { using type = result; };
                 template <typename... Matches, typename L2, typename... L2s>
-                struct left<Placeholder<Matches...>, L2, L2s...> {
+                struct left<Pack<Matches...>, L2, L2s...> {
                     template <typename result, typename L3, typename... R2s>
                     struct right { using type = result; };
                     template <typename... Ms, typename L3, typename R2, typename... R2s>
-                    struct right<Placeholder<Ms...>, L3, R2, R2s...> {
+                    struct right<Pack<Ms...>, L3, R2, R2s...> {
                         template <typename>
-                        struct conditional { using type = Placeholder<Ms...>; };
+                        struct conditional { using type = Pack<Ms...>; };
                         template <typename R3>
                             requires (control<qualify_lvalue<L3, L>, qualify_lvalue<R3, R>>::enable)
                         struct conditional<R3> {
-                            using type = Placeholder<
+                            using type = Pack<
                                 Ms...,
                                 typename control<qualify_lvalue<L3, L>, qualify_lvalue<R3, R>>::type
                             >;
@@ -1140,12 +1072,12 @@ namespace impl {
                         >::type;
                     };
                     using type = left<
-                        typename right<Placeholder<Matches...>, L2, Rs...>::type,
+                        typename right<Pack<Matches...>, L2, Rs...>::type,
                         L2s...
                     >::type;
                 };
                 static constexpr bool enable = true;
-                using type = to_union<typename left<Placeholder<>, Ls...>::type>::type;
+                using type = to_union<typename left<Pack<>, Ls...>::type>::type;
             };
             static constexpr bool enable = traits<
                 std::remove_cvref_t<L>,
@@ -1240,7 +1172,7 @@ namespace impl {
                 );
             }
         };
-        template <py_union L, typename R> requires (!py_union<R>)
+        template <py_union L, typename R>
         struct op<L, R> {
             template <typename>
             struct traits {
@@ -1253,13 +1185,13 @@ namespace impl {
                 template <typename result, typename... L2s>
                 struct left { using type = result; };
                 template <typename... Matches, typename L2, typename... L2s>
-                struct left<Placeholder<Matches...>, L2, L2s...> {
+                struct left<Pack<Matches...>, L2, L2s...> {
                     template <typename>
-                    struct conditional { using type = Placeholder<Matches...>; };
+                    struct conditional { using type = Pack<Matches...>; };
                     template <typename L3>
                         requires (control<qualify_lvalue<L3, L>, R>::enable)
                     struct conditional<L3> {
-                        using type = Placeholder<
+                        using type = Pack<
                             Matches...,
                             typename control<qualify_lvalue<L3, L>, R>::type
                         >;
@@ -1267,7 +1199,7 @@ namespace impl {
                     using type = left<typename conditional<L2>::type, L2s...>::type;
                 };
                 static constexpr bool enable = true;
-                using type = to_union<typename left<Placeholder<>, Ls...>::type>::type;
+                using type = to_union<typename left<Pack<>, Ls...>::type>::type;
             };
             static constexpr bool enable = traits<std::remove_cvref_t<L>>::enable;
             using type = traits<std::remove_cvref_t<L>>::type;
@@ -1340,7 +1272,7 @@ namespace impl {
                 );
             }
         };
-        template <typename L, py_union R> requires (!py_union<L>)
+        template <typename L, py_union R>
         struct op<L, R> {
             template <typename>
             struct traits {
@@ -1353,13 +1285,13 @@ namespace impl {
                 template <typename result, typename... R2s>
                 struct right { using type = result; };
                 template <typename... Matches, typename R2, typename... R2s>
-                struct right<Placeholder<Matches...>, R2, R2s...> {
+                struct right<Pack<Matches...>, R2, R2s...> {
                     template <typename>
-                    struct conditional { using type = Placeholder<Matches...>; };
+                    struct conditional { using type = Pack<Matches...>; };
                     template <typename R3>
                         requires (control<L, qualify_lvalue<R3, R>>::enable)
                     struct conditional<R3> {
-                        using type = Placeholder<
+                        using type = Pack<
                             Matches...,
                             typename control<L, qualify_lvalue<R3, R>>::type
                         >;
@@ -1367,7 +1299,7 @@ namespace impl {
                     using type = right<typename conditional<R2>::type, R2s...>::type;
                 };
                 static constexpr bool enable = true;
-                using type = to_union<typename right<Placeholder<>, Rs...>::type>::type;
+                using type = to_union<typename right<Pack<>, Rs...>::type>::type;
             };
             static constexpr bool enable = traits<std::remove_cvref_t<R>>::enable;
             using type = traits<std::remove_cvref_t<R>>::type;
@@ -1466,8 +1398,6 @@ namespace impl {
     using UnionFloorDiv = union_binary_operator<__floordiv__>::template op<L, R>;
     template <typename L, typename R>
     using UnionMod = union_binary_operator<__mod__>::template op<L, R>;
-    template <typename L, typename R>
-    using UnionPow = union_binary_operator<__pow__>::template op<L, R>;
     template <typename L, typename R>
     using UnionLShift = union_binary_operator<__lshift__>::template op<L, R>;
     template <typename L, typename R>
@@ -1590,7 +1520,7 @@ namespace impl {
                 );
             }
         };
-        template <py_union L, typename R> requires (!py_union<R>)
+        template <py_union L, typename R>
         struct op<L, R> {
             template <typename>
             static constexpr bool match = false;
@@ -1670,7 +1600,7 @@ namespace impl {
                 );
             }
         };
-        template <typename L, py_union R> requires (!py_union<L>)
+        template <typename L, py_union R>
         struct op<L, R> {
             template <typename>
             static constexpr bool match = false;
@@ -1765,8 +1695,6 @@ namespace impl {
     template <typename L, typename R>
     using UnionInplaceMod = union_inplace_binary_operator<__imod__>::template op<L, R>;
     template <typename L, typename R>
-    using UnionInplacePow = union_inplace_binary_operator<__ipow__>::template op<L, R>;
-    template <typename L, typename R>
     using UnionInplaceLShift = union_inplace_binary_operator<__ilshift__>::template op<L, R>;
     template <typename L, typename R>
     using UnionInplaceRShift = union_inplace_binary_operator<__irshift__>::template op<L, R>;
@@ -1776,6 +1704,51 @@ namespace impl {
     using UnionInplaceXor = union_inplace_binary_operator<__ixor__>::template op<L, R>;
     template <typename L, typename R>
     using UnionInplaceOr = union_inplace_binary_operator<__ior__>::template op<L, R>;
+
+    template <template <typename, typename, typename> typename control>
+    struct union_ternary_operator {
+        template <typename, typename, typename>
+        struct op { static constexpr bool enable = false; };
+        template <py_union First, py_union Second, py_union Third>
+        struct op<First, Second, Third> {
+            /// TODO: any_match has to 
+        };
+        template <py_union First, py_union Second, typename Third>
+        struct op<First, Second, Third> {
+
+        };
+        template <py_union First, typename Second, py_union Third>
+        struct op<First, Second, Third> {
+
+        };
+        template <typename First, py_union Second, py_union Third>
+        struct op<First, Second, Third> {
+
+        };
+        template <py_union First, typename Second, typename Third>
+        struct op<First, Second, Third> {
+
+        };
+        template <typename First, py_union Second, typename Third>
+        struct op<First, Second, Third> {
+
+        };
+        template <typename First, typename Second, py_union Third>
+        struct op<First, Second, Third> {
+
+        };
+    };
+
+    template <typename Base, typename Exp, typename Mod>
+    using UnionPow = union_ternary_operator<__pow__>::template op<Base, Mod, Exp>;
+
+    template <template <typename, typename, typename> typename control>
+    struct union_inplace_ternary_operator {
+
+    };
+
+    template <typename Base, typename Exp, typename Mod>
+    using UnionInplacePow = union_inplace_ternary_operator<__ipow__>::template op<Base, Exp, Mod>;
 
 }
 
