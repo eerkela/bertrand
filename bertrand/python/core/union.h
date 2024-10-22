@@ -20,15 +20,17 @@ template <typename... Types>
     requires (
         sizeof...(Types) > 0 &&
         (!std::is_reference_v<Types> && ...) &&
+        (!std::is_const_v<Types> && ...) &&
+        (!std::is_volatile_v<Types> && ...) &&
         (std::derived_from<Types, Object> && ...) &&
-        impl::types_are_unique<Types...> &&
-        !(std::is_const_v<Types> || ...) &&
-        !(std::is_volatile_v<Types> || ...)
+        impl::types_are_unique<Types...>
     )
 struct Union;
 
-template <std::derived_from<Object> T = Object>
+
+template <std::derived_from<Object> T> requires (!std::same_as<T, NoneType>)
 using Optional = Union<T, NoneType>;
+
 
 template <impl::has_python T> requires (!std::same_as<T, NoneType>)
 Union(T) -> Union<obj<T>, NoneType>;
@@ -101,18 +103,36 @@ namespace impl {
     struct to_union<Pack<Matches...>> {
         template <typename pack>
         struct convert {
+            template <typename T>
+            struct VoidToNone { using type = python_type<T>; };
+            template <>
+            struct VoidToNone<void> { using type = NoneType; };
             template <typename>
             struct helper;
             template <typename... Unique>
             struct helper<Pack<Unique...>> {
-                using type = Union<std::remove_cvref_t<impl::python_type<Unique>>...>;
+                using type = Union<std::remove_cvref_t<Unique>...>;
             };
-            using type = helper<typename Pack<Matches...>::deduplicate>::type;
+            using type = helper<
+                typename Pack<typename VoidToNone<Matches>::type...>::deduplicate
+            >::type;
         };
         template <typename Match>
         struct convert<Pack<Match>> { using type = Match; };
         using type = convert<typename Pack<Matches...>::deduplicate>::type;
     };
+
+    /// TODO: generalized operator factory may need to handle std::variant/std::optional
+    /// similarly to unions.
+
+    /// TODO: technically, inplace operators can return any type, although void still
+    /// presents a problem.
+
+    /// TODO: a void return could maybe just not add a type to the output pack, which
+    /// means the return type could be empty, and you might end up in a situation where
+    /// you'd have to return a union, but the real operator returns void, which
+    /// presents a problem.  Maybe the only way around this is to return NoneType in
+    /// place of void, and account for that in the operator factory.
 
     /* A generalized operator factory that uses template metaprogramming to evaluate a
     control structure over a set of argument types and collect the possible returns.
@@ -172,7 +192,6 @@ namespace impl {
 
             /* 5. If there is only one valid return type, return it directly, otherwise
             construct a new union and convert all of the results to Python. */
-            /// TODO: convert the output types to Python if returning a Union?
             using type = to_union<returns>::type;
 
             /// TODO: also, how to represent void types here?
@@ -198,6 +217,8 @@ namespace impl {
                     std::forward<Args>(args)...
                 );
             }
+
+        private:
 
             template <
                 size_t I,
@@ -236,7 +257,7 @@ namespace impl {
                         return call<I + 1>(
                             std::forward<OnSuccess>(success),
                             std::forward<OnFailure>(failure),
-                            unpack_arg<Actual>(std::forward<Actual>(args)...)...
+                            std::forward<Actual>(args)...
                         );
                     }
                 }
@@ -271,7 +292,7 @@ namespace impl {
                             std::add_rvalue_reference_t<unpack_type<I, Actual...>>
                         >;
                         U arg = reinterpret_cast<U>(
-                            unpack_arg<I>(std::forward<Args>(args)...)
+                            unpack_arg<I>(std::forward<Actual>(args)...)
                         );
                         if (J == arg->m_index) {
                             return []<size_t... Prev, size_t... Next>(
@@ -304,7 +325,7 @@ namespace impl {
                         return unpack_union::call<J + 1>(
                             std::forward<OnSuccess>(success),
                             std::forward<OnFailure>(failure),
-                            std::forward<Args>(args)...
+                            std::forward<Actual>(args)...
                         );
                     }
                 }
@@ -312,6 +333,11 @@ namespace impl {
         };
     };
 
+    // unary operators
+    template <typename T>
+    using UnionHash = union_operator<__hash__>::template op<T>;
+    template <typename T>
+    using UnionLen = union_operator<__len__>::template op<T>;
     template <typename T>
     using UnionIter = union_operator<__iter__>::template op<T>;
     template <typename T>
@@ -324,6 +350,14 @@ namespace impl {
     using UnionPos = union_operator<__pos__>::template op<T>;
     template <typename T>
     using UnionNeg = union_operator<__neg__>::template op<T>;
+    template <typename T>
+    using UnionIncrement = union_operator<__increment__>::template op<T>;
+    template <typename T>
+    using UnionDecrement = union_operator<__decrement__>::template op<T>;
+
+    // binary operators
+    template <typename L, typename R>
+    using UnionContains = union_operator<__contains__>::template op<L, R>;
     template <typename L, typename R>
     using UnionLess = union_operator<__lt__>::template op<L, R>;
     template <typename L, typename R>
@@ -358,8 +392,40 @@ namespace impl {
     using UnionXor = union_operator<__xor__>::template op<L, R>;
     template <typename L, typename R>
     using UnionOr = union_operator<__or__>::template op<L, R>;
+    template <typename L, typename R>
+    using UnionInplaceAdd = union_operator<__iadd__>::template op<L, R>;
+    template <typename L, typename R>
+    using UnionInplaceSub = union_operator<__isub__>::template op<L, R>;
+    template <typename L, typename R>
+    using UnionInplaceMul = union_operator<__imul__>::template op<L, R>;
+    template <typename L, typename R>
+    using UnionInplaceTrueDiv = union_operator<__itruediv__>::template op<L, R>;
+    template <typename L, typename R>
+    using UnionInplaceFloorDiv = union_operator<__ifloordiv__>::template op<L, R>;
+    template <typename L, typename R>
+    using UnionInplaceMod = union_operator<__imod__>::template op<L, R>;
+    template <typename L, typename R>
+    using UnionInplaceLShift = union_operator<__ilshift__>::template op<L, R>;
+    template <typename L, typename R>
+    using UnionInplaceRShift = union_operator<__irshift__>::template op<L, R>;
+    template <typename L, typename R>
+    using UnionInplaceAnd = union_operator<__iand__>::template op<L, R>;
+    template <typename L, typename R>
+    using UnionInplaceXor = union_operator<__ixor__>::template op<L, R>;
+    template <typename L, typename R>
+    using UnionInplaceOr = union_operator<__ior__>::template op<L, R>;
+
+    // ternary operators
     template <typename Base, typename Exp, typename Mod>
     using UnionPow = union_operator<__pow__>::template op<Base, Mod, Exp>;
+    template <typename Base, typename Exp, typename Mod>
+    using UnionInplacePow = union_operator<__ipow__>::template op<Base, Exp, Mod>;
+
+    // n-ary operators
+    template <typename Self, typename... Args>
+    using UnionCall = union_operator<__call__>::template op<Self, Args...>;
+    template <typename Self, typename... Key>
+    using UnionGetItem = union_operator<__getitem__>::template op<Self, Key...>;
 
 
 
@@ -403,6 +469,8 @@ namespace impl {
         template <typename Out>
         static constexpr bool convertible_to = _convertible_to<Out, Types...>;
     };
+
+
 
 
 
@@ -467,212 +535,6 @@ namespace impl {
         static constexpr bool match<Union<Types...>> = true;
         static constexpr bool enable = match<std::remove_cvref_t<Self>>;
         using type = void;
-    };
-
-    template <typename, typename... Args>
-    struct UnionCall { static constexpr bool enable = false; };
-    template <py_union Self, typename... Args>
-    struct UnionCall<Self, Args...> {
-        template <typename>
-        struct traits {
-            static constexpr bool enable = false;
-            using type = void;
-        };
-        template <typename... Types>
-            requires (__call__<qualify_lvalue<Types, Self>, Args...>::enable || ...)
-        struct traits<Union<Types...>> {
-            template <typename result, typename... Ts>
-            struct unary { using type = result; };
-            template <typename... Matches, typename T, typename... Ts>
-            struct unary<Pack<Matches...>, T, Ts...> {
-                template <typename>
-                struct conditional { using type = Pack<Matches...>; };
-                template <typename T2>
-                    requires (__call__<qualify_lvalue<T2, Self>, Args...>::enable)
-                struct conditional<T2> {
-                    using type = Pack<
-                        Matches...,
-                        typename __call__<qualify_lvalue<T2, Self>, Args...>::type
-                    >;
-                };
-                using type = unary<typename conditional<T>::type, Ts...>::type;
-            };
-            static constexpr bool enable = true;
-            using type = to_union<typename unary<Pack<>, Types...>::type>::type;
-        };
-        static constexpr bool enable = traits<std::remove_cvref_t<Self>>::enable;
-        using type = traits<std::remove_cvref_t<Self>>::type;
-
-        template <typename>
-        struct call;
-        template <typename... Types>
-        struct call<Union<Types...>> {
-            template <size_t I, typename OnSuccess, typename OnFailure>
-            static type exec(
-                OnSuccess&& success,
-                OnFailure&& failure,
-                Self self,
-                Args... args
-            ) {
-                using S = qualify_lvalue<unpack_type<I, Types...>, Self>;
-                if constexpr (__call__<S, Args...>::enable) {
-                    return success(
-                        reinterpret_cast<S>(std::forward<Self>(self)->m_value),
-                        std::forward<Args>(args)...
-                    );
-                } else {
-                    return failure(
-                        reinterpret_cast<S>(std::forward<Self>(self)->m_value),
-                        std::forward<Args>(args)...
-                    );
-                }
-            }
-        };
-
-        template <size_t I, typename OnSuccess, typename OnFailure>
-        static type exec(
-            OnSuccess&& success,
-            OnFailure&& failure,
-            Self self,
-            Args... args
-        ) {
-            if (I == self->m_index) {
-                return call<std::remove_cvref_t<Self>>::template exec<I>(
-                    std::forward<OnSuccess>(success),
-                    std::forward<OnFailure>(failure),
-                    std::forward<Self>(self),
-                    std::forward<Args>(args)...
-                );
-            }
-            if constexpr ((I + 1) < UnionTraits<Self>::n) {
-                return exec<I + 1>(
-                    std::forward<OnSuccess>(success),
-                    std::forward<OnFailure>(failure),
-                    std::forward<Self>(self),
-                    std::forward<Args>(args)...
-                );
-            } else {
-                return failure(std::forward<Self>(self), std::forward<Args>(args)...);
-            }
-        }
-
-        template <typename OnSuccess, typename OnFailure>
-        static type operator()(
-            OnSuccess&& success,
-            OnFailure&& failure,
-            Self self,
-            Args... args
-        ) {
-            return exec<0>(
-                std::forward<OnSuccess>(success),
-                std::forward<OnFailure>(failure),
-                std::forward<Self>(self),
-                std::forward<Args>(args)...
-            );
-        }
-    };
-
-    template <typename, typename... Key>
-    struct UnionGetItem { static constexpr bool enable = false; };
-    template <py_union Self, typename... Key>
-    struct UnionGetItem<Self, Key...> {
-        template <typename>
-        struct traits {
-            static constexpr bool enable = false;
-            using type = void;
-        };
-        template <typename... Types>
-            requires (__getitem__<qualify_lvalue<Types, Self>, Key...>::enable || ...)
-        struct traits<Union<Types...>> {
-            template <typename result, typename... Ts>
-            struct unary { using type = result; };
-            template <typename... Matches, typename T, typename... Ts>
-            struct unary<Pack<Matches...>, T, Ts...> {
-                template <typename>
-                struct conditional { using type = Pack<Matches...>; };
-                template <typename T2>
-                    requires (__getitem__<qualify_lvalue<T2, Self>, Key...>::enable)
-                struct conditional<T2> {
-                    using type = Pack<
-                        Matches...,
-                        typename __getitem__<qualify_lvalue<T2, Self>, Key...>::type
-                    >;
-                };
-                using type = unary<typename conditional<T>::type, Ts...>::type;
-            };
-            static constexpr bool enable = true;
-            using type = to_union<typename unary<Pack<>, Types...>::type>::type;
-        };
-        static constexpr bool enable = traits<std::remove_cvref_t<Self>>::enable;
-        using type = traits<std::remove_cvref_t<Self>>::type;
-
-        template <typename>
-        struct call;
-        template <typename... Types>
-        struct call<Union<Types...>> {
-            template <size_t I, typename OnSuccess, typename OnFailure>
-            static type exec(
-                OnSuccess&& success,
-                OnFailure&& failure,
-                Self self,
-                Key... key
-            ) {
-                using S = qualify_lvalue<unpack_type<I, Types...>, Self>;
-                if constexpr (__getitem__<S, Key...>::enable) {
-                    return success(
-                        reinterpret_cast<S>(std::forward<Self>(self)->m_value),
-                        std::forward<Key>(key)...
-                    );
-                } else {
-                    return failure(
-                        reinterpret_cast<S>(std::forward<Self>(self)->m_value),
-                        std::forward<Key>(key)...
-                    );
-                }
-            }
-        };
-
-        template <size_t I, typename OnSuccess, typename OnFailure>
-        static type exec(
-            OnSuccess&& success,
-            OnFailure&& failure,
-            Self self,
-            Key... key
-        ) {
-            if (I == self->m_index) {
-                return call<std::remove_cvref_t<Self>>::template exec<I>(
-                    std::forward<OnSuccess>(success),
-                    std::forward<OnFailure>(failure),
-                    std::forward<Self>(self),
-                    std::forward<Key>(key)...
-                );
-            }
-            if constexpr ((I + 1) < UnionTraits<Self>::n) {
-                return exec<I + 1>(
-                    std::forward<OnSuccess>(success),
-                    std::forward<OnFailure>(failure),
-                    std::forward<Self>(self),
-                    std::forward<Key>(key)...
-                );
-            } else {
-                return failure(std::forward<Self>(self), std::forward<Key>(key)...);
-            }
-        }
-
-        template <typename OnSuccess, typename OnFailure>
-        static type operator()(
-            OnSuccess&& success,
-            OnFailure&& failure,
-            Self self,
-            Key... key
-        ) {
-            return exec<0>(
-                std::forward<OnSuccess>(success),
-                std::forward<OnFailure>(failure),
-                std::forward<Self>(self),
-                std::forward<Key>(key)...
-            );
-        }
     };
 
     template <typename, typename, typename... Key>
@@ -849,622 +711,6 @@ namespace impl {
         }
     };
 
-    template <typename>
-    struct UnionHash { static constexpr bool enable = false; };
-    template <py_union Self>
-    struct UnionHash<Self> {
-        template <typename>
-        static constexpr bool match = false;
-        template <typename... Types>
-            requires (__hash__<qualify_lvalue<Types, Self>>::enable || ...)
-        static constexpr bool match<Union<Types...>> = true;
-        static constexpr bool enable = match<std::remove_cvref_t<Self>>;
-        using type = size_t;
-
-        template <typename>
-        struct call;
-        template <typename... Types>
-        struct call<Union<Types...>> {
-            template <size_t I, typename OnSuccess, typename OnFailure>
-            static type exec(
-                Self self,
-                OnSuccess&& success,
-                OnFailure&& failure
-            ) {
-                using S = qualify_lvalue<unpack_type<I, Types...>, Self>;
-                if constexpr (__hash__<S>::enable) {
-                    return success(
-                        reinterpret_cast<S>(std::forward<Self>(self)->m_value)
-                    );
-                } else {
-                    return failure(
-                        reinterpret_cast<S>(std::forward<Self>(self)->m_value)
-                    );
-                }
-            }
-        };
-
-        template <size_t I, typename OnSuccess, typename OnFailure>
-        static type exec(
-            Self self,
-            OnSuccess&& success,
-            OnFailure&& failure
-        ) {
-            if (I == self->m_index) {
-                return call<std::remove_cvref_t<Self>>::template exec<I>(
-                    std::forward<Self>(self),
-                    std::forward<OnSuccess>(success),
-                    std::forward<OnFailure>(failure)
-                );
-            }
-            if constexpr ((I + 1) < UnionTraits<Self>::n) {
-                return exec<I + 1>(
-                    std::forward<Self>(self),
-                    std::forward<OnSuccess>(success),
-                    std::forward<OnFailure>(failure)
-                );
-            } else {
-                return failure(std::forward<Self>(self));
-            }
-        }
-
-        template <typename OnSuccess, typename OnFailure>
-        static type operator()(
-            Self self,
-            OnSuccess&& success,
-            OnFailure&& failure
-        ) {
-            return exec<0>(
-                std::forward<Self>(self),
-                std::forward<OnSuccess>(success),
-                std::forward<OnFailure>(failure)
-            );
-        }
-    };
-
-    template <typename>
-    struct UnionLen { static constexpr bool enable = false; };
-    template <py_union Self>
-    struct UnionLen<Self> {
-        template <typename>
-        static constexpr bool match = false;
-        template <typename... Types>
-            requires (__len__<qualify_lvalue<Types, Self>>::enable || ...)
-        static constexpr bool match<Union<Types...>> = true;
-        static constexpr bool enable = match<std::remove_cvref_t<Self>>;
-        using type = size_t;
-
-        template <typename>
-        struct call;
-        template <typename... Types>
-        struct call<Union<Types...>> {
-            template <size_t I, typename OnSuccess, typename OnFailure>
-            static type exec(
-                OnSuccess&& success,
-                OnFailure&& failure,
-                Self self
-            ) {
-                using S = qualify_lvalue<unpack_type<I, Types...>, Self>;
-                if constexpr (__len__<S>::enable) {
-                    return success(
-                        reinterpret_cast<S>(std::forward<Self>(self)->m_value)
-                    );
-                } else {
-                    return failure(
-                        reinterpret_cast<S>(std::forward<Self>(self)->m_value)
-                    );
-                }
-            }
-        };
-
-        template <size_t I, typename OnSuccess, typename OnFailure>
-        static type exec(
-            OnSuccess&& success,
-            OnFailure&& failure,
-            Self self
-        ) {
-            if (I == self->m_index) {
-                return call<std::remove_cvref_t<Self>>::template exec<I>(
-                    std::forward<OnSuccess>(success),
-                    std::forward<OnFailure>(failure),
-                    std::forward<Self>(self)
-                );
-            }
-            if constexpr ((I + 1) < UnionTraits<Self>::n) {
-                return exec<I + 1>(
-                    std::forward<OnSuccess>(success),
-                    std::forward<OnFailure>(failure),
-                    std::forward<Self>(self)
-                );
-            } else {
-                return failure(std::forward<Self>(self));
-            }
-        }
-
-        template <typename OnSuccess, typename OnFailure>
-        static type operator()(
-            OnSuccess&& success,
-            OnFailure&& failure,
-            Self self
-        ) {
-            return exec<0>(
-                std::forward<OnSuccess>(success),
-                std::forward<OnFailure>(failure),
-                std::forward<Self>(self)
-            );
-        }
-    };
-
-    template <typename, typename>
-    struct UnionContains { static constexpr bool enable = false; };
-    template <py_union Self, typename Key>
-    struct UnionContains<Self, Key> {
-        template <typename>
-        static constexpr bool match = false;
-        template <typename... Types>
-            requires (__contains__<qualify_lvalue<Types, Self>, Key>::enable || ...)
-        static constexpr bool match<Union<Types...>> = true;
-        static constexpr bool enable = match<std::remove_cvref_t<Self>>;
-        using type = bool;
-
-        template <typename>
-        struct call;
-        template <typename... Types>
-        struct call<Union<Types...>> {
-            template <size_t I, typename OnSuccess, typename OnFailure>
-            static type exec(
-                OnSuccess&& success,
-                OnFailure&& failure,
-                Self self,
-                Key key
-            ) {
-                using S = qualify_lvalue<unpack_type<I, Types...>, Self>;
-                if constexpr (__contains__<S, Key>::enable) {
-                    return success(
-                        reinterpret_cast<S>(std::forward<Self>(self)->m_value),
-                        std::forward<Key>(key)
-                    );
-                } else {
-                    return failure(
-                        reinterpret_cast<S>(std::forward<Self>(self)->m_value),
-                        std::forward<Key>(key)
-                    );
-                }
-            }
-        };
-
-        template <size_t I, typename OnSuccess, typename OnFailure>
-        static type exec(
-            OnSuccess&& success,
-            OnFailure&& failure,
-            Self self,
-            Key key
-        ) {
-            if (I == self->m_index) {
-                return call<std::remove_cvref_t<Self>>::template exec<I>(
-                    std::forward<OnSuccess>(success),
-                    std::forward<OnFailure>(failure),
-                    std::forward<Self>(self),
-                    std::forward<Key>(key)
-                );
-            }
-            if constexpr ((I + 1) < UnionTraits<Self>::n) {
-                return exec<I + 1>(
-                    std::forward<OnSuccess>(success),
-                    std::forward<OnFailure>(failure),
-                    std::forward<Self>(self),
-                    std::forward<Key>(key)
-                );
-            } else {
-                return failure(std::forward<Self>(self), std::forward<Key>(key));
-            }
-        }
-
-        template <typename OnSuccess, typename OnFailure>
-        static type operator()(
-            OnSuccess&& success,
-            OnFailure&& failure,
-            Self self,
-            Key key
-        ) {
-            return exec<0>(
-                std::forward<OnSuccess>(success),
-                std::forward<OnFailure>(failure),
-                std::forward<Self>(self),
-                std::forward<Key>(key)
-            );
-        }
-    };
-
-
-    /// TODO: inplace operators might require special handling.
-
-
-    template <template <typename> typename control>
-    struct union_unary_inplace_operator {
-        template <typename>
-        struct op { static constexpr bool enable = false; };
-        template <py_union Self>
-        struct op<Self> {
-            template <typename>
-            static constexpr bool match = false;
-            template <typename... Types>
-                requires (control<qualify_lvalue<Types, Self>>::enable || ...)
-            static constexpr bool match<Union<Types...>> = true;
-            static constexpr bool enable = match<std::remove_cvref_t<Self>>;
-            using type = Self;
-
-            template <typename>
-            struct call;
-            template <typename... Types>
-            struct call<Union<Types...>> {
-                template <size_t I, typename OnSuccess, typename OnFailure>
-                static type exec(
-                    OnSuccess&& success,
-                    OnFailure&& failure,
-                    Self self
-                ) {
-                    using S = qualify_lvalue<unpack_type<I, Types...>, Self>;
-                    if constexpr (control<S>::enable) {
-                        success(reinterpret_cast<S>(
-                            std::forward<Self>(self)->m_value
-                        ));
-                    } else {
-                        failure(reinterpret_cast<S>(
-                            std::forward<Self>(self)->m_value
-                        ));
-                    }
-                    return self;
-                }
-            };
-
-            template <size_t I, typename OnSuccess, typename OnFailure>
-            static type exec(
-                OnSuccess&& success,
-                OnFailure&& failure,
-                Self self
-            ) {
-                if (I == self->m_index) {
-                    return call<std::remove_cvref_t<Self>>::template exec<I>(
-                        std::forward<OnSuccess>(success),
-                        std::forward<OnFailure>(failure),
-                        std::forward<Self>(self)
-                    );
-                }
-                if constexpr ((I + 1) < UnionTraits<Self>::n) {
-                    return exec<I + 1>(
-                        std::forward<OnSuccess>(success),
-                        std::forward<OnFailure>(failure),
-                        std::forward<Self>(self)
-                    );
-                } else {
-                    failure(std::forward<Self>(self));
-                    return std::forward<Self>(self);
-                }
-            }
-
-            template <typename OnSuccess, typename OnFailure>
-            static type operator()(
-                OnSuccess&& success,
-                OnFailure&& failure,
-                Self self
-            ) {
-                return exec<0>(
-                    std::forward<OnSuccess>(success),
-                    std::forward<OnFailure>(failure),
-                    std::forward<Self>(self)
-                );
-            }
-        };
-    };
-
-    template <typename T>
-    using UnionIncrement = union_unary_inplace_operator<__increment__>::template op<T>;
-    template <typename T>
-    using UnionDecrement = union_unary_inplace_operator<__decrement__>::template op<T>;
-
-
-
-    template <template <typename, typename> typename control>
-    struct union_inplace_binary_operator {
-        template <typename, typename>
-        struct op { static constexpr bool enable = false; };
-        template <py_union L, py_union R>
-        struct op<L, R> {
-            template <typename, typename...>
-            struct any_match { static constexpr bool enable = false; };
-            template <typename L2, typename R2, typename... R2s>
-            struct any_match<L2, R2, R2s...> {
-                static constexpr bool enable =
-                    control<qualify_lvalue<L2, L>, qualify_lvalue<R2, R>>::enable ||
-                    any_match<L2, R2s...>::enable;
-            };
-            template <typename, typename>
-            static constexpr bool match = false;
-            template <typename... Ls, typename... Rs>
-                requires (any_match<Ls, Rs...>::enable || ...)
-            static constexpr bool match<Union<Ls...>, Union<Rs...>> = true;
-            static constexpr bool enable = match<
-                std::remove_cvref_t<L>,
-                std::remove_cvref_t<R>
-            >;
-            using type = L;
-
-            template <typename, typename>
-            struct call;
-            template <typename... Ls, typename... Rs>
-            struct call<Union<Ls...>, Union<Rs...>> {
-                template <size_t I, size_t J, typename OnSuccess, typename OnFailure>
-                static type exec(
-                    OnSuccess&& success,
-                    OnFailure&& failure,
-                    L lhs,
-                    R rhs
-                ) {
-                    using L2 = qualify_lvalue<unpack_type<I, Ls...>, L>;
-                    using R2 = qualify_lvalue<unpack_type<J, Rs...>, R>;
-                    if constexpr (control<L2, R2>::enable) {
-                        success(
-                            reinterpret_cast<L2>(std::forward<L>(lhs)->m_value),
-                            reinterpret_cast<R2>(std::forward<R>(rhs)->m_value)
-                        );
-                    } else {
-                        failure(
-                            reinterpret_cast<L2>(std::forward<L>(lhs)->m_value),
-                            reinterpret_cast<R2>(std::forward<R>(rhs)->m_value)
-                        );
-                    }
-                    return std::forward<L>(lhs);
-                }
-            };
-
-            template <size_t I, size_t J, typename OnSuccess, typename OnFailure>
-            static type exec(
-                OnSuccess&& success,
-                OnFailure&& failure,
-                L lhs,
-                R rhs
-            ) {
-                if (I == lhs->m_index) {
-                    if (J == rhs->m_index) {
-                        return call<
-                            std::remove_cvref_t<L>,
-                            std::remove_cvref_t<R>
-                        >::template exec<I, J>(
-                            std::forward<OnSuccess>(success),
-                            std::forward<OnFailure>(failure),
-                            std::forward<L>(lhs),
-                            std::forward<R>(rhs)
-                        );
-                    }
-                    if constexpr (I < UnionTraits<L>::n && (J + 1) < UnionTraits<R>::n) {
-                        return exec<I, J + 1>(
-                            std::forward<OnSuccess>(success),
-                            std::forward<OnFailure>(failure),
-                            std::forward<L>(lhs),
-                            std::forward<R>(rhs)
-                        );
-                    } else {
-                        failure(std::forward<L>(lhs), std::forward<R>(rhs));
-                    }
-                }
-                if constexpr ((I + 1) < UnionTraits<L>::n && J < UnionTraits<R>::n) {
-                    return exec<I + 1, J>(
-                        std::forward<OnSuccess>(success),
-                        std::forward<OnFailure>(failure),
-                        std::forward<L>(lhs),
-                        std::forward<R>(rhs)
-                    );
-                } else {
-                    failure(std::forward<L>(lhs), std::forward<R>(rhs));
-                    return std::forward<L>(lhs);
-                }
-            }
-
-            template <typename OnSuccess, typename OnFailure>
-            static type operator()(
-                OnSuccess&& success,
-                OnFailure&& failure,
-                L lhs,
-                R rhs
-            ) {
-                return exec<0, 0>(
-                    std::forward<OnSuccess>(success),
-                    std::forward<OnFailure>(failure),
-                    std::forward<L>(lhs),
-                    std::forward<R>(rhs)
-                );
-            }
-        };
-        template <py_union L, typename R>
-        struct op<L, R> {
-            template <typename>
-            static constexpr bool match = false;
-            template <typename... Ls>
-                requires (control<qualify_lvalue<Ls, L>, R>::enable || ...)
-            static constexpr bool match<Union<Ls...>> = true;
-            static constexpr bool enable = match<std::remove_cvref_t<L>>;
-            using type = L;
-
-            template <typename>
-            struct call;
-            template <typename... Ls>
-            struct call<Union<Ls...>> {
-                template <size_t I, typename OnSuccess, typename OnFailure>
-                static type exec(
-                    OnSuccess&& success,
-                    OnFailure&& failure,
-                    L lhs,
-                    R rhs
-                ) {
-                    using L2 = qualify_lvalue<unpack_type<I, Ls...>, L>;
-                    if constexpr (control<L2, R>::enable) {
-                        success(
-                            reinterpret_cast<L2>(std::forward<L>(lhs)->m_value),
-                            std::forward<R>(rhs)
-                        );
-                    } else {
-                        failure(
-                            reinterpret_cast<L2>(std::forward<L>(lhs)->m_value),
-                            std::forward<R>(rhs)
-                        );
-                    }
-                    return std::forward<L>(lhs);
-                }
-            };
-
-            template <size_t I, typename OnSuccess, typename OnFailure>
-            static type exec(
-                OnSuccess&& success,
-                OnFailure&& failure,
-                L lhs,
-                R rhs
-            ) {
-                if (I == lhs->m_index) {
-                    return call<std::remove_cvref_t<L>>::template exec<I>(
-                        std::forward<OnSuccess>(success),
-                        std::forward<OnFailure>(failure),
-                        std::forward<L>(lhs),
-                        std::forward<R>(rhs)
-                    );
-                }
-                if constexpr ((I + 1) < UnionTraits<L>::n) {
-                    return exec<I + 1>(
-                        std::forward<OnSuccess>(success),
-                        std::forward<OnFailure>(failure),
-                        std::forward<L>(lhs),
-                        std::forward<R>(rhs)
-                    );
-                } else {
-                    failure(std::forward<L>(lhs), std::forward<R>(rhs));
-                    return std::forward<L>(lhs);
-                }
-            }
-
-            template <typename OnSuccess, typename OnFailure>
-            static type operator()(
-                OnSuccess&& success,
-                OnFailure&& failure,
-                L lhs,
-                R rhs
-            ) {
-                return exec<0>(
-                    std::forward<OnSuccess>(success),
-                    std::forward<OnFailure>(failure),
-                    std::forward<L>(lhs),
-                    std::forward<R>(rhs)
-                );
-            }
-        };
-        template <typename L, py_union R>
-        struct op<L, R> {
-            template <typename>
-            static constexpr bool match = false;
-            template <typename... Rs>
-                requires (control<L, qualify_lvalue<Rs, R>>::enable || ...)
-            static constexpr bool match<Union<Rs...>> = true;
-            static constexpr bool enable = match<std::remove_cvref_t<R>>;
-            using type = L;
-
-            template <typename>
-            struct call;
-            template <typename... Rs>
-            struct call<Union<Rs...>> {
-                template <size_t J, typename OnSuccess, typename OnFailure>
-                static type exec(
-                    OnSuccess&& success,
-                    OnFailure&& failure,
-                    L lhs,
-                    R rhs
-                ) {
-                    using R2 = qualify_lvalue<unpack_type<J, Rs...>, R>;
-                    if constexpr (control<L, R2>::enable) {
-                        success(
-                            std::forward<L>(lhs),
-                            reinterpret_cast<R2>(std::forward<R>(rhs)->m_value)
-                        );
-                    } else {
-                        failure(
-                            std::forward<L>(lhs),
-                            reinterpret_cast<R2>(std::forward<R>(rhs)->m_value)
-                        );
-                    }
-                    return std::forward<L>(lhs);
-                }
-            };
-
-            template <size_t J, typename OnSuccess, typename OnFailure>
-            static type exec(
-                OnSuccess&& success,
-                OnFailure&& failure,
-                L lhs,
-                R rhs
-            ) {
-                if (J == lhs->m_index) {
-                    return call<std::remove_cvref_t<L>>::template exec<J>(
-                        std::forward<OnSuccess>(success),
-                        std::forward<OnFailure>(failure),
-                        std::forward<L>(lhs),
-                        std::forward<R>(rhs)
-                    );
-                }
-                if constexpr ((J + 1) < UnionTraits<R>::n) {
-                    return exec<J + 1>(
-                        std::forward<OnSuccess>(success),
-                        std::forward<OnFailure>(failure),
-                        std::forward<L>(lhs),
-                        std::forward<R>(rhs)
-                    );
-                } else {
-                    failure(std::forward<L>(lhs), std::forward<R>(rhs));
-                    return std::forward<L>(lhs);
-                }
-            }
-
-            template <typename OnSuccess, typename OnFailure>
-            static type operator()(
-                OnSuccess&& success,
-                OnFailure&& failure,
-                L lhs,
-                R rhs
-            ) {
-                return exec<0>(
-                    std::forward<OnSuccess>(success),
-                    std::forward<OnFailure>(failure),
-                    std::forward<L>(lhs),
-                    std::forward<R>(rhs)
-                );
-            }
-        };
-    };
-
-    template <typename L, typename R>
-    using UnionInplaceAdd = union_inplace_binary_operator<__iadd__>::template op<L, R>;
-    template <typename L, typename R>
-    using UnionInplaceSub = union_inplace_binary_operator<__isub__>::template op<L, R>;
-    template <typename L, typename R>
-    using UnionInplaceMul = union_inplace_binary_operator<__imul__>::template op<L, R>;
-    template <typename L, typename R>
-    using UnionInplaceTrueDiv = union_inplace_binary_operator<__itruediv__>::template op<L, R>;
-    template <typename L, typename R>
-    using UnionInplaceFloorDiv = union_inplace_binary_operator<__ifloordiv__>::template op<L, R>;
-    template <typename L, typename R>
-    using UnionInplaceMod = union_inplace_binary_operator<__imod__>::template op<L, R>;
-    template <typename L, typename R>
-    using UnionInplaceLShift = union_inplace_binary_operator<__ilshift__>::template op<L, R>;
-    template <typename L, typename R>
-    using UnionInplaceRShift = union_inplace_binary_operator<__irshift__>::template op<L, R>;
-    template <typename L, typename R>
-    using UnionInplaceAnd = union_inplace_binary_operator<__iand__>::template op<L, R>;
-    template <typename L, typename R>
-    using UnionInplaceXor = union_inplace_binary_operator<__ixor__>::template op<L, R>;
-    template <typename L, typename R>
-    using UnionInplaceOr = union_inplace_binary_operator<__ior__>::template op<L, R>;
-
-
-    // template <typename Base, typename Exp, typename Mod>
-    // using UnionInplacePow = union_inplace_ternary_operator<__ipow__>::template op<Base, Exp, Mod>;
-
 }
 
 
@@ -1478,10 +724,10 @@ template <typename... Types>
     requires (
         sizeof...(Types) > 0 &&
         (!std::is_reference_v<Types> && ...) &&
+        (!std::is_const_v<Types> && ...) &&
+        (!std::is_volatile_v<Types> && ...) &&
         (std::derived_from<Types, Object> && ...) &&
-        impl::types_are_unique<Types...> &&
-        !(std::is_const_v<Types> || ...) &&
-        !(std::is_volatile_v<Types> || ...)
+        impl::types_are_unique<Types...>
     )
 struct Union : Object, Interface<Union<Types...>> {
     struct __python__ : def<__python__, Union>, PyObject {
@@ -3324,7 +2570,11 @@ struct __delitem__<Self, Key...> : Returns<void> {
 };
 
 
-template <impl::py_union Self> requires (impl::UnionHash<Self>::enable)
+template <impl::py_union Self>
+    requires (
+        impl::UnionHash<Self>::enable &&
+        std::convertible_to<typename impl::UnionHash<Self>::type, size_t>
+    )
 struct __hash__<Self> : Returns<size_t> {
     static size_t operator()(Self self) {
         return impl::UnionHash<Self>{}(
@@ -3342,7 +2592,11 @@ struct __hash__<Self> : Returns<size_t> {
 };
 
 
-template <impl::py_union Self> requires (impl::UnionLen<Self>::enable)
+template <impl::py_union Self>
+    requires (
+        impl::UnionLen<Self>::enable &&
+        std::convertible_to<typename impl::UnionLen<Self>::type, size_t>
+    )
 struct __len__<Self> : Returns<size_t> {
     static size_t operator()(Self self) {
         return impl::UnionLen<Self>{}(
@@ -3361,7 +2615,11 @@ struct __len__<Self> : Returns<size_t> {
 };
 
 
-template <impl::py_union Self, typename Key> requires (impl::UnionContains<Self, Key>::enable)
+template <impl::py_union Self, typename Key>
+    requires (
+        impl::UnionContains<Self, Key>::enable &&
+        std::convertible_to<typename impl::UnionContains<Self, Key>::type, bool>
+    )
 struct __contains__<Self, Key> : Returns<bool> {
     static bool operator()(Self self, Key key) {
         return impl::UnionContains<Self, Key>{}(
@@ -3477,14 +2735,14 @@ struct __neg__<Self> : Returns<typename impl::UnionNeg<Self>::type> {
 
 
 template <impl::py_union Self> requires (impl::UnionIncrement<Self>::enable)
-struct __increment__<Self> : Returns<Self> {
+struct __increment__<Self> : Returns<typename impl::UnionIncrement<Self>::type> {
     using type = impl::UnionIncrement<Self>::type;
     static type operator()(Self self) {
         return impl::UnionIncrement<Self>{}(
-            []<typename S>(S&& self) -> void {
-                ++std::forward<S>(self);
+            []<typename S>(S&& self) -> type {
+                return ++std::forward<S>(self);
             },
-            []<typename S>(S&& self) -> void {
+            []<typename S>(S&& self) -> type {
                 throw TypeError(
                     "'" + impl::demangle(typeid(S).name()) + "' object cannot be "
                     "incremented"
@@ -3497,14 +2755,14 @@ struct __increment__<Self> : Returns<Self> {
 
 
 template <impl::py_union Self> requires (impl::UnionDecrement<Self>::enable)
-struct __decrement__<Self> : Returns<Self> {
+struct __decrement__<Self> : Returns<typename impl::UnionDecrement<Self>::type> {
     using type = impl::UnionDecrement<Self>::type;
     static type operator()(Self self) {
         return impl::UnionDecrement<Self>{}(
-            []<typename S>(S&& self) -> void {
-                --std::forward<S>(self);
+            []<typename S>(S&& self) -> type {
+                return --std::forward<S>(self);
             },
-            []<typename S>(S&& self) -> void {
+            []<typename S>(S&& self) -> type {
                 throw TypeError(
                     "'" + impl::demangle(typeid(S).name()) + "' object cannot be "
                     "decremented"
@@ -3714,23 +2972,46 @@ struct __mul__<L, R> : Returns<typename impl::UnionMul<L, R>::type> {
 };
 
 
-template <typename L, typename R> requires (impl::UnionPow<L, R>::enable)
-struct __pow__<L, R> : Returns<typename impl::UnionPow<L, R>::type> {
-    using type = impl::UnionPow<L, R>::type;
-    static type operator()(L lhs, R rhs) {
-        return impl::UnionPow<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
-                return pow(std::forward<L2>(lhs), std::forward<R2>(rhs));
+template <typename Base, typename Exp, typename Mod>
+    requires (impl::UnionPow<Base, Exp, Mod>::enable)
+struct __pow__<Base, Exp, Mod> : Returns<typename impl::UnionPow<Base, Exp, Mod>::type> {
+    using type = impl::UnionPow<Base, Exp, Mod>::type;
+    static type operator()(Base base, Exp exp) {
+        return impl::UnionPow<Base, Exp, Mod>{}(
+            []<typename B, typename E>(B&& base, E&& exp) -> type {
+                return pow(std::forward<B>(base), std::forward<E>(exp));
             },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+            []<typename B, typename E>(B&& base, E&& exp) -> type {
                 throw TypeError(
-                    "unsupported operand types for **: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
+                    "unsupported operand types for pow(): '" +
+                    impl::demangle(typeid(B).name()) + "' and '" +
+                    impl::demangle(typeid(E).name()) + "'"
                 );
             },
-            std::forward<L>(lhs),
-            std::forward<R>(rhs)
+            std::forward<Base>(base),
+            std::forward<Exp>(exp)
+        );
+    }
+    static type operator()(Base base, Exp exp, Mod mod) {
+        return impl::UnionPow<Base, Exp, Mod>{}(
+            []<typename B, typename E, typename M>(B&& base, E&& exp, M&& mod) -> type {
+                return pow(
+                    std::forward<B>(base),
+                    std::forward<E>(exp),
+                    std::forward<M>(mod)
+                );
+            },
+            []<typename B, typename E, typename M>(B&& base, E&& exp, M&& mod) -> type {
+                throw TypeError(
+                    "unsupported operand types for pow(): '" +
+                    impl::demangle(typeid(B).name()) + "' and '" +
+                    impl::demangle(typeid(E).name()) + "' and '" +
+                    impl::demangle(typeid(M).name()) + "'"
+                );
+            },
+            std::forward<Base>(base),
+            std::forward<Exp>(exp),
+            std::forward<Mod>(mod)
         );
     }
 };
@@ -3913,13 +3194,14 @@ struct __or__<L, R> : Returns<typename impl::UnionOr<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionInplaceAdd<L, R>::enable)
-struct __iadd__<L, R> : Returns<L> {
-    static L operator()(L lhs, R rhs) {
+struct __iadd__<L, R> : Returns<typename impl::UnionInplaceAdd<L, R>::type> {
+    using type = impl::UnionInplaceAdd<L, R>::type;
+    static type operator()(L lhs, R rhs) {
         return impl::UnionInplaceAdd<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
-                std::forward<L2>(lhs) += std::forward<R2>(rhs);
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                return std::forward<L2>(lhs) += std::forward<R2>(rhs);
             },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
                 throw TypeError(
                     "unsupported operand types for +=: '" +
                     impl::demangle(typeid(L2).name()) + "' and '" +
@@ -3934,13 +3216,14 @@ struct __iadd__<L, R> : Returns<L> {
 
 
 template <typename L, typename R> requires (impl::UnionInplaceSub<L, R>::enable)
-struct __isub__<L, R> : Returns<L> {
-    static L operator()(L lhs, R rhs) {
+struct __isub__<L, R> : Returns<typename impl::UnionInplaceSub<L, R>::type> {
+    using type = impl::UnionInplaceSub<L, R>::type;
+    static type operator()(L lhs, R rhs) {
         return impl::UnionInplaceSub<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
-                std::forward<L2>(lhs) -= std::forward<R2>(rhs);
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                return std::forward<L2>(lhs) -= std::forward<R2>(rhs);
             },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
                 throw TypeError(
                     "unsupported operand types for -=: '" +
                     impl::demangle(typeid(L2).name()) + "' and '" +
@@ -3955,13 +3238,14 @@ struct __isub__<L, R> : Returns<L> {
 
 
 template <typename L, typename R> requires (impl::UnionInplaceMul<L, R>::enable)
-struct __imul__<L, R> : Returns<L> {
-    static L operator()(L lhs, R rhs) {
+struct __imul__<L, R> : Returns<typename impl::UnionInplaceMul<L, R>::type> {
+    using type = impl::UnionInplaceMul<L, R>::type;
+    static type operator()(L lhs, R rhs) {
         return impl::UnionInplaceMul<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
-                std::forward<L2>(lhs) *= std::forward<R2>(rhs);
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                return std::forward<L2>(lhs) *= std::forward<R2>(rhs);
             },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
                 throw TypeError(
                     "unsupported operand types for *=: '" +
                     impl::demangle(typeid(L2).name()) + "' and '" +
@@ -3975,35 +3259,60 @@ struct __imul__<L, R> : Returns<L> {
 };
 
 
-template <typename L, typename R> requires (impl::UnionInplacePow<L, R>::enable)
-struct __ipow__<L, R> : Returns<L> {
-    static L operator()(L lhs, R rhs) {
-        return impl::UnionInplacePow<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
-                ipow(std::forward<L2>(lhs), std::forward<R2>(rhs));
+template <typename Base, typename Exp, typename Mod>
+    requires (impl::UnionInplacePow<Base, Exp, Mod>::enable)
+struct __ipow__<Base, Exp, Mod> : Returns<typename impl::UnionInplacePow<Base, Exp, Mod>::type> {
+    using type = impl::UnionInplacePow<Base, Exp, Mod>::type;
+    static type operator()(Base base, Exp exp) {
+        return impl::UnionInplacePow<Base, Exp, Mod>{}(
+            []<typename B, typename E>(B&& base, E&& exp) -> type {
+                return ipow(std::forward<B>(base), std::forward<E>(exp));
             },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
+            []<typename B, typename E>(B&& base, E&& exp) -> type {
                 throw TypeError(
                     "unsupported operand types for **=: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
+                    impl::demangle(typeid(B).name()) + "' and '" +
+                    impl::demangle(typeid(E).name()) + "'"
                 );
             },
-            std::forward<L>(lhs),
-            std::forward<R>(rhs)
+            std::forward<Base>(base),
+            std::forward<Exp>(exp)
+        );
+    }
+    static type operator()(Base base, Exp exp, Mod mod) {
+        return impl::UnionInplacePow<Base, Exp, Mod>{}(
+            []<typename B, typename E, typename M>(B&& base, E&& exp, M&& mod) -> type {
+                return ipow(
+                    std::forward<B>(base),
+                    std::forward<E>(exp),
+                    std::forward<M>(mod)
+                );
+            },
+            []<typename B, typename E, typename M>(B&& base, E&& exp, M&& mod) -> type {
+                throw TypeError(
+                    "unsupported operand types for **=: '" +
+                    impl::demangle(typeid(B).name()) + "' and '" +
+                    impl::demangle(typeid(E).name()) + "' and '" +
+                    impl::demangle(typeid(M).name()) + "'"
+                );
+            },
+            std::forward<Base>(base),
+            std::forward<Exp>(exp),
+            std::forward<Mod>(mod)
         );
     }
 };
 
 
 template <typename L, typename R> requires (impl::UnionInplaceTrueDiv<L, R>::enable)
-struct __itruediv__<L, R> : Returns<L> {
-    static L operator()(L lhs, R rhs) {
+struct __itruediv__<L, R> : Returns<typename impl::UnionInplaceTrueDiv<L, R>::type> {
+    using type = impl::UnionInplaceTrueDiv<L, R>::type;
+    static type operator()(L lhs, R rhs) {
         return impl::UnionInplaceTrueDiv<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
-                std::forward<L2>(lhs) /= std::forward<R2>(rhs);
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                return std::forward<L2>(lhs) /= std::forward<R2>(rhs);
             },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
                 throw TypeError(
                     "unsupported operand types for /=: '" +
                     impl::demangle(typeid(L2).name()) + "' and '" +
@@ -4018,13 +3327,14 @@ struct __itruediv__<L, R> : Returns<L> {
 
 
 template <typename L, typename R> requires (impl::UnionInplaceFloorDiv<L, R>::enable)
-struct __ifloordiv__<L, R> : Returns<L> {
-    static L operator()(L lhs, R rhs) {
+struct __ifloordiv__<L, R> : Returns<typename impl::UnionInplaceFloorDiv<L, R>::type> {
+    using type = impl::UnionInplaceFloorDiv<L, R>::type;
+    static type operator()(L lhs, R rhs) {
         return impl::UnionInplaceFloorDiv<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
-                ifloordiv(std::forward<L2>(lhs), std::forward<R2>(rhs));
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                return ifloordiv(std::forward<L2>(lhs), std::forward<R2>(rhs));
             },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
                 throw TypeError(
                     "unsupported operand types for //=: '" +
                     impl::demangle(typeid(L2).name()) + "' and '" +
@@ -4039,13 +3349,14 @@ struct __ifloordiv__<L, R> : Returns<L> {
 
 
 template <typename L, typename R> requires (impl::UnionInplaceMod<L, R>::enable)
-struct __imod__<L, R> : Returns<L> {
-    static L operator()(L lhs, R rhs) {
+struct __imod__<L, R> : Returns<typename impl::UnionInplaceMod<L, R>::type> {
+    using type = impl::UnionInplaceMod<L, R>::type;
+    static type operator()(L lhs, R rhs) {
         return impl::UnionInplaceMod<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
-                std::forward<L2>(lhs) %= std::forward<R2>(rhs);
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                return std::forward<L2>(lhs) %= std::forward<R2>(rhs);
             },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
                 throw TypeError(
                     "unsupported operand types for %=: '" +
                     impl::demangle(typeid(L2).name()) + "' and '" +
@@ -4060,13 +3371,14 @@ struct __imod__<L, R> : Returns<L> {
 
 
 template <typename L, typename R> requires (impl::UnionInplaceLShift<L, R>::enable)
-struct __ilshift__<L, R> : Returns<L> {
-    static L operator()(L lhs, R rhs) {
+struct __ilshift__<L, R> : Returns<typename impl::UnionInplaceLShift<L, R>::type> {
+    using type = impl::UnionInplaceLShift<L, R>::type;
+    static type operator()(L lhs, R rhs) {
         return impl::UnionInplaceLShift<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
-                std::forward<L2>(lhs) <<= std::forward<R2>(rhs);
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                return std::forward<L2>(lhs) <<= std::forward<R2>(rhs);
             },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
                 throw TypeError(
                     "unsupported operand types for <<=: '" +
                     impl::demangle(typeid(L2).name()) + "' and '" +
@@ -4081,13 +3393,14 @@ struct __ilshift__<L, R> : Returns<L> {
 
 
 template <typename L, typename R> requires (impl::UnionInplaceRShift<L, R>::enable)
-struct __irshift__<L, R> : Returns<L> {
+struct __irshift__<L, R> : Returns<typename impl::UnionInplaceRShift<L, R>::type> {
+    using type = impl::UnionInplaceRShift<L, R>::type;
     static L operator()(L lhs, R rhs) {
         return impl::UnionInplaceRShift<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
-                std::forward<L2>(lhs) >>= std::forward<R2>(rhs);
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                return std::forward<L2>(lhs) >>= std::forward<R2>(rhs);
             },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
                 throw TypeError(
                     "unsupported operand types for >>=: '" +
                     impl::demangle(typeid(L2).name()) + "' and '" +
@@ -4102,13 +3415,14 @@ struct __irshift__<L, R> : Returns<L> {
 
 
 template <typename L, typename R> requires (impl::UnionInplaceAnd<L, R>::enable)
-struct __iand__<L, R> : Returns<L> {
-    static L operator()(L lhs, R rhs) {
+struct __iand__<L, R> : Returns<typename impl::UnionInplaceAnd<L, R>::type> {
+    using type = impl::UnionInplaceAnd<L, R>::type;
+    static type operator()(L lhs, R rhs) {
         return impl::UnionInplaceAnd<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
-                std::forward<L2>(lhs) &= std::forward<R2>(rhs);
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                return std::forward<L2>(lhs) &= std::forward<R2>(rhs);
             },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
                 throw TypeError(
                     "unsupported operand types for &: '" +
                     impl::demangle(typeid(L2).name()) + "' and '" +
@@ -4123,13 +3437,14 @@ struct __iand__<L, R> : Returns<L> {
 
 
 template <typename L, typename R> requires (impl::UnionInplaceXor<L, R>::enable)
-struct __ixor__<L, R> : Returns<L> {
-    static L operator()(L lhs, R rhs) {
+struct __ixor__<L, R> : Returns<typename impl::UnionInplaceXor<L, R>::type> {
+    using type = impl::UnionInplaceXor<L, R>::type;
+    static type operator()(L lhs, R rhs) {
         return impl::UnionInplaceXor<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
-                std::forward<L2>(lhs) ^= std::forward<R2>(rhs);
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                return std::forward<L2>(lhs) ^= std::forward<R2>(rhs);
             },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
                 throw TypeError(
                     "unsupported operand types for ^: '" +
                     impl::demangle(typeid(L2).name()) + "' and '" +
@@ -4144,13 +3459,14 @@ struct __ixor__<L, R> : Returns<L> {
 
 
 template <typename L, typename R> requires (impl::UnionInplaceOr<L, R>::enable)
-struct __ior__<L, R> : Returns<L> {
-    static L operator()(L lhs, R rhs) {
+struct __ior__<L, R> : Returns<typename impl::UnionInplaceOr<L, R>::type> {
+    using type = impl::UnionInplaceOr<L, R>::type;
+    static type operator()(L lhs, R rhs) {
         return impl::UnionInplaceOr<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
-                std::forward<L2>(lhs) |= std::forward<R2>(rhs);
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                return std::forward<L2>(lhs) |= std::forward<R2>(rhs);
             },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> void {
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
                 throw TypeError(
                     "unsupported operand types for |: '" +
                     impl::demangle(typeid(L2).name()) + "' and '" +

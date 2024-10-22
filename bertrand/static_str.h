@@ -18,13 +18,24 @@
 namespace bertrand {
 
 
+template <size_t N>
+struct StaticStr;
+
+
+/* CTAD deduction guide that allows StaticStr to be built from string literals using
+compile-time aggregate initializatiion. */
+template <size_t N>
+StaticStr(const char(&arr)[N]) -> StaticStr<N - 1>;
+
+
 /* C++20 expands support for non-type template parameters, including compile-time
 strings.  This helper class allows ASCII string literals to be encoded directly as
 template parameters, and for them to be manipulated entirely at compile-time using
 the familiar Python string interface.  Furthermore, templates can be specialized based
 on these strings, allowing for full compile-time flexibility based on their values. */
 template <size_t N>
-class StaticStr {
+struct StaticStr {
+private:
 
     template <size_t M>
     friend class StaticStr;
@@ -511,12 +522,6 @@ public:
     }
 
 };
-
-
-/* CTAD deduction guide that allows StaticStr to be built from string literals using
-compile-time aggregate initializatiion. */
-template <size_t N>
-StaticStr(const char(&arr)[N]) -> StaticStr<N-1>;
 
 
 /* Compile-time string manipulations must be defined as free functions in order to
