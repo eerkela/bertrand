@@ -108,12 +108,10 @@ namespace impl {
         #endif
     }
 
-    template <size_t I, typename... Ts>
-    static void unpack_arg(Ts&&...) {
-        static_assert(false, "index out of range for parameter pack");
-    }
+    template <size_t I, typename... Ts> requires (I < sizeof...(Ts))
+    static void unpack_arg(Ts&&...) {}
 
-    template <size_t I, typename T, typename... Ts>
+    template <size_t I, typename T, typename... Ts> requires (I < (sizeof...(Ts) + 1))
     static decltype(auto) unpack_arg(T&& curr, Ts&&... next) {
         if constexpr (I == 0) {
             return std::forward<T>(curr);
@@ -310,8 +308,8 @@ namespace impl {
         template <is_pack T>
         using concat = _concat<T>::type;
 
-        // /* Get a pack of packs containing all unique permutations of the types in this
-        // parameter pack and all others, returning their Cartesian product.  */
+        /* Get a pack of packs containing all unique permutations of the types in this
+        parameter pack and all others, returning their Cartesian product.  */
         template <is_pack... Packs> requires (n > 0 && ((Packs::n > 0) && ...))
         using product = _product<Packs...>::type;
 
@@ -336,68 +334,60 @@ namespace impl {
         }
     };
 
-
-
-    template <is_pack First, is_pack... Packs>
-        requires (First::n > 0 && ((Packs::n > 0) && ...))
-    struct _CartesianProduct {
-    private:
-
-        /* First pack gets expanded into a pack of packs of length 1 to initialize
-        recursion. */
-        template <typename>
-        struct nest;
-        template <typename... Ts>
-        struct nest<Pack<Ts...>> { using type = Pack<Pack<Ts>...>; };
-
-        /* permute<> iterates from left to right along the packs, starting with the
-        nested first pack. */
-        template <typename permuted, typename...>
-        struct permute { using type = permuted; };
-        template <typename... permuted, typename... types, typename... rest>
-        struct permute<Pack<permuted...>, Pack<types...>, rest...> {
-
-            /* accumulate<> iterates over the prior premutations and updates them with
-            the types at this index. */
-            template <typename accumulated, typename...>
-            struct accumulate { using type = accumulated; };
-            template <typename... accumulated, typename permutation, typename... others>
-            struct accumulate<Pack<accumulated...>, permutation, others...> {
-
-                /* append<> iterates from top to bottom for each type. */
-                template <typename appended, typename...>
-                struct append { using type = appended; };
-                template <typename... appended, typename T, typename... Ts>
-                struct append<Pack<appended...>, T, Ts...> {
-                    using type = append<
-                        Pack<appended..., typename permutation::template append<T>>,
-                        Ts...
-                    >::type;
-                };
-
-                /* append<> extends the accumulated output at this index. */
-                using type = accumulate<
-                    typename append<Pack<accumulated...>, types...>::type,
-                    others...
-                >::type;
-            };
-
-            /* accumulate<> has to rebuild the output pack at each iteration. */
-            using type = permute<
-                typename accumulate<Pack<>, permuted...>::type,
-                rest...
-            >::type;
-        };
-
-    public:
-        using type = permute<typename nest<First>::type, Packs...>::type;
-    };
-
-    /* Get a flat list of permutations for all the types in the given parameter packs,
-    returning their cartesian product. */
-    template <is_pack First, is_pack... Packs>
-        requires (First::n > 0 && ((Packs::n > 0) && ...))
-    using CartesianProduct = _CartesianProduct<First, Packs...>::type;
+    template <typename T, typename Self>
+    struct _qualify { using type = T; };
+    template <typename T, typename Self>
+    struct _qualify<T, const Self> { using type = const T; };
+    template <typename T, typename Self>
+    struct _qualify<T, volatile Self> { using type = volatile T; };
+    template <typename T, typename Self>
+    struct _qualify<T, const volatile Self> { using type = const volatile T; };
+    template <typename T, typename Self>
+    struct _qualify<T, Self&> { using type = T&; };
+    template <typename T, typename Self>
+    struct _qualify<T, const Self&> { using type = const T&; };
+    template <typename T, typename Self>
+    struct _qualify<T, volatile Self&> { using type = volatile T&; };
+    template <typename T, typename Self>
+    struct _qualify<T, const volatile Self&> { using type = const volatile T&; };
+    template <typename T, typename Self>
+    struct _qualify<T, Self&&> { using type = T&&; };
+    template <typename T, typename Self>
+    struct _qualify<T, const Self&&> { using type = const T&&; };
+    template <typename T, typename Self>
+    struct _qualify<T, volatile Self&&> { using type = volatile T&&; };
+    template <typename T, typename Self>
+    struct _qualify<T, const volatile Self&&> { using type = const volatile T&&; };
+    template <typename Self>
+    struct _qualify<void, Self> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, const Self> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, volatile Self> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, const volatile Self> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, Self&> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, const Self&> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, volatile Self&> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, const volatile Self&> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, Self&&> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, const Self&&> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, volatile Self&&> { using type = void; };
+    template <typename Self>
+    struct _qualify<void, const volatile Self&&> { using type = void; };
+    template <typename T, typename Self>
+    using qualify = _qualify<T, Self>::type;
+    template <typename T, typename Self>
+    using qualify_lvalue = std::add_lvalue_reference_t<qualify<T, Self>>;
+    template <typename T, typename Self>
+    using qualify_pointer = std::add_pointer_t<std::remove_reference_t<qualify<T, Self>>>;
 
     /* Merge several hashes into a single value.  Based on `boost::hash_combine()`:
     https://www.boost.org/doc/libs/1_86_0/libs/container_hash/doc/html/hash.html#notes_hash_combine */
@@ -2749,61 +2739,6 @@ namespace impl {
     template <typename T, typename... Ts>
     constexpr bool types_are_unique<T, Ts...> =
         !(std::same_as<T, Ts> || ...) && types_are_unique<Ts...>;
-
-    template <typename T, typename Self>
-    struct _qualify { using type = T; };
-    template <typename T, typename Self>
-    struct _qualify<T, const Self> { using type = const T; };
-    template <typename T, typename Self>
-    struct _qualify<T, volatile Self> { using type = volatile T; };
-    template <typename T, typename Self>
-    struct _qualify<T, const volatile Self> { using type = const volatile T; };
-    template <typename T, typename Self>
-    struct _qualify<T, Self&> { using type = T&; };
-    template <typename T, typename Self>
-    struct _qualify<T, const Self&> { using type = const T&; };
-    template <typename T, typename Self>
-    struct _qualify<T, volatile Self&> { using type = volatile T&; };
-    template <typename T, typename Self>
-    struct _qualify<T, const volatile Self&> { using type = const volatile T&; };
-    template <typename T, typename Self>
-    struct _qualify<T, Self&&> { using type = T&&; };
-    template <typename T, typename Self>
-    struct _qualify<T, const Self&&> { using type = const T&&; };
-    template <typename T, typename Self>
-    struct _qualify<T, volatile Self&&> { using type = volatile T&&; };
-    template <typename T, typename Self>
-    struct _qualify<T, const volatile Self&&> { using type = const volatile T&&; };
-    template <typename Self>
-    struct _qualify<void, Self> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, const Self> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, volatile Self> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, const volatile Self> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, Self&> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, const Self&> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, volatile Self&> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, const volatile Self&> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, Self&&> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, const Self&&> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, volatile Self&&> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, const volatile Self&&> { using type = void; };
-    template <typename T, typename Self>
-    using qualify = _qualify<T, Self>::type;
-    template <typename T, typename Self>
-    using qualify_lvalue = std::add_lvalue_reference_t<qualify<T, Self>>;
-    template <typename T, typename Self>
-    using qualify_pointer = std::add_pointer_t<std::remove_reference_t<qualify<T, Self>>>;
 
     template <typename T, typename = void>
     constexpr bool has_interface_helper = false;
