@@ -152,6 +152,9 @@ namespace impl {
     template <size_t I, typename... Ts>
     using unpack_type = _unpack_type<I, Ts...>::type;
 
+    /// TODO: if any Ts... are void, then recursive inheritance should not be used,
+    /// and the pack should not be constructible
+
     template <typename... Ts>
     struct PackBase {};
     template <typename T, typename... Ts>
@@ -165,6 +168,9 @@ namespace impl {
             PackBase<Ts...>(std::forward<Ts>(ts)...), value(std::forward<T>(value))
         {}
     };
+    template <typename T, typename... Ts>
+        requires (std::is_void_v<T> || (std::is_void_v<Ts> || ...))
+    struct PackBase<T, Ts...> {};
 
     /* A generic container for an arbitrary set of types, capable of storing references
     and perfectly forwarding them to a consuming function, without any extra
@@ -322,11 +328,22 @@ namespace impl {
         copy/move. */
         using deduplicate = _deduplicate<unique>::type;
 
-        Pack(Ts... ts) : PackBase<Ts...>(std::forward<Ts>(ts)...) {}
+        template <std::same_as<Ts>... Us>
+        Pack(Us... args) : PackBase<Ts...>(std::forward<Us>(args)...) {}
+
+        Pack() = delete;
+        Pack(const Pack&) = delete;
+        Pack(Pack&&) = delete;
+        Pack& operator=(const Pack&) = delete;
+        Pack& operator=(Pack&&) = delete;
 
         /* Calling a pack as an rvalue will perfectly forward the input arguments to an
         input function that is templated to accept them. */
-        template <typename Func> requires (std::is_invocable_v<Func, Ts...>)
+        template <typename Func>
+            requires (
+                !(std::is_void_v<Ts> || ...) &&
+                std::is_invocable_v<Func, Ts...>
+            )
         decltype(auto) operator()(Func&& func) && {
             return [&]<size_t... Is>(std::index_sequence<Is...>) {
                 return func(forward<Is>()...);
