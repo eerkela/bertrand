@@ -328,7 +328,7 @@ namespace impl {
         copy/move. */
         using deduplicate = _deduplicate<unique>::type;
 
-        template <std::same_as<Ts>... Us>
+        template <std::convertible_to<Ts>... Us>
         Pack(Us... args) : PackBase<Ts...>(std::forward<Us>(args)...) {}
 
         Pack() = delete;

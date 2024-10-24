@@ -46,6 +46,84 @@ namespace impl {
     template <typename T>
     concept py_union = _py_union<std::remove_cvref_t<T>>;
 
+    /* Converting a pack to a union involves converting all C++ types to their Python
+    equivalents, then deduplicating the results.  If the final pack contains only a
+    single type, then that type is returned directly, rather than instantiating a new
+    Union. */
+    template <typename>
+    struct to_union;
+    template <has_python... Matches>
+    struct to_union<Pack<Matches...>> {
+        template <typename pack>
+        struct convert {
+            template <typename T>
+            struct ToPython { using type = python_type<T>; };
+            template <>
+            struct ToPython<void> { using type = NoneType; };
+            template <typename>
+            struct helper;
+            template <typename... Unique>
+            struct helper<Pack<Unique...>> {
+                using type = Union<std::remove_cvref_t<Unique>...>;
+            };
+            using type = helper<
+                typename Pack<typename ToPython<Matches>::type...>::deduplicate
+            >::type;
+        };
+        template <typename Match>
+        struct convert<Pack<Match>> { using type = Match; };
+        using type = convert<typename Pack<Matches...>::deduplicate>::type;
+    };
+
+    /* Allow implicit conversion from the union type if and only if all of its
+    qualified members are convertible to that type. */
+    template <py_union U>
+    struct UnionToType {
+        template <typename>
+        struct convertible;
+        template <typename... Types>
+        struct convertible<Union<Types...>> {
+            template <typename Out>
+            static constexpr bool convert =
+                (std::convertible_to<qualify<Types, U>, Out> && ...);
+        };
+        template <typename Out>
+        static constexpr bool convert = convertible<std::remove_cvref_t<U>>::convert;
+    };
+
+    /* Allow implicit conversion from a std::variant if and only if all members have
+    equivalent Python types, and those types are convertible to the expected members of
+    the union. */
+    template <is_variant V>
+    struct VariantToUnion {
+        template <typename>
+        struct convertible {
+            static constexpr bool enable = false;
+            using type = void;
+            template <typename...>
+            static constexpr bool convert = false;
+        };
+        template <has_python... Types>
+        struct convertible<std::variant<Types...>> {
+            static constexpr bool enable = true;
+            using type = to_union<Pack<python_type<Types>...>>::type;
+            template <typename, typename... Ts>
+            static constexpr bool _convert = true;
+            template <typename... To, typename T, typename... Ts>
+            static constexpr bool _convert<Pack<To...>, T, Ts...> =
+                (std::convertible_to<qualify<T, V>, To> || ...) &&
+                _convert<Pack<To...>, Ts...>;
+            template <typename... Ts>
+            static constexpr bool convert = _convert<Pack<Types...>, Ts...>;
+        };
+        static constexpr bool enable = convertible<std::remove_cvref_t<V>>::enable;
+        using type = convertible<std::remove_cvref_t<V>>::type;
+        template <typename... Ts>
+        static constexpr bool convert = convertible<
+            std::remove_cvref_t<V>
+        >::template convert<Ts...>;
+    };
+
     /* Raw types are converted to a pack of length 1. */
     template <typename T>
     struct UnionTraits {
@@ -68,63 +146,6 @@ namespace impl {
     public:
         using type = T;
         using pack = _pack<std::remove_cvref_t<T>>::type;
-    };
-
-    /// TODO: std::variant and std::optional should not be handled here.  Only py::Union.
-    /// The std::variant conversion logic should be handled in the conversion operator
-    /// directly, not here.
-
-    /* Variants are treated like unions. */
-    template <is_variant T>
-    struct UnionTraits<T> {
-    private:
-
-        template <typename>
-        struct _pack;
-        template <typename... Types>
-        struct _pack<std::variant<Types...>> {
-            using type = Pack<Types...>;
-        };
-
-    public:
-        using type = T;
-        using pack = _pack<std::remove_cvref_t<T>>::type;
-    };
-
-    /* Optionals are treated as variants with std::nullopt_t. */
-    template <is_optional T>
-    struct UnionTraits<T> {
-        using type = T;
-        using pack = Pack<impl::optional_type<T>, std::nullopt_t>;
-    };
-
-    /* Converting a pack to a union involves converting all C++ types to their Python
-    equivalents, then deduplicating the results.  If the final pack contains only a
-    single type, then that type is returned directly, rather than instantiating a new
-    Union. */
-    template <typename>
-    struct to_union;
-    template <typename... Matches>
-    struct to_union<Pack<Matches...>> {
-        template <typename pack>
-        struct convert {
-            template <typename T>
-            struct ToPython { using type = python_type<T>; };
-            template <>
-            struct ToPython<void> { using type = NoneType; };
-            template <typename>
-            struct helper;
-            template <typename... Unique>
-            struct helper<Pack<Unique...>> {
-                using type = Union<std::remove_cvref_t<Unique>...>;
-            };
-            using type = helper<
-                typename Pack<typename ToPython<Matches>::type...>::deduplicate
-            >::type;
-        };
-        template <typename Match>
-        struct convert<Pack<Match>> { using type = Match; };
-        using type = convert<typename Pack<Matches...>::deduplicate>::type;
     };
 
     /* A generalized operator factory that uses template metaprogramming to evaluate a
@@ -491,47 +512,6 @@ namespace impl {
         static constexpr bool match<Union<Types...>> = true;
         static constexpr bool enable = match<std::remove_cvref_t<Self>>;
         using type = void;
-    };
-
-
-
-    /// TODO: converting std::variant to py::Union may need to account for duplicate
-    /// types and cv qualifiers and convert everything accordingly.  Perhaps this can
-    /// also demote variants to singular Python types if they all resolve to the
-    /// same type
-    template <typename T>
-    struct VariantToUnion { static constexpr bool enable = false; };
-    template <std::convertible_to<Object>... Ts>
-    struct VariantToUnion<std::variant<Ts...>> {
-        static constexpr bool enable = true;
-        using type = Union<std::remove_cv_t<python_type<Ts>>...>;
-
-        template <size_t I, typename... Us>
-        static constexpr bool _convertible_to = true;
-        template <size_t I, typename... Us> requires (I < sizeof...(Ts))
-        static constexpr bool _convertible_to<I, Us...> =
-            (std::convertible_to<impl::unpack_type<I, Ts...>, Us> || ...) &&
-            _convertible_to<I + 1, Us...>;
-
-        template <typename... Us>
-        static constexpr bool convertible_to = _convertible_to<0, Us...>;
-    };
-
-    template <typename T>
-    struct UnionToType { static constexpr bool enable = false; };
-    template <typename... Types>
-    struct UnionToType<Union<Types...>> {
-        static constexpr bool enable = true;
-
-        template <typename Out, typename... Ts>
-        static constexpr bool _convertible_to = true;
-        template <typename Out, typename T, typename... Ts>
-        static constexpr bool _convertible_to<Out, T, Ts...> =
-            std::convertible_to<T, Out> &&
-            _convertible_to<Out, Ts...>;
-
-        template <typename Out>
-        static constexpr bool convertible_to = _convertible_to<Out, Types...>;
     };
 
 }
@@ -1787,6 +1767,9 @@ struct __template__<Union<Ts...>>                           : Returns<Object> {
 
 /// TODO: __explicit_cast__ for union types?
 
+/// TODO: review constructors and incorporate a forwarding `__explicit_cast__` for
+/// union types.  Then figure out typechecks.
+
 
 /* Initializer list constructor is only enabled for `Optional<T>`, and not for any
 other form of union, where such a call might be ambiguous. */
@@ -1877,10 +1860,7 @@ convertible.  This covers conversions to `std::variant` provided all types are
 accounted for, as well as to `std::optional` and pointer types whereby `NoneType` is
 convertible to `std::nullopt` and `nullptr`, respectively. */
 template <impl::py_union From, typename To>
-    requires (
-        !impl::py_union<To> &&
-        impl::UnionToType<std::remove_cvref_t<From>>::template convertible_to<To>
-    )
+    requires (!impl::py_union<To> && impl::UnionToType<From>::template convert<To>)
 struct __cast__<From, To>                                   : Returns<To> {
     template <typename>
     struct context {};
@@ -1916,10 +1896,12 @@ template <impl::is_optional T> requires (impl::has_python<impl::optional_type<T>
 struct __cast__<T> : Returns<
     Optional<impl::python_type<std::remove_cv_t<impl::optional_type<T>>>>
 > {};
-template <impl::has_python T> requires (impl::python<T> || std::same_as<
-    std::remove_cv_t<T>,
-    impl::cpp_type<impl::python_type<std::remove_cv_t<T>>>
->)
+template <impl::has_python T> requires (impl::python<T> || (
+    impl::has_cpp<impl::python_type<T>> && std::same_as<
+        std::remove_cv_t<T>,
+        impl::cpp_type<impl::python_type<std::remove_cv_t<T>>>
+    >
+))
 struct __cast__<T*> : Returns<
     Optional<impl::python_type<std::remove_cv_t<T>>>
 > {};
@@ -1933,25 +1915,32 @@ struct __cast__<T> : Returns<
 > {};
 
 
+template <impl::is_variant From, std::derived_from<Object> To>
+    requires (impl::VariantToUnion<From>::template convert<To>)
+struct __cast__<From, To>                                   : Returns<To> {
+    static To operator()(From value) {
+        return std::visit(
+            []<typename T>(T&& value) -> To {
+                return std::forward<T>(value);
+            },
+            std::forward<From>(value)
+        );
+    }
+};
+
+
 template <impl::is_variant From, typename... Ts>
-    requires (impl::VariantToUnion<From>::template convertible_to<Ts...>)
+    requires (impl::VariantToUnion<From>::template convert<Ts...>)
 struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts...>> {
-    template <typename T>
-    struct convert {
-        static Union<Ts...> operator()(const T& value) {
-            return impl::construct<Union<Ts...>>(
-                impl::python_type<T>(value)
-            );
-        }
-        static Union<Ts...> operator()(T&& value) {
-            return impl::construct<Union<Ts...>>(
-                impl::python_type<T>(std::move(value))
-            );
-        }
-    };
-    struct Visitor : convert<Ts>... { using convert<Ts>::operator()...; };
     static Union<Ts...> operator()(From value) {
-        return std::visit(Visitor{}, std::forward<From>(value));
+        return std::visit(
+            []<typename T>(T&& value) -> Union<Ts...> {
+                return impl::construct<Union<Ts...>>(
+                    impl::python_type<T>(std::forward<T>(value))
+                );
+            },
+            std::forward<From>(value)
+        );
     }
 };
 
@@ -2174,7 +2163,7 @@ struct __setattr__<Self, Name, Value> : Returns<void> {
     template <typename... Types>
     struct call<Union<Types...>> {
         template <size_t I> requires (I < sizeof...(Types))
-        static void exec(Self self, Value&& value) {
+        static void exec(Self self, Value value) {
             using T = impl::qualify_lvalue<impl::unpack_type<I, Types...>, Self>;
             if constexpr (__setattr__<T, Name, Value>::enable) {
                 setattr<Name>(
@@ -2191,7 +2180,7 @@ struct __setattr__<Self, Name, Value> : Returns<void> {
     };
 
     template <size_t I>
-    static void exec(Self self, Value&& value) {
+    static void exec(Self self, Value value) {
         if (I == self->m_index) {
             call<std::remove_cvref_t<Self>>::template exec<I>(
                 std::forward<Self>(self),
@@ -2212,7 +2201,7 @@ struct __setattr__<Self, Name, Value> : Returns<void> {
         }
     }
 
-    static void operator()(Self self, Value&& value) {
+    static void operator()(Self self, Value value) {
         exec<0>(std::forward<Self>(self), std::forward<Value>(value));
     }
 };
@@ -2447,7 +2436,7 @@ struct __contains__<Self, Key> : Returns<bool> {
     static bool operator()(Self self, Key key) {
         return impl::UnionContains<Self, Key>{}(
             []<typename S, typename K>(S&& self, K&& key) -> bool {
-                return std::forward<S>(self).contains(std::forward<K>(key));
+                return in(std::forward<K>(key), std::forward<S>(self));
             },
             []<typename S, typename K>(S&& self, K&& key) -> bool {
                 throw TypeError(
