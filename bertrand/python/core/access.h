@@ -462,6 +462,36 @@ void del(impl::Item<Self, Key...>&& item) {
 }
 
 
+/* Explicitly convert a lazily-evaluated attribute or item wrapper into a normalized
+Object instance. */
+template <impl::inherits<Object> Self, impl::lazily_evaluated T>
+    requires (std::constructible_from<Self, impl::lazy_type<T>>)
+struct __init__<Self, T>                           : Returns<Self> {
+    static auto operator()(T&& value) {
+        if constexpr (std::is_lvalue_reference_v<T>) {
+            return Self(reinterpret_borrow<impl::lazy_type<T>>(ptr(value)));
+        } else {
+            return Self(reinterpret_steal<impl::lazy_type<T>>(release(value)));
+        }
+    }
+};
+
+
+/* Implicitly convert a lazily-evaluated attribute or item wrapper into a normalized
+Object instance. */
+template <impl::lazily_evaluated T, impl::inherits<Object> Self>
+    requires (std::convertible_to<impl::lazy_type<T>, Self>)
+struct __cast__<T, Self>                                    : Returns<Self> {
+    static Self operator()(T&& value) {
+        if constexpr (std::is_lvalue_reference_v<T>) {
+            return reinterpret_borrow<impl::lazy_type<T>>(ptr(value));
+        } else {
+            return reinterpret_steal<impl::lazy_type<T>>(release(value));
+        }
+    }
+};
+
+
 template <impl::lazily_evaluated From, typename To>
     requires (std::convertible_to<impl::lazy_type<From>, To>)
 struct __cast__<From, To>                                   : Returns<To> {

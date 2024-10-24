@@ -791,31 +791,11 @@ struct __init__<Object>                                     : Returns<Object> {
 };
 
 
-/* Explicitly convert a lazily-evaluated attribute or item wrapper into a normalized
-Object instance. */
-template <impl::inherits<Object> Self, impl::lazily_evaluated T>
-    requires (std::constructible_from<Self, impl::lazy_type<T>>)
-struct __init__<Self, T>                           : Returns<Self> {
-    static auto operator()(T&& value) {
-        if constexpr (std::is_lvalue_reference_v<T>) {
-            return Self(reinterpret_borrow<impl::lazy_type<T>>(ptr(value)));
-        } else {
-            return Self(reinterpret_steal<impl::lazy_type<T>>(release(value)));
-        }
-    }
-};
-
-
-/// NOTE: additional delegating constructors for objects using Python-level
-/// `__new__()`/`__init__()` are defined in core.h
-/// TODO: Are these extra constructors necessary, or is the default __init__ enough?
-
-
 /* Implicitly convert any C++ value into a py::Object by invoking the unary cast type,
 and then reinterpreting as a dynamic object. */
 template <impl::cpp T> requires (impl::has_python<T>)
 struct __cast__<T, Object>                                  : Returns<Object> {
-    static auto operator()(T&& value) {
+    static auto operator()(T value) {
         return reinterpret_steal<Object>(
             release(impl::python_type<T>(std::forward<T>(value)))
         );
@@ -823,40 +803,45 @@ struct __cast__<T, Object>                                  : Returns<Object> {
 };
 
 
-/* Implicitly convert a lazily-evaluated attribute or item wrapper into a normalized
-Object instance. */
-template <impl::lazily_evaluated T, impl::inherits<Object> Self>
-    requires (std::convertible_to<impl::lazy_type<T>, Self>)
-struct __cast__<T, Self>                                    : Returns<Self> {
-    static Self operator()(T&& value) {
-        if constexpr (std::is_lvalue_reference_v<T>) {
-            return reinterpret_borrow<impl::lazy_type<T>>(ptr(value));
-        } else {
-            return reinterpret_steal<impl::lazy_type<T>>(release(value));
-        }
-    }
-};
-
-
 /* Implicitly convert a Python object into one of its subclasses by applying a runtime
 `isinstance()` check. */
-template <impl::inherits<Object> From, impl::inherits<From> To>
+template <impl::inherits<Object> From, std::derived_from<From> To>
     requires (!impl::is<From, To>)
 struct __cast__<From, To>                                   : Returns<To> {
-    static auto operator()(From&& from);
+    static auto operator()(From from);
 };
 
 
 /* Implicitly convert a Python object into any recognized C++ type by checking for an
 equivalent Python type via __cast__, implicitly converting to that type, and then
 implicitly converting the result to the C++ type in a 2-step process. */
-template <impl::is<Object> From, impl::cpp To> requires (__cast__<To>::enable)
+template <impl::is<Object> From, impl::cpp To>
+    requires (
+        !std::is_reference_v<To> &&
+        !std::is_const_v<To> &&
+        !std::is_volatile_v<To> &&
+        __cast__<To>::enable
+    )
 struct __cast__<From, To>                                   : Returns<To> {
-    static auto operator()(From&& self) {
+    static auto operator()(From self) {
         using Intermediate = __cast__<To>::type;
         return impl::implicit_cast<To>(
             impl::implicit_cast<Intermediate>(std::forward<From>(self))
         );
+    }
+};
+
+
+/* Implicitly convert a Python object that wraps around a C++ type into an lvalue
+reference to that type, which directly references the internal data. */
+template <impl::inherits<Object> From, typename To>
+    requires (
+        impl::has_cpp<From> &&
+        std::same_as<impl::cpp_type<std::remove_cvref_t<From>>, std::remove_cv_t<To>>
+    )
+struct __cast__<From, To&>                                  : Returns<To&> {
+    static To& operator()(From from) {
+        return from_python(std::forward<From>(from));
     }
 };
 
@@ -870,11 +855,7 @@ template <impl::inherits<Object> From, typename To>
     )
 struct __cast__<From, To*>                                  : Returns<To*> {
     static To* operator()(From from) {
-        if constexpr (std::same_as<std::remove_cvref_t<From>, std::remove_cv_t<To>>) {
-            return &std::forward<From>(from);
-        } else {
-            return &from_python(std::forward<From>(from));
-        }
+        return &from_python(std::forward<From>(from));
     }
 };
 
@@ -905,11 +886,17 @@ struct __cast__<From, std::unique_ptr<To>>                  : Returns<std::uniqu
 
 
 /* Explicitly convert a Python object into any C++ type by checking for an equivalent
-Python type via __cast__, explicitly converting to that type, and then explicitly
-converting to the C++ type in a 2-step process. */
-template <impl::inherits<Object> From, impl::cpp To> requires (impl::has_python<To>)
+Python type via unary __cast__, explicitly converting to that type, and then to the C++
+type in a 2-step process. */
+template <impl::inherits<Object> From, impl::cpp To>
+    requires (
+        !std::is_reference_v<To> &&
+        !std::is_const_v<To> &&
+        !std::is_volatile_v<To> &&
+        impl::has_python<To>
+    )
 struct __explicit_cast__<From, To>                          : Returns<To> {
-    static auto operator()(From&& from) {
+    static auto operator()(From from) {
         return static_cast<To>(
             static_cast<impl::python_type<To>>(std::forward<From>(from))
         );
@@ -917,7 +904,7 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 };
 
 
-/* Contextually convert an Object into a boolean value for use in if/else  statements,
+/* Contextually convert an Object into a boolean value for use in if/else statements,
 with the same semantics as Python. */
 template <impl::inherits<Object> From>
 struct __explicit_cast__<From, bool>                         : Returns<bool> {
@@ -976,17 +963,20 @@ template <impl::is<Object> Self, StaticStr Name> requires (!impl::is_const<Self>
 struct __delattr__<Self, Name>                              : Returns<void> {};
 
 
-/// NOTE: the call operator has to be defined as a specialization in order to bootstrap
-/// the introspection process for the object type.
-
-
-/// TODO: the args should be constrained to has_python<>, but that seems to cause a
-/// conflict with reinterpret_borrow/steal constructors
-template <impl::is<Object> Self, impl::has_python... Args>
+/* The Object call operator has to be defined as a specialization in order to bootstrap
+the introspection behavior. */
+template <impl::is<Object> Self, std::convertible_to<Object>... Args>
 struct __call__<Self, Args...>                              : Returns<Object> {};
 
 
-/* Inserting an object into an output stream corresponds to a `str()` call at the
+/* Allow Objects to be used as left-hand arguments in `issubclass()` checks. */
+template <impl::is<Object> Derived, typename Base>
+struct __issubclass__<Derived, Base>                         : Returns<bool> {
+    static bool operator()(Derived derived);
+};
+
+
+/* Inserting a Python object into an output stream corresponds to a `str()` call at the
 Python level. */
 template <std::derived_from<std::ostream> Stream, impl::inherits<Object> Self>
 struct __lshift__<Stream, Self>                             : Returns<Stream&> {

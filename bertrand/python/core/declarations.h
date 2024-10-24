@@ -694,9 +694,6 @@ namespace impl {
     template <typename T>
     concept cpp = !python<T>;
 
-    template <typename T>
-    concept dynamic = is<T, Object>;
-
     template <typename From, typename To>
     concept explicitly_convertible_to = requires(From from) {
         { static_cast<To>(from) } -> std::same_as<To>;
@@ -1349,7 +1346,11 @@ struct __init__ {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <typename T> requires (std::is_invocable_r_v<Object, T, Args...>)
+        template <typename T>
+            requires (
+                !impl::is<T, Object> &&
+                std::is_invocable_r_v<Object, T, Args...>
+            )
         struct inspect<T> {
             static constexpr bool enable = true;
             using type = std::invoke_result_t<T, Args...>;
