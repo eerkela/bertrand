@@ -1337,22 +1337,22 @@ arguments.  Such constructors will be demoted to implicit constructors, rather t
 requiring an explicit call. */
 template <typename Self, typename... Args>
 struct __init__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct ctor {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<Self, name>::enable)
     struct ctor<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, Args...>)
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<Args...>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, Args...>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<Self, name>::type>::enable;
@@ -1429,21 +1429,12 @@ the operator will fall back to either C++ stream insertion via the `<<` operator
 `repr()` will return a string containing the demangled typeid. */
 template <typename Self>
 struct __repr__ {
-    template <StaticStr name>
-    struct infer {
-        static constexpr bool enable = false;
-    };
+    template <StaticStr>
+    static constexpr bool _enable = false;
     template <StaticStr name> requires (__getattr__<Self, name>::enable)
-    struct infer<name> {
-        template <typename>
-        static constexpr bool _enable = false;
-        template <std::derived_from<impl::FunctionTag> T>
-            requires (T::has_self && T::template bind<>)
-        static constexpr bool _enable<T> =
-            std::convertible_to<typename T::Return, std::string>;
-        static constexpr bool enable = _enable<typename __getattr__<Self, name>::type>;
-    };
-    static constexpr bool enable = infer<"__repr__">::enable;
+    static constexpr bool _enable<name> =
+        std::is_invocable_r_v<std::string, typename __getattr__<Self, name>::type>;
+    static constexpr bool enable = _enable<"__repr__">;
     using type = std::string;
 };
 
@@ -1471,16 +1462,12 @@ must return a boolean.  This operator has 3 forms:
  */
 template <typename Derived, typename Base>
 struct __issubclass__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer { static constexpr bool enable = false; };
     template <StaticStr name> requires (__getattr__<Base, name>::enable)
     struct infer<name> {
-        template <typename>
-        static constexpr bool _enable = false;
-        template <std::derived_from<impl::FunctionTag> T>
-            requires (T::has_self && T::template bind<Derived>)
-        static constexpr bool _enable<T> = std::convertible_to<typename T::Return, bool>;
-        static constexpr bool enable = _enable<typename __getattr__<Base, name>::type>;
+        static constexpr bool enable =
+            std::is_invocable_r_v<bool, typename __getattr__<Base, name>::type, Derived>;
     };
     static constexpr bool enable = impl::python<Derived> && impl::python<Base>;
     using type = bool;
@@ -1509,16 +1496,12 @@ must return a boolean.  This operator has 2 forms:
  */
 template <typename Derived, typename Base>
 struct __isinstance__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer { static constexpr bool enable = false; };
     template <StaticStr name> requires (__getattr__<Base, name>::enable)
     struct infer<name> {
-        template <typename>
-        static constexpr bool _enable = false;
-        template <std::derived_from<impl::FunctionTag> T>
-            requires (T::has_self && T::template bind<Derived>)
-        static constexpr bool _enable<T> = std::convertible_to<typename T::Return, bool>;
-        static constexpr bool enable = _enable<typename __getattr__<Base, name>::type>;
+        static constexpr bool enable = 
+            std::is_invocable_r_v<bool, typename __getattr__<Base, name>::type, Derived>;
     };
     static constexpr bool enable = impl::python<Derived> && impl::python<Base>;
     using type = bool;
@@ -1534,7 +1517,7 @@ possibly with Python-style argument annotations.  Specializations of this class 
 implement a custom call operator to replace the default behavior. */
 template <typename Self, typename... Args>
 struct __call__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
@@ -1546,10 +1529,10 @@ struct __call__ {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, Args...>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<Args...>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, Args...>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<Self, name>::type>::enable;
@@ -1567,22 +1550,22 @@ possibly with Python-style argument annotations.  Specializations of this class 
 implement a custom call operator to replace the default behavior. */
 template <typename Self, typename... Key>
 struct __getitem__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, Key...>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<Key...>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, Key...>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<Self, name>::type>::enable;
@@ -1600,22 +1583,22 @@ Python-style argument annotations.  Specializations of this class may implement 
 custom call operator to replace the default behavior. */
 template <typename Self, typename Value, typename... Key>
 struct __setitem__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<void, T, Value, Key...>)
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<Value, Key...>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, Value, Key...>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<Self, name>::type>::enable;
@@ -1633,22 +1616,22 @@ Python-style argument annotations.  Specializations of this class may implement 
 custom call operator to replace the default behavior. */
 template <typename Self, typename... Key>
 struct __delitem__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<void, T, Key...>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<Key...>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, Key...>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<Self, name>::type>::enable;
@@ -1666,22 +1649,22 @@ function, possibly with Python-style argument annotations.  Specializations of t
 class may implement a custom call operator to replace the default behavior. */
 template <typename Self>
 struct __len__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<size_t, T>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<Self, name>::type>::enable;
@@ -1702,25 +1685,23 @@ always given as `py::impl::Sentinel`, which is an empty struct against which the
 `__iter__` specialization must be comparable. */
 template <typename Self>
 struct __iter__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> requires (
-            T::has_self && T::template bind<> &&
-            std::derived_from<typename T::Return, impl::IterTag>
-        )
+        template <typename T>
+            requires (std::is_invocable_v<T> && impl::iterable<std::invoke_result_t<T>>)
         struct inspect<T> {
             static constexpr bool enable = true;
-            using type = T::Return::value_type;
+            using type = impl::iter_type<std::invoke_result_t<T>>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<Self, name>::type>::enable;
@@ -1742,25 +1723,23 @@ be returned from a member `begin()` and `end()` method within the `__iter__`
 specialization itself. */
 template <typename Self>
 struct __reversed__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> requires (
-            T::has_self && T::template bind<> &&
-            std::derived_from<typename T::Return, impl::IterTag>
-        )
+        template <typename T>
+            requires (std::is_invocable_v<T> && impl::iterable<std::invoke_result_t<T>>)
         struct inspect<T> {
             static constexpr bool enable = true;
-            using type = T::Return::value_type;
+            using type = impl::iter_type<std::invoke_result_t<T>>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<Self, name>::type>::enable;
@@ -1778,29 +1757,13 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior.  */
 template <typename Self, typename Key>
 struct __contains__ {
-    template <StaticStr name>
-    struct infer {
-        static constexpr bool enable = false;
-        using type = void;
-    };
+    template <StaticStr>
+    static constexpr bool _enable = false;
     template <StaticStr name> requires (__getattr__<Self, name>::enable)
-    struct infer<name> {
-        template <typename T>
-        struct inspect {
-            static constexpr bool enable = false;
-            using type = void;
-        };
-        template <std::derived_from<impl::FunctionTag> T> 
-        struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<Key>;
-            using type = T::Return;
-        };
-        static constexpr bool enable =
-            inspect<typename __getattr__<Self, name>::type>::enable;
-        using type = inspect<typename __getattr__<Self, name>::type>::type;
-    };
-    static constexpr bool enable = infer<"__contains__">::enable;
-    using type = infer<"__contains__">::type;
+    static constexpr bool _enable<name> =
+        std::is_invocable_r_v<bool, typename __getattr__<Self, name>::type, Key>;
+    static constexpr bool enable = _enable<"__contains__">;
+    using type = bool;
 };
 
 
@@ -1811,29 +1774,13 @@ possibly with Python-style argument annotations.  Specializations of this class 
 implement a custom call operator to replace the default behavior. */
 template <typename Self>
 struct __hash__ {
-    template <StaticStr name>
-    struct infer {
-        static constexpr bool enable = false;
-        using type = void;
-    };
+    template <StaticStr>
+    static constexpr bool _enable = false;
     template <StaticStr name> requires (__getattr__<Self, name>::enable)
-    struct infer<name> {
-        template <typename T>
-        struct inspect {
-            static constexpr bool enable = false;
-            using type = void;
-        };
-        template <std::derived_from<impl::FunctionTag> T> 
-        struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<>;
-            using type = T::Return;
-        };
-        static constexpr bool enable =
-            inspect<typename __getattr__<Self, name>::type>::enable;
-        using type = inspect<typename __getattr__<Self, name>::type>::type;
-    };
-    static constexpr bool enable = infer<"__hash__">::enable;
-    using type = infer<"__hash__">::type;
+    static constexpr bool _enable<name> =
+        std::is_invocable_r_v<size_t, typename __getattr__<Self, name>::type>;
+    static constexpr bool enable = _enable<"__hash__">;
+    using type = size_t;
 };
 
 
@@ -1843,22 +1790,22 @@ a member function, possibly with Python-style argument annotations.  Specializat
 this class may implement a custom call operator to replace the default behavior. */
 template <typename Self>
 struct __abs__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<Self, name>::type>::enable;
@@ -1876,22 +1823,22 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename Self>
 struct __invert__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<Self, name>::type>::enable;
@@ -1909,22 +1856,22 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename Self>
 struct __pos__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<Self, name>::type>::enable;
@@ -1942,22 +1889,22 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename Self>
 struct __neg__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T>)
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<Self, name>::type>::enable;
@@ -1999,22 +1946,22 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __lt__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -2032,22 +1979,22 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __le__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -2065,22 +2012,22 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __eq__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -2098,22 +2045,22 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __ne__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -2131,22 +2078,22 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __ge__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -2164,22 +2111,22 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __gt__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -2197,55 +2144,56 @@ functions, possibly with Python-style argument annotations.  Specializations of 
 class may implement a custom call operator to replace the default behavior. */
 template <typename L, typename R>
 struct __add__ {
-    template <StaticStr name>
-    struct add {
+    template <StaticStr>
+    struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
-    struct add<name> {
-        template <typename T>
+    struct forward<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr name>
-    struct radd {
+    template <StaticStr>
+    struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<R, name>::enable)
-    struct radd<name> {
-        template <typename T>
+    struct reverse<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T>
+        template <typename T> requires (std::is_invocable_r_v<Object, T, L>)
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<L>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<R, name>::type>::enable;
         using type = inspect<typename __getattr__<R, name>::type>::type;
     };
-    static constexpr bool enable = add<"__add__">::enable || radd<"__radd__">::enable;
+    static constexpr bool enable =
+        forward<"__add__">::enable || reverse<"__radd__">::enable;
     using type = std::conditional_t<
-        add<"__add__">::enable,
-        typename add<"__add__">::type,
+        forward<"__add__">::enable,
+        typename forward<"__add__">::type,
         std::conditional_t<
-            radd<"__radd__">::enable,
-            typename radd<"__radd__">::type,
+            reverse<"__radd__">::enable,
+            typename reverse<"__radd__">::type,
             void
         >
     >;
@@ -2259,22 +2207,22 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __iadd__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -2292,55 +2240,56 @@ functions, possibly with Python-style argument annotations.  Specializations of 
 class may implement a custom call operator to replace the default behavior. */
 template <typename L, typename R>
 struct __sub__ {
-    template <StaticStr name>
-    struct sub {
+    template <StaticStr>
+    struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
-    struct sub<name> {
-        template <typename T>
+    struct forward<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>)
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr name>
-    struct rsub {
+    template <StaticStr>
+    struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<R, name>::enable)
-    struct rsub<name> {
-        template <typename T>
+    struct reverse<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T>
+        template <typename T> requires (std::is_invocable_r_v<Object, T, L>)
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<L>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<R, name>::type>::enable;
         using type = inspect<typename __getattr__<R, name>::type>::type;
     };
-    static constexpr bool enable = sub<"__sub__">::enable || rsub<"__rsub__">::enable;
+    static constexpr bool enable =
+        forward<"__sub__">::enable || reverse<"__rsub__">::enable;
     using type = std::conditional_t<
-        sub<"__sub__">::enable,
-        typename sub<"__sub__">::type,
+        forward<"__sub__">::enable,
+        typename forward<"__sub__">::type,
         std::conditional_t<
-            rsub<"__rsub__">::enable,
-            typename rsub<"__rsub__">::type,
+            reverse<"__rsub__">::enable,
+            typename reverse<"__rsub__">::type,
             void
         >
     >;
@@ -2354,22 +2303,22 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __isub__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -2387,55 +2336,56 @@ functions, possibly with Python-style argument annotations.  Specializations of 
 class may implement a custom call operator to replace the default behavior. */
 template <typename L, typename R>
 struct __mul__ {
-    template <StaticStr name>
-    struct mul {
+    template <StaticStr>
+    struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
-    struct mul<name> {
-        template <typename T>
+    struct forward<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr name>
-    struct rmul {
+    template <StaticStr>
+    struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<R, name>::enable)
-    struct rmul<name> {
-        template <typename T>
+    struct reverse<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T>
+        template <typename T> requires (std::is_invocable_r_v<Object, T, L>)
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<L>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<R, name>::type>::enable;
         using type = inspect<typename __getattr__<R, name>::type>::type;
     };
-    static constexpr bool enable = mul<"__mul__">::enable || rmul<"__rmul__">::enable;
+    static constexpr bool enable =
+        forward<"__mul__">::enable || reverse<"__rmul__">::enable;
     using type = std::conditional_t<
-        mul<"__mul__">::enable,
-        typename mul<"__mul__">::type,
+        forward<"__mul__">::enable,
+        typename forward<"__mul__">::type,
         std::conditional_t<
-            rmul<"__rmul__">::enable,
-            typename rmul<"__rmul__">::type,
+            reverse<"__rmul__">::enable,
+            typename reverse<"__rmul__">::type,
             void
         >
     >;
@@ -2449,22 +2399,22 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __imul__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -2483,56 +2433,56 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __truediv__ {
-    template <StaticStr name>
-    struct truediv {
+    template <StaticStr>
+    struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
-    struct truediv<name> {
-        template <typename T>
+    struct forward<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr name>
-    struct rtruediv {
+    template <StaticStr>
+    struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<R, name>::enable)
-    struct rtruediv<name> {
-        template <typename T>
+    struct reverse<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T>
+        template <typename T> requires (std::is_invocable_r_v<Object, T, L>)
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<L>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<R, name>::type>::enable;
         using type = inspect<typename __getattr__<R, name>::type>::type;
     };
     static constexpr bool enable =
-        truediv<"__truediv__">::enable || rtruediv<"__rtruediv__">::enable;
+        forward<"__truediv__">::enable || reverse<"__rtruediv__">::enable;
     using type = std::conditional_t<
-        truediv<"__truediv__">::enable,
-        typename truediv<"__truediv__">::type,
+        forward<"__truediv__">::enable,
+        typename forward<"__truediv__">::type,
         std::conditional_t<
-            rtruediv<"__rtruediv__">::enable,
-            typename rtruediv<"__rtruediv__">::type,
+            reverse<"__rtruediv__">::enable,
+            typename reverse<"__rtruediv__">::type,
             void
         >
     >;
@@ -2546,22 +2496,22 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __itruediv__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -2584,56 +2534,56 @@ This is used internally to implement `py::div()`, `py::mod()`, `py::divmod()`, a
 based on this operator. */
 template <typename L, typename R>
 struct __floordiv__ {
-    template <StaticStr name>
-    struct floordiv {
+    template <StaticStr>
+    struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
-    struct floordiv<name> {
-        template <typename T>
+    struct forward<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr name>
-    struct rfloordiv {
+    template <StaticStr>
+    struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<R, name>::enable)
-    struct rfloordiv<name> {
-        template <typename T>
+    struct reverse<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T>
+        template <typename T> requires (std::is_invocable_r_v<Object, T, L>)
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<L>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<R, name>::type>::enable;
         using type = inspect<typename __getattr__<R, name>::type>::type;
     };
     static constexpr bool enable =
-        floordiv<"__floordiv__">::enable || rfloordiv<"__rfloordiv__">::enable;
+        forward<"__floordiv__">::enable || reverse<"__rfloordiv__">::enable;
     using type = std::conditional_t<
-        floordiv<"__floordiv__">::enable,
-        typename floordiv<"__floordiv__">::type,
+        forward<"__floordiv__">::enable,
+        typename forward<"__floordiv__">::type,
         std::conditional_t<
-            rfloordiv<"__rfloordiv__">::enable,
-            typename rfloordiv<"__rfloordiv__">::type,
+            reverse<"__rfloordiv__">::enable,
+            typename reverse<"__rfloordiv__">::type,
             void
         >
     >;
@@ -2651,22 +2601,22 @@ This is used internally to implement `py::div()`, `py::mod()`, `py::divmod()`, a
 based on this operator. */
 template <typename L, typename R>
 struct __ifloordiv__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -2684,55 +2634,56 @@ functions, possibly with Python-style argument annotations.  Specializations of 
 class may implement a custom call operator to replace the default behavior. */
 template <typename L, typename R>
 struct __mod__ {
-    template <StaticStr name>
-    struct mod {
+    template <StaticStr>
+    struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
-    struct mod<name> {
-        template <typename T>
+    struct forward<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr name>
-    struct rmod {
+    template <StaticStr>
+    struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<R, name>::enable)
-    struct rmod<name> {
-        template <typename T>
+    struct reverse<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T>
+        template <typename T> requires (std::is_invocable_r_v<Object, T, L>)
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<L>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<R, name>::type>::enable;
         using type = inspect<typename __getattr__<R, name>::type>::type;
     };
-    static constexpr bool enable = mod<"__mod__">::enable || rmod<"__rmod__">::enable;
+    static constexpr bool enable =
+        forward<"__mod__">::enable || reverse<"__rmod__">::enable;
     using type = std::conditional_t<
-        mod<"__mod__">::enable,
-        typename mod<"__mod__">::type,
+        forward<"__mod__">::enable,
+        typename forward<"__mod__">::type,
         std::conditional_t<
-            rmod<"__rmod__">::enable,
-            typename rmod<"__rmod__">::type,
+            reverse<"__rmod__">::enable,
+            typename reverse<"__rmod__">::type,
             void
         >
     >;
@@ -2746,22 +2697,22 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __imod__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -2782,36 +2733,37 @@ implement a custom call operator to replace the default behavior.
 This is used internally to implement `py::pow()`. */
 template <typename Base, typename Exp, typename Mod = void>
 struct __pow__ {
-    template <StaticStr name>
-    struct pow {
+    template <StaticStr>
+    struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<Base, name>::enable)
-    struct pow<name> {
-        template <typename T>
+    struct forward<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T>
-            requires (T::has_self && T::template bind<Exp>)
+        template <typename T> requires (std::is_invocable_r_v<Object, T, Exp>)
         struct inspect<T> {
             /// TODO: this needs to be updated to support the ternary form of pow()
             static constexpr bool enable = true;
-            using type = T::Return;
+            using type = std::invoke_result_t<T, Exp>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<Base, name>::type>::enable;
         using type = inspect<typename __getattr__<Base, name>::type>::type;
     };
-    static constexpr bool enable = pow<"__pow__">::enable || pow<"__rpow__">::enable;
+    /// TODO: reverse<>
+    static constexpr bool enable =
+        forward<"__pow__">::enable || forward<"__rpow__">::enable;
     using type = std::conditional_t<
-        pow<"__pow__">::enable,
-        typename pow<"__pow__">::type,
+        forward<"__pow__">::enable,
+        typename forward<"__pow__">::type,
         std::conditional_t<
-            pow<"__rpow__">::enable,
-            typename pow<"__rpow__">::type,
+            forward<"__rpow__">::enable,
+            typename forward<"__rpow__">::type,
             void
         >
     >;
@@ -2827,23 +2779,23 @@ class may implement a custom call operator to replace the default behavior.
 This is used internally to implement `py::ipow()`. */
 template <typename Base, typename Exp, typename Mod = void>
 struct __ipow__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<Base, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, Exp>) 
         struct inspect<T> {
             /// TODO: same as for ternary form of pow()
-            static constexpr bool enable = T::has_self && T::template bind<Exp>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, Exp>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<Base, name>::type>::enable;
@@ -2861,56 +2813,56 @@ functions, possibly with Python-style argument annotations.  Specializations of 
 class may implement a custom call operator to replace the default behavior. */
 template <typename L, typename R>
 struct __lshift__ {
-    template <StaticStr name>
-    struct lshift {
+    template <StaticStr>
+    struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
-    struct lshift<name> {
-        template <typename T>
+    struct forward<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr name>
-    struct rlshift {
+    template <StaticStr>
+    struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<R, name>::enable)
-    struct rlshift<name> {
-        template <typename T>
+    struct reverse<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T>
+        template <typename T> requires (std::is_invocable_r_v<Object, T, L>)
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<L>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<R, name>::type>::enable;
         using type = inspect<typename __getattr__<R, name>::type>::type;
     };
     static constexpr bool enable =
-        lshift<"__lshift__">::enable || rlshift<"__rlshift__">::enable;
+        forward<"__lshift__">::enable || reverse<"__rlshift__">::enable;
     using type = std::conditional_t<
-        lshift<"__lshift__">::enable,
-        typename lshift<"__lshift__">::type,
+        forward<"__lshift__">::enable,
+        typename forward<"__lshift__">::type,
         std::conditional_t<
-            rlshift<"__rlshift__">::enable,
-            typename rlshift<"__rlshift__">::type,
+            reverse<"__rlshift__">::enable,
+            typename reverse<"__rlshift__">::type,
             void
         >
     >;
@@ -2924,22 +2876,22 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __ilshift__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -2957,56 +2909,56 @@ functions, possibly with Python-style argument annotations.  Specializations of 
 class may implement a custom call operator to replace the default behavior. */
 template <typename L, typename R>
 struct __rshift__ {
-    template <StaticStr name>
-    struct rshift {
+    template <StaticStr>
+    struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
-    struct rshift<name> {
-        template <typename T>
+    struct forward<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr name>
-    struct rrshift {
+    template <StaticStr>
+    struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<R, name>::enable)
-    struct rrshift<name> {
-        template <typename T>
+    struct reverse<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T>
+        template <typename T> requires (std::is_invocable_r_v<Object, T, L>)
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<L>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<R, name>::type>::enable;
         using type = inspect<typename __getattr__<R, name>::type>::type;
     };
     static constexpr bool enable =
-        rshift<"__rshift__">::enable || rrshift<"__rrshift__">::enable;
+        forward<"__rshift__">::enable || reverse<"__rrshift__">::enable;
     using type = std::conditional_t<
-        rshift<"__rshift__">::enable,
-        typename rshift<"__rshift__">::type,
+        forward<"__rshift__">::enable,
+        typename forward<"__rshift__">::type,
         std::conditional_t<
-            rrshift<"__rrshift__">::enable,
-            typename rrshift<"__rrshift__">::type,
+            reverse<"__rrshift__">::enable,
+            typename reverse<"__rrshift__">::type,
             void
         >
     >;
@@ -3020,22 +2972,22 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __irshift__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -3053,55 +3005,56 @@ functions, possibly with Python-style argument annotations.  Specializations of 
 class may implement a custom call operator to replace the default behavior. */
 template <typename L, typename R>
 struct __and__ {
-    template <StaticStr name>
-    struct _and {
+    template <StaticStr>
+    struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
-    struct _and<name> {
-        template <typename T>
+    struct forward<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr name>
-    struct rand {
+    template <StaticStr>
+    struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<R, name>::enable)
-    struct rand<name> {
-        template <typename T>
+    struct reverse<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T>
+        template <typename T> requires (std::is_invocable_r_v<Object, T, L>)
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<L>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<R, name>::type>::enable;
         using type = inspect<typename __getattr__<R, name>::type>::type;
     };
-    static constexpr bool enable = _and<"__and__">::enable || rand<"__rand__">::enable;
+    static constexpr bool enable =
+        forward<"__and__">::enable || reverse<"__rand__">::enable;
     using type = std::conditional_t<
-        _and<"__and__">::enable,
-        typename _and<"__and__">::type,
+        forward<"__and__">::enable,
+        typename forward<"__and__">::type,
         std::conditional_t<
-            rand<"__rand__">::enable,
-            typename rand<"__rand__">::type,
+            reverse<"__rand__">::enable,
+            typename reverse<"__rand__">::type,
             void
         >
     >;
@@ -3115,22 +3068,22 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __iand__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -3148,55 +3101,56 @@ functions, possibly with Python-style argument annotations.  Specializations of 
 class may implement a custom call operator to replace the default behavior. */
 template <typename L, typename R>
 struct __or__ {
-    template <StaticStr name>
-    struct _or {
+    template <StaticStr>
+    struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
-    struct _or<name> {
-        template <typename T>
+    struct forward<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr name>
-    struct ror {
+    template <StaticStr>
+    struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<R, name>::enable)
-    struct ror<name> {
-        template <typename T>
+    struct reverse<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T>
+        template <typename T> requires (std::is_invocable_r_v<Object, T, L>)
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<L>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<R, name>::type>::enable;
         using type = inspect<typename __getattr__<R, name>::type>::type;
     };
-    static constexpr bool enable = _or<"__or__">::enable || ror<"__ror__">::enable;
+    static constexpr bool enable =
+        forward<"__or__">::enable || reverse<"__ror__">::enable;
     using type = std::conditional_t<
-        _or<"__or__">::enable,
-        typename _or<"__or__">::type,
+        forward<"__or__">::enable,
+        typename forward<"__or__">::type,
         std::conditional_t<
-            ror<"__ror__">::enable,
-            typename ror<"__ror__">::type,
+            reverse<"__ror__">::enable,
+            typename reverse<"__ror__">::type,
             void
         >
     >;
@@ -3210,22 +3164,22 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __ior__ {
-    template <StaticStr name>
+    template <StaticStr>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
-        template <typename T>
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -3243,55 +3197,56 @@ functions, possibly with Python-style argument annotations.  Specializations of 
 class may implement a custom call operator to replace the default behavior. */
 template <typename L, typename R>
 struct __xor__ {
-    template <StaticStr name>
-    struct _xor {
+    template <StaticStr>
+    struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<L, name>::enable)
-    struct _xor<name> {
-        template <typename T>
+    struct forward<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr name>
-    struct rxor {
+    template <StaticStr>
+    struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
     template <StaticStr name> requires (__getattr__<R, name>::enable)
-    struct rxor<name> {
-        template <typename T>
+    struct reverse<name> {
+        template <typename>
         struct inspect {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T>
+        template <typename T> requires (std::is_invocable_r_v<Object, T, L>)
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<L>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<R, name>::type>::enable;
         using type = inspect<typename __getattr__<R, name>::type>::type;
     };
-    static constexpr bool enable = _xor<"__xor__">::enable || rxor<"__rxor__">::enable;
+    static constexpr bool enable =
+        forward<"__xor__">::enable || reverse<"__rxor__">::enable;
     using type = std::conditional_t<
-        _xor<"__xor__">::enable,
-        typename _xor<"__xor__">::type,
+        forward<"__xor__">::enable,
+        typename forward<"__xor__">::type,
         std::conditional_t<
-            rxor<"__rxor__">::enable,
-            typename rxor<"__rxor__">::type,
+            reverse<"__rxor__">::enable,
+            typename reverse<"__rxor__">::type,
             void
         >
     >;
@@ -3317,10 +3272,10 @@ struct __ixor__ {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <std::derived_from<impl::FunctionTag> T> 
+        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
         struct inspect<T> {
-            static constexpr bool enable = T::has_self && T::template bind<R>;
-            using type = T::Return;
+            static constexpr bool enable = true;
+            using type = std::invoke_result_t<T, R>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;

@@ -699,7 +699,7 @@ public:
     types via the __call__ control struct, enabling static type safety for callable
     Python objects in C++. */
     template <typename Self, typename... Args> requires (__call__<Self, Args...>::enable)
-    decltype(auto) operator()(this Self&& self, Args&&... args) {
+    decltype(auto) operator()(this Self&& self, Args&&... args);  // {
         /// TODO: move this to func.h
 
         // using call = __call__<Self, Args...>;
@@ -745,7 +745,7 @@ public:
         //         );
         //     }
         // }
-    }
+    // }
 
 };
 
@@ -774,57 +774,6 @@ template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_steal(PyObject* ptr) {
     return T(ptr, Object::stolen_t{});
 }
-
-
-template <impl::is<Object> Derived, impl::is<Object> Base>
-struct __isinstance__<Derived, Base>                        : Returns<bool> {
-    static constexpr bool operator()(Derived obj) { return true; }
-    static bool operator()(Derived obj, Base cls);
-};
-
-
-template <impl::is<Object> Derived, typename Base>
-struct __isinstance__<Derived, Base>                        : Returns<bool> {
-    static bool operator()(Derived obj);
-    /// NOTE: 2-argument form disabled by default unless explicitly enabled in a
-    /// downstream specialization.
-};
-
-
-template <typename Derived, impl::is<Object> Base>
-struct __isinstance__<Derived, Base>                        : Returns<bool> {
-    static constexpr bool operator()(Derived obj) { return true; }
-    static bool operator()(Derived obj, Base cls);
-};
-
-
-template <impl::is<Object> Derived, impl::is<Object> Base>
-struct __issubclass__<Derived, Base>                        : Returns<bool> {
-    static constexpr bool operator()() { return true; }
-    static bool operator()(Derived subclass);
-    static bool operator()(Derived subclass, Base cls);
-};
-
-
-template <impl::is<Object> Derived, typename Base>
-struct __issubclass__<Derived, Base>                        : Returns<bool> {
-    static constexpr bool operator()() {
-        return impl::inherits<Derived, Base>;
-    }
-    static bool operator()(Derived subclass);
-    /// NOTE: 2-argument form disabled by default unless explicitly enabled in a
-    /// downstream specialization.
-};
-
-
-template <typename Derived, impl::is<Object> Base>
-struct __issubclass__<Derived, Base>                        : Returns<bool> {
-    static constexpr bool operator()() {
-        return impl::inherits<Derived, Base>;
-    }
-    static bool operator()(Derived subclass);
-    static bool operator()(Derived subclass, Base cls);
-};
 
 
 template <impl::inherits<Object> T>
@@ -859,6 +808,7 @@ struct __init__<Self, T>                           : Returns<Self> {
 
 /// NOTE: additional delegating constructors for objects using Python-level
 /// `__new__()`/`__init__()` are defined in core.h
+/// TODO: Are these extra constructors necessary, or is the default __init__ enough?
 
 
 /* Implicitly convert any C++ value into a py::Object by invoking the unary cast type,
@@ -1009,6 +959,14 @@ struct __explicit_cast__<From, std::basic_string<Char>> : Returns<std::basic_str
 };
 
 
+/// NOTE: most control structures are enabled through the default specializations,
+/// which attempt to introspect various dunder methods on the object type.  Because
+/// these are fully generic for the dynamic `Object` type, those introspections will
+/// always succeed, and the control structures will be enabled and delegate to Python,
+/// which is the same behavior we'd be implementing here.  Doing it this way also
+/// prevents template conflicts in downstream code, reducing the chance of ambiguity.
+
+
 template <impl::is<Object> Self, StaticStr Name>
 struct __getattr__<Self, Name>                              : Returns<Object> {};
 template <impl::is<Object> Self, StaticStr Name, std::convertible_to<Object> Value>
@@ -1016,134 +974,16 @@ template <impl::is<Object> Self, StaticStr Name, std::convertible_to<Object> Val
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <impl::is<Object> Self, StaticStr Name> requires (!impl::is_const<Self>)
 struct __delattr__<Self, Name>                              : Returns<void> {};
-template <impl::is<Object> Self, std::convertible_to<Object>... Key>
-struct __getitem__<Self, Key...>                            : Returns<Object> {};
-template <impl::is<Object> Self, std::convertible_to<Object> Value, std::convertible_to<Object>... Key>
-    requires (!impl::is_const<Self>)
-struct __setitem__<Self, Value, Key...>                     : Returns<void> {};
-template <impl::is<Object> Self, std::convertible_to<Object>... Key>
-    requires (!impl::is_const<Self>)
-struct __delitem__<Self, Key...>                            : Returns<void> {};
-template <impl::is<Object> Self, std::convertible_to<Object> Key>
-struct __contains__<Self, Key>                              : Returns<bool> {};
-template <impl::is<Object> Self>
-struct __len__<Self>                                        : Returns<size_t> {};
-template <impl::is<Object> Self>
-struct __iter__<Self>                                       : Returns<Object> {};
-template <impl::is<Object> Self>
-struct __reversed__<Self>                                   : Returns<Object> {};
-template <impl::is<Object> Self, typename ... Args>
+
+
+/// NOTE: the call operator has to be defined as a specialization in order to bootstrap
+/// the introspection process for the object type.
+
+
+/// TODO: the args should be constrained to has_python<>, but that seems to cause a
+/// conflict with reinterpret_borrow/steal constructors
+template <impl::is<Object> Self, impl::has_python... Args>
 struct __call__<Self, Args...>                              : Returns<Object> {};
-template <impl::is<Object> Self>
-struct __hash__<Self>                                       : Returns<size_t> {};
-template <impl::is<Object> Self>
-struct __abs__<Self>                                        : Returns<Object> {};
-template <impl::is<Object> Self>
-struct __invert__<Self>                                     : Returns<Object> {};
-template <impl::is<Object> Self>
-struct __pos__<Self>                                        : Returns<Object> {};
-template <impl::is<Object> Self>
-struct __neg__<Self>                                        : Returns<Object> {};
-template <impl::is<Object> Self> requires (!impl::is_const<Self>)
-struct __increment__<Self>                                  : Returns<Self> {};
-template <impl::is<Object> Self> requires (!impl::is_const<Self>)
-struct __decrement__<Self>                                  : Returns<Self> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __lt__<L, R>                                         : Returns<Object> {};
-template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __lt__<L, R>                                         : Returns<Object> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __le__<L, R>                                         : Returns<Object> {};
-template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __le__<L, R>                                         : Returns<Object> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __eq__<L, R>                                         : Returns<Object> {};
-template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __eq__<L, R>                                         : Returns<Object> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __ne__<L, R>                                         : Returns<Object> {};
-template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __ne__<L, R>                                         : Returns<Object> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __ge__<L, R>                                         : Returns<Object> {};
-template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __ge__<L, R>                                         : Returns<Object> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __gt__<L, R>                                         : Returns<Object> {};
-template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __gt__<L, R>                                         : Returns<Object> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __add__<L, R>                                        : Returns<Object> {};
-template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __add__<L, R>                                        : Returns<Object> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __sub__<L, R>                                        : Returns<Object> {};
-template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __sub__<L, R>                                        : Returns<Object> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __mul__<L, R>                                        : Returns<Object> {};
-template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __mul__<L, R>                                        : Returns<Object> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __truediv__<L, R>                                    : Returns<Object> {};
-template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __truediv__<L, R>                                    : Returns<Object> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __floordiv__<L, R>                                   : Returns<Object> {};
-template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __floordiv__<L, R>                                   : Returns<Object> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __mod__<L, R>                                        : Returns<Object> {};
-template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __mod__<L, R>                                        : Returns<Object> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __pow__<L, R>                                        : Returns<Object> {};
-template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __pow__<L, R>                                        : Returns<Object> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __lshift__<L, R>                                     : Returns<Object> {};
-template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __lshift__<L, R>                                     : Returns<Object> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __rshift__<L, R>                                     : Returns<Object> {};
-template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __rshift__<L, R>                                     : Returns<Object> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __and__<L, R>                                        : Returns<Object> {};
-template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __and__<L, R>                                        : Returns<Object> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __or__<L, R>                                         : Returns<Object> {};
-template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __or__<L, R>                                         : Returns<Object> {};
-template <impl::is<Object> L, std::convertible_to<Object> R>
-struct __xor__<L, R>                                        : Returns<Object> {};
-template <std::convertible_to<Object> L, impl::is<Object> R> requires (!impl::is<L, Object>)
-struct __xor__<L, R>                                        : Returns<Object> {};
-template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __iadd__<L, R>                                       : Returns<L> {};
-template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __isub__<L, R>                                       : Returns<L> {};
-template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __imul__<L, R>                                       : Returns<L> {};
-template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __itruediv__<L, R>                                   : Returns<L> {};
-template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __ifloordiv__<L, R>                                  : Returns<L> {};
-template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __imod__<L, R>                                       : Returns<L> {};
-template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __ipow__<L, R>                                       : Returns<L> {};
-template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __ilshift__<L, R>                                    : Returns<L> {};
-template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __irshift__<L, R>                                    : Returns<L> {};
-template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __iand__<L, R>                                       : Returns<L> {};
-template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __ior__<L, R>                                        : Returns<L> {};
-template <impl::is<Object> L, std::convertible_to<Object> R> requires (!impl::is_const<L>)
-struct __ixor__<L, R>                                       : Returns<L> {};
 
 
 /* Inserting an object into an output stream corresponds to a `str()` call at the

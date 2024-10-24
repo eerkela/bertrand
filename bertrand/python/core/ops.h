@@ -1029,6 +1029,7 @@ decltype(auto) operator+=(L& lhs, R&& rhs) = delete;
 template <impl::python L, typename R>
     requires (
         __iadd__<L, R>::enable &&
+        !std::is_const_v<std::remove_reference_t<L>> &&
         std::convertible_to<typename __iadd__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __iadd__<L, R>::type, __iadd__<L, R>, L, R> || (
                 !impl::has_call_operator<__iadd__<L, R>> &&
@@ -1110,6 +1111,7 @@ decltype(auto) operator-=(L& lhs, R&& rhs) = delete;
 template <impl::python L, typename R>
     requires (
         __isub__<L, R>::enable &&
+        !std::is_const_v<std::remove_reference_t<L>> &&
         std::convertible_to<typename __isub__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __isub__<L, R>::type, __isub__<L, R>, L, R> || (
                 !impl::has_call_operator<__isub__<L, R>> &&
@@ -1191,6 +1193,7 @@ decltype(auto) operator*=(L& lhs, R&& rhs) = delete;
 template <impl::python L, typename R>
     requires (
         __imul__<L, R>::enable &&
+        !std::is_const_v<std::remove_reference_t<L>> &&
         std::convertible_to<typename __imul__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __imul__<L, R>::type, __imul__<L, R>, L, R> || (
                 !impl::has_call_operator<__imul__<L, R>> &&
@@ -1418,6 +1421,7 @@ decltype(auto) operator/=(L& lhs, R&& rhs) = delete;
 template <impl::python L, typename R>
     requires (
         __itruediv__<L, R>::enable &&
+        !std::is_const_v<std::remove_reference_t<L>> &&
         std::convertible_to<typename __itruediv__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __itruediv__<L, R>::type, __itruediv__<L, R>, L, R> || (
                 !impl::has_call_operator<__itruediv__<L, R>> &&
@@ -1557,6 +1561,7 @@ decltype(auto) operator%=(L& lhs, R&& rhs) = delete;
 template <impl::python L, typename R>
     requires (
         __imod__<L, R>::enable &&
+        !std::is_const_v<std::remove_reference_t<L>> &&
         std::convertible_to<typename __imod__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __imod__<L, R>::type, __imod__<L, R>, L, R> || (
                 !impl::has_call_operator<__imod__<L, R>> &&
@@ -1800,6 +1805,7 @@ decltype(auto) operator&=(L& lhs, R&& rhs) = delete;
 template <impl::python L, typename R>
     requires (
         __iand__<L, R>::enable &&
+        !std::is_const_v<std::remove_reference_t<L>> &&
         std::convertible_to<typename __iand__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __iand__<L, R>::type, __iand__<L, R>, L, R> || (
                 !impl::has_call_operator<__iand__<L, R>> &&
@@ -1881,6 +1887,7 @@ decltype(auto) operator|=(L& lhs, R&& rhs) = delete;
 template <impl::python L, typename R>
     requires (
         __ior__<L, R>::enable &&
+        !std::is_const_v<std::remove_reference_t<L>> &&
         std::convertible_to<typename __ior__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __ior__<L, R>::type, __ior__<L, R>, L, R> || (
                 !impl::has_call_operator<__ior__<L, R>> &&
@@ -1962,6 +1969,7 @@ decltype(auto) operator^=(L& lhs, R&& rhs) = delete;
 template <impl::python L, typename R>
     requires (
         __ixor__<L, R>::enable &&
+        !std::is_const_v<std::remove_reference_t<L>> &&
         std::convertible_to<typename __ixor__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __ixor__<L, R>::type, __ixor__<L, R>, L, R> || (
                 !impl::has_call_operator<__ixor__<L, R>> &&

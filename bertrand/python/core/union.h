@@ -2020,6 +2020,13 @@ struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts..
 /// or a standard type if the resulting union would be a singleton.
 
 
+/// TODO: isinstance() and issubclass() can be optimized in some cases to just call
+/// std::holds_alternative<T>() on the underlying object, rather than needing to
+/// invoke Python.  This can be done if the type that is checked against is a
+/// supertype of any of the members of the union, in which case the type check can be
+/// reduced to just a simple comparison against the index.
+
+
 template <impl::py_union Derived, impl::py_union Base>
     requires (impl::UnionIsInstance<Derived, Base>::enable)
 struct __isinstance__<Derived, Base>                        : Returns<bool> {
@@ -2033,9 +2040,6 @@ struct __isinstance__<Derived, Base>                        : Returns<bool> {
         /// the given base type.
     }
 };
-
-
-/// TODO: does this conflict with Object<>?
 
 
 template <impl::py_union Derived, typename Base>
@@ -2060,13 +2064,6 @@ struct __isinstance__<Derived, Base>                        : Returns<bool> {
         /// TODO: only enabled if one or more members supports it
     }
 };
-
-
-/// TODO: isinstance() and issubclass() can be optimized in some cases to just call
-/// std::holds_alternative<T>() on the underlying object, rather than needing to
-/// invoke Python.  This can be done if the type that is checked against is a
-/// supertype of any of the members of the union, in which case the type check can be
-/// reduced to just a simple comparison against the index.
 
 
 template <impl::py_union Self, StaticStr Name>
