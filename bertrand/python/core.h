@@ -19,6 +19,33 @@
 namespace py {
 
 
+/////////////////////////
+////    OPERATORS    ////
+/////////////////////////
+
+
+template <typename Derived, typename Base>
+template <typename T> requires (T::enable)
+bool __issubclass__<Derived, Base>::operator()(Derived obj, Base base) {
+    int rc = PyObject_IsSubclass(ptr(obj), ptr(base));
+    if (rc < 0) {
+        Exception::from_python();
+    }
+    return rc;
+}
+
+
+template <typename Derived, typename Base>
+template <typename T> requires (T::enable)
+bool __isinstance__<Derived, Base>::operator()(Derived obj, Base base) {
+    int rc = PyObject_IsInstance(ptr(obj), ptr(base));
+    if (rc < 0) {
+        Exception::from_python();
+    }
+    return rc;
+}
+
+
 /* Equivalent to Python `print(args...)`. */
 template <typename... Args>
     requires (

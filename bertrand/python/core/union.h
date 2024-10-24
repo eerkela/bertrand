@@ -451,7 +451,7 @@ namespace impl {
     using UnionDelItem = union_operator<__delitem__>::template op<Self, Key...>;
 
     /// NOTE: Attr<> operators cannot be generalized due to accepting a non-type
-    /// template template parameter
+    /// template parameter (the attribute name).
 
     template <typename, StaticStr>
     struct UnionGetAttr { static constexpr bool enable = false; };
@@ -512,6 +512,63 @@ namespace impl {
         static constexpr bool match<Union<Types...>> = true;
         static constexpr bool enable = match<std::remove_cvref_t<Self>>;
         using type = void;
+    };
+
+    /// NOTE: __isinstance__ and __issubclass__ cannot be generalized due to using
+    /// several different call signatures, which must be handled uniquely.
+
+    /// TODO: Maybe __isinstance__, __issubclass__, and __repr__ structures need to
+    /// default to enabled as long as the template conditions in the operator are met.
+    /// -> changes to declarations to make sure the state of the control structure
+    /// always determines the enable state of the operator.
+    /// -> Maybe default __isinstance__ and __issubclass__ can enable the 2-argument
+    /// form if the object implements an `__instancecheck__()` or `__subclasscheck__()`
+    /// Python member.
+
+    template <typename Derived, typename Base>
+    struct UnionIsInstance {
+        template <typename, typename>
+        struct op { static constexpr bool enable = false; };
+        template <typename... Ds, typename... Bs>
+        struct op<Union<Ds...>, Union<Bs...>> {
+            /// TODO: true if ALL Ds are instances of ANY Bs
+        };
+        template <typename... Ds, typename B>
+        struct op<Union<Ds...>, B> {
+            /// TODO: true if ALL Ds are instances of B
+        };
+        template <typename D, typename... Bs>
+        struct op<D, Union<Bs...>> {
+            /// TODO: true if D is an instances of ANY Bs
+        };
+        static constexpr bool enable = op<
+            std::remove_cvref_t<Derived>,
+            std::remove_cvref_t<Base>
+        >::enable;
+        using type = bool;
+    };
+
+    template <typename Derived, typename Base>
+    struct UnionIsSubclass {
+        template <typename, typename>
+        struct op { static constexpr bool enable = false; };
+        template <typename... Ds, typename... Bs>
+        struct op<Union<Ds...>, Union<Bs...>> {
+            /// TODO: true if ALL Ds are subclasses of ANY Bs
+        };
+        template <typename... Ds, typename B>
+        struct op<Union<Ds...>, B> {
+            /// TODO: true if ALL Ds are subclasses of B
+        };
+        template <typename D, typename... Bs>
+        struct op<D, Union<Bs...>> {
+            /// TODO: true if D is a subclass of ANY Bs
+        };
+        static constexpr bool enable = op<
+            std::remove_cvref_t<Derived>,
+            std::remove_cvref_t<Base>
+        >::enable;
+        using type = bool;
     };
 
 }
@@ -1613,162 +1670,19 @@ attribute and unwrap the optional if it is present.)doc"
 template <typename... Ts>
 struct __template__<Union<Ts...>>                           : Returns<Object> {
     static Object operator()() {
-        /// TODO: this would need some special handling for argument annotations
-        /// denoting structural fields, as well as a way to instantiate them
-        /// accordingly.
-        Object result = reinterpret_steal<Object>(PyTuple_Pack(
+        PyObject* result = PyTuple_Pack(
             sizeof...(Ts),
             ptr(Type<Ts>())...
-        ));
-        if (result.is(nullptr)) {
+        );
+        if (result == nullptr) {
             Exception::to_python();
         }
-        return result;
+        return reinterpret_steal<Object>(result);
     }
 };
 
 
-// template <impl::py_union Derived, typename Base>
-//     requires (
-//         /// TODO: should this be disabled if the base type is also a union?
-//         true
-//     )  /// TODO: should be enabled if one or more members supports it
-// struct __isinstance__<Derived, Base>                        : Returns<bool> {
-//     static constexpr bool operator()(Derived obj) {
-//         /// TODO: if Derived is a member of the union or a superclass of a member,
-//         /// then this can devolve to a simple index check.  Otherwise, it should
-//         /// extract the underlying object and recur.
-//     }
-//     static constexpr bool operator()(Derived obj, Base base) {
-//         /// TODO: this should only be enabled if one or more members supports it with
-//         /// the given base type.
-//     }
-// };
-
-
-// template <typename Derived, impl::py_union Base>
-//     requires (true)  /// TODO: should be enabled if one or more members supports it
-// struct __isinstance__<Derived, Base>                        : Returns<bool> {
-//     static constexpr bool operator()(Derived obj) {
-//         /// TODO: returns true if any of the types match
-//     }
-//     static constexpr bool operator()(Derived obj, Base base) {
-//         /// TODO: only enabled if one or more members supports it
-//     }
-// };
-
-
-// template <impl::inherits<impl::OptionalTag> Derived, typename Base>
-//     requires (__isinstance__<impl::wrapped_type<Derived>, Base>::enable)
-// struct __isinstance__<Derived, Base>                        : Returns<bool> {
-//     static constexpr bool operator()(Derived obj) {
-//         if (obj->m_value.is(None)) {
-//             return impl::is<Base, NoneType>;
-//         } else {
-//             return isinstance<Base>(
-//                 reinterpret_cast<impl::wrapped_type<Derived>>(
-//                     std::forward<Derived>(obj)->m_value
-//                 )
-//             );
-//         }
-//     }
-//     template <typename T = impl::wrapped_type<Derived>>
-//         requires (std::is_invocable_v<__isinstance__<T, Base>, T, Base>)
-//     static constexpr bool operator()(Derived obj, Base&& base) {
-//         if (obj->m_value.is(None)) {
-//             return false;  /// TODO: ???
-//         } else {
-//             return isinstance(
-//                 reinterpret_cast<impl::wrapped_type<Derived>>(
-//                     std::forward<Derived>(obj)->m_value
-//                 ),
-//                 std::forward<Base>(base)
-//             );
-//         }
-//     }
-// };
-
-
-// template <typename Derived, impl::inherits<impl::OptionalTag> Base>
-//     requires (
-//         __issubclass__<Derived, impl::wrapped_type<Base>>::enable &&
-//         !impl::inherits<Derived, impl::OptionalTag>
-//     )
-// struct __isinstance__<Derived, Base>                         : Returns<bool> {
-//     static constexpr bool operator()(Derived&& obj) {
-//         if constexpr (impl::dynamic<Derived>) {
-//             return
-//                 obj.is(None) ||
-//                 isinstance<impl::wrapped_type<Base>>(std::forward<Derived>(obj));
-//         } else {
-//             return
-//                 impl::none_like<Derived> ||
-//                 isinstance<impl::wrapped_type<Base>>(std::forward<Derived>(obj));
-//         }
-//     }
-//     template <typename T = impl::wrapped_type<Base>>
-//         requires (std::is_invocable_v<__isinstance__<Derived, T>, Derived, T>)
-//     static constexpr bool operator()(Derived&& obj, Base base) {
-//         if (base->m_value.is(None)) {
-//             return false;  /// TODO: ???
-//         } else {
-//             return isinstance(
-//                 std::forward<Derived>(obj),
-//                 reinterpret_cast<impl::wrapped_type<Derived>>(
-//                     std::forward<Base>(base)->m_value
-//                 )
-//             );
-//         }
-//     }
-// };
-
-
-
-
-
-// template <typename Derived, impl::inherits<impl::OptionalTag> Base>
-// struct __issubclass__<Derived, Base>                         : Returns<bool> {
-//     using Wrapped = std::remove_reference_t<Base>::__wrapped__;
-//     static constexpr bool operator()() {
-//         return impl::none_like<Derived> || issubclass<Derived, Wrapped>();
-//     }
-//     template <typename T = Wrapped>
-//         requires (std::is_invocable_v<__issubclass__<Derived, T>, Derived>)
-//     static constexpr bool operator()(Derived&& obj) {
-//         if constexpr (impl::dynamic<Derived>) {
-//             return
-//                 obj.is(None) ||
-//                 issubclass<Wrapped>(std::forward<Derived>(obj));
-//         } else {
-//             return
-//                 impl::none_like<Derived> ||
-//                 issubclass<Wrapped>(std::forward<Derived>(obj));
-//         }
-//     }
-//     template <typename T = Wrapped>
-//         requires (std::is_invocable_v<__issubclass__<Derived, T>, Derived, T>)
-//     static constexpr bool operator()(Derived&& obj, Base base) {
-//         if (base.is(None)) {
-//             return false;
-//         } else {
-//             return issubclass(std::forward<Derived>(obj), base.value());
-//         }
-//     }
-// };
-
-
-
-/// TODO: isinstance() and issubclass() can be optimized in some cases to just call
-/// std::holds_alternative<T>() on the underlying object, rather than needing to
-/// invoke Python.  This can be done if the type that is checked against is a
-/// supertype of any of the members of the union, in which case the type check can be
-/// reduced to just a simple comparison against the index.
-
-
 /// TODO: __explicit_cast__ for union types?
-
-/// TODO: review constructors and incorporate a forwarding `__explicit_cast__` for
-/// union types.  Then figure out typechecks.
 
 
 /* Initializer list constructor is only enabled for `Optional<T>`, and not for any
@@ -2104,6 +2018,55 @@ struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts..
 /// NOTE: all other operations are only enabled if one or more members of the union
 /// support them, and will return a new union type holding all of the valid results,
 /// or a standard type if the resulting union would be a singleton.
+
+
+template <impl::py_union Derived, impl::py_union Base>
+    requires (impl::UnionIsInstance<Derived, Base>::enable)
+struct __isinstance__<Derived, Base>                        : Returns<bool> {
+    static constexpr bool operator()(Derived obj) {
+        /// TODO: if Derived is a member of the union or a superclass of a member,
+        /// then this can devolve to a simple index check.  Otherwise, it should
+        /// extract the underlying object and recur.
+    }
+    static constexpr bool operator()(Derived obj, Base base) {
+        /// TODO: this should only be enabled if one or more members supports it with
+        /// the given base type.
+    }
+};
+
+
+/// TODO: does this conflict with Object<>?
+
+
+template <impl::py_union Derived, typename Base>
+    requires (impl::UnionIsInstance<Derived, Base>::enable)
+struct __isinstance__<Derived, Base>                        : Returns<bool> {
+    static constexpr bool operator()(Derived obj) {
+        /// TODO: returns true if any of the types match
+    }
+    static constexpr bool operator()(Derived obj, Base base) {
+        /// TODO: only enabled if one or more members supports it
+    }
+};
+
+
+template <typename Derived, impl::py_union Base>
+    requires (impl::UnionIsInstance<Derived, Base>::enable)
+struct __isinstance__<Derived, Base>                        : Returns<bool> {
+    static constexpr bool operator()(Derived obj) {
+        /// TODO: returns true if any of the types match
+    }
+    static constexpr bool operator()(Derived obj, Base base) {
+        /// TODO: only enabled if one or more members supports it
+    }
+};
+
+
+/// TODO: isinstance() and issubclass() can be optimized in some cases to just call
+/// std::holds_alternative<T>() on the underlying object, rather than needing to
+/// invoke Python.  This can be done if the type that is checked against is a
+/// supertype of any of the members of the union, in which case the type check can be
+/// reduced to just a simple comparison against the index.
 
 
 template <impl::py_union Self, StaticStr Name>

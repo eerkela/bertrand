@@ -85,22 +85,11 @@ template <typename Base, typename Derived>
         !std::is_const_v<Base> &&
         !std::is_volatile_v<Base> &&
         impl::inherits<Base, Object> &&
-        impl::inherits<Derived, Object> && (
-            std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, Derived> || (
-                !std::is_invocable_v<__issubclass__<Derived, Base>> &&
-                impl::inherits<Derived, impl::TypeTag>
-            )
-        )
+        impl::inherits<Derived, Object> &&
+        std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, Derived>
     )
 [[nodiscard]] constexpr bool issubclass(Derived&& obj) {
-    if constexpr (std::is_invocable_v<__issubclass__<Derived, Base>, Derived>) {
-        return __issubclass__<Derived, Base>{}(std::forward<Derived>(obj));
-    } else {
-        /// TODO: how is Type<Object> handled here?  Maybe it needs a specialized
-        /// control structure?  Maybe at that point, this control structure is
-        /// only enabled explicitly?
-        return issubclass<Derived, Base>();
-    }
+    return __issubclass__<Derived, Base>{}(std::forward<Derived>(obj));
 }
 
 
