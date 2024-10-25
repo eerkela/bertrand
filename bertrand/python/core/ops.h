@@ -1038,7 +1038,7 @@ template <impl::python L, typename R>
             ) || (
                 !impl::has_call_operator<__iadd__<L, R>> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
-                std::same_as<typename __iadd__<L, R>::type, L>
+                std::derived_from<typename __iadd__<L, R>::type, Object>
             )
         )
     )
@@ -1058,12 +1058,8 @@ decltype(auto) operator+=(L&& lhs, R&& rhs) {
         );
         if (result == nullptr) {
             Exception::from_python();
-        } else if (result == ptr(lhs)) {
-            Py_DECREF(result);
-        } else {
-            lhs = reinterpret_steal<Return>(result);
         }
-        return std::forward<L>(lhs);
+        return reinterpret_steal<Return>(result);
     }
 }
 
@@ -1120,7 +1116,7 @@ template <impl::python L, typename R>
             ) || (
                 !impl::has_call_operator<__isub__<L, R>> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
-                std::same_as<typename __isub__<L, R>::type, L>
+                std::derived_from<typename __isub__<L, R>::type, Object>
             )
         )
     )
@@ -1140,12 +1136,8 @@ decltype(auto) operator-=(L&& lhs, R&& rhs) {
         );
         if (result == nullptr) {
             Exception::from_python();
-        } else if (result == ptr(lhs)) {
-            Py_DECREF(result);
-        } else {
-            lhs = reinterpret_steal<Return>(result);
         }
-        return std::forward<L>(lhs);
+        return reinterpret_steal<Return>(result);
     }
 }
 
@@ -1202,7 +1194,7 @@ template <impl::python L, typename R>
             ) || (
                 !impl::has_call_operator<__imul__<L, R>> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
-                std::same_as<typename __imul__<L, R>::type, L>
+                std::derived_from<typename __imul__<L, R>::type, Object>
             )
         )
     )
@@ -1222,12 +1214,8 @@ decltype(auto) operator*=(L&& lhs, R&& rhs) {
         );
         if (result == nullptr) {
             Exception::from_python();
-        } else if (result == ptr(lhs)) {
-            Py_DECREF(result);
-        } else {
-            lhs = reinterpret_steal<Return>(result);
         }
-        return std::forward<L>(lhs);
+        return reinterpret_steal<Return>(result);
     }
 }
 
@@ -1430,7 +1418,7 @@ template <impl::python L, typename R>
             ) || (
                 !impl::has_call_operator<__itruediv__<L, R>> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
-                std::same_as<typename __itruediv__<L, R>::type, L>
+                std::derived_from<typename __itruediv__<L, R>::type, Object>
             )
         )
     )
@@ -1450,12 +1438,8 @@ decltype(auto) operator/=(L&& lhs, R&& rhs) {
         );
         if (result == nullptr) {
             Exception::from_python();
-        } else if (result == ptr(lhs)) {
-            Py_DECREF(result);
-        } else {
-            lhs = reinterpret_steal<Return>(result);
         }
-        return std::forward<L>(lhs);
+        return reinterpret_steal<Return>(result);
     }
 }
 
@@ -1492,7 +1476,7 @@ template <impl::python L, typename R>
         std::convertible_to<typename __ifloordiv__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __ifloordiv__<L, R>::type, __ifloordiv__<L, R>, L, R> || (
                 !impl::has_call_operator<__ifloordiv__<L, R>> &&
-                std::same_as<typename __ifloordiv__<L, R>::type, L>
+                std::derived_from<typename __ifloordiv__<L, R>::type, Object>
             )
         )
     )
@@ -1508,12 +1492,8 @@ decltype(auto) ifloordiv(L&& lhs, R&& rhs) {
         );
         if (result == nullptr) {
             Exception::from_python();
-        } else if (result == ptr(lhs)) {
-            Py_DECREF(result);
-        } else {
-            lhs = reinterpret_steal<Return>(result);
         }
-        return std::forward<L>(lhs);
+        return reinterpret_steal<Return>(result);
     }
 }
 
@@ -1570,7 +1550,7 @@ template <impl::python L, typename R>
             ) || (
                 !impl::has_call_operator<__imod__<L, R>> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
-                std::same_as<typename __imod__<L, R>::type, L>
+                std::derived_from<typename __imod__<L, R>::type, Object>
             )
         )
     )
@@ -1590,12 +1570,8 @@ decltype(auto) operator%=(L&& lhs, R&& rhs) {
         );
         if (result == nullptr) {
             Exception::from_python();
-        } else if (result == ptr(lhs)) {
-            Py_DECREF(result);
-        } else {
-            lhs = reinterpret_steal<Return>(result);
         }
-        return std::forward<L>(lhs);
+        return reinterpret_steal<Return>(result);
     }
 }
 
@@ -1651,7 +1627,7 @@ template <impl::python L, typename R>
             ) || (
                 !impl::has_call_operator<__ilshift__<L, R>> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
-                std::same_as<typename __ilshift__<L, R>::type, L>
+                std::derived_from<typename __ilshift__<L, R>::type, Object>
             )
         )
     )
@@ -1671,12 +1647,8 @@ decltype(auto) operator<<=(L&& lhs, R&& rhs) {
         );
         if (result == nullptr) {
             Exception::from_python();
-        } else if (result == ptr(lhs)) {
-            Py_DECREF(result);
-        } else {
-            lhs = reinterpret_steal<Return>(result);
         }
-        return std::forward<L>(lhs);
+        return reinterpret_steal<Return>(result);
     }
 }
 
@@ -1732,7 +1704,7 @@ template <impl::python L, typename R>
             ) || (
                 !impl::has_call_operator<__irshift__<L, R>> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
-                std::same_as<typename __irshift__<L, R>::type, L>
+                std::derived_from<typename __irshift__<L, R>::type, Object>
             )
         )
     )
@@ -1752,12 +1724,8 @@ decltype(auto) operator>>=(L&& lhs, R&& rhs) {
         );
         if (result == nullptr) {
             Exception::from_python();
-        } else if (result == ptr(lhs)) {
-            Py_DECREF(result);
-        } else {
-            lhs = reinterpret_steal<Return>(result);
         }
-        return std::forward<L>(lhs);
+        return reinterpret_steal<Return>(result);
     }
 }
 
@@ -1814,7 +1782,7 @@ template <impl::python L, typename R>
             ) || (
                 !impl::has_call_operator<__iand__<L, R>> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
-                std::same_as<typename __iand__<L, R>::type, L>
+                std::derived_from<typename __iand__<L, R>::type, Object>
             )
         )
     )
@@ -1834,12 +1802,8 @@ decltype(auto) operator&=(L&& lhs, R&& rhs) {
         );
         if (result == nullptr) {
             Exception::from_python();
-        } else if (result == ptr(lhs)) {
-            Py_DECREF(result);
-        } else {
-            lhs = reinterpret_steal<Return>(result);
         }
-        return std::forward<L>(lhs);
+        return reinterpret_steal<Return>(result);
     }
 }
 
@@ -1896,7 +1860,7 @@ template <impl::python L, typename R>
             ) || (
                 !impl::has_call_operator<__ior__<L, R>> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
-                std::same_as<typename __ior__<L, R>::type, L>
+                std::derived_from<typename __ior__<L, R>::type, Object>
             )
         )
     )
@@ -1916,12 +1880,8 @@ decltype(auto) operator|=(L&& lhs, R&& rhs) {
         );
         if (result == nullptr) {
             Exception::from_python();
-        } else if (result == ptr(lhs)) {
-            Py_DECREF(result);
-        } else {
-            lhs = reinterpret_steal<Return>(result);
         }
-        return std::forward<L>(lhs);
+        return reinterpret_steal<Return>(result);
     }
 }
 
@@ -1978,7 +1938,7 @@ template <impl::python L, typename R>
             ) || (
                 !impl::has_call_operator<__ixor__<L, R>> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
-                std::same_as<typename __ixor__<L, R>::type, L>
+                std::derived_from<typename __ixor__<L, R>::type, Object>
             )
         )
     )
@@ -1998,12 +1958,8 @@ decltype(auto) operator^=(L&& lhs, R&& rhs) {
         );
         if (result == nullptr) {
             Exception::from_python();
-        } else if (result == ptr(lhs)) {
-            Py_DECREF(result);
-        } else {
-            lhs = reinterpret_steal<Return>(result);
         }
-        return std::forward<L>(lhs);
+        return reinterpret_steal<Return>(result);
     }
 }
 

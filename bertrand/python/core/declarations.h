@@ -1260,6 +1260,10 @@ struct Returns : impl::BertrandTag {
 };
 
 
+/// TODO: maybe all default operator specializations also account for wrapped C++ types,
+/// and are enabled if the underlying type supports the operation.
+
+
 /* Customizes the way C++ templates are exposed to Python.  The closest Python
 analogue to this is the `__class_getitem__` method of a custom type, which in
 Bertrand's case allows navigation of the C++ template hierarchy from Python, by
@@ -1323,6 +1327,54 @@ template <typename Self>
 struct __initializer__                                      : Disable {};
 
 
+/* Enables implicit conversions between any `py::Object` subclass and an arbitrary
+type.  This class handles both conversion to and from Python, as well as conversions
+between Python types at the same time.  Specializations of this class MUST implement a
+custom call operator which takes an instance of `From` and returns an instance of `To`
+(both of which can have arbitrary cvref-qualifiers), with the following rules:
+
+1.  If `From` is a C++ type and `To` is a Python type, then `__cast__<From, To>` will
+    enable an implicit constructor on `To` that accepts a `From` object with the
+    given qualifiers.
+2.  If `From` is a Python type and `To` is a C++ type, then `__cast__<From, To>` will
+    enable an implicit conversion operator on `From` that returns a `To` object with
+    the given qualifiers.
+3.  If both `From` and `To` are Python types, then `__cast__<From, To>` will enable
+    an implicit conversion operator similar to (2), but can interact with the CPython
+    API to ensure dynamic type safety.
+4.  If only `From` is supplied, then the return type must be a `py::Object` subclass
+    and `__cast__<From>` will mark it as being convertible to Python.  In this case,
+    the default behavior is to call the return type's constructor with the given
+    `From` argument, which will apply the correct conversion logic according to the
+    previous rules.  The user does not (and should not) need to implement a custom call
+    operator in this case.
+ */
+template <typename From, typename To = void>
+struct __cast__                                             : Disable {};
+
+
+/* Enables explicit conversions between any `py::Object` subclass and an arbitrary
+type.  This class corresponds to the `static_cast<To>()` operator in C++, which is
+similar to, but more restrictive than the ordinary `__cast__` control struct.
+Specializations of this class MUST implement a custom call operator which takes an
+instance of `From` and returns an instance of `To` (both of which can have arbitrary
+cvref-qualifiers), with the following rules:
+
+1.  If `From` is a C++ type and `To` is a Python type, then `__explicit_cast__<From,
+    To>` will enable an explicit constructor on `To` that accepts a `From` object with
+    the given qualifiers.  Such a constructor will be also called when performing a
+    functional-style cast in C++ (e.g. `To(from)`).
+2.  If `From` is a Python type and `To` is a C++ type, then `__explicit_cast__<From,
+    To>` will enable an explicit conversion operator on `From` that returns a `To`
+    object with the given qualifiers.
+
+Note that normal `__cast__` specializations will always take precedence over explicit
+casts, so this control struct is only used when no implicit conversion would match, and
+the user explicitly specifies the cast. */
+template <typename From, typename To>
+struct __explicit_cast__                                    : Disable {};
+
+
 /* Enables the explicit C++ constructor for any `py::Object` subclass.  The default
 specialization delegates to Python by introspecting `__getattr__<Self, "__init__">` or
 `__getattr__<Self, "__new__">` in that order, which must return member functions,
@@ -1370,54 +1422,6 @@ struct __init__ {
         >
     >;
 };
-
-
-/* Enables implicit conversions between any `py::Object` subclass and an arbitrary
-type.  This class handles both conversion to and from Python, as well as conversions
-between Python types at the same time.  Specializations of this class MUST implement a
-custom call operator which takes an instance of `From` and returns an instance of `To`
-(both of which can have arbitrary cvref-qualifiers), with the following rules:
-
-1.  If `From` is a C++ type and `To` is a Python type, then `__cast__<From, To>` will
-    enable an implicit constructor on `To` that accepts a `From` object with the
-    given qualifiers.
-2.  If `From` is a Python type and `To` is a C++ type, then `__cast__<From, To>` will
-    enable an implicit conversion operator on `From` that returns a `To` object with
-    the given qualifiers.
-3.  If both `From` and `To` are Python types, then `__cast__<From, To>` will enable
-    an implicit conversion operator similar to (2), but can interact with the CPython
-    API to ensure dynamic type safety.
-4.  If only `From` is supplied, then the return type must be a `py::Object` subclass
-    and `__cast__<From>` will mark it as being convertible to Python.  In this case,
-    the default behavior is to call the return type's constructor with the given
-    `From` argument, which will apply the correct conversion logic according to the
-    previous rules.  The user does not (and should not) need to implement a custom call
-    operator in this case.
- */
-template <typename From, typename To = void>
-struct __cast__                                             : Disable {};
-
-
-/* Enables explicit conversions between any `py::Object` subclass and an arbitrary
-type.  This class corresponds to the `static_cast<To>()` operator in C++, which is
-similar to, but more restrictive than the ordinary `__cast__` control struct.
-Specializations of this class MUST implement a custom call operator which takes an
-instance of `From` and returns an instance of `To` (both of which can have arbitrary
-cvref-qualifiers), with the following rules:
-
-1.  If `From` is a C++ type and `To` is a Python type, then `__explicit_cast__<From,
-    To>` will enable an explicit constructor on `To` that accepts a `From` object with
-    the given qualifiers.  Such a constructor will be also called when performing a
-    functional-style cast in C++ (e.g. `To(from)`).
-2.  If `From` is a Python type and `To` is a C++ type, then `__explicit_cast__<From,
-    To>` will enable an explicit conversion operator on `From` that returns a `To`
-    object with the given qualifiers.
-
-Note that normal `__cast__` specializations will always take precedence over explicit
-casts, so this control struct is only used when no implicit conversion would match, and
-the user explicitly specifies the cast. */
-template <typename From, typename To>
-struct __explicit_cast__                                    : Disable {};
 
 
 /* Customizes the `py::repr()` output for an arbitrary type.  Note that `py::repr()` is
@@ -1916,30 +1920,6 @@ struct __neg__ {
 };
 
 
-/// TODO: maybe __increment__/__decrement__ can be enabled by default if the object
-/// supports inplace addition with an integer.
-
-
-/* Enables the C++ prefix `++` operator for any `py::Object` subclass.  Defaults to
-disabled, since there is no equivalent Python operator.  Specializations of this class
-may implement a custom call operator to implement this operator.
-
-Note that postfix `++` is not supported for Python objects, since it would not respect
-C++ copy semantics. */
-template <typename Self>
-struct __increment__                                        : Disable {};
-
-
-/* Enables the C++ prefix `--` operator for any `py::Object` subclass.  Defaults to
-disabled, since there is no equivalent Python operator.  Specializations of this class
-may implement a custom call operator to implement this operator.
-
-Note that postfix `--` is not supported for Python objects, since it would not respect
-C++ copy semantics. */
-template <typename Self>
-struct __decrement__                                        : Disable {};
-
-
 /* Enables the C++ binary `<` operator for any `py::Object` subclass.  The default
 specialization delegates to Python by introspecting `__getattr__<L, "__lt__">`, which
 must return a member function, possibly with Python-style argument annotations.
@@ -2234,6 +2214,29 @@ struct __iadd__ {
 };
 
 
+/* Enables the C++ prefix `++` operator for any `py::Object` subclass.  Enabled by
+default if inplace addition with `Int` is enabled for the given type.  Specializations
+of this class may implement a custom call operator to replace the default behavior.
+
+Note that postfix `++` is not supported for Python objects, since it would not respect
+C++ copy semantics. */
+template <typename Self>
+struct __increment__ {
+    template <typename>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <typename S> requires (__iadd__<S, Int>::enable)
+    struct infer<S> {
+        static constexpr bool enable = true;
+        using type = __iadd__<S, Int>::enable::type;
+    };
+    static constexpr bool enable = infer<Self>::enable;
+    using type = infer<Self>::type;
+};
+
+
 /* Enables the C++ binary `-` operator for any `py::Object` subclass.  the default
 specialization delegates to Python by introspecting either `__getattr__<L, "__sub__">`
 or `__getattr__<R, "__rsub__">` in that order, both of which must return member
@@ -2327,6 +2330,30 @@ struct __isub__ {
     };
     static constexpr bool enable = infer<"__isub__">::enable;
     using type = infer<"__isub__">::type;
+};
+
+
+/* Enables the C++ prefix `--` operator for any `py::Object` subclass.  Enabled by
+default if inplace subtraction with `Int` is enabled for the given type.
+Specializations of this class may implement a custom call operator to implement this
+operator.
+
+Note that postfix `--` is not supported for Python objects, since it would not respect
+C++ copy semantics. */
+template <typename Self>
+struct __decrement__ {
+    template <typename>
+    struct infer {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <typename S> requires (__isub__<S, Int>::enable)
+    struct infer<S> {
+        static constexpr bool enable = true;
+        using type = __isub__<S, Int>::enable::type;
+    };
+    static constexpr bool enable = infer<Self>::enable;
+    using type = infer<Self>::type;
 };
 
 
@@ -3430,19 +3457,6 @@ namespace impl {
     concept is_item = item_helper<std::remove_cvref_t<T>>::enable;
     template <is_item T>
     using item_type = item_helper<std::remove_cvref_t<T>>::type;
-
-    template <typename T>
-    concept lazily_evaluated = is_attr<T> || is_item<T>;
-
-    template <typename T>
-    struct lazy_type_helper {};
-    template <is_attr T>
-    struct lazy_type_helper<T> { using type = attr_type<T>; };
-    template <is_item T>
-    struct lazy_type_helper<T> { using type = item_type<T>; };
-    template <lazily_evaluated T>
-    using lazy_type = lazy_type_helper<std::remove_cvref_t<T>>::type;
-
 
     /// TODO: eventually I should reconsider the following concepts and potentially
     /// standardize them in some way.  Ideally, I can fully remove them and replace

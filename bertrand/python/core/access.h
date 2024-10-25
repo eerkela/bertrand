@@ -38,6 +38,18 @@ void del(impl::Item<Self, Key...>&& item);
 
 namespace impl {
 
+    template <typename T>
+    concept lazily_evaluated = is_attr<T> || is_item<T>;
+
+    template <typename T>
+    struct lazy_type_helper {};
+    template <is_attr T>
+    struct lazy_type_helper<T> { using type = attr_type<T>; };
+    template <is_item T>
+    struct lazy_type_helper<T> { using type = item_type<T>; };
+    template <lazily_evaluated T>
+    using lazy_type = lazy_type_helper<std::remove_cvref_t<T>>::type;
+
     /* A proxy for the result of an attribute lookup that is controlled by the
     `__getattr__`, `__setattr__`, and `__delattr__` control structs.
 
@@ -460,6 +472,9 @@ void del(impl::Item<Self, Key...>&& item) {
         }
     });
 }
+
+
+/// TODO: I think these control structures are duplicating work
 
 
 /* Explicitly convert a lazily-evaluated attribute or item wrapper into a normalized

@@ -699,7 +699,7 @@ public:
     types via the __call__ control struct, enabling static type safety for callable
     Python objects in C++. */
     template <typename Self, typename... Args> requires (__call__<Self, Args...>::enable)
-    decltype(auto) operator()(this Self&& self, Args&&... args);  // {
+    auto operator()(this Self&& self, Args&&... args) -> __call__<Self, Args...>::type;  // {
         /// TODO: move this to func.h
 
         // using call = __call__<Self, Args...>;
