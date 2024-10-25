@@ -1984,32 +1984,10 @@ convertible to `std::nullopt` and `nullptr`, respectively. */
 template <impl::py_union From, typename To>
     requires (!impl::py_union<To> && impl::UnionToType<From>::template convert<To>)
 struct __cast__<From, To>                                   : Returns<To> {
-    template <typename>
-    struct context {};
-    template <typename... Types>
-    struct context<Union<Types...>> {
-        template <size_t I> requires (I < sizeof...(Types))
-        static To get(From from) {
-            return reinterpret_cast<impl::unpack_type<I, Types...>&>(
-                std::forward<From>(from)->m_value
-            );
-        }
-    };
-
-    /// TODO: use .visit()
-
-    template <size_t I>
-    static To get(From from) {
-        using F = std::remove_cvref_t<From>;
-        if (I == from->m_index) {
-            return context<F>::template get<I>(std::forward<From>(from));
-        } else {
-            return get<I + 1>(std::forward<From>(from));
-        }
-    }
-
     static To operator()(From from) {
-        return get<0>(std::forward<From>(from));
+        return std::forward<From>(from).visit([](auto&& value) -> To {
+            return std::forward<decltype(value)>(value);
+        });
     }
 };
 
@@ -2285,49 +2263,17 @@ template <impl::py_union Self, StaticStr Name>
     requires (impl::UnionGetAttr<Self, Name>::enable)
 struct __getattr__<Self, Name> : Returns<typename impl::UnionGetAttr<Self, Name>::type> {
     using type = impl::UnionGetAttr<Self, Name>::type;
-
-    template <typename>
-    struct call {};
-    template <typename... Types>
-    struct call<Union<Types...>> {
-        template <size_t I> requires (I < sizeof...(Types))
-        static type exec(Self self) {
-            using T = impl::qualify_lvalue<impl::unpack_type<I, Types...>, Self>;
+    static type operator()(Self self) {
+        return std::forward<Self>(self).visit([]<typename T>(T&& value) -> type {
             if constexpr (__getattr__<T, Name>::enable) {
-                return getattr<Name>(
-                    reinterpret_cast<T>(std::forward<Self>(self)->m_value)
-                );
+                return getattr<Name>(std::forward<T>(value));
             } else {
                 throw AttributeError(
                     "'" + impl::demangle(typeid(T).name()) + "' object has no "
                     "attribute '" + Name + "'"
                 );
             }
-        }
-    };
-
-    /// TODO: use .visit()
-
-    template <size_t I>
-    static type exec(Self self) {
-        if (I == self->m_index) {
-            return call<std::remove_cvref_t<Self>>::template exec<I>(
-                std::forward<Self>(self)
-            );
-        } else {
-            if constexpr ((I + 1) < impl::UnionTraits<Self>::n) {
-                return exec<I + 1>(std::forward<Self>(self));
-            } else {
-                throw AttributeError(
-                    "'" + impl::demangle(typeid(Self).name()) + "' object has no "
-                    "attribute '" + Name + "'"
-                );
-            }
-        }
-    }
-
-    static type operator()(Self self) {
-        return exec<0>(std::forward<Self>(self));
+        });
     }
 };
 
@@ -2335,16 +2281,11 @@ struct __getattr__<Self, Name> : Returns<typename impl::UnionGetAttr<Self, Name>
 template <impl::py_union Self, StaticStr Name, typename Value>
     requires (impl::UnionSetAttr<Self, Name, Value>::enable)
 struct __setattr__<Self, Name, Value> : Returns<void> {
-    template <typename>
-    struct call {};
-    template <typename... Types>
-    struct call<Union<Types...>> {
-        template <size_t I> requires (I < sizeof...(Types))
-        static void exec(Self self, Value value) {
-            using T = impl::qualify_lvalue<impl::unpack_type<I, Types...>, Self>;
+    static void operator()(Self self, Value value) {
+        std::forward<Self>(self).visit([]<typename T>(T&& self, Value value) -> void {
             if constexpr (__setattr__<T, Name, Value>::enable) {
                 setattr<Name>(
-                    reinterpret_cast<T>(std::forward<Self>(self)->m_value),
+                    std::forward<T>(self),
                     std::forward<Value>(value)
                 );
             } else {
@@ -2353,35 +2294,7 @@ struct __setattr__<Self, Name, Value> : Returns<void> {
                     impl::demangle(typeid(T).name()) + "'"
                 );
             }
-        }
-    };
-
-    /// TODO: use .visit()
-
-    template <size_t I>
-    static void exec(Self self, Value value) {
-        if (I == self->m_index) {
-            call<std::remove_cvref_t<Self>>::template exec<I>(
-                std::forward<Self>(self),
-                std::forward<Value>(value)
-            );
-        } else {
-            if constexpr ((I + 1) < impl::UnionTraits<Self>::n) {
-                exec<I + 1>(
-                    std::forward<Self>(self),
-                    std::forward<Value>(value)
-                );
-            } else {
-                throw AttributeError(
-                    "cannot set attribute '" + Name + "' on object of type '" +
-                    impl::demangle(typeid(Self).name()) + "'"
-                );
-            }
-        }
-    }
-
-    static void operator()(Self self, Value value) {
-        exec<0>(std::forward<Self>(self), std::forward<Value>(value));
+        }, std::forward<Value>(value));
     }
 };
 
@@ -2389,90 +2302,27 @@ struct __setattr__<Self, Name, Value> : Returns<void> {
 template <impl::py_union Self, StaticStr Name>
     requires (impl::UnionDelAttr<Self, Name>::enable)
 struct __delattr__<Self, Name> : Returns<void> {
-    template <typename>
-    struct call {};
-    template <typename... Types>
-    struct call<Union<Types...>> {
-        template <size_t I> requires (I < sizeof...(Types))
-        static void exec(Self self) {
-            using T = impl::qualify_lvalue<impl::unpack_type<I, Types...>, Self>;
+    static void operator()(Self self) {
+        std::forward<Self>(self).visit([]<typename T>(T&& self) -> void {
             if constexpr (__delattr__<T, Name>::enable) {
-                delattr<Name>(
-                    reinterpret_cast<T>(std::forward<Self>(self)->m_value)
-                );
+                delattr<Name>(std::forward<Self>(self));
             } else {
                 throw AttributeError(
                     "cannot delete attribute '" + Name + "' on object of type '" +
                     impl::demangle(typeid(T).name()) + "'"
                 );
             }
-        }
-    };
-
-    /// TODO: use .visit()
-
-    template <size_t I>
-    static void exec(Self self) {
-        if (I == self->m_index) {
-            call<std::remove_cvref_t<Self>>::template exec<I>(
-                std::forward<Self>(self)
-            );
-        } else {
-            if constexpr ((I + 1) < impl::UnionTraits<Self>::n) {
-                exec<I + 1>(std::forward<Self>(self));
-            } else {
-                throw AttributeError(
-                    "cannot delete attribute '" + Name + "' on object of type '" +
-                    impl::demangle(typeid(Self).name()) + "'"
-                );
-            }
-        }
-    }
-
-    static void operator()(Self self) {
-        exec<0>(std::forward<Self>(self));
+        }, std::forward<Self>(self));
     }
 };
 
 
 template <impl::py_union Self>
 struct __repr__<Self> : Returns<std::string> {
-    template <typename>
-    struct call {};
-    template <typename... Types>
-    struct call<Union<Types...>> {
-        template <size_t I> requires (I < sizeof...(Types))
-        static std::string exec(Self self) {
-            using T = impl::qualify_lvalue<impl::unpack_type<I, Types...>, Self>;
-            if constexpr (__repr__<T>::enable) {
-                return repr(reinterpret_cast<T>(std::forward<Self>(self)->m_value));
-            } else {
-                return repr(std::forward<Self>(self)->m_value);
-            }
-        }
-    };
-
-    /// TODO: use .visit()
-
-    template <size_t I>
-    static std::string exec(Self self) {
-        if (I == self->m_index) {
-            return call<std::remove_cvref_t<Self>>::template exec<I>(
-                std::forward<Self>(self)
-            );
-        }
-        if constexpr ((I + 1) < impl::UnionTraits<Self>::n) {
-            return exec<I + 1>(std::forward<Self>(self));
-        } else {
-            throw TypeError(
-                "cannot represent object of type '" +
-                impl::demangle(typeid(Self).name()) + "'"
-            );
-        }
-    }
-
     static std::string operator()(Self self) {
-        return exec<0>(std::forward<Self>(self));
+        return std::forward<Self>(self).visit([]<typename T>(T&& self) -> std::string {
+            return repr(std::forward<T>(self));
+        });
     }
 };
 
