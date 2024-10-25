@@ -474,63 +474,50 @@ void del(impl::Item<Self, Key...>&& item) {
 }
 
 
-/// TODO: I think these control structures are duplicating work
-
-
-/* Explicitly convert a lazily-evaluated attribute or item wrapper into a normalized
-Object instance. */
-template <impl::inherits<Object> Self, impl::lazily_evaluated T>
-    requires (std::constructible_from<Self, impl::lazy_type<T>>)
-struct __init__<Self, T>                           : Returns<Self> {
-    static auto operator()(T&& value) {
-        if constexpr (std::is_lvalue_reference_v<T>) {
-            return Self(reinterpret_borrow<impl::lazy_type<T>>(ptr(value)));
-        } else {
-            return Self(reinterpret_steal<impl::lazy_type<T>>(release(value)));
-        }
-    }
-};
-
-
-/* Implicitly convert a lazily-evaluated attribute or item wrapper into a normalized
-Object instance. */
-template <impl::lazily_evaluated T, impl::inherits<Object> Self>
-    requires (std::convertible_to<impl::lazy_type<T>, Self>)
-struct __cast__<T, Self>                                    : Returns<Self> {
-    static Self operator()(T&& value) {
-        if constexpr (std::is_lvalue_reference_v<T>) {
-            return reinterpret_borrow<impl::lazy_type<T>>(ptr(value));
-        } else {
-            return reinterpret_steal<impl::lazy_type<T>>(release(value));
-        }
-    }
-};
-
-
+/* Implicitly convert a lazily-evaluated attribute or item wrapper to any type that the
+wrapped object can be converted to. */
 template <impl::lazily_evaluated From, typename To>
     requires (std::convertible_to<impl::lazy_type<From>, To>)
 struct __cast__<From, To>                                   : Returns<To> {
-    static To operator()(From&& item) {
-        if constexpr (impl::has_cpp<impl::lazy_type<From>>) {
-            return impl::implicit_cast<To>(from_python(std::forward<From>(item)));
+    static To operator()(From from) {
+        if constexpr (impl::python<To>) {
+            if constexpr (std::is_lvalue_reference_v<From>) {
+                return impl::implicit_cast<To>(
+                    reinterpret_borrow<impl::lazy_type<From>>(ptr(from))
+                );
+           } else {
+                return impl::implicit_cast<To>(
+                    reinterpret_steal<impl::lazy_type<From>>(release(from))
+                );
+            }
         } else {
             return impl::implicit_cast<To>(
-                reinterpret_steal<impl::lazy_type<From>>(ptr(item))
+                from_python(std::forward<From>(from))
             );
         }
     }
 };
 
 
+/* Explicitly convert a lazily-evaluated attribute or item wrapper to any type that the
+wrapped object can be converted to. */
 template <impl::lazily_evaluated From, typename To>
     requires (impl::explicitly_convertible_to<impl::lazy_type<From>, To>)
 struct __explicit_cast__<From, To>                          : Returns<To> {
-    static To operator()(const From& item) {
-        if constexpr (impl::has_cpp<impl::lazy_type<From>>) {
-            return static_cast<To>(from_python(item));
+    static To operator()(From from) {
+        if constexpr (impl::python<To>) {
+            if constexpr (std::is_lvalue_reference_v<From>) {
+                return static_cast<To>(
+                    reinterpret_borrow<impl::lazy_type<From>>(ptr(from))
+                );
+            } else {
+                return static_cast<To>(
+                    reinterpret_steal<impl::lazy_type<From>>(release(from))
+                );
+            }
         } else {
             return static_cast<To>(
-                reinterpret_steal<impl::lazy_type<From>>(ptr(item))
+                from_python(std::forward<From>(from))
             );
         }
     }
@@ -539,15 +526,15 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 
 template <impl::lazily_evaluated Derived, impl::lazily_evaluated Base>
 struct __isinstance__<Derived, Base> : __isinstance__<impl::lazy_type<Derived>, impl::lazy_type<Base>> {};
-template <impl::lazily_evaluated Derived, typename Base> requires (!impl::lazily_evaluated<Base>)
+template <impl::lazily_evaluated Derived, typename Base>
 struct __isinstance__<Derived, Base> : __isinstance__<impl::lazy_type<Derived>, Base> {};
-template <typename Derived, impl::lazily_evaluated Base> requires (!impl::lazily_evaluated<Derived>)
+template <typename Derived, impl::lazily_evaluated Base>
 struct __isinstance__<Derived, Base> : __isinstance__<Derived, impl::lazy_type<Base>> {};
 template <impl::lazily_evaluated Derived, impl::lazily_evaluated Base>
 struct __issubclass__<Derived, Base> : __issubclass__<impl::lazy_type<Derived>, impl::lazy_type<Base>> {};
-template <impl::lazily_evaluated Derived, typename Base> requires (!impl::lazily_evaluated<Base>)
+template <impl::lazily_evaluated Derived, typename Base>
 struct __issubclass__<Derived, Base> : __issubclass__<impl::lazy_type<Derived>, Base> {};
-template <typename Derived, impl::lazily_evaluated Base> requires (!impl::lazily_evaluated<Derived>)
+template <typename Derived, impl::lazily_evaluated Base>
 struct __issubclass__<Derived, Base> : __issubclass__<Derived, impl::lazy_type<Base>> {};
 template <impl::lazily_evaluated Base, StaticStr Name>
 struct __getattr__<Base, Name> : __getattr__<impl::lazy_type<Base>, Name> {};
@@ -585,183 +572,183 @@ template <impl::lazily_evaluated Base>
 struct __decrement__<Base> : __decrement__<impl::lazy_type<Base>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __lt__<L, R> : __lt__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __lt__<L, R> : __lt__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __lt__<L, R> : __lt__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __le__<L, R> : __le__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __le__<L, R> : __le__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __le__<L, R> : __le__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __eq__<L, R> : __eq__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __eq__<L, R> : __eq__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __eq__<L, R> : __eq__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __ne__<L, R> : __ne__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __ne__<L, R> : __ne__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __ne__<L, R> : __ne__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __ge__<L, R> : __ge__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __ge__<L, R> : __ge__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __ge__<L, R> : __ge__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __gt__<L, R> : __gt__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __gt__<L, R> : __gt__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __gt__<L, R> : __gt__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __add__<L, R> : __add__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __add__<L, R> : __add__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __add__<L, R> : __add__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __sub__<L, R> : __sub__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __sub__<L, R> : __sub__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __sub__<L, R> : __sub__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __mul__<L, R> : __mul__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __mul__<L, R> : __mul__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __mul__<L, R> : __mul__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __truediv__<L, R> : __truediv__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __truediv__<L, R> : __truediv__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __truediv__<L, R> : __truediv__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __floordiv__<L, R> : __floordiv__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __floordiv__<L, R> : __floordiv__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __floordiv__<L, R> : __floordiv__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __mod__<L, R> : __mod__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __mod__<L, R> : __mod__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __mod__<L, R> : __mod__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __pow__<L, R> : __pow__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __pow__<L, R> : __pow__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __pow__<L, R> : __pow__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __lshift__<L, R> : __lshift__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __lshift__<L, R> : __lshift__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __lshift__<L, R> : __lshift__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __rshift__<L, R> : __rshift__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __rshift__<L, R> : __rshift__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __rshift__<L, R> : __rshift__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __and__<L, R> : __and__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __and__<L, R> : __and__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __and__<L, R> : __and__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __xor__<L, R> : __xor__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __xor__<L, R> : __xor__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __xor__<L, R> : __xor__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __or__<L, R> : __or__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __or__<L, R> : __or__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __or__<L, R> : __or__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __iadd__<L, R> : __iadd__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __iadd__<L, R> : __iadd__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __iadd__<L, R> : __iadd__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __isub__<L, R> : __isub__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __isub__<L, R> : __isub__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __isub__<L, R> : __isub__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __imul__<L, R> : __imul__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __imul__<L, R> : __imul__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __imul__<L, R> : __imul__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __itruediv__<L, R> : __itruediv__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __itruediv__<L, R> : __itruediv__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __itruediv__<L, R> : __itruediv__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __ifloordiv__<L, R> : __ifloordiv__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __ifloordiv__<L, R> : __ifloordiv__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __ifloordiv__<L, R> : __ifloordiv__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __imod__<L, R> : __imod__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __imod__<L, R> : __imod__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __imod__<L, R> : __imod__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __ipow__<L, R> : __ipow__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __ipow__<L, R> : __ipow__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __ipow__<L, R> : __ipow__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __ilshift__<L, R> : __ilshift__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __ilshift__<L, R> : __ilshift__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __ilshift__<L, R> : __ilshift__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __irshift__<L, R> : __irshift__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __irshift__<L, R> : __irshift__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __irshift__<L, R> : __irshift__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __iand__<L, R> : __iand__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __iand__<L, R> : __iand__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __iand__<L, R> : __iand__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __ixor__<L, R> : __ixor__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __ixor__<L, R> : __ixor__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __ixor__<L, R> : __ixor__<L, impl::lazy_type<R>> {};
 template <impl::lazily_evaluated L, impl::lazily_evaluated R>
 struct __ior__<L, R> : __ior__<impl::lazy_type<L>, impl::lazy_type<R>> {};
-template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+template <impl::lazily_evaluated L, typename R>
 struct __ior__<L, R> : __ior__<impl::lazy_type<L>, R> {};
-template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+template <typename L, impl::lazily_evaluated R>
 struct __ior__<L, R> : __ior__<L, impl::lazy_type<R>> {};
 
 

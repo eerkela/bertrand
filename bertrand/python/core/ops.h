@@ -1038,7 +1038,7 @@ template <impl::python L, typename R>
             ) || (
                 !impl::has_call_operator<__iadd__<L, R>> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
-                std::derived_from<typename __iadd__<L, R>::type, Object>
+                impl::inherits<typename __iadd__<L, R>::type, L>
             )
         )
     )
@@ -1059,7 +1059,9 @@ decltype(auto) operator+=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Return>(result);
+        Return out = reinterpret_steal<Return>(result);
+        lhs = out;
+        return out;
     }
 }
 
@@ -1116,7 +1118,7 @@ template <impl::python L, typename R>
             ) || (
                 !impl::has_call_operator<__isub__<L, R>> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
-                std::derived_from<typename __isub__<L, R>::type, Object>
+                impl::inherits<typename __isub__<L, R>::type, L>
             )
         )
     )
@@ -1137,7 +1139,9 @@ decltype(auto) operator-=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Return>(result);
+        Return out = reinterpret_steal<Return>(result);
+        lhs = out;
+        return out;
     }
 }
 
@@ -1194,7 +1198,7 @@ template <impl::python L, typename R>
             ) || (
                 !impl::has_call_operator<__imul__<L, R>> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
-                std::derived_from<typename __imul__<L, R>::type, Object>
+                impl::inherits<typename __imul__<L, R>::type, L>
             )
         )
     )
@@ -1215,7 +1219,9 @@ decltype(auto) operator*=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Return>(result);
+        Return out = reinterpret_steal<Return>(result);
+        lhs = out;
+        return out;
     }
 }
 
@@ -1418,7 +1424,7 @@ template <impl::python L, typename R>
             ) || (
                 !impl::has_call_operator<__itruediv__<L, R>> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
-                std::derived_from<typename __itruediv__<L, R>::type, Object>
+                impl::inherits<typename __itruediv__<L, R>::type, L>
             )
         )
     )
@@ -1439,7 +1445,9 @@ decltype(auto) operator/=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Return>(result);
+        Return out = reinterpret_steal<Return>(result);
+        lhs = out;
+        return out;
     }
 }
 
@@ -1550,7 +1558,7 @@ template <impl::python L, typename R>
             ) || (
                 !impl::has_call_operator<__imod__<L, R>> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
-                std::derived_from<typename __imod__<L, R>::type, Object>
+                impl::inherits<typename __imod__<L, R>::type, L>
             )
         )
     )
@@ -1571,7 +1579,9 @@ decltype(auto) operator%=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Return>(result);
+        Return out = reinterpret_steal<Return>(result);
+        lhs = out;
+        return out;
     }
 }
 
@@ -1782,7 +1792,7 @@ template <impl::python L, typename R>
             ) || (
                 !impl::has_call_operator<__iand__<L, R>> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
-                std::derived_from<typename __iand__<L, R>::type, Object>
+                impl::inherits<typename __iand__<L, R>::type, L>
             )
         )
     )
@@ -1803,7 +1813,9 @@ decltype(auto) operator&=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Return>(result);
+        Return out = reinterpret_steal<Return>(result);
+        lhs = out;
+        return out;
     }
 }
 
@@ -1860,7 +1872,7 @@ template <impl::python L, typename R>
             ) || (
                 !impl::has_call_operator<__ior__<L, R>> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
-                std::derived_from<typename __ior__<L, R>::type, Object>
+                impl::inherits<typename __ior__<L, R>::type, L>
             )
         )
     )
@@ -1881,7 +1893,9 @@ decltype(auto) operator|=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Return>(result);
+        Return out = reinterpret_steal<Return>(result);
+        lhs = out;
+        return out;
     }
 }
 
@@ -1938,7 +1952,7 @@ template <impl::python L, typename R>
             ) || (
                 !impl::has_call_operator<__ixor__<L, R>> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
-                std::derived_from<typename __ixor__<L, R>::type, Object>
+                impl::inherits<typename __ixor__<L, R>::type, L>
             )
         )
     )
@@ -1959,7 +1973,9 @@ decltype(auto) operator^=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Return>(result);
+        Return out = reinterpret_steal<Return>(result);
+        lhs = out;
+        return out;
     }
 }
 

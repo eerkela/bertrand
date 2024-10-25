@@ -75,6 +75,204 @@ namespace impl {
         using type = convert<typename Pack<Matches...>::deduplicate>::type;
     };
 
+    /* Raw types are converted to a pack of length 1. */
+    template <typename T>
+    struct UnionTraits {
+        using type = T;
+        using pack = Pack<T>;
+    };
+
+    /* Unions are converted into a pack of the same length. */
+    template <py_union T>
+    struct UnionTraits<T> {
+    private:
+
+        template <typename>
+        struct _pack;
+        template <typename... Types>
+        struct _pack<Union<Types...>> {
+            using type = Pack<qualify<Types, T>...>;
+        };
+
+    public:
+        using type = T;
+        using pack = _pack<std::remove_cvref_t<T>>::type;
+    };
+
+    /* A generic visitor function for `Union.visit()`, with some extra metaprogramming
+    facilities to unwrap additional unions given as arguments. */
+    template <typename... Funcs>
+        requires ((impl::has_call_operator<Funcs> || std::is_function_v<
+            std::remove_pointer_t<std::remove_reference_t<Funcs>>
+        >) && ...)
+    struct Visitor : Funcs... {
+    private:
+
+        template <typename>
+        struct callable;
+        template <typename... Permutations>
+        struct callable<Pack<Permutations...>> {
+            template <typename>
+            struct _enable {
+                static constexpr bool enable = false;
+            };
+            template <typename... Args> requires (std::is_invocable_v<Visitor, Args...>)
+            struct _enable<Pack<Args...>> {
+                static constexpr bool enable = true;
+                using type = std::invoke_result_t<Visitor, Args...>;
+            };
+            template <typename...>
+            static constexpr bool consistent = false;
+            template <typename First, typename... Rest>
+                requires (_enable<Permutations>::enable && ...)
+            static constexpr bool consistent<First, Rest...> = (std::same_as<
+                typename _enable<First>::type,
+                typename _enable<Rest>::type
+            > && ...);
+            static constexpr bool enable = consistent<Permutations...>;
+
+            template <bool>
+            struct _type { using type = void; };
+            template <>
+            struct _type<true> {
+                using type = std::common_type_t<typename _enable<Permutations>::type...>;
+            };
+            using type = _type<enable>::type;
+        };
+
+    public:
+        using Funcs::operator()...;
+        Visitor(Funcs... funcs) : Funcs(funcs)... {}
+
+        template <typename...>
+        static constexpr bool enable = false;
+        template <typename First, typename... Rest>
+        static constexpr bool enable<First, Rest...> = callable<
+            typename UnionTraits<First>::pack::template product<
+                UnionTraits<Rest>::pack...
+            >
+        >::enable;
+
+        template <typename First, typename... Rest> requires (enable<First, Rest...>)
+        using type = callable<
+            typename UnionTraits<First>::pack::template product<
+                UnionTraits<Rest>::pack...
+            >
+        >::type;
+    };
+
+    template <typename... Funcs>
+        requires ((impl::has_call_operator<Funcs> || std::is_function_v<
+            std::remove_pointer_t<std::remove_reference_t<Funcs>>
+        >) && ...)
+    Visitor(Funcs&&...) -> Visitor<Funcs...>;
+
+    template <typename, typename...>
+    struct visit_helper;
+    template <typename... Prev>
+    struct visit_helper<Pack<Prev...>> {
+        template <typename Visitor> requires (std::is_invocable_v<Visitor, Prev...>)
+        static decltype(auto) operator()(Visitor&& visitor, Prev... prev) {
+            return std::forward<Visitor>(visitor)(std::forward<Prev>(prev)...);
+        }
+    };
+    template <typename... Prev, typename Curr, typename... Next>
+    struct visit_helper<Pack<Prev...>, Curr, Next...> {
+        template <size_t I, typename Visitor>
+        struct VTable {
+            using Return = std::remove_reference_t<Visitor>::template type<
+                Prev..., Curr, Next...
+            >;
+            static auto create() -> Return(*)(Visitor, Prev..., Curr, Next...) {
+                constexpr auto callback = [](
+                    Visitor visitor,
+                    Prev... prev,
+                    Curr curr,
+                    Next... next
+                ) -> Return {
+                    using T = std::remove_cvref_t<Curr>::template at<I>;
+                    using Q = qualify<T, Curr>;
+                    if constexpr (std::is_lvalue_reference_v<Curr>) {
+                        return visit_helper<Pack<Prev..., Q>, Next...>{}(
+                            std::forward<Visitor>(visitor),
+                            std::forward<Prev>(prev)...,
+                            reinterpret_cast<Q>(curr->m_value),
+                            std::forward<Next>(next)...
+                        );
+                    } else {
+                        return visit_helper<Pack<Prev..., Q>, Next...>{}(
+                            std::forward<Visitor>(visitor),
+                            std::forward<Prev>(prev)...,
+                            reinterpret_steal<T>(release(curr->m_value)),
+                            std::forward<Next>(next)...
+                        );
+                    }
+                };
+                return +callback;
+            };
+        };
+
+        template <typename Visitor>
+            requires (std::remove_cvref_t<Visitor>::template enable<Prev..., Curr, Next...>)
+        static decltype(auto) operator()(
+            Visitor&& visitor,
+            Prev... prev,
+            Curr curr,
+            Next... next
+        ) {
+            if constexpr (py_union<Curr>) {
+                constexpr auto vtable = []<size_t... Is>(std::index_sequence<Is...>) {
+                    return std::array{VTable<Is, Visitor>::create()...};
+                }(std::make_index_sequence<std::remove_cvref_t<Curr>::n>{});
+
+                return vtable[curr->m_index](
+                    std::forward<Visitor>(visitor),
+                    std::forward<Prev>(prev)...,
+                    std::forward<Curr>(curr),
+                    std::forward<Next>(next)...
+                );
+
+            } else {
+                return visit_helper<Pack<Prev..., Curr>, Next...>{}(
+                    std::forward<Visitor>(visitor),
+                    std::forward<Prev>(prev)...,
+                    std::forward<Curr>(curr),
+                    std::forward<Next>(next)...
+                );
+            }
+        }
+    };
+
+}  // namespace impl
+
+
+/* Non-member `py::visit(visitor, args...)` operator, similar to `std::visit()`.  A
+member version of this operator is implemented for `Union` objects, which allows for
+chaining.
+
+The `visitor` object is a temporary that is constructed from either a single function
+or a set of functions enclosed in an initializer list, emulating the overload pattern.
+The `args` are the arguments to be passed to the visitor, which must contain at least
+one union type.  The visitor must be callable for all possible permutations of the
+unions in `args`, and the return type must be consistent across each one.  The
+arguments will be perfectly forwarded in the same order as they are given, with each
+union unwrapped to its actual type.  The order of the unions is irrelevant, and
+non-union arguments can be interspersed freely between them. */
+template <typename... Funcs, typename... Args>
+    requires (
+        (impl::py_union<Args> || ...) &&
+        impl::Visitor<Funcs...>::template enable<Args...>
+    )
+decltype(auto) visit(impl::Visitor<Funcs...>&& visitor, Args&&... args) {
+    return impl::visit_helper<impl::Pack<>, Args...>{}(
+        std::move(visitor),
+        std::forward<Args>(args)...
+    );
+}
+
+
+namespace impl {
+
     /* Allow implicit conversion from the union type if and only if all of its
     qualified members are convertible to that type. */
     template <py_union U>
@@ -122,30 +320,6 @@ namespace impl {
         static constexpr bool convert = convertible<
             std::remove_cvref_t<V>
         >::template convert<Ts...>;
-    };
-
-    /* Raw types are converted to a pack of length 1. */
-    template <typename T>
-    struct UnionTraits {
-        using type = T;
-        using pack = Pack<T>;
-    };
-
-    /* Unions are converted into a pack of the same length. */
-    template <py_union T>
-    struct UnionTraits<T> {
-    private:
-
-        template <typename>
-        struct _pack;
-        template <typename... Types>
-        struct _pack<Union<Types...>> {
-            using type = Pack<Types...>;
-        };
-
-    public:
-        using type = T;
-        using pack = _pack<std::remove_cvref_t<T>>::type;
     };
 
     /* A generalized operator factory that uses template metaprogramming to evaluate a
@@ -221,134 +395,32 @@ namespace impl {
                 OnFailure&& failure,
                 Args... args
             ) {
-                return call<0>(
+                return py::visit(
+                    []<typename... Actual>(
+                        auto&& success,
+                        auto&& failure,
+                        Actual&&... args
+                    ) {
+                        if constexpr (control<Actual...>::enable) {
+                            if constexpr (
+                                !std::is_void_v<type> &&
+                                std::is_invocable_r_v<void, OnSuccess, Actual...>
+                            ) {
+                                success(std::forward<Actual>(args)...);
+                                return None;
+                            } else {
+                                return success(std::forward<Actual>(args)...);
+                            }
+                        } else {
+                            failure(std::forward<Actual>(args)...);
+                            std::unreachable();  // failure() always raises an error
+                        }
+                    },
                     std::forward<OnSuccess>(success),
                     std::forward<OnFailure>(failure),
-                    std::forward<Args>(args)...
+                    args...
                 );
             }
-
-        private:
-
-            template <
-                size_t I,
-                typename OnSuccess,
-                typename OnFailure,
-                typename... Actual
-            >
-            static type call(
-                OnSuccess&& success,
-                OnFailure&& failure,
-                Actual&&... args
-            ) {
-                // base case: all arguments have been processed
-                if constexpr (I == sizeof...(Args)) {
-                    if constexpr (control<Actual...>::enable) {
-                        if constexpr (
-                            !std::is_void_v<type> &&
-                            std::is_invocable_r_v<void, OnSuccess, Actual...>
-                        ) {
-                            success(std::forward<Actual>(args)...);
-                            return None;
-                        } else {
-                            return success(std::forward<Actual>(args)...);
-                        }
-                    } else {
-                        failure(std::forward<Actual>(args)...);
-                        std::unreachable();  // failure() always raises an error
-                    }
-
-                // recursive case: determine the actual type of the current argument
-                } else {
-                    using T = unpack_type<I, Actual...>;
-
-                    // if the argument is a union, recur until the correct index is
-                    // identified, then reinterpret and continue to the next argument
-                    if constexpr (py_union<T>) {
-                        return unpack_union<I, std::remove_cvref_t<T>>::template call<0>(
-                            std::forward<OnSuccess>(success),
-                            std::forward<OnFailure>(failure),
-                            std::forward<Actual>(args)...
-                        );
-
-                    // otherwise, skip to the next argument
-                    } else {
-                        return call<I + 1>(
-                            std::forward<OnSuccess>(success),
-                            std::forward<OnFailure>(failure),
-                            std::forward<Actual>(args)...
-                        );
-                    }
-                }
-            }
-
-            template <size_t I, typename>
-            struct unpack_union;
-            template <size_t I, typename... Types>
-            struct unpack_union<I, Union<Types...>> {
-                template <
-                    size_t J,
-                    typename OnSuccess,
-                    typename OnFailure,
-                    typename... Actual
-                >
-                static type call(
-                    OnSuccess&& success,
-                    OnFailure&& failure,
-                    Actual&&... args
-                ) {
-                    // the union's active index is always within bounds
-                    if constexpr (J == sizeof...(Types)) {
-                        std::unreachable();
-
-                    // if J is equal to the union's active index, then reinterpret
-                    // the object accordingly, carrying over any cvref qualifiers from
-                    // the union itself
-                    } else {
-                        using U = std::conditional_t<
-                            std::is_reference_v<unpack_type<I, Actual...>>,
-                            unpack_type<I, Actual...>,
-                            std::add_rvalue_reference_t<unpack_type<I, Actual...>>
-                        >;
-                        U arg = reinterpret_cast<U>(
-                            unpack_arg<I>(std::forward<Actual>(args)...)
-                        );
-                        if (J == arg->m_index) {
-                            return []<size_t... Prev, size_t... Next>(
-                                U arg,
-                                std::index_sequence<Prev...>,
-                                std::index_sequence<Next...>,
-                                OnSuccess&& success,
-                                OnFailure&& failure,
-                                Actual&&... args
-                            ) {
-                                // once the correct type has been identified, return
-                                // back to the outer call<>() helper.
-                                using T = qualify<unpack_type<J, Types...>, U>;
-                                return op::call<I + 1>(
-                                    std::forward<OnSuccess>(success),
-                                    std::forward<OnFailure>(failure),
-                                    unpack_arg<Prev>(std::forward<Actual>(args)...)...,
-                                    reinterpret_cast<T>(std::forward<U>(arg)->m_value),
-                                    unpack_arg<I + 1 + Next>(std::forward<Actual>(args)...)...
-                                );
-                            }(
-                                std::forward<U>(arg),
-                                std::make_index_sequence<I>{},
-                                std::make_index_sequence<sizeof...(Args) - (I + 1)>{},
-                                std::forward<OnSuccess>(success),
-                                std::forward<OnFailure>(failure),
-                                std::forward<Actual>(args)...
-                            );
-                        }
-                        return unpack_union::call<J + 1>(
-                            std::forward<OnSuccess>(success),
-                            std::forward<OnFailure>(failure),
-                            std::forward<Actual>(args)...
-                        );
-                    }
-                }
-            };
         };
     };
 
@@ -532,6 +604,8 @@ namespace impl {
         template <typename... Ds, typename... Bs>
         struct op<Union<Ds...>, Union<Bs...>> {
             /// TODO: true if ALL Ds are instances of ANY Bs
+            /// TODO: 1-argument form is always enabled, this only applies to 2-arg
+            /// form.
         };
         template <typename... Ds, typename B>
         struct op<Union<Ds...>, B> {
@@ -571,13 +645,147 @@ namespace impl {
         using type = bool;
     };
 
-}
+}  // namespace impl
 
 
 template <typename... Types>
-struct Interface<Union<Types...>> : impl::UnionTag {};
+struct Interface<Union<Types...>> : impl::UnionTag {
+    static constexpr size_t n = sizeof...(Types);
+
+    template <size_t I> requires (I < n)
+    using at = impl::unpack_type<I, Types...>;
+
+    template <typename T> requires (std::same_as<T, Types> || ...)
+    [[nodiscard]] bool is(this auto&& self) {
+        return self->m_index == impl::index_of<T, Types...>;
+    }
+
+    template <typename T> requires (std::same_as<T, Types> || ...)
+    [[nodiscard]] auto get(this auto&& self) -> T {
+        if (self->m_index != impl::index_of<T, Types...>) {
+            throw TypeError(
+                "bad union access: '" + impl::demangle(typeid(T).name()) +
+                "' is not the active type"
+            );
+        }
+        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+            return reinterpret_borrow<T>(ptr(self->m_value));
+        } else {
+            return reinterpret_steal<T>(release(self->m_value));
+        }
+    }
+
+    template <size_t I> requires (I < n)
+    [[nodiscard]] auto get(this auto&& self) -> at<I> {
+        using ref = impl::qualify_lvalue<at<I>, decltype(self)>;
+        if (self->m_index != I) {
+            throw TypeError(
+                "bad union access: '" + impl::demangle(typeid(at<I>).name()) +
+                "' is not the active type"
+            );
+        }
+        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+            return reinterpret_borrow<at<I>>(ptr(self->m_value));
+        } else {
+            return reinterpret_steal<at<I>>(release(self->m_value));
+        }
+    }
+
+    template <typename T> requires (std::same_as<T, Types> || ...)
+    [[nodiscard]] auto get_if(this auto&& self) -> Optional<T> {
+        if (self->m_index != impl::index_of<T, Types...>) {
+            return None;
+        }
+        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+            return reinterpret_borrow<T>(ptr(self->m_value));
+        } else {
+            return reinterpret_steal<T>(release(self->m_value));
+        }
+    }
+
+    template <size_t I> requires (I < n)
+    [[nodiscard]] auto get_if(this auto&& self) -> Optional<at<I>> {
+        if (self->m_index != I) {
+            return None;
+        }
+        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+            return reinterpret_borrow<at<I>>(ptr(self->m_value));
+        } else {
+            return reinterpret_steal<at<I>>(release(self->m_value));
+        }
+    }
+
+    template <typename Self, typename... Funcs, typename... Args>
+        requires (impl::Visitor<Funcs...>::template enable<Self, Args...>)
+    decltype(auto) visit(
+        this Self&& self,
+        impl::Visitor<Funcs...>&& visitor,
+        Args&&... args
+    ) {
+        return py::visit(
+            std::move(visitor),
+            std::forward<Self>(self),
+            std::forward<Args>(args)...
+        );
+    }
+};
+
+
 template <typename... Types>
-struct Interface<Type<Union<Types...>>> : impl::UnionTag {};
+struct Interface<Type<Union<Types...>>> : impl::UnionTag {
+private:
+    using type = Interface<Union<Types...>>;
+
+public:
+    static constexpr size_t n = type::n;
+
+    template <size_t I> requires (I < n)
+    using at = type::template at<I>;
+
+    template <typename T, impl::inherits<type> Self>
+        requires (std::same_as<T, Types> || ...)
+    [[nodiscard]] static bool is(Self&& self) {
+        return std::forward<Self>(self).template holds_alternative<T>();
+    }
+
+    template <typename T, impl::inherits<type> Self>
+        requires (std::same_as<T, Types> || ...)
+    [[nodiscard]] static auto get(Self&& self) -> T {
+        return std::forward<Self>(self).template get<T>();
+    }
+
+    template <size_t I, impl::inherits<type> Self>
+        requires (I < n)
+    [[nodiscard]] static auto get(Self&& self) -> at<I> {
+        return std::forward<Self>(self).template get<I>();
+    }
+
+    template <typename T, impl::inherits<type> Self>
+        requires (std::same_as<T, Types> || ...)
+    [[nodiscard]] static auto get_if(Self&& self) -> Optional<T> {
+        return std::forward<Self>(self).template get_if<T>();
+    }
+
+    template <size_t I, impl::inherits<type> Self>
+        requires (I < n)
+    [[nodiscard]] static auto get_if(Self&& self) -> Optional<at<I>> {
+        return std::forward<Self>(self).template get_if<I>();
+    }
+
+    template <impl::inherits<type> Self, typename... Funcs, typename... Args>
+        requires (impl::Visitor<Funcs...>::template enable<Self, Args...>)
+    static decltype(auto) visit(
+        Self&& self,
+        impl::Visitor<Funcs...>&& visitor,
+        Args&&... args
+    ) {
+        return py::visit(
+            std::move(visitor),
+            std::forward<Self>(self),
+            std::forward<Args>(args)...
+        );
+    }
+};
 
 
 template <typename... Types>
@@ -1788,6 +1996,8 @@ struct __cast__<From, To>                                   : Returns<To> {
         }
     };
 
+    /// TODO: use .visit()
+
     template <size_t I>
     static To get(From from) {
         using F = std::remove_cvref_t<From>;
@@ -2027,6 +2237,11 @@ struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts..
 /// reduced to just a simple comparison against the index.
 
 
+/// TODO: the UnionIsInstance and UnionIsSubclass traits only apply to 1/2 arg forms
+/// of these operators?  The 1-arg form of isinstance() and 0-arg form of issubclass()
+/// are always enabled.
+
+
 template <impl::py_union Derived, impl::py_union Base>
     requires (impl::UnionIsInstance<Derived, Base>::enable)
 struct __isinstance__<Derived, Base>                        : Returns<bool> {
@@ -2091,6 +2306,8 @@ struct __getattr__<Self, Name> : Returns<typename impl::UnionGetAttr<Self, Name>
         }
     };
 
+    /// TODO: use .visit()
+
     template <size_t I>
     static type exec(Self self) {
         if (I == self->m_index) {
@@ -2138,6 +2355,8 @@ struct __setattr__<Self, Name, Value> : Returns<void> {
             }
         }
     };
+
+    /// TODO: use .visit()
 
     template <size_t I>
     static void exec(Self self, Value value) {
@@ -2190,6 +2409,8 @@ struct __delattr__<Self, Name> : Returns<void> {
         }
     };
 
+    /// TODO: use .visit()
+
     template <size_t I>
     static void exec(Self self) {
         if (I == self->m_index) {
@@ -2230,6 +2451,8 @@ struct __repr__<Self> : Returns<std::string> {
             }
         }
     };
+
+    /// TODO: use .visit()
 
     template <size_t I>
     static std::string exec(Self self) {
@@ -3251,97 +3474,6 @@ struct __ior__<L, R> : Returns<typename impl::UnionInplaceOr<L, R>::type> {
     }
 };
 
-
-}
-
-
-namespace std {
-
-    template <typename... Types>
-    struct variant_size<py::Union<Types...>> :
-        std::integral_constant<size_t, sizeof...(Types)>
-    {};
-
-    template <size_t I, typename... Types> requires (I < sizeof...(Types))
-    struct variant_alternative<I, py::Union<Types...>> {
-        using type = py::impl::unpack_type<I, Types...>;
-    };
-
-    template <typename T, py::impl::py_union Self>
-        requires (py::impl::UnionTraits<Self>::template contains<T>)
-    bool holds_alternative(Self&& self) {
-        return py::impl::UnionTraits<Self>::template index_of<T> == self->m_index;
-    }
-
-    template <typename T, py::impl::py_union Self>
-        requires (py::impl::UnionTraits<Self>::template contains<T>)
-    auto get(Self&& self) -> py::impl::qualify_lvalue<T, Self> {
-        using Return = py::impl::qualify_lvalue<T, Self>;
-        constexpr size_t index = py::impl::UnionTraits<Self>::template index_of<T>;
-        if (index == self->m_index) {
-            return reinterpret_cast<Return>(std::forward<Self>(self)->m_value);
-        } else {
-            throw py::TypeError(
-                "bad union access: '" + py::impl::demangle(typeid(T).name()) +
-                "' is not the active type"
-            );
-        }
-    }
-
-    template <size_t I, py::impl::py_union Self>
-        requires (
-            (I < py::impl::UnionTraits<Self>::n) &&
-            py::impl::UnionTraits<Self>::template contains<
-                typename std::variant_alternative_t<I, std::remove_cvref_t<Self>>
-            >
-        )
-    auto get(Self&& self) -> py::impl::qualify_lvalue<
-        typename std::variant_alternative_t<I, std::remove_cvref_t<Self>>,
-        Self
-    > {
-        using Return = py::impl::qualify_lvalue<
-            typename std::variant_alternative_t<I, std::remove_cvref_t<Self>>,
-            Self
-        >;
-        if (I == self->m_index) {
-            return reinterpret_cast<Return>(self->m_value);
-        } else {
-            throw py::TypeError(
-                "bad union access: '" +
-                py::impl::demangle(typeid(std::remove_cvref_t<Return>).name()) +
-                "' is not the active type"
-            );
-        }
-    }
-
-    template <typename T, py::impl::py_union Self>
-        requires (py::impl::UnionTraits<Self>::template contains<T>)
-    auto get_if(Self&& self) -> py::impl::qualify_pointer<T, Self> {
-        return py::impl::UnionTraits<Self>::template index_of<T> == self->m_index ?
-            reinterpret_cast<py::impl::qualify_pointer<T, Self>>(&self->m_value) :
-            nullptr;
-    }
-
-    template <size_t I, py::impl::py_union Self>
-        requires (
-            (I < py::impl::UnionTraits<Self>::n) &&
-            py::impl::UnionTraits<Self>::template contains<
-                typename std::variant_alternative_t<I, std::remove_cvref_t<Self>>
-            >
-        )
-    auto get_if(Self&& self) -> py::impl::qualify_pointer<
-        typename std::variant_alternative_t<I, std::remove_cvref_t<Self>>,
-        Self
-    > {
-        return I == self->m_index ?
-            reinterpret_cast<py::impl::qualify_pointer<
-                typename std::variant_alternative_t<I, std::remove_cvref_t<Self>>,
-                Self
-            >>(&self->m_value) :
-            nullptr;
-    }
-
-    /// TODO: std::visit?
 
 }
 
