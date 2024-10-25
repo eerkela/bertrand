@@ -99,37 +99,30 @@ namespace impl {
         using pack = _pack<std::remove_cvref_t<T>>::type;
     };
 
-    /* A generic visitor function for `Union.visit()`, with some extra metaprogramming
-    facilities to unwrap additional unions given as arguments. */
-    template <typename... Funcs>
-        requires ((impl::has_call_operator<Funcs> || std::is_function_v<
-            std::remove_pointer_t<std::remove_reference_t<Funcs>>
-        >) && ...)
-    struct Visitor : Funcs... {
-    private:
-
+    template <typename...>
+    struct _visit_enable { static constexpr bool enable = false; };
+    template <typename Func, typename... Args> requires (py_union<Args> || ...)
+    struct _visit_enable<Func, Args...> {
         template <typename>
-        struct callable;
+        struct permute;
         template <typename... Permutations>
-        struct callable<Pack<Permutations...>> {
+        struct permute<Pack<Permutations...>> {
             template <typename>
-            struct _enable {
-                static constexpr bool enable = false;
-            };
-            template <typename... Args> requires (std::is_invocable_v<Visitor, Args...>)
-            struct _enable<Pack<Args...>> {
+            struct _enable { static constexpr bool enable = false; };
+            template <typename... Actual> requires (std::is_invocable_v<Func, Actual...>)
+            struct _enable<Pack<Actual...>> {
                 static constexpr bool enable = true;
-                using type = std::invoke_result_t<Visitor, Args...>;
+                using type = std::invoke_result_t<Func, Actual...>;
             };
             template <typename...>
-            static constexpr bool consistent = false;
+            static constexpr bool returns_are_identical = false;
             template <typename First, typename... Rest>
                 requires (_enable<Permutations>::enable && ...)
-            static constexpr bool consistent<First, Rest...> = (std::same_as<
+            static constexpr bool returns_are_identical<First, Rest...> = (std::same_as<
                 typename _enable<First>::type,
                 typename _enable<Rest>::type
             > && ...);
-            static constexpr bool enable = consistent<Permutations...>;
+            static constexpr bool enable = returns_are_identical<Permutations...>;
 
             template <bool>
             struct _type { using type = void; };
@@ -140,32 +133,25 @@ namespace impl {
             using type = _type<enable>::type;
         };
 
-    public:
-        using Funcs::operator()...;
-        Visitor(Funcs... funcs) : Funcs(funcs)... {}
-
         template <typename...>
-        static constexpr bool enable = false;
+        struct _permutations { using type = Pack<>; };
         template <typename First, typename... Rest>
-        static constexpr bool enable<First, Rest...> = callable<
-            typename UnionTraits<First>::pack::template product<
-                UnionTraits<Rest>::pack...
-            >
-        >::enable;
+        struct _permutations<First, Rest...> {
+            using type = UnionTraits<First>::pack::template product<
+                typename UnionTraits<Rest>::pack...
+            >;
+        };
+        using permutations = _permutations<Args...>::type;
 
-        template <typename First, typename... Rest> requires (enable<First, Rest...>)
-        using type = callable<
-            typename UnionTraits<First>::pack::template product<
-                UnionTraits<Rest>::pack...
-            >
-        >::type;
+        static constexpr bool enable = permute<permutations>::enable;
+        using type = permute<permutations>::type;
     };
 
-    template <typename... Funcs>
-        requires ((impl::has_call_operator<Funcs> || std::is_function_v<
-            std::remove_pointer_t<std::remove_reference_t<Funcs>>
-        >) && ...)
-    Visitor(Funcs&&...) -> Visitor<Funcs...>;
+    template <typename Func, typename... Args>
+    static constexpr bool visit_enable = _visit_enable<Func, Args...>::enable;
+
+    template <typename Func, typename... Args> requires (visit_enable<Func, Args...>)
+    using visit_type = _visit_enable<Func, Args...>::type;
 
     template <typename, typename...>
     struct visit_helper;
@@ -179,11 +165,10 @@ namespace impl {
     template <typename... Prev, typename Curr, typename... Next>
     struct visit_helper<Pack<Prev...>, Curr, Next...> {
         template <size_t I, typename Visitor>
+            requires (visit_enable<Visitor, Prev..., Curr, Next...>)
         struct VTable {
-            using Return = std::remove_reference_t<Visitor>::template type<
-                Prev..., Curr, Next...
-            >;
-            static auto create() -> Return(*)(Visitor, Prev..., Curr, Next...) {
+            using Return = visit_type<Visitor, Prev..., Curr, Next...>;
+            static constexpr auto create() -> Return(*)(Visitor, Prev..., Curr, Next...) {
                 constexpr auto callback = [](
                     Visitor visitor,
                     Prev... prev,
@@ -213,7 +198,6 @@ namespace impl {
         };
 
         template <typename Visitor>
-            requires (std::remove_cvref_t<Visitor>::template enable<Prev..., Curr, Next...>)
         static decltype(auto) operator()(
             Visitor&& visitor,
             Prev... prev,
@@ -258,14 +242,10 @@ unions in `args`, and the return type must be consistent across each one.  The
 arguments will be perfectly forwarded in the same order as they are given, with each
 union unwrapped to its actual type.  The order of the unions is irrelevant, and
 non-union arguments can be interspersed freely between them. */
-template <typename... Funcs, typename... Args>
-    requires (
-        (impl::py_union<Args> || ...) &&
-        impl::Visitor<Funcs...>::template enable<Args...>
-    )
-decltype(auto) visit(impl::Visitor<Funcs...>&& visitor, Args&&... args) {
+template <typename Func, typename... Args> requires (impl::visit_enable<Func, Args...>)
+decltype(auto) visit(Func&& visitor, Args&&... args) {
     return impl::visit_helper<impl::Pack<>, Args...>{}(
-        std::move(visitor),
+        std::forward<Func>(visitor),
         std::forward<Args>(args)...
     );
 }
@@ -381,46 +361,6 @@ namespace impl {
             /* 5. If there is only one valid return type, return it directly, otherwise
             construct a new union and convert all of the results to Python. */
             using type = to_union<returns>::type;
-
-            /* 6. Calling the operator will determine the actual type held in each
-            union and forward to either a success or failure callback that is templated
-            to receive them.  If the control structure is not enabled for the observed
-            types, then the failure callback will be used, which is expected to raise a
-            Python-style runtime error, as if you were working with a generic object.
-            Otherwise, the success callback will be used, which will implement the
-            operation with the internal state of each union. */
-            template <typename OnSuccess, typename OnFailure>
-            static type operator()(
-                OnSuccess&& success,
-                OnFailure&& failure,
-                Args... args
-            ) {
-                return py::visit(
-                    []<typename... Actual>(
-                        auto&& success,
-                        auto&& failure,
-                        Actual&&... args
-                    ) {
-                        if constexpr (control<Actual...>::enable) {
-                            if constexpr (
-                                !std::is_void_v<type> &&
-                                std::is_invocable_r_v<void, OnSuccess, Actual...>
-                            ) {
-                                success(std::forward<Actual>(args)...);
-                                return None;
-                            } else {
-                                return success(std::forward<Actual>(args)...);
-                            }
-                        } else {
-                            failure(std::forward<Actual>(args)...);
-                            std::unreachable();  // failure() always raises an error
-                        }
-                    },
-                    std::forward<OnSuccess>(success),
-                    std::forward<OnFailure>(failure),
-                    args...
-                );
-            }
         };
     };
 
@@ -715,15 +655,15 @@ struct Interface<Union<Types...>> : impl::UnionTag {
         }
     }
 
-    template <typename Self, typename... Funcs, typename... Args>
-        requires (impl::Visitor<Funcs...>::template enable<Self, Args...>)
+    template <typename Self, typename Func, typename... Args>
+        requires (impl::visit_enable<Func, Self, Args...>)
     decltype(auto) visit(
         this Self&& self,
-        impl::Visitor<Funcs...>&& visitor,
+        Func&& visitor,
         Args&&... args
     ) {
         return py::visit(
-            std::move(visitor),
+            std::forward<Func>(visitor),
             std::forward<Self>(self),
             std::forward<Args>(args)...
         );
@@ -772,15 +712,15 @@ public:
         return std::forward<Self>(self).template get_if<I>();
     }
 
-    template <impl::inherits<type> Self, typename... Funcs, typename... Args>
-        requires (impl::Visitor<Funcs...>::template enable<Self, Args...>)
+    template <impl::inherits<type> Self, typename Func, typename... Args>
+        requires (impl::visit_enable<Func, Self, Args...>)
     static decltype(auto) visit(
         Self&& self,
-        impl::Visitor<Funcs...>&& visitor,
+        Func&& visitor,
         Args&&... args
     ) {
         return py::visit(
-            std::move(visitor),
+            std::forward<Func>(visitor),
             std::forward<Self>(self),
             std::forward<Args>(args)...
         );
@@ -2332,16 +2272,17 @@ template <impl::py_union Self, typename... Args>
 struct __call__<Self, Args...> : Returns<typename impl::UnionCall<Self, Args...>::type> {
     using type = impl::UnionCall<Self, Args...>::type;
     static type operator()(Self self, Args&&... args) {
-        return impl::UnionCall<Self, Args...>{}(
-            []<typename S, typename... A>(S&& self, A&&... args) {
-                return std::forward<S>(self)(std::forward<A>(args)...);
-            },
-            []<typename S, typename... A>(S&& self, A&&... args) {
-                throw TypeError(
-                    "cannot call object of type '" +
-                    impl::demangle(typeid(S).name()) + "' with the given "
-                    "arguments"
-                );
+        return visit(
+            []<typename S, typename... A>(S&& self, A&&... args) -> type {
+                if constexpr (__call__<S, A...>::enable) {
+                    return std::forward<S>(self)(std::forward<A>(args)...);
+                } else {
+                    throw TypeError(
+                        "cannot call object of type '" +
+                        impl::demangle(typeid(S).name()) + "' with the given "
+                        "arguments"
+                    );
+                }
             },
             std::forward<Self>(self),
             std::forward<Args>(args)...
@@ -2355,15 +2296,16 @@ template <impl::py_union Self, typename... Key>
 struct __getitem__<Self, Key...> : Returns<typename impl::UnionGetItem<Self, Key...>::type> {
     using type = impl::UnionGetItem<Self, Key...>::type;
     static type operator()(Self self, Key... key) {
-        return impl::UnionGetItem<Self, Key...>{}(
-            []<typename S, typename... K>(S&& self, K&&... key) {
-                return std::forward<S>(self)[std::forward<K>(key)...];
-            },
-            []<typename S, typename... K>(S&& self, K&&... key) {
-                throw KeyError(
-                    "cannot get item with the given key(s) from object of type '" +
-                    impl::demangle(typeid(S).name()) + "'"
-                );
+        return visit(
+            []<typename S, typename... K>(S&& self, K&&... key) -> type {
+                if constexpr (__getitem__<S, K...>::enable) {
+                    return std::forward<S>(self)[std::forward<K>(key)...];
+                } else {
+                    throw KeyError(
+                        "cannot get item with the given key(s) from object of type '" +
+                        impl::demangle(typeid(S).name()) + "'"
+                    );
+                }
             },
             std::forward<Self>(self),
             std::forward<Key>(key)...
@@ -2376,15 +2318,20 @@ template <impl::py_union Self, typename Value, typename... Key>
     requires (impl::UnionSetItem<Self, Value, Key...>::enable)
 struct __setitem__<Self, Value, Key...> : Returns<void> {
     static void operator()(Self self, Value value, Key... key) {
-        return impl::UnionSetItem<Self, Value, Key...>{}(
-            []<typename S, typename V, typename... K>(S&& self, V&& value, K&&... key) {
-                std::forward<S>(self)[std::forward<K>(key)...] = std::forward<V>(value);
-            },
-            []<typename S, typename V, typename... K>(S&& self, V&& value, K&&... key) {
-                throw KeyError(
-                    "cannot set item with the given key(s) on object of type '" +
-                    impl::demangle(typeid(S).name()) + "'"
-                );
+        return visit(
+            []<typename S, typename V, typename... K>(
+                S&& self,
+                V&& value,
+                K&&... key
+            ) -> void {
+                if constexpr (__setitem__<S, V, K...>::enable) {
+                    std::forward<S>(self)[std::forward<K>(key)...] = std::forward<V>(value);
+                } else {
+                    throw KeyError(
+                        "cannot set item with the given key(s) on object of type '" +
+                        impl::demangle(typeid(S).name()) + "'"
+                    );
+                }
             },
             std::forward<Self>(self),
             std::forward<Value>(value),
@@ -2398,15 +2345,16 @@ template <impl::py_union Self, typename... Key>
     requires (impl::UnionDelItem<Self, Key...>::enable)
 struct __delitem__<Self, Key...> : Returns<void> {
     static void operator()(Self self, Key... key) {
-        return impl::UnionDelItem<Self, Key...>{}(
-            []<typename S, typename... K>(S&& self, K&&... key) {
-                del(std::forward<S>(self)[std::forward<K>(key)...]);
-            },
-            []<typename S, typename... K>(S&& self, K&&... key) {
-                throw KeyError(
-                    "cannot delete item with the given key(s) from object of type '" +
-                    impl::demangle(typeid(S).name()) + "'"
-                );
+        return visit(
+            []<typename S, typename... K>(S&& self, K&&... key) -> void {
+                if constexpr (__delitem__<S, K...>::enable) {
+                    del(std::forward<S>(self)[std::forward<K>(key)...]);
+                } else {
+                    throw KeyError(
+                        "cannot delete item with the given key(s) from object of type '" +
+                        impl::demangle(typeid(S).name()) + "'"
+                    );
+                }
             },
             std::forward<Self>(self),
             std::forward<Key>(key)...
@@ -2422,16 +2370,17 @@ template <impl::py_union Self>
     )
 struct __hash__<Self> : Returns<size_t> {
     static size_t operator()(Self self) {
-        return impl::UnionHash<Self>{}(
-            std::forward<Self>(self),
+        return visit(
             []<typename S>(S&& self) -> size_t {
-                return hash(std::forward<S>(self));
+                if constexpr (__hash__<S>::enable) {
+                    return hash(std::forward<S>(self));
+                } else {
+                    throw TypeError(
+                        "unhashable type: '" + impl::demangle(typeid(S).name()) + "'"
+                    );
+                }
             },
-            []<typename S>(S&& self) -> size_t {
-                throw TypeError(
-                    "unhashable type: '" + impl::demangle(typeid(S).name()) + "'"
-                );
-            }
+            std::forward<Self>(self)
         );
     }
 };
@@ -2444,15 +2393,16 @@ template <impl::py_union Self>
     )
 struct __len__<Self> : Returns<size_t> {
     static size_t operator()(Self self) {
-        return impl::UnionLen<Self>{}(
+        return visit(
             []<typename S>(S&& self) -> size_t {
-                return len(std::forward<S>(self));
-            },
-            []<typename S>(S&& self) -> size_t {
-                throw TypeError(
-                    "object of type '" + impl::demangle(typeid(S).name()) +
-                    "' has no len()"
-                );
+                if constexpr (__len__<S>::enable) {
+                    return len(std::forward<S>(self));
+                } else {
+                    throw TypeError(
+                        "object of type '" + impl::demangle(typeid(S).name()) +
+                        "' has no len()"
+                    );
+                }
             },
             std::forward<Self>(self)
         );
@@ -2467,15 +2417,16 @@ template <impl::py_union Self, typename Key>
     )
 struct __contains__<Self, Key> : Returns<bool> {
     static bool operator()(Self self, Key key) {
-        return impl::UnionContains<Self, Key>{}(
+        return visit(
             []<typename S, typename K>(S&& self, K&& key) -> bool {
-                return in(std::forward<K>(key), std::forward<S>(self));
-            },
-            []<typename S, typename K>(S&& self, K&& key) -> bool {
-                throw TypeError(
-                    "argument of type '" + impl::demangle(typeid(K).name()) +
-                    "' does not support .contains() checks"
-                );
+                if constexpr (__contains__<S, K>::enable) {
+                    return in(std::forward<K>(key), std::forward<S>(self));
+                } else {
+                    throw TypeError(
+                        "argument of type '" + impl::demangle(typeid(K).name()) +
+                        "' does not support .contains() checks"
+                    );
+                }
             },
             std::forward<Self>(self),
             std::forward<Key>(key)
@@ -2503,15 +2454,16 @@ template <impl::py_union Self> requires (impl::UnionAbs<Self>::enable)
 struct __abs__<Self> : Returns<typename impl::UnionAbs<Self>::type> {
     using type = impl::UnionAbs<Self>::type;
     static type operator()(Self self) {
-        return impl::UnionAbs<Self>{}(
-            []<typename S>(S&& self) {
-                return abs(std::forward<S>(self));
-            },
-            []<typename S>(S&& self) {
-                throw TypeError(
-                    "bad operand type for abs(): '" +
-                    impl::demangle(typeid(S).name()) + "'"
-                );
+        return visit(
+            []<typename S>(S&& self) -> type {
+                if constexpr (__abs__<S>::enable) {
+                    return abs(std::forward<S>(self));
+                } else {
+                    throw TypeError(
+                        "bad operand type for abs(): '" +
+                        impl::demangle(typeid(S).name()) + "'"
+                    );
+                }
             },
             std::forward<Self>(self)
         );
@@ -2523,15 +2475,16 @@ template <impl::py_union Self> requires (impl::UnionInvert<Self>::enable)
 struct __invert__<Self> : Returns<typename impl::UnionInvert<Self>::type> {
     using type = impl::UnionInvert<Self>::type;
     static type operator()(Self self) {
-        return impl::UnionInvert<Self>{}(
-            []<typename S>(S&& self) {
-                return ~std::forward<S>(self);
-            },
-            []<typename S>(S&& self) {
-                throw TypeError(
-                    "bad operand type for unary ~: '" +
-                    impl::demangle(typeid(S).name()) + "'"
-                );
+        return visit(
+            []<typename S>(S&& self) -> type {
+                if constexpr (__invert__<S>::enable) {
+                    return ~std::forward<S>(self);
+                } else {
+                    throw TypeError(
+                        "bad operand type for unary ~: '" +
+                        impl::demangle(typeid(S).name()) + "'"
+                    );
+                }
             },
             std::forward<Self>(self)
         );
@@ -2543,15 +2496,16 @@ template <impl::py_union Self> requires (impl::UnionPos<Self>::enable)
 struct __pos__<Self> : Returns<typename impl::UnionPos<Self>::type> {
     using type = impl::UnionPos<Self>::type;
     static type operator()(Self self) {
-        return impl::UnionPos<Self>{}(
-            []<typename S>(S&& self) {
-                return +std::forward<S>(self);
-            },
-            []<typename S>(S&& self) {
-                throw TypeError(
-                    "bad operand type for unary +: '" +
-                    impl::demangle(typeid(S).name()) + "'"
-                );
+        return visit(
+            []<typename S>(S&& self) -> type {
+                if constexpr (__pos__<S>::enable) {
+                    return +std::forward<S>(self);
+                } else {
+                    throw TypeError(
+                        "bad operand type for unary +: '" +
+                        impl::demangle(typeid(S).name()) + "'"
+                    );
+                }
             },
             std::forward<Self>(self)
         );
@@ -2563,15 +2517,16 @@ template <impl::py_union Self> requires (impl::UnionNeg<Self>::enable)
 struct __neg__<Self> : Returns<typename impl::UnionNeg<Self>::type> {
     using type = impl::UnionNeg<Self>::type;
     static type operator()(Self self) {
-        return impl::UnionNeg<Self>{}(
-            []<typename S>(S&& self) {
-                return -std::forward<S>(self);
-            },
-            []<typename S>(S&& self) {
-                throw TypeError(
-                    "bad operand type for unary -: '" +
-                    impl::demangle(typeid(S).name()) + "'"
-                );
+        return visit(
+            []<typename S>(S&& self) -> type {
+                if constexpr (__neg__<S>::enable) {
+                    return -std::forward<S>(self);
+                } else {
+                    throw TypeError(
+                        "bad operand type for unary -: '" +
+                        impl::demangle(typeid(S).name()) + "'"
+                    );
+                }
             },
             std::forward<Self>(self)
         );
@@ -2583,15 +2538,16 @@ template <impl::py_union Self> requires (impl::UnionIncrement<Self>::enable)
 struct __increment__<Self> : Returns<typename impl::UnionIncrement<Self>::type> {
     using type = impl::UnionIncrement<Self>::type;
     static type operator()(Self self) {
-        return impl::UnionIncrement<Self>{}(
-            []<typename S>(S&& self) {
-                return ++std::forward<S>(self);
-            },
-            []<typename S>(S&& self) {
-                throw TypeError(
-                    "'" + impl::demangle(typeid(S).name()) + "' object cannot be "
-                    "incremented"
-                );
+        return visit(
+            []<typename S>(S&& self) -> type {
+                if constexpr (__increment__<S>::enable) {
+                    return ++std::forward<S>(self);
+                } else {
+                    throw TypeError(
+                        "'" + impl::demangle(typeid(S).name()) + "' object cannot be "
+                        "incremented"
+                    );
+                }
             },
             std::forward<Self>(self)
         );
@@ -2603,15 +2559,16 @@ template <impl::py_union Self> requires (impl::UnionDecrement<Self>::enable)
 struct __decrement__<Self> : Returns<typename impl::UnionDecrement<Self>::type> {
     using type = impl::UnionDecrement<Self>::type;
     static type operator()(Self self) {
-        return impl::UnionDecrement<Self>{}(
-            []<typename S>(S&& self) {
-                return --std::forward<S>(self);
-            },
-            []<typename S>(S&& self) {
-                throw TypeError(
-                    "'" + impl::demangle(typeid(S).name()) + "' object cannot be "
-                    "decremented"
-                );
+        return visit(
+            []<typename S>(S&& self) -> type {
+                if constexpr (__decrement__<S>::enable) {
+                    return --std::forward<S>(self);
+                } else {
+                    throw TypeError(
+                        "'" + impl::demangle(typeid(S).name()) + "' object cannot be "
+                        "decremented"
+                    );
+                }
             },
             std::forward<Self>(self)
         );
@@ -2623,16 +2580,17 @@ template <typename L, typename R> requires (impl::UnionLess<L, R>::enable)
 struct __lt__<L, R> : Returns<typename impl::UnionLess<L, R>::type> {
     using type = impl::UnionLess<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionLess<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) < std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for <: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__lt__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) < std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for <: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -2645,16 +2603,17 @@ template <typename L, typename R> requires (impl::UnionLessEqual<L, R>::enable)
 struct __le__<L, R> : Returns<typename impl::UnionLessEqual<L, R>::type> {
     using type = impl::UnionLessEqual<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionLessEqual<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) <= std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for <=: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__le__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) <= std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for <=: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -2667,16 +2626,17 @@ template <typename L, typename R> requires (impl::UnionEqual<L, R>::enable)
 struct __eq__<L, R> : Returns<typename impl::UnionEqual<L, R>::type> {
     using type = impl::UnionEqual<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionEqual<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) == std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for ==: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__eq__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) == std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for ==: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -2689,16 +2649,17 @@ template <typename L, typename R> requires (impl::UnionNotEqual<L, R>::enable)
 struct __ne__<L, R> : Returns<typename impl::UnionNotEqual<L, R>::type> {
     using type = impl::UnionNotEqual<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionNotEqual<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) != std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for !=: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__ne__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) != std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for !=: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -2711,16 +2672,17 @@ template <typename L, typename R> requires (impl::UnionGreaterEqual<L, R>::enabl
 struct __ge__<L, R> : Returns<typename impl::UnionGreaterEqual<L, R>::type> {
     using type = impl::UnionGreaterEqual<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionGreaterEqual<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) >= std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for >=: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__ge__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) >= std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for >=: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -2733,16 +2695,17 @@ template <typename L, typename R> requires (impl::UnionGreater<L, R>::enable)
 struct __gt__<L, R> : Returns<typename impl::UnionGreater<L, R>::type> {
     using type = impl::UnionGreater<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionGreater<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) > std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for >: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__gt__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) > std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for >: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -2751,20 +2714,22 @@ struct __gt__<L, R> : Returns<typename impl::UnionGreater<L, R>::type> {
 };
 
 
+
 template <typename L, typename R> requires (impl::UnionAdd<L, R>::enable)
 struct __add__<L, R> : Returns<typename impl::UnionAdd<L, R>::type> {
     using type = impl::UnionAdd<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionAdd<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) + std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for +: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__add__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) + std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for +: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -2777,16 +2742,17 @@ template <typename L, typename R> requires (impl::UnionSub<L, R>::enable)
 struct __sub__<L, R> : Returns<typename impl::UnionSub<L, R>::type> {
     using type = impl::UnionSub<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionSub<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) - std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for -: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__sub__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) - std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for -: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -2799,16 +2765,17 @@ template <typename L, typename R> requires (impl::UnionMul<L, R>::enable)
 struct __mul__<L, R> : Returns<typename impl::UnionMul<L, R>::type> {
     using type = impl::UnionMul<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionMul<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) * std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for *: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__mul__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) * std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for *: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -2822,37 +2789,43 @@ template <typename Base, typename Exp, typename Mod>
 struct __pow__<Base, Exp, Mod> : Returns<typename impl::UnionPow<Base, Exp, Mod>::type> {
     using type = impl::UnionPow<Base, Exp, Mod>::type;
     static type operator()(Base base, Exp exp) {
-        return impl::UnionPow<Base, Exp, Mod>{}(
-            []<typename B, typename E>(B&& base, E&& exp) {
-                return pow(std::forward<B>(base), std::forward<E>(exp));
-            },
-            []<typename B, typename E>(B&& base, E&& exp) {
-                throw TypeError(
-                    "unsupported operand types for pow(): '" +
-                    impl::demangle(typeid(B).name()) + "' and '" +
-                    impl::demangle(typeid(E).name()) + "'"
-                );
+        return visit(
+            []<typename B, typename E>(B&& base, E&& exp) -> type {
+                if constexpr (__pow__<B, E>::enable) {
+                    return pow(std::forward<B>(base), std::forward<E>(exp));
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for pow(): '" +
+                        impl::demangle(typeid(B).name()) + "' and '" +
+                        impl::demangle(typeid(E).name()) + "'"
+                    );
+                }
             },
             std::forward<Base>(base),
             std::forward<Exp>(exp)
         );
     }
     static type operator()(Base base, Exp exp, Mod mod) {
-        return impl::UnionPow<Base, Exp, Mod>{}(
-            []<typename B, typename E, typename M>(B&& base, E&& exp, M&& mod) {
-                return pow(
-                    std::forward<B>(base),
-                    std::forward<E>(exp),
-                    std::forward<M>(mod)
-                );
-            },
-            []<typename B, typename E, typename M>(B&& base, E&& exp, M&& mod) {
-                throw TypeError(
-                    "unsupported operand types for pow(): '" +
-                    impl::demangle(typeid(B).name()) + "' and '" +
-                    impl::demangle(typeid(E).name()) + "' and '" +
-                    impl::demangle(typeid(M).name()) + "'"
-                );
+        return visit(
+            []<typename B, typename E, typename M>(
+                    B&& base,
+                    E&& exp,
+                    M&& mod
+                ) -> type {
+                if constexpr (__pow__<B, E, M>::enable) {
+                    return pow(
+                        std::forward<B>(base),
+                        std::forward<E>(exp),
+                        std::forward<M>(mod)
+                    );
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for pow(): '" +
+                        impl::demangle(typeid(B).name()) + "' and '" +
+                        impl::demangle(typeid(E).name()) + "' and '" +
+                        impl::demangle(typeid(M).name()) + "'"
+                    );
+                }
             },
             std::forward<Base>(base),
             std::forward<Exp>(exp),
@@ -2866,16 +2839,17 @@ template <typename L, typename R> requires (impl::UnionTrueDiv<L, R>::enable)
 struct __truediv__<L, R> : Returns<typename impl::UnionTrueDiv<L, R>::type> {
     using type = impl::UnionTrueDiv<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionTrueDiv<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) / std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for /: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__truediv__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) / std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for /: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -2888,16 +2862,17 @@ template <typename L, typename R> requires (impl::UnionFloorDiv<L, R>::enable)
 struct __floordiv__<L, R> : Returns<typename impl::UnionFloorDiv<L, R>::type> {
     using type = impl::UnionFloorDiv<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionFloorDiv<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return floordiv(std::forward<L2>(lhs), std::forward<R2>(rhs));
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for //: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__floordiv__<L2, R2>::enable) {
+                    return floordiv(std::forward<L2>(lhs), std::forward<R2>(rhs));
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for floordiv(): '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -2910,16 +2885,17 @@ template <typename L, typename R> requires (impl::UnionMod<L, R>::enable)
 struct __mod__<L, R> : Returns<typename impl::UnionMod<L, R>::type> {
     using type = impl::UnionMod<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionMod<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) % std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for %: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__mod__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) % std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for %: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -2932,16 +2908,17 @@ template <typename L, typename R> requires (impl::UnionLShift<L, R>::enable)
 struct __lshift__<L, R> : Returns<typename impl::UnionLShift<L, R>::type> {
     using type = impl::UnionLShift<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionLShift<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) << std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for <<: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__lshift__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) << std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for <<: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -2954,16 +2931,17 @@ template <typename L, typename R> requires (impl::UnionRShift<L, R>::enable)
 struct __rshift__<L, R> : Returns<typename impl::UnionRShift<L, R>::type> {
     using type = impl::UnionRShift<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionRShift<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) >> std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for >>: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__rshift__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) >> std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for >>: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -2976,16 +2954,17 @@ template <typename L, typename R> requires (impl::UnionAnd<L, R>::enable)
 struct __and__<L, R> : Returns<typename impl::UnionAnd<L, R>::type> {
     using type = impl::UnionAnd<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionAnd<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) & std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for &: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__and__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) & std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for &: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -2998,16 +2977,17 @@ template <typename L, typename R> requires (impl::UnionXor<L, R>::enable)
 struct __xor__<L, R> : Returns<typename impl::UnionXor<L, R>::type> {
     using type = impl::UnionXor<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionXor<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) ^ std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for ^: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__xor__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) ^ std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for ^: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -3020,16 +3000,17 @@ template <typename L, typename R> requires (impl::UnionOr<L, R>::enable)
 struct __or__<L, R> : Returns<typename impl::UnionOr<L, R>::type> {
     using type = impl::UnionOr<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionOr<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) | std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for |: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__or__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) | std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for |: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -3042,16 +3023,17 @@ template <typename L, typename R> requires (impl::UnionInplaceAdd<L, R>::enable)
 struct __iadd__<L, R> : Returns<typename impl::UnionInplaceAdd<L, R>::type> {
     using type = impl::UnionInplaceAdd<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionInplaceAdd<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) += std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for +=: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__iadd__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) += std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for +=: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -3064,16 +3046,17 @@ template <typename L, typename R> requires (impl::UnionInplaceSub<L, R>::enable)
 struct __isub__<L, R> : Returns<typename impl::UnionInplaceSub<L, R>::type> {
     using type = impl::UnionInplaceSub<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionInplaceSub<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) -= std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for -=: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__isub__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) -= std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for -=: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -3086,16 +3069,17 @@ template <typename L, typename R> requires (impl::UnionInplaceMul<L, R>::enable)
 struct __imul__<L, R> : Returns<typename impl::UnionInplaceMul<L, R>::type> {
     using type = impl::UnionInplaceMul<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionInplaceMul<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) *= std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for *=: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__imul__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) *= std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for *=: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -3109,37 +3093,43 @@ template <typename Base, typename Exp, typename Mod>
 struct __ipow__<Base, Exp, Mod> : Returns<typename impl::UnionInplacePow<Base, Exp, Mod>::type> {
     using type = impl::UnionInplacePow<Base, Exp, Mod>::type;
     static type operator()(Base base, Exp exp) {
-        return impl::UnionInplacePow<Base, Exp, Mod>{}(
-            []<typename B, typename E>(B&& base, E&& exp) {
-                return ipow(std::forward<B>(base), std::forward<E>(exp));
-            },
-            []<typename B, typename E>(B&& base, E&& exp) {
-                throw TypeError(
-                    "unsupported operand types for **=: '" +
-                    impl::demangle(typeid(B).name()) + "' and '" +
-                    impl::demangle(typeid(E).name()) + "'"
-                );
+        return visit(
+            []<typename B, typename E>(B&& base, E&& exp) -> type {
+                if constexpr (__ipow__<B, E>::enable) {
+                    return ipow(std::forward<B>(base), std::forward<E>(exp));
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for ipow(): '" +
+                        impl::demangle(typeid(B).name()) + "' and '" +
+                        impl::demangle(typeid(E).name()) + "'"
+                    );
+                }
             },
             std::forward<Base>(base),
             std::forward<Exp>(exp)
         );
     }
     static type operator()(Base base, Exp exp, Mod mod) {
-        return impl::UnionInplacePow<Base, Exp, Mod>{}(
-            []<typename B, typename E, typename M>(B&& base, E&& exp, M&& mod) {
-                return ipow(
-                    std::forward<B>(base),
-                    std::forward<E>(exp),
-                    std::forward<M>(mod)
-                );
-            },
-            []<typename B, typename E, typename M>(B&& base, E&& exp, M&& mod) {
-                throw TypeError(
-                    "unsupported operand types for **=: '" +
-                    impl::demangle(typeid(B).name()) + "' and '" +
-                    impl::demangle(typeid(E).name()) + "' and '" +
-                    impl::demangle(typeid(M).name()) + "'"
-                );
+        return visit(
+            []<typename B, typename E, typename M>(
+                    B&& base,
+                    E&& exp,
+                    M&& mod
+                ) -> type {
+                if constexpr (__ipow__<B, E, M>::enable) {
+                    return ipow(
+                        std::forward<B>(base),
+                        std::forward<E>(exp),
+                        std::forward<M>(mod)
+                    );
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for ipow(): '" +
+                        impl::demangle(typeid(B).name()) + "' and '" +
+                        impl::demangle(typeid(E).name()) + "' and '" +
+                        impl::demangle(typeid(M).name()) + "'"
+                    );
+                }
             },
             std::forward<Base>(base),
             std::forward<Exp>(exp),
@@ -3153,16 +3143,17 @@ template <typename L, typename R> requires (impl::UnionInplaceTrueDiv<L, R>::ena
 struct __itruediv__<L, R> : Returns<typename impl::UnionInplaceTrueDiv<L, R>::type> {
     using type = impl::UnionInplaceTrueDiv<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionInplaceTrueDiv<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) /= std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for /=: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__itruediv__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) /= std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for /=: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -3175,16 +3166,17 @@ template <typename L, typename R> requires (impl::UnionInplaceFloorDiv<L, R>::en
 struct __ifloordiv__<L, R> : Returns<typename impl::UnionInplaceFloorDiv<L, R>::type> {
     using type = impl::UnionInplaceFloorDiv<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionInplaceFloorDiv<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return ifloordiv(std::forward<L2>(lhs), std::forward<R2>(rhs));
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for //=: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__ifloordiv__<L2, R2>::enable) {
+                    return ifloordiv(std::forward<L2>(lhs), std::forward<R2>(rhs));
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for ifloordiv(): '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -3197,16 +3189,17 @@ template <typename L, typename R> requires (impl::UnionInplaceMod<L, R>::enable)
 struct __imod__<L, R> : Returns<typename impl::UnionInplaceMod<L, R>::type> {
     using type = impl::UnionInplaceMod<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionInplaceMod<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) %= std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for %=: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__imod__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) %= std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for %=: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -3219,16 +3212,17 @@ template <typename L, typename R> requires (impl::UnionInplaceLShift<L, R>::enab
 struct __ilshift__<L, R> : Returns<typename impl::UnionInplaceLShift<L, R>::type> {
     using type = impl::UnionInplaceLShift<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionInplaceLShift<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) <<= std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for <<=: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__ilshift__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) <<= std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for <<=: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -3241,16 +3235,17 @@ template <typename L, typename R> requires (impl::UnionInplaceRShift<L, R>::enab
 struct __irshift__<L, R> : Returns<typename impl::UnionInplaceRShift<L, R>::type> {
     using type = impl::UnionInplaceRShift<L, R>::type;
     static L operator()(L lhs, R rhs) {
-        return impl::UnionInplaceRShift<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) >>= std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for >>=: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__irshift__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) >>= std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for >>=: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -3263,16 +3258,17 @@ template <typename L, typename R> requires (impl::UnionInplaceAnd<L, R>::enable)
 struct __iand__<L, R> : Returns<typename impl::UnionInplaceAnd<L, R>::type> {
     using type = impl::UnionInplaceAnd<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionInplaceAnd<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) &= std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for &: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__iand__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) &= std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for &=: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -3285,16 +3281,17 @@ template <typename L, typename R> requires (impl::UnionInplaceXor<L, R>::enable)
 struct __ixor__<L, R> : Returns<typename impl::UnionInplaceXor<L, R>::type> {
     using type = impl::UnionInplaceXor<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionInplaceXor<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) ^= std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for ^: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__ixor__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) ^= std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for ^=: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
@@ -3307,16 +3304,17 @@ template <typename L, typename R> requires (impl::UnionInplaceOr<L, R>::enable)
 struct __ior__<L, R> : Returns<typename impl::UnionInplaceOr<L, R>::type> {
     using type = impl::UnionInplaceOr<L, R>::type;
     static type operator()(L lhs, R rhs) {
-        return impl::UnionInplaceOr<L, R>{}(
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                return std::forward<L2>(lhs) |= std::forward<R2>(rhs);
-            },
-            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) {
-                throw TypeError(
-                    "unsupported operand types for |: '" +
-                    impl::demangle(typeid(L2).name()) + "' and '" +
-                    impl::demangle(typeid(R2).name()) + "'"
-                );
+        return visit(
+            []<typename L2, typename R2>(L2&& lhs, R2&& rhs) -> type {
+                if constexpr (__ior__<L2, R2>::enable) {
+                    return std::forward<L2>(lhs) |= std::forward<R2>(rhs);
+                } else {
+                    throw TypeError(
+                        "unsupported operand types for |=: '" +
+                        impl::demangle(typeid(L2).name()) + "' and '" +
+                        impl::demangle(typeid(R2).name()) + "'"
+                    );
+                }
             },
             std::forward<L>(lhs),
             std::forward<R>(rhs)
