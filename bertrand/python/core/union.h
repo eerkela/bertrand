@@ -13,13 +13,13 @@ namespace py {
 
 /// TODO: when a Union is returned to Python, I should unpack it and only return the
 /// active member, not the actual union itself.  That effectively means that the
-/// Union object will never need to be used in Python itself, and exists mostly for the
-/// benefit of C++, in order to allow it to conform to Python's dynamic typing.
+/// Union object will never need to be used in Python directly, and exists mostly for
+/// the benefit of C++ code, in order to conform to Python's dynamic typing.
 
 
 template <typename... Types>
     requires (
-        sizeof...(Types) > 0 &&
+        sizeof...(Types) > 1 &&
         (!std::is_reference_v<Types> && ...) &&
         (!std::is_const_v<Types> && ...) &&
         (!std::is_volatile_v<Types> && ...) &&
@@ -52,7 +52,7 @@ namespace impl {
     Union. */
     template <typename>
     struct to_union;
-    template <has_python... Matches>
+    template <typename... Matches>
     struct to_union<Pack<Matches...>> {
         template <typename pack>
         struct convert {
@@ -115,7 +115,6 @@ namespace impl {
         using type = T;
         using pack = _pack<std::remove_cvref_t<T>>::type;
     };
-
 
     template <typename...>
     struct _exhaustive { static constexpr bool enable = false; };
@@ -322,11 +321,18 @@ namespace impl {
         template <typename... Types>
         struct convertible<Union<Types...>> {
             template <typename Out>
-            static constexpr bool convert =
+            static constexpr bool implicit =
                 (std::convertible_to<qualify<Types, U>, Out> && ...);
+            template <typename Out>
+            static constexpr bool convert =
+                (impl::explicitly_convertible_to<qualify<Types, U>, Out> || ...);
         };
         template <typename Out>
-        static constexpr bool convert = convertible<std::remove_cvref_t<U>>::convert;
+        static constexpr bool implicit =
+            convertible<std::remove_cvref_t<U>>::template implicit<Out>;
+        template <typename Out>
+        static constexpr bool convert =
+            convertible<std::remove_cvref_t<U>>::template convert<Out>;
     };
 
     /* Allow implicit conversion from a std::variant if and only if all members have
@@ -593,6 +599,13 @@ namespace impl {
     struct _BinaryUnionIsInstance {
         static constexpr bool enable =
             std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, Derived, Base>;
+
+        static constexpr bool assertion =
+            !(std::same_as<Derived, Object&> && std::same_as<Base, Object&>);
+
+        static_assert(
+            assertion || std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, Derived, Base>
+        );
         using type = bool;
     };
 
@@ -754,7 +767,7 @@ public:
 
 template <typename... Types>
     requires (
-        sizeof...(Types) > 0 &&
+        sizeof...(Types) > 1 &&
         (!std::is_reference_v<Types> && ...) &&
         (!std::is_const_v<Types> && ...) &&
         (!std::is_volatile_v<Types> && ...) &&
@@ -1859,9 +1872,6 @@ struct __template__<Union<Ts...>>                           : Returns<Object> {
 };
 
 
-/// TODO: __explicit_cast__ for union types?
-
-
 /* Initializer list constructor is only enabled for `Optional<T>`, and not for any
 other form of union, where such a call might be ambiguous. */
 template <typename T> requires (__initializer__<T>::enable)
@@ -1946,16 +1956,37 @@ struct __cast__<From, Union<Ts...>>                            : Returns<Union<T
 };
 
 
-/* Universal conversion from a union to any type for which each element of the union is
-convertible.  This covers conversions to `std::variant` provided all types are
-accounted for, as well as to `std::optional` and pointer types whereby `NoneType` is
-convertible to `std::nullopt` and `nullptr`, respectively. */
+/* Universal implicit conversion from a union to any type for which ALL elements of the
+union are implicitly convertible.  This covers conversions to `std::variant` provided
+all types are accounted for, as well as to `std::optional` and pointer types whereby
+`NoneType` is convertible to `std::nullopt` and `nullptr`, respectively. */
 template <impl::py_union From, typename To>
-    requires (!impl::py_union<To> && impl::UnionToType<From>::template convert<To>)
+    requires (!impl::py_union<To> && impl::UnionToType<From>::template implicit<To>)
 struct __cast__<From, To>                                   : Returns<To> {
     static To operator()(From from) {
         return std::forward<From>(from).visit([](auto&& value) -> To {
             return std::forward<decltype(value)>(value);
+        });
+    }
+};
+
+
+/* Unversal explicit conversion from a union to any type for which ANY elements of the
+union are explicitly convertible.  This can potentially raise an error if the actual
+type contained within the union does not support the conversion. */
+template <impl::py_union From, typename To>
+    requires (!impl::py_union<To> && impl::UnionToType<From>::template convert<To>)
+struct __explicit_cast__<From, To>                          : Returns<To> {
+    static To operator()(From from) {
+        return std::forward<From>(from).visit([](auto&& value) -> To {
+            if constexpr (__explicit_cast__<decltype(value), To>::enable) {
+                return static_cast<To>(std::forward<decltype(value)>(value));
+            } else {
+                throw TypeError(
+                    "cannot convert from '" + impl::demangle(typeid(value).name()) +
+                    "' to '" + impl::demangle(typeid(To).name()) + "'"
+                );
+            }
         });
     }
 };
@@ -2291,7 +2322,7 @@ struct __issubclass__<Derived, Base> : Returns<bool> {
                             __issubclass__<T, Base>,
                             T
                         >) {
-                            return issubclass<T>(std::forward<T>(value));
+                            return issubclass<Base>(std::forward<T>(value));
                         } else {
                             throw TypeError(
                                 "unary issubclass<" +
@@ -2844,7 +2875,6 @@ struct __gt__<L, R> : Returns<typename impl::UnionGreater<L, R>::type> {
         );
     }
 };
-
 
 
 template <typename L, typename R> requires (impl::UnionAdd<L, R>::enable)

@@ -130,7 +130,7 @@ template <typename Base, typename Derived>
     if constexpr (std::is_invocable_v<__isinstance__<Derived, Base>, Derived>) {
         return __isinstance__<Derived, Base>{}(std::forward<Derived>(obj));
     } else {
-        return issubclass<Derived, Base>();
+        return issubclass<std::remove_cvref_t<Derived>, Base>();
     }
 }
 
@@ -527,7 +527,7 @@ template <typename Self>
     if constexpr (impl::has_call_operator<__abs__<Self>>) {
         return __abs__<Self>{}(std::forward<Self>(self));
 
-    } else if (impl::has_cpp<Self>) {
+    } else if constexpr (impl::has_cpp<Self>) {
         return std::abs(from_python(std::forward<Self>(self)));
 
     } else {
