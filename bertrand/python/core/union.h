@@ -99,10 +99,28 @@ namespace impl {
         using pack = _pack<std::remove_cvref_t<T>>::type;
     };
 
+    /* Variants are treated like unions. */
+    template <is_variant T>
+    struct UnionTraits<T> {
+    private:
+
+        template <typename>
+        struct _pack;
+        template <typename... Types>
+        struct _pack<std::variant<Types...>> {
+            using type = Pack<qualify<Types, T>...>;
+        };
+
+    public:
+        using type = T;
+        using pack = _pack<std::remove_cvref_t<T>>::type;
+    };
+
+
     template <typename...>
-    struct _visit_enable { static constexpr bool enable = false; };
+    struct _exhaustive { static constexpr bool enable = false; };
     template <typename Func, typename... Args> requires (py_union<Args> || ...)
-    struct _visit_enable<Func, Args...> {
+    struct _exhaustive<Func, Args...> {
         template <typename>
         struct permute;
         template <typename... Permutations>
@@ -148,10 +166,10 @@ namespace impl {
     };
 
     template <typename Func, typename... Args>
-    static constexpr bool visit_enable = _visit_enable<Func, Args...>::enable;
+    static constexpr bool exhaustive = _exhaustive<Func, Args...>::enable;
 
-    template <typename Func, typename... Args> requires (visit_enable<Func, Args...>)
-    using visit_type = _visit_enable<Func, Args...>::type;
+    template <typename Func, typename... Args> requires (exhaustive<Func, Args...>)
+    using visit_type = _exhaustive<Func, Args...>::type;
 
     template <typename, typename...>
     struct visit_helper;
@@ -165,10 +183,10 @@ namespace impl {
     template <typename... Prev, typename Curr, typename... Next>
     struct visit_helper<Pack<Prev...>, Curr, Next...> {
         template <size_t I, typename Visitor>
-            requires (visit_enable<Visitor, Prev..., Curr, Next...>)
+            requires (exhaustive<Visitor, Prev..., Curr, Next...>)
         struct VTable {
             using Return = visit_type<Visitor, Prev..., Curr, Next...>;
-            static constexpr auto create() -> Return(*)(Visitor, Prev..., Curr, Next...) {
+            static constexpr auto python() -> Return(*)(Visitor, Prev..., Curr, Next...) {
                 constexpr auto callback = [](
                     Visitor visitor,
                     Prev... prev,
@@ -195,6 +213,36 @@ namespace impl {
                 };
                 return +callback;
             };
+            static constexpr auto variant() -> Return(*)(Visitor, Prev..., Curr, Next...) {
+                constexpr auto callback = [](
+                    Visitor visitor,
+                    Prev... prev,
+                    Curr curr,
+                    Next... next
+                ) -> Return {
+                    using T = std::variant_alternative_t<I, std::remove_cvref_t<Curr>>;
+                    using Q = qualify<T, Curr>;
+                    if constexpr (
+                        std::is_lvalue_reference_v<Curr> ||
+                        std::is_const_v<std::remove_reference_t<Curr>>
+                    ) {
+                        return visit_helper<Pack<Prev..., Q>, Next...>{}(
+                            std::forward<Visitor>(visitor),
+                            std::forward<Prev>(prev)...,
+                            std::get<I>(curr),
+                            std::forward<Next>(next)...
+                        );
+                    } else {
+                        return visit_helper<Pack<Prev..., Q>, Next...>{}(
+                            std::forward<Visitor>(visitor),
+                            std::forward<Prev>(prev)...,
+                            std::move(std::get<I>(curr)),
+                            std::forward<Next>(next)...
+                        );
+                    }
+                };
+                return +callback;
+            }
         };
 
         template <typename Visitor>
@@ -206,10 +254,22 @@ namespace impl {
         ) {
             if constexpr (py_union<Curr>) {
                 constexpr auto vtable = []<size_t... Is>(std::index_sequence<Is...>) {
-                    return std::array{VTable<Is, Visitor>::create()...};
+                    return std::array{VTable<Is, Visitor>::python()...};
                 }(std::make_index_sequence<std::remove_cvref_t<Curr>::n>{});
 
                 return vtable[curr->m_index](
+                    std::forward<Visitor>(visitor),
+                    std::forward<Prev>(prev)...,
+                    std::forward<Curr>(curr),
+                    std::forward<Next>(next)...
+                );
+
+            } else if constexpr (is_variant<Curr>) {
+                constexpr auto vtable = []<size_t... Is>(std::index_sequence<Is...>) {
+                    return std::array{VTable<Is, Visitor>::variant()...};
+                }(std::make_index_sequence<std::variant_size_v<std::remove_cvref_t<Curr>>>{});
+
+                return vtable[curr.index()](
                     std::forward<Visitor>(visitor),
                     std::forward<Prev>(prev)...,
                     std::forward<Curr>(curr),
@@ -242,7 +302,7 @@ unions in `args`, and the return type must be consistent across each one.  The
 arguments will be perfectly forwarded in the same order as they are given, with each
 union unwrapped to its actual type.  The order of the unions is irrelevant, and
 non-union arguments can be interspersed freely between them. */
-template <typename Func, typename... Args> requires (impl::visit_enable<Func, Args...>)
+template <typename Func, typename... Args> requires (impl::exhaustive<Func, Args...>)
 decltype(auto) visit(Func&& visitor, Args&&... args) {
     return impl::visit_helper<impl::Pack<>, Args...>{}(
         std::forward<Func>(visitor),
@@ -527,63 +587,38 @@ namespace impl {
     };
 
     /// NOTE: __isinstance__ and __issubclass__ cannot be generalized due to using
-    /// several different call signatures, which must be handled uniquely.
-
-    /// TODO: Maybe __isinstance__, __issubclass__, and __repr__ structures need to
-    /// default to enabled as long as the template conditions in the operator are met.
-    /// -> changes to declarations to make sure the state of the control structure
-    /// always determines the enable state of the operator.
-    /// -> Maybe default __isinstance__ and __issubclass__ can enable the 2-argument
-    /// form if the object implements an `__instancecheck__()` or `__subclasscheck__()`
-    /// Python member.
+    /// multiple call signatures, which require special wrapper traits to handle.
 
     template <typename Derived, typename Base>
-    struct UnionIsInstance {
-        template <typename, typename>
-        struct op { static constexpr bool enable = false; };
-        template <typename... Ds, typename... Bs>
-        struct op<Union<Ds...>, Union<Bs...>> {
-            /// TODO: true if ALL Ds are instances of ANY Bs
-            /// TODO: 1-argument form is always enabled, this only applies to 2-arg
-            /// form.
-        };
-        template <typename... Ds, typename B>
-        struct op<Union<Ds...>, B> {
-            /// TODO: true if ALL Ds are instances of B
-        };
-        template <typename D, typename... Bs>
-        struct op<D, Union<Bs...>> {
-            /// TODO: true if D is an instances of ANY Bs
-        };
-        static constexpr bool enable = op<
-            std::remove_cvref_t<Derived>,
-            std::remove_cvref_t<Base>
-        >::enable;
+    struct _BinaryUnionIsInstance {
+        static constexpr bool enable =
+            std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, Derived, Base>;
         using type = bool;
     };
 
     template <typename Derived, typename Base>
-    struct UnionIsSubclass {
-        template <typename, typename>
-        struct op { static constexpr bool enable = false; };
-        template <typename... Ds, typename... Bs>
-        struct op<Union<Ds...>, Union<Bs...>> {
-            /// TODO: true if ALL Ds are subclasses of ANY Bs
-        };
-        template <typename... Ds, typename B>
-        struct op<Union<Ds...>, B> {
-            /// TODO: true if ALL Ds are subclasses of B
-        };
-        template <typename D, typename... Bs>
-        struct op<D, Union<Bs...>> {
-            /// TODO: true if D is a subclass of ANY Bs
-        };
-        static constexpr bool enable = op<
-            std::remove_cvref_t<Derived>,
-            std::remove_cvref_t<Base>
-        >::enable;
+    struct _UnaryUnionIsSubclass {
+        static constexpr bool enable =
+            std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, Derived>;
         using type = bool;
     };
+
+    template <typename Derived, typename Base>
+    struct _BinaryUnionIsSubclass {
+        static constexpr bool enable =
+            std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, Derived, Base>;
+        using type = bool;
+    };
+
+    template <typename Derived, typename Base>
+    using BinaryUnionIsInstance =
+        union_operator<_BinaryUnionIsInstance>::template op<Derived, Base>;
+    template <typename Derived, typename Base>
+    using UnaryUnionIsSubclass =
+        union_operator<_UnaryUnionIsSubclass>::template op<Derived, Base>;
+    template <typename Derived, typename Base>
+    using BinaryUnionIsSubclass =
+        union_operator<_BinaryUnionIsSubclass>::template op<Derived, Base>;
 
 }  // namespace impl
 
@@ -594,11 +629,6 @@ struct Interface<Union<Types...>> : impl::UnionTag {
 
     template <size_t I> requires (I < n)
     using at = impl::unpack_type<I, Types...>;
-
-    template <typename T> requires (std::same_as<T, Types> || ...)
-    [[nodiscard]] bool is(this auto&& self) {
-        return self->m_index == impl::index_of<T, Types...>;
-    }
 
     template <typename T> requires (std::same_as<T, Types> || ...)
     [[nodiscard]] auto get(this auto&& self) -> T {
@@ -656,7 +686,7 @@ struct Interface<Union<Types...>> : impl::UnionTag {
     }
 
     template <typename Self, typename Func, typename... Args>
-        requires (impl::visit_enable<Func, Self, Args...>)
+        requires (impl::exhaustive<Func, Self, Args...>)
     decltype(auto) visit(
         this Self&& self,
         Func&& visitor,
@@ -684,12 +714,6 @@ public:
 
     template <typename T, impl::inherits<type> Self>
         requires (std::same_as<T, Types> || ...)
-    [[nodiscard]] static bool is(Self&& self) {
-        return std::forward<Self>(self).template holds_alternative<T>();
-    }
-
-    template <typename T, impl::inherits<type> Self>
-        requires (std::same_as<T, Types> || ...)
     [[nodiscard]] static auto get(Self&& self) -> T {
         return std::forward<Self>(self).template get<T>();
     }
@@ -713,7 +737,7 @@ public:
     }
 
     template <impl::inherits<type> Self, typename Func, typename... Args>
-        requires (impl::visit_enable<Func, Self, Args...>)
+        requires (impl::exhaustive<Func, Self, Args...>)
     static decltype(auto) visit(
         Self&& self,
         Func&& visitor,
@@ -1812,6 +1836,11 @@ attribute and unwrap the optional if it is present.)doc"
         return (*this)->m_value.is(other);
     }
 
+    template <typename T> requires (std::same_as<T, Types> || ...)
+    [[nodiscard]] bool is() const {
+        return (*this)->m_index == impl::index_of<T, Types...>;
+    }
+
 };
 
 
@@ -2148,53 +2177,156 @@ struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts..
 /// or a standard type if the resulting union would be a singleton.
 
 
-/// TODO: isinstance() and issubclass() can be optimized in some cases to just call
-/// std::holds_alternative<T>() on the underlying object, rather than needing to
-/// invoke Python.  This can be done if the type that is checked against is a
-/// supertype of any of the members of the union, in which case the type check can be
-/// reduced to just a simple comparison against the index.
+template <typename Derived, typename Base>
+    requires (impl::py_union<Derived> || impl::py_union<Base>)
+struct __isinstance__<Derived, Base> : Returns<bool> {
+    template <typename>
+    struct unary;
+    template <typename... Types>
+    struct unary<Union<Types...>> {
+        static bool operator()(auto&& value) {
+            return (isinstance<Types>(std::forward<decltype(value)>(value)) || ...);
+        }
+    };
 
-
-/// TODO: the UnionIsInstance and UnionIsSubclass traits only apply to 1/2 arg forms
-/// of these operators?  The 1-arg form of isinstance() and 0-arg form of issubclass()
-/// are always enabled.
-
-
-template <impl::py_union Derived, impl::py_union Base>
-    requires (impl::UnionIsInstance<Derived, Base>::enable)
-struct __isinstance__<Derived, Base>                        : Returns<bool> {
     static constexpr bool operator()(Derived obj) {
-        /// TODO: if Derived is a member of the union or a superclass of a member,
-        /// then this can devolve to a simple index check.  Otherwise, it should
-        /// extract the underlying object and recur.
+        if constexpr (impl::py_union<Derived>) {
+            return visit(
+                []<typename T>(T&& value) -> bool {
+                    if constexpr (impl::py_union<Base>) {
+                        return unary<std::remove_cvref_t<Base>>{}(std::forward<T>(value));
+                    } else {
+                        return isinstance<Base>(std::forward<T>(value));
+                    }
+                },
+                std::forward<Derived>(obj)
+            );
+        } else {
+            return unary<std::remove_cvref_t<Base>>{}(std::forward<Derived>(obj));
+        }
     }
-    static constexpr bool operator()(Derived obj, Base base) {
-        /// TODO: this should only be enabled if one or more members supports it with
-        /// the given base type.
+
+    template <typename D, typename B>
+        requires (impl::BinaryUnionIsInstance<D, B>::enable)
+    static constexpr bool operator()(D&& obj, B&& base) {
+        return visit(
+            []<typename D2, typename B2>(D2&& obj, B2&& base) -> bool {
+                if constexpr (std::is_invocable_r_v<bool, __isinstance__<D2, B2>, D2, B2>) {
+                    return isinstance(std::forward<D2>(obj), std::forward<B2>(base));
+                } else {
+                    throw TypeError(
+                        "isinstance() arg 2 must be a type, a tuple of types, a "
+                        "union, or an object that implements __instancecheck__(), "
+                        "not: " + repr(base)
+                    );
+                }
+            },
+            std::forward<D>(obj),
+            std::forward<B>(base)
+        );
     }
 };
 
 
-template <impl::py_union Derived, typename Base>
-    requires (impl::UnionIsInstance<Derived, Base>::enable)
-struct __isinstance__<Derived, Base>                        : Returns<bool> {
-    static constexpr bool operator()(Derived obj) {
-        /// TODO: returns true if any of the types match
-    }
-    static constexpr bool operator()(Derived obj, Base base) {
-        /// TODO: only enabled if one or more members supports it
-    }
-};
+template <typename Derived, typename Base>
+    requires (impl::py_union<Derived> || impl::py_union<Base>)
+struct __issubclass__<Derived, Base> : Returns<bool> {
+    template <typename, typename>
+    struct nullary;
+    template <typename... Ds, typename... Bs>
+    struct nullary<Union<Ds...>, Union<Bs...>> {
+        template <typename D>
+        struct helper {
+            static constexpr bool operator()() { return (issubclass<D, Bs>() || ...); }
+        };
+        static constexpr bool operator()() { return (helper<Ds>{}() && ...); }
+    };
+    template <typename... Ds, typename B>
+    struct nullary<Union<Ds...>, B> {
+        static constexpr bool operator()() { return (issubclass<Ds, B>() && ...); }
+    };
+    template <typename D, typename... Bs>
+    struct nullary<D, Union<Bs...>> {
+        static constexpr bool operator()() { return (issubclass<D, Bs>() || ...); }
+    };
 
-
-template <typename Derived, impl::py_union Base>
-    requires (impl::UnionIsInstance<Derived, Base>::enable)
-struct __isinstance__<Derived, Base>                        : Returns<bool> {
-    static constexpr bool operator()(Derived obj) {
-        /// TODO: returns true if any of the types match
+    static constexpr bool operator()() {
+        return nullary<Derived, Base>{}();
     }
-    static constexpr bool operator()(Derived obj, Base base) {
-        /// TODO: only enabled if one or more members supports it
+
+    template <typename>
+    struct unary;
+    template <typename... Types>
+    struct unary<Union<Types...>> {
+        template <typename T>
+        struct helper {
+            static constexpr bool operator()(auto&& value) {
+                if constexpr (std::is_invocable_r_v<
+                    bool,
+                    __issubclass__<T, decltype(value)>,
+                    decltype(value)
+                >) {
+                    return issubclass<T>(std::forward<decltype(value)>(value));
+                } else {
+                    return false;
+                }
+            }
+        };
+
+        static bool operator()(auto&& value) {
+            return (helper<Types>(std::forward<decltype(value)>(value)) || ...);
+        }
+    };
+
+    template <typename D> requires (impl::UnaryUnionIsSubclass<D, Base>::enable)
+    static constexpr bool operator()(D&& obj) {
+        if constexpr (impl::py_union<D>) {
+            return visit(
+                []<typename T>(T&& value) -> bool {
+                    if constexpr (impl::py_union<Base>) {
+                        return unary<std::remove_cvref_t<Base>>{}(std::forward<T>(value));
+                    } else {
+                        if constexpr (std::is_invocable_r_v<
+                            bool,
+                            __issubclass__<T, Base>,
+                            T
+                        >) {
+                            return issubclass<T>(std::forward<T>(value));
+                        } else {
+                            throw TypeError(
+                                "unary issubclass<" +
+                                impl::demangle(typeid(Base).name()) +
+                                ">() is not enabled for argument of type '" +
+                                impl::demangle(typeid(T).name()) + "'"
+                            );
+                        }
+                    }
+                },
+                std::forward<D>(obj)
+            );
+        } else {
+            return unary<std::remove_cvref_t<Base>>{}(std::forward<D>(obj));
+        }
+    }
+
+    template <typename D, typename B>
+        requires (impl::BinaryUnionIsSubclass<D, B>::enable)
+    static constexpr bool operator()(D&& obj, B&& base) {
+        return visit(
+            []<typename D2, typename B2>(D2&& obj, B2&& base) -> bool {
+                if constexpr (std::is_invocable_r_v<bool, __issubclass__<D2, B2>, D2, B2>) {
+                    return issubclass(std::forward<D2>(obj), std::forward<B2>(base));
+                } else {
+                    throw TypeError(
+                        "binary issubclass() requires a type as the first argument "
+                        "and a type, a tuple of types, a union, or an object that "
+                        "implements __subclasscheck__() as the second argument"
+                    );
+                }
+            },
+            std::forward<D>(obj),
+            std::forward<B>(base)
+        );
     }
 };
 
