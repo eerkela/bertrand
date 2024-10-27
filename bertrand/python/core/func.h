@@ -369,13 +369,22 @@ namespace impl {
         size_t seed;
         size_t prime;
 
-        /// TODO: rather than passing a PyObject* directly, maybe use Object semantics.
-
         Inspect(
-            PyObject* func,
+            const Object& func,
             size_t seed,
             size_t prime
-        ) : func(reinterpret_borrow<Object>(func)),
+        ) : func(func),
+            signature(get_signature()),
+            parameters(get_parameters()),
+            seed(seed),
+            prime(prime)
+        {}
+
+        Inspect(
+            Object&& func,
+            size_t seed,
+            size_t prime
+        ) : func(std::move(func)),
             signature(get_signature()),
             parameters(get_parameters()),
             seed(seed),
@@ -827,229 +836,116 @@ namespace impl {
                 Exception::from_python();
             }
 
-            /// TODO: insert return type into the key tuple, then proceed similar to
-            /// the key() method above.
+            // first element lists type of bound `self` argument, descriptor type, and
+            // return type as a slice
             PyObject* returns = this->returns();
-            if (!returns) {
-                /// TODO: somehow represent a noreturn function.  Maybe the template
-                /// key uses an empty in this case? [::, ...]
+            if (!returns || returns == reinterpret_cast<PyObject*>(Py_TYPE(Py_None))) {
+                returns = Py_None;
             }
-
-
-            /// NOTE: the primary difficulty here is handling unions, which cannot be
-            /// directly reflected in C++.  In order to accomodate these, we analyze
-            /// the MRO of each element in the union to find a common ancestor, which
-            /// is then used in the final key.
-
-            /// TODO: all of this MRO garbage is super hard.
-            /// -> What would be really cool is if unions were translated into
-            /// std::variants in C++ and vice versa, but that's a lot of work.
-
-            std::vector<PyObject*> returns = this->returns();
-            if (returns.size() > 1) {
-
-            } else {
-
-            }
-
-            size_t offset = 1;
-            if (size() > 1) {
-                bool has_posonly = false;
-                bool found_posonly = false;
-                bool has_kwonly = false;
-                for (size_t i = 0; i < nparams; ++i) {
-                    // account for `/` and `*` delimiters by growing the tuple and
-                    // incrementing the write offset
-                    Object parameter = reinterpret_borrow<Object>(
-                        PyTuple_GET_ITEM(ptr(parameters), i)
-                    );
-                    Object kind = getattr<"kind">(parameter);
-                    if (kind.is(POSITIONAL_ONLY)) {
-                        has_posonly = true;
-                    } else if (!kind.is(VAR_POSITIONAL)) {
-                        if (has_posonly && !found_posonly) {
-                            found_posonly = true;
-                            PyObject* new_key = PyTuple_New(nparams + offset + 1);
-                            if (new_key == nullptr) {
-                                Exception::from_python();
-                            }
-                            for (size_t j = 0, end = i + offset; j < end; ++j) {
-                                PyTuple_SET_ITEM(
-                                    new_key,
-                                    j,
-                                    Py_NewRef(PyTuple_GET_ITEM(ptr(result), j))
-                                );
-                            }
-                            result = reinterpret_steal<Object>(new_key);
-                            PyTuple_SET_ITEM(
-                                ptr(result),
-                                i + offset,
-                                release(template_string<"/">())
-                            );
-                            ++offset;
-                        } else if (kind.is(KEYWORD_ONLY) && !has_kwonly) {
-                            has_kwonly = true;
-                            PyObject* new_key = PyTuple_New(++nparams + 1);
-                            if (new_key == nullptr) {
-                                Exception::from_python();
-                            }
-                            for (size_t j = 0, end = i + offset; j < end; ++j) {
-                                PyTuple_SET_ITEM(
-                                    new_key,
-                                    j,
-                                    Py_NewRef(PyTuple_GET_ITEM(ptr(result), j))
-                                );
-                            }
-                            result = reinterpret_steal<Object>(new_key);
-                            PyTuple_SET_ITEM(
-                                ptr(result),
-                                i + offset,
-                                release(template_string<"*">())
-                            );
-                            ++offset;
-                        }
-                    }
-
-                    // get the MRO for each parameter at this index
-                    std::unordered_set<MRO, typename MRO::Hash, std::equal_to<>> mros;
-                    size_t max_length = 0;
-                    for (const auto& key : *this) {
-                        const impl::Param& param = key[i];
-                        Object order = reinterpret_steal<Object>(PyObject_GetAttr(
-                            PyType_Check(param.type) ?
-                                param.type :
-                                reinterpret_cast<PyObject*>(Py_TYPE(param.type)),
-                            ptr(template_string<"__mro__">())
-                        ));
-                        if (order.is(nullptr)) {
-                            Exception::from_python();
-                        }
-                        size_t size = len(order);
-                        if (size > max_length) {
-                            max_length = size;
-                        }
-                        mros.insert({std::move(order), size});
-                    }
-
-                    // traverse the MROs to find the first common ancestor, which
-                    // always terminates at the root `object` type as a fallback
-                    size_t depth = 0;
-                    PyObject* common = nullptr;
-                    while (depth < max_length) {
-                        for (const auto& key : *this) {
-                            const impl::Param& param = key[i];
-                            const MRO& mro = *(mros.find(PyType_Check(param.type) ?
-                                param.type :
-                                reinterpret_cast<PyObject*>(Py_TYPE(param.type))
-                            ));
-
-                            // MROs are not guaranteed to be the same length, and we
-                            // want to prefer the longest one, so we align them by the
-                            // last element, and then truncate until the depth has
-                            // exceeded the difference in lengths
-                            size_t offset = max_length - mro.size;
-                            common = PyTuple_GET_ITEM(
-                                ptr(mro.order),
-                                depth < offset ? 0 : depth - offset
-                            );
-                            for (auto [order, size] : mros) {
-                                offset = max_length - size;
-                                PyObject* type = PyTuple_GET_ITEM(
-                                    ptr(order),
-                                    depth < offset ? 0 : depth - offset
-                                );
-                                if (type != common) {
-                                    // if any element does not pass an issubclass
-                                    // check, then we break out of the loop and
-                                    // increment the depth until a match is found
-                                    int rc = PyObject_IsSubclass(
-                                        type,
-                                        common
-                                    );
-                                    if (rc < 0) {
-                                        Exception::from_python();
-                                    } else if (!rc) {
-                                        common = nullptr;
-                                        break;
-                                    }
-                                }
-                            }
-                            if (common) {
-                                break;
-                            }
-                        }
-                        if (common) {
-                            break;
-                        }
-                        ++depth;
-                    }
-
-                    /// TODO: write to the result tuple using the computed offset.
-
-
-
-                    /// TODO: this is all wrong, and needs to account for correct
-                    /// slice construction.
-                    Object parameter = this->at(i);
-                    Object empty = getattr<"empty">(parameter);
-                    PyObject* slice = PySlice_New(
-                        ptr(getattr<"name">(parameter)),
-                        common,
-                        getattr<"default">(parameter).is(empty) ?
-                            Py_None :
-                            Py_Ellipsis
-                    );
-                    if (slice == nullptr) {
-                        Exception::from_python();
-                    }
-                    PyTuple_SET_ITEM(ptr(key), i + 1, slice);
+            Object self = getattr<"__self__">(func, None);
+            if (PyType_Check(ptr(self))) {
+                PyObject* slice = PySlice_New(
+                    ptr(self),
+                    reinterpret_cast<PyObject*>(&PyClassMethodDescr_Type),
+                    returns
+                );
+                if (slice == nullptr) {
+                    Exception::from_python();
                 }
-
+                PyTuple_SET_ITEM(ptr(result), 0, slice);  // steals a reference
             } else {
-                const auto& params = overload_keys[0];
-                for (size_t i = 0; i < nparams; ++i) {
-                    const impl::Param& param = params[i];
-                    if (param.posonly()) {
-                        if (!param.opt()) {
-                            PyTuple_SET_ITEM(
-                                ptr(key),
-                                i + 1,
-                                Py_NewRef(param.type)
-                            );
-                        } else {
-                            PyObject* slice = PySlice_New(
-                                param.type,
-                                Py_Ellipsis,
-                                Py_None
-                            );
-                            if (slice == nullptr) {
-                                Exception::from_python();
-                            }
-                            PyTuple_SET_ITEM(ptr(key), i + 1, slice);
-                        }
-                    } else {
-                        Object name = reinterpret_steal<Object>(
-                            PyUnicode_FromStringAndSize(
-                                param.name.data(),
-                                param.name.size()
-                            )
+                PyObject* slice = PySlice_New(
+                    reinterpret_cast<PyObject*>(Py_TYPE(ptr(self))),
+                    Py_None,
+                    returns
+                );
+                if (slice == nullptr) {
+                    Exception::from_python();
+                }
+                PyTuple_SET_ITEM(ptr(result), 0, slice);  // steals a reference
+            }
+
+            /// remaining elements are parameters, with slices, '/', '*', etc.
+            const Params<std::vector<Param>>& key = this->key();
+            Py_ssize_t offset = 1;
+            Py_ssize_t posonly_idx = std::numeric_limits<Py_ssize_t>::max();
+            Py_ssize_t kwonly_idx = std::numeric_limits<Py_ssize_t>::max();
+            for (Py_ssize_t i = 0; i < len; ++i) {
+                const Param& param = key[i];
+                if (param.posonly()) {
+                    posonly_idx = i;
+                    if (!param.opt()) {
+                        PyTuple_SET_ITEM(
+                            ptr(result),
+                            i + offset,
+                            Py_NewRef(param.type)
                         );
-                        if (name.is(nullptr)) {
-                            Exception::from_python();
-                        }
+                    } else {
                         PyObject* slice = PySlice_New(
-                            ptr(name),
                             param.type,
-                            param.opt() ? Py_Ellipsis : Py_None
+                            Py_Ellipsis,
+                            Py_None
                         );
                         if (slice == nullptr) {
                             Exception::from_python();
                         }
-                        PyTuple_SET_ITEM(ptr(key), i + 1, slice);
+                        PyTuple_SET_ITEM(ptr(result), i + offset, slice);
                     }
+                } else {
+                    // insert '/' delimiter if there are any posonly arguments
+                    if (i > posonly_idx) {
+                        PyObject* grow;
+                        if (_PyTuple_Resize(&grow, len + offset + 1) < 0) {
+                            Exception::from_python();
+                        }
+                        result = reinterpret_steal<Object>(grow);
+                        PyTuple_SET_ITEM(
+                            ptr(result),
+                            i + offset,
+                            release(template_string<"/">())
+                        );
+                        ++offset;
+
+                    // insert '*' delimiter if there are any kwonly arguments
+                    } else if (
+                        param.kwonly() &&
+                        kwonly_idx == std::numeric_limits<Py_ssize_t>::max()
+                    ) {
+                        kwonly_idx = i;
+                        PyObject* grow;
+                        if (_PyTuple_Resize(&grow, len + offset + 1) < 0) {
+                            Exception::from_python();
+                        }
+                        result = reinterpret_steal<Object>(grow);
+                        PyTuple_SET_ITEM(
+                            ptr(result),
+                            i + offset,
+                            release(template_string<"*">())
+                        );
+                        ++offset;
+                    }
+
+                    // insert parameter identifier
+                    Object name = reinterpret_steal<Object>(
+                        PyUnicode_FromStringAndSize(
+                            param.name.data(),
+                            param.name.size()
+                        )
+                    );
+                    if (name.is(nullptr)) {
+                        Exception::from_python();
+                    }
+                    PyObject* slice = PySlice_New(
+                        ptr(name),
+                        param.type,
+                        param.opt() ? Py_Ellipsis : Py_None
+                    );
+                    if (slice == nullptr) {
+                        Exception::from_python();
+                    }
+                    PyTuple_SET_ITEM(ptr(result), i + offset, slice);
                 }
             }
-
             return result;
         }
 

@@ -765,6 +765,10 @@ public:
 };
 
 
+/// TODO: Unions should not be constructible from Python, only specialized from C++.
+/// Use standard Python syntax for unions.
+
+
 template <typename... Types>
     requires (
         sizeof...(Types) > 1 &&
@@ -950,36 +954,36 @@ int main() {
 }
 ```)doc";
 
-    private:
+    // private:
 
-        template <size_t I>
-        static size_t find_matching_type(const Object& obj, size_t& first) {
-            Type<impl::unpack_type<I, Types...>> type;
-            if (reinterpret_cast<PyObject*>(Py_TYPE(ptr(obj))) == ptr(type)) {
-                return I;
-            } else if (first == sizeof...(Types)) {
-                int rc = PyObject_IsInstance(
-                    ptr(obj),
-                    ptr(type)
-                );
-                if (rc == -1) {
-                    Exception::to_python();
-                } else if (rc) {
-                    first = I;
-                }
-            }
-            if constexpr (I + 1 >= sizeof...(Types)) {
-                return sizeof...(Types);
-            } else {
-                return find_matching_type<I + 1>(obj, first);
-            }
-        }
+    //     template <size_t I>
+    //     static size_t find_matching_type(const Object& obj, size_t& first) {
+    //         Type<impl::unpack_type<I, Types...>> type;
+    //         if (reinterpret_cast<PyObject*>(Py_TYPE(ptr(obj))) == ptr(type)) {
+    //             return I;
+    //         } else if (first == sizeof...(Types)) {
+    //             int rc = PyObject_IsInstance(
+    //                 ptr(obj),
+    //                 ptr(type)
+    //             );
+    //             if (rc == -1) {
+    //                 Exception::to_python();
+    //             } else if (rc) {
+    //                 first = I;
+    //             }
+    //         }
+    //         if constexpr (I + 1 >= sizeof...(Types)) {
+    //             return sizeof...(Types);
+    //         } else {
+    //             return find_matching_type<I + 1>(obj, first);
+    //         }
+    //     }
 
-    public:
+    // public:
 
         Object m_value;
         size_t m_index;
-        vectorcallfunc vectorcall = reinterpret_cast<vectorcallfunc>(__call__);
+        // vectorcallfunc vectorcall = reinterpret_cast<vectorcallfunc>(__call__);
 
         template <typename T> requires (std::same_as<std::remove_cvref_t<T>, Types> || ...)
         explicit __python__(T&& value) :
@@ -987,836 +991,836 @@ int main() {
             m_index(impl::index_of<std::remove_cvref_t<T>, Types...>)
         {}
 
-        static PyObject* __new__(
-            PyTypeObject* type,
-            PyObject* args,
-            PyObject* kwargs
-        ) noexcept {
-            __python__* self = reinterpret_cast<__python__*>(
-                type->tp_alloc(type, 0)
-            );
-            if (self != nullptr) {
-                new (&self->m_value) Object(None);
-                self->m_index = 0;
-            }
-            return self;
-        }
+        // static PyObject* __new__(
+        //     PyTypeObject* type,
+        //     PyObject* args,
+        //     PyObject* kwargs
+        // ) noexcept {
+        //     __python__* self = reinterpret_cast<__python__*>(
+        //         type->tp_alloc(type, 0)
+        //     );
+        //     if (self != nullptr) {
+        //         new (&self->m_value) Object(None);
+        //         self->m_index = 0;
+        //     }
+        //     return self;
+        // }
 
-        static int __init__(
-            __python__* self,
-            PyObject* args,
-            PyObject* kwargs
-        ) noexcept {
-            try {
-                if (kwargs) {
-                    PyErr_SetString(
-                        PyExc_TypeError,
-                        "Union constructor does not accept keyword arguments"
-                    );
-                    return -1;
-                }
-                size_t nargs = PyTuple_GET_SIZE(args);
-                if (nargs != 1) {
-                    PyErr_SetString(
-                        PyExc_TypeError,
-                        "Union constructor requires exactly one argument"
-                    );
-                    return -1;
-                }
-                constexpr StaticStr str = "bertrand";
-                PyObject* name = PyUnicode_FromStringAndSize(str, str.size());
-                if (name == nullptr) {
-                    return -1;
-                }
-                Object bertrand = reinterpret_steal<Object>(PyImport_Import(name));
-                Py_DECREF(name);
-                if (bertrand.is(nullptr)) {
-                    return -1;
-                }
-                Object converted = reinterpret_steal<Object>(PyObject_CallOneArg(
-                    ptr(bertrand),
-                    PyTuple_GET_ITEM(args, 0)
-                ));
-                if (converted.is(nullptr)) {
-                    return -1;
-                }
-                size_t subclass = sizeof...(Types);
-                size_t match = find_matching_type<0>(converted, subclass);
-                if (match == sizeof...(Types)) {
-                    if (subclass == sizeof...(Types)) {
-                        std::string message = "cannot convert object of type '";
-                        message += impl::demangle(Py_TYPE(ptr(converted))->tp_name);
-                        message += "' to '";
-                        message += impl::demangle(ptr(Type<Union<Types...>>())->tp_name);
-                        message += "'";
-                        PyErr_SetString(PyExc_TypeError, message.c_str());
-                        return -1;
-                    } else {
-                        match = subclass;
-                    }
-                }
-                self->m_index = match;
-                self->m_value = std::move(converted);
-            } catch (...) {
-                Exception::to_python();
-                return -1;
-            }
-        }
+        // static int __init__(
+        //     __python__* self,
+        //     PyObject* args,
+        //     PyObject* kwargs
+        // ) noexcept {
+        //     try {
+        //         if (kwargs) {
+        //             PyErr_SetString(
+        //                 PyExc_TypeError,
+        //                 "Union constructor does not accept keyword arguments"
+        //             );
+        //             return -1;
+        //         }
+        //         size_t nargs = PyTuple_GET_SIZE(args);
+        //         if (nargs != 1) {
+        //             PyErr_SetString(
+        //                 PyExc_TypeError,
+        //                 "Union constructor requires exactly one argument"
+        //             );
+        //             return -1;
+        //         }
+        //         constexpr StaticStr str = "bertrand";
+        //         PyObject* name = PyUnicode_FromStringAndSize(str, str.size());
+        //         if (name == nullptr) {
+        //             return -1;
+        //         }
+        //         Object bertrand = reinterpret_steal<Object>(PyImport_Import(name));
+        //         Py_DECREF(name);
+        //         if (bertrand.is(nullptr)) {
+        //             return -1;
+        //         }
+        //         Object converted = reinterpret_steal<Object>(PyObject_CallOneArg(
+        //             ptr(bertrand),
+        //             PyTuple_GET_ITEM(args, 0)
+        //         ));
+        //         if (converted.is(nullptr)) {
+        //             return -1;
+        //         }
+        //         size_t subclass = sizeof...(Types);
+        //         size_t match = find_matching_type<0>(converted, subclass);
+        //         if (match == sizeof...(Types)) {
+        //             if (subclass == sizeof...(Types)) {
+        //                 std::string message = "cannot convert object of type '";
+        //                 message += impl::demangle(Py_TYPE(ptr(converted))->tp_name);
+        //                 message += "' to '";
+        //                 message += impl::demangle(ptr(Type<Union<Types...>>())->tp_name);
+        //                 message += "'";
+        //                 PyErr_SetString(PyExc_TypeError, message.c_str());
+        //                 return -1;
+        //             } else {
+        //                 match = subclass;
+        //             }
+        //         }
+        //         self->m_index = match;
+        //         self->m_value = std::move(converted);
+        //     } catch (...) {
+        //         Exception::to_python();
+        //         return -1;
+        //     }
+        // }
 
         template <StaticStr ModName>
         static Type<Union> __export__(Module<ModName>& mod);
         static Type<Union> __import__();
 
-        static PyObject* __wrapped__(__python__* self) noexcept {
-            return Py_NewRef(ptr(self->m_value));
-        }
-
-        static PyObject* __repr__(__python__* self) noexcept {
-            return PyObject_Repr(ptr(self->m_value));
-        }
-
-        /// TODO: these slots should only be enabled if the underlying objects support
-        /// them.  Basically, when I'm exposing the heap type, I'll use a static
-        /// vector and conditionally append all of these slots.
-
-        static PyObject* __hash__(__python__* self) noexcept {
-            return PyObject_Hash(ptr(self->m_value));
-        }
-
-        static PyObject* __call__(
-            __python__* self,
-            PyObject* const* args,
-            size_t nargsf,
-            PyObject* kwnames
-        ) noexcept {
-            return PyObject_Vectorcall(
-                ptr(self->m_value),
-                args,
-                nargsf,
-                kwnames
-            );
-        }
-
-        static PyObject* __str__(__python__* self) noexcept {
-            return PyObject_Str(ptr(self->m_value));
-        }
-
-        static PyObject* __getattr__(__python__* self, PyObject* attr) noexcept {
-            try {
-                Py_ssize_t len;
-                const char* data = PyUnicode_AsUTF8AndSize(attr, &len);
-                if (data == nullptr) {
-                    return nullptr;
-                }
-                std::string_view name = {data, static_cast<size_t>(len)};
-                if (name == "__wrapped__") {
-                    return PyObject_GenericGetAttr(ptr(self->m_value), attr);
-                }
-                return PyObject_GetAttr(ptr(self->m_value), attr);
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static int __setattr__(
-            __python__* self,
-            PyObject* attr,
-            PyObject* value
-        ) noexcept {
-            try {
-                Py_ssize_t len;
-                const char* data = PyUnicode_AsUTF8AndSize(attr, &len);
-                if (data == nullptr) {
-                    return -1;
-                }
-                std::string_view name = {data, static_cast<size_t>(len)};
-                if (name == "__wrapped__") {
-                    std::string message = "cannot ";
-                    message += value ? "set" : "delete";
-                    message += " attribute '" + std::string(name) + "'";
-                    PyErr_SetString(
-                        PyExc_AttributeError,
-                        message.c_str()
-                    );
-                    return -1;
-                }
-                return PyObject_SetAttr(ptr(self->m_value), attr, value);
-
-            } catch (...) {
-                Exception::to_python();
-                return -1;
-            }
-        }
-
-        static int __traverse__(
-            __python__* self,
-            visitproc visit,
-            void* arg
-        ) noexcept {
-            PyTypeObject* type = Py_TYPE(ptr(self->m_value));
-            if (type->tp_traverse) {
-                return type->tp_traverse(ptr(self->m_value), visit, arg);
-            }
-            return def<__python__, Union>::__traverse__(self, visit, arg);
-        }
-
-        static int __clear__(__python__* self) noexcept {
-            PyTypeObject* type = Py_TYPE(ptr(self->m_value));
-            if (type->tp_clear) {
-                return type->tp_clear(ptr(self->m_value));
-            }
-            return def<__python__, Union>::__clear__(self);
-        }
-
-        static int __richcmp__(
-            __python__* self,
-            PyObject* other,
-            int op
-        ) noexcept {
-            return PyObject_RichCompareBool(ptr(self->m_value), other, op);
-        }
-
-        static PyObject* __iter__(__python__* self) noexcept {
-            return PyObject_GetIter(ptr(self->m_value));
-        }
-
-        static PyObject* __next__(__python__* self) noexcept {
-            return PyIter_Next(ptr(self->m_value));
-        }
-
-        static PyObject* __get__(
-            __python__* self,
-            PyObject* obj,
-            PyObject* type
-        ) noexcept {
-            PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(type);
-            if (cls->tp_descr_get) {
-                return cls->tp_descr_get(ptr(self), obj, type);
-            }
-            PyErr_SetString(
-                PyExc_TypeError,
-                "object is not a descriptor"
-            );
-            return nullptr;
-        }
-
-        static PyObject* __set__(
-            __python__* self,
-            PyObject* obj,
-            PyObject* value
-        ) noexcept {
-            PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(Py_TYPE(ptr(self)));
-            if (cls->tp_descr_set) {
-                return cls->tp_descr_set(ptr(self), obj, value);
-            }
-            if (value) {
-                PyErr_SetString(
-                    PyExc_TypeError,
-                    "object does not support descriptor assignment"
-                );
-            } else {
-                PyErr_SetString(
-                    PyExc_AttributeError,
-                    "object does not support descriptor deletion"
-                );
-            }
-            return nullptr;
-        }
-
-        static PyObject* __getitem__(__python__* self, PyObject* key) noexcept {
-            return PyObject_GetItem(ptr(self->m_value), key);
-        }
-
-        static PyObject* __sq_getitem__(__python__* self, Py_ssize_t index) noexcept {
-            return PySequence_GetItem(ptr(self->m_value), index);
-        }
-
-        static PyObject* __setitem__(
-            __python__* self,
-            PyObject* key,
-            PyObject* value
-        ) noexcept {
-            return PyObject_SetItem(ptr(self->m_value), key, value);
-        }
-
-        static int __sq_setitem__(
-            __python__* self,
-            Py_ssize_t index,
-            PyObject* value
-        ) noexcept {
-            return PySequence_SetItem(ptr(self->m_value), index, value);
-        }
-
-        static Py_ssize_t __len__(__python__* self) noexcept {
-            return PyObject_Length(ptr(self->m_value));
-        }
-
-        static int __contains__(__python__* self, PyObject* key) noexcept {
-            return PySequence_Contains(ptr(self->m_value), key);
-        }
-
-        static PyObject* __await__(__python__* self) noexcept {
-            PyAsyncMethods* async = Py_TYPE(ptr(self))->tp_as_async;
-            if (async && async->am_await) {
-                return async->am_await(ptr(self));
-            }
-            PyErr_SetString(
-                PyExc_TypeError,
-                "object is not awaitable"
-            );
-            return nullptr;
-        }
-
-        static PyObject* __aiter__(__python__* self) noexcept {
-            PyAsyncMethods* async = Py_TYPE(ptr(self))->tp_as_async;
-            if (async && async->am_aiter) {
-                return async->am_aiter(ptr(self));
-            }
-            PyErr_SetString(
-                PyExc_TypeError,
-                "object is not an async iterator"
-            );
-            return nullptr;
-        }
-
-        static PyObject* __anext__(__python__* self) noexcept {
-            PyAsyncMethods* async = Py_TYPE(ptr(self))->tp_as_async;
-            if (async && async->am_anext) {
-                return async->am_anext(ptr(self));
-            }
-            PyErr_SetString(
-                PyExc_TypeError,
-                "object is not an async iterator"
-            );
-            return nullptr;
-        }
-
-        static PySendResult __asend__(
-            __python__* self,
-            PyObject* arg,
-            PyObject** prsesult
-        ) noexcept {
-            return PyIter_Send(ptr(self->m_value), arg, prsesult);
-        }
-
-        static PyObject* __add__(PyObject* lhs, PyObject* rhs) noexcept {
-            try {
-                Type<Union> cls;
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs),
-                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
-                ) {
-                    return PyNumber_Add(
-                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-                        rhs
-                    );
-                }
-                return PyNumber_Add(
-                    lhs,
-                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-                );
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* __iadd__(__python__* lhs, PyObject* rhs) noexcept {
-            return PyNumber_InPlaceAdd(ptr(lhs->m_value), rhs);
-        }
-
-        static PyObject* __sub__(PyObject* lhs, PyObject* rhs) noexcept {
-            try {
-                Type<Union> cls;
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs),
-                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
-                ) {
-                    return PyNumber_Subtract(
-                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-                        rhs
-                    );
-                }
-                return PyNumber_Subtract(
-                    lhs,
-                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-                );
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* __isub__(__python__* lhs, PyObject* rhs) noexcept {
-            return PyNumber_InPlaceSubtract(ptr(lhs->m_value), rhs);
-        }
-
-        static PyObject* __mul__(PyObject* lhs, PyObject* rhs) noexcept {
-            try {
-                Type<Union> cls;
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs),
-                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
-                ) {
-                    return PyNumber_Multiply(
-                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-                        rhs
-                    );
-                }
-                return PyNumber_Multiply(
-                    lhs,
-                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-                );
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* __repeat__(__python__* lhs, Py_ssize_t rhs) noexcept {
-            return PySequence_Repeat(ptr(lhs->m_value), rhs);
-        }
-
-        static PyObject* __imul__(__python__* lhs, PyObject* rhs) noexcept {
-            return PyNumber_InPlaceMultiply(ptr(lhs->m_value), rhs);
-        }
-
-        static PyObject* __irepeat__(__python__* lhs, Py_ssize_t rhs) noexcept {
-            return PySequence_InPlaceRepeat(ptr(lhs->m_value), rhs);
-        }
-
-        static PyObject* __mod__(PyObject* lhs, PyObject* rhs) noexcept {
-            try {
-                Type<Union> cls;
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs),
-                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
-                ) {
-                    return PyNumber_Remainder(
-                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-                        rhs
-                    );
-                }
-                return PyNumber_Remainder(
-                    lhs,
-                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-                );
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* __imod__(__python__* lhs, PyObject* rhs) noexcept {
-            return PyNumber_InPlaceRemainder(ptr(lhs->m_value), rhs);
-        }
-
-        static PyObject* __divmod__(PyObject* lhs, PyObject* rhs) noexcept {
-            try {
-                Type<Union> cls;
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs),
-                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
-                ) {
-                    return PyNumber_Divmod(
-                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-                        rhs
-                    );
-                }
-                return PyNumber_Divmod(
-                    lhs,
-                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-                );
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* __power__(PyObject* lhs, PyObject* rhs, PyObject* mod) noexcept {
-            try {
-                Type<Union> cls;
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs),
-                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
-                ) {
-                    return PyNumber_Power(
-                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-                        rhs,
-                        mod
-                    );
-                } else if (PyType_IsSubtype(
-                    Py_TYPE(rhs),
-                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
-                ) {
-                    return PyNumber_Power(
-                        lhs,
-                        ptr(reinterpret_cast<__python__*>(rhs)->m_value),
-                        mod
-                    );
-                }
-                return PyNumber_Power(
-                    lhs,
-                    rhs,
-                    ptr(reinterpret_cast<__python__*>(mod)->m_value)
-                );
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* __ipower__(__python__* lhs, PyObject* rhs, PyObject* mod) noexcept {
-            return PyNumber_InPlacePower(ptr(lhs->m_value), rhs, mod);
-        }
-
-        static PyObject* __neg__(__python__* self) noexcept {
-            return PyNumber_Negative(ptr(self->m_value));
-        }
-
-        static PyObject* __pos__(__python__* self) noexcept {
-            return PyNumber_Positive(ptr(self->m_value));
-        }
-
-        static PyObject* __abs__(__python__* self) noexcept {
-            return PyNumber_Absolute(ptr(self->m_value));
-        }
-
-        static int __bool__(__python__* self) noexcept {
-            return PyObject_IsTrue(ptr(self->m_value));
-        }
-
-        static PyObject* __invert__(__python__* self) noexcept {
-            return PyNumber_Invert(ptr(self->m_value));
-        }
-
-        static PyObject* __lshift__(PyObject* lhs, PyObject* rhs) noexcept {
-            try {
-                Type<Union> cls;
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs),
-                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
-                ) {
-                    return PyNumber_Lshift(
-                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-                        rhs
-                    );
-                }
-                return PyNumber_Lshift(
-                    lhs,
-                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-                );
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* __ilshift__(__python__* lhs, PyObject* rhs) noexcept {
-            return PyNumber_InPlaceLshift(ptr(lhs->m_value), rhs);
-        }
-
-        static PyObject* __rshift__(PyObject* lhs, PyObject* rhs) noexcept {
-            try {
-                Type<Union> cls;
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs),
-                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
-                ) {
-                    return PyNumber_Rshift(
-                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-                        rhs
-                    );
-                }
-                return PyNumber_Rshift(
-                    lhs,
-                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-                );
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* __irshift__(__python__* lhs, PyObject* rhs) noexcept {
-            return PyNumber_InPlaceRshift(ptr(lhs->m_value), rhs);
-        }
-
-        static PyObject* __and__(PyObject* lhs, PyObject* rhs) noexcept {
-            try {
-                Type<Union> cls;
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs),
-                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
-                ) {
-                    return PyNumber_And(
-                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-                        rhs
-                    );
-                }
-                return PyNumber_And(
-                    lhs,
-                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-                );
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* __iand__(__python__* lhs, PyObject* rhs) noexcept {
-            return PyNumber_InPlaceAnd(ptr(lhs->m_value), rhs);
-        }
-
-        static PyObject* __xor__(PyObject* lhs, PyObject* rhs) noexcept {
-            try {
-                Type<Union> cls;
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs),
-                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
-                ) {
-                    return PyNumber_Xor(
-                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-                        rhs
-                    );
-                }
-                return PyNumber_Xor(
-                    lhs,
-                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-                );
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* __ixor__(__python__* lhs, PyObject* rhs) noexcept {
-            return PyNumber_InPlaceXor(ptr(lhs->m_value), rhs);
-        }
-
-        static PyObject* __or__(PyObject* lhs, PyObject* rhs) noexcept {
-            try {
-                Type<Union> cls;
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs),
-                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
-                ) {
-                    return PyNumber_Or(
-                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-                        rhs
-                    );
-                }
-                return PyNumber_Or(
-                    lhs,
-                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-                );
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* __ior__(__python__* lhs, PyObject* rhs) noexcept {
-            return PyNumber_InPlaceOr(ptr(lhs->m_value), rhs);
-        }
-
-        static PyObject* __int__(__python__* self) noexcept {
-            return PyNumber_Long(ptr(self->m_value));
-        }
-
-        static PyObject* __float__(__python__* self) noexcept {
-            return PyNumber_Float(ptr(self->m_value));
-        }
-
-        static PyObject* __floordiv__(PyObject* lhs, PyObject* rhs) noexcept {
-            try {
-                Type<Union> cls;
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs),
-                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
-                ) {
-                    return PyNumber_FloorDivide(
-                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-                        rhs
-                    );
-                }
-                return PyNumber_FloorDivide(
-                    lhs,
-                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-                );
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* __ifloordiv__(__python__* lhs, PyObject* rhs) noexcept {
-            return PyNumber_InPlaceFloorDivide(ptr(lhs->m_value), rhs);
-        }
-
-        static PyObject* __truediv__(PyObject* lhs, PyObject* rhs) noexcept {
-            try {
-                Type<Union> cls;
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs),
-                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
-                ) {
-                    return PyNumber_TrueDivide(
-                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-                        rhs
-                    );
-                }
-                return PyNumber_TrueDivide(
-                    lhs,
-                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-                );
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* __itruediv__(__python__* lhs, PyObject* rhs) noexcept {
-            return PyNumber_InPlaceTrueDivide(ptr(lhs->m_value), rhs);
-        }
-
-        static PyObject* __index__(__python__* self) noexcept {
-            return PyNumber_Index(ptr(self->m_value));
-        }
-
-        static PyObject* __matmul__(PyObject* lhs, PyObject* rhs) noexcept {
-            try {
-                Type<Union> cls;
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs),
-                    reinterpret_cast<PyTypeObject*>(ptr(cls)))
-                ) {
-                    return PyNumber_MatrixMultiply(
-                        ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-                        rhs
-                    );
-                }
-                return PyNumber_MatrixMultiply(
-                    lhs,
-                    ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-                );
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* __imatmul__(__python__* lhs, PyObject* rhs) noexcept {
-            return PyNumber_InPlaceMatrixMultiply(ptr(lhs->m_value), rhs);
-        }
-
-        static int __buffer__(
-            __python__* exported,
-            Py_buffer* view,
-            int flags
-        ) noexcept {
-            return PyObject_GetBuffer(ptr(exported->m_value), view, flags);
-        }
-
-        static void __release_buffer__(__python__* exported, Py_buffer* view) noexcept {
-            PyBuffer_Release(view);
-        }
-
-    private:
-
-        inline static PyGetSetDef properties[] = {
-            {
-                "__wrapped__",
-                reinterpret_cast<getter>(__wrapped__),
-                nullptr,
-                PyDoc_STR(
-R"doc(The value stored in the optional.
-
-Returns
--------
-object
-    The value stored in the optional, or None if it is currently empty.
-
-Notes
------
-The presence of a `__wrapped__` attribute triggers some special behavior in
-both the Python and Bertrand APIs.  In Python, it allows the `inspect` module
-to unwrap the optional and inspect the internal value, in the same way as
-`functools.partial` and `functools.wraps`.  In Bertrand, some operators
-(like the `isinstance()` operator) will check for the presence of this
-attribute and unwrap the optional if it is present.)doc"
-                )
-            },
-            {nullptr}
-        };
-
-        inline static PyAsyncMethods async = {
-            .am_await = reinterpret_cast<unaryfunc>(__await__),
-            .am_aiter = reinterpret_cast<unaryfunc>(__aiter__),
-            .am_anext = reinterpret_cast<unaryfunc>(__anext__),
-            .am_send = reinterpret_cast<sendfunc>(__asend__),
-        };
-
-        inline static PyNumberMethods number = {
-            .nb_add = reinterpret_cast<binaryfunc>(__add__),
-            .nb_subtract = reinterpret_cast<binaryfunc>(__sub__),
-            .nb_multiply = reinterpret_cast<binaryfunc>(__mul__),
-            .nb_remainder = reinterpret_cast<binaryfunc>(__mod__),
-            .nb_divmod = reinterpret_cast<binaryfunc>(__divmod__),
-            .nb_power = reinterpret_cast<ternaryfunc>(__power__),
-            .nb_negative = reinterpret_cast<unaryfunc>(__neg__),
-            .nb_positive = reinterpret_cast<unaryfunc>(__pos__),
-            .nb_absolute = reinterpret_cast<unaryfunc>(__abs__),
-            .nb_bool = reinterpret_cast<inquiry>(__bool__),
-            .nb_invert = reinterpret_cast<unaryfunc>(__invert__),
-            .nb_lshift = reinterpret_cast<binaryfunc>(__lshift__),
-            .nb_rshift = reinterpret_cast<binaryfunc>(__rshift__),
-            .nb_and = reinterpret_cast<binaryfunc>(__and__),
-            .nb_xor = reinterpret_cast<binaryfunc>(__xor__),
-            .nb_or = reinterpret_cast<binaryfunc>(__or__),
-            .nb_int = reinterpret_cast<unaryfunc>(__int__),
-            .nb_float = reinterpret_cast<unaryfunc>(__float__),
-            .nb_inplace_add = reinterpret_cast<binaryfunc>(__iadd__),
-            .nb_inplace_subtract = reinterpret_cast<binaryfunc>(__isub__),
-            .nb_inplace_multiply = reinterpret_cast<binaryfunc>(__imul__),
-            .nb_inplace_remainder = reinterpret_cast<binaryfunc>(__imod__),
-            .nb_inplace_power = reinterpret_cast<ternaryfunc>(__ipower__),
-            .nb_inplace_lshift = reinterpret_cast<binaryfunc>(__ilshift__),
-            .nb_inplace_rshift = reinterpret_cast<binaryfunc>(__irshift__),
-            .nb_inplace_and = reinterpret_cast<binaryfunc>(__iand__),
-            .nb_inplace_xor = reinterpret_cast<binaryfunc>(__ixor__),
-            .nb_inplace_or = reinterpret_cast<binaryfunc>(__ior__),
-            .nb_floor_divide = reinterpret_cast<binaryfunc>(__floordiv__),
-            .nb_true_divide = reinterpret_cast<binaryfunc>(__truediv__),
-            .nb_inplace_floor_divide = reinterpret_cast<binaryfunc>(__ifloordiv__),
-            .nb_inplace_true_divide = reinterpret_cast<binaryfunc>(__itruediv__),
-            .nb_index = reinterpret_cast<unaryfunc>(__index__),
-            .nb_matrix_multiply = reinterpret_cast<binaryfunc>(__matmul__),
-            .nb_inplace_matrix_multiply = reinterpret_cast<binaryfunc>(__imatmul__),
-        };
-
-        inline static PyMappingMethods mapping = {
-            .mp_length = reinterpret_cast<lenfunc>(__len__),
-            .mp_subscript = reinterpret_cast<binaryfunc>(__getitem__),
-            .mp_ass_subscript = reinterpret_cast<objobjargproc>(__setitem__)
-        };
-
-        inline static PySequenceMethods sequence = {
-            .sq_length = reinterpret_cast<lenfunc>(__len__),
-            .sq_concat = reinterpret_cast<binaryfunc>(__add__),
-            .sq_repeat = reinterpret_cast<ssizeargfunc>(__repeat__),
-            .sq_item = reinterpret_cast<ssizeargfunc>(__sq_getitem__),
-            .sq_ass_item = reinterpret_cast<ssizeobjargproc>(__sq_setitem__),
-            .sq_contains = reinterpret_cast<objobjproc>(__contains__),
-            .sq_inplace_concat = reinterpret_cast<binaryfunc>(__iadd__),
-            .sq_inplace_repeat = reinterpret_cast<ssizeargfunc>(__irepeat__)
-        };
-
-        inline static PyBufferProcs buffer = {
-            .bf_getbuffer = reinterpret_cast<getbufferproc>(__buffer__),
-            .bf_releasebuffer = reinterpret_cast<releasebufferproc>(__release_buffer__)
-        };
+//         static PyObject* __wrapped__(__python__* self) noexcept {
+//             return Py_NewRef(ptr(self->m_value));
+//         }
+
+//         static PyObject* __repr__(__python__* self) noexcept {
+//             return PyObject_Repr(ptr(self->m_value));
+//         }
+
+//         /// TODO: these slots should only be enabled if the underlying objects support
+//         /// them.  Basically, when I'm exposing the heap type, I'll use a static
+//         /// vector and conditionally append all of these slots.
+
+//         static PyObject* __hash__(__python__* self) noexcept {
+//             return PyObject_Hash(ptr(self->m_value));
+//         }
+
+//         static PyObject* __call__(
+//             __python__* self,
+//             PyObject* const* args,
+//             size_t nargsf,
+//             PyObject* kwnames
+//         ) noexcept {
+//             return PyObject_Vectorcall(
+//                 ptr(self->m_value),
+//                 args,
+//                 nargsf,
+//                 kwnames
+//             );
+//         }
+
+//         static PyObject* __str__(__python__* self) noexcept {
+//             return PyObject_Str(ptr(self->m_value));
+//         }
+
+//         static PyObject* __getattr__(__python__* self, PyObject* attr) noexcept {
+//             try {
+//                 Py_ssize_t len;
+//                 const char* data = PyUnicode_AsUTF8AndSize(attr, &len);
+//                 if (data == nullptr) {
+//                     return nullptr;
+//                 }
+//                 std::string_view name = {data, static_cast<size_t>(len)};
+//                 if (name == "__wrapped__") {
+//                     return PyObject_GenericGetAttr(ptr(self->m_value), attr);
+//                 }
+//                 return PyObject_GetAttr(ptr(self->m_value), attr);
+//             } catch (...) {
+//                 Exception::to_python();
+//                 return nullptr;
+//             }
+//         }
+
+//         static int __setattr__(
+//             __python__* self,
+//             PyObject* attr,
+//             PyObject* value
+//         ) noexcept {
+//             try {
+//                 Py_ssize_t len;
+//                 const char* data = PyUnicode_AsUTF8AndSize(attr, &len);
+//                 if (data == nullptr) {
+//                     return -1;
+//                 }
+//                 std::string_view name = {data, static_cast<size_t>(len)};
+//                 if (name == "__wrapped__") {
+//                     std::string message = "cannot ";
+//                     message += value ? "set" : "delete";
+//                     message += " attribute '" + std::string(name) + "'";
+//                     PyErr_SetString(
+//                         PyExc_AttributeError,
+//                         message.c_str()
+//                     );
+//                     return -1;
+//                 }
+//                 return PyObject_SetAttr(ptr(self->m_value), attr, value);
+
+//             } catch (...) {
+//                 Exception::to_python();
+//                 return -1;
+//             }
+//         }
+
+//         static int __traverse__(
+//             __python__* self,
+//             visitproc visit,
+//             void* arg
+//         ) noexcept {
+//             PyTypeObject* type = Py_TYPE(ptr(self->m_value));
+//             if (type->tp_traverse) {
+//                 return type->tp_traverse(ptr(self->m_value), visit, arg);
+//             }
+//             return def<__python__, Union>::__traverse__(self, visit, arg);
+//         }
+
+//         static int __clear__(__python__* self) noexcept {
+//             PyTypeObject* type = Py_TYPE(ptr(self->m_value));
+//             if (type->tp_clear) {
+//                 return type->tp_clear(ptr(self->m_value));
+//             }
+//             return def<__python__, Union>::__clear__(self);
+//         }
+
+//         static int __richcmp__(
+//             __python__* self,
+//             PyObject* other,
+//             int op
+//         ) noexcept {
+//             return PyObject_RichCompareBool(ptr(self->m_value), other, op);
+//         }
+
+//         static PyObject* __iter__(__python__* self) noexcept {
+//             return PyObject_GetIter(ptr(self->m_value));
+//         }
+
+//         static PyObject* __next__(__python__* self) noexcept {
+//             return PyIter_Next(ptr(self->m_value));
+//         }
+
+//         static PyObject* __get__(
+//             __python__* self,
+//             PyObject* obj,
+//             PyObject* type
+//         ) noexcept {
+//             PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(type);
+//             if (cls->tp_descr_get) {
+//                 return cls->tp_descr_get(ptr(self), obj, type);
+//             }
+//             PyErr_SetString(
+//                 PyExc_TypeError,
+//                 "object is not a descriptor"
+//             );
+//             return nullptr;
+//         }
+
+//         static PyObject* __set__(
+//             __python__* self,
+//             PyObject* obj,
+//             PyObject* value
+//         ) noexcept {
+//             PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(Py_TYPE(ptr(self)));
+//             if (cls->tp_descr_set) {
+//                 return cls->tp_descr_set(ptr(self), obj, value);
+//             }
+//             if (value) {
+//                 PyErr_SetString(
+//                     PyExc_TypeError,
+//                     "object does not support descriptor assignment"
+//                 );
+//             } else {
+//                 PyErr_SetString(
+//                     PyExc_AttributeError,
+//                     "object does not support descriptor deletion"
+//                 );
+//             }
+//             return nullptr;
+//         }
+
+//         static PyObject* __getitem__(__python__* self, PyObject* key) noexcept {
+//             return PyObject_GetItem(ptr(self->m_value), key);
+//         }
+
+//         static PyObject* __sq_getitem__(__python__* self, Py_ssize_t index) noexcept {
+//             return PySequence_GetItem(ptr(self->m_value), index);
+//         }
+
+//         static PyObject* __setitem__(
+//             __python__* self,
+//             PyObject* key,
+//             PyObject* value
+//         ) noexcept {
+//             return PyObject_SetItem(ptr(self->m_value), key, value);
+//         }
+
+//         static int __sq_setitem__(
+//             __python__* self,
+//             Py_ssize_t index,
+//             PyObject* value
+//         ) noexcept {
+//             return PySequence_SetItem(ptr(self->m_value), index, value);
+//         }
+
+//         static Py_ssize_t __len__(__python__* self) noexcept {
+//             return PyObject_Length(ptr(self->m_value));
+//         }
+
+//         static int __contains__(__python__* self, PyObject* key) noexcept {
+//             return PySequence_Contains(ptr(self->m_value), key);
+//         }
+
+//         static PyObject* __await__(__python__* self) noexcept {
+//             PyAsyncMethods* async = Py_TYPE(ptr(self))->tp_as_async;
+//             if (async && async->am_await) {
+//                 return async->am_await(ptr(self));
+//             }
+//             PyErr_SetString(
+//                 PyExc_TypeError,
+//                 "object is not awaitable"
+//             );
+//             return nullptr;
+//         }
+
+//         static PyObject* __aiter__(__python__* self) noexcept {
+//             PyAsyncMethods* async = Py_TYPE(ptr(self))->tp_as_async;
+//             if (async && async->am_aiter) {
+//                 return async->am_aiter(ptr(self));
+//             }
+//             PyErr_SetString(
+//                 PyExc_TypeError,
+//                 "object is not an async iterator"
+//             );
+//             return nullptr;
+//         }
+
+//         static PyObject* __anext__(__python__* self) noexcept {
+//             PyAsyncMethods* async = Py_TYPE(ptr(self))->tp_as_async;
+//             if (async && async->am_anext) {
+//                 return async->am_anext(ptr(self));
+//             }
+//             PyErr_SetString(
+//                 PyExc_TypeError,
+//                 "object is not an async iterator"
+//             );
+//             return nullptr;
+//         }
+
+//         static PySendResult __asend__(
+//             __python__* self,
+//             PyObject* arg,
+//             PyObject** prsesult
+//         ) noexcept {
+//             return PyIter_Send(ptr(self->m_value), arg, prsesult);
+//         }
+
+//         static PyObject* __add__(PyObject* lhs, PyObject* rhs) noexcept {
+//             try {
+//                 Type<Union> cls;
+//                 if (PyType_IsSubtype(
+//                     Py_TYPE(lhs),
+//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
+//                 ) {
+//                     return PyNumber_Add(
+//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+//                         rhs
+//                     );
+//                 }
+//                 return PyNumber_Add(
+//                     lhs,
+//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+//                 );
+//             } catch (...) {
+//                 Exception::to_python();
+//                 return nullptr;
+//             }
+//         }
+
+//         static PyObject* __iadd__(__python__* lhs, PyObject* rhs) noexcept {
+//             return PyNumber_InPlaceAdd(ptr(lhs->m_value), rhs);
+//         }
+
+//         static PyObject* __sub__(PyObject* lhs, PyObject* rhs) noexcept {
+//             try {
+//                 Type<Union> cls;
+//                 if (PyType_IsSubtype(
+//                     Py_TYPE(lhs),
+//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
+//                 ) {
+//                     return PyNumber_Subtract(
+//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+//                         rhs
+//                     );
+//                 }
+//                 return PyNumber_Subtract(
+//                     lhs,
+//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+//                 );
+//             } catch (...) {
+//                 Exception::to_python();
+//                 return nullptr;
+//             }
+//         }
+
+//         static PyObject* __isub__(__python__* lhs, PyObject* rhs) noexcept {
+//             return PyNumber_InPlaceSubtract(ptr(lhs->m_value), rhs);
+//         }
+
+//         static PyObject* __mul__(PyObject* lhs, PyObject* rhs) noexcept {
+//             try {
+//                 Type<Union> cls;
+//                 if (PyType_IsSubtype(
+//                     Py_TYPE(lhs),
+//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
+//                 ) {
+//                     return PyNumber_Multiply(
+//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+//                         rhs
+//                     );
+//                 }
+//                 return PyNumber_Multiply(
+//                     lhs,
+//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+//                 );
+//             } catch (...) {
+//                 Exception::to_python();
+//                 return nullptr;
+//             }
+//         }
+
+//         static PyObject* __repeat__(__python__* lhs, Py_ssize_t rhs) noexcept {
+//             return PySequence_Repeat(ptr(lhs->m_value), rhs);
+//         }
+
+//         static PyObject* __imul__(__python__* lhs, PyObject* rhs) noexcept {
+//             return PyNumber_InPlaceMultiply(ptr(lhs->m_value), rhs);
+//         }
+
+//         static PyObject* __irepeat__(__python__* lhs, Py_ssize_t rhs) noexcept {
+//             return PySequence_InPlaceRepeat(ptr(lhs->m_value), rhs);
+//         }
+
+//         static PyObject* __mod__(PyObject* lhs, PyObject* rhs) noexcept {
+//             try {
+//                 Type<Union> cls;
+//                 if (PyType_IsSubtype(
+//                     Py_TYPE(lhs),
+//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
+//                 ) {
+//                     return PyNumber_Remainder(
+//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+//                         rhs
+//                     );
+//                 }
+//                 return PyNumber_Remainder(
+//                     lhs,
+//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+//                 );
+//             } catch (...) {
+//                 Exception::to_python();
+//                 return nullptr;
+//             }
+//         }
+
+//         static PyObject* __imod__(__python__* lhs, PyObject* rhs) noexcept {
+//             return PyNumber_InPlaceRemainder(ptr(lhs->m_value), rhs);
+//         }
+
+//         static PyObject* __divmod__(PyObject* lhs, PyObject* rhs) noexcept {
+//             try {
+//                 Type<Union> cls;
+//                 if (PyType_IsSubtype(
+//                     Py_TYPE(lhs),
+//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
+//                 ) {
+//                     return PyNumber_Divmod(
+//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+//                         rhs
+//                     );
+//                 }
+//                 return PyNumber_Divmod(
+//                     lhs,
+//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+//                 );
+//             } catch (...) {
+//                 Exception::to_python();
+//                 return nullptr;
+//             }
+//         }
+
+//         static PyObject* __power__(PyObject* lhs, PyObject* rhs, PyObject* mod) noexcept {
+//             try {
+//                 Type<Union> cls;
+//                 if (PyType_IsSubtype(
+//                     Py_TYPE(lhs),
+//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
+//                 ) {
+//                     return PyNumber_Power(
+//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+//                         rhs,
+//                         mod
+//                     );
+//                 } else if (PyType_IsSubtype(
+//                     Py_TYPE(rhs),
+//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
+//                 ) {
+//                     return PyNumber_Power(
+//                         lhs,
+//                         ptr(reinterpret_cast<__python__*>(rhs)->m_value),
+//                         mod
+//                     );
+//                 }
+//                 return PyNumber_Power(
+//                     lhs,
+//                     rhs,
+//                     ptr(reinterpret_cast<__python__*>(mod)->m_value)
+//                 );
+//             } catch (...) {
+//                 Exception::to_python();
+//                 return nullptr;
+//             }
+//         }
+
+//         static PyObject* __ipower__(__python__* lhs, PyObject* rhs, PyObject* mod) noexcept {
+//             return PyNumber_InPlacePower(ptr(lhs->m_value), rhs, mod);
+//         }
+
+//         static PyObject* __neg__(__python__* self) noexcept {
+//             return PyNumber_Negative(ptr(self->m_value));
+//         }
+
+//         static PyObject* __pos__(__python__* self) noexcept {
+//             return PyNumber_Positive(ptr(self->m_value));
+//         }
+
+//         static PyObject* __abs__(__python__* self) noexcept {
+//             return PyNumber_Absolute(ptr(self->m_value));
+//         }
+
+//         static int __bool__(__python__* self) noexcept {
+//             return PyObject_IsTrue(ptr(self->m_value));
+//         }
+
+//         static PyObject* __invert__(__python__* self) noexcept {
+//             return PyNumber_Invert(ptr(self->m_value));
+//         }
+
+//         static PyObject* __lshift__(PyObject* lhs, PyObject* rhs) noexcept {
+//             try {
+//                 Type<Union> cls;
+//                 if (PyType_IsSubtype(
+//                     Py_TYPE(lhs),
+//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
+//                 ) {
+//                     return PyNumber_Lshift(
+//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+//                         rhs
+//                     );
+//                 }
+//                 return PyNumber_Lshift(
+//                     lhs,
+//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+//                 );
+//             } catch (...) {
+//                 Exception::to_python();
+//                 return nullptr;
+//             }
+//         }
+
+//         static PyObject* __ilshift__(__python__* lhs, PyObject* rhs) noexcept {
+//             return PyNumber_InPlaceLshift(ptr(lhs->m_value), rhs);
+//         }
+
+//         static PyObject* __rshift__(PyObject* lhs, PyObject* rhs) noexcept {
+//             try {
+//                 Type<Union> cls;
+//                 if (PyType_IsSubtype(
+//                     Py_TYPE(lhs),
+//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
+//                 ) {
+//                     return PyNumber_Rshift(
+//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+//                         rhs
+//                     );
+//                 }
+//                 return PyNumber_Rshift(
+//                     lhs,
+//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+//                 );
+//             } catch (...) {
+//                 Exception::to_python();
+//                 return nullptr;
+//             }
+//         }
+
+//         static PyObject* __irshift__(__python__* lhs, PyObject* rhs) noexcept {
+//             return PyNumber_InPlaceRshift(ptr(lhs->m_value), rhs);
+//         }
+
+//         static PyObject* __and__(PyObject* lhs, PyObject* rhs) noexcept {
+//             try {
+//                 Type<Union> cls;
+//                 if (PyType_IsSubtype(
+//                     Py_TYPE(lhs),
+//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
+//                 ) {
+//                     return PyNumber_And(
+//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+//                         rhs
+//                     );
+//                 }
+//                 return PyNumber_And(
+//                     lhs,
+//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+//                 );
+//             } catch (...) {
+//                 Exception::to_python();
+//                 return nullptr;
+//             }
+//         }
+
+//         static PyObject* __iand__(__python__* lhs, PyObject* rhs) noexcept {
+//             return PyNumber_InPlaceAnd(ptr(lhs->m_value), rhs);
+//         }
+
+//         static PyObject* __xor__(PyObject* lhs, PyObject* rhs) noexcept {
+//             try {
+//                 Type<Union> cls;
+//                 if (PyType_IsSubtype(
+//                     Py_TYPE(lhs),
+//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
+//                 ) {
+//                     return PyNumber_Xor(
+//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+//                         rhs
+//                     );
+//                 }
+//                 return PyNumber_Xor(
+//                     lhs,
+//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+//                 );
+//             } catch (...) {
+//                 Exception::to_python();
+//                 return nullptr;
+//             }
+//         }
+
+//         static PyObject* __ixor__(__python__* lhs, PyObject* rhs) noexcept {
+//             return PyNumber_InPlaceXor(ptr(lhs->m_value), rhs);
+//         }
+
+//         static PyObject* __or__(PyObject* lhs, PyObject* rhs) noexcept {
+//             try {
+//                 Type<Union> cls;
+//                 if (PyType_IsSubtype(
+//                     Py_TYPE(lhs),
+//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
+//                 ) {
+//                     return PyNumber_Or(
+//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+//                         rhs
+//                     );
+//                 }
+//                 return PyNumber_Or(
+//                     lhs,
+//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+//                 );
+//             } catch (...) {
+//                 Exception::to_python();
+//                 return nullptr;
+//             }
+//         }
+
+//         static PyObject* __ior__(__python__* lhs, PyObject* rhs) noexcept {
+//             return PyNumber_InPlaceOr(ptr(lhs->m_value), rhs);
+//         }
+
+//         static PyObject* __int__(__python__* self) noexcept {
+//             return PyNumber_Long(ptr(self->m_value));
+//         }
+
+//         static PyObject* __float__(__python__* self) noexcept {
+//             return PyNumber_Float(ptr(self->m_value));
+//         }
+
+//         static PyObject* __floordiv__(PyObject* lhs, PyObject* rhs) noexcept {
+//             try {
+//                 Type<Union> cls;
+//                 if (PyType_IsSubtype(
+//                     Py_TYPE(lhs),
+//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
+//                 ) {
+//                     return PyNumber_FloorDivide(
+//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+//                         rhs
+//                     );
+//                 }
+//                 return PyNumber_FloorDivide(
+//                     lhs,
+//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+//                 );
+//             } catch (...) {
+//                 Exception::to_python();
+//                 return nullptr;
+//             }
+//         }
+
+//         static PyObject* __ifloordiv__(__python__* lhs, PyObject* rhs) noexcept {
+//             return PyNumber_InPlaceFloorDivide(ptr(lhs->m_value), rhs);
+//         }
+
+//         static PyObject* __truediv__(PyObject* lhs, PyObject* rhs) noexcept {
+//             try {
+//                 Type<Union> cls;
+//                 if (PyType_IsSubtype(
+//                     Py_TYPE(lhs),
+//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
+//                 ) {
+//                     return PyNumber_TrueDivide(
+//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+//                         rhs
+//                     );
+//                 }
+//                 return PyNumber_TrueDivide(
+//                     lhs,
+//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+//                 );
+//             } catch (...) {
+//                 Exception::to_python();
+//                 return nullptr;
+//             }
+//         }
+
+//         static PyObject* __itruediv__(__python__* lhs, PyObject* rhs) noexcept {
+//             return PyNumber_InPlaceTrueDivide(ptr(lhs->m_value), rhs);
+//         }
+
+//         static PyObject* __index__(__python__* self) noexcept {
+//             return PyNumber_Index(ptr(self->m_value));
+//         }
+
+//         static PyObject* __matmul__(PyObject* lhs, PyObject* rhs) noexcept {
+//             try {
+//                 Type<Union> cls;
+//                 if (PyType_IsSubtype(
+//                     Py_TYPE(lhs),
+//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
+//                 ) {
+//                     return PyNumber_MatrixMultiply(
+//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
+//                         rhs
+//                     );
+//                 }
+//                 return PyNumber_MatrixMultiply(
+//                     lhs,
+//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
+//                 );
+//             } catch (...) {
+//                 Exception::to_python();
+//                 return nullptr;
+//             }
+//         }
+
+//         static PyObject* __imatmul__(__python__* lhs, PyObject* rhs) noexcept {
+//             return PyNumber_InPlaceMatrixMultiply(ptr(lhs->m_value), rhs);
+//         }
+
+//         static int __buffer__(
+//             __python__* exported,
+//             Py_buffer* view,
+//             int flags
+//         ) noexcept {
+//             return PyObject_GetBuffer(ptr(exported->m_value), view, flags);
+//         }
+
+//         static void __release_buffer__(__python__* exported, Py_buffer* view) noexcept {
+//             PyBuffer_Release(view);
+//         }
+
+//     private:
+
+//         inline static PyGetSetDef properties[] = {
+//             {
+//                 "__wrapped__",
+//                 reinterpret_cast<getter>(__wrapped__),
+//                 nullptr,
+//                 PyDoc_STR(
+// R"doc(The value stored in the optional.
+
+// Returns
+// -------
+// object
+//     The value stored in the optional, or None if it is currently empty.
+
+// Notes
+// -----
+// The presence of a `__wrapped__` attribute triggers some special behavior in
+// both the Python and Bertrand APIs.  In Python, it allows the `inspect` module
+// to unwrap the optional and inspect the internal value, in the same way as
+// `functools.partial` and `functools.wraps`.  In Bertrand, some operators
+// (like the `isinstance()` operator) will check for the presence of this
+// attribute and unwrap the optional if it is present.)doc"
+//                 )
+//             },
+//             {nullptr}
+//         };
+
+//         inline static PyAsyncMethods async = {
+//             .am_await = reinterpret_cast<unaryfunc>(__await__),
+//             .am_aiter = reinterpret_cast<unaryfunc>(__aiter__),
+//             .am_anext = reinterpret_cast<unaryfunc>(__anext__),
+//             .am_send = reinterpret_cast<sendfunc>(__asend__),
+//         };
+
+//         inline static PyNumberMethods number = {
+//             .nb_add = reinterpret_cast<binaryfunc>(__add__),
+//             .nb_subtract = reinterpret_cast<binaryfunc>(__sub__),
+//             .nb_multiply = reinterpret_cast<binaryfunc>(__mul__),
+//             .nb_remainder = reinterpret_cast<binaryfunc>(__mod__),
+//             .nb_divmod = reinterpret_cast<binaryfunc>(__divmod__),
+//             .nb_power = reinterpret_cast<ternaryfunc>(__power__),
+//             .nb_negative = reinterpret_cast<unaryfunc>(__neg__),
+//             .nb_positive = reinterpret_cast<unaryfunc>(__pos__),
+//             .nb_absolute = reinterpret_cast<unaryfunc>(__abs__),
+//             .nb_bool = reinterpret_cast<inquiry>(__bool__),
+//             .nb_invert = reinterpret_cast<unaryfunc>(__invert__),
+//             .nb_lshift = reinterpret_cast<binaryfunc>(__lshift__),
+//             .nb_rshift = reinterpret_cast<binaryfunc>(__rshift__),
+//             .nb_and = reinterpret_cast<binaryfunc>(__and__),
+//             .nb_xor = reinterpret_cast<binaryfunc>(__xor__),
+//             .nb_or = reinterpret_cast<binaryfunc>(__or__),
+//             .nb_int = reinterpret_cast<unaryfunc>(__int__),
+//             .nb_float = reinterpret_cast<unaryfunc>(__float__),
+//             .nb_inplace_add = reinterpret_cast<binaryfunc>(__iadd__),
+//             .nb_inplace_subtract = reinterpret_cast<binaryfunc>(__isub__),
+//             .nb_inplace_multiply = reinterpret_cast<binaryfunc>(__imul__),
+//             .nb_inplace_remainder = reinterpret_cast<binaryfunc>(__imod__),
+//             .nb_inplace_power = reinterpret_cast<ternaryfunc>(__ipower__),
+//             .nb_inplace_lshift = reinterpret_cast<binaryfunc>(__ilshift__),
+//             .nb_inplace_rshift = reinterpret_cast<binaryfunc>(__irshift__),
+//             .nb_inplace_and = reinterpret_cast<binaryfunc>(__iand__),
+//             .nb_inplace_xor = reinterpret_cast<binaryfunc>(__ixor__),
+//             .nb_inplace_or = reinterpret_cast<binaryfunc>(__ior__),
+//             .nb_floor_divide = reinterpret_cast<binaryfunc>(__floordiv__),
+//             .nb_true_divide = reinterpret_cast<binaryfunc>(__truediv__),
+//             .nb_inplace_floor_divide = reinterpret_cast<binaryfunc>(__ifloordiv__),
+//             .nb_inplace_true_divide = reinterpret_cast<binaryfunc>(__itruediv__),
+//             .nb_index = reinterpret_cast<unaryfunc>(__index__),
+//             .nb_matrix_multiply = reinterpret_cast<binaryfunc>(__matmul__),
+//             .nb_inplace_matrix_multiply = reinterpret_cast<binaryfunc>(__imatmul__),
+//         };
+
+//         inline static PyMappingMethods mapping = {
+//             .mp_length = reinterpret_cast<lenfunc>(__len__),
+//             .mp_subscript = reinterpret_cast<binaryfunc>(__getitem__),
+//             .mp_ass_subscript = reinterpret_cast<objobjargproc>(__setitem__)
+//         };
+
+//         inline static PySequenceMethods sequence = {
+//             .sq_length = reinterpret_cast<lenfunc>(__len__),
+//             .sq_concat = reinterpret_cast<binaryfunc>(__add__),
+//             .sq_repeat = reinterpret_cast<ssizeargfunc>(__repeat__),
+//             .sq_item = reinterpret_cast<ssizeargfunc>(__sq_getitem__),
+//             .sq_ass_item = reinterpret_cast<ssizeobjargproc>(__sq_setitem__),
+//             .sq_contains = reinterpret_cast<objobjproc>(__contains__),
+//             .sq_inplace_concat = reinterpret_cast<binaryfunc>(__iadd__),
+//             .sq_inplace_repeat = reinterpret_cast<ssizeargfunc>(__irepeat__)
+//         };
+
+//         inline static PyBufferProcs buffer = {
+//             .bf_getbuffer = reinterpret_cast<getbufferproc>(__buffer__),
+//             .bf_releasebuffer = reinterpret_cast<releasebufferproc>(__release_buffer__)
+//         };
 
     };
 
