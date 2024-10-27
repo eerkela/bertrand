@@ -212,32 +212,6 @@ inline bool __explicit_cast__<From, bool>::operator()(From&& from) {
 
 
 
-
-
-
-
-template <impl::inherits<Object> From, impl::inherits<From> To>
-    requires (!impl::is<From, To>)
-auto __cast__<From, To>::operator()(From&& from) {
-    if (isinstance<To>(from)) {
-        if constexpr (std::is_lvalue_reference_v<From>) {
-            return reinterpret_borrow<To>(ptr(from));
-        } else {
-            return reinterpret_steal<To>(release(from));
-        }
-    } else {
-        /// TODO: Type<From> and Type<To> must apply std::remove_cvref_t<>?  Maybe that
-        /// can be rolled into the Type<> class itself?
-        /// -> The only way this can be handled universally is if these forward
-        /// declarations are filled after type.h is included
-        throw TypeError(
-            "cannot convert Python object from type '" + repr(Type<From>()) +
-            "' to type '" + repr(Type<To>()) + "'"
-        );
-    }
-}
-
-
 template <impl::inherits<Object> From, impl::cpp To>
     requires (__cast__<To>::enable && std::integral<To>)
 To __explicit_cast__<From, To>::operator()(From&& from) {

@@ -803,15 +803,6 @@ struct __cast__<T, Object>                                  : Returns<Object> {
 };
 
 
-/* Implicitly convert a Python object into one of its subclasses by applying a runtime
-`isinstance()` check. */
-template <impl::inherits<Object> From, std::derived_from<From> To>
-    requires (!impl::is<From, To>)
-struct __cast__<From, To>                                   : Returns<To> {
-    static auto operator()(From from);
-};
-
-
 /* Implicitly convert a Python object into any recognized C++ type by checking for an
 equivalent Python type via __cast__, implicitly converting to that type, and then
 implicitly converting the result to the C++ type in a 2-step process. */
@@ -961,12 +952,12 @@ template <impl::is<Object> Self, StaticStr Name, std::convertible_to<Object> Val
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <impl::is<Object> Self, StaticStr Name> requires (!impl::is_const<Self>)
 struct __delattr__<Self, Name>                              : Returns<void> {};
-
-
-/* The Object call operator has to be defined as a specialization in order to bootstrap
-the introspection behavior. */
 template <impl::is<Object> Self, std::convertible_to<Object>... Args>
 struct __call__<Self, Args...>                              : Returns<Object> {};
+template <impl::is<Object> Self>
+struct __iter__<Self>                                       : Returns<Object> {};
+template <impl::is<Object> Self>
+struct __reversed__<Self>                                   : Returns<Object> {};
 
 
 /* Allow Objects to be used as left-hand arguments in `issubclass()` checks. */

@@ -5,15 +5,14 @@
 #include "object.h"
 #include "except.h"
 #include "ops.h"
-#include "access.h"
+#include "arg.h"
+#include "iter.h"
 
 
 namespace py {
 
 
 namespace impl {
-
-
 
     /* Default seed for FNV-1a hash function. */
     constexpr size_t fnv1a_seed = [] {
@@ -79,7 +78,7 @@ namespace impl {
 
     /* Round a number up to the next power of two unless it is one already. */
     template <std::unsigned_integral T>
-    T next_power_of_two(T n) {
+    constexpr T next_power_of_two(T n) noexcept {
         constexpr size_t bits = sizeof(T) * 8;
         --n;
         for (size_t i = 1; i < bits; i <<= 1) {
@@ -173,11 +172,7 @@ namespace impl {
         auto cbegin() const noexcept { return std::ranges::cbegin(value); }
         auto end() const noexcept { return std::ranges::end(value); }
         auto cend() const noexcept { return std::ranges::cend(value); }
-
     };
-
-    /// TODO: rather than trying to split apart unions, I should create a std::variant
-    /// equivalent that can be used to represent them.
 
     /* Inspect an annotated Python function and extract its inline type hints so that
     they can be translated into corresponding parameter lists. */
@@ -185,7 +180,7 @@ namespace impl {
     private:
 
         static Object import_typing() {
-            PyObject* typing = PyImport_ImportModule("typing");
+            PyObject* typing = PyImport_Import(ptr(template_string<"typing">()));
             if (typing == nullptr) {
                 Exception::from_python();
             }
@@ -193,7 +188,7 @@ namespace impl {
         }
 
         static Object import_types() {
-            PyObject* types = PyImport_ImportModule("types");
+            PyObject* types = PyImport_Import(ptr(template_string<"types">()));
             if (types == nullptr) {
                 Exception::from_python();
             }
@@ -220,7 +215,7 @@ namespace impl {
             }
             PyObject* get_type_hints_args[] = {nullptr, ptr(func), Py_True};
             Object get_type_hints_kwnames = reinterpret_steal<Object>(
-                PyTuple_Pack(1, TemplateString<"include_extras">::ptr)
+                PyTuple_Pack(1, ptr(template_string<"include_extras">()))
             );
             Object hints = reinterpret_steal<Object>(PyObject_Vectorcall(
                 ptr(getattr<"get_type_hints">(typing)),
@@ -234,10 +229,14 @@ namespace impl {
             Object empty = getattr<"empty">(getattr<"Parameter">(inspect));
             Object parameters = reinterpret_steal<Object>(PyObject_CallMethodNoArgs(
                 ptr(getattr<"parameters">(signature)),
-                TemplateString<"values">::ptr
+                ptr(template_string<"values">())
             ));
+            Py_ssize_t len = PyObject_Length(ptr(parameters));
+            if (len < 0) {
+                Exception::from_python();
+            }
             Object new_params = reinterpret_steal<Object>(
-                PyList_New(len(parameters))
+                PyList_New(len)
             );
             Py_ssize_t idx = 0;
             for (Object param : parameters) {
@@ -257,10 +256,9 @@ namespace impl {
                         }
                     }
                     PyObject* replace_args[] = {nullptr, ptr(annotation)};
-                    Object replace_kwnames = reinterpret_steal<Object>(PyTuple_Pack(
-                        1,
-                        TemplateString<"annotation">::ptr
-                    ));
+                    Object replace_kwnames = reinterpret_steal<Object>(
+                        PyTuple_Pack(1, ptr(template_string<"annotation">()))
+                    );
                     if (replace_kwnames.is(nullptr)) {
                         Exception::from_python();
                     }
@@ -279,7 +277,7 @@ namespace impl {
             }
             Object return_annotation = reinterpret_steal<Object>(PyDict_GetItem(
                 ptr(hints),
-                TemplateString<"return">::ptr
+                ptr(template_string<"return">())
             ));
             if (return_annotation.is(nullptr)) {
                 return_annotation = empty;
@@ -291,8 +289,8 @@ namespace impl {
             };
             Object replace_kwnames = reinterpret_steal<Object>(PyTuple_Pack(
                 2,
-                TemplateString<"return_annotation">::ptr,
-                TemplateString<"parameters">::ptr
+                ptr(template_string<"return_annotation">()),
+                ptr(template_string<"parameters">())
             ));
             if (replace_kwnames.is(nullptr)) {
                 Exception::from_python();
@@ -312,7 +310,7 @@ namespace impl {
         Object get_parameters() const {
             Object values = reinterpret_steal<Object>(PyObject_CallMethodNoArgs(
                 ptr(getattr<"parameters">(signature)),
-                TemplateString<"values">::ptr
+                ptr(template_string<"values">())
             ));
             if (values.is(nullptr)) {
                 Exception::from_python();
@@ -326,27 +324,52 @@ namespace impl {
             return result;
         }
 
+        static Object to_union(std::set<PyObject*>& keys) {
+            Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+                ptr(template_string<"bertrand">())
+            ));
+            if (bertrand.is(nullptr)) {
+                Exception::from_python();
+            }
+            Object key = reinterpret_steal<Object>(
+                PyTuple_New(keys.size())
+            );
+            if (key.is(nullptr)) {
+                Exception::from_python();
+            }
+            size_t i = 0;
+            for (PyObject* type : keys) {
+                PyTuple_SET_ITEM(ptr(key), i++, Py_NewRef(type));
+            }
+            Object specialization = reinterpret_steal<Object>(
+                PyObject_GetItem(
+                    ptr(getattr<"Union">(bertrand)),
+                    ptr(key)
+                )
+            );
+            if (specialization.is(nullptr)) {
+                Exception::from_python();
+            }
+            return specialization;
+        }
+
     public:
         Object inspect = [] {
-            PyObject* inspect = PyImport_Import(TemplateString<"inspect">::ptr);
+            PyObject* inspect = PyImport_Import(ptr(template_string<"inspect">()));
             if (inspect == nullptr) {
                 Exception::from_python();
             }
             return reinterpret_steal<Object>(inspect);
         }();
-        Object typing = [] {
-            PyObject* inspect = PyImport_Import(TemplateString<"typing">::ptr);
-            if (inspect == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Object>(inspect);
-        }();
+        Object typing = import_typing();
 
         Object func;
         Object signature;
         Object parameters;
         size_t seed;
         size_t prime;
+
+        /// TODO: rather than passing a PyObject* directly, maybe use Object semantics.
 
         Inspect(
             PyObject* func,
@@ -364,21 +387,37 @@ namespace impl {
         Inspect& operator=(const Inspect& other) = delete;
         Inspect& operator=(Inspect&& other) noexcept = delete;
 
+        /* Get the `inspect.Parameter` object at a particular index of the introspected
+        function signature. */
+        Object at(size_t i) const {
+            Py_ssize_t len = PyObject_Length(ptr(parameters));
+            if (len < 0) {
+                Exception::from_python();
+            } else if (i >= len) {
+                throw IndexError("index out of range");
+            }
+            return reinterpret_borrow<Object>(
+                PyTuple_GET_ITEM(ptr(parameters), i)
+            );
+        }
+
         /* A callback function to use when parsing inline type hints within a Python
         function declaration. */
         struct Callback {
-            using Func = std::function<bool(Object, std::vector<PyObject*>& result)>;
             std::string id;
-            Func callback;
+            std::function<bool(Object, std::set<PyObject*>&)> func;
+            bool operator()(Object hint, std::set<PyObject*>& out) const {
+                return func(hint, out);
+            }
         };
 
         /* Initiate a search of the callback map in order to parse a Python-style type
         hint.  The search stops at the first callback that returns true, otherwise the
         hint is interpreted as either a single type if it is a Python class, or a
         generic `object` type otherwise. */
-        static void parse(Object hint, std::vector<PyObject*>& out) {
+        static void parse(Object hint, std::set<PyObject*>& out) {
             for (const Callback& cb : callbacks) {
-                if (cb.callback(hint, out)) {
+                if (cb(hint, out)) {
                     return;
                 }
             }
@@ -406,7 +445,7 @@ namespace impl {
             }
 
             // unrecognized hints are assumed to implement `issubclass()`
-            out.push_back(ptr(hint));
+            out.insert(ptr(hint));
         }
 
         /* In order to provide custom handlers for Python type hints, each annotation
@@ -430,7 +469,7 @@ namespace impl {
         The default behavior in this case is to simply extract the underlying type,
         but custom callbacks can be added to interpret these annotations as needed.
 
-        For performance reasons, the types that are added to the `out` vector are
+        For performance reasons, the types that are added to the `out` set are
         always expected to be BORROWED references, and do not own the underlying
         type objects.  This allows the overload keys to be trivially destructible,
         which avoids an extra loop in their destructors.  Since an overload key is
@@ -443,9 +482,15 @@ namespace impl {
                 /// and will require interactions with the global type map, and thus a
                 /// forward declaration here.
                 "types.GenericAlias",
-                [](Object hint, std::vector<PyObject*>& out) -> bool {
+                [](Object hint, std::set<PyObject*>& out) -> bool {
                     Object types = import_types();
-                    if (isinstance(hint, getattr<"GenericAlias">(types))) {
+                    int rc = PyObject_IsInstance(
+                        ptr(hint),
+                        ptr(getattr<"GenericAlias">(types))
+                    );
+                    if (rc < 0) {
+                        Exception::from_python();
+                    } else if (rc) {
                         Object typing = import_typing();
                         Object origin = reinterpret_steal<Object>(PyObject_CallOneArg(
                             ptr(getattr<"get_origin">(typing)),
@@ -469,9 +514,15 @@ namespace impl {
             },
             {
                 "types.UnionType",
-                [](Object hint, std::vector<PyObject*>& out) -> bool {
+                [](Object hint, std::set<PyObject*>& out) -> bool {
                     Object types = import_types();
-                    if (isinstance(hint, getattr<"UnionType">(types))) {
+                    int rc = PyObject_IsInstance(
+                        ptr(hint),
+                        ptr(getattr<"UnionType">(types))
+                    );
+                    if (rc < 0) {
+                        Exception::from_python();
+                    } else if (rc) {
                         Object args = reinterpret_steal<Object>(PyObject_CallOneArg(
                             ptr(getattr<"get_args">(types)),
                             ptr(hint)
@@ -492,7 +543,7 @@ namespace impl {
                 /// it returns `typing.Union`, meaning that this handler will also
                 /// implicitly cover `Optional` annotations for free.
                 "typing.Union",
-                [](Object hint, std::vector<PyObject*>& out) -> bool {
+                [](Object hint, std::set<PyObject*>& out) -> bool {
                     Object typing = import_typing();
                     Object origin = reinterpret_steal<Object>(PyObject_CallOneArg(
                         ptr(getattr<"get_origin">(typing)),
@@ -518,7 +569,7 @@ namespace impl {
             },
             {
                 "typing.Any",
-                [](Object hint, std::vector<PyObject*>& out) -> bool {
+                [](Object hint, std::set<PyObject*>& out) -> bool {
                     Object typing = import_typing();
                     Object origin = reinterpret_steal<Object>(PyObject_CallOneArg(
                         ptr(getattr<"get_origin">(typing)),
@@ -527,14 +578,7 @@ namespace impl {
                     if (origin.is(nullptr)) {
                         Exception::from_python();
                     } else if (origin.is(getattr<"Any">(typing))) {
-                        PyObject* type = reinterpret_cast<PyObject*>(&PyBaseObject_Type);
-                        bool contains = false;
-                        for (PyObject* t : out) {
-                            if (t == type) {
-                                contains = true;
-                            }
-                        }
-                        out.push_back(type);
+                        out.insert(reinterpret_cast<PyObject*>(&PyBaseObject_Type));
                         return true;
                     }
                     return false;
@@ -542,9 +586,15 @@ namespace impl {
             },
             {
                 "typing.TypeAliasType",
-                [](Object hint, std::vector<PyObject*>& out) -> bool {
+                [](Object hint, std::set<PyObject*>& out) -> bool {
                     Object typing = import_typing();
-                    if (isinstance(hint, getattr<"TypeAliasType">(typing))) {
+                    int rc = PyObject_IsInstance(
+                        ptr(hint),
+                        ptr(getattr<"TypeAliasType">(typing))
+                    );
+                    if (rc < 0) {
+                        Exception::from_python();
+                    } else if (rc) {
                         parse(getattr<"__value__">(hint), out);
                         return true;
                     }
@@ -553,7 +603,7 @@ namespace impl {
             },
             {
                 "typing.Literal",
-                [](Object hint, std::vector<PyObject*>& out) -> bool {
+                [](Object hint, std::set<PyObject*>& out) -> bool {
                     Object typing = import_typing();
                     Object origin = reinterpret_steal<Object>(PyObject_CallOneArg(
                         ptr(getattr<"get_origin">(typing)),
@@ -571,18 +621,9 @@ namespace impl {
                         }
                         Py_ssize_t len = PyTuple_GET_SIZE(ptr(args));
                         for (Py_ssize_t i = 0; i < len; ++i) {
-                            PyObject* type = reinterpret_cast<PyObject*>(
+                            out.insert(reinterpret_cast<PyObject*>(
                                 Py_TYPE(PyTuple_GET_ITEM(ptr(args), i))
-                            );
-                            bool contains = false;
-                            for (PyObject* t : out) {
-                                if (t == type) {
-                                    contains = true;
-                                }
-                            }
-                            if (!contains) {
-                                out.push_back(type);
-                            }
+                            ));
                         }
                         return true;
                     }
@@ -591,19 +632,10 @@ namespace impl {
             },
             {
                 "typing.LiteralString",
-                [](Object hint, std::vector<PyObject*>& out) -> bool {
+                [](Object hint, std::set<PyObject*>& out) -> bool {
                     Object typing = import_typing();
                     if (hint.is(getattr<"LiteralString">(typing))) {
-                        PyObject* type = reinterpret_cast<PyObject*>(&PyUnicode_Type);
-                        bool contains = false;
-                        for (PyObject* t : out) {
-                            if (t == type) {
-                                contains = true;
-                            }
-                        }
-                        if (!contains) {
-                            out.push_back(type);
-                        }
+                        out.insert(reinterpret_cast<PyObject*>(&PyUnicode_Type));
                         return true;
                     }
                     return false;
@@ -611,26 +643,11 @@ namespace impl {
             },
             {
                 "typing.AnyStr",
-                [](Object hint, std::vector<PyObject*>& out) -> bool {
+                [](Object hint, std::set<PyObject*>& out) -> bool {
                     Object typing = import_typing();
                     if (hint.is(getattr<"AnyStr">(typing))) {
-                        PyObject* unicode = reinterpret_cast<PyObject*>(&PyUnicode_Type);
-                        PyObject* bytes = reinterpret_cast<PyObject*>(&PyBytes_Type);
-                        bool contains_unicode = false;
-                        bool contains_bytes = false;
-                        for (PyObject* t : out) {
-                            if (t == unicode) {
-                                contains_unicode = true;
-                            } else if (t == bytes) {
-                                contains_bytes = true;
-                            }
-                        }
-                        if (!contains_unicode) {
-                            out.push_back(unicode);
-                        }
-                        if (!contains_bytes) {
-                            out.push_back(bytes);
-                        }
+                        out.insert(reinterpret_cast<PyObject*>(&PyUnicode_Type));
+                        out.insert(reinterpret_cast<PyObject*>(&PyBytes_Type));
                         return true;
                     }
                     return false;
@@ -638,14 +655,14 @@ namespace impl {
             },
             {
                 "typing.NoReturn",
-                [](Object hint, std::vector<PyObject*>& out) -> bool {
+                [](Object hint, std::set<PyObject*>& out) -> bool {
                     Object typing = import_typing();
                     if (
                         hint.is(getattr<"NoReturn">(typing)) ||
                         hint.is(getattr<"Never">(typing))
                     ) {
                         /// NOTE: this handler models NoReturn/Never by not pushing a
-                        /// type to the `out` vector, giving an empty return type.
+                        /// type to the `out` set, giving an empty return type.
                         return true;
                     }
                     return false;
@@ -653,7 +670,7 @@ namespace impl {
             },
             {
                 "typing.TypeGuard",
-                [](Object hint, std::vector<PyObject*>& out) -> bool {
+                [](Object hint, std::set<PyObject*>& out) -> bool {
                     Object typing = import_typing();
                     Object origin = reinterpret_steal<Object>(PyObject_CallOneArg(
                         ptr(getattr<"get_origin">(typing)),
@@ -662,16 +679,7 @@ namespace impl {
                     if (origin.is(nullptr)) {
                         Exception::from_python();
                     } else if (origin.is(getattr<"TypeGuard">(typing))) {
-                        PyObject* type = reinterpret_cast<PyObject*>(&PyBool_Type);
-                        bool contains = false;
-                        for (PyObject* t : out) {
-                            if (t == type) {
-                                contains = true;
-                            }
-                        }
-                        if (!contains) {
-                            out.push_back(type);
-                        }
+                        out.insert(reinterpret_cast<PyObject*>(&PyBool_Type));
                         return true;
                     }
                     return false;
@@ -679,51 +687,128 @@ namespace impl {
             }
         };
 
-        /* Get the possible return types of the function, using the same callback
+        /* Get the possible return type of the function, using the same callback
         handlers as the parameters.  Note that functions with `typing.NoReturn` or
-        `typing.Never` annotations can return an empty vector. */
-        std::vector<PyObject*> returns() const {
+        `typing.Never` annotations can return a null pointer.  Otherwise, returns
+        the parsed return type of the function, which may be a specialization of
+        `Union` if multiple return types are valid. */
+        PyObject* returns() const {
+            if (return_initialized) {
+                return _returns;
+            }
             Object return_annotation = getattr<"return_annotation">(signature);
-            std::vector<PyObject*> keys;
+            std::set<PyObject*> keys;
             if (return_annotation.is(getattr<"empty">(signature))) {
-                keys.push_back(reinterpret_cast<PyObject*>(&PyBaseObject_Type));
+                keys.insert(reinterpret_cast<PyObject*>(&PyBaseObject_Type));
             } else {
                 parse(return_annotation, keys);
             }
-            return keys;
+            if (keys.empty()) {
+                _returns = nullptr;
+            } else if (keys.size() == 1) {
+                _returns = *keys.begin();
+            } else {
+                _returns = ptr(to_union(keys));
+            }
+            return_initialized = true;
+            return _returns;
         }
 
-        auto begin() const {
-            if (overload_keys.empty()) {
-                get_overloads();
+        /* Convert the introspected signature into a lightweight C++ template key,
+        suitable for insertion into a function's overload trie. */
+        const Params<std::vector<Param>>& key() const {
+            if (key_initialized) {
+                return _key;
             }
-            return overload_keys.cbegin();
-        }
-        auto cbegin() const { return begin(); }
-        auto end() const { return overload_keys.cend(); }
-        auto cend() const { return end(); }
 
-        size_t size() const {
-            if (overload_keys.empty()) {
-                get_overloads();
-            }
-            return overload_keys.size();
-        }
+            Object Parameter = getattr<"Parameter">(inspect);
+            Object empty = getattr<"empty">(Parameter);
+            Object POSITIONAL_ONLY = getattr<"POSITIONAL_ONLY">(Parameter);
+            Object POSITIONAL_OR_KEYWORD = getattr<"POSITIONAL_OR_KEYWORD">(Parameter);
+            Object VAR_POSITIONAL = getattr<"VAR_POSITIONAL">(Parameter);
+            Object KEYWORD_ONLY = getattr<"KEYWORD_ONLY">(Parameter);
+            Object VAR_KEYWORD = getattr<"VAR_KEYWORD">(Parameter);
 
-        /* Get a borrowed reference to the `inspect.Parameter` object at a particular
-        index of the introspected function signature. */
-        Object parameter(size_t i) const {
-            if (i >= len(parameters)) {
-                throw IndexError("index out of range");
+            Py_ssize_t len = PyObject_Length(ptr(parameters));
+            if (len < 0) {
+                Exception::from_python();
             }
-            return reinterpret_steal<Object>(
-                PyTuple_GET_ITEM(ptr(parameters), i)
-            );
+            _key.value.reserve(len);
+            for (Object param : parameters) {
+                std::string_view name = Param::get_name(
+                    ptr(getattr<"name">(param)
+                ));
+
+                ArgKind category;
+                Object kind = getattr<"kind">(param);
+                if (kind.is(POSITIONAL_ONLY)) {
+                    category = getattr<"default">(param).is(empty) ?
+                        ArgKind::POS :
+                        ArgKind::POS | ArgKind::OPT;
+                } else if (kind.is(POSITIONAL_OR_KEYWORD)) {
+                    category = getattr<"default">(param).is(empty) ?
+                        ArgKind::POS | ArgKind::KW :
+                        ArgKind::POS | ArgKind::KW | ArgKind::OPT;
+                } else if (kind.is(KEYWORD_ONLY)) {
+                    category = getattr<"default">(param).is(empty) ?
+                        ArgKind::KW :
+                        ArgKind::KW | ArgKind::OPT;
+                } else if (kind.is(VAR_POSITIONAL)) {
+                    category = ArgKind::POS | ArgKind::VARIADIC;
+                } else if (kind.is(VAR_KEYWORD)) {
+                    category = ArgKind::KW | ArgKind::VARIADIC;
+                } else {
+                    throw TypeError("unrecognized parameter kind: " + repr(kind));
+                }
+
+                std::set<PyObject*> types;
+                if (getattr<"annotation">(param).is(empty)) {
+                    types.insert(reinterpret_cast<PyObject*>(&PyBaseObject_Type));
+                } else {
+                    parse(param, types);
+                }
+                if (types.empty()) {
+                    throw TypeError(
+                        "invalid type hint for parameter '" + std::string(name) +
+                        "': " + repr(getattr<"annotation">(param))
+                    );
+                } else if (types.size() == 1) {
+                    PyObject* type = *types.begin();
+                    _key.value.push_back({
+                        name,
+                        type,
+                        category
+                    });
+                    _key.hash = hash_combine(
+                        _key.hash,
+                        fnv1a(name.data(), seed, prime),
+                        reinterpret_cast<size_t>(type)
+                    );
+                } else {
+                    Object specialization = to_union(types);
+                    _key.value.push_back({
+                        name,
+                        ptr(specialization),
+                        category
+                    });
+                    _key.hash = hash_combine(
+                        _key.hash,
+                        fnv1a(name.data(), seed, prime),
+                        reinterpret_cast<size_t>(ptr(specialization))
+                    );
+                }
+            }
+            key_initialized = true;
+            return _key;
         }
 
         /* Convert the inspected signature into a valid template key for the
         `bertrand.Function` class on the Python side. */
         Object template_key() const {
+            if (!_template_key.is(nullptr)) {
+                return _template_key;
+            }
+
             Object Parameter = getattr<"Parameter">(inspect);
             Object empty = getattr<"empty">(Parameter);
             Object POSITIONAL_ONLY = getattr<"POSITIONAL_ONLY">(Parameter);
@@ -731,13 +816,25 @@ namespace impl {
             Object VAR_POSITIONAL = getattr<"VAR_POSITIONAL">(Parameter);
             Object KEYWORD_ONLY = getattr<"KEYWORD_ONLY">(Parameter);
 
-            size_t nparams = len(parameters);
+            Py_ssize_t len = PyObject_Length(ptr(parameters));
+            if (len < 0) {
+                Exception::from_python();
+            }
             Object result = reinterpret_steal<Object>(
-                PyTuple_New(nparams + 1)
+                PyTuple_New(len + 1)
             );
             if (result.is(nullptr)) {
                 Exception::from_python();
             }
+
+            /// TODO: insert return type into the key tuple, then proceed similar to
+            /// the key() method above.
+            PyObject* returns = this->returns();
+            if (!returns) {
+                /// TODO: somehow represent a noreturn function.  Maybe the template
+                /// key uses an empty in this case? [::, ...]
+            }
+
 
             /// NOTE: the primary difficulty here is handling unions, which cannot be
             /// directly reflected in C++.  In order to accomodate these, we analyze
@@ -787,7 +884,7 @@ namespace impl {
                             PyTuple_SET_ITEM(
                                 ptr(result),
                                 i + offset,
-                                Py_NewRef(TemplateString<"/">::ptr)
+                                release(template_string<"/">())
                             );
                             ++offset;
                         } else if (kind.is(KEYWORD_ONLY) && !has_kwonly) {
@@ -807,7 +904,7 @@ namespace impl {
                             PyTuple_SET_ITEM(
                                 ptr(result),
                                 i + offset,
-                                Py_NewRef(TemplateString<"*">::ptr)
+                                release(template_string<"*">())
                             );
                             ++offset;
                         }
@@ -822,7 +919,7 @@ namespace impl {
                             PyType_Check(param.type) ?
                                 param.type :
                                 reinterpret_cast<PyObject*>(Py_TYPE(param.type)),
-                            impl::TemplateString<"__mro__">::ptr
+                            ptr(template_string<"__mro__">())
                         ));
                         if (order.is(nullptr)) {
                             Exception::from_python();
@@ -893,7 +990,7 @@ namespace impl {
 
                     /// TODO: this is all wrong, and needs to account for correct
                     /// slice construction.
-                    Object parameter = this->parameter(i);
+                    Object parameter = this->at(i);
                     Object empty = getattr<"empty">(parameter);
                     PyObject* slice = PySlice_New(
                         ptr(getattr<"name">(parameter)),
@@ -957,131 +1054,11 @@ namespace impl {
         }
 
     private:
-        using Params = impl::Params<std::vector<Param>>;
-        mutable std::vector<Params> overload_keys;
-
-        /* A thin wrapper around a Python MRO tuple that allows it to be stored in a
-        hash set.  Uses transparent hashing for lookups based on the first (most
-        derived) type in the tuple. */
-        struct MRO {
-            Object order;
-            size_t size;
-
-            struct Hash {
-                using is_transparent = void;
-                static size_t operator()(const MRO& mro) noexcept {
-                    return reinterpret_cast<size_t>(
-                        PyTuple_GET_ITEM(ptr(mro.order), 0)
-                    );
-                }
-                static size_t operator()(PyObject* type) noexcept {
-                    return reinterpret_cast<size_t>(type);
-                }
-            };
-
-            bool operator==(const MRO& other) const noexcept {
-                if (size != other.size) {
-                    return false;
-                }
-                int rc = PyObject_RichCompareBool(
-                    ptr(order),
-                    ptr(other.order),
-                    Py_EQ
-                );
-                if (rc < 0) {
-                    Exception::from_python();
-                }
-                return rc;
-            }
-
-            bool operator==(PyObject* type) const noexcept {
-                return PyTuple_GET_ITEM(ptr(order), 0) == type;
-            }
-
-            friend bool operator==(PyObject* type, const MRO& mro) noexcept {
-                return mro == type;
-            }
-        };
-
-        /* Iterate over the Python signature and invoke the matching callbacks */
-        void get_overloads() const {
-            Object Parameter = getattr<"Parameter">(inspect);
-            Object empty = getattr<"empty">(Parameter);
-            Object POSITIONAL_ONLY = getattr<"POSITIONAL_ONLY">(Parameter);
-            Object POSITIONAL_OR_KEYWORD = getattr<"POSITIONAL_OR_KEYWORD">(Parameter);
-            Object VAR_POSITIONAL = getattr<"VAR_POSITIONAL">(Parameter);
-            Object KEYWORD_ONLY = getattr<"KEYWORD_ONLY">(Parameter);
-            Object VAR_KEYWORD = getattr<"VAR_KEYWORD">(Parameter);
-
-            overload_keys.push_back({std::vector<Param>{}, 0});
-            overload_keys.back().value.reserve(len(parameters));
-            for (Object param : parameters) {
-                // determine the name and category of each `inspect.Parameter` object
-                std::string_view name = Param::get_name(
-                    ptr(getattr<"name">(param)
-                ));
-                ArgKind category;
-                Object kind = getattr<"kind">(param);
-                if (kind.is(POSITIONAL_ONLY)) {
-                    category = getattr<"default">(param).is(empty) ?
-                        ArgKind::POS :
-                        ArgKind::POS | ArgKind::OPT;
-                } else if (kind.is(POSITIONAL_OR_KEYWORD)) {
-                    category = getattr<"default">(param).is(empty) ?
-                        ArgKind::POS | ArgKind::KW :
-                        ArgKind::POS | ArgKind::KW | ArgKind::OPT;
-                } else if (kind.is(KEYWORD_ONLY)) {
-                    category = getattr<"default">(param).is(empty) ?
-                        ArgKind::KW :
-                        ArgKind::KW | ArgKind::OPT;
-                } else if (kind.is(VAR_POSITIONAL)) {
-                    category = ArgKind::POS | ArgKind::VARIADIC;
-                } else if (kind.is(VAR_KEYWORD)) {
-                    category = ArgKind::KW | ArgKind::VARIADIC;
-                } else {
-                    throw TypeError("unrecognized parameter kind: " + repr(kind));
-                }
-
-                // parse the annotation for each `inspect.Parameter` object
-                std::vector<PyObject*> types;
-                if (getattr<"annotation">(param).is(empty)) {
-                    types.push_back(reinterpret_cast<PyObject*>(&PyBaseObject_Type));
-                } else {
-                    parse(param, types);
-                }
-
-                // if there is more than one type in the output vector, then the
-                // existing keys must be duplicated to maintain uniqueness
-                overload_keys.reserve(types.size() * overload_keys.size());
-                for (size_t i = 1; i < types.size(); ++i) {
-                    for (size_t j = 0; j < overload_keys.size(); ++j) {
-                        auto& key = overload_keys[j];
-                        overload_keys.push_back(key);
-                        overload_keys.back().value.reserve(key.value.capacity());
-                    }
-                }
-
-                // append the types to the overload keys and update their hashes such
-                // that each gives a unique path through a function's overload trie
-                for (size_t i = 0; i < types.size(); ++i) {
-                    PyObject* type = types[i];
-                    for (size_t j = 0; j < overload_keys.size(); ++j) {
-                        Params& key = overload_keys[i * overload_keys.size() + j];
-                        key.value.push_back({
-                            name,
-                            type,
-                            category
-                        });
-                        key.hash = hash_combine(
-                            key.hash,
-                            fnv1a(name.data(), seed, prime),
-                            reinterpret_cast<size_t>(type)
-                        );
-                    }
-                }
-            }
-        }
-
+        mutable bool return_initialized = false;
+        mutable PyObject* _returns;
+        mutable bool key_initialized = false;
+        mutable Params<std::vector<Param>> _key = {std::vector<Param>{}, 0};
+        mutable Object _template_key;
     };
 
     /* Inspect an annotated C++ parameter list at compile time and extract metadata
@@ -2250,6 +2227,9 @@ namespace impl {
             }
 
         };
+
+        /// TODO: Overload tries should apply isinstance() rather than issubclass()
+        /// when traversing overloads.
 
         /* A Trie-based data structure that describes a collection of dynamic overloads
         for a `py::Function` object, which will be dispatched to when called from
@@ -4490,7 +4470,7 @@ namespace impl {
                         PyTuple_SET_ITEM(
                             kwnames,
                             J - Inner::kw_idx,
-                            Py_NewRef(TemplateString<name>::ptr)
+                            release(template_string<name>())
                         );
                         args[J + 1] = release(as_object(
                             impl::unpack_arg<J>(std::forward<Values>(values)...)
@@ -4909,138 +4889,138 @@ namespace impl {
     given, cvref-qualified type.  Passing void as the enclosing class will return the
     non-member function pointer as-is. */
     template <typename Func, typename Self>
-    struct as_member_func {
+    struct to_member_func {
         static constexpr bool enable = false;
     };
     template <typename R, typename... A, typename Self>
         requires (std::is_void_v<std::remove_cvref_t<Self>>)
-    struct as_member_func<R(*)(A...), Self> {
+    struct to_member_func<R(*)(A...), Self> {
         static constexpr bool enable = true;
         using type = R(*)(A...);
     };
     template <typename R, typename... A, typename Self>
         requires (std::is_void_v<std::remove_cvref_t<Self>>)
-    struct as_member_func<R(*)(A...) noexcept, Self> {
+    struct to_member_func<R(*)(A...) noexcept, Self> {
         static constexpr bool enable = true;
         using type = R(*)(A...) noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...), Self> {
+    struct to_member_func<R(*)(A...), Self> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...);
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...) noexcept, Self> {
+    struct to_member_func<R(*)(A...) noexcept, Self> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...), Self&> {
+    struct to_member_func<R(*)(A...), Self&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) &;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...) noexcept, Self&> {
+    struct to_member_func<R(*)(A...) noexcept, Self&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) & noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...), Self&&> {
+    struct to_member_func<R(*)(A...), Self&&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) &&;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...) noexcept, Self&&> {
+    struct to_member_func<R(*)(A...) noexcept, Self&&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) && noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...), const Self> {
+    struct to_member_func<R(*)(A...), const Self> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...) noexcept, const Self> {
+    struct to_member_func<R(*)(A...) noexcept, const Self> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...), const Self&> {
+    struct to_member_func<R(*)(A...), const Self&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const &;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...) noexcept, const Self&> {
+    struct to_member_func<R(*)(A...) noexcept, const Self&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const & noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...), const Self&&> {
+    struct to_member_func<R(*)(A...), const Self&&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const &&;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...) noexcept, const Self&&> {
+    struct to_member_func<R(*)(A...) noexcept, const Self&&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const && noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...), volatile Self> {
+    struct to_member_func<R(*)(A...), volatile Self> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...) noexcept, volatile Self> {
+    struct to_member_func<R(*)(A...) noexcept, volatile Self> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...), volatile Self&> {
+    struct to_member_func<R(*)(A...), volatile Self&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile &;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...) noexcept, volatile Self&> {
+    struct to_member_func<R(*)(A...) noexcept, volatile Self&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile & noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...), volatile Self&&> {
+    struct to_member_func<R(*)(A...), volatile Self&&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile &&;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...) noexcept, volatile Self&&> {
+    struct to_member_func<R(*)(A...) noexcept, volatile Self&&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile && noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...), const volatile Self> {
+    struct to_member_func<R(*)(A...), const volatile Self> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...) noexcept, const volatile Self> {
+    struct to_member_func<R(*)(A...) noexcept, const volatile Self> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...), const volatile Self&> {
+    struct to_member_func<R(*)(A...), const volatile Self&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile &;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...) noexcept, const volatile Self&> {
+    struct to_member_func<R(*)(A...) noexcept, const volatile Self&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile & noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...), const volatile Self&&> {
+    struct to_member_func<R(*)(A...), const volatile Self&&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile &&;
     };
     template <typename R, typename... A, typename Self>
-    struct as_member_func<R(*)(A...) noexcept, const volatile Self&&> {
+    struct to_member_func<R(*)(A...) noexcept, const volatile Self&&> {
         static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile && noexcept;
     };
@@ -5060,7 +5040,7 @@ namespace impl {
         static constexpr bool return_is_convertible_to_python =
             std::convertible_to<R, Object>;
         template <typename T>
-        static constexpr bool can_make_member = as_member_func<R(*)(A...), T>::enable;
+        static constexpr bool can_make_member = to_member_func<R(*)(A...), T>::enable;
         using Return = R;
         using Self = void;
         using to_ptr = Signature;
@@ -5068,7 +5048,7 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(*)(A...)>;
         template <typename C> requires (can_make_member<C>)
-        using with_self = Signature<typename as_member_func<R(*)(A...), C>::type>;
+        using with_self = Signature<typename to_member_func<R(*)(A...), C>::type>;
         template <typename... A2>
         using with_args = Signature<R(*)(A2...)>;
         template <typename R2, typename... A2>
@@ -5099,7 +5079,7 @@ namespace impl {
         static constexpr bool return_is_convertible_to_python =
             std::convertible_to<R, Object>;
         template <typename T>
-        static constexpr bool can_make_member = as_member_func<R(*)(A...), T>::enable;
+        static constexpr bool can_make_member = to_member_func<R(*)(A...), T>::enable;
         using Return = R;
         using Self = C&;
         using to_ptr = Signature<R(*)(Self, A...)>;
@@ -5107,7 +5087,7 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...)>;
         template <typename C2> requires (can_make_member<C2>)
-        using with_self = Signature<typename as_member_func<R(*)(A...), C2>::type>;
+        using with_self = Signature<typename to_member_func<R(*)(A...), C2>::type>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...)>;
         template <typename R2, typename... A2>
@@ -5142,7 +5122,7 @@ namespace impl {
         static constexpr bool return_is_convertible_to_python =
             std::convertible_to<R, Object>;
         template <typename T>
-        static constexpr bool can_make_member = as_member_func<R(*)(A...), T>::enable;
+        static constexpr bool can_make_member = to_member_func<R(*)(A...), T>::enable;
         using Return = R;
         using Self = const C&;
         using to_ptr = Signature<R(*)(Self, A...)>;
@@ -5150,7 +5130,7 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) const>;
         template <typename C2> requires (can_make_member<C2>)
-        using with_self = Signature<typename as_member_func<R(*)(A...), C2>::type>;
+        using with_self = Signature<typename to_member_func<R(*)(A...), C2>::type>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const>;
         template <typename R2, typename... A2>
@@ -5185,7 +5165,7 @@ namespace impl {
         static constexpr bool return_is_convertible_to_python =
             std::convertible_to<R, Object>;
         template <typename T>
-        static constexpr bool can_make_member = as_member_func<R(*)(A...), T>::enable;
+        static constexpr bool can_make_member = to_member_func<R(*)(A...), T>::enable;
         using Return = R;
         using Self = volatile C&;
         using to_ptr = Signature<R(*)(Self, A...)>;
@@ -5193,7 +5173,7 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) volatile>;
         template <typename C2> requires (can_make_member<C2>)
-        using with_self = Signature<typename as_member_func<R(*)(A...), C2>::type>;
+        using with_self = Signature<typename to_member_func<R(*)(A...), C2>::type>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) volatile>;
         template <typename R2, typename... A2>
@@ -5228,7 +5208,7 @@ namespace impl {
         static constexpr bool return_is_convertible_to_python =
             std::convertible_to<R, Object>;
         template <typename T>
-        static constexpr bool can_make_member = as_member_func<R(*)(A...), T>::enable;
+        static constexpr bool can_make_member = to_member_func<R(*)(A...), T>::enable;
         using Return = R;
         using Self = const volatile C&;
         using to_ptr = Signature<R(*)(Self, A...)>;
@@ -5236,7 +5216,7 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) const volatile>;
         template <typename C2> requires (can_make_member<C2>)
-        using with_self = Signature<typename as_member_func<R(*)(A...), C2>::type>;
+        using with_self = Signature<typename to_member_func<R(*)(A...), C2>::type>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const volatile>;
         template <typename R2, typename... A2>
@@ -5587,7 +5567,7 @@ namespace impl {
                 type == Py_None ? reinterpret_cast<PyObject*>(Py_TYPE(obj)) : type,
             };
             return PyObject_VectorcallMethod(
-                TemplateString<"_capture">::ptr,
+                ptr(template_string<"_capture">()),
                 args,
                 3,
                 nullptr
@@ -5788,7 +5768,7 @@ mirrors C++ semantics and enables structural typing via `isinstance()` and
                 if (self->fset == nullptr) {
                     PyObject* name = PyObject_GetAttr(
                         self->fget,
-                        TemplateString<"__name__">::ptr
+                        ptr(template_string<"__name__">())
                     );
                     if (name == nullptr) {
                         return nullptr;
@@ -5814,7 +5794,7 @@ mirrors C++ semantics and enables structural typing via `isinstance()` and
             if (self->fdel == nullptr) {
                 PyObject* name = PyObject_GetAttr(
                     self->fget,
-                    TemplateString<"__name__">::ptr
+                    ptr(template_string<"__name__">())
                 );
                 if (name == nullptr) {
                     return nullptr;
@@ -5959,7 +5939,7 @@ mirrors C++ semantics and enables structural typing via `isinstance()` and
                         PyObject* key = PyTuple_GET_ITEM(kwnames, i);
                         int is_name = PyObject_RichCompareBool(
                             key,
-                            TemplateString<"name">::ptr,
+                            ptr(template_string<"name">()),
                             Py_EQ
                         );
                         if (is_name < 0) {
@@ -5975,7 +5955,7 @@ mirrors C++ semantics and enables structural typing via `isinstance()` and
                         }
                         int is_doc = PyObject_RichCompareBool(
                             key,
-                            TemplateString<"doc">::ptr,
+                            ptr(template_string<"doc">()),
                             Py_EQ
                         );
                         if (is_doc < 0) {
@@ -6071,7 +6051,7 @@ mirrors C++ semantics and enables structural typing via `isinstance()` and
                     }
                     Object rc = reinterpret_steal<Object>(PyObject_CallMethodOneArg(
                         ptr(result),
-                        impl::TemplateString<"overload">::ptr,
+                        ptr(impl::template_string<"overload">()),
                         func
                     ));
                     if (rc.is(nullptr)) {
@@ -7069,14 +7049,14 @@ parameter is a type object, and thus the method is a class method.)doc";
         {
             this->name = name ? Py_NewRef(name) : PyObject_GetAttr(
                 name,
-                impl::TemplateString<"__name__">::ptr
+                ptr(impl::template_string<"__name__">())
             );
             if (this->name == nullptr) {
                 Exception::from_python();
             }
             this->docstring = docstring ? Py_NewRef(docstring) : PyObject_GetAttr(
                 docstring,
-                impl::TemplateString<"__doc__">::ptr
+                ptr(impl::template_string<"__doc__">())
             );
             if (this->docstring == nullptr) {
                 Py_DECREF(this->name);
@@ -7174,7 +7154,8 @@ parameter is a type object, and thus the method is a class method.)doc";
                 Object doc = reinterpret_steal<Object>(nullptr);
                 if (kwargs) {
                     name = reinterpret_steal<Object>(PyDict_GetItem(
-                        kwargs, impl::TemplateString<"name">::ptr
+                        kwargs,
+                        ptr(impl::template_string<"name">())
                     ));
                     if (!name.is(nullptr) && !PyUnicode_Check(ptr(name))) {
                         throw TypeError(
@@ -7182,7 +7163,8 @@ parameter is a type object, and thus the method is a class method.)doc";
                         );
                     }
                     doc = reinterpret_steal<Object>(PyDict_GetItem(
-                        kwargs, impl::TemplateString<"doc">::ptr
+                        kwargs,
+                        ptr(impl::template_string<"doc">())
                     ));
                     if (!doc.is(nullptr) && !PyUnicode_Check(ptr(doc))) {
                         throw TypeError(
@@ -7535,7 +7517,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                             PyObject* key = PyTuple_GET_ITEM(kwnames, 0);
                             int rc = PyObject_RichCompareBool(
                                 key,
-                                impl::TemplateString<"setter">::ptr,
+                                ptr(impl::template_string<"setter">()),
                                 Py_EQ
                             );
                             if (rc < 0) {
@@ -7545,7 +7527,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                             } else {
                                 rc = PyObject_RichCompareBool(
                                     key,
-                                    impl::TemplateString<"deleter">::ptr,
+                                    ptr(impl::template_string<"deleter">()),
                                     Py_EQ
                                 );
                                 if (rc < 0) {
@@ -7564,7 +7546,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                             key = PyTuple_GET_ITEM(kwnames, 1);
                             rc = PyObject_RichCompareBool(
                                 key,
-                                impl::TemplateString<"deleter">::ptr,
+                                ptr(impl::template_string<"deleter">()),
                                 Py_EQ
                             );
                             if (rc < 0) {
@@ -7574,7 +7556,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                             } else {
                                 rc = PyObject_RichCompareBool(
                                     key,
-                                    impl::TemplateString<"setter">::ptr,
+                                    ptr(impl::template_string<"setter">()),
                                     Py_EQ
                                 );
                                 if (rc < 0) {
@@ -7594,7 +7576,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                             PyObject* key = PyTuple_GET_ITEM(kwnames, 0);
                             int rc = PyObject_RichCompareBool(
                                 key,
-                                impl::TemplateString<"setter">::ptr,
+                                ptr(impl::template_string<"setter">()),
                                 Py_EQ
                             );
                             if (rc < 0) {
@@ -7604,7 +7586,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                             } else {
                                 rc = PyObject_RichCompareBool(
                                     key,
-                                    impl::TemplateString<"deleter">::ptr,
+                                    ptr(impl::template_string<"deleter">()),
                                     Py_EQ
                                 );
                                 if (rc < 0) {
@@ -7709,7 +7691,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                 // get the current function's template key and allocate a copy
                 Object unbound_key = reinterpret_steal<Object>(PyObject_GetAttr(
                     cls,
-                    impl::TemplateString<"__template__">::ptr
+                    ptr(impl::template_string<"__template__">())
                 ));
                 if (unbound_key.is(nullptr)) {
                     return nullptr;
@@ -7760,7 +7742,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                 // to the bound type's normal Python constructor and return the result
                 PyObject* args[] = {ptr(bound_type), self, obj};
                 return PyObject_VectorcallMethod(
-                    impl::TemplateString<"_capture">::ptr,
+                    ptr(impl::template_string<"_capture">()),
                     args,
                     3,
                     nullptr
@@ -7945,7 +7927,7 @@ parameter is a type object, and thus the method is a class method.)doc";
 
             try {
                 Object inspect = reinterpret_steal<Object>(PyImport_Import(
-                    impl::TemplateString<"inspect">::ptr
+                    ptr(impl::template_string<"inspect">())
                 ));
                 if (inspect.is(nullptr)) {
                     return nullptr;
@@ -7955,7 +7937,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                 if (self->pyfunc) {
                     Object signature = reinterpret_steal<Object>(PyObject_GetAttr(
                         ptr(inspect),
-                        impl::TemplateString<"signature">::ptr
+                        ptr(impl::template_string<"signature">())
                     ));
                     if (signature.is(nullptr)) {
                         return nullptr;
@@ -7999,7 +7981,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                 // create the signature object
                 PyObject* args[] = {nullptr, ptr(tuple), ptr(return_type)};
                 Object kwnames = reinterpret_steal<Object>(
-                    PyTuple_Pack(1, impl::TemplateString<"return_annotation">::ptr)
+                    PyTuple_Pack(1, ptr(impl::template_string<"return_annotation">()))
                 );
                 return PyObject_Vectorcall(
                     ptr(Signature),
@@ -8264,7 +8246,7 @@ parameter is a type object, and thus the method is a class method.)doc";
         template <size_t J>
         static Object extract_default(impl::Inspect& signature) {
             Object default_value = getattr<"default">(
-                signature.parameter(Sig::Defaults::template rfind<J>)
+                signature.at(Sig::Defaults::template rfind<J>)
             );
             if (default_value.is(getattr<"empty">(signature.signature))) {
                 throw TypeError(
@@ -8317,10 +8299,10 @@ parameter is a type object, and thus the method is a class method.)doc";
             };
             Object kwnames = reinterpret_steal<Object>(
                 PyTuple_Pack(4,
-                    impl::TemplateString<"name">::ptr,
-                    impl::TemplateString<"kind">::ptr,
-                    impl::TemplateString<"default">::ptr,
-                    impl::TemplateString<"annotation">::ptr
+                    ptr(impl::template_string<"name">()),
+                    ptr(impl::template_string<"kind">()),
+                    ptr(impl::template_string<"default">()),
+                    ptr(impl::template_string<"annotation">())
                 )
             );
             Object result = reinterpret_steal<Object>(PyObject_Vectorcall(
@@ -8754,7 +8736,7 @@ parameter is a type object, and thus the method is a class method.)doc";
         static Py_ssize_t __len__(PyFunction* self) noexcept {
             PyObject* result = PyObject_CallMethodOneArg(
                 self->__wrapped__,
-                impl::TemplateString<"_subtrie_len">::ptr,
+                ptr(impl::template_string<"_subtrie_len">()),
                 PyType_Check(self->__self__) ?
                     self->__self__ :
                     reinterpret_cast<PyObject*>(Py_TYPE(self->__self__))
@@ -8849,7 +8831,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                 func
             };
             PyObject* result = PyObject_VectorcallMethod(
-                impl::TemplateString<"_subtrie_contains">::ptr,
+                ptr(impl::template_string<"_subtrie_contains">()),
                 args,
                 3 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                 nullptr
@@ -8865,7 +8847,7 @@ parameter is a type object, and thus the method is a class method.)doc";
         static PyObject* __iter__(PyFunction* self) noexcept {
             return PyObject_CallMethodOneArg(
                 self->__wrapped__,
-                impl::TemplateString<"_subtrie_iter">::ptr,
+                ptr(impl::template_string<"_subtrie_iter">()),
                 PyType_Check(self->__self__) ?
                     self->__self__ :
                     reinterpret_cast<PyObject*>(Py_TYPE(self->__self__))
@@ -8875,7 +8857,7 @@ parameter is a type object, and thus the method is a class method.)doc";
         static PyObject* __signature__(PyFunction* self, void*) noexcept {
             try {
                 Object inspect = reinterpret_steal<Object>(PyImport_Import(
-                    impl::TemplateString<"inspect">::ptr
+                    ptr(impl::template_string<"inspect">())
                 ));
                 if (inspect.is(nullptr)) {
                     return nullptr;
@@ -8909,7 +8891,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                 }
                 PyObject* args[] = {nullptr, ptr(parameters)};
                 Object kwnames = reinterpret_steal<Object>(
-                    PyTuple_Pack(1, impl::TemplateString<"parameters">::ptr)
+                    PyTuple_Pack(1, ptr(impl::template_string<"parameters">()))
                 );
                 return PyObject_Vectorcall(
                     ptr(getattr<"replace">(signature)),
@@ -10405,7 +10387,7 @@ namespace impl {
         using Func = __getattr__<std::decay_t<Self>, Name>::type;
         Object meth = reinterpret_steal<Object>(PyObject_GetAttr(
             ptr(self),
-            TemplateString<Name>::ptr
+            ptr(template_string<Name>())
         ));
         if (meth.is(nullptr)) {
             Exception::from_python();
@@ -10432,7 +10414,7 @@ namespace impl {
         using Func = __getattr__<std::decay_t<Self>, Name>::type;
         Object meth = reinterpret_steal<Object>(PyObject_GetAttr(
             ptr(Self::type),
-            TemplateString<Name>::ptr
+            ptr(template_string<Name>())
         ));
         if (meth.is(nullptr)) {
             Exception::from_python();

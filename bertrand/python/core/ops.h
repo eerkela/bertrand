@@ -39,6 +39,15 @@ namespace impl {
         return reinterpret_steal<Wrapper>(self);
     }
 
+    template <StaticStr name>
+    Object template_string() {
+        PyObject* result = PyUnicode_FromStringAndSize(name, name.size());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Object>(result);
+    }
+
 }
 
 
@@ -151,6 +160,48 @@ template <typename Derived, typename Base>
         std::forward<Base>(base)
     );
 }
+
+
+/* Implicitly convert a Python object into one of its superclasses. */
+template <impl::inherits<Object> From, std::derived_from<Object> To>
+    requires (
+        !impl::is<From, To> &&
+        issubclass<std::remove_cvref_t<From>, To>()
+    )
+struct __cast__<From, To>                                   : Returns<To> {
+    static To operator()(From from) {
+        if constexpr (std::is_lvalue_reference_v<From>) {
+            return reinterpret_borrow<To>(ptr(from));
+        } else {
+            return reinterpret_steal<To>(release(from));
+        }
+    }
+};
+
+
+/* Implicitly convert a Python object into one of its subclasses by applying a runtime
+`isinstance()` check. */
+template <impl::inherits<Object> From, std::derived_from<Object> To>
+    requires (
+        !impl::is<From, To> &&
+        issubclass<To, std::remove_cvref_t<From>>()
+    )
+struct __cast__<From, To>                                   : Returns<To> {
+    static auto operator()(From from) {
+        if (isinstance<To>(from)) {
+            if constexpr (std::is_lvalue_reference_v<From>) {
+                return reinterpret_borrow<To>(ptr(from));
+            } else {
+                return reinterpret_steal<To>(release(from));
+            }
+        } else {
+            throw TypeError(
+                "cannot convert Python object from type '" + repr(Type<From>()) +
+                "' to type '" + repr(Type<To>()) + "'"
+            );
+        }
+    }
+};
 
 
 /* Equivalent to Python `hasattr(obj, name)` with a static attribute name. */

@@ -1666,7 +1666,7 @@ struct __len__ {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <typename T> requires (std::is_invocable_r_v<size_t, T>) 
+        template <typename T> requires (std::is_invocable_r_v<size_t, T>)
         struct inspect<T> {
             static constexpr bool enable = true;
             using type = std::invoke_result_t<T>;
@@ -3460,15 +3460,11 @@ namespace impl {
 
     /// TODO: eventually I should reconsider the following concepts and potentially
     /// standardize them in some way.  Ideally, I can fully remove them and replace
-    /// the logic with converts_to and converts_exact.
+    /// the logic with converts_to.
 
     template <typename T, typename Base>
     concept converts_to = __cast__<std::remove_cvref_t<T>>::enable &&
         std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, Base>;
-
-    template <typename T, typename Base>
-    concept converts_exact = __cast__<std::remove_cvref_t<T>>::enable &&
-        std::same_as<typename __cast__<std::remove_cvref_t<T>>::type, Base>;
 
     template <typename T>
     concept type_like = converts_to<T, TypeTag>;
