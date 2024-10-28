@@ -87,11 +87,49 @@ namespace impl {
         return ++n;
     }
 
+    /* Parse a C++ string that represents an argument name, throwing an error if it
+    is invalid. */
+    inline std::string_view get_parameter_name(std::string_view str) {
+        std::string_view sub = str.substr(
+            str.starts_with("*") +
+            str.starts_with("**")
+        );
+        if (sub.empty()) {
+            throw TypeError("argument name cannot be empty");
+        } else if (std::isdigit(sub.front())) {
+            throw TypeError(
+                "argument name cannot start with a number: '" +
+                std::string(sub) + "'"
+            );
+        }
+        for (const char c : sub) {
+            if (std::isalnum(c) || c == '_') {
+                continue;
+            }
+            throw TypeError(
+                "argument name must only contain alphanumerics and underscores: '" +
+                std::string(sub) + "'"
+            );
+        }
+        return str;
+    }
+
+    /* Parse a Python string that represents an argument name, throwing an error if
+    it is invalid. */
+    inline std::string_view get_parameter_name(PyObject* str) {
+        Py_ssize_t len;
+        const char* data = PyUnicode_AsUTF8AndSize(str, &len);
+        if (data == nullptr) {
+            Exception::from_python();
+        }
+        return get_parameter_name({data, static_cast<size_t>(len)});
+    }
+
     /* A simple, trivially-destructible representation of a single parameter in a
     function signature or call site. */
     struct Param {
         std::string_view name;
-        PyObject* type;
+        PyObject* value;  // borrowed reference, may be a type or instance
         ArgKind kind;
 
         constexpr bool posonly() const noexcept { return kind.posonly(); }
@@ -108,49 +146,10 @@ namespace impl {
         size_t hash(size_t seed, size_t prime) const noexcept {
             return hash_combine(
                 fnv1a(name.data(), seed, prime),
-                reinterpret_cast<size_t>(type),
+                reinterpret_cast<size_t>(value),
                 static_cast<size_t>(kind)
             );
         }
-
-        /* Parse a C++ string that represents an argument name, throwing an error if it
-        is invalid. */
-        static std::string_view get_name(std::string_view str) {
-            std::string_view sub = str.substr(
-                str.starts_with("*") +
-                str.starts_with("**")
-            );
-            if (sub.empty()) {
-                throw TypeError("argument name cannot be empty");
-            } else if (std::isdigit(sub.front())) {
-                throw TypeError(
-                    "argument name cannot start with a number: '" +
-                    std::string(sub) + "'"
-                );
-            }
-            for (const char c : sub) {
-                if (std::isalnum(c) || c == '_') {
-                    continue;
-                }
-                throw TypeError(
-                    "argument name must only contain alphanumerics and underscores: '" +
-                    std::string(sub) + "'"
-                );
-            }
-            return str;
-        }
-
-        /* Parse a Python string that represents an argument name, throwing an error if
-        it is invalid. */
-        static std::string_view get_name(PyObject* str) {
-            Py_ssize_t len;
-            const char* data = PyUnicode_AsUTF8AndSize(str, &len);
-            if (data == nullptr) {
-                Exception::from_python();
-            }
-            return get_name({data, static_cast<size_t>(len)});
-        }
-
     };
 
     /* A read-only container of `Param` objects that also holds a combined hash
@@ -750,7 +749,7 @@ namespace impl {
             }
             _key.value.reserve(len);
             for (Object param : parameters) {
-                std::string_view name = Param::get_name(
+                std::string_view name = get_parameter_name(
                     ptr(getattr<"name">(param)
                 ));
 
@@ -887,11 +886,11 @@ namespace impl {
                         PyTuple_SET_ITEM(
                             ptr(result),
                             i + offset,
-                            Py_NewRef(param.type)
+                            Py_NewRef(param.value)
                         );
                     } else {
                         PyObject* slice = PySlice_New(
-                            param.type,
+                            param.value,
                             Py_Ellipsis,
                             Py_None
                         );
@@ -946,7 +945,7 @@ namespace impl {
                     }
                     PyObject* slice = PySlice_New(
                         ptr(name),
-                        param.type,
+                        param.value,
                         param.opt() ? Py_Ellipsis : Py_None
                     );
                     if (slice == nullptr) {
@@ -1261,10 +1260,10 @@ namespace impl {
         struct Callback {
             std::string_view name;
             uint64_t mask = 0;
-            bool(*func)(PyObject*) = nullptr;
+            bool(*isinstance)(PyObject*) = nullptr;
+            bool(*issubclass)(PyObject*) = nullptr;
             PyObject*(*type)() = nullptr;
-            explicit operator bool() const noexcept { return func != nullptr; }
-            bool operator()(PyObject* type) const { return func(type); }
+            explicit operator bool() const noexcept { return isinstance != nullptr; }
         };
 
         /* A bitmask with a 1 in the position of all of the required arguments in the
@@ -1287,25 +1286,28 @@ namespace impl {
     private:
         static constexpr Callback null_callback;
 
+        static bool instance_check(PyObject* obj, PyObject* cls) {
+            int rc = PyObject_IsInstance(obj, cls);
+            if (rc < 0) {
+                Exception::from_python();
+            }
+            return rc;
+        }
+
         /* Populate the positional argument table with an appropriate callback for
         each argument in the parameter list. */
         template <size_t I>
         static consteval Callback populate_positional_table() {
             using T = at<I>;
             return {
-                ArgTraits<T>::name,
-                ArgTraits<T>::variadic() ? 0ULL : 1ULL << I,
-                [](PyObject* type) -> bool {
+                .name = ArgTraits<T>::name,
+                .mask = ArgTraits<T>::variadic() ? 0ULL : 1ULL << I,
+                .isinstance = [](PyObject* value) -> bool {
                     using U = ArgTraits<T>::type;
-                    if constexpr (has_type<U>) {
-                        int rc = PyObject_IsSubclass(
-                            type,
-                            ptr(Type<U>())
+                    if constexpr (has_python<U>) {
+                        return isinstance<std::remove_cvref_t<python_type<U>>>(
+                            reinterpret_borrow<Object>(value)
                         );
-                        if (rc < 0) {
-                            Exception::from_python();
-                        }
-                        return rc;
                     } else {
                         throw TypeError(
                             "C++ type has no Python equivalent: " +
@@ -1313,10 +1315,23 @@ namespace impl {
                         );
                     }
                 },
-                []() -> PyObject* {
+                .issubclass = [](PyObject* type) -> bool {
                     using U = ArgTraits<T>::type;
-                    if constexpr (has_type<U>) {
-                        return ptr(Type<U>());
+                    if constexpr (has_python<U>) {
+                        return issubclass<std::remove_cvref_t<python_type<U>>>(
+                            reinterpret_borrow<Object>(type)
+                        );
+                    } else {
+                        throw TypeError(
+                            "C++ type has no Python equivalent: " +
+                            demangle(typeid(U).name())
+                        );
+                    }
+                },
+                .type = []() -> PyObject* {
+                    using U = ArgTraits<T>::type;
+                    if constexpr (has_python<U>) {
+                        return ptr(Type<std::remove_cvref_t<python_type<U>>>());
                     } else {
                         throw TypeError(
                             "C++ type has no Python equivalent: " +
@@ -1422,19 +1437,14 @@ namespace impl {
             if constexpr (ArgTraits<T>::kw()) {
                 constexpr size_t i = keyword_modulus(hash(ArgTraits<T>::name));
                 table[i] = {
-                    ArgTraits<T>::name,
-                    ArgTraits<T>::variadic() ? 0ULL : 1ULL << I,
-                    [](PyObject* type) -> bool {
+                    .name =ArgTraits<T>::name,
+                    .mask = ArgTraits<T>::variadic() ? 0ULL : 1ULL << I,
+                    .isinstance = [](PyObject* value) -> bool {
                         using U = ArgTraits<T>::type;
-                        if constexpr (has_type<U>) {
-                            int rc = PyObject_IsSubclass(
-                                type,
-                                ptr(Type<U>())
+                        if constexpr (has_python<U>) {
+                            return isinstance<std::remove_cvref_t<python_type<U>>>(
+                                reinterpret_borrow<Object>(value)
                             );
-                            if (rc < 0) {
-                                Exception::from_python();
-                            }
-                            return rc;
                         } else {
                             throw TypeError(
                                 "C++ type has no Python equivalent: " +
@@ -1442,10 +1452,23 @@ namespace impl {
                             );
                         }
                     },
-                    []() -> PyObject* {
+                    .issubclass = [](PyObject* type) -> bool {
                         using U = ArgTraits<T>::type;
-                        if constexpr (has_type<U>) {
-                            return ptr(Type<U>());
+                        if constexpr (has_python<U>) {
+                            return issubclass<std::remove_cvref_t<python_type<U>>>(
+                                reinterpret_borrow<Object>(type)
+                            );
+                        } else {
+                            throw TypeError(
+                                "C++ type has no Python equivalent: " +
+                                demangle(typeid(U).name())
+                            );
+                        }
+                    },
+                    .type = []() -> PyObject* {
+                        using U = ArgTraits<T>::type;
+                        if constexpr (has_python<U>) {
+                            return ptr(Type<std::remove_cvref_t<python_type<U>>>());
                         } else {
                             throw TypeError(
                                 "C++ type has no Python equivalent: " +
@@ -1611,23 +1634,22 @@ namespace impl {
         parameter list that is marked as optional. */
         struct Defaults {
         private:
-            using Outer = Arguments;
 
             /* The type of a single value in the defaults tuple.  The templated index
             is used to correlate the default value with its corresponding argument in
             the enclosing signature. */
             template <size_t I>
             struct Value  {
-                using type = ArgTraits<Outer::at<I>>::type;
-                static constexpr StaticStr name = ArgTraits<Outer::at<I>>::name;
+                using type = ArgTraits<Arguments::at<I>>::type;
+                static constexpr StaticStr name = ArgTraits<Arguments::at<I>>::name;
                 static constexpr size_t index = I;
                 std::remove_reference_t<type> value;
 
                 type get(this auto& self) {
-                    if constexpr (std::is_rvalue_reference_v<type>) {
-                        return std::remove_cvref_t<type>(self.value);
-                    } else {
+                    if constexpr (std::is_lvalue_reference_v<type>) {
                         return self.value;
+                    } else {
+                        return std::remove_cvref_t<type>(self.value);
                     }
                 }
             };
@@ -1636,18 +1658,18 @@ namespace impl {
             the enclosing signature.  This will be a specialization of the enclosing
             class, which is used to bind arguments to this class's constructor using
             the same semantics as the function's call operator. */
-            template <typename Sig, typename... Ts>
-            struct _Inner { using type = Sig; };
-            template <typename... Sig, typename T, typename... Ts>
-            struct _Inner<Arguments<Sig...>, T, Ts...> {
-                template <typename U>
+            template <typename out, typename...>
+            struct _Inner { using type = out; };
+            template <typename... out, typename T, typename... Ts>
+            struct _Inner<Arguments<out...>, T, Ts...> {
+                template <typename>
                 struct sub_signature {
-                    using type = _Inner<Arguments<Sig...>, Ts...>::type;
+                    using type = _Inner<Arguments<out...>, Ts...>::type;
                 };
                 template <typename U> requires (ArgTraits<U>::opt())
                 struct sub_signature<U> {
                     using type =_Inner<
-                        Arguments<Sig..., typename ArgTraits<U>::no_opt>,
+                        Arguments<out..., typename ArgTraits<U>::no_opt>,
                         Ts...
                     >::type;
                 };
@@ -1657,21 +1679,21 @@ namespace impl {
 
             /* Build a std::tuple of Value<I> instances to hold the default values
             themselves. */
-            template <size_t I, typename Tuple, typename... Ts>
-            struct _Tuple { using type = Tuple; };
-            template <size_t I, typename... Part, typename T, typename... Ts>
-            struct _Tuple<I, std::tuple<Part...>, T, Ts...> {
+            template <typename out, size_t, typename...>
+            struct _Tuple { using type = out; };
+            template <typename... out, size_t I, typename T, typename... Ts>
+            struct _Tuple<std::tuple<out...>, I, T, Ts...> {
                 template <typename U>
                 struct tuple {
-                    using type = _Tuple<I + 1, std::tuple<Part...>, Ts...>::type;
+                    using type = _Tuple<std::tuple<out...>, I + 1, Ts...>::type;
                 };
                 template <typename U> requires (ArgTraits<U>::opt())
                 struct tuple<U> {
-                    using type = _Tuple<I + 1, std::tuple<Part..., Value<I>>, Ts...>::type;
+                    using type = _Tuple<std::tuple<out..., Value<I>>, I + 1, Ts...>::type;
                 };
                 using type = tuple<T>::type;
             };
-            using Tuple = _Tuple<0, std::tuple<>, Args...>::type;
+            using Tuple = _Tuple<std::tuple<>, 0, Args...>::type;
 
             template <size_t I, typename T>
             static constexpr size_t _find = 0;
@@ -1708,7 +1730,7 @@ namespace impl {
 
             /* Given an index into the enclosing signature, find the corresponding index
             in the defaults tuple if that index corresponds to a default value. */
-            template <size_t I> requires (ArgTraits<typename Outer::at<I>>::opt())
+            template <size_t I> requires (ArgTraits<typename Arguments::at<I>>::opt())
             static constexpr size_t find = _find<I, Tuple>;
 
             /* Given an index into the  */
@@ -1724,15 +1746,17 @@ namespace impl {
                 constexpr StaticStr name = ArgTraits<T>::name;
 
                 if constexpr (ArgTraits<T>::kwonly()) {
-                    constexpr size_t idx = observed::template idx<name>;
-                    return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
+                    return impl::unpack_arg<observed::template idx<name>>(
+                        std::forward<Values>(values)...
+                    ).value;
 
                 } else if constexpr (ArgTraits<T>::kw()) {
                     if constexpr (I < observed::kw_idx) {
                         return impl::unpack_arg<I>(std::forward<Values>(values)...);
                     } else {
-                        constexpr size_t idx = observed::template idx<name>;
-                        return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
+                        return impl::unpack_arg<observed::template idx<name>>(
+                            std::forward<Values>(values)...
+                        ).value;
                     }
 
                 } else {
@@ -1757,8 +1781,9 @@ namespace impl {
                 constexpr StaticStr name = ArgTraits<T>::name;
 
                 if constexpr (ArgTraits<T>::kwonly()) {
-                    constexpr size_t idx = observed::template idx<name>;
-                    return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
+                    return impl::unpack_arg<observed::template idx<name>>(
+                        std::forward<Values>(values)...
+                    ).value;
 
                 } else if constexpr (ArgTraits<T>::kw()) {
                     if constexpr (I < observed::kw_idx) {
@@ -1778,8 +1803,7 @@ namespace impl {
 
                         } else {
                             if constexpr (observed::template has<name>) {
-                                constexpr size_t idx = observed::template idx<name>;
-                                return impl::unpack_arg<idx>(
+                                return impl::unpack_arg<observed::template idx<name>>(
                                     std::forward<Values>(values)...
                                 ).value;
                             } else {
@@ -1831,8 +1855,7 @@ namespace impl {
                                 "' at index " + std::to_string(I)
                             );
                         }
-                        constexpr size_t idx = observed::template idx<name>;
-                        return impl::unpack_arg<idx>(
+                        return impl::unpack_arg<observed::template idx<name>>(
                             std::forward<Values>(values)...
                         ).value;
                     } else {
@@ -1863,8 +1886,7 @@ namespace impl {
                                 "' at index " + std::to_string(I)
                             );
                         }
-                        constexpr size_t idx = observed::template idx<name>;
-                        return impl::unpack_arg<idx>(
+                        return impl::unpack_arg<observed::template idx<name>>(
                             std::forward<Values>(values)...
                         ).value;
                     } else {
@@ -1944,8 +1966,7 @@ namespace impl {
                                         "' at index " + std::to_string(I)
                                     );
                                 } else {
-                                    constexpr size_t idx = observed::template idx<name>;
-                                    return impl::unpack_arg<idx>(
+                                    return impl::unpack_arg<observed::template idx<name>>(
                                         std::forward<Values>(values)...
                                     ).value;
                                 }
@@ -2081,39 +2102,14 @@ namespace impl {
         for a `py::Function` object, which will be dispatched to when called from
         either Python or C++. */
         struct Overloads {
+        private:
+            struct BoundView;
+
+        public:
             struct Edge;
             struct Metadata;
             struct Edges;
             struct Node;
-
-        private:
-            struct BoundView;
-
-            /// TODO: type_check() should be split into two functions, one that calls
-            /// issubclass and the other which calls isinstance().  The first is used
-            /// when inserting a function and the second is used when calling it.  This
-            /// is necessary for a Python list of the form `[1, 2, 3]` to match
-            /// `List<Int>` during overloads, because falling back to the type object
-            /// would erase information and yield a generic `List<Object>` type in this
-            /// case.
-
-            static bool type_check(PyObject* lhs, PyObject* rhs) {
-                int rc = PyObject_IsSubclass(lhs, rhs);
-                if (rc < 0) {
-                    Exception::from_python();
-                }
-                return rc;
-            }
-
-            static bool value_check(PyObject* obj, PyObject* cls) {
-                int rc = PyObject_IsInstance(obj, cls);
-                if (rc < 0) {
-                    Exception::from_python();
-                }
-                return rc;
-            }
-
-        public:
 
             /* A single link between two nodes in the trie, which describes how to
             traverse from one to the other.  Multiple edges may share the same target
@@ -2136,8 +2132,8 @@ namespace impl {
             from the root node that leads to the terminal function.
 
             These are stored in an associative set rather than a hash set in order to
-            ensure address stability over the lifetime of the corresponding nodes, so
-            that they don't have to manage any memory themselves. */
+            ensure address stability over the lifetime of the trie, so that it doesn't
+            need to manage any memory itself. */
             struct Metadata {
                 size_t hash;
                 uint64_t required;
@@ -2194,7 +2190,11 @@ namespace impl {
 
                 struct TopoSort {
                     static bool operator()(PyObject* lhs, PyObject* rhs) {
-                        return type_check(lhs, rhs) || lhs < rhs;
+                        int rc = PyObject_IsSubclass(lhs, rhs);
+                        if (rc < 0) {
+                            Exception::from_python();
+                        }
+                        return rc || lhs < rhs;
                     }
                 };
 
@@ -2204,7 +2204,7 @@ namespace impl {
                 identified by its hash. */
                 struct HashView {
                     const Edges& self;
-                    PyObject* type;
+                    PyObject* value;
                     size_t hash;
 
                     struct Sentinel;
@@ -2218,20 +2218,20 @@ namespace impl {
 
                         Map::iterator it;
                         Map::iterator end;
-                        PyObject* type;
+                        PyObject* value;
                         size_t hash;
                         const Edge* curr;
 
                         Iterator(
                             Map::iterator&& it,
                             Map::iterator&& end,
-                            PyObject* type,
+                            PyObject* value,
                             size_t hash
-                        ) : it(std::move(it)), end(std::move(end)), type(type),
+                        ) : it(std::move(it)), end(std::move(end)), value(value),
                             hash(hash), curr(nullptr)
                         {
                             while (this->it != this->end) {
-                                if (type_check(type, this->it->first)) {
+                                if (instance_check(value, this->it->first)) {
                                     auto lookup = this->it->second.set.find(hash);
                                     if (lookup != this->it->second.set.end()) {
                                         curr = *lookup;
@@ -2245,7 +2245,7 @@ namespace impl {
                         Iterator& operator++() {
                             ++it;
                             while (it != end) {
-                                if (type_check(type, it->first)) {
+                                if (instance_check(value, it->first)) {
                                     auto lookup = it->second.set.find(hash);
                                     if (lookup != it->second.set.end()) {
                                         curr = *lookup;
@@ -2281,12 +2281,12 @@ namespace impl {
                     };
 
                     Iterator begin() const {
-                        return Iterator(
+                        return {
                             self.map.begin(),
                             self.map.end(),
-                            type,
+                            value,
                             hash
-                        );
+                        };
                     }
 
                     Sentinel end() const {
@@ -2298,7 +2298,7 @@ namespace impl {
                 /* A range adaptor that yields edges in order, regardless of key. */
                 struct OrderedView {
                     const Edges& self;
-                    PyObject* type;
+                    PyObject* value;
 
                     struct Sentinel;
 
@@ -2313,16 +2313,16 @@ namespace impl {
                         Map::iterator end;
                         Table::Set::iterator edge_it;
                         Table::Set::iterator edge_end;
-                        PyObject* type;
+                        PyObject* value;
 
                         Iterator(
                             Map::iterator&& it,
                             Map::iterator&& end,
-                            PyObject* type
-                        ) : it(std::move(it)), end(std::move(end)), type(type)
+                            PyObject* value
+                        ) : it(std::move(it)), end(std::move(end)), value(value)
                         {
                             while (this->it != this->end) {
-                                if (type_check(type, this->it->first)) {
+                                if (instance_check(value, this->it->first)) {
                                     edge_it = this->it->second.set.begin();
                                     edge_end = this->it->second.set.end();
                                     break;
@@ -2336,7 +2336,7 @@ namespace impl {
                             if (edge_it == edge_end) {
                                 ++it;
                                 while (it != end) {
-                                    if (type_check(type, it->first)) {
+                                    if (instance_check(value, it->first)) {
                                         edge_it = it->second.set.begin();
                                         edge_end = it->second.set.end();
                                         break;
@@ -2371,11 +2371,11 @@ namespace impl {
                     };
 
                     Iterator begin() const {
-                        return Iterator(
+                        return {
                             self.map.begin(),
                             self.map.end(),
-                            type
-                        );
+                            value
+                        };
                     }
 
                     Sentinel end() const {
@@ -2392,7 +2392,7 @@ namespace impl {
                 or false if the edge references an existing node. */
                 [[maybe_unused]] bool insert(Edge& edge) {
                     auto [outer, inserted] = map.try_emplace(
-                        edge->type,
+                        ptr(edge.type),
                         Table{}
                     );
                     auto [inner, success] = outer->second.set.insert(&edge);
@@ -2419,7 +2419,7 @@ namespace impl {
                 table references the same node. */
                 [[maybe_unused]] bool insert(Edge& edge, std::shared_ptr<Node> node) {
                     auto [outer, inserted] = map.try_emplace(
-                        edge->type,
+                        ptr(edge.type),
                         Table{node}
                     );
                     auto [inner, success] = outer->second.set.insert(&edge);
@@ -2456,8 +2456,8 @@ namespace impl {
                 coming before optional, which come before variadic.  There is no
                 guarantee that the edges come from a single key, just that they match
                 the observed type. */
-                OrderedView match(PyObject* type) const {
-                    return {*this, type};
+                OrderedView match(PyObject* value) const {
+                    return {*this, value};
                 }
 
                 /* Return a range adaptor that iterates over the topologically-sorted
@@ -2466,10 +2466,9 @@ namespace impl {
                 unique hash.  Rather than matching all possible edges, this view will
                 essentially trace out the specified key, only checking edges that are
                 contained within it. */
-                HashView match(PyObject* type, size_t hash) const {
-                    return {*this, type, hash};
+                HashView match(PyObject* value, size_t hash) const {
+                    return {*this, value, hash};
                 }
-
             };
 
             /* A single node in the overload trie, which holds the topologically-sorted
@@ -2517,7 +2516,7 @@ namespace impl {
                     // positional arguments have empty names
                     if (param.name.empty()) {
                         if (idx) {
-                            for (const Edge* edge : positional.match(param.type, hash)) {
+                            for (const Edge* edge : positional.match(param.value, hash)) {
                                 size_t i = idx + 1;
                                 // variadic positional arguments will test all
                                 // remaining positional args against the expected type
@@ -2528,8 +2527,8 @@ namespace impl {
                                         while (
                                             i < key.size() &&
                                             (curr = &key[i])->pos() &&
-                                            type_check(
-                                                curr->type,
+                                            instance_check(
+                                                curr->value,
                                                 ptr(edge->type)
                                             )
                                         ) {
@@ -2555,7 +2554,7 @@ namespace impl {
                                 }
                             }
                         } else {
-                            for (const Edge* edge : positional.match(param.type)) {
+                            for (const Edge* edge : positional.match(param.value)) {
                                 size_t i = idx + 1;
                                 if constexpr (Arguments::has_args) {
                                     if (edge->kind.variadic()) {
@@ -2563,8 +2562,8 @@ namespace impl {
                                         while (
                                             i < key.size() &&
                                             (curr = &key[i])->pos() &&
-                                            type_check(
-                                                curr->type,
+                                            instance_check(
+                                                curr->value,
                                                 ptr(edge->type)
                                             )
                                         ) {
@@ -2601,7 +2600,7 @@ namespace impl {
                             (it = keyword.find("")) != keyword.end()
                         ) {
                             if (idx) {
-                                for (const Edge* edge : it->second.match(param.type, hash)) {
+                                for (const Edge* edge : it->second.match(param.value, hash)) {
                                     uint64_t temp_mask = mask | edge->mask;
                                     size_t temp_hash = edge->hash;
                                     PyObject* result = edge->node->search(
@@ -2626,7 +2625,7 @@ namespace impl {
                                     }
                                 }
                             } else {
-                                for (const Edge* edge : it->second.match(param.type)) {
+                                for (const Edge* edge : it->second.match(param.value)) {
                                     uint64_t temp_mask = mask | edge->mask;
                                     size_t temp_hash = edge->hash;
                                     PyObject* result = edge->node->search(
@@ -2672,35 +2671,32 @@ namespace impl {
                 bool empty() const {
                     return positional.map.empty() && keyword.empty();
                 }
-
             };
 
             std::shared_ptr<Node> root;
             std::set<const Metadata, std::less<>> data;
             mutable std::unordered_map<size_t, PyObject*> cache;
 
-            /* Search the overload trie for a matching signature.  This will
-            recursively backtrack until a matching node is found or the trie is
-            exhausted, returning nullptr on a failed search.  The results will be
+            /* Search the overload trie for a matching signature, as if calling the
+            function.  An `isinstance()` check is performed on each parameter when
+            searching the trie.
+
+            This will recursively backtrack until a matching node is found or the trie
+            is exhausted, returning nullptr on a failed search.  The results will be
             cached for subsequent invocations.  An error will be thrown if the key does
             not fully satisfy the enclosing parameter list.  Note that variadic
             parameter packs must be expanded prior to calling this function.
 
-            The Python-level call operator for `py::Function<>` will immediately
-            delegate to this function after constructing a key from the input
-            arguments, so it will be called every time a C++ function is invoked from
-            Python.  If it returns null, then the fallback implementation will be
+            The Python-level call and index operators for `py::Function<>` will
+            immediately delegate to this function after constructing a key from the
+            input arguments, so it will be called every time a C++ function is invoked
+            from Python.  If it returns null, then the fallback implementation will be
             used instead.
 
             Returns a borrowed reference to the terminal function if a match is
             found within the trie, or null otherwise. */
             template <typename Container>
             [[nodiscard]] PyObject* search(const Params<Container>& key) const {
-                /// TODO: this also doesn't work because the parameters always contain
-                /// just the parameter type.  This will mean any time the function is
-                /// called with a list, it will choose the same overload, regardless of
-                /// the contents of the list.  There's no way around this.
-
                 // check the cache first
                 auto it = cache.find(key.hash);
                 if (it != cache.end()) {
@@ -2732,12 +2728,15 @@ namespace impl {
                 return nullptr;
             }
 
-            /* Search the overload trie for a matching signature, suppressing errors
-            caused by the signature not satisfying the enclosing parameter list.  This
-            is equivalent to calling `search()` in a try/catch, but without any error
-            handling overhead.  Errors are converted into a null optionals, separate
-            from the null status of the wrapped pointer, which retains the same
-            semantics as `search()`.
+            /* Search the overload trie for a matching signature, as if calling the
+            function, suppressing errors caused by the signature not satisfying the
+            enclosing parameter list.  An `isinstance()` check is performed on each
+            parameter when searching the trie.
+
+            This is equivalent to calling `search()` in a try/catch, but without any
+            error handling overhead.  Errors are converted into a null optionals,
+            separate from the null status of the wrapped pointer, which retains the
+            same semantics as `search()`.
 
             This is used by the Python-level `__getitem__` and `__contains__` operators
             for `py::Function<>` instances, which converts a null optional result into
@@ -2749,9 +2748,7 @@ namespace impl {
             Returns a borrowed reference to the terminal function if a match is
             found. */
             template <typename Container>
-            [[nodiscard]] std::optional<PyObject*> get(
-                const Params<Container>& key
-            ) const {
+            [[nodiscard]] std::optional<PyObject*> get(const Params<Container>& key) const {
                 auto it = cache.find(key.hash);
                 if (it != cache.end()) {
                     return it->second;
@@ -2762,7 +2759,7 @@ namespace impl {
                     const Param& param = key[i];
                     if (param.name.empty()) {
                         const Callback& callback = Arguments::callback(i);
-                        if (!callback || !callback(param.type)) {
+                        if (!callback || !callback.isinstance(param.value)) {
                             return std::nullopt;
                         }
                         mask |= callback.mask;
@@ -2771,7 +2768,7 @@ namespace impl {
                         if (
                             !callback ||
                             (mask & callback.mask) ||
-                            !callback(param.type)
+                            !callback.isinstance(param.value)
                         ) {
                             return std::nullopt;
                         }
@@ -2803,13 +2800,15 @@ namespace impl {
             }
 
             /* Filter the overload trie for a given first positional argument, which
-            represents the type of the implicit `self` parameter for a bound member
-            function.  Returns a range adaptor that extracts only the matching
-            functions from the metadata set, with extra information encoding their full
-            path through the overload trie. */
-            [[nodiscard]] BoundView match(PyObject* type) const {
-                return {*this, type};
+            represents the an implicit `self` parameter for a bound member function.
+            Returns a range adaptor that extracts only the matching functions from the
+            metadata set, with extra information encoding their full path through the
+            overload trie. */
+            [[nodiscard]] BoundView match(PyObject* value) const {
+                return {*this, value};
             }
+
+            /// TODO: update this to use issubclass()?
 
             /* Insert a function into the overload trie, throwing a TypeError if it
             does not conform to the enclosing parameter list or if it conflicts with
@@ -2852,7 +2851,7 @@ namespace impl {
                             .hash = key.hash,
                             .mask = 1ULL << i,
                             .name = param.name,
-                            .type = reinterpret_borrow<Object>(param.type),
+                            .type = reinterpret_borrow<Object>(param.value),
                             .kind = param.kind,
                             .node = nullptr
                         });
@@ -3054,7 +3053,7 @@ namespace impl {
             forward the overload interface. */
             struct BoundView {
                 const Overloads& self;
-                PyObject* type;
+                PyObject* value;
 
                 struct Sentinel;
 
@@ -3072,10 +3071,10 @@ namespace impl {
                     std::ranges::sentinel_t<typename Edges::OrderedView> end;
                     std::unordered_set<size_t> visited;
 
-                    Iterator(const Overloads& self, PyObject* type) :
+                    Iterator(const Overloads& self, PyObject* value) :
                         self(self),
                         curr(nullptr),
-                        view(self.root->positional.match(type)),
+                        view(self.root->positional.match(value)),
                         it(std::ranges::begin(this->view)),
                         end(std::ranges::end(this->view))
                     {
@@ -3122,11 +3121,11 @@ namespace impl {
                 };
 
                 Iterator begin() const {
-                    return Iterator{self, type};
+                    return {self, value};
                 }
 
                 Sentinel end() const {
-                    return Sentinel{};
+                    return {};
                 }
             };
 
@@ -3143,15 +3142,15 @@ namespace impl {
                                 std::to_string(i)
                             );
                         }
-                        if (!callback(param.type)) {
+                        if (!callback.isinstance(param.value)) {
                             throw TypeError(
                                 "expected positional argument at index " +
                                 std::to_string(i) + " to be a subclass of '" +
-                                repr(reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(callback.type())
-                                )) + "', not: '" + repr(reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(param.type)
-                                )) + "'"
+                                repr(
+                                    reinterpret_borrow<Object>(callback.type())
+                                ) + "', not: '" + repr(
+                                    reinterpret_borrow<Object>(param.value)
+                                ) + "'"
                             );
                         }
                         mask |= callback.mask;
@@ -3169,15 +3168,15 @@ namespace impl {
                                 std::string(param.name) + "'"
                             );
                         }
-                        if (!callback(param.type)) {
+                        if (!callback.isinstance(param.value)) {
                             throw TypeError(
                                 "expected argument '" + std::string(param.name) +
                                 "' to be a subclass of '" +
-                                repr(reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(callback.type())
-                                )) + "', not: '" + repr(reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(param.type)
-                                )) + "'"
+                                repr(
+                                    reinterpret_borrow<Object>(callback.type())
+                                ) + "', not: '" + repr(
+                                    reinterpret_borrow<Object>(param.value)
+                                ) + "'"
                             );
                         }
                         mask |= callback.mask;
@@ -3189,11 +3188,11 @@ namespace impl {
                     size_t i = 0;
                     while (i < n) {
                         if (missing & (1ULL << i)) {
-                            const Callback& param = positional_table[i];
-                            if (param.name.empty()) {
+                            const Callback& callback = positional_table[i];
+                            if (callback.name.empty()) {
                                 msg += "<parameter " + std::to_string(i) + ">";
                             } else {
-                                msg += "'" + std::string(param.name) + "'";
+                                msg += "'" + std::string(callback.name) + "'";
                             }
                             ++i;
                             break;
@@ -3202,11 +3201,11 @@ namespace impl {
                     }
                     while (i < n) {
                         if (missing & (1ULL << i)) {
-                            const Callback& param = positional_table[i];
-                            if (param.name.empty()) {
+                            const Callback& callback = positional_table[i];
+                            if (callback.name.empty()) {
                                 msg += ", <parameter " + std::to_string(i) + ">";
                             } else {
-                                msg += ", '" + std::string(param.name) + "'";
+                                msg += ", '" + std::string(callback.name) + "'";
                             }
                         }
                         ++i;
@@ -3217,12 +3216,11 @@ namespace impl {
             }
 
             template <size_t I, typename Container>
-            static void assert_viable_overload(
-                const Params<Container>& key,
-                size_t& idx
-            ) {
-                using T = __cast__<std::remove_cvref_t<typename ArgTraits<at<I>>::type>>;
-
+            static void assert_viable_overload(const Params<Container>& key, size_t& idx) {
+                using T = at<I>;
+                using Expected = std::remove_cvref_t<python_type<
+                    typename ArgTraits<at<I>>::type
+                >>;
                 constexpr auto description = [](const Param& param) {
                     if (param.kwonly()) {
                         return "keyword-only";
@@ -3239,9 +3237,9 @@ namespace impl {
                     }
                 };
 
-                if constexpr (ArgTraits<at<I>>::posonly()) {
+                if constexpr (ArgTraits<T>::posonly()) {
                     if (idx >= key.size()) {
-                        if (ArgTraits<at<I>>::name.empty()) {
+                        if (ArgTraits<T>::name.empty()) {
                             throw TypeError(
                                 "missing positional-only argument at index " +
                                 std::to_string(idx)
@@ -3249,38 +3247,35 @@ namespace impl {
                         } else {
                             throw TypeError(
                                 "missing positional-only argument '" +
-                                ArgTraits<at<I>>::name + "' at index " +
+                                ArgTraits<T>::name + "' at index " +
                                 std::to_string(idx)
                             );
                         }
                     }
                     const Param& param = key[idx];
                     if (!param.posonly()) {
-                        if (ArgTraits<at<I>>::name.empty()) {
+                        if (ArgTraits<T>::name.empty()) {
                             throw TypeError(
                                 "expected positional-only argument at index " +
                                 std::to_string(idx) + ", not " + description(param)
                             );
                         } else {
                             throw TypeError(
-                                "expected argument '" + ArgTraits<at<I>>::name +
+                                "expected argument '" + ArgTraits<T>::name +
                                 "' at index " + std::to_string(idx) +
                                 " to be positional-only, not " + description(param)
                             );
                         }
                     }
-                    if (
-                        !ArgTraits<at<I>>::name.empty() &&
-                        param.name != ArgTraits<at<I>>::name
-                    ) {
+                    if (!ArgTraits<T>::name.empty() && param.name != ArgTraits<T>::name) {
                         throw TypeError(
-                            "expected argument '" + ArgTraits<at<I>>::name +
+                            "expected argument '" + ArgTraits<T>::name +
                             "' at index " + std::to_string(idx) + ", not '" +
                             std::string(param.name) + "'"
                         );
                     }
-                    if (!ArgTraits<at<I>>::opt() && param.opt()) {
-                        if (ArgTraits<at<I>>::name.empty()) {
+                    if (!ArgTraits<T>::opt() && param.opt()) {
+                        if (ArgTraits<T>::name.empty()) {
                             throw TypeError(
                                 "required positional-only argument at index " +
                                 std::to_string(idx) + " must not have a default "
@@ -3289,150 +3284,154 @@ namespace impl {
                         } else {
                             throw TypeError(
                                 "required positional-only argument '" +
-                                ArgTraits<at<I>>::name + "' at index " +
+                                ArgTraits<T>::name + "' at index " +
                                 std::to_string(idx) + " must not have a default "
                                 "value"
                             );
                         }
                     }
-                    if (!issubclass<T>(reinterpret_borrow<Object>(
-                        reinterpret_cast<PyObject*>(param.type)
-                    ))) {
-                        if (ArgTraits<at<I>>::name.empty()) {
+                    if (!issubclass<Expected>(
+                        reinterpret_borrow<Object>(param.value)
+                    )) {
+                        if (ArgTraits<T>::name.empty()) {
                             throw TypeError(
                                 "expected positional-only argument at index " +
                                 std::to_string(idx) + " to be a subclass of '" +
                                 repr(reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(ptr(Type<T>()))
-                                )) + "', not: '" + repr(reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(param.type)
+                                    ptr(Type<Expected>())
+                                )) + "', not: '" +
+                                repr(reinterpret_borrow<Object>(
+                                    param.value
                                 )) + "'"
                             );
                         } else {
                             throw TypeError(
                                 "expected positional-only argument '" +
-                                ArgTraits<at<I>>::name + "' at index " +
+                                ArgTraits<T>::name + "' at index " +
                                 std::to_string(idx) + " to be a subclass of '" +
                                 repr(reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(ptr(Type<T>()))
-                                )) + "', not: '" + repr(reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(param.type)
+                                    ptr(Type<Expected>())
+                                )) + "', not: '" +
+                                repr(reinterpret_borrow<Object>(
+                                    param.value
                                 )) + "'"
                             );
                         }
                     }
                     ++idx;
 
-                } else if constexpr (ArgTraits<at<I>>::pos()) {
+                } else if constexpr (ArgTraits<T>::pos()) {
                     if (idx >= key.size()) {
                         throw TypeError(
                             "missing positional-or-keyword argument '" +
-                            ArgTraits<at<I>>::name + "' at index " +
+                            ArgTraits<T>::name + "' at index " +
                             std::to_string(idx)
                         );
                     }
                     const Param& param = key[idx];
                     if (!param.pos() || !param.kw()) {
                         throw TypeError(
-                            "expected argument '" + ArgTraits<at<I>>::name +
+                            "expected argument '" + ArgTraits<T>::name +
                             "' at index " + std::to_string(idx) +
                             " to be positional-or-keyword, not " + description(param)
                         );
                     }
-                    if (param.name != ArgTraits<at<I>>::name) {
+                    if (param.name != ArgTraits<T>::name) {
                         throw TypeError(
                             "expected positional-or-keyword argument '" +
-                            ArgTraits<at<I>>::name + "' at index " +
+                            ArgTraits<T>::name + "' at index " +
                             std::to_string(idx) + ", not '" +
                             std::string(param.name) + "'"
                         );
                     }
-                    if (!ArgTraits<at<I>>::opt() && param.opt()) {
+                    if (!ArgTraits<T>::opt() && param.opt()) {
                         throw TypeError(
                             "required positional-or-keyword argument '" +
-                            ArgTraits<at<I>>::name + "' at index " +
+                            ArgTraits<T>::name + "' at index " +
                             std::to_string(idx) + " must not have a default value"
                         );
                     }
-                    if (!issubclass<T>(reinterpret_borrow<Object>(
-                        reinterpret_cast<PyObject*>(param.type)
-                    ))) {
+                    if (!issubclass<Expected>(
+                        reinterpret_borrow<Object>(param.value)
+                    )) {
                         throw TypeError(
                             "expected positional-or-keyword argument '" +
-                            ArgTraits<at<I>>::name + "' at index " +
+                            ArgTraits<T>::name + "' at index " +
                             std::to_string(idx) + " to be a subclass of '" +
                             repr(reinterpret_borrow<Object>(
-                                reinterpret_cast<PyObject*>(ptr(Type<T>()))
-                            )) + "', not: '" + repr(reinterpret_borrow<Object>(
-                                reinterpret_cast<PyObject*>(param.type)
+                                ptr(Type<Expected>())
+                            )) + "', not: '" +
+                            repr(reinterpret_borrow<Object>(
+                                param.value
                             )) + "'"
                         );
                     }
                     ++idx;
 
-                } else if constexpr (ArgTraits<at<I>>::kw()) {
+                } else if constexpr (ArgTraits<T>::kw()) {
                     if (idx >= key.size()) {
                         throw TypeError(
-                            "missing keyword-only argument '" + ArgTraits<at<I>>::name +
+                            "missing keyword-only argument '" + ArgTraits<T>::name +
                             "' at index " + std::to_string(idx)
                         );
                     }
                     const Param& param = key[idx];
                     if (!param.kwonly()) {
                         throw TypeError(
-                            "expected argument '" + ArgTraits<at<I>>::name +
+                            "expected argument '" + ArgTraits<T>::name +
                             "' at index " + std::to_string(idx) +
                             " to be keyword-only, not " + description(param)
                         );
                     }
-                    if (param.name != ArgTraits<at<I>>::name) {
+                    if (param.name != ArgTraits<T>::name) {
                         throw TypeError(
-                            "expected keyword-only argument '" + ArgTraits<at<I>>::name +
+                            "expected keyword-only argument '" + ArgTraits<T>::name +
                             "' at index " + std::to_string(idx) + ", not '" +
                             std::string(param.name) + "'"
                         );
                     }
-                    if (!ArgTraits<at<I>>::opt() && param.opt()) {
+                    if (!ArgTraits<T>::opt() && param.opt()) {
                         throw TypeError(
-                            "required keyword-only argument '" + ArgTraits<at<I>>::name +
+                            "required keyword-only argument '" + ArgTraits<T>::name +
                             "' at index " + std::to_string(idx) + " must not have a "
                             "default value"
                         );
                     }
-                    if (!issubclass<T>(reinterpret_borrow<Object>(
-                        reinterpret_cast<PyObject*>(param.type)
-                    ))) {
+                    if (!issubclass<Expected>(
+                        reinterpret_borrow<Object>(param.value)
+                    )) {
                         throw TypeError(
-                            "expected keyword-only argument '" + ArgTraits<at<I>>::name +
+                            "expected keyword-only argument '" + ArgTraits<T>::name +
                             "' at index " + std::to_string(idx) +
-                            " to be a subclass of '" + repr(reinterpret_borrow<Object>(
-                                reinterpret_cast<PyObject*>(ptr(Type<T>()))
-                            )) + "', not: '" + repr(reinterpret_borrow<Object>(
-                                reinterpret_cast<PyObject*>(param.type)
+                            " to be a subclass of '" +
+                            repr(reinterpret_borrow<Object>(
+                                ptr(Type<Expected>())
+                            )) + "', not: '" +
+                            repr(reinterpret_borrow<Object>(
+                                param.value
                             )) + "'"
                         );
                     }
                     ++idx;
 
-                } else if constexpr (ArgTraits<at<I>>::args()) {
+                } else if constexpr (ArgTraits<T>::args()) {
                     while (idx < key.size()) {
                         const Param& param = key[idx];
                         if (!(param.pos() || param.args())) {
                             break;
                         }
-                        if (!issubclass<T>(
-                            reinterpret_borrow<Object>(
-                                reinterpret_cast<PyObject*>(param.type)
-                            )
+                        if (!issubclass<Expected>(
+                            reinterpret_borrow<Object>(param.value)
                         )) {
                             if (param.name.empty()) {
                                 throw TypeError(
                                     "expected variadic positional argument at index " +
                                     std::to_string(idx) + " to be a subclass of '" +
                                     repr(reinterpret_borrow<Object>(
-                                        reinterpret_cast<PyObject*>(ptr(Type<T>()))
-                                    )) + "', not: '" + repr(reinterpret_borrow<Object>(
-                                        reinterpret_cast<PyObject*>(param.type)
+                                        ptr(Type<Expected>())
+                                    )) + "', not: '" +
+                                    repr(reinterpret_borrow<Object>(
+                                        param.value
                                     )) + "'"
                                 );
                             } else {
@@ -3441,9 +3440,10 @@ namespace impl {
                                     std::string(param.name) + "' at index " +
                                     std::to_string(idx) + " to be a subclass of '" +
                                     repr(reinterpret_borrow<Object>(
-                                        reinterpret_cast<PyObject*>(ptr(Type<T>()))
-                                    )) + "', not: '" + repr(reinterpret_borrow<Object>(
-                                        reinterpret_cast<PyObject*>(param.type)
+                                        ptr(Type<Expected>())
+                                    )) + "', not: '" +
+                                    repr(reinterpret_borrow<Object>(
+                                        param.value
                                     )) + "'"
                                 );
                             }
@@ -3451,25 +3451,24 @@ namespace impl {
                         ++idx;
                     }
 
-                } else if constexpr (ArgTraits<at<I>>::kwargs()) {
+                } else if constexpr (ArgTraits<T>::kwargs()) {
                     while (idx < key.size()) {
                         const Param& param = key[idx];
                         if (!(param.kw() || param.kwargs())) {
                             break;
                         }
-                        if (!issubclass<T>(
-                            reinterpret_borrow<Object>(
-                                reinterpret_cast<PyObject*>(param.type)
-                            )
+                        if (!issubclass<Expected>(
+                            reinterpret_borrow<Object>(param.value)
                         )) {
                             throw TypeError(
                                 "expected variadic keyword argument '" +
                                 std::string(param.name) + "' at index " +
                                 std::to_string(idx) + " to be a subclass of '" +
                                 repr(reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(ptr(Type<T>()))
-                                )) + "', not: '" + repr(reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(param.type)
+                                    ptr(Type<Expected>())
+                                )) + "', not: '" +
+                                repr(reinterpret_borrow<Object>(
+                                    param.value
                                 )) + "'"
                             );
                         }
@@ -6344,6 +6343,8 @@ struct Interface<Function<F>> : impl::FunctionTag {
     /// TODO: __signature__, which returns a proper Python `inspect.Signature` object.
 
 };
+
+
 template <typename F>
 struct Interface<Type<Function<F>>> {
 
@@ -7972,11 +7973,11 @@ parameter is a type object, and thus the method is a class method.)doc";
             }
         }
 
-        static PyObject* _subtrie_len(PyFunction* self, PyObject* type) noexcept {
+        static PyObject* _subtrie_len(PyFunction* self, PyObject* value) noexcept {
             try {
                 size_t len = 0;
                 for (const typename Sig::Overloads::Metadata& data :
-                    self->overloads.match(type)
+                    self->overloads.match(value)
                 ) {
                     ++len;
                 }
@@ -7987,10 +7988,10 @@ parameter is a type object, and thus the method is a class method.)doc";
             }
         }
 
-        static PyObject* _subtrie_iter(PyFunction* self, PyObject* type) noexcept {
+        static PyObject* _subtrie_iter(PyFunction* self, PyObject* value) noexcept {
             try {
                 return release(Iterator(
-                    self->overloads.match(type) | std::views::transform(
+                    self->overloads.match(value) | std::views::transform(
                         [](const typename Sig::Overloads::Metadata& data) -> Object {
                             return data.func;
                         }
@@ -8085,7 +8086,7 @@ parameter is a type object, and thus the method is a class method.)doc";
             return (
                 param.name == impl::ArgTraits<T>::name &&
                 param.kind == impl::ArgTraits<T>::kind &&
-                param.type == ptr(Type<typename impl::ArgTraits<T>::type>())
+                param.value == ptr(Type<typename impl::ArgTraits<T>::type>())
             );
         }
 
@@ -8190,7 +8191,7 @@ parameter is a type object, and thus the method is a class method.)doc";
             for (Py_ssize_t i = 0; i < kwcount; ++i) {
                 PyObject* name = PyTuple_GET_ITEM(kwnames, i);
                 key.push_back({
-                    impl::Param::get_name(name),
+                    impl::get_parameter_name(name),
                     reinterpret_cast<PyObject*>(Py_TYPE(args[nargs + i])),
                     impl::ArgKind::KW
                 });
@@ -8226,7 +8227,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                             )
                         );
                     }
-                    std::string_view name = impl::Param::get_name(slice->start);
+                    std::string_view name = impl::get_parameter_name(slice->start);
                     if (names.contains(name)) {
                         throw TypeError(
                             "duplicate keyword argument: " + std::string(name)
@@ -8583,9 +8584,7 @@ parameter is a type object, and thus the method is a class method.)doc";
             PyObject* result = PyObject_CallMethodOneArg(
                 self->__wrapped__,
                 ptr(impl::template_string<"_subtrie_len">()),
-                PyType_Check(self->__self__) ?
-                    self->__self__ :
-                    reinterpret_cast<PyObject*>(Py_TYPE(self->__self__))
+                self->__self__
             );
             if (result == nullptr) {
                 return -1;
@@ -8671,9 +8670,7 @@ parameter is a type object, and thus the method is a class method.)doc";
         static int __contains__(PyFunction* self, PyObject* func) noexcept {
             PyObject* args[] = {
                 self->__wrapped__,
-                PyType_Check(self->__self__) ?
-                    self->__self__ :
-                    reinterpret_cast<PyObject*>(Py_TYPE(self->__self__)),
+                self->__self__,
                 func
             };
             PyObject* result = PyObject_VectorcallMethod(
@@ -8694,9 +8691,7 @@ parameter is a type object, and thus the method is a class method.)doc";
             return PyObject_CallMethodOneArg(
                 self->__wrapped__,
                 ptr(impl::template_string<"_subtrie_iter">()),
-                PyType_Check(self->__self__) ?
-                    self->__self__ :
-                    reinterpret_cast<PyObject*>(Py_TYPE(self->__self__))
+                self->__self__
             );
         }
 
@@ -9299,31 +9294,31 @@ struct TODO2 {
                 return (
                     (param.kwonly() & (param.opt() == ArgTraits<at<I>>::opt())) &&
                     (param.name == ArgTraits<at<I>>::name) &&
-                    (reinterpret_cast<PyObject*>(param.type) == ptr(Type<T>()))
+                    (param.value == ptr(Type<T>()))
                 );
             } else if constexpr (ArgTraits<at<I>>::kw()) {
                 return (
                     (param.kw() & (param.opt() == ArgTraits<at<I>>::opt())) &&
                     (param.name == ArgTraits<at<I>>::name) &&
-                    (reinterpret_cast<PyObject*>(param.type) == ptr(Type<T>()))
+                    (param.value == ptr(Type<T>()))
                 );
             } else if constexpr (ArgTraits<at<I>>::pos()) {
                 return (
                     (param.posonly() & (param.opt() == ArgTraits<at<I>>::opt())) &&
                     (param.name == ArgTraits<at<I>>::name) &&
-                    (reinterpret_cast<PyObject*>(param.type) == ptr(Type<T>()))
+                    (param.value == ptr(Type<T>()))
                 );
             } else if constexpr (ArgTraits<at<I>>::args()) {
                 return (
                     param.args() &&
                     (param.name == ArgTraits<at<I>>::name) &&
-                    (reinterpret_cast<PyObject*>(param.type) == ptr(Type<T>()))
+                    (param.value == ptr(Type<T>()))
                 );
             } else if constexpr (ArgTraits<at<I>>::kwargs()) {
                 return (
                     param.kwargs() &&
                     (param.name == ArgTraits<at<I>>::name) &&
-                    (reinterpret_cast<PyObject*>(param.type) == ptr(Type<T>()))
+                    (param.value == ptr(Type<T>()))
                 );
             } else {
                 static_assert(false, "unrecognized parameter kind");
@@ -9390,7 +9385,7 @@ struct TODO2 {
             }
             Type<T> expected;
             int rc = PyObject_IsSubclass(
-                reinterpret_cast<PyObject*>(param.type),
+                param.value,
                 ptr(expected)
             );
             if (rc < 0) {
@@ -9399,9 +9394,7 @@ struct TODO2 {
                 throw TypeError(
                     "expected keyword-only argument '" + ArgTraits<at<I>>::name +
                     "' to be a subclass of '" + repr(expected) + "', not: '" +
-                    repr(reinterpret_borrow<Object>(
-                        reinterpret_cast<PyObject*>(param.type)
-                    )) + "'"
+                    repr(reinterpret_borrow<Object>(param.value)) + "'"
                 );
             }
 
@@ -9443,7 +9436,7 @@ struct TODO2 {
             }
             Type<T> expected;
             int rc = PyObject_IsSubclass(
-                reinterpret_cast<PyObject*>(param.type),
+                param.value,
                 ptr(expected)
             );
             if (rc < 0) {
@@ -9452,11 +9445,8 @@ struct TODO2 {
                 throw TypeError(
                     "expected positional-or-keyword argument '" +
                     ArgTraits<at<I>>::name + "' to be a subclass of '" +
-                    repr(expected) + "', not: '" + repr(
-                        reinterpret_borrow<Object>(
-                            reinterpret_cast<PyObject*>(param.type)
-                        )
-                    ) + "'"
+                    repr(expected) + "', not: '" +
+                    repr(reinterpret_borrow<Object>(param.value)) + "'"
                 );
             }
 
@@ -9498,7 +9488,7 @@ struct TODO2 {
             }
             Type<T> expected;
             int rc = PyObject_IsSubclass(
-                reinterpret_cast<PyObject*>(param.type),
+                param.value,
                 ptr(expected)
             );
             if (rc < 0) {
@@ -9507,11 +9497,8 @@ struct TODO2 {
                 throw TypeError(
                     "expected positional-only argument '" +
                     ArgTraits<at<I>>::name + "' to be a subclass of '" +
-                    repr(expected) + "', not: '" + repr(
-                        reinterpret_borrow<Object>(
-                            reinterpret_cast<PyObject*>(param.type)
-                        )
-                    ) + "'"
+                    repr(expected) + "', not: '" +
+                    repr(reinterpret_borrow<Object>(param.value)) + "'"
                 );
             }
 
@@ -9538,7 +9525,7 @@ struct TODO2 {
             }
             Type<T> expected;
             int rc = PyObject_IsSubclass(
-                reinterpret_cast<PyObject*>(param.type),
+                param.value,
                 ptr(expected)
             );
             if (rc < 0) {
@@ -9547,11 +9534,8 @@ struct TODO2 {
                 throw TypeError(
                     "expected variadic positional argument '" +
                     ArgTraits<at<I>>::name + "' to be a subclass of '" +
-                    repr(expected) + "', not: '" + repr(
-                        reinterpret_borrow<Object>(
-                            reinterpret_cast<PyObject*>(param.type)
-                        )
-                    ) + "'"
+                    repr(expected) + "', not: '" +
+                    repr(reinterpret_borrow<Object>(param.value)) + "'"
                 );
             }
 
@@ -9578,7 +9562,7 @@ struct TODO2 {
             }
             Type<T> expected;
             int rc = PyObject_IsSubclass(
-                reinterpret_cast<PyObject*>(param.type),
+                param.value,
                 ptr(expected)
             );
             if (rc < 0) {
@@ -9587,11 +9571,8 @@ struct TODO2 {
                 throw TypeError(
                     "expected variadic keyword argument '" +
                     ArgTraits<at<I>>::name + "' to be a subclass of '" +
-                    repr(expected) + "', not: '" + repr(
-                        reinterpret_borrow<Object>(
-                            reinterpret_cast<PyObject*>(param.type)
-                        )
-                    ) + "'"
+                    repr(expected) + "', not: '" +
+                    repr(reinterpret_borrow<Object>(param.value)) + "'"
                 );
             }
 
@@ -9695,9 +9676,7 @@ struct TODO2 {
                 return (
                     (param.kwonly() & (~ArgTraits<at<I>>::opt() | param.opt())) &&
                     (param.name == ArgTraits<at<I>>::name) &&
-                    (issubclass<T>(reinterpret_borrow<Object>(
-                        reinterpret_cast<PyObject*>(param.type))
-                    ))
+                    (issubclass<T>(reinterpret_borrow<Object>(param.value)))
                 );
             }
 
@@ -9708,9 +9687,7 @@ struct TODO2 {
                 return (
                     (param.kw() & (~ArgTraits<at<I>>::opt() | param.opt())) &&
                     (param.name == ArgTraits<at<I>>::name) &&
-                    (issubclass<T>(reinterpret_borrow<Object>(
-                        reinterpret_cast<PyObject*>(param.type))
-                    ))
+                    (issubclass<T>(reinterpret_borrow<Object>(param.value)))
                 );
             }
 
@@ -9721,9 +9698,7 @@ struct TODO2 {
                 return (
                     (param.pos() & (~ArgTraits<at<I>>::opt() | param.opt())) &&
                     (param.name == ArgTraits<at<I>>::name) &&
-                    (issubclass<T>(reinterpret_borrow<Object>(
-                        reinterpret_cast<PyObject*>(param.type))
-                    ))
+                    (issubclass<T>(reinterpret_borrow<Object>(param.value)))
                 );
             }
 
@@ -9731,9 +9706,7 @@ struct TODO2 {
             if (idx < key.size()) {
                 const Param* param = &key[idx];
                 while (param->pos()) {
-                    if (!issubclass<T>(reinterpret_borrow<Object>(
-                        reinterpret_cast<PyObject*>(param->type))
-                    )) {
+                    if (!issubclass<T>(reinterpret_borrow<Object>(param->value))) {
                         return false;
                     }
                     ++idx;
@@ -9743,9 +9716,7 @@ struct TODO2 {
                     param = &key[idx];            
                 }
                 if (param->args()) {
-                    if (!issubclass<T>(reinterpret_borrow<Object>(
-                        reinterpret_cast<PyObject*>(param->type))
-                    )) {
+                    if (!issubclass<T>(reinterpret_borrow<Object>(param->value))) {
                         return false;
                     }
                     ++idx;
@@ -9761,9 +9732,8 @@ struct TODO2 {
                     if (
                         /// TODO: check to see if the argument is present
                         // !callback(param->name) &&
-                        !issubclass<T>(reinterpret_borrow<Object>(
-                        reinterpret_cast<PyObject*>(param->type))
-                    )) {
+                        !issubclass<T>(reinterpret_borrow<Object>(param->value))
+                    ) {
                         return false;
                     }
                     ++idx;
@@ -9773,9 +9743,7 @@ struct TODO2 {
                     param = &key[idx];
                 }
                 if (param->kwargs()) {
-                    if (!issubclass<T>(reinterpret_borrow<Object>(
-                        reinterpret_cast<PyObject*>(param->type))
-                    )) {
+                    if (!issubclass<T>(reinterpret_borrow<Object>(param->value))) {
                         return false;
                     }
                     ++idx;
@@ -9837,15 +9805,11 @@ struct TODO2 {
                     "' must not have a default value"
                 );
             }
-            if (!issubclass<T>(reinterpret_borrow<Object>(
-                reinterpret_cast<PyObject*>(param.type))
-            )) {
+            if (!issubclass<T>(reinterpret_borrow<Object>(param.value))) {
                 throw TypeError(
                     "expected keyword-only argument '" + ArgTraits<at<I>>::name +
                     "' to be a subclass of '" + repr(Type<T>()) + "', not: '" +
-                    repr(reinterpret_borrow<Object>(
-                        reinterpret_cast<PyObject*>(param.type)
-                    )) + "'"
+                    repr(reinterpret_borrow<Object>(param.value)) + "'"
                 );
             }
             ++idx;
@@ -9877,17 +9841,12 @@ struct TODO2 {
                     ArgTraits<at<I>>::name + "' must not have a default value"
                 );
             }
-            if (!issubclass<T>(reinterpret_borrow<Object>(
-                reinterpret_cast<PyObject*>(param.type))
-            )) {
+            if (!issubclass<T>(reinterpret_borrow<Object>(param.value))) {
                 throw TypeError(
                     "expected positional-or-keyword argument '" +
                     ArgTraits<at<I>>::name + "' to be a subclass of '" +
-                    repr(Type<T>()) + "', not: '" + repr(
-                        reinterpret_borrow<Object>(
-                            reinterpret_cast<PyObject*>(param.type)
-                        )
-                    ) + "'"
+                    repr(Type<T>()) + "', not: '" +
+                    repr(reinterpret_borrow<Object>(param.value)) + "'"
                 );
             }
             ++idx;
@@ -9919,15 +9878,11 @@ struct TODO2 {
                     "' must not have a default value"
                 );
             }
-            if (!issubclass<T>(reinterpret_borrow<Object>(
-                reinterpret_cast<PyObject*>(param.type))
-            )) {
+            if (!issubclass<T>(reinterpret_borrow<Object>(param.value))) {
                 throw TypeError(
                     "expected positional argument '" + ArgTraits<at<I>>::name +
                     "' to be a subclass of '" + repr(Type<T>()) + "', not: '" +
-                    repr(reinterpret_borrow<Object>(
-                        reinterpret_cast<PyObject*>(param.type)
-                    )) + "'"
+                    repr(reinterpret_borrow<Object>(param.value)) + "'"
                 );
             }
             ++idx;
@@ -9936,17 +9891,12 @@ struct TODO2 {
             if (idx < key.size()) {
                 const Param* param = &key[idx];
                 while (param->pos() && idx < key.size()) {
-                    if (!issubclass<T>(reinterpret_borrow<Object>(
-                        reinterpret_cast<PyObject*>(param->type))
-                    )) {
+                    if (!issubclass<T>(reinterpret_borrow<Object>(param->value))) {
                         throw TypeError(
                             "expected positional argument '" +
                             std::string(param->name) + "' to be a subclass of '" +
-                            repr(Type<T>()) + "', not: '" + repr(
-                                reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(param->type)
-                                )
-                            ) + "'"
+                            repr(Type<T>()) + "', not: '" +
+                            repr(reinterpret_borrow<Object>(param->value)) + "'"
                         );
                     }
                     ++idx;
@@ -9956,17 +9906,12 @@ struct TODO2 {
                     param = &key[idx];
                 }
                 if (param->args()) {
-                    if (!issubclass<T>(reinterpret_borrow<Object>(
-                        reinterpret_cast<PyObject*>(param->type))
-                    )) {
+                    if (!issubclass<T>(reinterpret_borrow<Object>(param->value))) {
                         throw TypeError(
                             "expected variadic positional argument '" +
                             std::string(param->name) + "' to be a subclass of '" +
-                            repr(Type<T>()) + "', not: '" + repr(
-                                reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(param->type)
-                                )
-                            ) + "'"
+                            repr(Type<T>()) + "', not: '" +
+                            repr(reinterpret_borrow<Object>(param->value)) + "'"
                         );
                     }
                     ++idx;
@@ -9977,17 +9922,12 @@ struct TODO2 {
             if (idx < key.size()) {
                 const Param* param = &key[idx];
                 while (param->kw() && idx < key.size()) {
-                    if (!issubclass<T>(reinterpret_borrow<Object>(
-                        reinterpret_cast<PyObject*>(param->type))
-                    )) {
+                    if (!issubclass<T>(reinterpret_borrow<Object>(param->value))) {
                         throw TypeError(
                             "expected keyword argument '" +
                             std::string(param->name) + "' to be a subclass of '" +
-                            repr(Type<T>()) + "', not: '" + repr(
-                                reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(param->type)
-                                )
-                            ) + "'"
+                            repr(Type<T>()) + "', not: '" +
+                            repr(reinterpret_borrow<Object>(param->value)) + "'"
                         );
                     }
                     ++idx;
@@ -9997,17 +9937,12 @@ struct TODO2 {
                     param = &key[idx];
                 }
                 if (param->kwargs()) {
-                    if (!issubclass<T>(reinterpret_borrow<Object>(
-                        reinterpret_cast<PyObject*>(param->type))
-                    )) {
+                    if (!issubclass<T>(reinterpret_borrow<Object>(param->value))) {
                         throw TypeError(
                             "expected variadic keyword argument '" +
                             std::string(param->name) + "' to be a subclass of '" +
-                            repr(Type<T>()) + "', not: '" + repr(
-                                reinterpret_borrow<Object>(
-                                    reinterpret_cast<PyObject*>(param->type)
-                                )
-                            ) + "'"
+                            repr(Type<T>()) + "', not: '" +
+                            repr(reinterpret_borrow<Object>(param->value)) + "'"
                         );
                     }
                     ++idx;
