@@ -4733,10 +4733,8 @@ namespace impl {
     /* Convert a non-member function pointer into a member function pointer of the
     given, cvref-qualified type.  Passing void as the enclosing class will return the
     non-member function pointer as-is. */
-    template <typename Func, typename Self>
-    struct to_member_func {
-        static constexpr bool enable = false;
-    };
+    template <typename, typename>
+    struct to_member_func { static constexpr bool enable = false; };
     template <typename R, typename... A, typename Self>
         requires (std::is_void_v<std::remove_cvref_t<Self>>)
     struct to_member_func<R(*)(A...), Self> {
@@ -5104,278 +5102,6 @@ namespace impl {
     template <typename T>
     concept no_required_after_default = Signature<T>::no_required_after_default;
 
-    /* A structural type hint whose `isinstance()`/`issubclass()` operators only return
-    true if ALL of the composite functions are present within a type's interface. */
-    struct FuncIntersect : PyObject {
-        Object lhs;
-        Object rhs;
-
-        explicit FuncIntersect(Object&& lhs, Object&& rhs) :
-            lhs(std::move(lhs)),
-            rhs(std::move(rhs))
-        {}
-
-        static void __dealloc__(FuncIntersect* self) {
-            self->~FuncIntersect();
-        }
-
-        static PyObject* __instancecheck__(FuncIntersect* self, PyObject* instance) {
-            int rc = PyObject_IsInstance(
-                instance,
-                ptr(self->lhs)
-            );
-            if (rc < 0) {
-                return nullptr;
-            } else if (!rc) {
-                Py_RETURN_FALSE;
-            }
-            rc = PyObject_IsInstance(
-                instance,
-                ptr(self->rhs)
-            );
-            if (rc < 0) {
-                return nullptr;
-            } else if (!rc) {
-                Py_RETURN_FALSE;
-            }
-            Py_RETURN_TRUE;
-        }
-
-        static PyObject* __subclasscheck__(FuncIntersect* self, PyObject* cls) {
-            int rc = PyObject_IsSubclass(
-                cls,
-                ptr(self->lhs)
-            );
-            if (rc < 0) {
-                return nullptr;
-            } else if (!rc) {
-                Py_RETURN_FALSE;
-            }
-            rc = PyObject_IsSubclass(
-                cls,
-                ptr(self->rhs)
-            );
-            if (rc < 0) {
-                return nullptr;
-            } else if (!rc) {
-                Py_RETURN_FALSE;
-            }
-            Py_RETURN_TRUE;
-        }
-
-        static PyObject* __and__(PyObject* lhs, PyObject* rhs) {
-            try {
-                /// TODO: do some validation on the inputs, ensuring that they are both
-                /// bertrand functions or structural intersection/union hints.
-
-                FuncIntersect* hint = reinterpret_cast<FuncIntersect*>(
-                    __type__.tp_alloc(&__type__, 0)
-                );
-                if (hint == nullptr) {
-                    return nullptr;
-                }
-                try {
-                    new (hint) FuncIntersect(
-                        reinterpret_borrow<Object>(lhs),
-                        reinterpret_borrow<Object>(rhs)
-                    );
-                } catch (...) {
-                    Py_DECREF(hint);
-                    throw;
-                }
-                return hint;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* __repr__(FuncIntersect* self) {
-            try {
-                std::string str =
-                    "(" + repr(self->lhs) + " & " + repr(self->rhs) + ")";
-                return PyUnicode_FromStringAndSize(str.c_str(), str.size());
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static PyNumberMethods number;
-
-        inline static PyMethodDef methods[] = {
-            {
-                "__instancecheck__",
-                reinterpret_cast<PyCFunction>(&__instancecheck__),
-                METH_O,
-                nullptr
-            },
-            {
-                "__subclasscheck__",
-                reinterpret_cast<PyCFunction>(&__subclasscheck__),
-                METH_O,
-                nullptr
-            },
-            {nullptr}
-        };
-
-        static PyTypeObject __type__;
-
-    };
-
-    /* A structural type hint whose `isinstance()`/`issubclass()` operators only return
-    true if ANY of the composite functions are present within a type's interface. */
-    struct FuncUnion : PyObject {
-        Object lhs;
-        Object rhs;
-
-        explicit FuncUnion(Object&& lhs, Object&& rhs) :
-            lhs(std::move(lhs)),
-            rhs(std::move(rhs))
-        {}
-
-        static void __dealloc__(FuncUnion* self) {
-            self->~FuncUnion();
-        }
-
-        static PyObject* __instancecheck__(FuncUnion* self, PyObject* instance) {
-            int rc = PyObject_IsInstance(
-                instance,
-                ptr(self->lhs)
-            );
-            if (rc < 0) {
-                return nullptr;
-            } else if (rc) {
-                Py_RETURN_TRUE;
-            }
-            rc = PyObject_IsInstance(
-                instance,
-                ptr(self->rhs)
-            );
-            if (rc < 0) {
-                return nullptr;
-            } else if (rc) {
-                Py_RETURN_TRUE;
-            }
-            Py_RETURN_FALSE;
-        }
-
-        static PyObject* __subclasscheck__(FuncUnion* self, PyObject* cls) {
-            int rc = PyObject_IsSubclass(
-                cls,
-                ptr(self->lhs)
-            );
-            if (rc < 0) {
-                return nullptr;
-            } else if (rc) {
-                Py_RETURN_TRUE;
-            }
-            rc = PyObject_IsSubclass(
-                cls,
-                ptr(self->rhs)
-            );
-            if (rc < 0) {
-                return nullptr;
-            } else if (rc) {
-                Py_RETURN_TRUE;
-            }
-            Py_RETURN_FALSE;
-        }
-
-        static PyObject* __or__(PyObject* lhs, PyObject* rhs) {
-            try {
-                /// TODO: do some validation on the inputs, ensuring that they are both
-                /// bertrand functions or structural intersection/union hints.
-
-                FuncUnion* hint = reinterpret_cast<FuncUnion*>(
-                    __type__.tp_alloc(&__type__, 0)
-                );
-                if (hint == nullptr) {
-                    return nullptr;
-                }
-                try {
-                    new (hint) FuncUnion(
-                        reinterpret_borrow<Object>(lhs),
-                        reinterpret_borrow<Object>(rhs)
-                    );
-                } catch (...) {
-                    Py_DECREF(hint);
-                    throw;
-                }
-                return hint;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* __repr__(FuncUnion* self) {
-            try {
-                std::string str =
-                    "(" + repr(self->lhs) + " | " + repr(self->rhs) + ")";
-                return PyUnicode_FromStringAndSize(str.c_str(), str.size());
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static PyNumberMethods number;
-
-        inline static PyMethodDef methods[] = {
-            {
-                "__instancecheck__",
-                reinterpret_cast<PyCFunction>(&__instancecheck__),
-                METH_O,
-                nullptr
-            },
-            {
-                "__subclasscheck__",
-                reinterpret_cast<PyCFunction>(&__subclasscheck__),
-                METH_O,
-                nullptr
-            },
-            {nullptr}
-        };
-
-        static PyTypeObject __type__;
-
-    };
-
-    PyNumberMethods FuncIntersect::number = {
-        .nb_and = reinterpret_cast<binaryfunc>(&FuncIntersect::__and__),
-        .nb_or = reinterpret_cast<binaryfunc>(&FuncUnion::__or__),
-    };
-
-    PyNumberMethods FuncUnion::number = {
-        .nb_and = reinterpret_cast<binaryfunc>(&FuncIntersect::__and__),
-        .nb_or = reinterpret_cast<binaryfunc>(&FuncUnion::__or__),
-    };
-
-    PyTypeObject FuncIntersect::__type__ = {
-        .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
-        .tp_name = typeid(FuncIntersect).name(),
-        .tp_basicsize = sizeof(FuncIntersect),
-        .tp_itemsize = 0,
-        .tp_dealloc = reinterpret_cast<destructor>(&FuncIntersect::__dealloc__),
-        .tp_repr = reinterpret_cast<reprfunc>(&FuncIntersect::__repr__),
-        .tp_as_number = &FuncIntersect::number,
-        .tp_flags = Py_TPFLAGS_DEFAULT,
-        .tp_methods = FuncIntersect::methods,
-    };
-
-    PyTypeObject FuncUnion::__type__ = {
-        .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
-        .tp_name = typeid(FuncUnion).name(),
-        .tp_basicsize = sizeof(FuncUnion),
-        .tp_itemsize = 0,
-        .tp_dealloc = reinterpret_cast<destructor>(&FuncUnion::__dealloc__),
-        .tp_repr = reinterpret_cast<reprfunc>(&FuncUnion::__repr__),
-        .tp_as_number = &FuncUnion::number,
-        .tp_flags = Py_TPFLAGS_DEFAULT,
-        .tp_methods = FuncUnion::methods,
-    };
-
     /* A `@classmethod` descriptor for a C++ function type, which references an
     unbound function and produces bound equivalents that pass the enclosing type as a
     `self` argument when accessed. */
@@ -5383,31 +5109,27 @@ namespace impl {
         static PyTypeObject __type__;
 
         PyObject* __wrapped__;
-        PyObject* cls;
-        PyObject* target;
+        PyObject* member_function_type = nullptr;
+        vectorcallfunc __vectorcall__ = reinterpret_cast<vectorcallfunc>(&__call__);
 
-        explicit ClassMethod(PyObject* func, PyObject* cls) :
-            __wrapped__(func),
-            cls(cls),
-            target(release(get_member_function_type(func, cls)))
-        {
-            Py_INCREF(__wrapped__);
-            Py_INCREF(cls);
-        }
+        explicit ClassMethod(PyObject* func) : __wrapped__(Py_NewRef(func)) {}
 
         ~ClassMethod() noexcept {
-            Py_DECREF(__wrapped__);
-            Py_DECREF(cls);
-            Py_DECREF(target);
+            Py_XDECREF(__wrapped__);
+            Py_XDECREF(member_function_type);
         }
 
-        static void __dealloc__(ClassMethod* self) {
+        static void __dealloc__(ClassMethod* self) noexcept {
             self->~ClassMethod();
         }
 
-        static PyObject* __get__(ClassMethod* self, PyObject* obj, PyObject* type) {
+        static PyObject* __get__(
+            ClassMethod* self,
+            PyObject* obj,
+            PyObject* type
+        ) noexcept {
             PyObject* const args[] = {
-                self->target,
+                self->member_function_type,
                 self->__wrapped__,
                 type == Py_None ? reinterpret_cast<PyObject*>(Py_TYPE(obj)) : type,
             };
@@ -5419,12 +5141,80 @@ namespace impl {
             );
         }
 
-        static PyObject* __repr__(ClassMethod* self) {
+        static PyObject* __call__(
+            ClassMethod* self,
+            PyObject* const* args,
+            Py_ssize_t nargsf,
+            PyObject* kwnames
+        ) noexcept {
+            try {
+                if (kwnames) {
+                    PyErr_SetString(
+                        PyExc_TypeError,
+                        "classmethod() does not accept keyword arguments"
+                    );
+                    return nullptr;
+                }
+                size_t nargs = PyVectorcall_NARGS(nargsf);
+                if (nargs != 1) {
+                    PyErr_SetString(
+                        PyExc_TypeError,
+                        "classmethod() requires exactly one positional argument"
+                    );
+                    return nullptr;
+                }
+                PyObject* cls = args[0];
+                PyObject* forward[] = {
+                    self->__wrapped__,
+                    cls,
+                    self
+                };
+                PyObject* result = PyObject_VectorcallMethod(
+                    ptr(template_string<"_bind_classmethod">()),
+                    forward,
+                    3,
+                    nullptr
+                );
+                if (result == nullptr) {
+                    return nullptr;
+                }
+                self->member_function_type =
+                    get_member_function_type(self->__wrapped__, cls);
+                return result;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __or__(PyObject* lhs, PyObject* rhs) noexcept {
+            return PyNumber_Or(
+                PyType_IsSubtype(Py_TYPE(lhs), &__type__) ?
+                    reinterpret_cast<ClassMethod*>(lhs)->member_function_type :
+                    lhs,
+                PyType_IsSubtype(Py_TYPE(rhs), &__type__) ?
+                    reinterpret_cast<ClassMethod*>(rhs)->member_function_type :
+                    rhs
+            );
+        }
+
+        static PyObject* __and__(PyObject* lhs, PyObject* rhs) noexcept {
+            return PyNumber_And(
+                PyType_IsSubtype(Py_TYPE(lhs), &__type__) ?
+                    reinterpret_cast<ClassMethod*>(lhs)->member_function_type :
+                    lhs,
+                PyType_IsSubtype(Py_TYPE(rhs), &__type__) ?
+                    reinterpret_cast<ClassMethod*>(rhs)->member_function_type :
+                    rhs
+            );
+        }
+
+        static PyObject* __repr__(ClassMethod* self) noexcept {
             try {
                 std::string str =
-                    "<classmethod(" + repr(reinterpret_borrow<Object>(
-                        self->__wrapped__
-                    )) + ")>";
+                    "<classmethod(" +
+                    repr(reinterpret_borrow<Object>(self->__wrapped__)) +
+                    ")>";
                 return PyUnicode_FromStringAndSize(str.c_str(), str.size());
             } catch (...) {
                 Exception::to_python();
@@ -5434,16 +5224,65 @@ namespace impl {
 
     private:
 
-        /// TODO: implement this here, rather than as a forward declaration, using the
-        /// same logic as __get__.
-
-        /// TODO: this must be defined after the metaclass + template framework
-        /// is figured out.
-        static Object get_member_function_type(
+        static PyObject* get_member_function_type(
             PyObject* func,
             PyObject* cls
-        ) noexcept;
+        ) noexcept {
+            Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+                ptr(template_string<"bertrand">())
+            ));
+            if (bertrand.is(nullptr)) {
+                Exception::from_python();
+            }
+            Object key = reinterpret_steal<Object>(PyObject_GetAttr(
+                func,
+                ptr(template_string<"__template_key__">())
+            ));
+            if (key.is(nullptr)) {
+                Exception::from_python();
+            }
+            PySliceObject* rtype = reinterpret_cast<PySliceObject*>(PyTuple_GET_ITEM(
+                ptr(key),
+                0
+            ));
+            PyObject* new_rtype = PySlice_New(
+                cls,
+                reinterpret_cast<PyObject*>(&PyClassMethodDescr_Type),
+                rtype->step
+            );
+            if (new_rtype == nullptr) {
+                Exception::from_python();
+            }
+            PyTuple_SET_ITEM(ptr(key), 0, new_rtype);
+            Py_DECREF(rtype);
+            PyObject* result = PyObject_GetItem(
+                ptr(template_string<"Function">()),
+                ptr(key)
+            );
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return result;
+        }
 
+        static PyMemberDef members[];
+
+        inline static PyNumberMethods number = {
+            .nb_and = reinterpret_cast<binaryfunc>(&__and__),
+            .nb_or = reinterpret_cast<binaryfunc>(&__or__),
+        };
+
+    };
+
+    PyMemberDef ClassMethod::members[] = {
+        {
+            "__wrapped__",
+            Py_T_OBJECT_EX,
+            offsetof(ClassMethod, __wrapped__),
+            Py_READONLY,
+            nullptr
+        },
+        {nullptr}
     };
 
     PyTypeObject ClassMethod::__type__ = {
@@ -5453,6 +5292,8 @@ namespace impl {
         .tp_itemsize = 0,
         .tp_dealloc = reinterpret_cast<destructor>(&ClassMethod::__dealloc__),
         .tp_repr = reinterpret_cast<reprfunc>(&ClassMethod::__repr__),
+        .tp_as_number = &ClassMethod::number,
+        .tp_call = PyVectorcall_Call,
         .tp_flags =
             Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION |
             Py_TPFLAGS_HAVE_VECTORCALL,
@@ -5468,7 +5309,9 @@ Note that each template instantiation exposes a unique descriptor type, which
 mirrors C++ semantics and enables structural typing via `isinstance()` and
 `issubclass()`.)doc"
         ),
+        .tp_members = ClassMethod::members,
         .tp_descr_get = reinterpret_cast<descrgetfunc>(&ClassMethod::__get__),
+        .tp_vectorcall_offset = offsetof(ClassMethod, __vectorcall__)
     };
 
     /* A `@staticmethod` descriptor for a C++ function type, which references an
@@ -5477,15 +5320,12 @@ mirrors C++ semantics and enables structural typing via `isinstance()` and
         static PyTypeObject __type__;
 
         PyObject* __wrapped__;
+        vectorcallfunc __vectorcall__ = reinterpret_cast<vectorcallfunc>(&__call__);
 
-        explicit StaticMethod(PyObject* __wrapped__) noexcept :
-            __wrapped__(__wrapped__)
-        {
-            Py_INCREF(__wrapped__);
-        }
+        explicit StaticMethod(PyObject* func) noexcept : __wrapped__(Py_NewRef(func)) {}
 
         ~StaticMethod() noexcept {
-            Py_DECREF(__wrapped__);
+            Py_XDECREF(__wrapped__);
         }
 
         static void __dealloc__(StaticMethod* self) noexcept {
@@ -5500,12 +5340,74 @@ mirrors C++ semantics and enables structural typing via `isinstance()` and
             return Py_NewRef(self->__wrapped__);
         }
 
+        static PyObject* __call__(
+            StaticMethod* self,
+            PyObject* const* args,
+            Py_ssize_t nargsf,
+            PyObject* kwnames
+        ) noexcept {
+            try {
+                if (kwnames) {
+                    PyErr_SetString(
+                        PyExc_TypeError,
+                        "staticmethod() does not accept keyword arguments"
+                    );
+                    return nullptr;
+                }
+                size_t nargs = PyVectorcall_NARGS(nargsf);
+                if (nargs != 1) {
+                    PyErr_SetString(
+                        PyExc_TypeError,
+                        "staticmethod() requires exactly one positional argument"
+                    );
+                    return nullptr;
+                }
+                PyObject* cls = args[0];
+                PyObject* forward[] = {
+                    self->__wrapped__,
+                    cls,
+                    self
+                };
+                return PyObject_VectorcallMethod(
+                    ptr(template_string<"_bind_staticmethod">()),
+                    forward,
+                    3,
+                    nullptr
+                );
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __or__(PyObject* lhs, PyObject* rhs) noexcept {
+            return PyNumber_Or(
+                PyType_IsSubtype(Py_TYPE(lhs), &__type__) ?
+                    reinterpret_cast<StaticMethod*>(lhs)->__wrapped__ :
+                    lhs,
+                PyType_IsSubtype(Py_TYPE(rhs), &__type__) ?
+                    reinterpret_cast<StaticMethod*>(rhs)->__wrapped__ :
+                    rhs
+            );
+        }
+
+        static PyObject* __and__(PyObject* lhs, PyObject* rhs) noexcept {
+            return PyNumber_And(
+                PyType_IsSubtype(Py_TYPE(lhs), &__type__) ?
+                    reinterpret_cast<StaticMethod*>(lhs)->__wrapped__ :
+                    lhs,
+                PyType_IsSubtype(Py_TYPE(rhs), &__type__) ?
+                    reinterpret_cast<StaticMethod*>(rhs)->__wrapped__ :
+                    rhs
+            );
+        }
+
         static PyObject* __repr__(StaticMethod* self) noexcept {
             try {
                 std::string str =
-                    "<staticmethod(" + repr(reinterpret_borrow<Object>(
-                        self->__wrapped__
-                    )) + ")>";
+                    "<staticmethod(" +
+                    repr(reinterpret_borrow<Object>(self->__wrapped__)) +
+                    ")>";
                 return PyUnicode_FromStringAndSize(str.c_str(), str.size());
             } catch (...) {
                 Exception::to_python();
@@ -5516,6 +5418,11 @@ mirrors C++ semantics and enables structural typing via `isinstance()` and
     private:
 
         static PyMemberDef members[];
+
+        inline static PyNumberMethods number = {
+            .nb_and = reinterpret_cast<binaryfunc>(&__and__),
+            .nb_or = reinterpret_cast<binaryfunc>(&__or__),
+        };
 
     };
 
@@ -5537,6 +5444,8 @@ mirrors C++ semantics and enables structural typing via `isinstance()` and
         .tp_itemsize = 0,
         .tp_dealloc = reinterpret_cast<destructor>(&StaticMethod::__dealloc__),
         .tp_repr = reinterpret_cast<reprfunc>(&StaticMethod::__repr__),
+        .tp_as_number = &StaticMethod::number,
+        .tp_call = PyVectorcall_Call,
         .tp_flags =
             Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION |
             Py_TPFLAGS_HAVE_VECTORCALL,
@@ -5553,7 +5462,9 @@ Note that each template instantiation exposes a unique descriptor type, which
 mirrors C++ semantics and enables structural typing via `isinstance()` and
 `issubclass()`.)doc"
         ),
+        .tp_members = StaticMethod::members,
         .tp_descr_get = reinterpret_cast<descrgetfunc>(&StaticMethod::__get__),
+        .tp_vectorcall_offset = offsetof(StaticMethod, __vectorcall__)
     };
 
     /* A `@property` descriptor for a C++ function type that accepts a single
@@ -7178,7 +7089,7 @@ parameter is a type object, and thus the method is a class method.)doc";
         /* Attach a function to a type as a class method descriptor.  Accepts the type
         to attach to, which can be provided by calling this method as a decorator from
         Python. */
-        static PyObject* classmethod(PyFunction* self, PyObject* cls) noexcept {
+        static PyObject* classmethod(PyFunction* self, void*) noexcept {
             try {
                 if constexpr (Sig::n < 1 || !(
                     impl::ArgTraits<typename Sig::template at<0>>::pos() ||
@@ -7191,52 +7102,23 @@ parameter is a type object, and thus the method is a class method.)doc";
                     );
                     return nullptr;
                 } else {
-                    using T = impl::ArgTraits<typename Sig::template at<0>>::type;
-                    if (!PyType_Check(cls)) {
-                        PyErr_Format(
-                            PyExc_TypeError,
-                            "expected a type object, not: %R",
-                            cls
-                        );
-                        return nullptr;
-                    }
-                    if (!issubclass<T>(reinterpret_borrow<Object>(cls))) {
-                        PyErr_Format(
-                            PyExc_TypeError,
-                            "class must be a must be a subclass of %R",
-                            ptr(Type<T>())
-                        );
-                        return nullptr;
-                    }
-                    if (PyObject_HasAttr(cls, self->name)) {
-                        PyErr_Format(
-                            PyExc_AttributeError,
-                            "attribute '%U' already exists on type '%R'",
-                            self->name,
-                            cls
-                        );
-                        return nullptr;
-                    }
-                    using impl::ClassMethod;
-                    ClassMethod* descr = reinterpret_cast<ClassMethod*>(
-                        ClassMethod::__type__.tp_alloc(&ClassMethod::__type__, 0)
+                    impl::ClassMethod* descr = reinterpret_cast<impl::ClassMethod*>(
+                        impl::ClassMethod::__type__.tp_alloc(
+                            &impl::ClassMethod::__type__,
+                            0
+                        )
                     );
                     if (descr == nullptr) {
                         return nullptr;
                     }
                     try {
-                        new (descr) ClassMethod(self, cls);
+                        new (descr) impl::ClassMethod(self);
                     } catch (...) {
                         Py_DECREF(descr);
                         Exception::to_python();
                         return nullptr;
                     }
-                    int rc = PyObject_SetAttr(cls, self->name, descr);
-                    Py_DECREF(descr);
-                    if (rc) {
-                        return nullptr;
-                    }
-                    return Py_NewRef(cls);
+                    return descr;
                 }
             } catch (...) {
                 Exception::to_python();
@@ -7247,45 +7129,25 @@ parameter is a type object, and thus the method is a class method.)doc";
         /* Attach a function to a type as a static method descriptor.  Accepts the type
         to attach to, which can be provided by calling this method as a decorator from
         Python. */
-        static PyObject* staticmethod(PyFunction* self, PyObject* cls) noexcept {
-            if (!PyType_Check(cls)) {
-                PyErr_Format(
-                    PyExc_TypeError,
-                    "expected a type object, not: %R",
-                    cls
-                );
-                return nullptr;
-            }
-            if (PyObject_HasAttr(cls, self->name)) {
-                PyErr_Format(
-                    PyExc_AttributeError,
-                    "attribute '%U' already exists on type '%R'",
-                    self->name,
-                    cls
-                );
-                return nullptr;
-            }
-            using impl::StaticMethod;
-            StaticMethod* descr = reinterpret_cast<StaticMethod*>(
-                StaticMethod::__type__.tp_alloc(&StaticMethod::__type__, 0)
+        static PyObject* staticmethod(PyFunction* self, void*) noexcept {
+            impl::StaticMethod* descr = reinterpret_cast<impl::StaticMethod*>(
+                impl::StaticMethod::__type__.tp_alloc(&impl::StaticMethod::__type__, 0)
             );
             if (descr == nullptr) {
                 return nullptr;
             }
             try {
-                new (descr) StaticMethod(self);
+                new (descr) impl::StaticMethod(self);
             } catch (...) {
                 Py_DECREF(descr);
                 Exception::to_python();
                 return nullptr;
             }
-            int rc = PyObject_SetAttr(cls, self->name, descr);
-            Py_DECREF(descr);
-            if (rc) {
-                return nullptr;
-            }
-            return Py_NewRef(cls);
+            return descr;
         }
+
+        /// TODO: .property needs to be converted into a getset descriptor that
+        /// returns an unbound descriptor object.
 
         /* Attach a function to a type as a getset descriptor.  Accepts a type object
         to attach to, which can be provided by calling this method as a decorator from
@@ -7973,6 +7835,124 @@ parameter is a type object, and thus the method is a class method.)doc";
             }
         }
 
+        static PyObject* _bind_classmethod(
+            PyFunction* self,
+            PyObject* const* args,
+            size_t nargsf,
+            PyObject* kwnames
+        ) noexcept {
+            using T = impl::ArgTraits<typename Sig::template at<0>>::type;
+            if (kwnames) {
+                PyErr_SetString(
+                    PyExc_TypeError,
+                    "_bind_classmethod() does not accept keyword arguments"
+                );
+                return nullptr;
+            }
+            size_t nargs = PyVectorcall_NARGS(nargsf);
+            if (nargs != 2) {
+                PyErr_SetString(
+                    PyExc_TypeError,
+                    "_bind_classmethod() requires exactly two positional arguments"
+                );
+                return nullptr;
+            }
+            PyObject* cls = args[0];
+            if (!PyType_Check(cls)) {
+                PyErr_SetString(
+                    PyExc_TypeError,
+                    "classmethod() requires a type object"
+                );
+                return nullptr;
+            }
+            if (!issubclass<T>(reinterpret_borrow<Object>(cls))) {
+                PyErr_Format(
+                    PyExc_TypeError,
+                    "class must be a must be a subclass of %R",
+                    ptr(Type<T>())
+                );
+                return nullptr;
+            }
+            if (PyObject_HasAttr(cls, self->name)) {
+                PyErr_Format(
+                    PyExc_AttributeError,
+                    "attribute '%U' already exists on type '%R'",
+                    self->name,
+                    cls
+                );
+                return nullptr;
+            }
+            PyObject* descr = args[1];
+            if (!PyType_IsSubtype(Py_TYPE(descr), &impl::ClassMethod::__type__)) {
+                PyErr_SetString(
+                    PyExc_TypeError,
+                    "_bind_classmethod() requires a Bertrand classmethod "
+                    "descriptor as the second argument"
+                );
+                return nullptr;
+            }
+            int rc = PyObject_SetAttr(cls, self->name, descr);
+            if (rc) {
+                return nullptr;
+            }
+            return Py_NewRef(cls);
+        }
+
+        static PyObject* _bind_staticmethod(
+            PyFunction* self,
+            PyObject* const* args,
+            size_t nargsf,
+            PyObject* kwnames
+        ) noexcept {
+            if (kwnames) {
+                PyErr_SetString(
+                    PyExc_TypeError,
+                    "_bind_staticmethod() does not accept keyword arguments"
+                );
+                return nullptr;
+            }
+            size_t nargs = PyVectorcall_NARGS(nargsf);
+            if (nargs != 2) {
+                PyErr_SetString(
+                    PyExc_TypeError,
+                    "_bind_staticmethod() requires exactly two positional "
+                    "arguments"
+                );
+                return nullptr;
+            }
+            PyObject* cls = args[0];
+            if (!PyType_Check(cls)) {
+                PyErr_SetString(
+                    PyExc_TypeError,
+                    "staticmethod() requires a type object"
+                );
+                return nullptr;
+            }
+            if (PyObject_HasAttr(cls, self->name)) {
+                PyErr_Format(
+                    PyExc_AttributeError,
+                    "attribute '%U' already exists on type '%R'",
+                    self->name,
+                    cls
+                );
+                return nullptr;
+            }
+            PyObject* descr = args[1];
+            if (!PyType_IsSubtype(Py_TYPE(descr), &impl::StaticMethod::__type__)) {
+                PyErr_SetString(
+                    PyExc_TypeError,
+                    "_bind_staticmethod() requires a Bertrand classmethod "
+                    "descriptor as the second argument"
+                );
+                return nullptr;
+            }
+            int rc = PyObject_SetAttr(cls, self->name, descr);
+            if (rc) {
+                return nullptr;
+            }
+            return Py_NewRef(cls);
+        }
+
         static PyObject* _subtrie_len(PyFunction* self, PyObject* value) noexcept {
             try {
                 size_t len = 0;
@@ -8306,34 +8286,12 @@ R"doc()doc"
 R"doc()doc"
                 )
             },
+            /// TODO: @Function.method should return a descriptor?  Or maybe just
+            /// forward the function itself?
             {
                 "method",
                 reinterpret_cast<PyCFunction>(&method),
                 METH_O,
-                PyDoc_STR(
-R"doc()doc"
-                )
-            },
-            {
-                "classmethod",
-                reinterpret_cast<PyCFunction>(&classmethod),
-                METH_O,
-                PyDoc_STR(
-R"doc()doc"
-                )
-            },
-            {
-                "staticmethod",
-                reinterpret_cast<PyCFunction>(&staticmethod),
-                METH_O,
-                PyDoc_STR(
-R"doc()doc"
-                )
-            },
-            {
-                "property",
-                reinterpret_cast<PyCFunction>(&property),
-                METH_FASTCALL | METH_KEYWORDS,
                 PyDoc_STR(
 R"doc()doc"
                 )
@@ -8374,11 +8332,92 @@ R"doc()doc"
 R"doc(A property that produces an accurate `inspect.Signature` object when a
 C++ function is introspected from Python.
 
+Returns
+-------
+inspect.Signature
+    A signature object that describes the function's expected arguments and
+    return value.
+
 Notes
 -----
 Providing this descriptor allows the `inspect` module to be used on C++
 functions as if they were implemented in Python itself, reflecting the signature
 of their underlying `py::Function` representation.)doc"
+                ),
+                nullptr
+            },
+            {
+                "classmethod",
+                reinterpret_cast<getter>(&classmethod),
+                nullptr,
+                PyDoc_STR(
+R"doc(Returns a classmethod descriptor for this function.
+
+Returns
+-------
+classmethod
+    A classmethod descriptor that binds the function to a type.
+
+Raises
+------
+TypeError
+    If the function does not accept at least one positional argument which can
+    be interpreted as a type.
+
+Notes
+-----
+The returned descriptor implements a call operator that attaches it to a type,
+enabling this property to be called like a normal method/decorator.  The
+unbound descriptor provides a convenient place to implement the `&` and `|`
+operators for structural typing.)doc"
+                ),
+                nullptr
+            },
+            {
+                "staticmethod",
+                reinterpret_cast<getter>(&staticmethod),
+                nullptr,
+                PyDoc_STR(
+R"doc(Returns a staticmethod descriptor for this function.
+
+Returns
+-------
+staticmethod
+    A staticmethod descriptor that binds the function to a type.
+
+Notes
+-----
+The returned descriptor implements a call operator that attaches it to a type,
+enabling this property to be called like a normal method/decorator.  The
+unbound descriptor provides a convenient place to implement the `&` and `|`
+operators for structural typing.)doc"
+                ),
+                nullptr
+            },
+            {
+                "property",
+                reinterpret_cast<getter>(&property),
+                nullptr,
+                PyDoc_STR(
+R"doc(Returns a property descriptor that uses this function as a getter.
+
+Returns
+-------
+property
+    A property descriptor that binds the function to a type.
+
+Raises
+------
+TypeError
+    If the function does not accept exactly one positional argument which can
+    be bound to the given type.
+
+Notes
+-----
+The returned descriptor implements a call operator that attaches it to a type,
+enabling this property to be called like a normal method/decorator.  The
+unbound descriptor provides a convenient place to implement the `&` and `|`
+operators for structural typing.)doc"
                 ),
                 nullptr
             },
@@ -8878,6 +8917,8 @@ public:
 
 
 /*
+    /// TODO: I don't know if this syntax is even possible, actually.
+
     auto func = py::Function(
         "subtract",
         "a simple example function",
