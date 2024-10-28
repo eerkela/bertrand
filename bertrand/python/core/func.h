@@ -324,13 +324,7 @@ namespace impl {
             return result;
         }
 
-        static Object to_union(std::set<PyObject*>& keys) {
-            Object bertrand = reinterpret_steal<Object>(PyImport_Import(
-                ptr(template_string<"bertrand">())
-            ));
-            if (bertrand.is(nullptr)) {
-                Exception::from_python();
-            }
+        static Object to_union(std::set<PyObject*>& keys, const Object& Union) {
             Object key = reinterpret_steal<Object>(
                 PyTuple_New(keys.size())
             );
@@ -343,7 +337,7 @@ namespace impl {
             }
             Object specialization = reinterpret_steal<Object>(
                 PyObject_GetItem(
-                    ptr(getattr<"Union">(bertrand)),
+                    ptr(Union),
                     ptr(key)
                 )
             );
@@ -354,6 +348,15 @@ namespace impl {
         }
 
     public:
+        Object bertrand = [] {
+            PyObject* bertrand = PyImport_Import(
+                ptr(template_string<"bertrand">())
+            );
+            if (bertrand == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Object>(bertrand);
+        }();
         Object inspect = [] {
             PyObject* inspect = PyImport_Import(ptr(template_string<"inspect">()));
             if (inspect == nullptr) {
@@ -717,7 +720,10 @@ namespace impl {
             } else if (keys.size() == 1) {
                 _returns = *keys.begin();
             } else {
-                _returns = ptr(to_union(keys));
+                _returns = ptr(to_union(
+                    keys,
+                    getattr<"Union">(bertrand)
+                ));
             }
             return_initialized = true;
             return _returns;
@@ -794,7 +800,10 @@ namespace impl {
                         reinterpret_cast<size_t>(type)
                     );
                 } else {
-                    Object specialization = to_union(types);
+                    Object specialization = to_union(
+                        types,
+                        getattr<"Union">(bertrand)
+                    );
                     _key.value.push_back({
                         name,
                         ptr(specialization),
@@ -964,194 +973,192 @@ namespace impl {
     struct Arguments : BertrandTag {
     private:
 
-        template <size_t I, typename... Ts>
-        static consteval size_t _n_posonly() { return 0; }
-        template <size_t I, typename T, typename... Ts>
-        static consteval size_t _n_posonly() {
-            return _n_posonly<I + ArgTraits<T>::posonly(), Ts...>();
-        }
+        template <typename... Ts>
+        static constexpr size_t _n_posonly = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t _n_posonly<T, Ts...> =
+            _n_posonly<Ts...> + ArgTraits<T>::posonly();
 
-        template <size_t I, typename... Ts>
-        static consteval size_t _n_pos() { return 0; }
-        template <size_t I, typename T, typename... Ts>
-        static consteval size_t _n_pos() {
-            return _n_pos<I + ArgTraits<T>::pos(), Ts...>();
-        }
+        template <typename... Ts>
+        static constexpr size_t _n_pos = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t _n_pos<T, Ts...> =
+            _n_pos<Ts...> + ArgTraits<T>::pos();
 
-        template <size_t I, typename... Ts>
-        static consteval size_t _n_kw() { return 0; }
-        template <size_t I, typename T, typename... Ts>
-        static consteval size_t _n_kw() {
-            return _n_kw<I + ArgTraits<T>::kw(), Ts...>();
-        }
+        template <typename... Ts>
+        static constexpr size_t _n_kw = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t _n_kw<T, Ts...> =
+            _n_kw<Ts...> + ArgTraits<T>::kw();
 
-        template <size_t I, typename... Ts>
-        static consteval size_t _n_kwonly() { return 0; }
-        template <size_t I, typename T, typename... Ts>
-        static consteval size_t _n_kwonly() {
-            return _n_kwonly<I + ArgTraits<T>::kwonly(), Ts...>();
-        }
+        template <typename... Ts>
+        static constexpr size_t _n_kwonly = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t _n_kwonly<T, Ts...> =
+            _n_kwonly<Ts...> + ArgTraits<T>::kwonly();
 
-        template <size_t I, typename... Ts>
-        static consteval size_t _n_opt() { return 0; }
-        template <size_t I, typename T, typename... Ts>
-        static consteval size_t _n_opt() {
-            return _n_opt<I + ArgTraits<T>::opt(), Ts...>();
-        }
+        template <typename... Ts>
+        static constexpr size_t _n_opt = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t _n_opt<T, Ts...> =
+            _n_opt<Ts...> + ArgTraits<T>::opt();
 
-        template <size_t I, typename... Ts>
-        static consteval size_t _n_opt_posonly() { return 0; }
-        template <size_t I, typename T, typename... Ts>
-        static consteval size_t _n_opt_posonly() {
-            return _n_opt_posonly<
-                I + (ArgTraits<T>::posonly() && ArgTraits<T>::opt()),
-                Ts...
-            >();
-        }
+        template <typename... Ts>
+        static constexpr size_t _n_opt_posonly = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t _n_opt_posonly<T, Ts...> =
+            _n_opt_posonly<Ts...> + (ArgTraits<T>::posonly() && ArgTraits<T>::opt());
 
-        template <size_t I, typename... Ts>
-        static consteval size_t _n_opt_pos() { return 0; }
-        template <size_t I, typename T, typename... Ts>
-        static consteval size_t _n_opt_pos() {
-            return _n_opt_pos<
-                I + (ArgTraits<T>::pos() && ArgTraits<T>::opt()),
-                Ts...
-            >();
-        }
+        template <typename... Ts>
+        static constexpr size_t _n_opt_pos = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t _n_opt_pos<T, Ts...> =
+            _n_opt_pos<Ts...> + (ArgTraits<T>::pos() && ArgTraits<T>::opt());
 
-        template <size_t I, typename... Ts>
-        static consteval size_t _n_opt_kw() { return 0; }
-        template <size_t I, typename T, typename... Ts>
-        static consteval size_t _n_opt_kw() {
-            return _n_opt_kw<
-                I + (ArgTraits<T>::kw() && ArgTraits<T>::opt()),
-                Ts...
-            >();
-        }
+        template <typename... Ts>
+        static constexpr size_t _n_opt_kw = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t _n_opt_kw<T, Ts...> =
+            _n_opt_kw<Ts...> + (ArgTraits<T>::kw() && ArgTraits<T>::opt());
 
-        template <size_t I, typename... Ts>
-        static consteval size_t _n_opt_kwonly() { return 0; }
-        template <size_t I, typename T, typename... Ts>
-        static consteval size_t _n_opt_kwonly() {
-            return _n_opt_kwonly<
-                I + (ArgTraits<T>::kwonly() && ArgTraits<T>::opt()),
-                Ts...
-            >();
-        }
+        template <typename... Ts>
+        static constexpr size_t _n_opt_kwonly = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t _n_opt_kwonly<T, Ts...> =
+            _n_opt_kwonly<Ts...> + (ArgTraits<T>::kwonly() && ArgTraits<T>::opt());
 
         template <StaticStr Name, typename... Ts>
-        static consteval size_t _idx() { return 0; }
+        static constexpr size_t _idx = 0;
         template <StaticStr Name, typename T, typename... Ts>
-        static consteval size_t _idx() {
-            return (ArgTraits<T>::name == Name) ? 0 : 1 + _idx<Name, Ts...>();
-        }
+        static constexpr size_t _idx<Name, T, Ts...> =
+            ArgTraits<T>::name == Name ? 0 : _idx<Name, Ts...> + 1;
 
         template <typename... Ts>
-        static consteval size_t _args_idx() { return 0; }
+        static constexpr size_t _args_idx = 0;
         template <typename T, typename... Ts>
-        static consteval size_t _args_idx() {
-            return ArgTraits<T>::args() ? 0 : 1 + _args_idx<Ts...>();
-        }
+        static constexpr size_t _args_idx<T, Ts...> =
+            ArgTraits<T>::args() ? 0 : _args_idx<Ts...> + 1;
 
         template <typename... Ts>
-        static consteval size_t _kw_idx() { return 0; }
+        static constexpr size_t _kw_idx = 0;
         template <typename T, typename... Ts>
-        static consteval size_t _kw_idx() {
-            return ArgTraits<T>::kw() ? 0 : 1 + _kw_idx<Ts...>();
-        }
+        static constexpr size_t _kw_idx<T, Ts...> =
+            ArgTraits<T>::kw() ? 0 : _kw_idx<Ts...> + 1;
 
         template <typename... Ts>
-        static consteval size_t _kwonly_idx() { return 0; }
+        static constexpr size_t _kwonly_idx = 0;
         template <typename T, typename... Ts>
-        static consteval size_t _kwonly_idx() {
-            return ArgTraits<T>::kwonly() ? 0 : 1 + _kwonly_idx<Ts...>();
-        }
+        static constexpr size_t _kwonly_idx<T, Ts...> =
+            ArgTraits<T>::kwonly() ? 0 : _kwonly_idx<Ts...> + 1;
 
         template <typename... Ts>
-        static consteval size_t _kwargs_idx() { return 0; }
+        static constexpr size_t _kwargs_idx = 0;
         template <typename T, typename... Ts>
-        static consteval size_t _kwargs_idx() {
-            return ArgTraits<T>::kwargs() ? 0 : 1 + _kwargs_idx<Ts...>();
-        }
+        static constexpr size_t _kwargs_idx<T, Ts...> =
+            ArgTraits<T>::kwargs() ? 0 : _kwargs_idx<Ts...> + 1;
 
         template <typename... Ts>
-        static consteval size_t _opt_idx() { return 0; }
+        static constexpr size_t _opt_idx = 0;
         template <typename T, typename... Ts>
-        static consteval size_t _opt_idx() {
-            return ArgTraits<T>::opt() ? 0 : 1 + _opt_idx<Ts...>();
-        }
+        static constexpr size_t _opt_idx<T, Ts...> =
+            ArgTraits<T>::opt() ? 0 : _opt_idx<Ts...> + 1;
 
         template <typename... Ts>
-        static consteval size_t _opt_posonly_idx() { return 0; }
+        static constexpr size_t _opt_posonly_idx = 0;
         template <typename T, typename... Ts>
-        static consteval size_t _opt_posonly_idx() {
-            return ArgTraits<T>::posonly() && ArgTraits<T>::opt() ?
-                0 : 1 + _opt_posonly_idx<Ts...>();
-        }
+        static constexpr size_t _opt_posonly_idx<T, Ts...> =
+            ArgTraits<T>::posonly() && ArgTraits<T>::opt() ?
+                0 : _opt_posonly_idx<Ts...> + 1;
 
         template <typename... Ts>
-        static consteval size_t _opt_pos_idx() { return 0; }
+        static constexpr size_t _opt_pos_idx = 0;
         template <typename T, typename... Ts>
-        static consteval size_t _opt_pos_idx() {
-            return ArgTraits<T>::pos() && ArgTraits<T>::opt() ?
-                0 : 1 + _opt_pos_idx<Ts...>();
-        }
+        static constexpr size_t _opt_pos_idx<T, Ts...> =
+            ArgTraits<T>::pos() && ArgTraits<T>::opt() ?
+                0 : _opt_pos_idx<Ts...> + 1;
 
         template <typename... Ts>
-        static consteval size_t _opt_kw_idx() { return 0; }
+        static constexpr size_t _opt_kw_idx = 0;
         template <typename T, typename... Ts>
-        static consteval size_t _opt_kw_idx() {
-            return ArgTraits<T>::kw() && ArgTraits<T>::opt() ?
-                0 : 1 + _opt_kw_idx<Ts...>();
-        }
+        static constexpr size_t _opt_kw_idx<T, Ts...> =
+            ArgTraits<T>::kw() && ArgTraits<T>::opt() ?
+                0 : _opt_kw_idx<Ts...> + 1;
 
         template <typename... Ts>
-        static consteval size_t _opt_kwonly_idx() { return 0; }
+        static constexpr size_t _opt_kwonly_idx = 0;
         template <typename T, typename... Ts>
-        static consteval size_t _opt_kwonly_idx() {
-            return ArgTraits<T>::kwonly() && ArgTraits<T>::opt() ?
-                0 : 1 + _opt_kwonly_idx<Ts...>();
-        }
+        static constexpr size_t _opt_kwonly_idx<T, Ts...> =
+            ArgTraits<T>::kwonly() && ArgTraits<T>::opt() ?
+                0 : _opt_kwonly_idx<Ts...> + 1;
+
+    public:
+        static constexpr size_t n                   = sizeof...(Args);
+        static constexpr size_t n_posonly           = _n_posonly<Args...>;
+        static constexpr size_t n_pos               = _n_pos<Args...>;
+        static constexpr size_t n_kw                = _n_kw<Args...>;
+        static constexpr size_t n_kwonly            = _n_kwonly<Args...>;
+        static constexpr size_t n_opt               = _n_opt<Args...>;
+        static constexpr size_t n_opt_posonly       = _n_opt_posonly<Args...>;
+        static constexpr size_t n_opt_pos           = _n_opt_pos<Args...>;
+        static constexpr size_t n_opt_kw            = _n_opt_kw<Args...>;
+        static constexpr size_t n_opt_kwonly        = _n_opt_kwonly<Args...>;
+
+        template <StaticStr Name>
+        static constexpr bool has                   = _idx<Name, Args...> != n;
+        static constexpr bool has_posonly           = n_posonly > 0;
+        static constexpr bool has_pos               = n_pos > 0;
+        static constexpr bool has_kw                = n_kw > 0;
+        static constexpr bool has_kwonly            = n_kwonly > 0;
+        static constexpr bool has_opt               = n_opt > 0;
+        static constexpr bool has_opt_posonly       = n_opt_posonly > 0;
+        static constexpr bool has_opt_pos           = n_opt_pos > 0;
+        static constexpr bool has_opt_kw            = n_opt_kw > 0;
+        static constexpr bool has_opt_kwonly        = n_opt_kwonly > 0;
+        static constexpr bool has_args              = _args_idx<Args...> != n;
+        static constexpr bool has_kwargs            = _kwargs_idx<Args...> != n;
+
+        template <StaticStr Name> requires (has<Name>)
+        static constexpr size_t idx                 = _idx<Name, Args...>;
+        static constexpr size_t kw_idx              = _kw_idx<Args...>;
+        static constexpr size_t kwonly_idx          = _kwonly_idx<Args...>;
+        static constexpr size_t opt_idx             = _opt_idx<Args...>;
+        static constexpr size_t opt_posonly_idx     = _opt_posonly_idx<Args...>;
+        static constexpr size_t opt_pos_idx         = _opt_pos_idx<Args...>;
+        static constexpr size_t opt_kw_idx          = _opt_kw_idx<Args...>;
+        static constexpr size_t opt_kwonly_idx      = _opt_kwonly_idx<Args...>;
+        static constexpr size_t args_idx            = _args_idx<Args...>;
+        static constexpr size_t kwargs_idx          = _kwargs_idx<Args...>;
+
+        template <size_t I> requires (I < n)
+        using at = unpack_type<I, Args...>;
+
+    private:
 
         template <size_t I, typename... Ts>
-        static consteval bool _proper_argument_order() { return true; }
+        static constexpr bool _proper_argument_order = true;
         template <size_t I, typename T, typename... Ts>
-        static consteval bool _proper_argument_order() {
-            if constexpr (
-                (ArgTraits<T>::posonly() && (I > kw_idx || I > args_idx || I > kwargs_idx)) ||
-                (ArgTraits<T>::pos() && (I > args_idx || I > kwonly_idx || I > kwargs_idx)) ||
-                (ArgTraits<T>::args() && (I > kwonly_idx || I > kwargs_idx)) ||
-                (ArgTraits<T>::kwonly() && (I > kwargs_idx))
-            ) {
-                return false;
-            }
-            return _proper_argument_order<I + 1, Ts...>();
-        }
+        static constexpr bool _proper_argument_order<I, T, Ts...> =
+            (ArgTraits<T>::posonly() && (I > kw_idx || I > args_idx || I > kwargs_idx)) ||
+            (ArgTraits<T>::pos() && (I > args_idx || I > kwonly_idx || I > kwargs_idx)) ||
+            (ArgTraits<T>::args() && (I > kwonly_idx || I > kwargs_idx)) ||
+            (ArgTraits<T>::kwonly() && (I > kwargs_idx)) ?
+                false : _proper_argument_order<I + 1, Ts...>;
 
         template <size_t I, typename... Ts>
-        static consteval bool _no_duplicate_arguments() { return true; }
+        static constexpr bool _no_duplicate_arguments = true;
         template <size_t I, typename T, typename... Ts>
-        static consteval bool _no_duplicate_arguments() {
-            if constexpr (
-                (T::name != "" && I != idx<ArgTraits<T>::name>) ||
-                (ArgTraits<T>::args() && I != args_idx) ||
-                (ArgTraits<T>::kwargs() && I != kwargs_idx)
-            ) {
-                return false;
-            }
-            return _no_duplicate_arguments<I + 1, Ts...>();
-        }
+        static constexpr bool _no_duplicate_arguments<I, T, Ts...> =
+            (T::name != "" && I != idx<ArgTraits<T>::name>) ||
+            (ArgTraits<T>::args() && I != args_idx) ||
+            (ArgTraits<T>::kwargs() && I != kwargs_idx) ?
+                false : _no_duplicate_arguments<I + 1, Ts...>;
 
         template <size_t I, typename... Ts>
-        static consteval bool _no_required_after_default() { return true; }
+        static constexpr bool _no_required_after_default = true;
         template <size_t I, typename T, typename... Ts>
-        static consteval bool _no_required_after_default() {
-            if constexpr (ArgTraits<T>::pos() && !ArgTraits<T>::opt() && I > opt_idx) {
-                return false;
-            } else {
-                return _no_required_after_default<I + 1, Ts...>();
-            }
-        }
+        static constexpr bool _no_required_after_default<I, T, Ts...> =
+            ArgTraits<T>::pos() && !ArgTraits<T>::opt() && I > opt_idx ?
+                false : _no_required_after_default<I + 1, Ts...>;
 
         template <size_t I, typename... Ts>
         static constexpr bool _compatible() {
@@ -1226,71 +1233,26 @@ namespace impl {
         }
 
         template <size_t I>
-        static consteval uint64_t _required() {
-            if constexpr (
-                ArgTraits<unpack_type<I, Args...>>::opt() ||
-                ArgTraits<unpack_type<I, Args...>>::variadic()
-            ) {
-                return 0ULL;
-            } else {
-                return 1ULL << I;
-            }
-        }
+        static constexpr uint64_t _required =
+            ArgTraits<unpack_type<I, Args...>>::opt() ||
+            ArgTraits<unpack_type<I, Args...>>::variadic() ?
+                0ULL : 1ULL << I;
 
     public:
-        static constexpr size_t n                   = sizeof...(Args);
-        static constexpr size_t n_posonly           = _n_posonly<0, Args...>();
-        static constexpr size_t n_pos               = _n_pos<0, Args...>();
-        static constexpr size_t n_kw                = _n_kw<0, Args...>();
-        static constexpr size_t n_kwonly            = _n_kwonly<0, Args...>();
-        static constexpr size_t n_opt               = _n_opt<0, Args...>();
-        static constexpr size_t n_opt_posonly       = _n_opt_posonly<0, Args...>();
-        static constexpr size_t n_opt_pos           = _n_opt_pos<0, Args...>();
-        static constexpr size_t n_opt_kw            = _n_opt_kw<0, Args...>();
-        static constexpr size_t n_opt_kwonly        = _n_opt_kwonly<0, Args...>();
-
-        template <StaticStr Name>
-        static constexpr bool has                   = _idx<Name, Args...>() != n;
-        static constexpr bool has_posonly           = n_posonly > 0;
-        static constexpr bool has_pos               = n_pos > 0;
-        static constexpr bool has_kw                = n_kw > 0;
-        static constexpr bool has_kwonly            = n_kwonly > 0;
-        static constexpr bool has_opt               = n_opt > 0;
-        static constexpr bool has_opt_posonly       = n_opt_posonly > 0;
-        static constexpr bool has_opt_pos           = n_opt_pos > 0;
-        static constexpr bool has_opt_kw            = n_opt_kw > 0;
-        static constexpr bool has_opt_kwonly        = n_opt_kwonly > 0;
-        static constexpr bool has_args              = _args_idx<Args...>() != n;
-        static constexpr bool has_kwargs            = _kwargs_idx<Args...>() != n;
-
-        template <StaticStr Name> requires (has<Name>)
-        static constexpr size_t idx                 = _idx<Name, Args...>();
-        static constexpr size_t kw_idx              = _kw_idx<Args...>();
-        static constexpr size_t kwonly_idx          = _kwonly_idx<Args...>();
-        static constexpr size_t opt_idx             = _opt_idx<Args...>();
-        static constexpr size_t opt_posonly_idx     = _opt_posonly_idx<Args...>();
-        static constexpr size_t opt_pos_idx         = _opt_pos_idx<Args...>();
-        static constexpr size_t opt_kw_idx          = _opt_kw_idx<Args...>();
-        static constexpr size_t opt_kwonly_idx      = _opt_kwonly_idx<Args...>();
-        static constexpr size_t args_idx            = _args_idx<Args...>();
-        static constexpr size_t kwargs_idx          = _kwargs_idx<Args...>();
 
         static constexpr bool args_are_convertible_to_python =
             (std::convertible_to<typename ArgTraits<Args>::type, Object> && ...);
         static constexpr bool proper_argument_order =
-            _proper_argument_order<0, Args...>();
+            _proper_argument_order<0, Args...>;
         static constexpr bool no_duplicate_arguments =
-            _no_duplicate_arguments<0, Args...>();
+            _no_duplicate_arguments<0, Args...>;
         static constexpr bool no_required_after_default =
-            _no_required_after_default<0, Args...>();
+            _no_required_after_default<0, Args...>;
 
         /* A template constraint that evaluates true if another signature represents a
         viable overload of a function with this signature. */
         template <typename... Ts>
         static constexpr bool compatible = _compatible<0, Ts...>(); 
-
-        template <size_t I> requires (I < n)
-        using at = unpack_type<I, Args...>;
 
         /* A single entry in a callback table, storing the argument name, a one-hot
         encoded bitmask specifying this argument's position, a function that can be
@@ -1307,7 +1269,7 @@ namespace impl {
 
         /* A bitmask with a 1 in the position of all of the required arguments in the
         parameter list.
-        
+
         Each callback stores a one-hot encoded mask that is joined into a single
         bitmask as each argument is processed.  The resulting mask can then be compared
         to this constant to determine if all required arguments have been provided.  If
@@ -1318,11 +1280,9 @@ namespace impl {
         can accept to 64, which is a reasonable limit for most functions.  The
         performance benefits justify the limitation, and if you need more than 64
         arguments, you should probably be using a different design pattern. */
-        static constexpr uint64_t required = [] {
-            return []<size_t... Is>(std::index_sequence<Is...>) {
-                return (_required<Is>() | ...);
-            }(std::make_index_sequence<n>{});
-        }();
+        static constexpr uint64_t required = []<size_t... Is>(std::index_sequence<Is...>) {
+            return (_required<Is> | ...);
+        }(std::make_index_sequence<n>{});
 
     private:
         static constexpr Callback null_callback;
@@ -1330,16 +1290,17 @@ namespace impl {
         /* Populate the positional argument table with an appropriate callback for
         each argument in the parameter list. */
         template <size_t I>
-        static consteval void populate_positional_table(std::array<Callback, n>& table) {
-            table[I] = {
-                ArgTraits<at<I>>::name,
-                ArgTraits<at<I>>::variadic() ? 0ULL : 1ULL << I,
+        static consteval Callback populate_positional_table() {
+            using T = at<I>;
+            return {
+                ArgTraits<T>::name,
+                ArgTraits<T>::variadic() ? 0ULL : 1ULL << I,
                 [](PyObject* type) -> bool {
-                    using T = typename ArgTraits<at<I>>::type;
-                    if constexpr (has_type<T>) {
+                    using U = ArgTraits<T>::type;
+                    if constexpr (has_type<U>) {
                         int rc = PyObject_IsSubclass(
                             type,
-                            ptr(Type<T>())
+                            ptr(Type<U>())
                         );
                         if (rc < 0) {
                             Exception::from_python();
@@ -1348,18 +1309,18 @@ namespace impl {
                     } else {
                         throw TypeError(
                             "C++ type has no Python equivalent: " +
-                            demangle(typeid(T).name())
+                            demangle(typeid(U).name())
                         );
                     }
                 },
                 []() -> PyObject* {
-                    using T = typename ArgTraits<at<I>>::type;
-                    if constexpr (has_type<T>) {
-                        return ptr(Type<T>());
+                    using U = ArgTraits<T>::type;
+                    if constexpr (has_type<U>) {
+                        return ptr(Type<U>());
                     } else {
                         throw TypeError(
                             "C++ type has no Python equivalent: " +
-                            demangle(typeid(T).name())
+                            demangle(typeid(U).name())
                         );
                     }
                 }
@@ -1368,81 +1329,72 @@ namespace impl {
 
         /* An array of positional arguments to callbacks and bitmasks that can be used
         to validate the argument dynamically at runtime. */
-        static constexpr std::array<Callback, n> positional_table = [] {
-            std::array<Callback, n> table;
-            []<size_t... Is>(std::index_sequence<Is...>, std::array<Callback, n>& table) {
-                (populate_positional_table<Is>(table), ...);
-            }(std::make_index_sequence<n>{}, table);
-            return table;
-        }();
+        static constexpr auto positional_table = []<size_t... Is>(
+            std::index_sequence<Is...>
+        ) -> std::array<Callback, n> {
+            return {populate_positional_table<Is>()...};
+        }(std::make_index_sequence<n>{});
 
         /* Get the size of the perfect hash table required to efficiently validate
         keyword arguments as a power of 2. */
-        static consteval size_t keyword_table_size() {
-            return next_power_of_two(2 * n_kw);
-        }
+        static constexpr size_t keyword_table_size = next_power_of_two(2 * n_kw);
 
         /* Take the modulus with respect to the keyword table by exploiting the power
         of 2 table size. */
-        static constexpr size_t keyword_table_index(size_t hash) {
-            constexpr size_t mask = keyword_table_size() - 1;
-            return hash & mask;
+        static constexpr size_t keyword_modulus(size_t hash) {
+            return hash & (keyword_table_size - 1);
         }
 
         /* Given a precomputed keyword index into the hash table, check to see if any
         subsequent arguments in the parameter list hash to the same index. */
-        template <size_t I>
-        static consteval bool collides_recursive(size_t idx, size_t seed, size_t prime) {
-            if constexpr (I < sizeof...(Args)) {
-                if constexpr (ArgTraits<at<I>>::kw) {
-                    size_t hash = fnv1a(
-                        ArgTraits<at<I>>::name,
-                        seed,
-                        prime
-                    );
-                    return
-                        (keyword_table_index(hash) == idx) ||
-                        collides_recursive<I + 1>(idx, seed, prime);
-                } else {
-                    return collides_recursive<I + 1>(idx, seed, prime);
-                }
+        template <typename...>
+        static consteval bool _collisions(size_t, size_t, size_t) { return false; }
+        template <typename T, typename... Ts>
+        static consteval bool _collisions(size_t idx, size_t seed, size_t prime) {
+            if constexpr (ArgTraits<T>::kw) {
+                size_t hash = fnv1a(
+                    ArgTraits<T>::name,
+                    seed,
+                    prime
+                );
+                return
+                    (keyword_modulus(hash) == idx) ||
+                    _collisions<Ts...>(idx, seed, prime);
             } else {
-                return false;
+                return _collisions<Ts...>(idx, seed, prime);
             }
-        };
+        }
 
         /* Check to see if the candidate seed and prime produce any collisions for the
-        target argument at index I. */
-        template <size_t I>
-        static consteval bool collides(size_t seed, size_t prime) {
-            if constexpr (I < sizeof...(Args)) {
-                if constexpr (ArgTraits<at<I>>::kw) {
-                    size_t hash = fnv1a(
-                        ArgTraits<at<I>>::name,
-                        seed,
-                        prime
-                    );
-                    return collides_recursive<I + 1>(
-                        keyword_table_index(hash),
-                        seed,
-                        prime
-                    ) || collides<I + 1>(seed, prime);
-                } else {
-                    return collides<I + 1>(seed, prime);
-                }
+        observed keyword arguments. */
+        template <typename...>
+        static consteval bool collisions(size_t seed, size_t prime) { return false; }
+        template <typename T, typename... Ts>
+        static consteval bool collisions(size_t seed, size_t prime) {
+            if constexpr (ArgTraits<T>::kw) {
+                size_t hash = fnv1a(
+                    ArgTraits<T>::name,
+                    seed,
+                    prime
+                );
+                return _collisions<Ts...>(
+                    keyword_modulus(hash),
+                    seed,
+                    prime
+                ) || collisions<Ts...>(seed, prime);
             } else {
-                return false;
+                return collisions<Ts...>(seed, prime);
             }
         }
 
         /* Find an FNV-1a seed and prime that produces perfect hashes with respect to
         the keyword table size. */
-        static consteval std::pair<size_t, size_t> hash_components() {
+        static constexpr auto hash_components = [] -> std::pair<size_t, size_t> {
             constexpr size_t recursion_limit = fnv1a_seed + 100'000;
             size_t seed = fnv1a_seed;
             size_t prime = fnv1a_prime;
             size_t i = 0;
-            while (collides<0>(seed, prime)) {
+            while (collisions<Args...>(seed, prime)) {
                 if (++seed > recursion_limit) {
                     if (++i == 10) {
                         std::cerr << "error: unable to find a perfect hash seed "
@@ -1456,29 +1408,28 @@ namespace impl {
                 }
             }
             return {seed, prime};
-        }
+        }();
 
         /* Populate the keyword table with an appropriate callback for each keyword
         argument in the parameter list. */
         template <size_t I>
         static consteval void populate_keyword_table(
-            std::array<Callback, keyword_table_size()>& table,
+            std::array<Callback, keyword_table_size>& table,
             size_t seed,
             size_t prime
         ) {
-            if constexpr (ArgTraits<at<I>>::kw()) {
-                constexpr size_t i = keyword_table_index(
-                    hash(ArgTraits<at<I>>::name)
-                );
+            using T = at<I>;
+            if constexpr (ArgTraits<T>::kw()) {
+                constexpr size_t i = keyword_modulus(hash(ArgTraits<T>::name));
                 table[i] = {
-                    ArgTraits<at<I>>::name,
-                    ArgTraits<at<I>>::variadic() ? 0ULL : 1ULL << I,
+                    ArgTraits<T>::name,
+                    ArgTraits<T>::variadic() ? 0ULL : 1ULL << I,
                     [](PyObject* type) -> bool {
-                        using T = typename ArgTraits<at<I>>::type;
-                        if constexpr (has_type<T>) {
+                        using U = ArgTraits<T>::type;
+                        if constexpr (has_type<U>) {
                             int rc = PyObject_IsSubclass(
                                 type,
-                                ptr(Type<T>())
+                                ptr(Type<U>())
                             );
                             if (rc < 0) {
                                 Exception::from_python();
@@ -1487,18 +1438,18 @@ namespace impl {
                         } else {
                             throw TypeError(
                                 "C++ type has no Python equivalent: " +
-                                demangle(typeid(T).name())
+                                demangle(typeid(U).name())
                             );
                         }
                     },
                     []() -> PyObject* {
-                        using T = typename ArgTraits<at<I>>::type;
-                        if constexpr (has_type<T>) {
-                            return ptr(Type<T>());
+                        using U = ArgTraits<T>::type;
+                        if constexpr (has_type<U>) {
+                            return ptr(Type<U>());
                         } else {
                             throw TypeError(
                                 "C++ type has no Python equivalent: " +
-                                demangle(typeid(T).name())
+                                demangle(typeid(U).name())
                             );
                         }
                     }
@@ -1509,39 +1460,107 @@ namespace impl {
         /* The keyword table itself.  Each entry holds the expected keyword name for
         validation as well as a callback that can be used to validate its type
         dynamically at runtime. */
-        static constexpr std::array<Callback, keyword_table_size()> keyword_table = [] {
-            std::array<Callback, keyword_table_size()> table;
-            []<size_t... Is>(
-                std::index_sequence<Is...>,
-                std::array<Callback, keyword_table_size()>& table,
-                size_t seed,
-                size_t prime
-            ) {
-                (populate_keyword_table<Is>(table, seed, prime), ...);
-            }(
-                std::make_index_sequence<n>{},
-                table,
-                hash_components().first,
-                hash_components().second
-            );
+        static constexpr auto keyword_table = []<size_t... Is>(
+            std::index_sequence<Is...>,
+            size_t seed,
+            size_t prime
+        ) {
+            std::array<Callback, keyword_table_size> table;
+            (populate_keyword_table<Is>(table, seed, prime), ...);
             return table;
-        }();
+        }(
+            std::make_index_sequence<n>{},
+            hash_components.first,
+            hash_components.second
+        );
 
         template <size_t I>
         static Param _parameters(size_t& hash) {
+            using T = at<I>;
             constexpr Callback& callback = positional_table[I];
             PyObject* type = callback.type();
             hash = hash_combine(
                 hash,
                 fnv1a(
-                    ArgTraits<at<I>>::name,
-                    hash_components().first,
-                    hash_components().second
+                    ArgTraits<T>::name,
+                    hash_components.first,
+                    hash_components.second
                 ),
                 reinterpret_cast<size_t>(type)
             );
-            return {ArgTraits<at<I>>::name, type, ArgTraits<at<I>>::kind};
+            return {ArgTraits<T>::name, type, ArgTraits<T>::kind};
         }
+
+    public:
+
+        /* A seed for an FNV-1a hash algorithm that was found to perfectly hash the
+        keyword argument names from the enclosing parameter list. */
+        static constexpr size_t seed = hash_components.first;
+
+        /* A prime for an FNV-1a hash algorithm that was found to perfectly hash the
+        keyword argument names from the enclosing parameter list. */
+        static constexpr size_t prime = hash_components.second;
+
+        /* Hash a byte string according to the FNV-1a algorithm using the seed and
+        prime that were found at compile time to perfectly hash the keyword
+        arguments. */
+        static constexpr size_t hash(const char* str) noexcept {
+            return fnv1a(str, seed, prime);
+        }
+        static constexpr size_t hash(std::string_view str) noexcept {
+            return fnv1a(str.data(), seed, prime);
+        }
+        static constexpr size_t hash(const std::string& str) noexcept {
+            return fnv1a(str.data(), seed, prime);
+        }
+
+        /* Look up a positional argument, returning a callback object that can be used
+        to efficiently validate it.  If the index does not correspond to a recognized
+        positional argument, a null callback will be returned that evaluates to false
+        under boolean logic.  If the parameter list accepts variadic positional
+        arguments, then the variadic argument's callback will be returned instead. */
+        static constexpr Callback& callback(size_t i) noexcept {
+            if constexpr (has_args) {
+                return i < args_idx ? positional_table[i] : positional_table[args_idx];
+            } else if constexpr (has_kwonly) {
+                return i < kwonly_idx ? positional_table[i] : null_callback;
+            } else {
+                return i < kwargs_idx ? positional_table[i] : null_callback;
+            }
+        }
+
+        /* Look up a keyword argument, returning a callback object that can be used to
+        efficiently validate it.  If the argument name is not recognized, a null
+        callback will be returned that evaluates to false under boolean logic.  If the
+        parameter list accepts variadic keyword arguments, then the variadic argument's
+        callback will be returned instead. */
+        static constexpr Callback& callback(std::string_view name) noexcept {
+            const Callback& callback = keyword_table[
+                keyword_modulus(hash(name.data()))
+            ];
+            if (callback.name == name) {
+                return callback;
+            } else {
+                if constexpr (has_kwargs) {
+                    return keyword_table[kwargs_idx];
+                } else {
+                    return null_callback;
+                }
+            }
+        }
+
+        /* Produce an overload key that matches the enclosing parameter list. */
+        static Params<std::array<Param, n>> parameters() {
+            size_t hash = 0;
+            return {
+                []<size_t... Is>(std::index_sequence<Is...>, size_t& hash) {
+                    return std::array<Param, n>{_parameters<Is>(hash)...};
+                }(std::make_index_sequence<n>{}, hash),
+                hash
+            };
+        }
+
+    private:
 
         /* After invoking a function with variadic positional arguments, the argument
         iterators must be fully consumed, otherwise there are additional positional
@@ -1587,75 +1606,6 @@ namespace impl {
         }
 
     public:
-
-        /* A seed for an FNV-1a hash algorithm that was found to perfectly hash the
-        keyword argument names from the enclosing parameter list. */
-        static constexpr size_t seed = hash_components().first;
-
-        /* A prime for an FNV-1a hash algorithm that was found to perfectly hash the
-        keyword argument names from the enclosing parameter list. */
-        static constexpr size_t prime = hash_components().second;
-
-        /* Hash a byte string according to the FNV-1a algorithm using the seed and
-        prime that were found at compile time to perfectly hash the keyword
-        arguments. */
-        static constexpr size_t hash(const char* str) noexcept {
-            return fnv1a(str, seed, prime);
-        }
-        static constexpr size_t hash(std::string_view str) noexcept {
-            return fnv1a(str.data(), seed, prime);
-        }
-        static constexpr size_t hash(const std::string& str) noexcept {
-            return fnv1a(str.data(), seed, prime);
-        }
-
-        /* Look up a positional argument, returning a callback object that can be used
-        to efficiently validate it.  If the index does not correspond to a recognized
-        positional argument, a null callback will be returned that evaluates to false
-        under boolean logic.  If the parameter list accepts variadic positional
-        arguments, then the variadic argument's callback will be returned instead. */
-        static constexpr Callback& callback(size_t i) noexcept {
-            if constexpr (has_args) {
-                constexpr Callback& args_callback = positional_table[args_idx];
-                return i < args_idx ? positional_table[i] : args_callback;
-            } else if constexpr (has_kwonly) {
-                return i < kwonly_idx ? positional_table[i] : null_callback;
-            } else {
-                return i < kwargs_idx ? positional_table[i] : null_callback;
-            }
-        }
-
-        /* Look up a keyword argument, returning a callback object that can be used to
-        efficiently validate it.  If the argument name is not recognized, a null
-        callback will be returned that evaluates to false under boolean logic.  If the
-        parameter list accepts variadic keyword arguments, then the variadic argument's
-        callback will be returned instead. */
-        static constexpr Callback& callback(std::string_view name) noexcept {
-            const Callback& callback = keyword_table[
-                keyword_table_index(hash(name.data()))
-            ];
-            if (callback.name == name) {
-                return callback;
-            } else {
-                if constexpr (has_kwargs) {
-                    constexpr Callback& kwargs_callback = keyword_table[kwargs_idx];
-                    return kwargs_callback;
-                } else {
-                    return null_callback;
-                }
-            }
-        }
-
-        /* Produce an overload key that matches the enclosing parameter list. */
-        static Params<std::array<Param, n>> parameters() {
-            size_t hash = 0;
-            return {
-                []<size_t... Is>(std::index_sequence<Is...>, size_t& hash) {
-                    return std::array<Param, n>{_parameters<Is>(hash)...};
-                }(std::make_index_sequence<n>{}, hash),
-                hash
-            };
-        }
 
         /* A tuple holding the default value for every argument in the enclosing
         parameter list that is marked as optional. */
