@@ -714,7 +714,7 @@ struct Interface<Union<Types...>> : impl::UnionTag {
 
 
 template <typename... Types>
-struct Interface<Type<Union<Types...>>> : impl::UnionTag {
+struct Interface<Type<Union<Types...>>> {
 private:
     using type = Interface<Union<Types...>>;
 

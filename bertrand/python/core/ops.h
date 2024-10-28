@@ -187,18 +187,70 @@ template <impl::inherits<Object> From, std::derived_from<Object> To>
         issubclass<To, std::remove_cvref_t<From>>()
     )
 struct __cast__<From, To>                                   : Returns<To> {
-    static auto operator()(From from) {
-        if (isinstance<To>(from)) {
-            if constexpr (std::is_lvalue_reference_v<From>) {
-                return reinterpret_borrow<To>(ptr(from));
-            } else {
-                return reinterpret_steal<To>(release(from));
+    template <size_t I>
+    static size_t find_union_type(
+        std::add_lvalue_reference_t<From> obj,
+        size_t& first
+    ) {
+        if constexpr (I < To::n) {
+            Type<typename To::template at<I>> type;
+            if (reinterpret_cast<PyObject*>(Py_TYPE(ptr(obj))) == ptr(type)) {
+                return I;
+            } else if (first == To::n) {
+                int rc = PyObject_IsInstance(
+                    ptr(obj),
+                    ptr(type)
+                );
+                if (rc == -1) {
+                    Exception::to_python();
+                } else if (rc) {
+                    first = I;
+                }
             }
+            return find_union_type<I + 1>(obj, first);
         } else {
-            throw TypeError(
-                "cannot convert Python object from type '" + repr(Type<From>()) +
-                "' to type '" + repr(Type<To>()) + "'"
-            );
+            return To::n;
+        }
+    }
+
+    static auto operator()(From from) {
+        if constexpr (impl::inherits<To, impl::UnionTag>) {
+            size_t subclass = To::n;
+            size_t exact = find_union_type<0>(from, subclass);
+            if (exact == To::n) {
+                if (subclass == To::n) {
+                    throw TypeError(
+                        "cannot convert Python object from type '" +
+                        repr(Type<From>()) + "' to type '" +
+                        repr(Type<To>()) + "'"
+                    );
+                } else {
+                    exact = subclass;
+                }
+            }
+            if constexpr (std::is_lvalue_reference_v<From>) {
+                To result = reinterpret_borrow<To>(ptr(from));
+                result.m_index = exact;
+                return result;
+            } else {
+                To result = reinterpret_steal<To>(release(from));
+                result.m_index = exact;
+                return result;
+            }
+
+        } else {
+            if (isinstance<To>(from)) {
+                if constexpr (std::is_lvalue_reference_v<From>) {
+                    return reinterpret_borrow<To>(ptr(from));
+                } else {
+                    return reinterpret_steal<To>(release(from));
+                }
+            } else {
+                throw TypeError(
+                    "cannot convert Python object from type '" + repr(Type<From>()) +
+                    "' to type '" + repr(Type<To>()) + "'"
+                );
+            }
         }
     }
 };
