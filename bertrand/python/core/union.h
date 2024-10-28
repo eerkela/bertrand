@@ -11,12 +11,6 @@
 namespace py {
 
 
-/// TODO: when a Union is returned to Python, I should unpack it and only return the
-/// active member, not the actual union itself.  That effectively means that the
-/// Union object will never need to be used in Python directly, and exists mostly for
-/// the benefit of C++ code, in order to conform to Python's dynamic typing.
-
-
 template <typename... Types>
     requires (
         sizeof...(Types) > 1 &&
@@ -198,14 +192,14 @@ namespace impl {
                         return visit_helper<Pack<Prev..., Q>, Next...>{}(
                             std::forward<Visitor>(visitor),
                             std::forward<Prev>(prev)...,
-                            reinterpret_cast<Q>(curr->m_value),
+                            reinterpret_cast<Q>(curr),
                             std::forward<Next>(next)...
                         );
                     } else {
                         return visit_helper<Pack<Prev..., Q>, Next...>{}(
                             std::forward<Visitor>(visitor),
                             std::forward<Prev>(prev)...,
-                            reinterpret_steal<T>(release(curr->m_value)),
+                            reinterpret_cast<std::add_rvalue_reference_t<Q>>(curr),
                             std::forward<Next>(next)...
                         );
                     }
@@ -256,7 +250,7 @@ namespace impl {
                     return std::array{VTable<Is, Visitor>::python()...};
                 }(std::make_index_sequence<std::remove_cvref_t<Curr>::n>{});
 
-                return vtable[curr->m_index](
+                return vtable[curr.m_index](
                     std::forward<Visitor>(visitor),
                     std::forward<Prev>(prev)...,
                     std::forward<Curr>(curr),
@@ -644,57 +638,62 @@ struct Interface<Union<Types...>> : impl::UnionTag {
     using at = impl::unpack_type<I, Types...>;
 
     template <typename T> requires (std::same_as<T, Types> || ...)
+    [[nodiscard]] bool holds_alternative(this auto&& self) {
+        return self.m_index == impl::index_of<T, Types...>;
+    }
+
+    template <typename T> requires (std::same_as<T, Types> || ...)
     [[nodiscard]] auto get(this auto&& self) -> T {
-        if (self->m_index != impl::index_of<T, Types...>) {
+        if (self.m_index != impl::index_of<T, Types...>) {
             throw TypeError(
                 "bad union access: '" + impl::demangle(typeid(T).name()) +
                 "' is not the active type"
             );
         }
         if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
-            return reinterpret_borrow<T>(ptr(self->m_value));
+            return reinterpret_borrow<T>(ptr(self));
         } else {
-            return reinterpret_steal<T>(release(self->m_value));
+            return reinterpret_steal<T>(release(self));
         }
     }
 
     template <size_t I> requires (I < n)
     [[nodiscard]] auto get(this auto&& self) -> at<I> {
         using ref = impl::qualify_lvalue<at<I>, decltype(self)>;
-        if (self->m_index != I) {
+        if (self.m_index != I) {
             throw TypeError(
                 "bad union access: '" + impl::demangle(typeid(at<I>).name()) +
                 "' is not the active type"
             );
         }
         if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
-            return reinterpret_borrow<at<I>>(ptr(self->m_value));
+            return reinterpret_borrow<at<I>>(ptr(self));
         } else {
-            return reinterpret_steal<at<I>>(release(self->m_value));
+            return reinterpret_steal<at<I>>(release(self));
         }
     }
 
     template <typename T> requires (std::same_as<T, Types> || ...)
     [[nodiscard]] auto get_if(this auto&& self) -> Optional<T> {
-        if (self->m_index != impl::index_of<T, Types...>) {
+        if (self.m_index != impl::index_of<T, Types...>) {
             return None;
         }
         if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
-            return reinterpret_borrow<T>(ptr(self->m_value));
+            return reinterpret_borrow<T>(ptr(self));
         } else {
-            return reinterpret_steal<T>(release(self->m_value));
+            return reinterpret_steal<T>(release(self));
         }
     }
 
     template <size_t I> requires (I < n)
     [[nodiscard]] auto get_if(this auto&& self) -> Optional<at<I>> {
-        if (self->m_index != I) {
+        if (self.m_index != I) {
             return None;
         }
         if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
-            return reinterpret_borrow<at<I>>(ptr(self->m_value));
+            return reinterpret_borrow<at<I>>(ptr(self));
         } else {
-            return reinterpret_steal<at<I>>(release(self->m_value));
+            return reinterpret_steal<at<I>>(release(self));
         }
     }
 
@@ -724,6 +723,12 @@ public:
 
     template <size_t I> requires (I < n)
     using at = type::template at<I>;
+
+    template <typename T, impl::inherits<type> Self>
+        requires (std::same_as<T, Types> || ...)
+    [[nodiscard]] bool holds_alternative(Self&& self) {
+        return std::forward<Self>(self).template holds_alternative<T>();
+    }
 
     template <typename T, impl::inherits<type> Self>
         requires (std::same_as<T, Types> || ...)
@@ -765,10 +770,6 @@ public:
 };
 
 
-/// TODO: Unions should not be constructible from Python, only specialized from C++.
-/// Use standard Python syntax for unions.
-
-
 template <typename... Types>
     requires (
         sizeof...(Types) > 1 &&
@@ -799,19 +800,26 @@ Unions are implemented identically to `std::variant` in C++, except that the
 value is stored as an opaque `PyObject*` pointer rather than using aligned
 storage.  As such, unions have a fixed size and alignment, consisting of only
 a single pointer and an index to identify the active type.  They support all of
-the same operations as `std::variant`, including `std::holds_alternative`,
-`std::get`, `std::get_if`, and `std::visit` with identical semantics, on top of
-specializing each of the built-in control structures to forward to the active
-type, which gives them the same interface as a generic `Object`.  Each operator
-will be enabled if and only if at least one member of the union supports it,
-and will produce a new union if multiple results are possible.  This leads to
-an automatic narrowing behavior, whereby operating on a union will
-progressively reduce the number of possible results until only one remains.  If
-the active member does not support a given operation, then a corresponding
-Python error will be raised at runtime, as if the operation had been attempted
-from Python directly.  As in Python, it is the user's responsibility to
-determine the active type of the union before performing any operations on it
-if they wish to avoid this behavior.
+the same operations as `std::variant`, but as member functions rather than free
+functions, so as to avoid modifying standard library behavior.  The only
+exception is `py::visit()` and its member equivalent, which differ from
+`std::visit` in that they can accept arbitrary arguments, which are perfectly
+forwarded to the visitor after unwrapping any unions and/or variants.  This is
+done to reduce reliance on lambda captures, which can be cumbersome, and have
+with performance implications.  For the member `visit()` function, the first
+argument to the visitor is always the actual type of the invoking union.
+
+Unions also specialize each of the built-in control structures to forward to
+the active type, which gives them the same interface as a generic `Object`.
+Each operator will be enabled if and only if at least one member of the union
+supports it, and will produce a new union if multiple results are possible.
+This leads to an automatic narrowing behavior, whereby operating on a union
+will progressively reduce the number of possible results until only one
+remains.  If the active member does not support a given operation, then a
+corresponding Python error will be raised at runtime, as if the operation had
+been attempted from Python directly.  As in Python, it is the user's
+responsibility to determine the active type of the union before performing any
+operations on it if they wish to avoid this behavior.
 
 Note that `Optional[T]` is a simple alias to `Union[T, NoneType]` in both
 languages.  They have no special behavior otherwise, which ensures that no
@@ -833,33 +841,13 @@ combined with `|` syntax from Python.
 
 Examples
 --------
->>> from bertrand import Union
->>> x = Union[int, str](42)
->>> x
-42
->>> x + 15
-57
->>> x = Union[int, str]("hello")
->>> x
-'hello'
->>> x.capitalize()
-'Hello'
->>> x = Union[int, str](True)  # bool is a subclass of int
->>> x
-True
->>> x.capitalize()
-Traceback (most recent call last):
-    ...
-AttributeError: 'bool' object has no attribute 'capitalize'
->>> x = Union[int, str](1+2j)  # complex is not a member of the union
-Traceback (most recent call last):
-    ...
-TypeError: cannot convert complex to Union[int, str]
+Unions have no special syntax in Python, and are created automatically when
+using the `|` operator to combine several types.  They can be used in type
+hints, function annotations, and variable declarations, and will be preserved
+when translating to C++.
 
-Just like other Bertrand types, unions are type-safe and usable in both
-languages with the same interface and semantics.  This allows for seamless
-interoperability across the language barrier, and ensures that the same code
-can be used in both contexts.
+Union types exist mostly for the benefit of C++ code, where they are needed to
+blend the dynamic nature of Python with the static nature of C++.  For example:
 
 ```
 export module example;
@@ -900,12 +888,12 @@ Traceback (most recent call last):
     ...
 TypeError: cannot convert float to Union[int, str]
 
-Additionally, Python functions that accept or return unions using Python-style
-type hints will automatically be translated into C++ functions using the
-corresponding `py::Union<...>` types when bindings are generated.  Note that
-due to the interaction between unions and optionals, a `None` type hint as a
-member of the union in Python syntax will be transformed into a nested optional
-type in C++, as described above.
+Python functions that accept or return unions using Python-style type hints
+will automatically be translated into C++ functions using the corresponding
+`py::Union<...>` types when bindings are generated.  Note that due to the
+interaction between unions and optionals, a `None` type hint as a member of the
+union in Python syntax will be transformed into a nested optional type in C++,
+as described above.
 
 ```
 #example.py
@@ -954,875 +942,12 @@ int main() {
 }
 ```)doc";
 
-    // private:
-
-    //     template <size_t I>
-    //     static size_t find_matching_type(const Object& obj, size_t& first) {
-    //         Type<impl::unpack_type<I, Types...>> type;
-    //         if (reinterpret_cast<PyObject*>(Py_TYPE(ptr(obj))) == ptr(type)) {
-    //             return I;
-    //         } else if (first == sizeof...(Types)) {
-    //             int rc = PyObject_IsInstance(
-    //                 ptr(obj),
-    //                 ptr(type)
-    //             );
-    //             if (rc == -1) {
-    //                 Exception::to_python();
-    //             } else if (rc) {
-    //                 first = I;
-    //             }
-    //         }
-    //         if constexpr (I + 1 >= sizeof...(Types)) {
-    //             return sizeof...(Types);
-    //         } else {
-    //             return find_matching_type<I + 1>(obj, first);
-    //         }
-    //     }
-
-    // public:
-
-        Object m_value;
-        size_t m_index;
-        // vectorcallfunc vectorcall = reinterpret_cast<vectorcallfunc>(__call__);
-
-        template <typename T> requires (std::same_as<std::remove_cvref_t<T>, Types> || ...)
-        explicit __python__(T&& value) :
-            m_value(std::forward<T>(value)),
-            m_index(impl::index_of<std::remove_cvref_t<T>, Types...>)
-        {}
-
-        // static PyObject* __new__(
-        //     PyTypeObject* type,
-        //     PyObject* args,
-        //     PyObject* kwargs
-        // ) noexcept {
-        //     __python__* self = reinterpret_cast<__python__*>(
-        //         type->tp_alloc(type, 0)
-        //     );
-        //     if (self != nullptr) {
-        //         new (&self->m_value) Object(None);
-        //         self->m_index = 0;
-        //     }
-        //     return self;
-        // }
-
-        // static int __init__(
-        //     __python__* self,
-        //     PyObject* args,
-        //     PyObject* kwargs
-        // ) noexcept {
-        //     try {
-        //         if (kwargs) {
-        //             PyErr_SetString(
-        //                 PyExc_TypeError,
-        //                 "Union constructor does not accept keyword arguments"
-        //             );
-        //             return -1;
-        //         }
-        //         size_t nargs = PyTuple_GET_SIZE(args);
-        //         if (nargs != 1) {
-        //             PyErr_SetString(
-        //                 PyExc_TypeError,
-        //                 "Union constructor requires exactly one argument"
-        //             );
-        //             return -1;
-        //         }
-        //         constexpr StaticStr str = "bertrand";
-        //         PyObject* name = PyUnicode_FromStringAndSize(str, str.size());
-        //         if (name == nullptr) {
-        //             return -1;
-        //         }
-        //         Object bertrand = reinterpret_steal<Object>(PyImport_Import(name));
-        //         Py_DECREF(name);
-        //         if (bertrand.is(nullptr)) {
-        //             return -1;
-        //         }
-        //         Object converted = reinterpret_steal<Object>(PyObject_CallOneArg(
-        //             ptr(bertrand),
-        //             PyTuple_GET_ITEM(args, 0)
-        //         ));
-        //         if (converted.is(nullptr)) {
-        //             return -1;
-        //         }
-        //         size_t subclass = sizeof...(Types);
-        //         size_t match = find_matching_type<0>(converted, subclass);
-        //         if (match == sizeof...(Types)) {
-        //             if (subclass == sizeof...(Types)) {
-        //                 std::string message = "cannot convert object of type '";
-        //                 message += impl::demangle(Py_TYPE(ptr(converted))->tp_name);
-        //                 message += "' to '";
-        //                 message += impl::demangle(ptr(Type<Union<Types...>>())->tp_name);
-        //                 message += "'";
-        //                 PyErr_SetString(PyExc_TypeError, message.c_str());
-        //                 return -1;
-        //             } else {
-        //                 match = subclass;
-        //             }
-        //         }
-        //         self->m_index = match;
-        //         self->m_value = std::move(converted);
-        //     } catch (...) {
-        //         Exception::to_python();
-        //         return -1;
-        //     }
-        // }
-
         template <StaticStr ModName>
         static Type<Union> __export__(Module<ModName>& mod);
         static Type<Union> __import__();
-
-//         static PyObject* __wrapped__(__python__* self) noexcept {
-//             return Py_NewRef(ptr(self->m_value));
-//         }
-
-//         static PyObject* __repr__(__python__* self) noexcept {
-//             return PyObject_Repr(ptr(self->m_value));
-//         }
-
-//         /// TODO: these slots should only be enabled if the underlying objects support
-//         /// them.  Basically, when I'm exposing the heap type, I'll use a static
-//         /// vector and conditionally append all of these slots.
-
-//         static PyObject* __hash__(__python__* self) noexcept {
-//             return PyObject_Hash(ptr(self->m_value));
-//         }
-
-//         static PyObject* __call__(
-//             __python__* self,
-//             PyObject* const* args,
-//             size_t nargsf,
-//             PyObject* kwnames
-//         ) noexcept {
-//             return PyObject_Vectorcall(
-//                 ptr(self->m_value),
-//                 args,
-//                 nargsf,
-//                 kwnames
-//             );
-//         }
-
-//         static PyObject* __str__(__python__* self) noexcept {
-//             return PyObject_Str(ptr(self->m_value));
-//         }
-
-//         static PyObject* __getattr__(__python__* self, PyObject* attr) noexcept {
-//             try {
-//                 Py_ssize_t len;
-//                 const char* data = PyUnicode_AsUTF8AndSize(attr, &len);
-//                 if (data == nullptr) {
-//                     return nullptr;
-//                 }
-//                 std::string_view name = {data, static_cast<size_t>(len)};
-//                 if (name == "__wrapped__") {
-//                     return PyObject_GenericGetAttr(ptr(self->m_value), attr);
-//                 }
-//                 return PyObject_GetAttr(ptr(self->m_value), attr);
-//             } catch (...) {
-//                 Exception::to_python();
-//                 return nullptr;
-//             }
-//         }
-
-//         static int __setattr__(
-//             __python__* self,
-//             PyObject* attr,
-//             PyObject* value
-//         ) noexcept {
-//             try {
-//                 Py_ssize_t len;
-//                 const char* data = PyUnicode_AsUTF8AndSize(attr, &len);
-//                 if (data == nullptr) {
-//                     return -1;
-//                 }
-//                 std::string_view name = {data, static_cast<size_t>(len)};
-//                 if (name == "__wrapped__") {
-//                     std::string message = "cannot ";
-//                     message += value ? "set" : "delete";
-//                     message += " attribute '" + std::string(name) + "'";
-//                     PyErr_SetString(
-//                         PyExc_AttributeError,
-//                         message.c_str()
-//                     );
-//                     return -1;
-//                 }
-//                 return PyObject_SetAttr(ptr(self->m_value), attr, value);
-
-//             } catch (...) {
-//                 Exception::to_python();
-//                 return -1;
-//             }
-//         }
-
-//         static int __traverse__(
-//             __python__* self,
-//             visitproc visit,
-//             void* arg
-//         ) noexcept {
-//             PyTypeObject* type = Py_TYPE(ptr(self->m_value));
-//             if (type->tp_traverse) {
-//                 return type->tp_traverse(ptr(self->m_value), visit, arg);
-//             }
-//             return def<__python__, Union>::__traverse__(self, visit, arg);
-//         }
-
-//         static int __clear__(__python__* self) noexcept {
-//             PyTypeObject* type = Py_TYPE(ptr(self->m_value));
-//             if (type->tp_clear) {
-//                 return type->tp_clear(ptr(self->m_value));
-//             }
-//             return def<__python__, Union>::__clear__(self);
-//         }
-
-//         static int __richcmp__(
-//             __python__* self,
-//             PyObject* other,
-//             int op
-//         ) noexcept {
-//             return PyObject_RichCompareBool(ptr(self->m_value), other, op);
-//         }
-
-//         static PyObject* __iter__(__python__* self) noexcept {
-//             return PyObject_GetIter(ptr(self->m_value));
-//         }
-
-//         static PyObject* __next__(__python__* self) noexcept {
-//             return PyIter_Next(ptr(self->m_value));
-//         }
-
-//         static PyObject* __get__(
-//             __python__* self,
-//             PyObject* obj,
-//             PyObject* type
-//         ) noexcept {
-//             PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(type);
-//             if (cls->tp_descr_get) {
-//                 return cls->tp_descr_get(ptr(self), obj, type);
-//             }
-//             PyErr_SetString(
-//                 PyExc_TypeError,
-//                 "object is not a descriptor"
-//             );
-//             return nullptr;
-//         }
-
-//         static PyObject* __set__(
-//             __python__* self,
-//             PyObject* obj,
-//             PyObject* value
-//         ) noexcept {
-//             PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(Py_TYPE(ptr(self)));
-//             if (cls->tp_descr_set) {
-//                 return cls->tp_descr_set(ptr(self), obj, value);
-//             }
-//             if (value) {
-//                 PyErr_SetString(
-//                     PyExc_TypeError,
-//                     "object does not support descriptor assignment"
-//                 );
-//             } else {
-//                 PyErr_SetString(
-//                     PyExc_AttributeError,
-//                     "object does not support descriptor deletion"
-//                 );
-//             }
-//             return nullptr;
-//         }
-
-//         static PyObject* __getitem__(__python__* self, PyObject* key) noexcept {
-//             return PyObject_GetItem(ptr(self->m_value), key);
-//         }
-
-//         static PyObject* __sq_getitem__(__python__* self, Py_ssize_t index) noexcept {
-//             return PySequence_GetItem(ptr(self->m_value), index);
-//         }
-
-//         static PyObject* __setitem__(
-//             __python__* self,
-//             PyObject* key,
-//             PyObject* value
-//         ) noexcept {
-//             return PyObject_SetItem(ptr(self->m_value), key, value);
-//         }
-
-//         static int __sq_setitem__(
-//             __python__* self,
-//             Py_ssize_t index,
-//             PyObject* value
-//         ) noexcept {
-//             return PySequence_SetItem(ptr(self->m_value), index, value);
-//         }
-
-//         static Py_ssize_t __len__(__python__* self) noexcept {
-//             return PyObject_Length(ptr(self->m_value));
-//         }
-
-//         static int __contains__(__python__* self, PyObject* key) noexcept {
-//             return PySequence_Contains(ptr(self->m_value), key);
-//         }
-
-//         static PyObject* __await__(__python__* self) noexcept {
-//             PyAsyncMethods* async = Py_TYPE(ptr(self))->tp_as_async;
-//             if (async && async->am_await) {
-//                 return async->am_await(ptr(self));
-//             }
-//             PyErr_SetString(
-//                 PyExc_TypeError,
-//                 "object is not awaitable"
-//             );
-//             return nullptr;
-//         }
-
-//         static PyObject* __aiter__(__python__* self) noexcept {
-//             PyAsyncMethods* async = Py_TYPE(ptr(self))->tp_as_async;
-//             if (async && async->am_aiter) {
-//                 return async->am_aiter(ptr(self));
-//             }
-//             PyErr_SetString(
-//                 PyExc_TypeError,
-//                 "object is not an async iterator"
-//             );
-//             return nullptr;
-//         }
-
-//         static PyObject* __anext__(__python__* self) noexcept {
-//             PyAsyncMethods* async = Py_TYPE(ptr(self))->tp_as_async;
-//             if (async && async->am_anext) {
-//                 return async->am_anext(ptr(self));
-//             }
-//             PyErr_SetString(
-//                 PyExc_TypeError,
-//                 "object is not an async iterator"
-//             );
-//             return nullptr;
-//         }
-
-//         static PySendResult __asend__(
-//             __python__* self,
-//             PyObject* arg,
-//             PyObject** prsesult
-//         ) noexcept {
-//             return PyIter_Send(ptr(self->m_value), arg, prsesult);
-//         }
-
-//         static PyObject* __add__(PyObject* lhs, PyObject* rhs) noexcept {
-//             try {
-//                 Type<Union> cls;
-//                 if (PyType_IsSubtype(
-//                     Py_TYPE(lhs),
-//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
-//                 ) {
-//                     return PyNumber_Add(
-//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-//                         rhs
-//                     );
-//                 }
-//                 return PyNumber_Add(
-//                     lhs,
-//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-//                 );
-//             } catch (...) {
-//                 Exception::to_python();
-//                 return nullptr;
-//             }
-//         }
-
-//         static PyObject* __iadd__(__python__* lhs, PyObject* rhs) noexcept {
-//             return PyNumber_InPlaceAdd(ptr(lhs->m_value), rhs);
-//         }
-
-//         static PyObject* __sub__(PyObject* lhs, PyObject* rhs) noexcept {
-//             try {
-//                 Type<Union> cls;
-//                 if (PyType_IsSubtype(
-//                     Py_TYPE(lhs),
-//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
-//                 ) {
-//                     return PyNumber_Subtract(
-//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-//                         rhs
-//                     );
-//                 }
-//                 return PyNumber_Subtract(
-//                     lhs,
-//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-//                 );
-//             } catch (...) {
-//                 Exception::to_python();
-//                 return nullptr;
-//             }
-//         }
-
-//         static PyObject* __isub__(__python__* lhs, PyObject* rhs) noexcept {
-//             return PyNumber_InPlaceSubtract(ptr(lhs->m_value), rhs);
-//         }
-
-//         static PyObject* __mul__(PyObject* lhs, PyObject* rhs) noexcept {
-//             try {
-//                 Type<Union> cls;
-//                 if (PyType_IsSubtype(
-//                     Py_TYPE(lhs),
-//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
-//                 ) {
-//                     return PyNumber_Multiply(
-//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-//                         rhs
-//                     );
-//                 }
-//                 return PyNumber_Multiply(
-//                     lhs,
-//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-//                 );
-//             } catch (...) {
-//                 Exception::to_python();
-//                 return nullptr;
-//             }
-//         }
-
-//         static PyObject* __repeat__(__python__* lhs, Py_ssize_t rhs) noexcept {
-//             return PySequence_Repeat(ptr(lhs->m_value), rhs);
-//         }
-
-//         static PyObject* __imul__(__python__* lhs, PyObject* rhs) noexcept {
-//             return PyNumber_InPlaceMultiply(ptr(lhs->m_value), rhs);
-//         }
-
-//         static PyObject* __irepeat__(__python__* lhs, Py_ssize_t rhs) noexcept {
-//             return PySequence_InPlaceRepeat(ptr(lhs->m_value), rhs);
-//         }
-
-//         static PyObject* __mod__(PyObject* lhs, PyObject* rhs) noexcept {
-//             try {
-//                 Type<Union> cls;
-//                 if (PyType_IsSubtype(
-//                     Py_TYPE(lhs),
-//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
-//                 ) {
-//                     return PyNumber_Remainder(
-//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-//                         rhs
-//                     );
-//                 }
-//                 return PyNumber_Remainder(
-//                     lhs,
-//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-//                 );
-//             } catch (...) {
-//                 Exception::to_python();
-//                 return nullptr;
-//             }
-//         }
-
-//         static PyObject* __imod__(__python__* lhs, PyObject* rhs) noexcept {
-//             return PyNumber_InPlaceRemainder(ptr(lhs->m_value), rhs);
-//         }
-
-//         static PyObject* __divmod__(PyObject* lhs, PyObject* rhs) noexcept {
-//             try {
-//                 Type<Union> cls;
-//                 if (PyType_IsSubtype(
-//                     Py_TYPE(lhs),
-//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
-//                 ) {
-//                     return PyNumber_Divmod(
-//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-//                         rhs
-//                     );
-//                 }
-//                 return PyNumber_Divmod(
-//                     lhs,
-//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-//                 );
-//             } catch (...) {
-//                 Exception::to_python();
-//                 return nullptr;
-//             }
-//         }
-
-//         static PyObject* __power__(PyObject* lhs, PyObject* rhs, PyObject* mod) noexcept {
-//             try {
-//                 Type<Union> cls;
-//                 if (PyType_IsSubtype(
-//                     Py_TYPE(lhs),
-//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
-//                 ) {
-//                     return PyNumber_Power(
-//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-//                         rhs,
-//                         mod
-//                     );
-//                 } else if (PyType_IsSubtype(
-//                     Py_TYPE(rhs),
-//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
-//                 ) {
-//                     return PyNumber_Power(
-//                         lhs,
-//                         ptr(reinterpret_cast<__python__*>(rhs)->m_value),
-//                         mod
-//                     );
-//                 }
-//                 return PyNumber_Power(
-//                     lhs,
-//                     rhs,
-//                     ptr(reinterpret_cast<__python__*>(mod)->m_value)
-//                 );
-//             } catch (...) {
-//                 Exception::to_python();
-//                 return nullptr;
-//             }
-//         }
-
-//         static PyObject* __ipower__(__python__* lhs, PyObject* rhs, PyObject* mod) noexcept {
-//             return PyNumber_InPlacePower(ptr(lhs->m_value), rhs, mod);
-//         }
-
-//         static PyObject* __neg__(__python__* self) noexcept {
-//             return PyNumber_Negative(ptr(self->m_value));
-//         }
-
-//         static PyObject* __pos__(__python__* self) noexcept {
-//             return PyNumber_Positive(ptr(self->m_value));
-//         }
-
-//         static PyObject* __abs__(__python__* self) noexcept {
-//             return PyNumber_Absolute(ptr(self->m_value));
-//         }
-
-//         static int __bool__(__python__* self) noexcept {
-//             return PyObject_IsTrue(ptr(self->m_value));
-//         }
-
-//         static PyObject* __invert__(__python__* self) noexcept {
-//             return PyNumber_Invert(ptr(self->m_value));
-//         }
-
-//         static PyObject* __lshift__(PyObject* lhs, PyObject* rhs) noexcept {
-//             try {
-//                 Type<Union> cls;
-//                 if (PyType_IsSubtype(
-//                     Py_TYPE(lhs),
-//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
-//                 ) {
-//                     return PyNumber_Lshift(
-//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-//                         rhs
-//                     );
-//                 }
-//                 return PyNumber_Lshift(
-//                     lhs,
-//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-//                 );
-//             } catch (...) {
-//                 Exception::to_python();
-//                 return nullptr;
-//             }
-//         }
-
-//         static PyObject* __ilshift__(__python__* lhs, PyObject* rhs) noexcept {
-//             return PyNumber_InPlaceLshift(ptr(lhs->m_value), rhs);
-//         }
-
-//         static PyObject* __rshift__(PyObject* lhs, PyObject* rhs) noexcept {
-//             try {
-//                 Type<Union> cls;
-//                 if (PyType_IsSubtype(
-//                     Py_TYPE(lhs),
-//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
-//                 ) {
-//                     return PyNumber_Rshift(
-//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-//                         rhs
-//                     );
-//                 }
-//                 return PyNumber_Rshift(
-//                     lhs,
-//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-//                 );
-//             } catch (...) {
-//                 Exception::to_python();
-//                 return nullptr;
-//             }
-//         }
-
-//         static PyObject* __irshift__(__python__* lhs, PyObject* rhs) noexcept {
-//             return PyNumber_InPlaceRshift(ptr(lhs->m_value), rhs);
-//         }
-
-//         static PyObject* __and__(PyObject* lhs, PyObject* rhs) noexcept {
-//             try {
-//                 Type<Union> cls;
-//                 if (PyType_IsSubtype(
-//                     Py_TYPE(lhs),
-//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
-//                 ) {
-//                     return PyNumber_And(
-//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-//                         rhs
-//                     );
-//                 }
-//                 return PyNumber_And(
-//                     lhs,
-//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-//                 );
-//             } catch (...) {
-//                 Exception::to_python();
-//                 return nullptr;
-//             }
-//         }
-
-//         static PyObject* __iand__(__python__* lhs, PyObject* rhs) noexcept {
-//             return PyNumber_InPlaceAnd(ptr(lhs->m_value), rhs);
-//         }
-
-//         static PyObject* __xor__(PyObject* lhs, PyObject* rhs) noexcept {
-//             try {
-//                 Type<Union> cls;
-//                 if (PyType_IsSubtype(
-//                     Py_TYPE(lhs),
-//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
-//                 ) {
-//                     return PyNumber_Xor(
-//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-//                         rhs
-//                     );
-//                 }
-//                 return PyNumber_Xor(
-//                     lhs,
-//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-//                 );
-//             } catch (...) {
-//                 Exception::to_python();
-//                 return nullptr;
-//             }
-//         }
-
-//         static PyObject* __ixor__(__python__* lhs, PyObject* rhs) noexcept {
-//             return PyNumber_InPlaceXor(ptr(lhs->m_value), rhs);
-//         }
-
-//         static PyObject* __or__(PyObject* lhs, PyObject* rhs) noexcept {
-//             try {
-//                 Type<Union> cls;
-//                 if (PyType_IsSubtype(
-//                     Py_TYPE(lhs),
-//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
-//                 ) {
-//                     return PyNumber_Or(
-//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-//                         rhs
-//                     );
-//                 }
-//                 return PyNumber_Or(
-//                     lhs,
-//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-//                 );
-//             } catch (...) {
-//                 Exception::to_python();
-//                 return nullptr;
-//             }
-//         }
-
-//         static PyObject* __ior__(__python__* lhs, PyObject* rhs) noexcept {
-//             return PyNumber_InPlaceOr(ptr(lhs->m_value), rhs);
-//         }
-
-//         static PyObject* __int__(__python__* self) noexcept {
-//             return PyNumber_Long(ptr(self->m_value));
-//         }
-
-//         static PyObject* __float__(__python__* self) noexcept {
-//             return PyNumber_Float(ptr(self->m_value));
-//         }
-
-//         static PyObject* __floordiv__(PyObject* lhs, PyObject* rhs) noexcept {
-//             try {
-//                 Type<Union> cls;
-//                 if (PyType_IsSubtype(
-//                     Py_TYPE(lhs),
-//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
-//                 ) {
-//                     return PyNumber_FloorDivide(
-//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-//                         rhs
-//                     );
-//                 }
-//                 return PyNumber_FloorDivide(
-//                     lhs,
-//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-//                 );
-//             } catch (...) {
-//                 Exception::to_python();
-//                 return nullptr;
-//             }
-//         }
-
-//         static PyObject* __ifloordiv__(__python__* lhs, PyObject* rhs) noexcept {
-//             return PyNumber_InPlaceFloorDivide(ptr(lhs->m_value), rhs);
-//         }
-
-//         static PyObject* __truediv__(PyObject* lhs, PyObject* rhs) noexcept {
-//             try {
-//                 Type<Union> cls;
-//                 if (PyType_IsSubtype(
-//                     Py_TYPE(lhs),
-//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
-//                 ) {
-//                     return PyNumber_TrueDivide(
-//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-//                         rhs
-//                     );
-//                 }
-//                 return PyNumber_TrueDivide(
-//                     lhs,
-//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-//                 );
-//             } catch (...) {
-//                 Exception::to_python();
-//                 return nullptr;
-//             }
-//         }
-
-//         static PyObject* __itruediv__(__python__* lhs, PyObject* rhs) noexcept {
-//             return PyNumber_InPlaceTrueDivide(ptr(lhs->m_value), rhs);
-//         }
-
-//         static PyObject* __index__(__python__* self) noexcept {
-//             return PyNumber_Index(ptr(self->m_value));
-//         }
-
-//         static PyObject* __matmul__(PyObject* lhs, PyObject* rhs) noexcept {
-//             try {
-//                 Type<Union> cls;
-//                 if (PyType_IsSubtype(
-//                     Py_TYPE(lhs),
-//                     reinterpret_cast<PyTypeObject*>(ptr(cls)))
-//                 ) {
-//                     return PyNumber_MatrixMultiply(
-//                         ptr(reinterpret_cast<__python__*>(lhs)->m_value),
-//                         rhs
-//                     );
-//                 }
-//                 return PyNumber_MatrixMultiply(
-//                     lhs,
-//                     ptr(reinterpret_cast<__python__*>(rhs)->m_value)
-//                 );
-//             } catch (...) {
-//                 Exception::to_python();
-//                 return nullptr;
-//             }
-//         }
-
-//         static PyObject* __imatmul__(__python__* lhs, PyObject* rhs) noexcept {
-//             return PyNumber_InPlaceMatrixMultiply(ptr(lhs->m_value), rhs);
-//         }
-
-//         static int __buffer__(
-//             __python__* exported,
-//             Py_buffer* view,
-//             int flags
-//         ) noexcept {
-//             return PyObject_GetBuffer(ptr(exported->m_value), view, flags);
-//         }
-
-//         static void __release_buffer__(__python__* exported, Py_buffer* view) noexcept {
-//             PyBuffer_Release(view);
-//         }
-
-//     private:
-
-//         inline static PyGetSetDef properties[] = {
-//             {
-//                 "__wrapped__",
-//                 reinterpret_cast<getter>(__wrapped__),
-//                 nullptr,
-//                 PyDoc_STR(
-// R"doc(The value stored in the optional.
-
-// Returns
-// -------
-// object
-//     The value stored in the optional, or None if it is currently empty.
-
-// Notes
-// -----
-// The presence of a `__wrapped__` attribute triggers some special behavior in
-// both the Python and Bertrand APIs.  In Python, it allows the `inspect` module
-// to unwrap the optional and inspect the internal value, in the same way as
-// `functools.partial` and `functools.wraps`.  In Bertrand, some operators
-// (like the `isinstance()` operator) will check for the presence of this
-// attribute and unwrap the optional if it is present.)doc"
-//                 )
-//             },
-//             {nullptr}
-//         };
-
-//         inline static PyAsyncMethods async = {
-//             .am_await = reinterpret_cast<unaryfunc>(__await__),
-//             .am_aiter = reinterpret_cast<unaryfunc>(__aiter__),
-//             .am_anext = reinterpret_cast<unaryfunc>(__anext__),
-//             .am_send = reinterpret_cast<sendfunc>(__asend__),
-//         };
-
-//         inline static PyNumberMethods number = {
-//             .nb_add = reinterpret_cast<binaryfunc>(__add__),
-//             .nb_subtract = reinterpret_cast<binaryfunc>(__sub__),
-//             .nb_multiply = reinterpret_cast<binaryfunc>(__mul__),
-//             .nb_remainder = reinterpret_cast<binaryfunc>(__mod__),
-//             .nb_divmod = reinterpret_cast<binaryfunc>(__divmod__),
-//             .nb_power = reinterpret_cast<ternaryfunc>(__power__),
-//             .nb_negative = reinterpret_cast<unaryfunc>(__neg__),
-//             .nb_positive = reinterpret_cast<unaryfunc>(__pos__),
-//             .nb_absolute = reinterpret_cast<unaryfunc>(__abs__),
-//             .nb_bool = reinterpret_cast<inquiry>(__bool__),
-//             .nb_invert = reinterpret_cast<unaryfunc>(__invert__),
-//             .nb_lshift = reinterpret_cast<binaryfunc>(__lshift__),
-//             .nb_rshift = reinterpret_cast<binaryfunc>(__rshift__),
-//             .nb_and = reinterpret_cast<binaryfunc>(__and__),
-//             .nb_xor = reinterpret_cast<binaryfunc>(__xor__),
-//             .nb_or = reinterpret_cast<binaryfunc>(__or__),
-//             .nb_int = reinterpret_cast<unaryfunc>(__int__),
-//             .nb_float = reinterpret_cast<unaryfunc>(__float__),
-//             .nb_inplace_add = reinterpret_cast<binaryfunc>(__iadd__),
-//             .nb_inplace_subtract = reinterpret_cast<binaryfunc>(__isub__),
-//             .nb_inplace_multiply = reinterpret_cast<binaryfunc>(__imul__),
-//             .nb_inplace_remainder = reinterpret_cast<binaryfunc>(__imod__),
-//             .nb_inplace_power = reinterpret_cast<ternaryfunc>(__ipower__),
-//             .nb_inplace_lshift = reinterpret_cast<binaryfunc>(__ilshift__),
-//             .nb_inplace_rshift = reinterpret_cast<binaryfunc>(__irshift__),
-//             .nb_inplace_and = reinterpret_cast<binaryfunc>(__iand__),
-//             .nb_inplace_xor = reinterpret_cast<binaryfunc>(__ixor__),
-//             .nb_inplace_or = reinterpret_cast<binaryfunc>(__ior__),
-//             .nb_floor_divide = reinterpret_cast<binaryfunc>(__floordiv__),
-//             .nb_true_divide = reinterpret_cast<binaryfunc>(__truediv__),
-//             .nb_inplace_floor_divide = reinterpret_cast<binaryfunc>(__ifloordiv__),
-//             .nb_inplace_true_divide = reinterpret_cast<binaryfunc>(__itruediv__),
-//             .nb_index = reinterpret_cast<unaryfunc>(__index__),
-//             .nb_matrix_multiply = reinterpret_cast<binaryfunc>(__matmul__),
-//             .nb_inplace_matrix_multiply = reinterpret_cast<binaryfunc>(__imatmul__),
-//         };
-
-//         inline static PyMappingMethods mapping = {
-//             .mp_length = reinterpret_cast<lenfunc>(__len__),
-//             .mp_subscript = reinterpret_cast<binaryfunc>(__getitem__),
-//             .mp_ass_subscript = reinterpret_cast<objobjargproc>(__setitem__)
-//         };
-
-//         inline static PySequenceMethods sequence = {
-//             .sq_length = reinterpret_cast<lenfunc>(__len__),
-//             .sq_concat = reinterpret_cast<binaryfunc>(__add__),
-//             .sq_repeat = reinterpret_cast<ssizeargfunc>(__repeat__),
-//             .sq_item = reinterpret_cast<ssizeargfunc>(__sq_getitem__),
-//             .sq_ass_item = reinterpret_cast<ssizeobjargproc>(__sq_setitem__),
-//             .sq_contains = reinterpret_cast<objobjproc>(__contains__),
-//             .sq_inplace_concat = reinterpret_cast<binaryfunc>(__iadd__),
-//             .sq_inplace_repeat = reinterpret_cast<ssizeargfunc>(__irepeat__)
-//         };
-
-//         inline static PyBufferProcs buffer = {
-//             .bf_getbuffer = reinterpret_cast<getbufferproc>(__buffer__),
-//             .bf_releasebuffer = reinterpret_cast<releasebufferproc>(__release_buffer__)
-//         };
-
     };
+
+    size_t m_index = 0;
 
     Union(PyObject* p, borrowed_t t) : Object(p, t) {}
     Union(PyObject* p, stolen_t t) : Object(p, t) {}
@@ -1843,20 +968,6 @@ int main() {
         explicit_ctor<Union>{},
         std::forward<Args>(args)...
     ) {}
-
-    template <impl::inherits<Object> T>
-    [[nodiscard]] bool is(T&& other) const {
-        return (*this)->m_value.is(std::forward<T>(other));
-    }
-
-    [[nodiscard]] bool is(PyObject* other) const {
-        return (*this)->m_value.is(other);
-    }
-
-    template <typename T> requires (std::same_as<T, Types> || ...)
-    [[nodiscard]] bool is() const {
-        return (*this)->m_index == impl::index_of<T, Types...>;
-    }
 
 };
 
@@ -1882,7 +993,9 @@ template <typename T> requires (__initializer__<T>::enable)
 struct __initializer__<Optional<T>>                        : Returns<Optional<T>> {
     using Element = __initializer__<T>::type;
     static Optional<T> operator()(const std::initializer_list<Element>& init) {
-        return impl::construct<Optional<T>>(T(init));
+        Optional<T> result = reinterpret_steal<Optional<T>>(release(T(init)));
+        result.m_index = 0;
+        return result;
     }
 };
 
@@ -1907,11 +1020,16 @@ struct __init__<Union<Ts...>>                               : Returns<Union<Ts..
 
     static Union<Ts...> operator()() {
         if constexpr (none_idx<0, Ts...> < sizeof...(Ts)) {
-            return impl::construct<Union<Ts...>>(None);
+            Union<Ts...> result = reinterpret_borrow<Union<Ts...>>(ptr(None));
+            result.m_index = none_idx<0, Ts...>;
+            return result;
         } else {
-            return impl::construct<Union<Ts...>>(
-                impl::unpack_type<idx<0, Ts...>>()
+            constexpr size_t index = idx<0, Ts...>;
+            Union<Ts...> result = reinterpret_steal<Union<Ts...>>(
+                release(impl::unpack_type<index>())
             );
+            result.m_index = index;
+            return result;
         }
     }
 };
@@ -1923,7 +1041,11 @@ template <typename T, typename... Args>
     requires (sizeof...(Args) > 0 && std::constructible_from<T, Args...>)
 struct __init__<Optional<T>, Args...>                : Returns<Optional<T>> {
     static Optional<T> operator()(Args&&... args) {
-        return impl::construct<Optional<T>>(T(std::forward<Args>(args)...));
+        Optional<T> result = reinterpret_steal<Optional<T>>(
+            release(T(std::forward<Args>(args)...))
+        );
+        result.m_index = 0;
+        return result;
     }
 };
 
@@ -1938,7 +1060,8 @@ struct __cast__<From, Union<Ts...>>                            : Returns<Union<T
     static constexpr size_t match_idx = 0;
     template <size_t I, typename U, typename... Us>
     static constexpr size_t match_idx<I, U, Us...> =
-        std::same_as<std::remove_cvref_t<From>, U> ? 0 : match_idx<I + 1, Us...> + 1;
+        std::same_as<std::remove_cvref_t<impl::python_type<From>>, U> ?
+            0 : match_idx<I + 1, Us...> + 1;
 
     template <size_t I, typename... Us>
     static constexpr size_t convert_idx = 0;
@@ -1948,13 +1071,19 @@ struct __cast__<From, Union<Ts...>>                            : Returns<Union<T
 
     static Union<Ts...> operator()(From from) {
         if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
-            return impl::construct<Union<Ts...>>(
-                impl::unpack_type<match_idx<0, Ts...>>(std::forward<From>(from))
+            constexpr size_t idx = match_idx<0, Ts...>;
+            Union<Ts...> result = reinterpret_steal<Union<Ts...>>(
+                release(impl::unpack_type<idx>(std::forward<From>(from)))
             );
+            result.m_index = idx;
+            return result;
         } else {
-            return impl::construct<Union<Ts...>>(
-                impl::unpack_type<convert_idx<0, Ts...>>(std::forward<From>(from))
+            constexpr size_t idx = convert_idx<0, Ts...>;
+            Union<Ts...> result = reinterpret_steal<Union<Ts...>>(
+                release(impl::unpack_type<idx>(std::forward<From>(from)))
             );
+            result.m_index = idx;
+            return result;
         }
     }
 };
@@ -2038,12 +1167,37 @@ struct __cast__<From, To>                                   : Returns<To> {
 template <impl::is_variant From, typename... Ts>
     requires (impl::VariantToUnion<From>::template convert<Ts...>)
 struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts...>> {
+    template <size_t I, typename... Us>
+    static constexpr size_t match_idx = 0;
+    template <size_t I, typename U, typename... Us>
+    static constexpr size_t match_idx<I, U, Us...> =
+        std::same_as<std::remove_cvref_t<impl::python_type<From>>, U> ?
+            0 : match_idx<I + 1, Us...> + 1;
+
+    template <size_t I, typename... Us>
+    static constexpr size_t convert_idx = 0;
+    template <size_t I, typename U, typename... Us>
+    static constexpr size_t convert_idx<I, U, Us...> =
+        std::convertible_to<From, U> ? 0 : convert_idx<I + 1, Us...> + 1;
+
     static Union<Ts...> operator()(From value) {
         return std::visit(
             []<typename T>(T&& value) -> Union<Ts...> {
-                return impl::construct<Union<Ts...>>(
-                    impl::python_type<T>(std::forward<T>(value))
-                );
+                if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
+                    constexpr size_t idx = match_idx<0, Ts...>;
+                    Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                        impl::unpack_type<idx, Ts...>(std::forward<T>(value))
+                    ));
+                    result.m_index = idx;
+                    return result;
+                } else {
+                    constexpr size_t idx = convert_idx<0, Ts...>;
+                    Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                        impl::unpack_type<idx, Ts...>(std::forward<T>(value))
+                    ));
+                    result.m_index = idx;
+                    return result;
+                }
             },
             std::forward<From>(value)
         );
@@ -2063,31 +1217,36 @@ struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts..
     static constexpr size_t match_idx = 0;
     template <size_t I, typename U, typename... Us>
     static constexpr size_t match_idx<I, U, Us...> =
-        std::same_as<std::remove_cv_t<T>, U> ? 0 : match_idx<I + 1, Us...> + 1;
+        std::same_as<std::remove_cvref_t<impl::python_type<From>>, U> ?
+            0 : match_idx<I + 1, Us...> + 1;
 
     template <size_t I, typename... Us>
     static constexpr size_t convert_idx = 0;
     template <size_t I, typename U, typename... Us>
     static constexpr size_t convert_idx<I, U, Us...> =
-        std::convertible_to<T, U> ? 0 : convert_idx<I + 1, Us...> + 1;
+        std::convertible_to<From, U> ? 0 : convert_idx<I + 1, Us...> + 1;
 
     static Union<Ts...> operator()(From from) {
         if (from.has_value()) {
             if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
-                return impl::construct<Union<Ts...>>(
-                    impl::unpack_type<match_idx<0, Ts...>>(
-                        std::forward<From>(from).value()
-                    )
-                );
+                constexpr size_t idx = match_idx<0, Ts...>;
+                Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                    impl::unpack_type<idx, Ts...>(from.value())
+                ));
+                result.m_index = idx;
+                return result;
             } else {
-                return impl::construct<Union<Ts...>>(
-                    impl::unpack_type<convert_idx<0, Ts...>>(
-                        std::forward<From>(from).value()
-                    )
-                );
+                constexpr size_t idx = convert_idx<0, Ts...>;
+                Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                    impl::unpack_type<idx, Ts...>(from.value())
+                ));
+                result.m_index = idx;
+                return result;
             }
         } else {
-            return impl::construct<Union<Ts...>>(None);
+            Union<Ts...> result = reinterpret_borrow<Union<Ts...>>(ptr(None));
+            result.m_index = impl::index_of<NoneType, Ts...>;
+            return result;
         }
     }
 };
@@ -2103,7 +1262,7 @@ struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts..
     static constexpr size_t match_idx = 0;
     template <size_t I, typename U, typename... Us>
     static constexpr size_t match_idx<I, U, Us...> =
-        std::same_as<std::remove_cv_t<impl::ptr_type<From>>, U> ?
+        std::same_as<std::remove_cvref_t<impl::python_type<impl::ptr_type<From>>>, U> ?
             0 : match_idx<I + 1, Us...> + 1;
 
     template <size_t I, typename... Us>
@@ -2116,16 +1275,24 @@ struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts..
     static Union<Ts...> operator()(From from) {
         if (from) {
             if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
-                return impl::construct<Union<Ts...>>(
-                    impl::unpack_type<match_idx<0, Ts...>>(*from)
-                );
+                constexpr size_t idx = match_idx<0, Ts...>;
+                Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                    impl::unpack_type<idx, Ts...>(*from)
+                ));
+                result.m_index = idx;
+                return result;
             } else {
-                return impl::construct<Union<Ts...>>(
-                    impl::unpack_type<convert_idx<0, Ts...>>(*from)
-                );
+                constexpr size_t idx = convert_idx<0, Ts...>;
+                Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                    impl::unpack_type<idx, Ts...>(*from)
+                ));
+                result.m_index = idx;
+                return result;
             }
         } else {
-            return impl::construct<Union<Ts...>>(None);
+            Union<Ts...> result = reinterpret_borrow<Union<Ts...>>(ptr(None));
+            result.m_index = impl::index_of<NoneType, Ts...>;
+            return result;
         }
     }
 };
@@ -2141,7 +1308,7 @@ struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts..
     static constexpr size_t match_idx = 0;
     template <size_t I, typename U, typename... Us>
     static constexpr size_t match_idx<I, U, Us...> =
-        std::same_as<std::remove_cv_t<impl::shared_ptr_type<From>>, U> ?
+        std::same_as<std::remove_cvref_t<impl::python_type<impl::shared_ptr_type<From>>>, U> ?
             0 : match_idx<I + 1, Us...> + 1;
 
     template <size_t I, typename... Us>
@@ -2154,16 +1321,24 @@ struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts..
     static Union<Ts...> operator()(From from) {
         if (from) {
             if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
-                return impl::construct<Union<Ts...>>(
-                    impl::unpack_type<match_idx<0, Ts...>>(*from)
-                );
+                constexpr size_t idx = match_idx<0, Ts...>;
+                Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                    impl::unpack_type<idx, Ts...>(*from)
+                ));
+                result.m_index = idx;
+                return result;
             } else {
-                return impl::construct<Union<Ts...>>(
-                    impl::unpack_type<convert_idx<0, Ts...>>(*from)
-                );
+                constexpr size_t idx = convert_idx<0, Ts...>;
+                Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                    impl::unpack_type<idx, Ts...>(*from)
+                ));
+                result.m_index = idx;
+                return result;
             }
         } else {
-            return impl::construct<Union<Ts...>>(None);
+            Union<Ts...> result = reinterpret_borrow<Union<Ts...>>(ptr(None));
+            result.m_index = impl::index_of<NoneType, Ts...>;
+            return result;
         }
     }
 };
@@ -2179,7 +1354,7 @@ struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts..
     static constexpr size_t match_idx = 0;
     template <size_t I, typename U, typename... Us>
     static constexpr size_t match_idx<I, U, Us...> =
-        std::same_as<std::remove_cv_t<impl::unique_ptr_type<From>>, U> ?
+        std::same_as<std::remove_cvref_t<impl::python_type<impl::unique_ptr_type<From>>>, U> ?
             0 : match_idx<I + 1, Us...> + 1;
 
     template <size_t I, typename... Us>
@@ -2192,16 +1367,24 @@ struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts..
     static Union<Ts...> operator()(From from) {
         if (from) {
             if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
-                return impl::construct<Union<Ts...>>(
-                    impl::unpack_type<match_idx<0, Ts...>>(*from)
-                );
+                constexpr size_t idx = match_idx<0, Ts...>;
+                Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                    impl::unpack_type<idx, Ts...>(*from)
+                ));
+                result.m_index = idx;
+                return result;
             } else {
-                return impl::construct<Union<Ts...>>(
-                    impl::unpack_type<convert_idx<0, Ts...>>(*from)
-                );
+                constexpr size_t idx = convert_idx<0, Ts...>;
+                Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                    impl::unpack_type<idx, Ts...>(*from)
+                ));
+                result.m_index = idx;
+                return result;
             }
         } else {
-            return impl::construct<Union<Ts...>>(None);
+            Union<Ts...> result = reinterpret_borrow<Union<Ts...>>(ptr(None));
+            result.m_index = impl::index_of<NoneType, Ts...>;
+            return result;
         }
     }
 };
