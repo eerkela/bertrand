@@ -891,118 +891,118 @@ namespace impl {
     struct Arguments : BertrandTag {
     private:
 
-        template <typename... Ts>
+        template <typename...>
         static constexpr size_t _n_posonly = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _n_posonly<T, Ts...> =
             _n_posonly<Ts...> + ArgTraits<T>::posonly();
 
-        template <typename... Ts>
+        template <typename...>
         static constexpr size_t _n_pos = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _n_pos<T, Ts...> =
             _n_pos<Ts...> + ArgTraits<T>::pos();
 
-        template <typename... Ts>
+        template <typename...>
         static constexpr size_t _n_kw = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _n_kw<T, Ts...> =
             _n_kw<Ts...> + ArgTraits<T>::kw();
 
-        template <typename... Ts>
+        template <typename...>
         static constexpr size_t _n_kwonly = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _n_kwonly<T, Ts...> =
             _n_kwonly<Ts...> + ArgTraits<T>::kwonly();
 
-        template <typename... Ts>
+        template <typename...>
         static constexpr size_t _n_opt = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _n_opt<T, Ts...> =
             _n_opt<Ts...> + ArgTraits<T>::opt();
 
-        template <typename... Ts>
+        template <typename...>
         static constexpr size_t _n_opt_posonly = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _n_opt_posonly<T, Ts...> =
             _n_opt_posonly<Ts...> + (ArgTraits<T>::posonly() && ArgTraits<T>::opt());
 
-        template <typename... Ts>
+        template <typename...>
         static constexpr size_t _n_opt_pos = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _n_opt_pos<T, Ts...> =
             _n_opt_pos<Ts...> + (ArgTraits<T>::pos() && ArgTraits<T>::opt());
 
-        template <typename... Ts>
+        template <typename...>
         static constexpr size_t _n_opt_kw = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _n_opt_kw<T, Ts...> =
             _n_opt_kw<Ts...> + (ArgTraits<T>::kw() && ArgTraits<T>::opt());
 
-        template <typename... Ts>
+        template <typename...>
         static constexpr size_t _n_opt_kwonly = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _n_opt_kwonly<T, Ts...> =
             _n_opt_kwonly<Ts...> + (ArgTraits<T>::kwonly() && ArgTraits<T>::opt());
 
-        template <StaticStr Name, typename... Ts>
+        template <StaticStr, typename...>
         static constexpr size_t _idx = 0;
         template <StaticStr Name, typename T, typename... Ts>
         static constexpr size_t _idx<Name, T, Ts...> =
             ArgTraits<T>::name == Name ? 0 : _idx<Name, Ts...> + 1;
 
-        template <typename... Ts>
+        template <typename...>
         static constexpr size_t _args_idx = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _args_idx<T, Ts...> =
             ArgTraits<T>::args() ? 0 : _args_idx<Ts...> + 1;
 
-        template <typename... Ts>
+        template <typename...>
         static constexpr size_t _kw_idx = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _kw_idx<T, Ts...> =
             ArgTraits<T>::kw() ? 0 : _kw_idx<Ts...> + 1;
 
-        template <typename... Ts>
+        template <typename...>
         static constexpr size_t _kwonly_idx = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _kwonly_idx<T, Ts...> =
             ArgTraits<T>::kwonly() ? 0 : _kwonly_idx<Ts...> + 1;
 
-        template <typename... Ts>
+        template <typename...>
         static constexpr size_t _kwargs_idx = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _kwargs_idx<T, Ts...> =
             ArgTraits<T>::kwargs() ? 0 : _kwargs_idx<Ts...> + 1;
 
-        template <typename... Ts>
+        template <typename...>
         static constexpr size_t _opt_idx = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _opt_idx<T, Ts...> =
             ArgTraits<T>::opt() ? 0 : _opt_idx<Ts...> + 1;
 
-        template <typename... Ts>
+        template <typename...>
         static constexpr size_t _opt_posonly_idx = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _opt_posonly_idx<T, Ts...> =
             ArgTraits<T>::posonly() && ArgTraits<T>::opt() ?
                 0 : _opt_posonly_idx<Ts...> + 1;
 
-        template <typename... Ts>
+        template <typename...>
         static constexpr size_t _opt_pos_idx = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _opt_pos_idx<T, Ts...> =
             ArgTraits<T>::pos() && ArgTraits<T>::opt() ?
                 0 : _opt_pos_idx<Ts...> + 1;
 
-        template <typename... Ts>
+        template <typename...>
         static constexpr size_t _opt_kw_idx = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _opt_kw_idx<T, Ts...> =
             ArgTraits<T>::kw() && ArgTraits<T>::opt() ?
                 0 : _opt_kw_idx<Ts...> + 1;
 
-        template <typename... Ts>
+        template <typename...>
         static constexpr size_t _opt_kwonly_idx = 0;
         template <typename T, typename... Ts>
         static constexpr size_t _opt_kwonly_idx<T, Ts...> =
@@ -1052,7 +1052,7 @@ namespace impl {
 
     private:
 
-        template <size_t I, typename... Ts>
+        template <size_t, typename...>
         static constexpr bool _proper_argument_order = true;
         template <size_t I, typename T, typename... Ts>
         static constexpr bool _proper_argument_order<I, T, Ts...> =
@@ -1062,7 +1062,7 @@ namespace impl {
             (ArgTraits<T>::kwonly() && (I > kwargs_idx)) ?
                 false : _proper_argument_order<I + 1, Ts...>;
 
-        template <size_t I, typename... Ts>
+        template <size_t, typename...>
         static constexpr bool _no_duplicate_arguments = true;
         template <size_t I, typename T, typename... Ts>
         static constexpr bool _no_duplicate_arguments<I, T, Ts...> =
@@ -1071,7 +1071,7 @@ namespace impl {
             (ArgTraits<T>::kwargs() && I != kwargs_idx) ?
                 false : _no_duplicate_arguments<I + 1, Ts...>;
 
-        template <size_t I, typename... Ts>
+        template <size_t, typename...>
         static constexpr bool _no_required_after_default = true;
         template <size_t I, typename T, typename... Ts>
         static constexpr bool _no_required_after_default<I, T, Ts...> =
@@ -1558,7 +1558,7 @@ namespace impl {
             is used to correlate the default value with its corresponding argument in
             the enclosing signature. */
             template <size_t I>
-            struct Value  {
+            struct Value {
                 using type = ArgTraits<Arguments::at<I>>::type;
                 static constexpr StaticStr name = ArgTraits<Arguments::at<I>>::name;
                 static constexpr size_t index = I;
@@ -1614,7 +1614,7 @@ namespace impl {
             };
             using Tuple = _Tuple<std::tuple<>, 0, Args...>::type;
 
-            template <size_t I, typename T>
+            template <size_t, typename>
             static constexpr size_t _find = 0;
             template <size_t I, typename T, typename... Ts>
             static constexpr size_t _find<I, std::tuple<T, Ts...>> =
@@ -2011,7 +2011,6 @@ namespace impl {
             decltype(auto) get() const {
                 return std::get<idx<Name>>(values).get();
             }
-
         };
 
         /// TODO: maybe the index operator has to take types instead of values?  Values
@@ -3417,81 +3416,65 @@ namespace impl {
         template <typename... Values>
         struct Bind {
         private:
-            using Outer = Arguments;
-            using Inner = Arguments<Values...>;
+            using Bound = Arguments<Values...>;
 
-            template <size_t I>
-            using Target = Outer::template at<I>;
-            template <size_t J>
-            using Source = Inner::template at<J>;
+            template <size_t I> requires (I < Arguments::n)
+            using Target = Arguments::template at<I>;
+            template <size_t J> requires (J < Bound::n)
+            using Source = Bound::template at<J>;
 
             /* Upon encountering a variadic positional pack in the target signature,
             recursively traverse the remaining source positional arguments and ensure
             that each is convertible to the target type. */
+            template <size_t, typename>
+            static constexpr bool consume_target_args = true;
             template <size_t J, typename T>
-            static consteval bool consume_target_args() {
-                if constexpr (J < Inner::kw_idx && J < Inner::kwargs_idx) {
-                    return std::convertible_to<
-                        typename ArgTraits<Source<J>>::type,
-                        typename ArgTraits<T>::type
-                    > && consume_target_args<J + 1, T>();
-                } else {
-                    return true;
-                }
-            }
+                requires (J < Bound::kw_idx && J < Bound::kwargs_idx)
+            static constexpr bool consume_target_args<J, T> = std::convertible_to<
+                typename ArgTraits<Source<J>>::type,
+                typename ArgTraits<T>::type
+            > && consume_target_args<J + 1, T>;
 
             /* Upon encountering a variadic keyword pack in the target signature,
             recursively traverse the source keyword arguments and extract any that
             aren't present in the target signature, ensuring they are convertible to
             the target type. */
-            template <size_t J, typename T>
-            static consteval bool consume_target_kwargs() {
-                if constexpr (J < Inner::n) {
-                    return (
-                        Outer::template has<ArgTraits<Source<J>>::name> ||
-                        std::convertible_to<
-                            typename ArgTraits<Source<J>>::type,
-                            typename ArgTraits<T>::type
-                        >
-                    ) && consume_target_kwargs<J + 1, T>();
-                } else {
-                    return true;
-                }
-            }
+            template <size_t, typename>
+            static constexpr bool consume_target_kwargs = true;
+            template <size_t J, typename T> requires (J < Bound::n)
+            static constexpr bool consume_target_kwargs<J, T> = (
+                Arguments::template has<ArgTraits<Source<J>>::name> ||
+                std::convertible_to<
+                    typename ArgTraits<Source<J>>::type,
+                    typename ArgTraits<T>::type
+                >
+            ) && consume_target_kwargs<J + 1, T>;
 
             /* Upon encountering a variadic positional pack in the source signature,
             recursively traverse the target positional arguments and ensure that the source
             type is convertible to each target type. */
-            template <size_t I, typename S>
-            static consteval bool consume_source_args() {
-                if constexpr (I < kwonly_idx && I < kwargs_idx) {
-                    return std::convertible_to<
-                        typename ArgTraits<S>::type,
-                        typename ArgTraits<Target<I>>::type
-                    > && consume_source_args<I + 1, S>();
-                } else {
-                    return true;
-                }
-            }
+            template <size_t, typename>
+            static constexpr bool consume_source_args = true;
+            template <size_t I, typename S> requires (I < kwonly_idx && I < kwargs_idx)
+            static constexpr bool consume_source_args<I, S> = std::convertible_to<
+                typename ArgTraits<S>::type,
+                typename ArgTraits<Target<I>>::type
+            > && consume_source_args<I + 1, S>;
 
             /* Upon encountering a variadic keyword pack in the source signature,
             recursively traverse the target keyword arguments and extract any that aren't
             present in the source signature, ensuring that the source type is convertible
             to each target type. */
-            template <size_t I, typename S>
-            static consteval bool consume_source_kwargs() {
-                if constexpr (I < Outer::n) {
-                    return (
-                        Inner::template has<ArgTraits<Target<I>>::name> ||
-                        std::convertible_to<
-                            typename ArgTraits<S>::type,
-                            typename ArgTraits<Target<I>>::type
-                        >
-                    ) && consume_source_kwargs<I + 1, S>();
-                } else {
-                    return true;
-                }
-            }
+            template <size_t, typename>
+            static constexpr bool consume_source_kwargs = true;
+            template <size_t I, typename S> requires (I < Arguments::n)
+            static constexpr bool consume_source_kwargs<I, S> = (
+                Bound::template has<ArgTraits<Target<I>>::name> ||
+                std::convertible_to<
+                    typename ArgTraits<S>::type,
+                    typename ArgTraits<Target<I>>::type
+                >
+            ) && consume_source_kwargs<I + 1, S>;
 
             /* Recursively check whether the source arguments conform to Python calling
             conventions (i.e. no positional arguments after a keyword, no duplicate
@@ -3548,136 +3531,128 @@ namespace impl {
             template <size_t I, size_t J>
             static consteval bool enable_recursive() {
                 // both lists are satisfied
-                if constexpr (I >= Outer::n && J >= Inner::n) {
+                if constexpr (I >= Arguments::n && J >= Bound::n) {
                     return true;
 
                 // there are extra source arguments
-                } else if constexpr (I >= Outer::n) {
+                } else if constexpr (I >= Arguments::n) {
                     return false;
 
                 // there are extra target arguments
-                } else if constexpr (J >= Inner::n) {
+                } else if constexpr (J >= Bound::n) {
                     using T = Target<I>;
                     if constexpr (ArgTraits<T>::opt() || ArgTraits<T>::args()) {
                         return enable_recursive<I + 1, J>();
                     } else if constexpr (ArgTraits<T>::kwargs()) {
-                        return consume_target_kwargs<Inner::kw_idx, T>();
+                        return consume_target_kwargs<Bound::kw_idx, T>;
+                    } else {
+                        return false;  // a required argument is missing
                     }
-                    return false;  // a required argument is missing
 
                 // both lists have arguments remaining
                 } else {
                     using T = Target<I>;
                     using S = Source<J>;
 
-                    // ensure target arguments are present without conflict + expand
+                    // ensure target arguments are present and do not conflict + expand
                     // parameter packs over source arguments
                     if constexpr (ArgTraits<T>::posonly()) {
-                        if constexpr (
-                            (
-                                ArgTraits<T>::name != "" &&
-                                Inner::template has<ArgTraits<T>::name>
-                            ) || (
-                                !ArgTraits<T>::opt() &&
-                                ArgTraits<typename Inner::template at<J>>::kw()
-                            )
-                        ) {
+                        constexpr bool duplicate_name = (
+                            ArgTraits<T>::name != "" &&
+                            Bound::template has<ArgTraits<T>::name>
+                        );
+                        constexpr bool missing = (
+                            !ArgTraits<T>::opt() &&
+                            (ArgTraits<S>::kw() || ArgTraits<S>::kwargs())
+                        );
+                        if constexpr (duplicate_name || missing) {
                             return false;
                         }
                     } else if constexpr (ArgTraits<T>::pos()) {
-                        if constexpr (
-                            (
-                                ArgTraits<typename Inner::template at<J>>::pos() &&
-                                Inner::template has<ArgTraits<T>::name>
-                            ) || (
-                                ArgTraits<typename Inner::template at<J>>::kw() &&
-                                !ArgTraits<T>::opt() &&
-                                !Inner::template has<ArgTraits<T>::name>
-                            )
-                        ) {
+                        constexpr bool duplicate_name = (
+                            ArgTraits<T>::name != "" &&
+                            (ArgTraits<S>::pos() || ArgTraits<S>::args()) &&
+                            Bound::template has<ArgTraits<S>::name>
+                        );
+                        constexpr bool missing = (
+                            !ArgTraits<T>::opt() &&
+                            (ArgTraits<S>::kw() || ArgTraits<S>::kwargs()) &&
+                            !Bound::template has<ArgTraits<T>::name>
+                        );
+                        if constexpr (duplicate_name || missing) {
                             return false;
                         }
                     } else if constexpr (ArgTraits<T>::kwonly()) {
-                        if constexpr (
-                            ArgTraits<typename Inner::template at<J>>::pos() || (
-                                !ArgTraits<T>::opt() &&
-                                !Inner::template has<ArgTraits<T>::name>
-                            )
-                        ) {
+                        constexpr bool extra_positional = (
+                            ArgTraits<S>::pos() || ArgTraits<S>::args()
+                        );
+                        constexpr bool missing = (
+                            !ArgTraits<T>::opt() &&
+                            !Bound::template has<ArgTraits<T>::name>
+                        );
+                        if constexpr (extra_positional || missing) {
                             return false;
                         }
                     } else if constexpr (ArgTraits<T>::args()) {
-                        return consume_target_args<J, T>() && enable_recursive<
+                        return consume_target_args<J, T> && enable_recursive<
                             I + 1,
-                            Inner::has_kw ? Inner::kw_idx : Inner::kwargs_idx
+                            Bound::has_kw ? Bound::kw_idx : Bound::kwargs_idx
                         >();  // skip ahead to source keywords
                     } else if constexpr (ArgTraits<T>::kwargs()) {
                         return consume_target_kwargs<
-                            Inner::has_kw ? Inner::kw_idx : Inner::kwargs_idx,
+                            Bound::has_kw ? Bound::kw_idx : Bound::kwargs_idx,
                             T
-                        >();  // end of expression
+                        >;  // end of expression
                     } else {
                         return false;  // not reachable
                     }
 
                     // ensure source arguments match targets & expand parameter packs
-                    if constexpr (ArgTraits<S>::posonly()) {
-                        if constexpr (!std::convertible_to<
+                    // over target arguments.
+                    if constexpr (ArgTraits<S>::pos()) {
+                        constexpr bool not_convertible = !std::convertible_to<
                             typename ArgTraits<S>::type,
                             typename ArgTraits<T>::type
-                        >) {
+                        >;
+                        if constexpr (not_convertible) {
                             return false;
                         }
                     } else if constexpr (ArgTraits<S>::kw()) {
-                        if constexpr (Outer::template has<ArgTraits<S>::name>) {
-                            using T2 = Target<Outer::template idx<ArgTraits<S>::name>>;
-                            if constexpr (!std::convertible_to<
+                        constexpr StaticStr name = ArgTraits<S>::name;
+                        if constexpr (Arguments::template has<name>) {
+                            constexpr size_t idx = Arguments::template idx<name>;
+                            constexpr bool not_convertible = !std::convertible_to<
                                 typename ArgTraits<S>::type,
-                                typename ArgTraits<T2>::type
-                            >) {
+                                typename ArgTraits<Target<idx>>::type
+                            >;
+                            if constexpr (not_convertible) {
                                 return false;
                             }
-                        } else if constexpr (Outer::has_kwargs) {
-                            if constexpr (!std::convertible_to<
+                        } else if constexpr (Arguments::has_kwargs) {
+                            constexpr bool not_convertible = !std::convertible_to<
                                 typename ArgTraits<S>::type,
-                                typename ArgTraits<Target<Outer::kwargs_idx>>::type
-                            >) {
+                                typename ArgTraits<Target<Arguments::kwargs_idx>>::type
+                            >;
+                            if constexpr (not_convertible) {
                                 return false;
                             }
                         } else {
                             return false;
                         }
                     } else if constexpr (ArgTraits<S>::args()) {
-                        return consume_source_args<I, S>() && enable_recursive<
-                            Outer::has_kwonly ? Outer::kwonly_idx : Outer::kwargs_idx,
+                        return consume_source_args<I, S> && enable_recursive<
+                            Arguments::has_kwonly ?
+                                Arguments::kwonly_idx : Arguments::kwargs_idx,
                             J + 1
                         >();  // skip to target keywords
                     } else if constexpr (ArgTraits<S>::kwargs()) {
-                        return consume_source_kwargs<I, S>();  // end of expression
+                        return consume_source_kwargs<I, S>;  // end of expression
                     } else {
                         return false;  // not reachable
                     }
 
                     // advance to next argument pair
                     return enable_recursive<I + 1, J + 1>();
-                }
-            }
-
-            /// TODO: no idea if build_kwargs() is correct or necessary
-
-            template <size_t I, typename T>
-            static constexpr void build_kwargs(
-                std::unordered_map<std::string, T>& map,
-                Values&&... args
-            ) {
-                using Arg = Source<Inner::kw_idx + I>;
-                if constexpr (!Outer::template has<ArgTraits<Arg>::name>) {
-                    map.emplace(
-                        ArgTraits<Arg>::name,
-                        impl::unpack_arg<Inner::kw_index + I>(
-                            std::forward<Source>(args)...
-                        )
-                    );
                 }
             }
 
@@ -3697,6 +3672,24 @@ namespace impl {
              * extras that are not included in the target signature.
              */
 
+            /// TODO: no idea if build_kwargs() is correct or necessary
+
+            template <size_t I, typename T>
+            static constexpr void build_kwargs(
+                std::unordered_map<std::string, T>& map,
+                Values&&... args
+            ) {
+                using Arg = Source<Bound::kw_idx + I>;
+                if constexpr (!Arguments::template has<ArgTraits<Arg>::name>) {
+                    map.emplace(
+                        ArgTraits<Arg>::name,
+                        impl::unpack_arg<Bound::kw_index + I>(
+                            std::forward<Source>(args)...
+                        )
+                    );
+                }
+            }
+
             /// TODO: this side of things might need modifications to be able to handle
             /// the `self` parameter.
 
@@ -3710,18 +3703,18 @@ namespace impl {
                 constexpr StaticStr name = ArgTraits<T>::name;
 
                 if constexpr (ArgTraits<T>::kwonly()) {
-                    if constexpr (Inner::template has<name>) {
-                        constexpr size_t idx = Inner::template idx<name>;
+                    if constexpr (Bound::template has<name>) {
+                        constexpr size_t idx = Bound::template idx<name>;
                         return impl::unpack_arg<idx>(std::forward<Values>(values)...);
                     } else {
                         return defaults.template get<I>();
                     }
 
                 } else if constexpr (ArgTraits<T>::kw()) {
-                    if constexpr (I < Inner::kw_idx) {
+                    if constexpr (I < Bound::kw_idx) {
                         return impl::unpack_arg<I>(std::forward<Values>(values)...);
-                    } else if constexpr (Inner::template has<name>) {
-                        constexpr size_t idx = Inner::template idx<name>;
+                    } else if constexpr (Bound::template has<name>) {
+                        constexpr size_t idx = Bound::template idx<name>;
                         return impl::unpack_arg<idx>(std::forward<Values>(values)...);
                     } else {
                         return defaults.template get<I>();
@@ -3730,8 +3723,8 @@ namespace impl {
                 } else if constexpr (ArgTraits<T>::args()) {
                     using Pack = std::vector<type>;
                     Pack vec;
-                    if constexpr (I < Inner::kw_idx) {
-                        constexpr size_t diff = Inner::kw_idx - I;
+                    if constexpr (I < Bound::kw_idx) {
+                        constexpr size_t diff = Bound::kw_idx - I;
                         vec.reserve(diff);
                         []<size_t... Js>(
                             std::index_sequence<Js...>,
@@ -3759,14 +3752,14 @@ namespace impl {
                     ) {
                         (build_kwargs<Js>(pack, std::forward<Values>(args)...), ...);
                     }(
-                        std::make_index_sequence<Inner::n - Inner::kw_idx>{},
+                        std::make_index_sequence<Bound::n - Bound::kw_idx>{},
                         pack,
                         std::forward<Values>(values)...
                     );
                     return pack;
 
                 } else {
-                    if constexpr (I < Inner::kw_idx) {
+                    if constexpr (I < Bound::kw_idx) {
                         return impl::unpack_arg<I>(std::forward<Values>(values)...);
                     } else {
                         return defaults.template get<I>();
@@ -3790,11 +3783,11 @@ namespace impl {
                     return cpp_to_cpp<I>(defaults, std::forward<Values>(values)...);
 
                 } else if constexpr (ArgTraits<T>::kw()) {
-                    if constexpr (I < Inner::kw_idx) {
+                    if constexpr (I < Bound::kw_idx) {
                         return impl::unpack_arg<I>(std::forward<Values>(values)...);
                     } else {
                         if (iter != end) {
-                            if constexpr (Inner::template has<name>) {
+                            if constexpr (Bound::template has<name>) {
                                 throw TypeError(
                                     "conflicting values for parameter '" + name +
                                     "' at index " + std::to_string(I)
@@ -3806,8 +3799,8 @@ namespace impl {
                             }
 
                         } else {
-                            if constexpr (Inner::template has<name>) {
-                                constexpr size_t idx = Inner::template idx<name>;
+                            if constexpr (Bound::template has<name>) {
+                                constexpr size_t idx = Bound::template idx<name>;
                                 return impl::unpack_arg<idx>(std::forward<Values>(values)...);
                             } else {
                                 if constexpr (ArgTraits<T>::opt()) {
@@ -3825,8 +3818,8 @@ namespace impl {
                 } else if constexpr (ArgTraits<T>::args()) {
                     using Pack = std::vector<type>;  /// TODO: can't store references
                     Pack vec;
-                    if constexpr (I < Inner::args_idx) {
-                        constexpr size_t diff = Inner::args_idx - I;
+                    if constexpr (I < Bound::args_idx) {
+                        constexpr size_t diff = Bound::args_idx - I;
                         vec.reserve(diff + args_size);
                         []<size_t... Js>(
                             std::index_sequence<Js...>,
@@ -3849,7 +3842,7 @@ namespace impl {
                     return cpp_to_cpp<I>(defaults, std::forward<Values>(values)...);
 
                 } else {
-                    if constexpr (I < Inner::kw_idx) {
+                    if constexpr (I < Bound::kw_idx) {
                         return impl::unpack_arg<I>(std::forward<Values>(values)...);
                     } else {
                         if (iter != end) {
@@ -3882,14 +3875,14 @@ namespace impl {
 
                 if constexpr (ArgTraits<T>::kwonly()) {
                     auto item = map.find(name);
-                    if constexpr (Inner::template has<name>) {
+                    if constexpr (Bound::template has<name>) {
                         if (item != map.end()) {
                             throw TypeError(
                                 "conflicting value for parameter '" + name +
                                 "' at index " + std::to_string(I)
                             );
                         }
-                        constexpr size_t idx = Inner::template idx<name>;
+                        constexpr size_t idx = Bound::template idx<name>;
                         return impl::unpack_arg<idx>(std::forward<Values>(values)...);
                     } else {
                         if (item != map.end()) {
@@ -3908,7 +3901,7 @@ namespace impl {
 
                 } else if constexpr (ArgTraits<T>::kw()) {
                     auto item = map.find(name);
-                    if constexpr (I < Inner::kw_idx) {
+                    if constexpr (I < Bound::kw_idx) {
                         if (item != map.end()) {
                             throw TypeError(
                                 "conflicting value for parameter '" + name +
@@ -3916,14 +3909,14 @@ namespace impl {
                             );
                         }
                         return impl::unpack_arg<I>(std::forward<Values>(values)...);
-                    } else if constexpr (Inner::template has<name>) {
+                    } else if constexpr (Bound::template has<name>) {
                         if (item != map.end()) {
                             throw TypeError(
                                 "conflicting value for parameter '" + name +
                                 "' at index " + std::to_string(I)
                             );
                         }
-                        constexpr size_t idx = Inner::template idx<name>;
+                        constexpr size_t idx = Bound::template idx<name>;
                         return impl::unpack_arg<idx>(std::forward<Values>(values)...);
                     } else {
                         if (item != map.end()) {
@@ -3953,7 +3946,7 @@ namespace impl {
                     ) {
                         (build_kwargs<Js>(pack, std::forward<Values>(values)...), ...);
                     }(
-                        std::make_index_sequence<Inner::n - Inner::kw_idx>{},
+                        std::make_index_sequence<Bound::n - Bound::kw_idx>{},
                         pack,
                         std::forward<Values>(values)...
                     );
@@ -3999,7 +3992,7 @@ namespace impl {
 
                 } else if constexpr (ArgTraits<T>::kw()) {
                     auto item = map.find(name);
-                    if constexpr (I < Inner::kw_idx) {
+                    if constexpr (I < Bound::kw_idx) {
                         if (item != map.end()) {
                             throw TypeError(
                                 "conflicting values for parameter '" + name +
@@ -4009,7 +4002,7 @@ namespace impl {
                         return impl::unpack_arg<I>(std::forward<Values>(values)...);
                     } else {
                         if (iter != end) {
-                            if constexpr (Inner::template has<name>) {
+                            if constexpr (Bound::template has<name>) {
                                 throw TypeError(
                                     "conflicting values for parameter '" + name +
                                     "' at index " + std::to_string(I)
@@ -4027,14 +4020,14 @@ namespace impl {
                                 }
                             }
                         } else {
-                            if constexpr (Inner::template has<name>) {
+                            if constexpr (Bound::template has<name>) {
                                 if (item != map.end()) {
                                     throw TypeError(
                                         "conflicting values for parameter '" + name +
                                         "' at index " + std::to_string(I)
                                     );
                                 } else {
-                                    constexpr size_t idx = Inner::template idx<name>;
+                                    constexpr size_t idx = Bound::template idx<name>;
                                     return impl::unpack_arg<idx>(
                                         std::forward<Values>(values)...
                                     ).value;
@@ -4180,7 +4173,7 @@ namespace impl {
                 } else if constexpr (ArgTraits<T>::kwargs()) {
                     std::unordered_map<std::string, type> map;
                     if (kwnames != nullptr) {
-                        auto sequence = std::make_index_sequence<Outer::n_kw>{};
+                        auto sequence = std::make_index_sequence<Arguments::n_kw>{};
                         for (size_t i = 0; i < kwcount; ++i) {
                             Py_ssize_t length;
                             const char* kwname = PyUnicode_AsUTF8AndSize(
@@ -4189,7 +4182,7 @@ namespace impl {
                             );
                             if (kwname == nullptr) {
                                 Exception::from_python();
-                            } else if (!Outer::callback(kwname)) {
+                            } else if (!Arguments::callback(kwname)) {
                                 map.emplace(
                                     std::string(kwname, length),
                                     reinterpret_borrow<Object>(args[nargs + i])
@@ -4237,7 +4230,7 @@ namespace impl {
                     try {
                         PyTuple_SET_ITEM(
                             kwnames,
-                            J - Inner::kw_idx,
+                            J - Bound::kw_idx,
                             release(template_string<name>())
                         );
                         args[J + 1] = release(as_object(
@@ -4279,7 +4272,7 @@ namespace impl {
                             if (name == nullptr) {
                                 Exception::from_python();
                             }
-                            PyTuple_SET_ITEM(kwnames, curr - Inner::kw_idx, name);
+                            PyTuple_SET_ITEM(kwnames, curr - Bound::kw_idx, name);
                             args[curr] = release(as_object(value));
                             ++curr;
                         }
@@ -4304,30 +4297,30 @@ namespace impl {
 
         public:
             static constexpr size_t n               = sizeof...(Values);
-            static constexpr size_t n_pos           = Inner::n_pos;
-            static constexpr size_t n_kw            = Inner::n_kw;
+            static constexpr size_t n_pos           = Bound::n_pos;
+            static constexpr size_t n_kw            = Bound::n_kw;
 
             template <StaticStr Name>
-            static constexpr bool has               = Inner::template has<Name>;
-            static constexpr bool has_pos           = Inner::has_pos;
-            static constexpr bool has_args          = Inner::has_args;
-            static constexpr bool has_kw            = Inner::has_kw;
-            static constexpr bool has_kwargs        = Inner::has_kwargs;
+            static constexpr bool has               = Bound::template has<Name>;
+            static constexpr bool has_pos           = Bound::has_pos;
+            static constexpr bool has_args          = Bound::has_args;
+            static constexpr bool has_kw            = Bound::has_kw;
+            static constexpr bool has_kwargs        = Bound::has_kwargs;
 
             template <StaticStr Name> requires (has<Name>)
-            static constexpr size_t idx             = Inner::template idx<Name>;
-            static constexpr size_t args_idx        = Inner::args_idx;
-            static constexpr size_t kw_idx          = Inner::kw_idx;
-            static constexpr size_t kwargs_idx      = Inner::kwargs_idx;
+            static constexpr size_t idx             = Bound::template idx<Name>;
+            static constexpr size_t args_idx        = Bound::args_idx;
+            static constexpr size_t kw_idx          = Bound::kw_idx;
+            static constexpr size_t kwargs_idx      = Bound::kwargs_idx;
 
             template <size_t I> requires (I < n)
-            using at = Inner::template at<I>;
+            using at = Bound::template at<I>;
 
             /* Call operator is only enabled if source arguments are well-formed and
             match the target signature. */
             static constexpr bool enable =
-                Inner::proper_argument_order &&
-                Inner::no_duplicate_arguments &&
+                Bound::proper_argument_order &&
+                Bound::no_duplicate_arguments &&
                 enable_recursive<0, 0>();
 
             /// TODO: both of these call operators need to be updated to handle the
@@ -4348,14 +4341,14 @@ namespace impl {
                     Func&& func,
                     Values&&... values
                 ) {
-                    if constexpr (Inner::has_args && Inner::has_kwargs) {
-                        const auto& kwargs = impl::unpack_arg<Inner::kwargs_idx>(
+                    if constexpr (Bound::has_args && Bound::has_kwargs) {
+                        const auto& kwargs = impl::unpack_arg<Bound::kwargs_idx>(
                             std::forward<Values>(values)...
                         );
-                        if constexpr (!Outer::has_kwargs) {
-                            assert_kwargs_are_recognized<Outer, Inner>(kwargs);
+                        if constexpr (!Arguments::has_kwargs) {
+                            assert_kwargs_are_recognized<Arguments, Bound>(kwargs);
                         }
-                        const auto& args = impl::unpack_arg<Inner::args_idx>(
+                        const auto& args = impl::unpack_arg<Bound::args_idx>(
                             std::forward<Values>(values)...
                         );
                         auto iter = std::ranges::begin(args);
@@ -4371,7 +4364,7 @@ namespace impl {
                                     std::forward<Values>(values)...
                                 )
                             }...);
-                            if constexpr (!Outer::has_args) {
+                            if constexpr (!Arguments::has_args) {
                                 assert_args_are_exhausted(iter, end);
                             }
                         } else {
@@ -4385,7 +4378,7 @@ namespace impl {
                                     std::forward<Values>(values)...
                                 )
                             }...);
-                            if constexpr (!Outer::has_args) {
+                            if constexpr (!Arguments::has_args) {
                                 assert_args_are_exhausted(iter, end);
                             }
                             return result;
@@ -4393,8 +4386,8 @@ namespace impl {
 
                     // variadic positional arguments are passed as an iterator range, which
                     // must be exhausted after the function call completes
-                    } else if constexpr (Inner::has_args) {
-                        const auto& args = impl::unpack_arg<Inner::args_idx>(
+                    } else if constexpr (Bound::has_args) {
+                        const auto& args = impl::unpack_arg<Bound::args_idx>(
                             std::forward<Values>(values)...
                         );
                         auto iter = std::ranges::begin(args);
@@ -4409,7 +4402,7 @@ namespace impl {
                                     std::forward<Values>(values)...
                                 )
                             }...);
-                            if constexpr (!Outer::has_args) {
+                            if constexpr (!Arguments::has_args) {
                                 assert_args_are_exhausted(iter, end);
                             }
                         } else {
@@ -4422,7 +4415,7 @@ namespace impl {
                                     std::forward<Source>(values)...
                                 )
                             }...);
-                            if constexpr (!Outer::has_args) {
+                            if constexpr (!Arguments::has_args) {
                                 assert_args_are_exhausted(iter, end);
                             }
                             return result;
@@ -4430,12 +4423,12 @@ namespace impl {
 
                     // variadic keyword arguments are passed as a dictionary, which must be
                     // validated up front to ensure all keys are recognized
-                    } else if constexpr (Inner::has_kwargs) {
-                        const auto& kwargs = impl::unpack_arg<Inner::kwargs_idx>(
+                    } else if constexpr (Bound::has_kwargs) {
+                        const auto& kwargs = impl::unpack_arg<Bound::kwargs_idx>(
                             std::forward<Values>(values)...
                         );
-                        if constexpr (!Outer::has_kwargs) {
-                            assert_kwargs_are_recognized<Outer, Inner>(kwargs);
+                        if constexpr (!Arguments::has_kwargs) {
+                            assert_kwargs_are_recognized<Arguments, Bound>(kwargs);
                         }
                         return func({
                             cpp_to_cpp<Is>(
@@ -4455,7 +4448,7 @@ namespace impl {
                         }...);
                     }
                 }(
-                    std::make_index_sequence<Outer::n>{},
+                    std::make_index_sequence<Arguments::n>{},
                     defaults,
                     std::forward<Func>(func),
                     std::forward<Source>(values)...
@@ -4482,15 +4475,15 @@ namespace impl {
                     PyObject* result;
 
                     // if there are no arguments, we can use the no-args protocol
-                    if constexpr (Inner::n == 0) {
+                    if constexpr (Bound::n == 0) {
                         result = PyObject_CallNoArgs(func);
 
                     // if there are no variadic arguments, we can stack allocate the argument
                     // array with a fixed size
-                    } else if constexpr (!Inner::has_args && !Inner::has_kwargs) {
+                    } else if constexpr (!Bound::has_args && !Bound::has_kwargs) {
                         // if there is only one argument, we can use the one-arg protocol
-                        if constexpr (Inner::n == 1) {
-                            if constexpr (Inner::has_kw) {
+                        if constexpr (Bound::n == 1) {
+                            if constexpr (Bound::has_kw) {
                                 result = PyObject_CallOneArg(
                                     func,
                                     ptr(as_object(
@@ -4513,11 +4506,11 @@ namespace impl {
                         // if there is more than one argument, we construct a vectorcall
                         // argument array
                         } else {
-                            PyObject* array[Inner::n + 1];
+                            PyObject* array[Bound::n + 1];
                             array[0] = nullptr;
                             PyObject* kwnames;
-                            if constexpr (Inner::has_kw) {
-                                kwnames = PyTuple_New(Inner::n_kw);
+                            if constexpr (Bound::has_kw) {
+                                kwnames = PyTuple_New(Bound::n_kw);
                             } else {
                                 kwnames = nullptr;
                             }
@@ -4529,29 +4522,29 @@ namespace impl {
                                 ),
                                 ...
                             );
-                            Py_ssize_t npos = Inner::n - Inner::n_kw;
+                            Py_ssize_t npos = Bound::n - Bound::n_kw;
                             result = PyObject_Vectorcall(
                                 func,
                                 array,
                                 npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
                                 kwnames
                             );
-                            for (size_t i = 1; i <= Inner::n; ++i) {
+                            for (size_t i = 1; i <= Bound::n; ++i) {
                                 Py_XDECREF(array[i]);  // release all argument references
                             }
                         }
 
                     // otherwise, we have to heap-allocate the array with a variable size
-                    } else if constexpr (Inner::has_args && !Inner::has_kwargs) {
-                        const auto& args = impl::unpack_arg<Inner::args_idx>(
+                    } else if constexpr (Bound::has_args && !Bound::has_kwargs) {
+                        const auto& args = impl::unpack_arg<Bound::args_idx>(
                             std::forward<Values>(values)...
                         );
-                        size_t nargs = Inner::n - 1 + std::ranges::size(args);
+                        size_t nargs = Bound::n - 1 + std::ranges::size(args);
                         PyObject** array = new PyObject*[nargs + 1];
                         array[0] = nullptr;
                         PyObject* kwnames;
-                        if constexpr (Inner::has_kw) {
-                            kwnames = PyTuple_New(Inner::n_kw);
+                        if constexpr (Bound::has_kw) {
+                            kwnames = PyTuple_New(Bound::n_kw);
                         } else {
                             kwnames = nullptr;
                         }
@@ -4563,28 +4556,28 @@ namespace impl {
                             ),
                             ...
                         );
-                        Py_ssize_t npos = Inner::n - 1 - Inner::n_kw + std::ranges::size(args);
+                        Py_ssize_t npos = Bound::n - 1 - Bound::n_kw + std::ranges::size(args);
                         result = PyObject_Vectorcall(
                             func,
                             array,
                             npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             nullptr
                         );
-                        for (size_t i = 1; i <= Inner::n; ++i) {
+                        for (size_t i = 1; i <= Bound::n; ++i) {
                             Py_XDECREF(array[i]);
                         }
                         delete[] array;
 
                     // The following specializations handle the cross product of
                     // positional/keyword parameter packs which differ only in initialization
-                    } else if constexpr (!Inner::has_args && Inner::has_kwargs) {
-                        const auto& kwargs = impl::unpack_arg<Inner::kwargs_idx>(
+                    } else if constexpr (!Bound::has_args && Bound::has_kwargs) {
+                        const auto& kwargs = impl::unpack_arg<Bound::kwargs_idx>(
                             std::forward<Values>(values)...
                         );
-                        size_t nargs = Inner::n - 1 + std::ranges::size(kwargs);
+                        size_t nargs = Bound::n - 1 + std::ranges::size(kwargs);
                         PyObject** array = new PyObject*[nargs + 1];
                         array[0] = nullptr;
-                        PyObject* kwnames = PyTuple_New(Inner::n_kw + std::ranges::size(kwargs));
+                        PyObject* kwnames = PyTuple_New(Bound::n_kw + std::ranges::size(kwargs));
                         (
                             cpp_to_python<Is>(
                                 kwnames,
@@ -4593,29 +4586,29 @@ namespace impl {
                             ),
                             ...
                         );
-                        Py_ssize_t npos = Inner::n - 1 - Inner::n_kw;
+                        Py_ssize_t npos = Bound::n - 1 - Bound::n_kw;
                         result = PyObject_Vectorcall(
                             func,
                             array,
                             npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             kwnames
                         );
-                        for (size_t i = 1; i <= Inner::n; ++i) {
+                        for (size_t i = 1; i <= Bound::n; ++i) {
                             Py_XDECREF(array[i]);
                         }
                         delete[] array;
 
                     } else {
-                        const auto& args = impl::unpack_arg<Inner::args_idx>(
+                        const auto& args = impl::unpack_arg<Bound::args_idx>(
                             std::forward<Values>(values)...
                         );
-                        const auto& kwargs = impl::unpack_arg<Inner::kwargs_idx>(
+                        const auto& kwargs = impl::unpack_arg<Bound::kwargs_idx>(
                             std::forward<Values>(values)...
                         );
-                        size_t nargs = Inner::n - 2 + std::ranges::size(args) + std::ranges::size(kwargs);
+                        size_t nargs = Bound::n - 2 + std::ranges::size(args) + std::ranges::size(kwargs);
                         PyObject** array = new PyObject*[nargs + 1];
                         array[0] = nullptr;
-                        PyObject* kwnames = PyTuple_New(Inner::n_kw + std::ranges::size(kwargs));
+                        PyObject* kwnames = PyTuple_New(Bound::n_kw + std::ranges::size(kwargs));
                         (
                             cpp_to_python<Is>(
                                 kwnames,
@@ -4624,14 +4617,14 @@ namespace impl {
                             ),
                             ...
                         );
-                        size_t npos = Inner::n - 2 - Inner::n_kw + std::ranges::size(args);
+                        size_t npos = Bound::n - 2 - Bound::n_kw + std::ranges::size(args);
                         result = PyObject_Vectorcall(
                             func,
                             array,
                             npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             kwnames
                         );
-                        for (size_t i = 1; i <= Inner::n; ++i) {
+                        for (size_t i = 1; i <= Bound::n; ++i) {
                             Py_XDECREF(array[i]);
                         }
                         delete[] array;
@@ -4643,7 +4636,7 @@ namespace impl {
                     }
                     return result;  // will be None if the function returns void
                 }(
-                    std::make_index_sequence<Outer::n>{},
+                    std::make_index_sequence<Arguments::n>{},
                     func,
                     std::forward<Values>(values)...
                 );
