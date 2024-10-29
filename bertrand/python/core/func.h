@@ -3410,6 +3410,8 @@ namespace impl {
         /// can apply the simplified logic, since it will be used in the call operator.
         /// -> This key() method will also return a std::array-based Params list,
         /// similar to the above.
+        /// -> Is this even necessary in reality?  Yes, since that's what is fed into
+        /// the overload trie to search for a matching function.
 
         /* A helper that binds C++ arguments to the enclosing signature and performs
         the necessary translation to invoke a matching C++ or Python function. */
@@ -3656,15 +3658,26 @@ namespace impl {
                 }
             }
 
+            /* Conditionally convert a value to an Arg<> annotation when calling the
+            function. */
+            template <size_t I, typename T>
+            static constexpr Arguments::at<I> to_arg(T&& value) {
+                if constexpr (is_arg<Arguments::at<I>>) {
+                    return {std::forward<T>(value)};
+                } else {
+                    return std::forward<T>(value);
+                }
+            };
+
             /* Initialize a **kwargs map in the target arguments by collecting all
             keyword arguments that don't appear in the target parameter list.  The
             result can then be moved into the **kwargs argument annotation. */
-            template <size_t I, typename T>
+            template <size_t J, typename T>
             static constexpr void build_kwargs(
                 std::unordered_map<std::string, T>& map,
-                Values&&... args
+                Values... args
             ) {
-                constexpr size_t idx = Bound::kw_idx + I;
+                constexpr size_t idx = Bound::kw_idx + J;
                 if constexpr (!Arguments::template has<ArgTraits<Source<idx>>::name>) {
                     map.emplace(
                         ArgTraits<Source<idx>>::name,
@@ -3673,10 +3686,10 @@ namespace impl {
                 }
             }
 
-            /* The cpp_to_cpp() method is used to convert an index sequence over the
-             * enclosing signature into the corresponding values pulled from either the
-             * call site or the function's defaults.  It is complicated by the presence
-             * of variadic parameter packs in both the target signature and the call
+            /* The cpp() method is used to convert an index sequence over the enclosing
+             * signature into the corresponding values pulled from either the call site
+             * or the function's defaults.  It is complicated by the presence of
+             * variadic parameter packs in both the target signature and the call
              * arguments, which have to be handled as a cross product of possible
              * combinations.
              *
@@ -3689,21 +3702,30 @@ namespace impl {
              * extras that are not included in the target signature.
              */
 
-            /// TODO: this side of things might need modifications to be able to handle
-            /// the `self` parameter?
-
-            /// TODO: Maybe these methods return the actual Arg<> proxies?
-            /// -> No, these return the actual values, and then the calling code
-            /// converts them into Arg<> proxies by branching on is_arg<...>.
+            /// TODO: Note that the mapping and iterators that are supplied here are
+            /// from the BOUND signature, not the parent one.  That means they are
+            /// supplied as ArgPack and KwargPack objects, not as std::unordered_map,
+            /// etc.  That means there is not a reliable .find() method, etc.  That
+            /// requires a lot of extra thought.  What would be best is some kind of
+            /// iterative strategy, which might be possible now that I have the
+            /// callback hash table.  I would probably need some kind of bitmask to
+            /// account for conflicts, but that could also avoid doing a unique lookup
+            /// for every argument, which could also be more efficient.  Perhaps I
+            /// could boil some of this into the packs themselves, which might be
+            /// stateful views into the container, which enclose the begin and end
+            /// iterators rather than just generate them.  That would mean I could
+            /// pass the actual pack classes in here, which would clarify things
+            /// significantly, and would allow me to write a bunch of helpers to
+            /// automate things.
 
             template <size_t I>
-            static constexpr ArgTraits<Target<I>>::type cpp_to_cpp(
+            static constexpr ArgTraits<Target<I>>::type cpp(
                 const Defaults& defaults,
-                Values&&... values
+                Values... values
             ) {
                 using T = Target<I>;
                 constexpr StaticStr name = ArgTraits<T>::name;
-                constexpr size_t transition = std::max(Bound::kw_idx, Bound::kwargs_idx);
+                constexpr size_t transition = std::min(Bound::kw_idx, Bound::kwargs_idx);
 
                 if constexpr (ArgTraits<T>::posonly()) {
                     if constexpr (I < transition) {
@@ -3767,16 +3789,16 @@ namespace impl {
             }
 
             template <size_t I, std::input_iterator Iter, std::sentinel_for<Iter> End>
-            static constexpr ArgTraits<Target<I>>::type cpp_to_cpp(
+            static constexpr ArgTraits<Target<I>>::type cpp(
                 const Defaults& defaults,
                 size_t args_size,
                 Iter& iter,
                 const End& end,
-                Values&&... values
+                Values... values
             ) {
                 using T = Target<I>;
                 constexpr StaticStr name = ArgTraits<T>::name;
-                constexpr size_t transition = std::max(Bound::kw_idx, Bound::kwargs_idx);
+                constexpr size_t transition = std::min(Bound::kw_idx, Bound::kwargs_idx);
 
                 if constexpr (ArgTraits<T>::posonly()) {
                     if constexpr (I < transition) {
@@ -3833,7 +3855,7 @@ namespace impl {
                     }
 
                 } else if constexpr (ArgTraits<T>::kw()) {
-                    return cpp_to_cpp<I>(defaults, std::forward<Values>(values)...);
+                    return cpp<I>(defaults, std::forward<Values>(values)...);
 
                 } else if constexpr (ArgTraits<T>::args()) {
                     constexpr size_t diff = I < transition ? transition - I : 0;
@@ -3861,7 +3883,7 @@ namespace impl {
                     );
 
                 } else if constexpr (ArgTraits<T>::kwargs()) {
-                    return cpp_to_cpp<I>(defaults, std::forward<Values>(values)...);
+                    return cpp<I>(defaults, std::forward<Values>(values)...);
 
                 } else {
                     static_assert(false, "invalid argument kind");
@@ -3870,17 +3892,17 @@ namespace impl {
             }
 
             template <size_t I, typename Mapping>
-            static constexpr ArgTraits<Target<I>>::type cpp_to_cpp(
+            static constexpr ArgTraits<Target<I>>::type cpp(
                 const Defaults& defaults,
                 const Mapping& map,
-                Values&&... values
+                Values... values
             ) {
                 using T = Target<I>;
                 constexpr StaticStr name = ArgTraits<T>::name;
-                constexpr size_t transition = std::max(Bound::kw_idx, Bound::kwargs_idx);
+                constexpr size_t transition = std::min(Bound::kw_idx, Bound::kwargs_idx);
 
                 if constexpr (ArgTraits<T>::posonly()) {
-                    return cpp_to_cpp<I>(defaults, std::forward<Values>(values)...);
+                    return cpp<I>(defaults, std::forward<Values>(values)...);
 
                 } else if constexpr (ArgTraits<T>::pos()) {
                     auto it = map.find(name);
@@ -3935,7 +3957,7 @@ namespace impl {
                     }
 
                 } else if constexpr (ArgTraits<T>::args()) {
-                    return cpp_to_cpp<I>(defaults, std::forward<Values>(values)...);
+                    return cpp<I>(defaults, std::forward<Values>(values)...);
 
                 } else if constexpr (ArgTraits<T>::kwargs()) {
                     return []<size_t... Js>(
@@ -3945,14 +3967,13 @@ namespace impl {
                     ) {
                         std::unordered_map<std::string, typename ArgTraits<T>::type> pack;
                         (build_kwargs<Js>(pack, std::forward<Values>(values)...), ...);
-                        /// TODO: not sure what this even does, or if it works as intended
                         for (const auto& [key, value] : map) {
-                            if (pack.contains(key)) {
+                            auto [it, inserted] = pack.try_emplace(key, value);
+                            if (!inserted) {
                                 throw TypeError(
                                     "duplicate value for parameter '" + key + "'"
                                 );
                             }
-                            pack[key] = value;
                         }
                         return pack;
                     }(
@@ -3972,20 +3993,20 @@ namespace impl {
                 std::sentinel_for<Iter> End,
                 typename Mapping
             >
-            static constexpr ArgTraits<Target<I>>::type cpp_to_cpp(
+            static constexpr ArgTraits<Target<I>>::type cpp(
                 const Defaults& defaults,
                 size_t args_size,
                 Iter& iter,
                 const End& end,
                 const Mapping& map,
-                Values&&... values
+                Values... values
             ) {
                 using T = Target<I>;
                 constexpr StaticStr name = ArgTraits<T>::name;
-                constexpr size_t transition = std::max(Bound::kw_idx, Bound::kwargs_idx);
+                constexpr size_t transition = std::min(Bound::kw_idx, Bound::kwargs_idx);
 
                 if constexpr (ArgTraits<T>::posonly()) {
-                    return cpp_to_cpp<I>(
+                    return cpp<I>(
                         defaults,
                         args_size,
                         iter,
@@ -4039,14 +4060,10 @@ namespace impl {
                     }
 
                 } else if constexpr (ArgTraits<T>::kw()) {
-                    return cpp_to_cpp<I>(
-                        defaults,
-                        map,
-                        std::forward<Values>(values)...
-                    );
+                    return cpp<I>(defaults, map, std::forward<Values>(values)...);
 
                 } else if constexpr (ArgTraits<T>::args()) {
-                    return cpp_to_cpp<I>(
+                    return cpp<I>(
                         defaults,
                         args_size,
                         iter,
@@ -4055,11 +4072,7 @@ namespace impl {
                     );
 
                 } else if constexpr (ArgTraits<T>::kwargs()) {
-                    return cpp_to_cpp<I>(
-                        defaults,
-                        map,
-                        std::forward<Values>(values)...
-                    );
+                    return cpp<I>(defaults, map, std::forward<Values>(values)...);
 
                 } else {
                     static_assert(false, "invalid argument kind");
@@ -4067,12 +4080,12 @@ namespace impl {
                 }
             }
 
-            /* The py_to_cpp() method is used to convert an index sequence over the
-             * enclosing signature into the corresponding values pulled from either an
-             * array of Python vectorcall arguments or the function's defaults.  This
-             * requires us to parse an array of PyObject* pointers with a binary layout
-             * that looks something like this:
-             *
+            /* The python() method is used to populate a Python vectorcall argument
+             * array according to a C++ call site.  Such an array can then be used to
+             * efficiently call a Python function using the vectorcall protocol, which
+             * is the fastest way to call a Python function from C++.  Here's the basic
+             * layout:
+             * 
              *                          ( kwnames tuple )
              *      -------------------------------------
              *      | x | p | p | p |...| k | k | k |...|
@@ -4080,7 +4093,7 @@ namespace impl {
              *            ^             ^
              *            |             nargs ends here
              *            *args starts here
-             *
+             * 
              * Where 'x' is an optional first element that can be temporarily written to
              * in order to efficiently forward the `self` argument for bound methods,
              * etc.  The presence of this argument is determined by the
@@ -4095,138 +4108,23 @@ namespace impl {
              * extra allocations.
              */
 
-            template <size_t I>
-            static ArgTraits<Target<I>>::type py_to_cpp(
-                const Defaults& defaults,
-                PyObject* const* args,
-                size_t nargsf,
-                PyObject* kwnames,
-                size_t kwcount
-            ) {
-                using T = Target<I>;
-                using type = ArgTraits<T>::type;
-                constexpr StaticStr name = ArgTraits<T>::name;
-                bool has_self = nargsf & PY_VECTORCALL_ARGUMENTS_OFFSET;
-                size_t nargs = PyVectorcall_NARGS(nargsf);
-
-                if constexpr (ArgTraits<T>::kwonly()) {
-                    if (kwnames != nullptr) {
-                        for (size_t i = 0; i < kwcount; ++i) {
-                            const char* kwname = PyUnicode_AsUTF8(
-                                PyTuple_GET_ITEM(kwnames, i)
-                            );
-                            if (kwname == nullptr) {
-                                Exception::from_python();
-                            } else if (std::strcmp(kwname, name) == 0) {
-                                return reinterpret_borrow<Object>(args[i]);
-                            }
-                        }
-                    }
-                    if constexpr (ArgTraits<T>::opt()) {
-                        return defaults.template get<I>();
-                    } else {
-                        throw TypeError(
-                            "missing required keyword-only argument '" + name + "'"
-                        );
-                    }
-
-                } else if constexpr (ArgTraits<T>::kw()) {
-                    if (I < nargs) {
-                        return reinterpret_borrow<Object>(args[I]);
-                    } else if (kwnames != nullptr) {
-                        for (size_t i = 0; i < kwcount; ++i) {
-                            const char* kwname = PyUnicode_AsUTF8(
-                                PyTuple_GET_ITEM(kwnames, i)
-                            );
-                            if (kwname == nullptr) {
-                                Exception::from_python();
-                            } else if (std::strcmp(kwname, name) == 0) {
-                                return reinterpret_borrow<Object>(args[nargs + i]);
-                            }
-                        }
-                    }
-                    if constexpr (ArgTraits<T>::opt()) {
-                        return defaults.template get<I>();
-                    } else {
-                        throw TypeError(
-                            "missing required argument '" + name + "' at index " +
-                            std::to_string(I)
-                        );
-                    }
-
-                } else if constexpr (ArgTraits<T>::args()) {
-                    std::vector<type> vec;
-                    for (size_t i = I; i < nargs; ++i) {
-                        vec.emplace_back(reinterpret_borrow<Object>(args[i]));
-                    }
-                    return vec;
-
-                } else if constexpr (ArgTraits<T>::kwargs()) {
-                    std::unordered_map<std::string, type> map;
-                    if (kwnames != nullptr) {
-                        auto sequence = std::make_index_sequence<Arguments::n_kw>{};
-                        for (size_t i = 0; i < kwcount; ++i) {
-                            Py_ssize_t length;
-                            const char* kwname = PyUnicode_AsUTF8AndSize(
-                                PyTuple_GET_ITEM(kwnames, i),
-                                &length
-                            );
-                            if (kwname == nullptr) {
-                                Exception::from_python();
-                            } else if (!Arguments::callback(kwname)) {
-                                map.emplace(
-                                    std::string(kwname, length),
-                                    reinterpret_borrow<Object>(args[nargs + i])
-                                );
-                            }
-                        }
-                    }
-                    return map;
-
-                } else {
-                    if (I < nargs) {
-                        return reinterpret_borrow<Object>(args[I]);
-                    }
-                    if constexpr (ArgTraits<T>::opt()) {
-                        return defaults.template get<I>();
-                    } else {
-                        throw TypeError(
-                            "missing required positional-only argument at index " +
-                            std::to_string(I)
-                        );
-                    }
-                }
-            }
-
-            /* The cpp_to_py() method is used to allocate a Python vectorcall argument
-             * array and populate it according to a C++ argument list.  This is
-             * essentially the inverse of the py_to_cpp() method, and requires us to
-             * allocate an array with the same binary layout as described above.  That
-             * array can then be used to efficiently call a Python function using the
-             * vectorcall protocol, which is the fastest possible way to call a Python
-             * function from C++.
-             */
-
             template <size_t J>
-            static void cpp_to_py(
-                PyObject* kwnames,
+            static void python(
                 PyObject** args,
-                Values&&... values
+                PyObject* kwnames,
+                Values... values
             ) {
                 using S = Source<J>;
-                using type = ArgTraits<S>::type;
                 constexpr StaticStr name = ArgTraits<S>::name;
-
-                /// TODO: revisit this when implementing the python call operator
-                /// below.
+                constexpr size_t transition = std::min(Bound::kw_idx, Bound::kwargs_idx);
 
                 if constexpr (ArgTraits<S>::pos()) {
                     try {
-                        args[J + 1] = release(to_python(
+                        args[J] = release(to_python(
                             impl::unpack_arg<J>(std::forward<Values>(values)...)
                         ));
                     } catch (...) {
-                        for (size_t i = 1; i <= J; ++i) {
+                        for (size_t i = 0; i < J; ++i) {
                             Py_XDECREF(args[i]);
                         }
                     }
@@ -4235,20 +4133,20 @@ namespace impl {
                     try {
                         PyTuple_SET_ITEM(
                             kwnames,
-                            J - Bound::kw_idx,
+                            J - transition,
                             release(template_string<name>())
                         );
-                        args[J + 1] = release(to_python(
+                        args[J] = release(to_python(
                             impl::unpack_arg<J>(std::forward<Values>(values)...)
                         ));
                     } catch (...) {
-                        for (size_t i = 1; i <= J; ++i) {
+                        for (size_t i = 0; i < J; ++i) {
                             Py_XDECREF(args[i]);
                         }
                     }
 
                 } else if constexpr (ArgTraits<S>::args()) {
-                    size_t curr = J + 1;
+                    size_t curr = J;
                     try {
                         const auto& var_args = impl::unpack_arg<J>(
                             std::forward<Values>(values)...
@@ -4258,13 +4156,13 @@ namespace impl {
                             ++curr;
                         }
                     } catch (...) {
-                        for (size_t i = 1; i < curr; ++i) {
+                        for (size_t i = 0; i < curr; ++i) {
                             Py_XDECREF(args[i]);
                         }
                     }
 
                 } else if constexpr (ArgTraits<S>::kwargs()) {
-                    size_t curr = J + 1;
+                    size_t curr = J;
                     try {
                         const auto& var_kwargs = impl::unpack_arg<J>(
                             std::forward<Values>(values)...
@@ -4277,12 +4175,12 @@ namespace impl {
                             if (name == nullptr) {
                                 Exception::from_python();
                             }
-                            PyTuple_SET_ITEM(kwnames, curr - Bound::kw_idx, name);
+                            PyTuple_SET_ITEM(kwnames, curr - transition, name);
                             args[curr] = release(to_python(value));
                             ++curr;
                         }
                     } catch (...) {
-                        for (size_t i = 1; i < curr; ++i) {
+                        for (size_t i = 0; i < curr; ++i) {
                             Py_XDECREF(args[i]);
                         }
                     }
@@ -4321,8 +4219,19 @@ namespace impl {
                 Bound::no_duplicate_arguments &&
                 enable_recursive<0, 0>();
 
-            /// TODO: both of these call operators need to be updated to handle the
-            /// `self` parameter.
+            /* Produce an overload key from the bound C++ arguments, which can be used
+            to search the overload trie and invoke the resulting function. */
+            static Params<std::array<Param, n>> key(Values... values) {
+                /// TODO: implement this.  There will need to be some conversion, and
+                /// also some concerns about reference counting, since the key will
+                /// need to store Python objects.  Most likely, I need to just give
+                /// up on making the parameters trivially destructible, and make them
+                /// store a strong reference to the Python object instead.  That's
+                /// the only way to cover this case.
+            }
+
+            /// TODO: another overload of key() that takes a vectorcall array and
+            /// constructs an equivalent overload key.
 
             /* Invoke a C++ function from C++ using Python-style arguments. */
             template <typename Func>
@@ -4330,14 +4239,14 @@ namespace impl {
             static auto operator()(
                 const Defaults& defaults,
                 Func&& func,
-                Values&&... values
+                Values... values
             ) -> std::invoke_result_t<Func, Args...> {
                 using Return = std::invoke_result_t<Func, Args...>;
                 return []<size_t... Is>(
                     std::index_sequence<Is...>,
                     const Defaults& defaults,
                     Func&& func,
-                    Values&&... values
+                    Values... values
                 ) {
                     if constexpr (Bound::has_args && Bound::has_kwargs) {
                         const auto& kwargs = impl::unpack_arg<Bound::kwargs_idx>(
@@ -4352,30 +4261,26 @@ namespace impl {
                         auto iter = std::ranges::begin(args);
                         auto end = std::ranges::end(args);
                         if constexpr (std::is_void_v<Return>) {
-                            func({
-                                cpp_to_cpp<Is>(
-                                    defaults,
-                                    std::ranges::size(args),
-                                    iter,
-                                    end,
-                                    kwargs,
-                                    std::forward<Values>(values)...
-                                )
-                            }...);
+                            func(to_arg<Is>(cpp<Is>(
+                                defaults,
+                                std::ranges::size(args),
+                                iter,
+                                end,
+                                kwargs,
+                                std::forward<Values>(values)...
+                            ))...);
                             if constexpr (!Arguments::has_args) {
                                 assert_args_are_exhausted(iter, end);
                             }
                         } else {
-                            decltype(auto) result = func({
-                                cpp_to_cpp<Is>(
-                                    defaults,
-                                    std::ranges::size(args),
-                                    iter,
-                                    end,
-                                    kwargs,
-                                    std::forward<Values>(values)...
-                                )
-                            }...);
+                            decltype(auto) result = func(to_arg<Is>(cpp<Is>(
+                                defaults,
+                                std::ranges::size(args),
+                                iter,
+                                end,
+                                kwargs,
+                                std::forward<Values>(values)...
+                            ))...);
                             if constexpr (!Arguments::has_args) {
                                 assert_args_are_exhausted(iter, end);
                             }
@@ -4391,28 +4296,24 @@ namespace impl {
                         auto iter = std::ranges::begin(args);
                         auto end = std::ranges::end(args);
                         if constexpr (std::is_void_v<Return>) {
-                            func({
-                                cpp_to_cpp<Is>(
-                                    defaults,
-                                    std::ranges::size(args),
-                                    iter,
-                                    end,
-                                    std::forward<Values>(values)...
-                                )
-                            }...);
+                            func(to_arg<Is>(cpp<Is>(
+                                defaults,
+                                std::ranges::size(args),
+                                iter,
+                                end,
+                                std::forward<Values>(values)...
+                            ))...);
                             if constexpr (!Arguments::has_args) {
                                 assert_args_are_exhausted(iter, end);
                             }
                         } else {
-                            decltype(auto) result = func({
-                                cpp_to_cpp<Is>(
-                                    defaults,
-                                    std::ranges::size(args),
-                                    iter,
-                                    end,
-                                    std::forward<Source>(values)...
-                                )
-                            }...);
+                            decltype(auto) result = func(to_arg<Is>(cpp<Is>(
+                                defaults,
+                                std::ranges::size(args),
+                                iter,
+                                end,
+                                std::forward<Values>(values)...
+                            ))...);
                             if constexpr (!Arguments::has_args) {
                                 assert_args_are_exhausted(iter, end);
                             }
@@ -4428,34 +4329,26 @@ namespace impl {
                         if constexpr (!Arguments::has_kwargs) {
                             assert_kwargs_are_recognized<Arguments, Bound>(kwargs);
                         }
-                        return func({
-                            cpp_to_cpp<Is>(
-                                defaults,
-                                kwargs,
-                                std::forward<Values>(values)...
-                            )
-                        }...);
+                        return func(to_arg<Is>(cpp<Is>(
+                            defaults,
+                            kwargs,
+                            std::forward<Values>(values)...
+                        ))...);
 
                     // interpose the two if there are both positional and keyword argument packs
                     } else {
-                        return func({
-                            cpp_to_cpp<Is>(
-                                defaults,
-                                std::forward<Source>(values)...
-                            )
-                        }...);
+                        return func(to_arg<Is>(cpp<Is>(
+                            defaults,
+                            std::forward<Values>(values)...
+                        ))...);
                     }
                 }(
                     std::make_index_sequence<Arguments::n>{},
                     defaults,
                     std::forward<Func>(func),
-                    std::forward<Source>(values)...
+                    std::forward<Values>(values)...
                 );
             }
-
-            /// TODO: the inclusion of the `self` parameter changes the logic around
-            /// calling with no args, one arg, etc.  Perhaps the best thing to do is
-            /// to just always use the vectorcall protocol.
 
             /* Invoke a Python function from C++ using Python-style arguments.  This
             will always return a new reference to a raw Python object, or throw a
@@ -4463,102 +4356,71 @@ namespace impl {
             template <typename = void> requires (enable)
             static PyObject* operator()(
                 PyObject* func,
-                Values&&... values
+                Values... values
             ) {
-                return []<size_t... Is>(
-                    std::index_sequence<Is...>,
+                return []<size_t... Js>(
+                    std::index_sequence<Js...>,
                     PyObject* func,
-                    Values&&... values
+                    Values... values
                 ) {
                     PyObject* result;
 
-                    // if there are no arguments, we can use the no-args protocol
-                    if constexpr (Bound::n == 0) {
-                        result = PyObject_CallNoArgs(func);
-
-                    // if there are no variadic arguments, we can stack allocate the argument
-                    // array with a fixed size
-                    } else if constexpr (!Bound::has_args && !Bound::has_kwargs) {
-                        // if there is only one argument, we can use the one-arg protocol
-                        if constexpr (Bound::n == 1) {
-                            if constexpr (Bound::has_kw) {
-                                result = PyObject_CallOneArg(
-                                    func,
-                                    ptr(to_python(
-                                        impl::unpack_arg<0>(
-                                            std::forward<Values>(values)...
-                                        ).value
-                                    ))
-                                );
-                            } else {
-                                result = PyObject_CallOneArg(
-                                    func,
-                                    ptr(to_python(
-                                        impl::unpack_arg<0>(
-                                            std::forward<Values>(values)...
-                                        )
-                                    ))
-                                );
-                            }
-
-                        // if there is more than one argument, we construct a vectorcall
-                        // argument array
-                        } else {
-                            PyObject* array[Bound::n + 1];
-                            array[0] = nullptr;
-                            PyObject* kwnames;
-                            if constexpr (Bound::has_kw) {
-                                kwnames = PyTuple_New(Bound::n_kw);
-                            } else {
-                                kwnames = nullptr;
-                            }
-                            (
-                                cpp_to_python<Is>(
-                                    kwnames,
-                                    array,  // 1-indexed
-                                    std::forward<Values>(values)...
-                                ),
-                                ...
-                            );
-                            Py_ssize_t npos = Bound::n - Bound::n_kw;
-                            result = PyObject_Vectorcall(
-                                func,
-                                array,
-                                npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                                kwnames
-                            );
-                            for (size_t i = 1; i <= Bound::n; ++i) {
-                                Py_XDECREF(array[i]);  // release all argument references
-                            }
-                        }
-
-                    // otherwise, we have to heap-allocate the array with a variable size
-                    } else if constexpr (Bound::has_args && !Bound::has_kwargs) {
+                    if constexpr (Bound::has_args && Bound::has_kwargs) {
                         const auto& args = impl::unpack_arg<Bound::args_idx>(
                             std::forward<Values>(values)...
                         );
-                        size_t nargs = Bound::n - 1 + std::ranges::size(args);
+                        const auto& kwargs = impl::unpack_arg<Bound::kwargs_idx>(
+                            std::forward<Values>(values)...
+                        );
+                        size_t nargs =
+                            Bound::n +
+                            std::ranges::size(args) +
+                            std::ranges::size(kwargs);
                         PyObject** array = new PyObject*[nargs + 1];
                         array[0] = nullptr;
+                        ++array;
+                        size_t n_kw = Bound::n_kw + std::ranges::size(kwargs);
+                        PyObject* kwnames = n_kw ? PyTuple_New(n_kw) : nullptr;
+                        (python<Js>(
+                            array,
+                            kwnames,
+                            std::forward<Values>(values)...
+                        ), ...);
+                        size_t npos = Bound::n - Bound::n_kw + std::ranges::size(args);
+                        result = PyObject_Vectorcall(
+                            func,
+                            --array,
+                            npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            kwnames
+                        );
+                        for (size_t i = 1; i <= Bound::n; ++i) {
+                            Py_XDECREF(array[i]);
+                        }
+                        delete[] array;
+
+                    } else if constexpr (Bound::has_args) {
+                        const auto& args = impl::unpack_arg<Bound::args_idx>(
+                            std::forward<Values>(values)...
+                        );
+                        size_t nargs = Bound::n + std::ranges::size(args);
+                        PyObject** array = new PyObject*[nargs + 1];
+                        array[0] = nullptr;
+                        ++array;
                         PyObject* kwnames;
                         if constexpr (Bound::has_kw) {
                             kwnames = PyTuple_New(Bound::n_kw);
                         } else {
                             kwnames = nullptr;
                         }
-                        (
-                            cpp_to_python<Is>(
-                                kwnames,
-                                array,
-                                std::forward<Values>(values)...
-                            ),
-                            ...
-                        );
-                        Py_ssize_t npos = Bound::n - 1 - Bound::n_kw + std::ranges::size(args);
+                        (python<Js>(
+                            array,
+                            kwnames,
+                            std::forward<Values>(values)...
+                        ), ...);
                         result = PyObject_Vectorcall(
                             func,
-                            array,
-                            npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            --array,
+                            (nargs - Bound::n_kw) | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             nullptr
                         );
                         for (size_t i = 1; i <= Bound::n; ++i) {
@@ -4566,29 +4428,25 @@ namespace impl {
                         }
                         delete[] array;
 
-                    // The following specializations handle the cross product of
-                    // positional/keyword parameter packs which differ only in initialization
-                    } else if constexpr (!Bound::has_args && Bound::has_kwargs) {
+                    } else if constexpr (Bound::has_kwargs) {
                         const auto& kwargs = impl::unpack_arg<Bound::kwargs_idx>(
                             std::forward<Values>(values)...
                         );
-                        size_t nargs = Bound::n - 1 + std::ranges::size(kwargs);
+                        size_t nargs = Bound::n + std::ranges::size(kwargs);
                         PyObject** array = new PyObject*[nargs + 1];
                         array[0] = nullptr;
-                        PyObject* kwnames = PyTuple_New(Bound::n_kw + std::ranges::size(kwargs));
-                        (
-                            cpp_to_python<Is>(
-                                kwnames,
-                                array,
-                                std::forward<Values>(values)...
-                            ),
-                            ...
-                        );
-                        Py_ssize_t npos = Bound::n - 1 - Bound::n_kw;
+                        ++array;
+                        size_t n_kw = Bound::n_kw + std::ranges::size(kwargs);
+                        PyObject* kwnames = n_kw ? PyTuple_New(n_kw) : nullptr;
+                        (python<Js>(
+                            array,
+                            kwnames,
+                            std::forward<Values>(values)...
+                        ), ...);
                         result = PyObject_Vectorcall(
                             func,
-                            array,
-                            npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            --array,
+                            (Bound::n - Bound::n_kw) | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             kwnames
                         );
                         for (size_t i = 1; i <= Bound::n; ++i) {
@@ -4597,49 +4455,181 @@ namespace impl {
                         delete[] array;
 
                     } else {
-                        const auto& args = impl::unpack_arg<Bound::args_idx>(
-                            std::forward<Values>(values)...
-                        );
-                        const auto& kwargs = impl::unpack_arg<Bound::kwargs_idx>(
-                            std::forward<Values>(values)...
-                        );
-                        size_t nargs = Bound::n - 2 + std::ranges::size(args) + std::ranges::size(kwargs);
-                        PyObject** array = new PyObject*[nargs + 1];
+                        PyObject* array[Bound::n + 1];
                         array[0] = nullptr;
-                        PyObject* kwnames = PyTuple_New(Bound::n_kw + std::ranges::size(kwargs));
-                        (
-                            cpp_to_python<Is>(
-                                kwnames,
-                                array,
-                                std::forward<Values>(values)...
-                            ),
-                            ...
-                        );
-                        size_t npos = Bound::n - 2 - Bound::n_kw + std::ranges::size(args);
+                        ++array;
+                        PyObject* kwnames;
+                        if constexpr (Bound::has_kw) {
+                            kwnames = PyTuple_New(Bound::n_kw);
+                        } else {
+                            kwnames = nullptr;
+                        }
+                        (python<Js>(
+                            array,
+                            kwnames,
+                            std::forward<Values>(values)...
+                        ), ...);
                         result = PyObject_Vectorcall(
                             func,
-                            array,
-                            npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            --array,
+                            (Bound::n - Bound::n_kw) | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             kwnames
                         );
                         for (size_t i = 1; i <= Bound::n; ++i) {
                             Py_XDECREF(array[i]);
                         }
-                        delete[] array;
                     }
 
-                    // A null return value indicates an error
                     if (result == nullptr) {
                         Exception::from_python();
                     }
-                    return result;  // will be None if the function returns void
+                    return result;
                 }(
-                    std::make_index_sequence<Arguments::n>{},
+                    std::make_index_sequence<Bound::n>{},
                     func,
                     std::forward<Values>(values)...
                 );
             }
         };
+
+        /// TODO: revisit py_to_cpp once Bind<> is finished.  I probably also need
+        /// another method that produces a parameter key from a vectorcall array using
+        /// this signature's seed and prime, which is what would be used to search
+        /// the overload trie.
+
+        /* The py_to_cpp() method is used to convert an index sequence over the
+         * enclosing signature into the corresponding values pulled from either an
+         * array of Python vectorcall arguments or the function's defaults.  This
+         * requires us to parse an array of PyObject* pointers with a binary layout
+         * that looks something like this:
+         *
+         *                          ( kwnames tuple )
+         *      -------------------------------------
+         *      | x | p | p | p |...| k | k | k |...|
+         *      -------------------------------------
+         *            ^             ^
+         *            |             nargs ends here
+         *            *args starts here
+         *
+         * Where 'x' is an optional first element that can be temporarily written to
+         * in order to efficiently forward the `self` argument for bound methods,
+         * etc.  The presence of this argument is determined by the
+         * PY_VECTORCALL_ARGUMENTS_OFFSET flag, which is encoded in nargs.  You can
+         * check for its presence by bitwise AND-ing against nargs, and the true
+         * number of arguments must be extracted using `PyVectorcall_NARGS(nargs)`
+         * to account for this.
+         *
+         * If PY_VECTORCALL_ARGUMENTS_OFFSET is set and 'x' is written to, then it must
+         * always be reset to its original value before the function returns.  This
+         * allows for nested forwarding/scoping using the same argument list, with no
+         * extra allocations.
+         */
+
+        /// TODO: py_to_cpp should be lifted up into Arguments<...>, since it
+        /// doesn't correspond to any specific C++ call signature.
+
+        template <size_t I>
+        static ArgTraits<at<I>>::type py_to_cpp(
+            const Defaults& defaults,
+            PyObject* const* args,
+            size_t nargsf,
+            PyObject* kwnames,
+            size_t kwcount
+        ) {
+            using T = at<I>;
+            using type = ArgTraits<T>::type;
+            constexpr StaticStr name = ArgTraits<T>::name;
+            bool has_self = nargsf & PY_VECTORCALL_ARGUMENTS_OFFSET;
+            size_t nargs = PyVectorcall_NARGS(nargsf);
+
+            if constexpr (ArgTraits<T>::kwonly()) {
+                if (kwnames != nullptr) {
+                    for (size_t i = 0; i < kwcount; ++i) {
+                        const char* kwname = PyUnicode_AsUTF8(
+                            PyTuple_GET_ITEM(kwnames, i)
+                        );
+                        if (kwname == nullptr) {
+                            Exception::from_python();
+                        } else if (std::strcmp(kwname, name) == 0) {
+                            return reinterpret_borrow<Object>(args[i]);
+                        }
+                    }
+                }
+                if constexpr (ArgTraits<T>::opt()) {
+                    return defaults.template get<I>();
+                } else {
+                    throw TypeError(
+                        "missing required keyword-only argument '" + name + "'"
+                    );
+                }
+
+            } else if constexpr (ArgTraits<T>::kw()) {
+                if (I < nargs) {
+                    return reinterpret_borrow<Object>(args[I]);
+                } else if (kwnames != nullptr) {
+                    for (size_t i = 0; i < kwcount; ++i) {
+                        const char* kwname = PyUnicode_AsUTF8(
+                            PyTuple_GET_ITEM(kwnames, i)
+                        );
+                        if (kwname == nullptr) {
+                            Exception::from_python();
+                        } else if (std::strcmp(kwname, name) == 0) {
+                            return reinterpret_borrow<Object>(args[nargs + i]);
+                        }
+                    }
+                }
+                if constexpr (ArgTraits<T>::opt()) {
+                    return defaults.template get<I>();
+                } else {
+                    throw TypeError(
+                        "missing required argument '" + name + "' at index " +
+                        std::to_string(I)
+                    );
+                }
+
+            } else if constexpr (ArgTraits<T>::args()) {
+                std::vector<type> vec;
+                for (size_t i = I; i < nargs; ++i) {
+                    vec.emplace_back(reinterpret_borrow<Object>(args[i]));
+                }
+                return vec;
+
+            } else if constexpr (ArgTraits<T>::kwargs()) {
+                std::unordered_map<std::string, type> map;
+                if (kwnames != nullptr) {
+                    auto sequence = std::make_index_sequence<Arguments::n_kw>{};
+                    for (size_t i = 0; i < kwcount; ++i) {
+                        Py_ssize_t length;
+                        const char* kwname = PyUnicode_AsUTF8AndSize(
+                            PyTuple_GET_ITEM(kwnames, i),
+                            &length
+                        );
+                        if (kwname == nullptr) {
+                            Exception::from_python();
+                        } else if (!Arguments::callback(kwname)) {
+                            map.emplace(
+                                std::string(kwname, length),
+                                reinterpret_borrow<Object>(args[nargs + i])
+                            );
+                        }
+                    }
+                }
+                return map;
+
+            } else {
+                if (I < nargs) {
+                    return reinterpret_borrow<Object>(args[I]);
+                }
+                if constexpr (ArgTraits<T>::opt()) {
+                    return defaults.template get<I>();
+                } else {
+                    throw TypeError(
+                        "missing required positional-only argument at index " +
+                        std::to_string(I)
+                    );
+                }
+            }
+        }
 
     };
 

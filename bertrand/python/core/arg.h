@@ -187,6 +187,18 @@ namespace impl {
         }
     };
 
+    /// TODO: these get transformed into iterable views, so that they're easier to
+    /// use when calling a function.  They still use aggregate initialization to
+    /// capture the container, but they also capture a pair of iterators at the same
+    /// time, which will just have to be accounted for in the unpacking operator.
+
+    /// TODO: KwargPack is just an extension of ArgPack, which captures similar
+    /// iterators.
+
+    /// TODO: I might be able to exploit the fact that this syntax is only allowed on
+    /// Python objects, but if I stick with aggregate initialization, then I can
+    /// potentially also enable them for C++ types.
+
     /* A keyword parameter pack obtained by double-dereferencing a Python object. */
     template <mapping_like T>
     struct KwargPack {
