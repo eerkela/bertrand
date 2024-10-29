@@ -14,79 +14,6 @@ namespace py {
 
 namespace impl {
 
-    /* Default seed for FNV-1a hash function. */
-    constexpr size_t fnv1a_seed = [] {
-        if constexpr (sizeof(size_t) > 4) {
-            return 14695981039346656037ULL;
-        } else {
-            return 2166136261u;
-        }
-    }();
-
-    /* Default prime for FNV-1a hash function. */
-    constexpr size_t fnv1a_prime = [] {
-        if constexpr (sizeof(size_t) > 4) {
-            return 1099511628211ULL;
-        } else {
-            return 16777619u;
-        }
-    }();
-
-    /* In the vast majority of cases, adjusting the seed is all that's needed to get a
-    good FNV-1a hash, but just in case, we also provide the next 9 primes in case the
-    default value cannot be used. */
-    constexpr std::array<size_t, 10> fnv1a_fallback_primes = [] -> std::array<size_t, 10> {
-        if constexpr (sizeof(size_t) > 4) {
-            return {
-                fnv1a_prime,
-                1099511628221ULL,
-                1099511628227ULL,
-                1099511628323ULL,
-                1099511628329ULL,
-                1099511628331ULL,
-                1099511628359ULL,
-                1099511628401ULL,
-                1099511628403ULL,
-                1099511628427ULL,
-            };
-        } else {
-            return {
-                fnv1a_prime,
-                16777633u,
-                16777639u,
-                16777643u,
-                16777669u,
-                16777679u,
-                16777681u,
-                16777699u,
-                16777711u,
-                16777721,
-            };
-        }
-    }();
-
-    /* A deterministic FNV-1a string hashing function that gives the same results at
-    both compile time and run time. */
-    constexpr size_t fnv1a(const char* str, size_t seed, size_t prime) noexcept {
-        while (*str) {
-            seed ^= static_cast<size_t>(*str);
-            seed *= prime;
-            ++str;
-        }
-        return seed;
-    }
-
-    /* Round a number up to the next power of two unless it is one already. */
-    template <std::unsigned_integral T>
-    constexpr T next_power_of_two(T n) noexcept {
-        constexpr size_t bits = sizeof(T) * 8;
-        --n;
-        for (size_t i = 1; i < bits; i <<= 1) {
-            n |= (n >> i);
-        }
-        return ++n;
-    }
-
     /* Parse a C++ string that represents an argument name, throwing an error if it
     is invalid. */
     inline std::string_view get_parameter_name(std::string_view str) {
@@ -788,11 +715,7 @@ namespace impl {
                     );
                 } else if (types.size() == 1) {
                     PyObject* type = *types.begin();
-                    _key.value.push_back({
-                        name,
-                        type,
-                        category
-                    });
+                    _key.value.emplace_back(name, type, category);
                     _key.hash = hash_combine(
                         _key.hash,
                         fnv1a(name.data(), seed, prime),
@@ -803,11 +726,7 @@ namespace impl {
                         types,
                         getattr<"Union">(bertrand)
                     );
-                    _key.value.push_back({
-                        name,
-                        ptr(specialization),
-                        category
-                    });
+                    _key.value.emplace_back(name, ptr(specialization), category);
                     _key.hash = hash_combine(
                         _key.hash,
                         fnv1a(name.data(), seed, prime),
@@ -1611,7 +1530,7 @@ namespace impl {
                 std::vector<std::string> extra;
                 for (const auto& [key, value] : kwargs) {
                     if (!callback(key)) {
-                        extra.push_back(key);
+                        extra.emplace_back(key);
                     }
                 }
                 if (!extra.empty()) {
@@ -2095,8 +2014,12 @@ namespace impl {
 
         };
 
-        /// TODO: Overload tries should apply isinstance() rather than issubclass()
-        /// when traversing overloads.
+        /// TODO: maybe the index operator has to take types instead of values?  Values
+        /// could be converted into types by using the `bertrand[x]`, which will either
+        /// directly map input types or convert values into their equivalent bertrand
+        /// type by calling `bertrand(x)` and then indexing with the result.  It would
+        /// always return a properly-normalized Bertrand type, which is then used to
+        /// index the type map.
 
         /* A Trie-based data structure that describes a collection of dynamic overloads
         for a `py::Function` object, which will be dispatched to when called from
@@ -2106,24 +2029,10 @@ namespace impl {
             struct BoundView;
 
         public:
-            struct Edge;
             struct Metadata;
+            struct Edge;
             struct Edges;
             struct Node;
-
-            /* A single link between two nodes in the trie, which describes how to
-            traverse from one to the other.  Multiple edges may share the same target
-            node, and a unique edge will be created for each parameter in a key when it
-            is inserted, such that the original key can be unambiguously identified
-            from a simple search of the trie structure. */
-            struct Edge {
-                size_t hash;
-                uint64_t mask;
-                std::string name;
-                Object type;
-                ArgKind kind;
-                std::shared_ptr<Node> node;
-            };
 
             /* An encoded representation of a function that has been inserted into the
             overload trie, which includes the function itself, a hash of the key that
@@ -2150,44 +2059,29 @@ namespace impl {
                 }
             };
 
-            /* A collection of edges linking nodes within the trie.  The edges are
-            topologically sorted by their expected type, with subclasses coming before
-            their parent classes, and then by their kind, with required arguments
-            coming before optional arguments, which come before variadic arguments.
-            The stored edges are non-owning references to the contents of the
-            `Metadata::path` sequence, which is guaranteed to have a stable address. */
+            /* A single link between two nodes in the trie, which describes how to
+            traverse from one to the other.  Multiple edges may share the same target
+            node, and a unique edge will be created for each parameter in a key when it
+            is inserted, such that the original key can be unambiguously identified
+            from a simple search of the trie structure. */
+            struct Edge {
+                size_t hash;
+                uint64_t mask;
+                std::string name;
+                Object type;
+                ArgKind kind;
+                std::shared_ptr<Node> node;
+            };
+
+            /* A sorted collection of outgoing edges linking a node to its descendants.
+            Edges are topologically sorted by their expected type, with subclasses
+            coming before their parent classes. */
             struct Edges {
             private:
                 friend BoundView;
 
-                /* The topologically-sorted type map needs to store an additional
-                mapping layer to account for overlapping edges and ordering based on
-                kind.  By allowing transparent comparisons, we can support direct
-                lookups by hash without breaking proper order. */
-                struct Table {
-                    struct Ptr {
-                        Edge* edge;
-                        Ptr(const Edge* edge = nullptr) : edge(edge) {}
-                        operator const Edge*() const { return edge; }
-                        const Edge& operator*() const { return *edge; }
-                        const Edge* operator->() const { return edge; }
-                        friend bool operator<(const Ptr& lhs, const Ptr& rhs) {
-                            return
-                                lhs.edge->kind < rhs.edge->kind ||
-                                lhs.edge->hash < rhs.edge->hash;
-                        }
-                        friend bool operator<(const Ptr& lhs, size_t rhs) {
-                            return lhs.edge->hash < rhs;
-                        }
-                        friend bool operator<(size_t lhs, const Ptr& rhs) {
-                            return lhs < rhs.edge->hash;
-                        }
-                    };
-                    std::shared_ptr<Node> node;
-                    using Set = std::set<const Ptr, std::less<>>;
-                    Set set;
-                };
-
+                /* `issubclass()` checks are used to sort the edge map, with ties
+                being broken by address. */
                 struct TopoSort {
                     static bool operator()(PyObject* lhs, PyObject* rhs) {
                         int rc = PyObject_IsSubclass(lhs, rhs);
@@ -2198,7 +2092,43 @@ namespace impl {
                     }
                 };
 
-                using Map = std::map<PyObject*, Table, TopoSort>;
+                /* Edges are stored indirectly to simplify memory management, and are
+                sorted based on kind, with required arguments coming before optional,
+                which come before variadic, with ties broken by hash.  Each one refers
+                to the contents of a `Metadata::path` sequence, which is guaranteed to
+                have a stable address for the lifetime of the overload. */
+                struct EdgePtr {
+                    Edge* edge;
+                    EdgePtr(const Edge* edge = nullptr) : edge(edge) {}
+                    operator const Edge*() const { return edge; }
+                    const Edge& operator*() const { return *edge; }
+                    const Edge* operator->() const { return edge; }
+                    friend bool operator<(const EdgePtr& lhs, const EdgePtr& rhs) {
+                        return
+                            lhs.edge->kind < rhs.edge->kind ||
+                            lhs.edge->hash < rhs.edge->hash;
+                    }
+                    friend bool operator<(const EdgePtr& lhs, size_t rhs) {
+                        return lhs.edge->hash < rhs;
+                    }
+                    friend bool operator<(size_t lhs, const EdgePtr& rhs) {
+                        return lhs < rhs.edge->hash;
+                    }
+                };
+
+                /* Edge pointers are stored in another associative set to achieve
+                the nested sorting.  By definition, each edge within the set points
+                to the same destination node. */
+                struct EdgeKinds {
+                    using Set = std::set<const EdgePtr, std::less<>>;
+                    std::shared_ptr<Node> node;
+                    Set set;
+                };
+
+                /* The types stored in the edge map are also borrowed references to a
+                `Metadata::path` sequence to simplify memory management. */
+                using Map = std::map<PyObject*, EdgeKinds, TopoSort>;
+                Map map;
 
                 /* A range adaptor that only yields edges matching a particular key,
                 identified by its hash. */
@@ -2206,8 +2136,6 @@ namespace impl {
                     const Edges& self;
                     PyObject* value;
                     size_t hash;
-
-                    struct Sentinel;
 
                     struct Iterator {
                         using iterator_category = std::input_iterator_tag;
@@ -2261,46 +2189,48 @@ namespace impl {
                             return curr;
                         }
 
-                        bool operator==(const Sentinel& sentinel) const {
-                            return it == end;
-                        }
-
-                        bool operator!=(const Sentinel& sentinel) const {
-                            return it != end;
-                        }
-
-                    };
-
-                    struct Sentinel {
-                        bool operator==(const Iterator& iter) const {
+                        friend bool operator==(
+                            const Iterator& iter,
+                            const Sentinel& sentinel
+                        ) {
                             return iter.it == iter.end;
                         }
-                        bool operator!=(const Iterator& iter) const {
+
+                        friend bool operator==(
+                            const Sentinel& sentinel,
+                            const Iterator& iter
+                        ) {
+                            return iter.it == iter.end;
+                        }
+
+                        friend bool operator!=(
+                            const Iterator& iter,
+                            const Sentinel& sentinel
+                        ) {
+                            return iter.it != iter.end;
+                        }
+
+                        friend bool operator!=(
+                            const Sentinel& sentinel,
+                            const Iterator& iter
+                        ) {
                             return iter.it != iter.end;
                         }
                     };
 
                     Iterator begin() const {
-                        return {
-                            self.map.begin(),
-                            self.map.end(),
-                            value,
-                            hash
-                        };
+                        return {self.begin(), self.end(), value, hash};
                     }
 
                     Sentinel end() const {
                         return {};
                     }
-
                 };
 
                 /* A range adaptor that yields edges in order, regardless of key. */
                 struct OrderedView {
                     const Edges& self;
                     PyObject* value;
-
-                    struct Sentinel;
 
                     struct Iterator {
                         using iterator_category = std::input_iterator_tag;
@@ -2311,8 +2241,8 @@ namespace impl {
 
                         Map::iterator it;
                         Map::iterator end;
-                        Table::Set::iterator edge_it;
-                        Table::Set::iterator edge_end;
+                        EdgeKinds::Set::iterator edge_it;
+                        EdgeKinds::Set::iterator edge_end;
                         PyObject* value;
 
                         Iterator(
@@ -2351,41 +2281,52 @@ namespace impl {
                             return *edge_it;
                         }
 
-                        bool operator==(const Sentinel& sentinel) const {
-                            return it == end;
-                        }
-
-                        bool operator!=(const Sentinel& sentinel) const {
-                            return it != end;
-                        }
-
-                    };
-
-                    struct Sentinel {
-                        bool operator==(const Iterator& iter) const {
+                        friend bool operator==(
+                            const Iterator& iter,
+                            const Sentinel& sentinel
+                        ) {
                             return iter.it == iter.end;
                         }
-                        bool operator!=(const Iterator& iter) const {
+
+                        friend bool operator==(
+                            const Sentinel& sentinel,
+                            const Iterator& iter
+                        ) {
+                            return iter.it == iter.end;
+                        }
+
+                        friend bool operator!=(
+                            const Iterator& iter,
+                            const Sentinel& sentinel
+                        ) {
                             return iter.it != iter.end;
                         }
+
+                        friend bool operator!=(
+                            const Sentinel& sentinel,
+                            const Iterator& iter
+                        ) {
+                            return iter.it != iter.end;
+                        }
+
                     };
 
                     Iterator begin() const {
-                        return {
-                            self.map.begin(),
-                            self.map.end(),
-                            value
-                        };
+                        return {self.begin(), self.end(), value};
                     }
 
                     Sentinel end() const {
                         return {};
                     }
-
                 };
 
             public:
-                Map map;
+                auto size() const { return map.size(); }
+                auto empty() const { return map.empty(); }
+                auto begin() const { return map.begin(); }
+                auto cbegin() const { return map.cbegin(); }
+                auto end() const { return map.end(); }
+                auto cend() const { return map.cend(); }
 
                 /* Insert an edge into this map and initialize its node pointer.
                 Returns true if the insertion resulted in the creation of a new node,
@@ -2393,7 +2334,7 @@ namespace impl {
                 [[maybe_unused]] bool insert(Edge& edge) {
                     auto [outer, inserted] = map.try_emplace(
                         ptr(edge.type),
-                        Table{}
+                        EdgeKinds{}
                     );
                     auto [inner, success] = outer->second.set.insert(&edge);
                     if (!success) {
@@ -2414,13 +2355,13 @@ namespace impl {
 
                 /* Insert an edge into this map using an explicit node pointer.
                 Returns true if the insertion created a new table in the map, or false
-                if it was already present.  Does NOT initialize the edge's node
-                pointer, and a false return value does NOT guarantee that the existing
-                table references the same node. */
+                if it was added to an existing one.  Does NOT initialize the edge's
+                node pointer, and a false return value does NOT guarantee that the
+                existing table references the same node. */
                 [[maybe_unused]] bool insert(Edge& edge, std::shared_ptr<Node> node) {
                     auto [outer, inserted] = map.try_emplace(
                         ptr(edge.type),
-                        Table{node}
+                        EdgeKinds{node}
                     );
                     auto [inner, success] = outer->second.set.insert(&edge);
                     if (!success) {
@@ -2435,13 +2376,13 @@ namespace impl {
                     return inserted;
                 }
 
-                /* Remove any outgoing edges from the map that match the given hash. */
+                /* Remove any outgoing edges that match the given hash. */
                 void remove(size_t hash) noexcept {
                     std::vector<PyObject*> dead;
                     for (auto& [type, table] : map) {
                         table.set.erase(hash);
                         if (table.set.empty()) {
-                            dead.push_back(type);
+                            dead.emplace_back(type);
                         }
                     }
                     for (PyObject* type : dead) {
@@ -2491,102 +2432,58 @@ namespace impl {
                 /* Recursively search for a matching function in this node's sub-trie.
                 Returns a borrowed reference to a terminal function in the case of a
                 match, or null if no match is found, which causes the algorithm to
-                backtrack one level and continue searching. */
+                backtrack one level and continue searching.
+
+                This method is only called after the first argument has been processed,
+                which means the hash will remain stable over the course of the search.
+                The mask, however, is a mutable out parameter that will be updated with
+                all the edges that were followed to get here, so that the result can be
+                easily compared to the required bitmask of the candidate hash, and
+                keyword argument order can be normalized. */
                 template <typename Container>
                 [[nodiscard]] PyObject* search(
                     const Params<Container>& key,
                     size_t idx,
-                    uint64_t& mask,
-                    size_t& hash
+                    size_t hash,
+                    uint64_t& mask
                 ) const {
                     if (idx >= key.size()) {
                         return func;
                     }
                     const Param& param = key[idx];
 
-                    /// NOTE: if the index is zero, then the hash is ambiguous, so we
-                    /// need to test all edges in order to find a matching key.
-                    /// Otherwise, we already know which key we're tracing, so we can
-                    /// restrict our search to exact matches.  This maintains
-                    /// consistency in the final bitmasks, since each recursive call
-                    /// will only search along a single path after the first edge has
-                    /// been identified, but it requires us to duplicate some logic
-                    /// here, since the required view types are not interchangeable.
-
                     // positional arguments have empty names
                     if (param.name.empty()) {
-                        if (idx) {
-                            for (const Edge* edge : positional.match(param.value, hash)) {
-                                size_t i = idx + 1;
-                                // variadic positional arguments will test all
-                                // remaining positional args against the expected type
-                                // and only recur if they all match
-                                if constexpr (Arguments::has_args) {
-                                    if (edge->kind.variadic()) {
-                                        const Param* curr;
-                                        while (
-                                            i < key.size() &&
-                                            (curr = &key[i])->pos() &&
-                                            instance_check(
-                                                curr->value,
-                                                ptr(edge->type)
-                                            )
-                                        ) {
-                                            ++i;
-                                        }
-                                        if (i < key.size() && curr->pos()) {
-                                            continue;  // failed comparison
-                                        }
+                        for (const Edge* edge : positional.match(param.value, hash)) {
+                            size_t i = idx + 1;
+                            if constexpr (Arguments::has_args) {
+                                if (edge->kind.variadic()) {
+                                    const Param* curr;
+                                    while (
+                                        i < key.size() &&
+                                        (curr = &key[i])->pos() &&
+                                        instance_check(
+                                            curr->value,
+                                            ptr(edge->type)
+                                        )
+                                    ) {
+                                        ++i;
                                     }
-                                }
-                                uint64_t temp_mask = mask | edge->mask;
-                                size_t temp_hash = edge->hash;
-                                PyObject* result = edge->node->search(
-                                    key,
-                                    i,
-                                    temp_mask,
-                                    temp_hash
-                                );
-                                if (result) {
-                                    mask = temp_mask;
-                                    hash = temp_hash;
-                                    return result;
+                                    if (i < key.size() && curr->pos()) {
+                                        continue;  // failed type check
+                                    }
                                 }
                             }
-                        } else {
-                            for (const Edge* edge : positional.match(param.value)) {
-                                size_t i = idx + 1;
-                                if constexpr (Arguments::has_args) {
-                                    if (edge->kind.variadic()) {
-                                        const Param* curr;
-                                        while (
-                                            i < key.size() &&
-                                            (curr = &key[i])->pos() &&
-                                            instance_check(
-                                                curr->value,
-                                                ptr(edge->type)
-                                            )
-                                        ) {
-                                            ++i;
-                                        }
-                                        if (i < key.size() && curr->pos()) {
-                                            continue;
-                                        }
-                                    }
-                                }
-                                uint64_t temp_mask = mask | edge->mask;
-                                size_t temp_hash = edge->hash;
-                                PyObject* result = edge->node->search(
-                                    key,
-                                    i,
-                                    temp_mask,
-                                    temp_hash
-                                );
-                                if (result) {
-                                    mask = temp_mask;
-                                    hash = temp_hash;
-                                    return result;
-                                }
+                            uint64_t temp_mask = mask | edge->mask;
+                            PyObject* result = edge->node->search(
+                                key,
+                                i,
+                                hash,
+                                temp_mask
+                            );
+                            if (result) {
+                                mask = temp_mask;
+                                return result;
                             }
                         }
 
@@ -2599,49 +2496,26 @@ namespace impl {
                             it != keyword.end() ||
                             (it = keyword.find("")) != keyword.end()
                         ) {
-                            if (idx) {
-                                for (const Edge* edge : it->second.match(param.value, hash)) {
-                                    uint64_t temp_mask = mask | edge->mask;
-                                    size_t temp_hash = edge->hash;
-                                    PyObject* result = edge->node->search(
-                                        key,
-                                        idx + 1,
-                                        temp_mask,
-                                        temp_hash
-                                    );
-                                    if (result) {
-                                        // Keyword arguments can be given in any order,
-                                        // so the return value may not reflect the
-                                        // deepest node.  To consistently find the
-                                        // terminal node, we compare the mask of the
-                                        // current node to the mask of the edge we're
-                                        // following, and substitute if it is greater.
-                                        if (mask > edge->mask) {
-                                            result = func;
-                                        }
-                                        mask = temp_mask;
-                                        hash = temp_hash;
-                                        return result;
+                            for (const Edge* edge : it->second.match(param.value, hash)) {
+                                uint64_t temp_mask = mask | edge->mask;
+                                PyObject* result = edge->node->search(
+                                    key,
+                                    idx + 1,
+                                    hash,
+                                    temp_mask
+                                );
+                                if (result) {
+                                    // Keyword arguments can be given in any order, so
+                                    // the return value may not always reflect the
+                                    // deepest node.  To fix this, we compare the
+                                    // incoming mask to the outgoing mask, and
+                                    // substitute the result if this node comes later
+                                    // in the original argument list.
+                                    if (mask > edge->mask) {
+                                        result = func;
                                     }
-                                }
-                            } else {
-                                for (const Edge* edge : it->second.match(param.value)) {
-                                    uint64_t temp_mask = mask | edge->mask;
-                                    size_t temp_hash = edge->hash;
-                                    PyObject* result = edge->node->search(
-                                        key,
-                                        idx + 1,
-                                        temp_mask,
-                                        temp_hash
-                                    );
-                                    if (result) {
-                                        if (mask > edge->mask) {
-                                            result = func;
-                                        }
-                                        mask = temp_mask;
-                                        hash = temp_hash;
-                                        return result;
-                                    }
+                                    mask = temp_mask;
+                                    return result;
                                 }
                             }
                         }
@@ -2655,21 +2529,21 @@ namespace impl {
                 void remove(size_t hash) {
                     positional.remove(hash);
 
-                    std::vector<std::string_view> dead;
+                    std::vector<std::string_view> dead_kw;
                     for (auto& [name, edges] : keyword) {
                         edges.remove(hash);
-                        if (edges.map.empty()) {
-                            dead.push_back(name);
+                        if (edges.empty()) {
+                            dead_kw.emplace_back(name);
                         }
                     }
-                    for (std::string_view name : dead) {
+                    for (std::string_view name : dead_kw) {
                         keyword.erase(name);
                     }
                 }
 
                 /* Check to see if this node has any outgoing edges. */
                 bool empty() const {
-                    return positional.map.empty() && keyword.empty();
+                    return positional.empty() && keyword.empty();
                 }
             };
 
@@ -2697,35 +2571,15 @@ namespace impl {
             found within the trie, or null otherwise. */
             template <typename Container>
             [[nodiscard]] PyObject* search(const Params<Container>& key) const {
-                // check the cache first
                 auto it = cache.find(key.hash);
                 if (it != cache.end()) {
                     return it->second;
                 }
-
-                // ensure the key minimally satisfies the enclosing parameter list
                 assert_valid_args(key);
-
-                // search the trie for a matching node
-                if (root) {
-                    uint64_t mask = 0;
-                    size_t hash;
-                    PyObject* result = root->search(key, 0, mask, hash);
-                    if (result) {
-                        // hash is only initialized if the key has at least one param
-                        if (key.empty()) {
-                            cache[key.hash] = result;  // may be null
-                            return result;
-                        }
-                        const Metadata& metadata = *(data.find(hash));
-                        if ((mask & metadata.required) == metadata.required) {
-                            cache[key.hash] = result;  // may be null
-                            return result;
-                        }
-                    }
-                }
-                cache[key.hash] = nullptr;
-                return nullptr;
+                size_t hash;
+                PyObject* result = recursive_search(key, hash);
+                cache[key.hash] = result;
+                return result;
             }
 
             /* Search the overload trie for a matching signature, as if calling the
@@ -2779,24 +2633,10 @@ namespace impl {
                     return std::nullopt;
                 }
 
-                if (root) {
-                    mask = 0;
-                    size_t hash;
-                    PyObject* result = root->search(key, 0, mask, hash);
-                    if (result) {
-                        if (key.empty()) {
-                            cache[key.hash] = result;
-                            return result;
-                        }
-                        const Metadata& metadata = *(data.find(hash));
-                        if ((mask & metadata.required) == metadata.required) {
-                            cache[key.hash] = result;
-                            return result;
-                        }
-                    }
-                }
-                cache[key.hash] = nullptr;
-                return nullptr;
+                size_t hash;
+                PyObject* result = recursive_search(key, hash);
+                cache[key.hash] = result;
+                return result;
             }
 
             /* Filter the overload trie for a given first positional argument, which
@@ -2807,8 +2647,6 @@ namespace impl {
             [[nodiscard]] BoundView match(PyObject* value) const {
                 return {*this, value};
             }
-
-            /// TODO: update this to use issubclass()?
 
             /* Insert a function into the overload trie, throwing a TypeError if it
             does not conform to the enclosing parameter list or if it conflicts with
@@ -2847,14 +2685,14 @@ namespace impl {
                 for (int i = 0, end = key.size(); i < end; ++i) {
                     try {
                         const Param& param = key[i];
-                        path.push_back({
-                            .hash = key.hash,
-                            .mask = 1ULL << i,
-                            .name = param.name,
-                            .type = reinterpret_borrow<Object>(param.value),
-                            .kind = param.kind,
-                            .node = nullptr
-                        });
+                        path.emplace_back(
+                            key.hash,
+                            1ULL << i,
+                            param.name,
+                            reinterpret_borrow<Object>(param.value),
+                            param.kind,
+                            nullptr
+                        );
                         if (param.posonly()) {
                             curr->positional.insert(path.back());
                             if (!param.opt()) {
@@ -2991,45 +2829,39 @@ namespace impl {
                 // assert the key minimally satisfies the enclosing parameter list
                 assert_valid_args(key);
 
-                // search the trie for a matching node
-                if (root) {
-                    uint64_t mask = 0;
-                    size_t hash;
-                    Object result = reinterpret_borrow<Object>(
-                        root->search(key, 0, mask, hash)
-                    );
-                    if (!result.is(nullptr)) {
-                        // hash is only initialized if the key has at least one param
-                        if (key.empty()) {
-                            for (const Metadata& data : this->data) {
-                                if (data.func == ptr(result)) {
-                                    hash = data.hash;
-                                    break;
-                                }
-                            }
-                        }
-                        const Metadata& metadata = *(data.find(hash));
-                        if ((mask & metadata.required) == metadata.required) {
-                            Node* curr = root.get();
-                            for (const Edge& edge : metadata.path) {
-                                curr->remove(edge.hash);
-                                if (edge.node->func == ptr(metadata.func)) {
-                                    edge.node->func = nullptr;
-                                }
-                                curr = edge.node.get();
-                            }
-                            if (root->func == ptr(metadata.func)) {
-                                root->func = nullptr;
-                            }
-                            data.erase(hash);
-                            if (data.empty()) {
-                                root.reset();
-                            }
-                            return result;
+                size_t hash;
+                Object result = reinterpret_borrow<Object>(
+                    recursive_search(key, hash)
+                );
+                if (result.is(nullptr)) {
+                    return std::nullopt;
+                }
+                if (key.empty()) {
+                    for (const Metadata& data : this->data) {
+                        if (!data.required) {
+                            hash = data.hash;
+                            break;
                         }
                     }
                 }
-                return std::nullopt;
+
+                const Metadata& metadata = *(data.find(hash));
+                Node* curr = root.get();
+                for (const Edge& edge : metadata.path) {
+                    curr->remove(hash);
+                    if (edge.node->func == ptr(result)) {
+                        edge.node->func = nullptr;
+                    }
+                    curr = edge.node.get();
+                }
+                if (root->func == ptr(result)) {
+                    root->func = nullptr;
+                }
+                data.erase(hash);
+                if (data.empty()) {
+                    root.reset();
+                }
+                return result;
             }
 
             /* Clear the overload trie, removing all tracked functions. */
@@ -3047,15 +2879,13 @@ namespace impl {
 
         private:
 
-            /* A range adaptor that iterates over the space of overloads that follow
-            from a given `self` argument, which is used to prune the trie.  When a
-            bound method is created, it will use one of these views to correctly
-            forward the overload interface. */
+            /* A range adaptor that iterates over the space of overloads that follow a
+            given `self` argument, which is used to prune the trie.  When a bound
+            method is created, it will use one of these views to correctly forward the
+            overload interface. */
             struct BoundView {
                 const Overloads& self;
                 PyObject* value;
-
-                struct Sentinel;
 
                 struct Iterator {
                     using iterator_category = std::input_iterator_tag;
@@ -3101,21 +2931,31 @@ namespace impl {
                         return *curr;
                     }
 
-                    bool operator==(const Sentinel& sentinel) const {
-                        return it == end;
-                    }
-
-                    bool operator!=(const Sentinel& sentinel) const {
-                        return it != end;
-                    }
-
-                };
-
-                struct Sentinel {
-                    bool operator==(const Iterator& iter) const {
+                    friend bool operator==(
+                        const Iterator& iter,
+                        const Sentinel& sentinel
+                    ) {
                         return iter.it == iter.end;
                     }
-                    bool operator!=(const Iterator& iter) const {
+
+                    friend bool operator==(
+                        const Sentinel& sentinel,
+                        const Iterator& iter
+                    ) {
+                        return iter.it == iter.end;
+                    }
+
+                    friend bool operator!=(
+                        const Iterator& iter,
+                        const Sentinel& sentinel
+                    ) {
+                        return iter.it != iter.end;
+                    }
+
+                    friend bool operator!=(
+                        const Sentinel& sentinel,
+                        const Iterator& iter
+                    ) {
                         return iter.it != iter.end;
                     }
                 };
@@ -3480,6 +3320,89 @@ namespace impl {
                 }
             }
 
+            template <typename Container>
+            PyObject* recursive_search(const Params<Container>& key, size_t& hash) const {
+                // account for empty root node and/or key
+                if (!root) {
+                    return nullptr;
+                } else if (key.empty()) {
+                    return root->func;  // may be null
+                }
+
+                // The hash is ambiguous for the first argument, so we need to test all
+                // edges in order to find a matching key. Otherwise, we already know
+                // which key we're tracing, so we can restrict our search to exact
+                // matches.  This maintains consistency in the final bitmasks, since
+                // each recursive call will only search along a single path after the
+                // first edge has been identified.
+                const Param& param = key[0];
+
+                // positional arguments have empty names
+                if (param.name.empty()) {
+                    for (const Edge* edge : root->positional.match(param.value)) {
+                        size_t i = 1;
+                        size_t candidate = edge->hash;
+                        uint64_t mask = edge->mask;
+                        if constexpr (Arguments::has_args) {
+                            if (edge->kind.variadic()) {
+                                const Param* curr;
+                                while (
+                                    i < key.size() &&
+                                    (curr = &key[i])->pos() &&
+                                    instance_check(
+                                        curr->value,
+                                        ptr(edge->type)
+                                    )
+                                ) {
+                                    ++i;
+                                }
+                                if (i < key.size() && curr->pos()) {
+                                    continue;  // failed type check on positional arg
+                                }
+                            }
+                        }
+                        PyObject* result = edge->node->search(key, i, candidate, mask);
+                        if (result) {
+                            const Metadata& metadata = *(data.find(candidate));
+                            if ((mask & metadata.required) == metadata.required) {
+                                hash = candidate;
+                                return result;
+                            }
+                        }
+                    }
+
+                // keyword argument names must be looked up in the keyword map.  If
+                // the keyword name is not recognized, check for a variadic keyword
+                // argument under an empty string, and continue with that.
+                } else {
+                    auto it = root->keyword.find(param.name);
+                    if (
+                        it != root->keyword.end() ||
+                        (it = root->keyword.find("")) != root->keyword.end()
+                    ) {
+                        for (const Edge* edge : it->second.match(param.value)) {
+                            size_t candidate = edge->hash;
+                            uint64_t mask = edge->mask;
+                            PyObject* result = edge->node->search(
+                                key,
+                                1,
+                                candidate,
+                                mask
+                            );
+                            if (result) {
+                                const Metadata& metadata = *(data.find(candidate));
+                                if ((mask & metadata.required) == metadata.required) {
+                                    hash = candidate;
+                                    return result;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // if all matching edges have been exhausted, then there is no match
+                return nullptr;
+            }
         };
 
         /// TODO: add a method to Bind<> that produces a simplified Params list from a valid
@@ -3815,9 +3738,9 @@ namespace impl {
                             Pack& vec,
                             Values&&... args
                         ) {
-                            (vec.push_back(
-                                impl::unpack_arg<I + Js>(std::forward<Values>(args)...)
-                            ), ...);
+                            (vec.emplace_back(impl::unpack_arg<I + Js>(
+                                std::forward<Values>(args)...
+                            )), ...);
                         }(
                             std::make_index_sequence<diff>{},
                             vec,
@@ -3910,9 +3833,9 @@ namespace impl {
                             Pack& vec,
                             Values&&... args
                         ) {
-                            (vec.push_back(
-                                impl::unpack_arg<I + Js>(std::forward<Values>(args)...)
-                            ), ...);
+                            (vec.emplace_back(impl::unpack_arg<I + Js>(
+                                std::forward<Values>(args)...
+                            )), ...);
                         }(
                             std::make_index_sequence<diff>{},
                             vec,
@@ -4250,7 +4173,7 @@ namespace impl {
                 } else if constexpr (ArgTraits<T>::args()) {
                     std::vector<type> vec;
                     for (size_t i = I; i < nargs; ++i) {
-                        vec.push_back(reinterpret_borrow<Object>(args[i]));
+                        vec.emplace_back(reinterpret_borrow<Object>(args[i]));
                     }
                     return vec;
 
@@ -5187,6 +5110,10 @@ namespace impl {
             }
         }
 
+        /// TODO: rather than forwarding to the member function type, this would need
+        /// to generate a slice from the underlying function object, right?  This would
+        /// need some serious thought.
+
         static PyObject* __or__(PyObject* lhs, PyObject* rhs) noexcept {
             return PyNumber_Or(
                 PyType_IsSubtype(Py_TYPE(lhs), &__type__) ?
@@ -5245,6 +5172,9 @@ namespace impl {
                 ptr(key),
                 0
             ));
+            /// TODO: do I also need to remove the first argument?  Also, allocating
+            /// a new tuple is just a good idea anyways, since __template_key__ may
+            /// not be read-only.
             PyObject* new_rtype = PySlice_New(
                 cls,
                 reinterpret_cast<PyObject*>(&PyClassMethodDescr_Type),
@@ -8157,11 +8087,11 @@ parameter is a type object, and thus the method is a class method.)doc";
 
             for (Py_ssize_t i = 0; i < nargs; ++i) {
                 PyObject* arg = args[i];
-                key.push_back({
+                key.emplace_back(
                     "",
                     reinterpret_cast<PyObject*>(Py_TYPE(arg)),
                     impl::ArgKind::POS
-                });
+                );
                 hash = impl::hash_combine(
                     hash,
                     key.back().hash(Sig::seed, Sig::prime)
@@ -8170,11 +8100,11 @@ parameter is a type object, and thus the method is a class method.)doc";
 
             for (Py_ssize_t i = 0; i < kwcount; ++i) {
                 PyObject* name = PyTuple_GET_ITEM(kwnames, i);
-                key.push_back({
+                key.emplace_back(
                     impl::get_parameter_name(name),
                     reinterpret_cast<PyObject*>(Py_TYPE(args[nargs + i])),
                     impl::ArgKind::KW
-                });
+                );
                 hash = impl::hash_combine(
                     hash,
                     key.back().hash(Sig::seed, Sig::prime)
@@ -8218,13 +8148,13 @@ parameter is a type object, and thus the method is a class method.)doc";
                             repr(reinterpret_borrow<Object>(slice->step))
                         );
                     }
-                    key.push_back({
+                    key.emplace_back(
                         name,
                         PyType_Check(slice->stop) ?
                             slice->stop :
                             reinterpret_cast<PyObject*>(Py_TYPE(slice->stop)),
                         impl::ArgKind::KW
-                    });
+                    );
                     hash = impl::hash_combine(
                         hash,
                         key.back().hash(Sig::seed, Sig::prime)
@@ -8239,13 +8169,13 @@ parameter is a type object, and thus the method is a class method.)doc";
                             "positional argument follows keyword argument"
                         );
                     }
-                    key.push_back({
+                    key.emplace_back(
                         "",
                         PyType_Check(item) ?
                             item :
                             reinterpret_cast<PyObject*>(Py_TYPE(item)),
                         impl::ArgKind::POS
-                    });
+                    );
                     hash = impl::hash_combine(
                         hash,
                         key.back().hash(Sig::seed, Sig::prime)
