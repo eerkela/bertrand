@@ -3656,6 +3656,23 @@ namespace impl {
                 }
             }
 
+            /* Initialize a **kwargs map in the target arguments by collecting all
+            keyword arguments that don't appear in the target parameter list.  The
+            result can then be moved into the **kwargs argument annotation. */
+            template <size_t I, typename T>
+            static constexpr void build_kwargs(
+                std::unordered_map<std::string, T>& map,
+                Values&&... args
+            ) {
+                constexpr size_t idx = Bound::kw_idx + I;
+                if constexpr (!Arguments::template has<ArgTraits<Source<idx>>::name>) {
+                    map.emplace(
+                        ArgTraits<Source<idx>>::name,
+                        impl::unpack_arg<idx>(std::forward<Source>(args)...)
+                    );
+                }
+            }
+
             /* The cpp_to_cpp() method is used to convert an index sequence over the
              * enclosing signature into the corresponding values pulled from either the
              * call site or the function's defaults.  It is complicated by the presence
@@ -3672,26 +3689,12 @@ namespace impl {
              * extras that are not included in the target signature.
              */
 
-            /// TODO: no idea if build_kwargs() is correct or necessary
-
-            template <size_t I, typename T>
-            static constexpr void build_kwargs(
-                std::unordered_map<std::string, T>& map,
-                Values&&... args
-            ) {
-                using Arg = Source<Bound::kw_idx + I>;
-                if constexpr (!Arguments::template has<ArgTraits<Arg>::name>) {
-                    map.emplace(
-                        ArgTraits<Arg>::name,
-                        impl::unpack_arg<Bound::kw_index + I>(
-                            std::forward<Source>(args)...
-                        )
-                    );
-                }
-            }
-
             /// TODO: this side of things might need modifications to be able to handle
-            /// the `self` parameter.
+            /// the `self` parameter?
+
+            /// TODO: Maybe these methods return the actual Arg<> proxies?
+            /// -> No, these return the actual values, and then the calling code
+            /// converts them into Arg<> proxies by branching on is_arg<...>.
 
             template <size_t I>
             static constexpr ArgTraits<Target<I>>::type cpp_to_cpp(
@@ -3699,19 +3702,18 @@ namespace impl {
                 Values&&... values
             ) {
                 using T = Target<I>;
-                using type = ArgTraits<T>::type;
                 constexpr StaticStr name = ArgTraits<T>::name;
+                constexpr size_t transition = std::max(Bound::kw_idx, Bound::kwargs_idx);
 
-                if constexpr (ArgTraits<T>::kwonly()) {
-                    if constexpr (Bound::template has<name>) {
-                        constexpr size_t idx = Bound::template idx<name>;
-                        return impl::unpack_arg<idx>(std::forward<Values>(values)...);
+                if constexpr (ArgTraits<T>::posonly()) {
+                    if constexpr (I < transition) {
+                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
                     } else {
                         return defaults.template get<I>();
                     }
 
-                } else if constexpr (ArgTraits<T>::kw()) {
-                    if constexpr (I < Bound::kw_idx) {
+                } else if constexpr (ArgTraits<T>::pos()) {
+                    if constexpr (I < transition) {
                         return impl::unpack_arg<I>(std::forward<Values>(values)...);
                     } else if constexpr (Bound::template has<name>) {
                         constexpr size_t idx = Bound::template idx<name>;
@@ -3720,50 +3722,47 @@ namespace impl {
                         return defaults.template get<I>();
                     }
 
-                } else if constexpr (ArgTraits<T>::args()) {
-                    using Pack = std::vector<type>;
-                    Pack vec;
-                    if constexpr (I < Bound::kw_idx) {
-                        constexpr size_t diff = Bound::kw_idx - I;
-                        vec.reserve(diff);
-                        []<size_t... Js>(
-                            std::index_sequence<Js...>,
-                            Pack& vec,
-                            Values&&... args
-                        ) {
-                            (vec.emplace_back(impl::unpack_arg<I + Js>(
-                                std::forward<Values>(args)...
-                            )), ...);
-                        }(
-                            std::make_index_sequence<diff>{},
-                            vec,
-                            std::forward<Values>(values)...
-                        );
-                    }
-                    return vec;
-
-                } else if constexpr (ArgTraits<T>::kwargs()) {
-                    using Pack = std::unordered_map<std::string, type>;
-                    Pack pack;
-                    []<size_t... Js>(
-                        std::index_sequence<Js...>,
-                        Pack& pack,
-                        Values&&... args
-                    ) {
-                        (build_kwargs<Js>(pack, std::forward<Values>(args)...), ...);
-                    }(
-                        std::make_index_sequence<Bound::n - Bound::kw_idx>{},
-                        pack,
-                        std::forward<Values>(values)...
-                    );
-                    return pack;
-
-                } else {
-                    if constexpr (I < Bound::kw_idx) {
-                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
+                } else if constexpr (ArgTraits<T>::kw()) {
+                    if constexpr (Bound::template has<name>) {
+                        constexpr size_t idx = Bound::template idx<name>;
+                        return impl::unpack_arg<idx>(std::forward<Values>(values)...);
                     } else {
                         return defaults.template get<I>();
                     }
+
+                } else if constexpr (ArgTraits<T>::args()) {
+                    constexpr size_t diff = I < transition ? transition - I : 0;
+                    return []<size_t... Js>(
+                        std::index_sequence<Js...>,
+                        Values&&... args
+                    ) {
+                        std::vector<typename ArgTraits<T>::type> vec;
+                        vec.reserve(diff);
+                        (vec.emplace_back(impl::unpack_arg<I + Js>(
+                            std::forward<Values>(args)...
+                        )), ...);
+                        return vec;
+                    }(
+                        std::make_index_sequence<diff>{},
+                        std::forward<Values>(values)...
+                    );
+
+                } else if constexpr (ArgTraits<T>::kwargs()) {
+                    return []<size_t... Js>(
+                        std::index_sequence<Js...>,
+                        Values&&... args
+                    ) {
+                        std::unordered_map<std::string, typename ArgTraits<T>::type> map;
+                        (build_kwargs<Js>(map, std::forward<Values>(args)...), ...);
+                        return map;
+                    }(
+                        std::make_index_sequence<Bound::n - Bound::kw_idx>{},
+                        std::forward<Values>(values)...
+                    );
+
+                } else {
+                    static_assert(false, "invalid argument kind");
+                    std::unreachable();
                 }
             }
 
@@ -3776,73 +3775,11 @@ namespace impl {
                 Values&&... values
             ) {
                 using T = Target<I>;
-                using type = ArgTraits<T>::type;
                 constexpr StaticStr name = ArgTraits<T>::name;
+                constexpr size_t transition = std::max(Bound::kw_idx, Bound::kwargs_idx);
 
-                if constexpr (ArgTraits<T>::kwonly()) {
-                    return cpp_to_cpp<I>(defaults, std::forward<Values>(values)...);
-
-                } else if constexpr (ArgTraits<T>::kw()) {
-                    if constexpr (I < Bound::kw_idx) {
-                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
-                    } else {
-                        if (iter != end) {
-                            if constexpr (Bound::template has<name>) {
-                                throw TypeError(
-                                    "conflicting values for parameter '" + name +
-                                    "' at index " + std::to_string(I)
-                                );
-                            } else {
-                                decltype(auto) result = *iter;
-                                ++iter;
-                                return result;
-                            }
-
-                        } else {
-                            if constexpr (Bound::template has<name>) {
-                                constexpr size_t idx = Bound::template idx<name>;
-                                return impl::unpack_arg<idx>(std::forward<Values>(values)...);
-                            } else {
-                                if constexpr (ArgTraits<T>::opt()) {
-                                    return defaults.template get<I>();
-                                } else {
-                                    throw TypeError(
-                                        "no match for parameter '" + name +
-                                        "' at index " + std::to_string(I)
-                                    );
-                                }
-                            }
-                        }
-                    }
-
-                } else if constexpr (ArgTraits<T>::args()) {
-                    using Pack = std::vector<type>;  /// TODO: can't store references
-                    Pack vec;
-                    if constexpr (I < Bound::args_idx) {
-                        constexpr size_t diff = Bound::args_idx - I;
-                        vec.reserve(diff + args_size);
-                        []<size_t... Js>(
-                            std::index_sequence<Js...>,
-                            Pack& vec,
-                            Values&&... args
-                        ) {
-                            (vec.emplace_back(impl::unpack_arg<I + Js>(
-                                std::forward<Values>(args)...
-                            )), ...);
-                        }(
-                            std::make_index_sequence<diff>{},
-                            vec,
-                            std::forward<Values>(values)...
-                        );
-                        vec.insert(vec.end(), iter, end);
-                    }
-                    return vec;
-
-                } else if constexpr (ArgTraits<T>::kwargs()) {
-                    return cpp_to_cpp<I>(defaults, std::forward<Values>(values)...);
-
-                } else {
-                    if constexpr (I < Bound::kw_idx) {
+                if constexpr (ArgTraits<T>::posonly()) {
+                    if constexpr (I < transition) {
                         return impl::unpack_arg<I>(std::forward<Values>(values)...);
                     } else {
                         if (iter != end) {
@@ -3860,6 +3797,75 @@ namespace impl {
                             }
                         }
                     }
+
+                } else if constexpr (ArgTraits<T>::pos()) {
+                    if constexpr (I < transition) {
+                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
+                    } else {
+                        if (iter != end) {
+                            if constexpr (Bound::template has<name>) {
+                                throw TypeError(
+                                    "conflicting values for parameter '" + name +
+                                    "' at index " + std::to_string(I)
+                                );
+                            } else {
+                                decltype(auto) result = *iter;
+                                ++iter;
+                                return result;
+                            }
+
+                        } else {
+                            if constexpr (Bound::template has<name>) {
+                                return impl::unpack_arg<Bound::template idx<name>>(
+                                    std::forward<Values>(values)...
+                                );
+                            } else {
+                                if constexpr (ArgTraits<T>::opt()) {
+                                    return defaults.template get<I>();
+                                } else {
+                                    throw TypeError(
+                                        "no match for parameter '" + name +
+                                        "' at index " + std::to_string(I)
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                } else if constexpr (ArgTraits<T>::kw()) {
+                    return cpp_to_cpp<I>(defaults, std::forward<Values>(values)...);
+
+                } else if constexpr (ArgTraits<T>::args()) {
+                    constexpr size_t diff = I < transition ? transition - I : 0;
+                    return []<size_t... Js>(
+                        std::index_sequence<Js...>,
+                        size_t args_size,
+                        Iter& iter,
+                        const End& end,
+                        Values&&... args
+                    ) {
+                        std::vector<typename ArgTraits<T>::type> vec;
+                        /// TODO: adding args_size might be an overestimate?
+                        vec.reserve(diff + args_size);
+                        (vec.emplace_back(impl::unpack_arg<I + Js>(
+                            std::forward<Values>(args)...
+                        )), ...);
+                        vec.insert(vec.end(), iter, end);
+                        return vec;
+                    }(
+                        std::make_index_sequence<diff>{},
+                        args_size,
+                        iter,
+                        end,
+                        std::forward<Values>(values)...
+                    );
+
+                } else if constexpr (ArgTraits<T>::kwargs()) {
+                    return cpp_to_cpp<I>(defaults, std::forward<Values>(values)...);
+
+                } else {
+                    static_assert(false, "invalid argument kind");
+                    std::unreachable();
                 }
             }
 
@@ -3870,98 +3876,93 @@ namespace impl {
                 Values&&... values
             ) {
                 using T = Target<I>;
-                using type = ArgTraits<T>::type;
                 constexpr StaticStr name = ArgTraits<T>::name;
+                constexpr size_t transition = std::max(Bound::kw_idx, Bound::kwargs_idx);
 
-                if constexpr (ArgTraits<T>::kwonly()) {
-                    auto item = map.find(name);
-                    if constexpr (Bound::template has<name>) {
-                        if (item != map.end()) {
+                if constexpr (ArgTraits<T>::posonly()) {
+                    return cpp_to_cpp<I>(defaults, std::forward<Values>(values)...);
+
+                } else if constexpr (ArgTraits<T>::pos()) {
+                    auto it = map.find(name);
+                    if (it != map.end()) {
+                        if constexpr (I < transition || Bound::template has<name>) {
                             throw TypeError(
                                 "conflicting value for parameter '" + name +
                                 "' at index " + std::to_string(I)
                             );
-                        }
-                        constexpr size_t idx = Bound::template idx<name>;
-                        return impl::unpack_arg<idx>(std::forward<Values>(values)...);
-                    } else {
-                        if (item != map.end()) {
-                            return item->second;
                         } else {
-                            if constexpr (ArgTraits<T>::opt()) {
-                                return defaults.template get<I>();
-                            } else {
-                                throw TypeError(
-                                    "no match for parameter '" + name +
-                                    "' at index " + std::to_string(I)
-                                );
-                            }
+                            return it->second;
                         }
+                    }
+                    if constexpr (I < transition) {
+                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
+                    } else if constexpr (Bound::template has<name>) {
+                        return impl::unpack_arg<Bound::template idx<name>>(
+                            std::forward<Values>(values)...
+                        );
+                    } else if constexpr (ArgTraits<T>::opt()) {
+                        return defaults.template get<I>();
+                    } else {
+                        throw TypeError(
+                            "no match for parameter '" + name +
+                            "' at index " + std::to_string(I)
+                        );
                     }
 
                 } else if constexpr (ArgTraits<T>::kw()) {
-                    auto item = map.find(name);
-                    if constexpr (I < Bound::kw_idx) {
-                        if (item != map.end()) {
+                    auto it = map.find(name);
+                    if (it != map.end()) {
+                        if constexpr (Bound::template has<name>) {
                             throw TypeError(
                                 "conflicting value for parameter '" + name +
                                 "' at index " + std::to_string(I)
                             );
-                        }
-                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
-                    } else if constexpr (Bound::template has<name>) {
-                        if (item != map.end()) {
-                            throw TypeError(
-                                "conflicting value for parameter '" + name +
-                                "' at index " + std::to_string(I)
-                            );
-                        }
-                        constexpr size_t idx = Bound::template idx<name>;
-                        return impl::unpack_arg<idx>(std::forward<Values>(values)...);
-                    } else {
-                        if (item != map.end()) {
-                            return item->second;
                         } else {
-                            if constexpr (ArgTraits<T>::opt()) {
-                                return defaults.template get<I>();
-                            } else {
-                                throw TypeError(
-                                    "no match for parameter '" + name +
-                                    "' at index " + std::to_string(I)
-                                );
-                            }
+                            return it->second;
                         }
+                    }
+                    if constexpr (Bound::template has<name>) {
+                        return impl::unpack_arg<Bound::template idx<name>>(
+                            std::forward<Values>(values)...
+                        );
+                    } else if constexpr (ArgTraits<T>::opt()) {
+                        return defaults.template get<I>();
+                    } else {
+                        throw TypeError(
+                            "no match for parameter '" + name +
+                            "' at index " + std::to_string(I)
+                        );
                     }
 
                 } else if constexpr (ArgTraits<T>::args()) {
                     return cpp_to_cpp<I>(defaults, std::forward<Values>(values)...);
 
                 } else if constexpr (ArgTraits<T>::kwargs()) {
-                    using Pack = std::unordered_map<std::string, type>;
-                    Pack pack;
-                    []<size_t... Js>(
+                    return []<size_t... Js>(
                         std::index_sequence<Js...>,
-                        Pack& pack,
+                        const Mapping& map,
                         Values&&... values
                     ) {
+                        std::unordered_map<std::string, typename ArgTraits<T>::type> pack;
                         (build_kwargs<Js>(pack, std::forward<Values>(values)...), ...);
+                        /// TODO: not sure what this even does, or if it works as intended
+                        for (const auto& [key, value] : map) {
+                            if (pack.contains(key)) {
+                                throw TypeError(
+                                    "duplicate value for parameter '" + key + "'"
+                                );
+                            }
+                            pack[key] = value;
+                        }
+                        return pack;
                     }(
                         std::make_index_sequence<Bound::n - Bound::kw_idx>{},
-                        pack,
                         std::forward<Values>(values)...
                     );
-                    for (const auto& [key, value] : map) {
-                        if (pack.contains(key)) {
-                            throw TypeError(
-                                "duplicate value for parameter '" + key + "'"
-                            );
-                        }
-                        pack[key] = value;
-                    }
-                    return pack;
 
                 } else {
-                    return cpp_to_cpp<I>(defaults, std::forward<Values>(values)...);
+                    static_assert(false, "invalid argument kind");
+                    std::unreachable();
                 }
             }
 
@@ -3980,74 +3981,69 @@ namespace impl {
                 Values&&... values
             ) {
                 using T = Target<I>;
-                using type = ArgTraits<T>::type;
                 constexpr StaticStr name = ArgTraits<T>::name;
+                constexpr size_t transition = std::max(Bound::kw_idx, Bound::kwargs_idx);
 
-                if constexpr (ArgTraits<T>::kwonly()) {
+                if constexpr (ArgTraits<T>::posonly()) {
                     return cpp_to_cpp<I>(
                         defaults,
-                        map,
+                        args_size,
+                        iter,
+                        end,
                         std::forward<Values>(values)...
                     );
 
-                } else if constexpr (ArgTraits<T>::kw()) {
-                    auto item = map.find(name);
-                    if constexpr (I < Bound::kw_idx) {
-                        if (item != map.end()) {
+                } else if constexpr (ArgTraits<T>::pos()) {
+                    auto it = map.find(name);
+                    if constexpr (I < transition) {
+                        if (it != map.end()) {
                             throw TypeError(
                                 "conflicting values for parameter '" + name +
                                 "' at index " + std::to_string(I)
                             );
                         }
                         return impl::unpack_arg<I>(std::forward<Values>(values)...);
+                    } else if constexpr (Bound::template has<name>) {
+                        if (iter != end || it != map.end()) {
+                            throw TypeError(
+                                "conflicting values for parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+                        }
+                        return impl::unpack_arg<Bound::template idx<name>>(
+                            std::forward<Values>(values)...
+                        );
                     } else {
                         if (iter != end) {
-                            if constexpr (Bound::template has<name>) {
+                            if (it != map.end()) {
                                 throw TypeError(
                                     "conflicting values for parameter '" + name +
                                     "' at index " + std::to_string(I)
                                 );
-                            } else {
-                                if (item != map.end()) {
-                                    throw TypeError(
-                                        "conflicting values for parameter '" + name +
-                                        "' at index " + std::to_string(I)
-                                    );
-                                } else {
-                                    decltype(auto) result = *iter;
-                                    ++iter;
-                                    return result;
-                                }
                             }
+                            decltype(auto) result = *iter;
+                            ++iter;
+                            return result;
+                        } else if (it != map.end()) {
+                            return it->second;
                         } else {
-                            if constexpr (Bound::template has<name>) {
-                                if (item != map.end()) {
-                                    throw TypeError(
-                                        "conflicting values for parameter '" + name +
-                                        "' at index " + std::to_string(I)
-                                    );
-                                } else {
-                                    constexpr size_t idx = Bound::template idx<name>;
-                                    return impl::unpack_arg<idx>(
-                                        std::forward<Values>(values)...
-                                    ).value;
-                                }
+                            if constexpr (ArgTraits<T>::opt()) {
+                                return defaults.template get<I>();
                             } else {
-                                if (item != map.end()) {
-                                    return item->second;
-                                } else {
-                                    if constexpr (ArgTraits<T>::opt()) {
-                                        return defaults.template get<I>();
-                                    } else {
-                                        throw TypeError(
-                                            "no match for parameter '" + name +
-                                            "' at index " + std::to_string(I)
-                                        );
-                                    }
-                                }
+                                throw TypeError(
+                                    "no match for parameter '" + name +
+                                    "' at index " + std::to_string(I)
+                                );
                             }
                         }
                     }
+
+                } else if constexpr (ArgTraits<T>::kw()) {
+                    return cpp_to_cpp<I>(
+                        defaults,
+                        map,
+                        std::forward<Values>(values)...
+                    );
 
                 } else if constexpr (ArgTraits<T>::args()) {
                     return cpp_to_cpp<I>(
@@ -4066,13 +4062,8 @@ namespace impl {
                     );
 
                 } else {
-                    return cpp_to_cpp<I>(
-                        defaults,
-                        args_size,
-                        iter,
-                        end,
-                        std::forward<Values>(values)...
-                    );
+                    static_assert(false, "invalid argument kind");
+                    std::unreachable();
                 }
             }
 
@@ -4226,14 +4217,28 @@ namespace impl {
                 using type = ArgTraits<S>::type;
                 constexpr StaticStr name = ArgTraits<S>::name;
 
-                if constexpr (ArgTraits<S>::kw()) {
+                /// TODO: revisit this when implementing the python call operator
+                /// below.
+
+                if constexpr (ArgTraits<S>::pos()) {
+                    try {
+                        args[J + 1] = release(to_python(
+                            impl::unpack_arg<J>(std::forward<Values>(values)...)
+                        ));
+                    } catch (...) {
+                        for (size_t i = 1; i <= J; ++i) {
+                            Py_XDECREF(args[i]);
+                        }
+                    }
+
+                } else if constexpr (ArgTraits<S>::kw()) {
                     try {
                         PyTuple_SET_ITEM(
                             kwnames,
                             J - Bound::kw_idx,
                             release(template_string<name>())
                         );
-                        args[J + 1] = release(as_object(
+                        args[J + 1] = release(to_python(
                             impl::unpack_arg<J>(std::forward<Values>(values)...)
                         ));
                     } catch (...) {
@@ -4249,7 +4254,7 @@ namespace impl {
                             std::forward<Values>(values)...
                         );
                         for (const auto& value : var_args) {
-                            args[curr] = release(as_object(value));
+                            args[curr] = release(to_python(value));
                             ++curr;
                         }
                     } catch (...) {
@@ -4273,7 +4278,7 @@ namespace impl {
                                 Exception::from_python();
                             }
                             PyTuple_SET_ITEM(kwnames, curr - Bound::kw_idx, name);
-                            args[curr] = release(as_object(value));
+                            args[curr] = release(to_python(value));
                             ++curr;
                         }
                     } catch (...) {
@@ -4283,15 +4288,8 @@ namespace impl {
                     }
 
                 } else {
-                    try {
-                        args[J + 1] = release(as_object(
-                            impl::unpack_arg<J>(std::forward<Values>(values)...)
-                        ));
-                    } catch (...) {
-                        for (size_t i = 1; i <= J; ++i) {
-                            Py_XDECREF(args[i]);
-                        }
-                    }
+                    static_assert(false, "invalid argument kind");
+                    std::unreachable();
                 }
             }
 
@@ -4486,7 +4484,7 @@ namespace impl {
                             if constexpr (Bound::has_kw) {
                                 result = PyObject_CallOneArg(
                                     func,
-                                    ptr(as_object(
+                                    ptr(to_python(
                                         impl::unpack_arg<0>(
                                             std::forward<Values>(values)...
                                         ).value
@@ -4495,7 +4493,7 @@ namespace impl {
                             } else {
                                 result = PyObject_CallOneArg(
                                     func,
-                                    ptr(as_object(
+                                    ptr(to_python(
                                         impl::unpack_arg<0>(
                                             std::forward<Values>(values)...
                                         )
@@ -4641,7 +4639,6 @@ namespace impl {
                     std::forward<Values>(values)...
                 );
             }
-
         };
 
     };
@@ -7732,7 +7729,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                         );
                         Py_RETURN_NONE;
                     } else {
-                        return release(as_object(
+                        return release(to_python(
                             self->func(
                                 {impl::Arguments<Target...>::template from_python<Is>(
                                     self->defaults,
