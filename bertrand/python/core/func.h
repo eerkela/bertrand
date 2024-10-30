@@ -1080,22 +1080,13 @@ namespace impl {
             (ArgTraits<T>::kwargs() && I != kwargs_idx) ?
                 false : _no_duplicate_arguments<I + 1, Ts...>;
 
+        /// TODO: no_required_after_default should be merged with proper_argument_order?
         template <size_t, typename...>
         static constexpr bool _no_required_after_default = true;
         template <size_t I, typename T, typename... Ts>
         static constexpr bool _no_required_after_default<I, T, Ts...> =
             ArgTraits<T>::pos() && !ArgTraits<T>::opt() && I > opt_idx ?
                 false : _no_required_after_default<I + 1, Ts...>;
-
-        template <typename...>
-        static constexpr bool _no_qualified_arg_annotations = true;
-        template <typename T, typename... Ts>
-        static constexpr bool _no_qualified_arg_annotations<T, Ts...> =
-            is_arg<T> && (
-                std::is_reference_v<T> ||
-                std::is_const_v<std::remove_reference_t<T>> ||
-                std::is_volatile_v<std::remove_reference_t<T>>
-            ) ? false : _no_qualified_arg_annotations<Ts...>;
 
         template <size_t I, typename... Ts>
         static constexpr bool _compatible() {
@@ -1186,7 +1177,21 @@ namespace impl {
         static constexpr bool no_required_after_default =
             _no_required_after_default<0, Args...>;
         static constexpr bool no_qualified_arg_annotations =
-            _no_qualified_arg_annotations<Args...>;
+            !((is_arg<Args> && (
+                std::is_reference_v<Args> ||
+                std::is_const_v<std::remove_reference_t<Args>> ||
+                std::is_volatile_v<std::remove_reference_t<Args>>
+            )) || ...);
+        static constexpr bool no_qualified_args =
+            !((std::is_reference_v<Args> ||
+                std::is_const_v<std::remove_reference_t<Args>> ||
+                std::is_volatile_v<std::remove_reference_t<Args>> ||
+                std::is_reference_v<typename ArgTraits<Args>::type> ||
+                std::is_const_v<std::remove_reference_t<typename ArgTraits<Args>::type>> ||
+                std::is_volatile_v<std::remove_reference_t<typename ArgTraits<Args>::type>>
+            ) || ...);
+        static constexpr bool args_are_python =
+            (inherits<typename ArgTraits<Args>::type, Object> && ...);
 
         /* A template constraint that evaluates true if another signature represents a
         viable overload of a function with this signature. */
@@ -1525,7 +1530,7 @@ namespace impl {
         };
 
         /* Encapsulates a pair of iterators over a positional argument pack and
-        validates that they are fully consumed upon destruction. */
+        validates that they are fully consumed. */
         template <typename Signature, typename Pack>
         struct PositionalPack {
             std::ranges::iterator_t<const Pack&> begin;
@@ -1563,8 +1568,8 @@ namespace impl {
             }
         };
 
-        /* Encapsulates a map of keyword arguments drawn from a keyword argument pack,
-        which is validated upon construction. */
+        /* Encapsulates a map of keyword arguments drawn from a keyword argument pack
+        and validates that they are fully consumed. */
         template <typename Signature, typename Pack>
         struct KeywordPack {
             using Map = std::unordered_map<std::string, typename Pack::mapped_type>;
@@ -3443,11 +3448,6 @@ namespace impl {
             }
         };
 
-        /// TODO: Bind<> also needs to be restricted in that all of the argument
-        /// annotations that are provided must not be lvalues.  This should be rolled
-        /// into the `enable` state, which might be broken down into its individual
-        /// components for better error messages.
-
         /* A helper that binds C++ arguments to the enclosing signature and performs
         the necessary translation to invoke a matching C++ or Python function. */
         template <typename... Values>
@@ -4265,12 +4265,17 @@ namespace impl {
             /// TODO: break out the proper_argument_order, etc. checks into separate
             /// conditions that can be used to provide more detailed error messages.
 
+            static constexpr bool proper_argument_order = Bound::proper_argument_order;
+            static constexpr bool no_duplicate_arguments = Bound::no_duplicate_arguments;
+            static constexpr bool no_qualified_arg_annotations =
+                Bound::no_qualified_arg_annotations;
+
             /* Call operator is only enabled if source arguments are well-formed and
             match the target signature. */
             static constexpr bool enable =
                 Bound::proper_argument_order &&
                 Bound::no_duplicate_arguments &&
-                Bound::no_qualified_argument_annotations &&
+                Bound::no_qualified_arg_annotations &&
                 enable_recursive<0, 0>();
 
             /* Produce an overload key from the bound C++ arguments, which can be used
@@ -4960,6 +4965,12 @@ namespace impl {
         using type = R(C::*)(A...);
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
+        static constexpr bool unqualified_return = !(
+            std::is_reference_v<R> ||
+            std::is_const_v<std::remove_reference_t<R>> ||
+            std::is_volatile_v<std::remove_reference_t<R>>
+        );
+        static constexpr bool return_is_python = inherits<R, Object>;
         static constexpr bool return_is_convertible_to_python =
             std::convertible_to<R, Object>;
         template <typename T>
@@ -5003,6 +5014,12 @@ namespace impl {
         using type = R(C::*)(A...) const;
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
+        static constexpr bool unqualified_return = !(
+            std::is_reference_v<R> ||
+            std::is_const_v<std::remove_reference_t<R>> ||
+            std::is_volatile_v<std::remove_reference_t<R>>
+        );
+        static constexpr bool return_is_python = inherits<R, Object>;
         static constexpr bool return_is_convertible_to_python =
             std::convertible_to<R, Object>;
         template <typename T>
@@ -5046,6 +5063,12 @@ namespace impl {
         using type = R(C::*)(A...) volatile;
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
+        static constexpr bool unqualified_return = !(
+            std::is_reference_v<R> ||
+            std::is_const_v<std::remove_reference_t<R>> ||
+            std::is_volatile_v<std::remove_reference_t<R>>
+        );
+        static constexpr bool return_is_python = inherits<R, Object>;
         static constexpr bool return_is_convertible_to_python =
             std::convertible_to<R, Object>;
         template <typename T>
@@ -5089,6 +5112,12 @@ namespace impl {
         using type = R(C::*)(A...) const volatile;
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
+        static constexpr bool unqualified_return = !(
+            std::is_reference_v<R> ||
+            std::is_const_v<std::remove_reference_t<R>> ||
+            std::is_volatile_v<std::remove_reference_t<R>>
+        );
+        static constexpr bool return_is_python = inherits<R, Object>;
         static constexpr bool return_is_convertible_to_python =
             std::convertible_to<R, Object>;
         template <typename T>
@@ -5129,21 +5158,54 @@ namespace impl {
     struct Signature<R(C::*)(A...) const volatile & noexcept> : Signature<R(C::*)(A...) const volatile> {}; 
 
     template <typename T>
-    concept function_pointer_like = Signature<T>::enable;
+    struct GetSignature {
+        static constexpr bool enable = false;
+        using type = void;
+    };
+    template <typename T> requires (Signature<std::remove_cvref_t<T>>::enable)
+    struct GetSignature<T> {
+        static constexpr bool enable = true;
+        using type = Signature<std::remove_cvref_t<T>>::template with_self<void>;
+    };
+    template <has_call_operator T>
+    struct GetSignature<T> {
+    private:
+        using U = decltype(&std::remove_cvref_t<T>::operator());
+
+    public:
+        static constexpr bool enable = GetSignature<U>::enable;
+        using type = GetSignature<U>::type;
+    };
+
     template <typename T>
-    concept args_fit_within_bitset = Signature<T>::n <= 64;
-    template <typename T>
-    concept args_are_convertible_to_python = Signature<T>::args_are_convertible_to_python;
-    template <typename T>
-    concept return_is_convertible_to_python = Signature<T>::return_is_convertible_to_python;
-    template <typename T>
-    concept proper_argument_order = Signature<T>::proper_argument_order;
-    template <typename T>
-    concept no_duplicate_arguments = Signature<T>::no_duplicate_arguments;
-    template <typename T>
-    concept no_required_after_default = Signature<T>::no_required_after_default;
-    template <typename T>
-    concept no_qualified_arg_annotations = Signature<T>::no_qualified_arg_annotations;
+    concept has_signature = GetSignature<T>::enable;
+    template <has_signature T>
+    using get_signature = GetSignature<T>::type;
+
+    template <typename Sig>
+    concept function_pointer_like = Sig::enable;
+    template <typename Sig>
+    concept args_fit_within_bitset = Sig::n <= 64;
+    template <typename Sig>
+    concept args_are_python = Sig::args_are_python;
+    template <typename Sig>
+    concept args_are_convertible_to_python = Sig::args_are_convertible_to_python;
+    template <typename Sig>
+    concept unqualified_return = Sig::unqualified_return;
+    template <typename Sig>
+    concept return_is_python = Sig::return_is_python;
+    template <typename Sig>
+    concept return_is_convertible_to_python = Sig::return_is_convertible_to_python;
+    template <typename Sig>
+    concept proper_argument_order = Sig::proper_argument_order;
+    template <typename Sig>
+    concept no_duplicate_arguments = Sig::no_duplicate_arguments;
+    template <typename Sig>
+    concept no_required_after_default = Sig::no_required_after_default;
+    template <typename Sig>
+    concept no_qualified_arg_annotations = Sig::no_qualified_arg_annotations;
+    template <typename Sig>
+    concept no_qualified_args = Sig::no_qualified_args;
 
     /* A `@classmethod` descriptor for a C++ function type, which references an
     unbound function and produces bound equivalents that pass the enclosing type as a
@@ -5929,22 +5991,95 @@ mirrors C++ semantics and enables structural typing via `isinstance()` and
 
     };
 
+}  // namespace impl
+
+
+/* A template constraint that controls whether the `py::call()` operator is enabled
+for a given C++ function and argument list. */
+template <typename Func, typename... Args>
+concept callable =
+    impl::has_signature<Func> &&
+    impl::args_fit_within_bitset<impl::get_signature<Func>> &&
+    impl::proper_argument_order<impl::get_signature<Func>> &&
+    impl::no_duplicate_arguments<impl::get_signature<Func>> &&
+    impl::no_required_after_default<impl::get_signature<Func>> &&
+    impl::no_qualified_arg_annotations<impl::get_signature<Func>> &&
+    impl::get_signature<Func>::template Bind<Args...>::proper_argument_order &&
+    impl::get_signature<Func>::template Bind<Args...>::no_duplicate_arguments &&
+    impl::get_signature<Func>::template Bind<Args...>::no_qualified_arg_annotations &&
+    impl::get_signature<Func>::template Bind<Args...>::enable;
+
+
+/* Introspect a function signature to retrieve a tuple capable of storing default
+values for all argument annotations that are marked as `::opt`.  An object of this
+type can be passed to the `call` function to provide default values for arguments that
+are not present at the call site.  The tuple itself can be constructed using the same
+keyword argument and parameter pack semantics as the `call()` operator itself. */
+template <impl::has_signature Func>
+using Defaults = impl::get_signature<Func>::Defaults;
+
+
+/// TODO: these extra forms with no/movable defaults have to be implemented in Bind<>.
+
+
+/* Invoke a C++ function with Python-style calling conventions, including keyword
+arguments and/or parameter packs, which are resolved at compile time.  Note that the
+function signature cannot contain any template parameters (including auto arguments),
+as the function signature must be known unambiguously at compile time to implement the
+required matching. */
+template <typename Func, typename... Args> requires (callable<Func, Args...>)
+decltype(auto) call(Func&& func, Args&&... args) {
+    return typename impl::get_signature<Func>::template Bind<Args...>{}(
+        std::forward<Func>(func),
+        std::forward<Args>(args)...
+    );
+}
+
+
+/* Invoke a C++ function with Python-style calling conventions, including keyword
+arguments and/or parameter packs, which are resolved at compile time.  Note that the
+function signature cannot contain any template parameters (including auto arguments),
+as the function signature must be known unambiguously at compile time to implement the
+required matching. */
+template <typename Func, typename... Args> requires (callable<Func, Args...>)
+decltype(auto) call(const Defaults<Func>& defaults, Func&& func, Args&&... args) {
+    return typename impl::get_signature<Func>::template Bind<Args...>{}(
+        defaults,
+        std::forward<Func>(func),
+        std::forward<Args>(args)...
+    );
+}
+
+
+/* Invoke a C++ function with Python-style calling conventions, including keyword
+arguments and/or parameter packs, which are resolved at compile time.  Note that the
+function signature cannot contain any template parameters (including auto arguments),
+as the function signature must be known unambiguously at compile time to implement the
+required matching. */
+template <typename Func, typename... Args> requires (callable<Func, Args...>)
+decltype(auto) call(Defaults<Func>&& defaults, Func&& func, Args&&... args) {
+    return typename impl::get_signature<Func>::template Bind<Args...>{}(
+        std::move(defaults),
+        std::forward<Func>(func),
+        std::forward<Args>(args)...
+    );
 }
 
 
 template <typename F = Object(*)(
-    Arg<"args", const Object&>::args,
-    Arg<"kwargs", const Object&>::kwargs
+    Arg<"args", Object>::args,
+    Arg<"kwargs", Object>::kwargs
 )>
     requires (
         impl::function_pointer_like<F> &&
-        impl::args_fit_within_bitset<F> &&
-        impl::args_are_convertible_to_python<F> &&
-        impl::return_is_convertible_to_python<F> &&
-        impl::proper_argument_order<F> &&
-        impl::no_duplicate_arguments<F> &&
-        impl::no_required_after_default<F> &&
-        impl::no_qualified_arg_annotations<F>
+        impl::no_qualified_args<impl::Signature<F>> &&
+        impl::no_duplicate_arguments<impl::Signature<F>> &&
+        impl::proper_argument_order<impl::Signature<F>> &&
+        impl::no_required_after_default<impl::Signature<F>> &&
+        impl::args_fit_within_bitset<impl::Signature<F>> &&
+        impl::args_are_python<impl::Signature<F>> &&
+        impl::return_is_python<impl::Signature<F>> &&
+        impl::unqualified_return<impl::Signature<F>>
     )
 struct Function;
 
@@ -6756,13 +6891,14 @@ syntax highlighting and LSP support. */
 template <typename F>
     requires (
         impl::function_pointer_like<F> &&
-        impl::args_fit_within_bitset<F> &&
-        impl::args_are_convertible_to_python<F> &&
-        impl::return_is_convertible_to_python<F> &&
-        impl::proper_argument_order<F> &&
-        impl::no_duplicate_arguments<F> &&
-        impl::no_required_after_default<F> &&
-        impl::no_qualified_arg_annotations<F>
+        impl::no_qualified_args<impl::Signature<F>> &&
+        impl::no_duplicate_arguments<impl::Signature<F>> &&
+        impl::proper_argument_order<impl::Signature<F>> &&
+        impl::no_required_after_default<impl::Signature<F>> &&
+        impl::args_fit_within_bitset<impl::Signature<F>> &&
+        impl::args_are_python<impl::Signature<F>> &&
+        impl::return_is_python<impl::Signature<F>> &&
+        impl::unqualified_return<impl::Signature<F>>
     )
 struct Function : Object, Interface<Function<F>> {
 private:
