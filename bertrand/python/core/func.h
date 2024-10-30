@@ -1506,7 +1506,7 @@ namespace impl {
 
         /* Encapsulates a pair of iterators over a positional argument pack and
         validates that they are fully consumed upon destruction. */
-        template <typename Pack>
+        template <typename Signature, typename Pack>
         struct PositionalPack {
             std::ranges::iterator_t<const Pack&> begin;
             std::ranges::sentinel_t<const Pack&> end;
@@ -1520,7 +1520,7 @@ namespace impl {
             {}
 
             ~PositionalPack() {
-                if constexpr (!has_args) {
+                if constexpr (!Signature::has_args) {
                     if (begin != end) {
                         std::string message =
                             "too many arguments in positional parameter pack: ['" +
@@ -1583,10 +1583,13 @@ namespace impl {
 
         /* Extract a positional parameter pack from the given arguments and return a
         helper struct that encapsulates the validated arguments. */
-        template <size_t J, typename... Values> requires (J < sizeof...(Values))
+        template <typename Signature, size_t J, typename... Values>
+            requires (J < sizeof...(Values))
         static auto positional_pack(Values&&... values) {
             using Pack = std::remove_cvref_t<unpack_type<J, Values...>>;
-            return PositionalPack<Pack>{unpack_arg<J>(std::forward<Values>(values)...)};
+            return PositionalPack<Signature, Pack>{
+                unpack_arg<J>(std::forward<Values>(values)...)
+            };
         }
 
         /* Extract a keyword parameter pack from the given arguments and return a
@@ -1992,7 +1995,7 @@ namespace impl {
                 using Bound = Arguments<Values...>;
 
                 if constexpr (Bound::has_args && Bound::has_kwargs) {
-                    auto positional = positional_pack<Bound::args_idx>(
+                    auto positional = positional_pack<Inner, Bound::args_idx>(
                         std::forward<Values>(values)...
                     );
                     auto keyword = keyword_pack<Inner, Bound::kwargs_idx>(
@@ -2003,7 +2006,7 @@ namespace impl {
                     }...};
 
                 } else if constexpr (Bound::has_args) {
-                    auto positional = positional_pack<Bound::args_idx>(
+                    auto positional = positional_pack<Inner, Bound::args_idx>(
                         std::forward<Values>(values)...
                     );
                     return {{unpack<Is>(positional, std::forward<Values>(values)...)}...};
@@ -3453,14 +3456,8 @@ namespace impl {
             }
         };
 
-        /// TODO: add a method to Bind<> that produces a simplified Params list from a valid
-        /// C++ parameter list.  There also needs to be a cousin for Python calls that
-        /// does the same thing from a vectorcall argument array.  Both of the latter
-        /// can apply the simplified logic, since it will be used in the call operator.
-        /// -> This key() method will also return a std::array-based Params list,
-        /// similar to the above.
-        /// -> Is this even necessary in reality?  Yes, since that's what is fed into
-        /// the overload trie to search for a matching function.
+        /// TODO: Param needs to own the PyObject* value and give up on trivial
+        /// destructibility.  That's the only way conversions from C++ are possible
 
         /* A helper that binds C++ arguments to the enclosing signature and performs
         the necessary translation to invoke a matching C++ or Python function. */
@@ -3707,6 +3704,20 @@ namespace impl {
                 }
             }
 
+            /* Produce an overload key from the bound arguments, converting them to
+            Python. */
+            template <size_t J>
+            static Param to_param(Values... values) {
+                using S = Source<J>;
+                return {
+                    .name = ArgTraits<S>::name,
+                    .value = to_python(
+                        impl::unpack_arg<J>(std::forward<Values>(values)...)
+                    ),
+                    .kind = ArgTraits<S>::kind
+                };
+            }
+
             /* Conditionally convert a value to an Arg<> annotation when calling the
             function. */
             template <size_t I, typename T>
@@ -3839,7 +3850,7 @@ namespace impl {
             template <size_t I, typename Pos>
             static constexpr ArgTraits<Target<I>>::type cpp(
                 const Defaults& defaults,
-                PositionalPack<Pos>& positional,
+                PositionalPack<Arguments, Pos>& positional,
                 Values... values
             ) {
                 using T = Target<I>;
@@ -4040,7 +4051,7 @@ namespace impl {
             template <size_t I, typename Pos, typename Kw>
             static constexpr ArgTraits<Target<I>>::type cpp(
                 const Defaults& defaults,
-                PositionalPack<Pos>& positional,
+                PositionalPack<Arguments, Pos>& positional,
                 KeywordPack<Arguments, Kw>& keyword,
                 Values... values
             ) {
@@ -4227,6 +4238,8 @@ namespace impl {
             }
 
         public:
+            /// TODO: standardized comptime interface here?
+
             static constexpr size_t n               = sizeof...(Values);
             static constexpr size_t n_pos           = Bound::n_pos;
             static constexpr size_t n_kw            = Bound::n_kw;
@@ -4257,12 +4270,15 @@ namespace impl {
             /* Produce an overload key from the bound C++ arguments, which can be used
             to search the overload trie and invoke the resulting function. */
             static Params<std::array<Param, n>> key(Values... values) {
-                /// TODO: implement this.  There will need to be some conversion, and
-                /// also some concerns about reference counting, since the key will
-                /// need to store Python objects.  Most likely, I need to just give
-                /// up on making the parameters trivially destructible, and make them
-                /// store a strong reference to the Python object instead.  That's
-                /// the only way to cover this case.
+                return []<size_t... Js>(
+                    std::index_sequence<Js...>,
+                    Values... values
+                ) -> Params<std::array<Param, n>> {
+                    return {to_param<Js>(std::forward<Values>(values))...};
+                }(
+                    std::make_index_sequence<n>{},
+                    std::forward<Values>(values)...
+                );
             }
 
             /* Invoke a C++ function from C++ using Python-style arguments. */
@@ -4281,7 +4297,7 @@ namespace impl {
                 ) {
                     // pack() helpers return RAII guards that validate arguments
                     if constexpr (Bound::has_args && Bound::has_kwargs) {
-                        auto positional = positional_pack<Bound::args_idx>(
+                        auto positional = positional_pack<Arguments, Bound::args_idx>(
                             std::forward<Values>(values)...
                         );
                         auto keyword = keyword_pack<Arguments, Bound::kwargs_idx>(
@@ -4294,7 +4310,7 @@ namespace impl {
                             std::forward<Values>(values)...
                         ))...);
                     } else if constexpr (Bound::has_args) {
-                        auto positional = positional_pack<Bound::args_idx>(
+                        auto positional = positional_pack<Arguments, Bound::args_idx>(
                             std::forward<Values>(values)...
                         );
                         return func(to_arg<Is>(cpp<Is>(
