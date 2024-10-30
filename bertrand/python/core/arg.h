@@ -3,6 +3,7 @@
 
 #include "declarations.h"
 #include "object.h"
+#include "except.h"
 
 
 namespace py {
@@ -200,7 +201,7 @@ namespace impl {
     /// potentially also enable them for C++ types.
 
     /* A keyword parameter pack obtained by double-dereferencing a Python object. */
-    template <mapping_like T>
+    template <mapping_like T> requires (has_size<T>)
     struct KwargPack {
         using key_type = T::key_type;
         using mapped_type = T::mapped_type;
@@ -212,12 +213,13 @@ namespace impl {
 
     private:
 
+        template <typename U>
         static constexpr bool can_iterate =
-            impl::yields_pairs_with<T, key_type, mapped_type> ||
-            impl::has_items<T> ||
-            (impl::has_keys<T> && impl::has_values<T>) ||
-            (impl::yields<T, key_type> && impl::lookup_yields<T, mapped_type, key_type>) ||
-            (impl::has_keys<T> && impl::lookup_yields<T, mapped_type, key_type>);
+            impl::yields_pairs_with<U, key_type, mapped_type> ||
+            impl::has_items<U> ||
+            (impl::has_keys<U> && impl::has_values<U>) ||
+            (impl::yields<U, key_type> && impl::lookup_yields<U, mapped_type, key_type>) ||
+            (impl::has_keys<U> && impl::lookup_yields<U, mapped_type, key_type>);
 
         auto transform() const {
             if constexpr (impl::yields_pairs_with<T, key_type, mapped_type>) {
@@ -251,18 +253,19 @@ namespace impl {
 
     public:
 
-        template <typename U = T> requires (can_iterate)
+        auto size() const { return std::ranges::size(value); }
+        template <typename U = T> requires (can_iterate<U>)
         auto begin() const { return std::ranges::begin(transform()); }
-        template <typename U = T> requires (can_iterate)
+        template <typename U = T> requires (can_iterate<U>)
         auto cbegin() const { return begin(); }
-        template <typename U = T> requires (can_iterate)
+        template <typename U = T> requires (can_iterate<U>)
         auto end() const { return std::ranges::end(transform()); }
-        template <typename U = T> requires (can_iterate)
+        template <typename U = T> requires (can_iterate<U>)
         auto cend() const { return end(); }
     };
 
     /* A positional parameter pack obtained by dereferencing a Python object. */
-    template <iterable T>
+    template <iterable T> requires (has_size<T>)
     struct ArgPack {
         using type = iter_type<T>;
         static constexpr StaticStr name = "";
@@ -270,6 +273,7 @@ namespace impl {
 
         T value;
 
+        auto size() const { return std::ranges::size(value); }
         auto begin() const { return std::ranges::begin(value); }
         auto cbegin() const { return begin(); }
         auto end() const { return std::ranges::end(value); }

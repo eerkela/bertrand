@@ -1504,47 +1504,100 @@ namespace impl {
 
     private:
 
-        /* After invoking a function with variadic positional arguments, the argument
-        iterators must be fully consumed, otherwise there are additional positional
-        arguments that were not consumed. */
-        template <std::input_iterator Iter, std::sentinel_for<Iter> End>
-        static void assert_args_are_exhausted(Iter& iter, const End& end) {
-            if (iter != end) {
-                std::string message =
-                    "too many arguments in positional parameter pack: ['" +
-                    repr(*iter);
-                while (++iter != end) {
-                    message += "', '" + repr(*iter);
+        /* Encapsulates a pair of iterators over a positional argument pack and
+        validates that they are fully consumed upon destruction. */
+        template <typename Pack>
+        struct PositionalPack {
+            std::ranges::iterator_t<const Pack&> begin;
+            std::ranges::sentinel_t<const Pack&> end;
+            size_t size;
+            size_t consumed = 0;
+
+            PositionalPack(const Pack& pack) :
+                begin(std::ranges::begin(pack)),
+                end(std::ranges::end(pack)),
+                size(std::ranges::size(pack))
+            {}
+
+            ~PositionalPack() {
+                if constexpr (!has_args) {
+                    if (begin != end) {
+                        std::string message =
+                            "too many arguments in positional parameter pack: ['" +
+                            repr(*begin);
+                        while (++begin != end) {
+                            message += "', '" + repr(*begin);
+                        }
+                        message += "']";
+                        throw TypeError(message);
+                    }
                 }
-                message += "']";
-                throw TypeError(message);
             }
+
+            bool has_value() const { return begin != end; }
+            decltype(auto) value() {
+                decltype(auto) result = *begin;
+                ++begin;
+                ++consumed;
+                return result;
+            }
+        };
+
+        /* Encapsulates a map of keyword arguments drawn from a keyword argument pack,
+        which is validated upon construction. */
+        template <typename Signature, typename Pack>
+        struct KeywordPack {
+            using Map = std::unordered_map<std::string, typename Pack::mapped_type>;
+            Map map;
+
+            KeywordPack(const Pack& pack) :
+                map([]<size_t... Is>(std::index_sequence<Is...>, const Pack& pack) {
+                    Map map;
+                    map.reserve(pack.size());
+                    for (auto&& [key, value] : pack) {
+                        if constexpr (!Signature::has_kwargs) {
+                            if (!Arguments::callback(key)) {
+                                throw TypeError(
+                                    "unexpected keyword argument: '" + repr(key) +
+                                    "'"
+                                );
+                            }
+                        }
+                        auto [_, inserted] = map.emplace(key, value);
+                        if (!inserted) {
+                            throw TypeError(
+                                "duplicate keyword argument: '" + repr(key) +
+                                "'"
+                            );
+                        }
+                        return map;
+                    }
+                }(std::make_index_sequence<Signature::n>{}, pack))
+            {}
+
+            auto size() const { return map.size(); }
+            auto extract(const std::string& key) { return map.extract(key); }
+            auto begin() { return map.begin(); }
+            auto end() { return map.end(); }
+        };
+
+        /* Extract a positional parameter pack from the given arguments and return a
+        helper struct that encapsulates the validated arguments. */
+        template <size_t J, typename... Values> requires (J < sizeof...(Values))
+        static auto positional_pack(Values&&... values) {
+            using Pack = std::remove_cvref_t<unpack_type<J, Values...>>;
+            return PositionalPack<Pack>{unpack_arg<J>(std::forward<Values>(values)...)};
         }
 
-        /* Before invoking a function with variadic keyword arguments, those arguments
-        must be scanned to ensure each of them are recognized and do not interfere with
-        other keyword arguments given in the source signature. */
-        template <typename Outer, typename Inner, typename Map>
-        static void assert_kwargs_are_recognized(const Map& kwargs) {
-            []<size_t... Is>(std::index_sequence<Is...>, const Map& kwargs) {
-                std::vector<std::string> extra;
-                for (const auto& [key, value] : kwargs) {
-                    if (!callback(key)) {
-                        extra.emplace_back(key);
-                    }
-                }
-                if (!extra.empty()) {
-                    auto iter = extra.begin();
-                    auto end = extra.end();
-                    std::string message =
-                        "unexpected keyword arguments: ['" + repr(*iter);
-                    while (++iter != end) {
-                        message += "', '" + repr(*iter);
-                    }
-                    message += "']";
-                    throw TypeError(message);
-                }
-            }(std::make_index_sequence<Outer::n>{}, kwargs);
+        /* Extract a keyword parameter pack from the given arguments and return a
+        helper struct that encapsulates the validated arguments.  */
+        template <typename Signature, size_t J, typename... Values>
+            requires (J < sizeof...(Values))
+        static auto keyword_pack(Values&&... values) {
+            using Pack = std::remove_cvref_t<unpack_type<J, Values...>>;
+            return KeywordPack<Signature, Pack>{
+                unpack_arg<J>(std::forward<Values>(values)...)
+            };
         }
 
     public:
@@ -1626,6 +1679,11 @@ namespace impl {
             static constexpr size_t n_pos           = Inner::n_pos;
             static constexpr size_t n_kw            = Inner::n_kw;
             static constexpr size_t n_kwonly        = Inner::n_kwonly;
+            static constexpr size_t n_opt           = 0;
+            static constexpr size_t n_opt_posonly   = 0;
+            static constexpr size_t n_opt_pos       = 0;
+            static constexpr size_t n_opt_kw        = 0;
+            static constexpr size_t n_opt_kwonly    = 0;
 
             template <StaticStr Name>
             static constexpr bool has               = Inner::template has<Name>;
@@ -1633,11 +1691,25 @@ namespace impl {
             static constexpr bool has_pos           = Inner::has_pos;
             static constexpr bool has_kw            = Inner::has_kw;
             static constexpr bool has_kwonly        = Inner::has_kwonly;
+            static constexpr bool has_opt           = false;
+            static constexpr bool has_opt_posonly   = false;
+            static constexpr bool has_opt_pos       = false;
+            static constexpr bool has_opt_kw        = false;
+            static constexpr bool has_opt_kwonly    = false;
+            static constexpr bool has_args          = false;
+            static constexpr bool has_kwargs        = false;
 
             template <StaticStr Name> requires (has<Name>)
             static constexpr size_t idx             = Inner::template idx<Name>;
             static constexpr size_t kw_idx          = Inner::kw_idx;
             static constexpr size_t kwonly_idx      = Inner::kwonly_idx;
+            static constexpr size_t opt_idx         = n;
+            static constexpr size_t opt_posonly_idx = n;
+            static constexpr size_t opt_pos_idx     = n;
+            static constexpr size_t opt_kw_idx      = n;
+            static constexpr size_t opt_kwonly_idx  = n;
+            static constexpr size_t args_idx        = n;
+            static constexpr size_t kwargs_idx      = n;
 
             template <size_t I> requires (I < n)
             using at = Inner::template at<I>;
@@ -1917,53 +1989,30 @@ namespace impl {
                 std::index_sequence<Is...>,
                 Values&&... values
             ) {
-                using observed = Arguments<Values...>;
+                using Bound = Arguments<Values...>;
 
-                if constexpr (observed::has_args && observed::has_kwargs) {
-                    const auto& kwargs = impl::unpack_arg<observed::kwargs_idx>(
+                if constexpr (Bound::has_args && Bound::has_kwargs) {
+                    auto positional = positional_pack<Bound::args_idx>(
                         std::forward<Values>(values)...
                     );
-                    assert_kwargs_are_recognized<Inner, observed>(kwargs);
-                    const auto& args = impl::unpack_arg<observed::args_idx>(
+                    auto keyword = keyword_pack<Inner, Bound::kwargs_idx>(
                         std::forward<Values>(values)...
                     );
-                    auto iter = std::ranges::begin(args);
-                    auto end = std::ranges::end(args);
-                    Tuple result = {{
-                        unpack<Is>(
-                            std::ranges::size(args),
-                            iter,
-                            end,
-                            kwargs,
-                            std::forward<Values>(values)...
-                        )
+                    return {{
+                        unpack<Is>(positional, keyword, std::forward<Values>(values)...)
                     }...};
-                    assert_args_are_exhausted(iter, end);
-                    return result;
 
-                } else if constexpr (observed::has_args) {
-                    const auto& args = impl::unpack_arg<observed::args_idx>(
+                } else if constexpr (Bound::has_args) {
+                    auto positional = positional_pack<Bound::args_idx>(
                         std::forward<Values>(values)...
                     );
-                    auto iter = std::ranges::begin(args);
-                    auto end = std::ranges::end(args);
-                    Tuple result = {{
-                        unpack<Is>(
-                            std::ranges::size(args),
-                            iter,
-                            end,
-                            std::forward<Values>(values)...
-                        )
-                    }...};
-                    assert_args_are_exhausted(iter, end);
-                    return result;
+                    return {{unpack<Is>(positional, std::forward<Values>(values)...)}...};
 
-                } else if constexpr (observed::has_kwargs) {
-                    const auto& kwargs = impl::unpack_arg<observed::kwargs_idx>(
+                } else if constexpr (Bound::has_kwargs) {
+                    auto keyword = keyword_pack<Inner, Bound::kwargs_idx>(
                         std::forward<Values>(values)...
                     );
-                    assert_kwargs_are_recognized<Inner, observed>(kwargs);
-                    return {{unpack<Is>(kwargs, std::forward<Values>(values)...)}...};
+                    return {{unpack<Is>(keyword, std::forward<Values>(values)...)}...};
 
                 } else {
                     return {{unpack<Is>(std::forward<Values>(values)...)}...};
@@ -3669,6 +3718,20 @@ namespace impl {
                 }
             };
 
+            template <typename...>
+            static constexpr size_t _n_foreign_kwargs = 0;
+            template <typename T, typename... Ts>
+            static constexpr size_t _n_foreign_kwargs<T, Ts...> =
+                _n_foreign_kwargs<Ts...>;
+            template <typename T, typename... Ts> requires (ArgTraits<T>::kw())
+            static constexpr size_t _n_foreign_kwargs<T, Ts...> =
+                _n_foreign_kwargs<Ts...> +
+                (Arguments::template has<ArgTraits<T>::name>);
+
+            /* Get the base size of a **kwargs map by counting the C++ keyword
+            arguments that are not in the target signature at compile time. */
+            static constexpr size_t n_foreign_kwargs = _n_foreign_kwargs<Values...>;
+
             /* Initialize a **kwargs map in the target arguments by collecting all
             keyword arguments that don't appear in the target parameter list.  The
             result can then be moved into the **kwargs argument annotation. */
@@ -3701,22 +3764,6 @@ namespace impl {
              * corresponding value does not exist in the parameter pack, or if there are
              * extras that are not included in the target signature.
              */
-
-            /// TODO: Note that the mapping and iterators that are supplied here are
-            /// from the BOUND signature, not the parent one.  That means they are
-            /// supplied as ArgPack and KwargPack objects, not as std::unordered_map,
-            /// etc.  That means there is not a reliable .find() method, etc.  That
-            /// requires a lot of extra thought.  What would be best is some kind of
-            /// iterative strategy, which might be possible now that I have the
-            /// callback hash table.  I would probably need some kind of bitmask to
-            /// account for conflicts, but that could also avoid doing a unique lookup
-            /// for every argument, which could also be more efficient.  Perhaps I
-            /// could boil some of this into the packs themselves, which might be
-            /// stateful views into the container, which enclose the begin and end
-            /// iterators rather than just generate them.  That would mean I could
-            /// pass the actual pack classes in here, which would clarify things
-            /// significantly, and would allow me to write a bunch of helpers to
-            /// automate things.
 
             template <size_t I>
             static constexpr ArgTraits<Target<I>>::type cpp(
@@ -3775,6 +3822,7 @@ namespace impl {
                         Values&&... args
                     ) {
                         std::unordered_map<std::string, typename ArgTraits<T>::type> map;
+                        map.reserve(n_foreign_kwargs);
                         (build_kwargs<Js>(map, std::forward<Values>(args)...), ...);
                         return map;
                     }(
@@ -3788,12 +3836,10 @@ namespace impl {
                 }
             }
 
-            template <size_t I, std::input_iterator Iter, std::sentinel_for<Iter> End>
+            template <size_t I, typename Pos>
             static constexpr ArgTraits<Target<I>>::type cpp(
                 const Defaults& defaults,
-                size_t args_size,
-                Iter& iter,
-                const End& end,
+                PositionalPack<Pos>& positional,
                 Values... values
             ) {
                 using T = Target<I>;
@@ -3804,19 +3850,16 @@ namespace impl {
                     if constexpr (I < transition) {
                         return impl::unpack_arg<I>(std::forward<Values>(values)...);
                     } else {
-                        if (iter != end) {
-                            decltype(auto) result = *iter;
-                            ++iter;
-                            return result;
+                        if (positional.has_value()) {
+                            return positional.value();
+                        }
+                        if constexpr (ArgTraits<T>::opt()) {
+                            return defaults.template get<I>();
                         } else {
-                            if constexpr (ArgTraits<T>::opt()) {
-                                return defaults.template get<I>();
-                            } else {
-                                throw TypeError(
-                                    "no match for positional-only parameter at index " +
-                                    std::to_string(I)
-                                );
-                            }
+                            throw TypeError(
+                                "no match for positional-only parameter at index " +
+                                std::to_string(I)
+                            );
                         }
                     }
 
@@ -3824,32 +3867,28 @@ namespace impl {
                     if constexpr (I < transition) {
                         return impl::unpack_arg<I>(std::forward<Values>(values)...);
                     } else {
-                        if (iter != end) {
+                        if (positional.has_value()) {
                             if constexpr (Bound::template has<name>) {
                                 throw TypeError(
                                     "conflicting values for parameter '" + name +
                                     "' at index " + std::to_string(I)
                                 );
                             } else {
-                                decltype(auto) result = *iter;
-                                ++iter;
-                                return result;
+                                return positional.value();
                             }
-
+                        }
+                        if constexpr (Bound::template has<name>) {
+                            return impl::unpack_arg<Bound::template idx<name>>(
+                                std::forward<Values>(values)...
+                            );
                         } else {
-                            if constexpr (Bound::template has<name>) {
-                                return impl::unpack_arg<Bound::template idx<name>>(
-                                    std::forward<Values>(values)...
-                                );
+                            if constexpr (ArgTraits<T>::opt()) {
+                                return defaults.template get<I>();
                             } else {
-                                if constexpr (ArgTraits<T>::opt()) {
-                                    return defaults.template get<I>();
-                                } else {
-                                    throw TypeError(
-                                        "no match for parameter '" + name +
-                                        "' at index " + std::to_string(I)
-                                    );
-                                }
+                                throw TypeError(
+                                    "no match for parameter '" + name +
+                                    "' at index " + std::to_string(I)
+                                );
                             }
                         }
                     }
@@ -3861,24 +3900,19 @@ namespace impl {
                     constexpr size_t diff = I < transition ? transition - I : 0;
                     return []<size_t... Js>(
                         std::index_sequence<Js...>,
-                        size_t args_size,
-                        Iter& iter,
-                        const End& end,
+                        PositionalPack<Pos>& positional,
                         Values&&... args
                     ) {
                         std::vector<typename ArgTraits<T>::type> vec;
-                        /// TODO: adding args_size might be an overestimate?
-                        vec.reserve(diff + args_size);
+                        vec.reserve(diff + (positional.size - positional.consumed));
                         (vec.emplace_back(impl::unpack_arg<I + Js>(
                             std::forward<Values>(args)...
                         )), ...);
-                        vec.insert(vec.end(), iter, end);
+                        vec.insert(vec.end(), positional.begin, positional.end);
                         return vec;
                     }(
                         std::make_index_sequence<diff>{},
-                        args_size,
-                        iter,
-                        end,
+                        positional,
                         std::forward<Values>(values)...
                     );
 
@@ -3891,10 +3925,10 @@ namespace impl {
                 }
             }
 
-            template <size_t I, typename Mapping>
+            template <size_t I, typename Kw>
             static constexpr ArgTraits<Target<I>>::type cpp(
                 const Defaults& defaults,
-                const Mapping& map,
+                KeywordPack<Arguments, Kw>& keyword,
                 Values... values
             ) {
                 using T = Target<I>;
@@ -3905,15 +3939,19 @@ namespace impl {
                     return cpp<I>(defaults, std::forward<Values>(values)...);
 
                 } else if constexpr (ArgTraits<T>::pos()) {
-                    auto it = map.find(name);
-                    if (it != map.end()) {
+                    auto node = keyword.extract(name);
+                    if (node) {
                         if constexpr (I < transition || Bound::template has<name>) {
                             throw TypeError(
                                 "conflicting value for parameter '" + name +
                                 "' at index " + std::to_string(I)
                             );
+                        } else if constexpr (std::is_lvalue_reference_v<
+                            typename ArgTraits<T>::type
+                        >) {
+                            return node.mapped();
                         } else {
-                            return it->second;
+                            return std::move(node.mapped());
                         }
                     }
                     if constexpr (I < transition) {
@@ -3932,15 +3970,19 @@ namespace impl {
                     }
 
                 } else if constexpr (ArgTraits<T>::kw()) {
-                    auto it = map.find(name);
-                    if (it != map.end()) {
+                    auto node = keyword.extract(name);
+                    if (node) {
                         if constexpr (Bound::template has<name>) {
                             throw TypeError(
                                 "conflicting value for parameter '" + name +
                                 "' at index " + std::to_string(I)
                             );
+                        } else if constexpr (std::is_lvalue_reference_v<
+                            typename ArgTraits<T>::type
+                        >) {
+                            return node.mapped();
                         } else {
-                            return it->second;
+                            return std::move(node.mapped());
                         }
                     }
                     if constexpr (Bound::template has<name>) {
@@ -3962,13 +4004,20 @@ namespace impl {
                 } else if constexpr (ArgTraits<T>::kwargs()) {
                     return []<size_t... Js>(
                         std::index_sequence<Js...>,
-                        const Mapping& map,
+                        KeywordPack<Arguments, Kw>& keyword,
                         Values&&... values
                     ) {
                         std::unordered_map<std::string, typename ArgTraits<T>::type> pack;
+                        pack.reserve(n_foreign_kwargs + keyword.size());
                         (build_kwargs<Js>(pack, std::forward<Values>(values)...), ...);
-                        for (const auto& [key, value] : map) {
-                            auto [it, inserted] = pack.try_emplace(key, value);
+                        /// NOTE: since the pack's .extract() method is destructive,
+                        /// the only remaining elements are those that were not
+                        /// consumed, which can be directly moved into the result
+                        for (auto&& [key, value] : keyword) {
+                            auto [_, inserted] = pack.try_emplace(
+                                std::move(key),
+                                std::move(value)
+                            );
                             if (!inserted) {
                                 throw TypeError(
                                     "duplicate value for parameter '" + key + "'"
@@ -3978,6 +4027,7 @@ namespace impl {
                         return pack;
                     }(
                         std::make_index_sequence<Bound::n - Bound::kw_idx>{},
+                        keyword,
                         std::forward<Values>(values)...
                     );
 
@@ -3987,18 +4037,11 @@ namespace impl {
                 }
             }
 
-            template <
-                size_t I,
-                std::input_iterator Iter,
-                std::sentinel_for<Iter> End,
-                typename Mapping
-            >
+            template <size_t I, typename Pos, typename Kw>
             static constexpr ArgTraits<Target<I>>::type cpp(
                 const Defaults& defaults,
-                size_t args_size,
-                Iter& iter,
-                const End& end,
-                const Mapping& map,
+                PositionalPack<Pos>& positional,
+                KeywordPack<Arguments, Kw>& keyword,
                 Values... values
             ) {
                 using T = Target<I>;
@@ -4006,18 +4049,12 @@ namespace impl {
                 constexpr size_t transition = std::min(Bound::kw_idx, Bound::kwargs_idx);
 
                 if constexpr (ArgTraits<T>::posonly()) {
-                    return cpp<I>(
-                        defaults,
-                        args_size,
-                        iter,
-                        end,
-                        std::forward<Values>(values)...
-                    );
+                    return cpp<I>(defaults, positional, std::forward<Values>(values)...);
 
                 } else if constexpr (ArgTraits<T>::pos()) {
-                    auto it = map.find(name);
+                    auto node = keyword.extract(name);
                     if constexpr (I < transition) {
-                        if (it != map.end()) {
+                        if (node) {
                             throw TypeError(
                                 "conflicting values for parameter '" + name +
                                 "' at index " + std::to_string(I)
@@ -4025,7 +4062,7 @@ namespace impl {
                         }
                         return impl::unpack_arg<I>(std::forward<Values>(values)...);
                     } else if constexpr (Bound::template has<name>) {
-                        if (iter != end || it != map.end()) {
+                        if (node || positional.has_value()) {
                             throw TypeError(
                                 "conflicting values for parameter '" + name +
                                 "' at index " + std::to_string(I)
@@ -4035,18 +4072,22 @@ namespace impl {
                             std::forward<Values>(values)...
                         );
                     } else {
-                        if (iter != end) {
-                            if (it != map.end()) {
+                        if (positional.has_value()) {
+                            if (node) {
                                 throw TypeError(
                                     "conflicting values for parameter '" + name +
                                     "' at index " + std::to_string(I)
                                 );
                             }
-                            decltype(auto) result = *iter;
-                            ++iter;
-                            return result;
-                        } else if (it != map.end()) {
-                            return it->second;
+                            return positional.value();
+                        } else if (node) {
+                            if constexpr (std::is_lvalue_reference_v<
+                                typename ArgTraits<T>::type
+                            >) {
+                                return node.mapped();
+                            } else {
+                                return std::move(node.mapped());
+                            }
                         } else {
                             if constexpr (ArgTraits<T>::opt()) {
                                 return defaults.template get<I>();
@@ -4060,19 +4101,13 @@ namespace impl {
                     }
 
                 } else if constexpr (ArgTraits<T>::kw()) {
-                    return cpp<I>(defaults, map, std::forward<Values>(values)...);
+                    return cpp<I>(defaults, keyword, std::forward<Values>(values)...);
 
                 } else if constexpr (ArgTraits<T>::args()) {
-                    return cpp<I>(
-                        defaults,
-                        args_size,
-                        iter,
-                        end,
-                        std::forward<Values>(values)...
-                    );
+                    return cpp<I>(defaults, positional, std::forward<Values>(values)...);
 
                 } else if constexpr (ArgTraits<T>::kwargs()) {
-                    return cpp<I>(defaults, map, std::forward<Values>(values)...);
+                    return cpp<I>(defaults, keyword, std::forward<Values>(values)...);
 
                 } else {
                     static_assert(false, "invalid argument kind");
@@ -4230,9 +4265,6 @@ namespace impl {
                 /// the only way to cover this case.
             }
 
-            /// TODO: another overload of key() that takes a vectorcall array and
-            /// constructs an equivalent overload key.
-
             /* Invoke a C++ function from C++ using Python-style arguments. */
             template <typename Func>
                 requires (enable && std::is_invocable_v<Func, Args...>)
@@ -4241,101 +4273,44 @@ namespace impl {
                 Func&& func,
                 Values... values
             ) -> std::invoke_result_t<Func, Args...> {
-                using Return = std::invoke_result_t<Func, Args...>;
                 return []<size_t... Is>(
                     std::index_sequence<Is...>,
                     const Defaults& defaults,
-                    Func&& func,
+                    Func func,
                     Values... values
                 ) {
+                    // pack() helpers return RAII guards that validate arguments
                     if constexpr (Bound::has_args && Bound::has_kwargs) {
-                        const auto& kwargs = impl::unpack_arg<Bound::kwargs_idx>(
+                        auto positional = positional_pack<Bound::args_idx>(
                             std::forward<Values>(values)...
                         );
-                        if constexpr (!Arguments::has_kwargs) {
-                            assert_kwargs_are_recognized<Arguments, Bound>(kwargs);
-                        }
-                        const auto& args = impl::unpack_arg<Bound::args_idx>(
+                        auto keyword = keyword_pack<Arguments, Bound::kwargs_idx>(
                             std::forward<Values>(values)...
                         );
-                        auto iter = std::ranges::begin(args);
-                        auto end = std::ranges::end(args);
-                        if constexpr (std::is_void_v<Return>) {
-                            func(to_arg<Is>(cpp<Is>(
-                                defaults,
-                                std::ranges::size(args),
-                                iter,
-                                end,
-                                kwargs,
-                                std::forward<Values>(values)...
-                            ))...);
-                            if constexpr (!Arguments::has_args) {
-                                assert_args_are_exhausted(iter, end);
-                            }
-                        } else {
-                            decltype(auto) result = func(to_arg<Is>(cpp<Is>(
-                                defaults,
-                                std::ranges::size(args),
-                                iter,
-                                end,
-                                kwargs,
-                                std::forward<Values>(values)...
-                            ))...);
-                            if constexpr (!Arguments::has_args) {
-                                assert_args_are_exhausted(iter, end);
-                            }
-                            return result;
-                        }
-
-                    // variadic positional arguments are passed as an iterator range, which
-                    // must be exhausted after the function call completes
-                    } else if constexpr (Bound::has_args) {
-                        const auto& args = impl::unpack_arg<Bound::args_idx>(
-                            std::forward<Values>(values)...
-                        );
-                        auto iter = std::ranges::begin(args);
-                        auto end = std::ranges::end(args);
-                        if constexpr (std::is_void_v<Return>) {
-                            func(to_arg<Is>(cpp<Is>(
-                                defaults,
-                                std::ranges::size(args),
-                                iter,
-                                end,
-                                std::forward<Values>(values)...
-                            ))...);
-                            if constexpr (!Arguments::has_args) {
-                                assert_args_are_exhausted(iter, end);
-                            }
-                        } else {
-                            decltype(auto) result = func(to_arg<Is>(cpp<Is>(
-                                defaults,
-                                std::ranges::size(args),
-                                iter,
-                                end,
-                                std::forward<Values>(values)...
-                            ))...);
-                            if constexpr (!Arguments::has_args) {
-                                assert_args_are_exhausted(iter, end);
-                            }
-                            return result;
-                        }
-
-                    // variadic keyword arguments are passed as a dictionary, which must be
-                    // validated up front to ensure all keys are recognized
-                    } else if constexpr (Bound::has_kwargs) {
-                        const auto& kwargs = impl::unpack_arg<Bound::kwargs_idx>(
-                            std::forward<Values>(values)...
-                        );
-                        if constexpr (!Arguments::has_kwargs) {
-                            assert_kwargs_are_recognized<Arguments, Bound>(kwargs);
-                        }
                         return func(to_arg<Is>(cpp<Is>(
                             defaults,
-                            kwargs,
+                            positional,
+                            keyword,
                             std::forward<Values>(values)...
                         ))...);
-
-                    // interpose the two if there are both positional and keyword argument packs
+                    } else if constexpr (Bound::has_args) {
+                        auto positional = positional_pack<Bound::args_idx>(
+                            std::forward<Values>(values)...
+                        );
+                        return func(to_arg<Is>(cpp<Is>(
+                            defaults,
+                            positional,
+                            std::forward<Values>(values)...
+                        ))...);
+                    } else if constexpr (Bound::has_kwargs) {
+                        auto keyword = keyword_pack<Arguments, Bound::kwargs_idx>(
+                            std::forward<Values>(values)...
+                        );
+                        return func(to_arg<Is>(cpp<Is>(
+                            defaults,
+                            keyword,
+                            std::forward<Values>(values)...
+                        ))...);
                     } else {
                         return func(to_arg<Is>(cpp<Is>(
                             defaults,
@@ -4491,6 +4466,21 @@ namespace impl {
                 );
             }
         };
+
+        /* A helper that binds a Python vectorcall array to the enclosing signature
+        and performs the necessary translation to invoke a matching C++ function. */
+        struct Vectorcall {
+            /// TODO: place py_to_cpp() here, as well as the key() method that converts
+            /// a vectorcall array into an overload key.
+
+            /// TODO: maybe this stores the vectorcall array, size, and kwnames
+            /// internally?  Then, it could forward these when it's called, and they
+            /// don't constantly need to be given as parameters.  When the function
+            /// is called, the only extra information you'd need to provide is the
+            /// C++ function to call and some defaults.  Basically the C++ call operator
+            /// from Bind<> but without the values...
+        };
+
 
         /// TODO: revisit py_to_cpp once Bind<> is finished.  I probably also need
         /// another method that produces a parameter key from a vectorcall array using
