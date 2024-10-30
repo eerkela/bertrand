@@ -839,6 +839,16 @@ struct __cast__<From, To&>                                  : Returns<To&> {
 
 /* Implicitly convert a Python object that wraps around a C++ type into a pointer to
 that type, which directly references the internal data. */
+template <impl::inherits<Object> From, typename To> requires (std::convertible_to<From, To>)
+struct __cast__<From, std::optional<To>>                    : Returns<std::optional<To>> {
+    static std::optional<To> operator()(From from) {
+        return {impl::implicit_cast<To>(std::forward<From>(from))};
+    }
+};
+
+
+/* Implicitly convert a Python object that wraps around a C++ type into a pointer to
+that type, which directly references the internal data. */
 template <impl::inherits<Object> From, typename To>
     requires (
         impl::has_cpp<From> &&
@@ -865,8 +875,7 @@ struct __cast__<From, std::shared_ptr<To>>                  : Returns<std::share
 
 /* Implicitly convert a Python object into a unique pointer as long as the underlying
 types are convertible. */
-template <impl::inherits<Object> From, typename To>
-    requires (std::convertible_to<From, To>)
+template <impl::inherits<Object> From, typename To> requires (std::convertible_to<From, To>)
 struct __cast__<From, std::unique_ptr<To>>                  : Returns<std::unique_ptr<To>> {
     static std::unique_ptr<To> operator()(From value) {
         return std::make_unique<To>(
@@ -1017,12 +1026,6 @@ struct NoneType : Object, Interface<NoneType> {
     ) {}
 
 };
-
-
-template <>
-struct __cast__<std::nullptr_t>                             : Returns<NoneType> {};
-template <>
-struct __cast__<std::nullopt_t>                             : Returns<NoneType> {};
 
 
 template <>

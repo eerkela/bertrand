@@ -56,7 +56,7 @@ namespace impl {
     function signature or call site. */
     struct Param {
         std::string_view name;
-        PyObject* value;  // borrowed reference, may be a type or instance
+        Object value;  // may be a type or instance
         ArgKind kind;
 
         constexpr bool posonly() const noexcept { return kind.posonly(); }
@@ -73,7 +73,7 @@ namespace impl {
         size_t hash(size_t seed, size_t prime) const noexcept {
             return hash_combine(
                 fnv1a(name.data(), seed, prime),
-                reinterpret_cast<size_t>(value),
+                reinterpret_cast<size_t>(ptr(value)),
                 static_cast<size_t>(kind)
             );
         }
@@ -250,7 +250,7 @@ namespace impl {
             return result;
         }
 
-        static Object to_union(std::set<PyObject*>& keys, const Object& Union) {
+        static Object to_union(std::set<Object>& keys, const Object& Union) {
             Object key = reinterpret_steal<Object>(
                 PyTuple_New(keys.size())
             );
@@ -258,8 +258,8 @@ namespace impl {
                 Exception::from_python();
             }
             size_t i = 0;
-            for (PyObject* type : keys) {
-                PyTuple_SET_ITEM(ptr(key), i++, Py_NewRef(type));
+            for (const Object& type : keys) {
+                PyTuple_SET_ITEM(ptr(key), i++, Py_NewRef(ptr(type)));
             }
             Object specialization = reinterpret_steal<Object>(
                 PyObject_GetItem(
@@ -343,8 +343,8 @@ namespace impl {
         function declaration. */
         struct Callback {
             std::string id;
-            std::function<bool(Object, std::set<PyObject*>&)> func;
-            bool operator()(Object hint, std::set<PyObject*>& out) const {
+            std::function<bool(Object, std::set<Object>&)> func;
+            bool operator()(Object hint, std::set<Object>& out) const {
                 return func(hint, out);
             }
         };
@@ -353,7 +353,7 @@ namespace impl {
         hint.  The search stops at the first callback that returns true, otherwise the
         hint is interpreted as either a single type if it is a Python class, or a
         generic `object` type otherwise. */
-        static void parse(Object hint, std::set<PyObject*>& out) {
+        static void parse(Object hint, std::set<Object>& out) {
             for (const Callback& cb : callbacks) {
                 if (cb(hint, out)) {
                     return;
@@ -383,7 +383,7 @@ namespace impl {
             }
 
             // unrecognized hints are assumed to implement `issubclass()`
-            out.insert(ptr(hint));
+            out.emplace(std::move(hint));
         }
 
         /* In order to provide custom handlers for Python type hints, each annotation
@@ -405,13 +405,7 @@ namespace impl {
         `include_extras` flag is used to ensure that `typing.Annotated` hints are
         preserved, so that they can be interpreted by the callback map if necessary.
         The default behavior in this case is to simply extract the underlying type,
-        but custom callbacks can be added to interpret these annotations as needed.
-
-        For performance reasons, the types that are added to the `out` set are
-        always expected to be BORROWED references, and do not own the underlying
-        type objects.  This allows the overload keys to be trivially destructible,
-        which avoids an extra loop in their destructors.  Since an overload key is
-        created every time a function is called, this is significant. */
+        but custom callbacks can be added to interpret these annotations as needed. */
         inline static std::vector<Callback> callbacks {
             /// NOTE: Callbacks are linearly searched, so more common constructs should
             /// be generally placed at the front of the list for performance reasons.
@@ -420,7 +414,7 @@ namespace impl {
                 /// and will require interactions with the global type map, and thus a
                 /// forward declaration here.
                 "types.GenericAlias",
-                [](Object hint, std::set<PyObject*>& out) -> bool {
+                [](Object hint, std::set<Object>& out) -> bool {
                     Object types = import_types();
                     int rc = PyObject_IsInstance(
                         ptr(hint),
@@ -452,7 +446,7 @@ namespace impl {
             },
             {
                 "types.UnionType",
-                [](Object hint, std::set<PyObject*>& out) -> bool {
+                [](Object hint, std::set<Object>& out) -> bool {
                     Object types = import_types();
                     int rc = PyObject_IsInstance(
                         ptr(hint),
@@ -481,7 +475,7 @@ namespace impl {
                 /// it returns `typing.Union`, meaning that this handler will also
                 /// implicitly cover `Optional` annotations for free.
                 "typing.Union",
-                [](Object hint, std::set<PyObject*>& out) -> bool {
+                [](Object hint, std::set<Object>& out) -> bool {
                     Object typing = import_typing();
                     Object origin = reinterpret_steal<Object>(PyObject_CallOneArg(
                         ptr(getattr<"get_origin">(typing)),
@@ -507,7 +501,7 @@ namespace impl {
             },
             {
                 "typing.Any",
-                [](Object hint, std::set<PyObject*>& out) -> bool {
+                [](Object hint, std::set<Object>& out) -> bool {
                     Object typing = import_typing();
                     Object origin = reinterpret_steal<Object>(PyObject_CallOneArg(
                         ptr(getattr<"get_origin">(typing)),
@@ -516,7 +510,9 @@ namespace impl {
                     if (origin.is(nullptr)) {
                         Exception::from_python();
                     } else if (origin.is(getattr<"Any">(typing))) {
-                        out.insert(reinterpret_cast<PyObject*>(&PyBaseObject_Type));
+                        out.emplace(reinterpret_borrow<Object>(
+                            reinterpret_cast<PyObject*>(&PyBaseObject_Type)
+                        ));
                         return true;
                     }
                     return false;
@@ -524,7 +520,7 @@ namespace impl {
             },
             {
                 "typing.TypeAliasType",
-                [](Object hint, std::set<PyObject*>& out) -> bool {
+                [](Object hint, std::set<Object>& out) -> bool {
                     Object typing = import_typing();
                     int rc = PyObject_IsInstance(
                         ptr(hint),
@@ -541,7 +537,7 @@ namespace impl {
             },
             {
                 "typing.Literal",
-                [](Object hint, std::set<PyObject*>& out) -> bool {
+                [](Object hint, std::set<Object>& out) -> bool {
                     Object typing = import_typing();
                     Object origin = reinterpret_steal<Object>(PyObject_CallOneArg(
                         ptr(getattr<"get_origin">(typing)),
@@ -559,8 +555,10 @@ namespace impl {
                         }
                         Py_ssize_t len = PyTuple_GET_SIZE(ptr(args));
                         for (Py_ssize_t i = 0; i < len; ++i) {
-                            out.insert(reinterpret_cast<PyObject*>(
-                                Py_TYPE(PyTuple_GET_ITEM(ptr(args), i))
+                            out.emplace(reinterpret_borrow<Object>(
+                                reinterpret_cast<PyObject*>(Py_TYPE(
+                                    PyTuple_GET_ITEM(ptr(args), i)
+                                ))
                             ));
                         }
                         return true;
@@ -570,10 +568,12 @@ namespace impl {
             },
             {
                 "typing.LiteralString",
-                [](Object hint, std::set<PyObject*>& out) -> bool {
+                [](Object hint, std::set<Object>& out) -> bool {
                     Object typing = import_typing();
                     if (hint.is(getattr<"LiteralString">(typing))) {
-                        out.insert(reinterpret_cast<PyObject*>(&PyUnicode_Type));
+                        out.emplace(reinterpret_borrow<Object>(
+                            reinterpret_cast<PyObject*>(&PyUnicode_Type)
+                        ));
                         return true;
                     }
                     return false;
@@ -581,11 +581,15 @@ namespace impl {
             },
             {
                 "typing.AnyStr",
-                [](Object hint, std::set<PyObject*>& out) -> bool {
+                [](Object hint, std::set<Object>& out) -> bool {
                     Object typing = import_typing();
                     if (hint.is(getattr<"AnyStr">(typing))) {
-                        out.insert(reinterpret_cast<PyObject*>(&PyUnicode_Type));
-                        out.insert(reinterpret_cast<PyObject*>(&PyBytes_Type));
+                        out.emplace(reinterpret_borrow<Object>(
+                            reinterpret_cast<PyObject*>(&PyUnicode_Type)
+                        ));
+                        out.emplace(reinterpret_borrow<Object>(
+                            reinterpret_cast<PyObject*>(&PyBytes_Type)
+                        ));
                         return true;
                     }
                     return false;
@@ -593,7 +597,7 @@ namespace impl {
             },
             {
                 "typing.NoReturn",
-                [](Object hint, std::set<PyObject*>& out) -> bool {
+                [](Object hint, std::set<Object>& out) -> bool {
                     Object typing = import_typing();
                     if (
                         hint.is(getattr<"NoReturn">(typing)) ||
@@ -608,7 +612,7 @@ namespace impl {
             },
             {
                 "typing.TypeGuard",
-                [](Object hint, std::set<PyObject*>& out) -> bool {
+                [](Object hint, std::set<Object>& out) -> bool {
                     Object typing = import_typing();
                     Object origin = reinterpret_steal<Object>(PyObject_CallOneArg(
                         ptr(getattr<"get_origin">(typing)),
@@ -617,7 +621,9 @@ namespace impl {
                     if (origin.is(nullptr)) {
                         Exception::from_python();
                     } else if (origin.is(getattr<"TypeGuard">(typing))) {
-                        out.insert(reinterpret_cast<PyObject*>(&PyBool_Type));
+                        out.emplace(reinterpret_borrow<Object>(
+                            reinterpret_cast<PyObject*>(&PyBool_Type)
+                        ));
                         return true;
                     }
                     return false;
@@ -625,33 +631,36 @@ namespace impl {
             }
         };
 
-        /* Get the possible return type of the function, using the same callback
-        handlers as the parameters.  Note that functions with `typing.NoReturn` or
-        `typing.Never` annotations can return a null pointer.  Otherwise, returns
-        the parsed return type of the function, which may be a specialization of
-        `Union` if multiple return types are valid. */
-        PyObject* returns() const {
-            if (return_initialized) {
+        /* Get the return type of the function, using the same callback handlers as
+        the parameters.  May return a specialization of `Union` if multiple return
+        types are valid, or `NoneType` for void and noreturn functions.  The result is
+        always assumed to implement python-style `isinstance()` and `issubclass()`
+        checks. */
+        const Object& returns() const {
+            if (!_returns.is(nullptr)) {
                 return _returns;
             }
-            Object return_annotation = getattr<"return_annotation">(signature);
-            std::set<PyObject*> keys;
-            if (return_annotation.is(getattr<"empty">(signature))) {
-                keys.insert(reinterpret_cast<PyObject*>(&PyBaseObject_Type));
+            std::set<Object> keys;
+            Object hint = getattr<"return_annotation">(signature);
+            if (hint.is(getattr<"empty">(signature))) {
+                keys.insert(reinterpret_borrow<Object>(
+                    reinterpret_cast<PyObject*>(&PyBaseObject_Type)
+                ));
             } else {
-                parse(return_annotation, keys);
+                parse(hint, keys);
             }
             if (keys.empty()) {
-                _returns = nullptr;
+                _returns = reinterpret_borrow<Object>(
+                    reinterpret_cast<PyObject*>(Py_TYPE(Py_None))
+                );
             } else if (keys.size() == 1) {
-                _returns = *keys.begin();
+                _returns = std::move(*keys.begin());
             } else {
-                _returns = ptr(to_union(
+                _returns = to_union(
                     keys,
                     getattr<"Union">(bertrand)
-                ));
+                );
             }
-            return_initialized = true;
             return _returns;
         }
 
@@ -702,11 +711,14 @@ namespace impl {
                     throw TypeError("unrecognized parameter kind: " + repr(kind));
                 }
 
-                std::set<PyObject*> types;
-                if (getattr<"annotation">(param).is(empty)) {
-                    types.insert(reinterpret_cast<PyObject*>(&PyBaseObject_Type));
+                std::set<Object> types;
+                Object hint = getattr<"annotation">(param);
+                if (hint.is(empty)) {
+                    types.emplace(reinterpret_borrow<Object>(
+                        reinterpret_cast<PyObject*>(&PyBaseObject_Type)
+                    ));
                 } else {
-                    parse(param, types);
+                    parse(hint, types);
                 }
                 if (types.empty()) {
                     throw TypeError(
@@ -714,23 +726,20 @@ namespace impl {
                         "': " + repr(getattr<"annotation">(param))
                     );
                 } else if (types.size() == 1) {
-                    PyObject* type = *types.begin();
-                    _key.value.emplace_back(name, type, category);
+                    _key.value.emplace_back(name, std::move(*types.begin()), category);
                     _key.hash = hash_combine(
                         _key.hash,
-                        fnv1a(name.data(), seed, prime),
-                        reinterpret_cast<size_t>(type)
+                        _key.value.back().hash(seed, prime)
                     );
                 } else {
-                    Object specialization = to_union(
-                        types,
-                        getattr<"Union">(bertrand)
+                    _key.value.emplace_back(
+                        name,
+                        to_union(types, getattr<"Union">(bertrand)),
+                        category
                     );
-                    _key.value.emplace_back(name, ptr(specialization), category);
                     _key.hash = hash_combine(
                         _key.hash,
-                        fnv1a(name.data(), seed, prime),
-                        reinterpret_cast<size_t>(ptr(specialization))
+                        _key.value.back().hash(seed, prime)
                     );
                 }
             }
@@ -740,7 +749,7 @@ namespace impl {
 
         /* Convert the inspected signature into a valid template key for the
         `bertrand.Function` class on the Python side. */
-        Object template_key() const {
+        const Object& template_key() const {
             if (!_template_key.is(nullptr)) {
                 return _template_key;
             }
@@ -765,16 +774,16 @@ namespace impl {
 
             // first element lists type of bound `self` argument, descriptor type, and
             // return type as a slice
-            PyObject* returns = this->returns();
-            if (!returns || returns == reinterpret_cast<PyObject*>(Py_TYPE(Py_None))) {
-                returns = Py_None;
+            Object returns = this->returns();
+            if (returns.is(reinterpret_cast<PyObject*>(Py_TYPE(Py_None)))) {
+                returns = None;
             }
             Object self = getattr<"__self__">(func, None);
             if (PyType_Check(ptr(self))) {
                 PyObject* slice = PySlice_New(
                     ptr(self),
                     reinterpret_cast<PyObject*>(&PyClassMethodDescr_Type),
-                    returns
+                    ptr(returns)
                 );
                 if (slice == nullptr) {
                     Exception::from_python();
@@ -784,7 +793,7 @@ namespace impl {
                 PyObject* slice = PySlice_New(
                     reinterpret_cast<PyObject*>(Py_TYPE(ptr(self))),
                     Py_None,
-                    returns
+                    ptr(returns)
                 );
                 if (slice == nullptr) {
                     Exception::from_python();
@@ -805,11 +814,11 @@ namespace impl {
                         PyTuple_SET_ITEM(
                             ptr(result),
                             i + offset,
-                            Py_NewRef(param.value)
+                            Py_NewRef(ptr(param.value))
                         );
                     } else {
                         PyObject* slice = PySlice_New(
-                            param.value,
+                            ptr(param.value),
                             Py_Ellipsis,
                             Py_None
                         );
@@ -864,7 +873,7 @@ namespace impl {
                     }
                     PyObject* slice = PySlice_New(
                         ptr(name),
-                        param.value,
+                        ptr(param.value),
                         param.opt() ? Py_Ellipsis : Py_None
                     );
                     if (slice == nullptr) {
@@ -873,15 +882,15 @@ namespace impl {
                     PyTuple_SET_ITEM(ptr(result), i + offset, slice);
                 }
             }
-            return result;
+            _template_key = result;
+            return _template_key;
         }
 
     private:
-        mutable bool return_initialized = false;
-        mutable PyObject* _returns;
         mutable bool key_initialized = false;
         mutable Params<std::vector<Param>> _key = {std::vector<Param>{}, 0};
-        mutable Object _template_key;
+        mutable Object _returns = reinterpret_steal<Object>(nullptr);
+        mutable Object _template_key = reinterpret_steal<Object>(nullptr);
     };
 
     /* Inspect an annotated C++ parameter list at compile time and extract metadata
@@ -1179,9 +1188,9 @@ namespace impl {
         struct Callback {
             std::string_view name;
             uint64_t mask = 0;
-            bool(*isinstance)(PyObject*) = nullptr;
-            bool(*issubclass)(PyObject*) = nullptr;
-            PyObject*(*type)() = nullptr;
+            bool(*isinstance)(const Object&) = nullptr;
+            bool(*issubclass)(const Object&) = nullptr;
+            Object(*type)() = nullptr;
             explicit operator bool() const noexcept { return isinstance != nullptr; }
         };
 
@@ -1221,12 +1230,10 @@ namespace impl {
             return {
                 .name = ArgTraits<T>::name,
                 .mask = ArgTraits<T>::variadic() ? 0ULL : 1ULL << I,
-                .isinstance = [](PyObject* value) -> bool {
+                .isinstance = [](const Object& value) -> bool {
                     using U = ArgTraits<T>::type;
                     if constexpr (has_python<U>) {
-                        return isinstance<std::remove_cvref_t<python_type<U>>>(
-                            reinterpret_borrow<Object>(value)
-                        );
+                        return isinstance<std::remove_cvref_t<python_type<U>>>(value);
                     } else {
                         throw TypeError(
                             "C++ type has no Python equivalent: " +
@@ -1234,12 +1241,10 @@ namespace impl {
                         );
                     }
                 },
-                .issubclass = [](PyObject* type) -> bool {
+                .issubclass = [](const Object& type) -> bool {
                     using U = ArgTraits<T>::type;
                     if constexpr (has_python<U>) {
-                        return issubclass<std::remove_cvref_t<python_type<U>>>(
-                            reinterpret_borrow<Object>(type)
-                        );
+                        return issubclass<std::remove_cvref_t<python_type<U>>>(type);
                     } else {
                         throw TypeError(
                             "C++ type has no Python equivalent: " +
@@ -1247,10 +1252,10 @@ namespace impl {
                         );
                     }
                 },
-                .type = []() -> PyObject* {
+                .type = []() -> Object {
                     using U = ArgTraits<T>::type;
                     if constexpr (has_python<U>) {
-                        return ptr(Type<std::remove_cvref_t<python_type<U>>>());
+                        return Type<std::remove_cvref_t<python_type<U>>>();
                     } else {
                         throw TypeError(
                             "C++ type has no Python equivalent: " +
@@ -1358,12 +1363,10 @@ namespace impl {
                 table[i] = {
                     .name =ArgTraits<T>::name,
                     .mask = ArgTraits<T>::variadic() ? 0ULL : 1ULL << I,
-                    .isinstance = [](PyObject* value) -> bool {
+                    .isinstance = [](const Object& value) -> bool {
                         using U = ArgTraits<T>::type;
                         if constexpr (has_python<U>) {
-                            return isinstance<std::remove_cvref_t<python_type<U>>>(
-                                reinterpret_borrow<Object>(value)
-                            );
+                            return isinstance<std::remove_cvref_t<python_type<U>>>(value);
                         } else {
                             throw TypeError(
                                 "C++ type has no Python equivalent: " +
@@ -1371,12 +1374,10 @@ namespace impl {
                             );
                         }
                     },
-                    .issubclass = [](PyObject* type) -> bool {
+                    .issubclass = [](const Object& type) -> bool {
                         using U = ArgTraits<T>::type;
                         if constexpr (has_python<U>) {
-                            return issubclass<std::remove_cvref_t<python_type<U>>>(
-                                reinterpret_borrow<Object>(type)
-                            );
+                            return issubclass<std::remove_cvref_t<python_type<U>>>(type);
                         } else {
                             throw TypeError(
                                 "C++ type has no Python equivalent: " +
@@ -1384,10 +1385,10 @@ namespace impl {
                             );
                         }
                     },
-                    .type = []() -> PyObject* {
+                    .type = []() -> Object {
                         using U = ArgTraits<T>::type;
                         if constexpr (has_python<U>) {
-                            return ptr(Type<std::remove_cvref_t<python_type<U>>>());
+                            return Type<std::remove_cvref_t<python_type<U>>>();
                         } else {
                             throw TypeError(
                                 "C++ type has no Python equivalent: " +
@@ -1417,20 +1418,16 @@ namespace impl {
         );
 
         template <size_t I>
-        static Param _parameters(size_t& hash) {
+        static Param _key(size_t& hash) {
             using T = at<I>;
             constexpr Callback& callback = positional_table[I];
-            PyObject* type = callback.type();
-            hash = hash_combine(
-                hash,
-                fnv1a(
-                    ArgTraits<T>::name,
-                    hash_components.first,
-                    hash_components.second
-                ),
-                reinterpret_cast<size_t>(type)
-            );
-            return {ArgTraits<T>::name, type, ArgTraits<T>::kind};
+            Param param = {
+                .name = ArgTraits<T>::name,
+                .value = callback.type(),
+                .kind = ArgTraits<T>::kind
+            };
+            hash = hash_combine(hash, param.hash(seed, prime));
+            return param;
         }
 
     public:
@@ -1492,13 +1489,13 @@ namespace impl {
         }
 
         /* Produce an overload key that matches the enclosing parameter list. */
-        static Params<std::array<Param, n>> parameters() {
+        static Params<std::array<Param, n>> key() {
             size_t hash = 0;
             return {
-                []<size_t... Is>(std::index_sequence<Is...>, size_t& hash) {
-                    return std::array<Param, n>{_parameters<Is>(hash)...};
+                .value = []<size_t... Is>(std::index_sequence<Is...>, size_t& hash) {
+                    return std::array<Param, n>{_key<Is>(hash)...};
                 }(std::make_index_sequence<n>{}, hash),
-                hash
+                .hash = hash
             };
         }
 
@@ -2185,7 +2182,7 @@ namespace impl {
                 identified by its hash. */
                 struct HashView {
                     const Edges& self;
-                    PyObject* value;
+                    Object value;
                     size_t hash;
 
                     struct Iterator {
@@ -2197,20 +2194,23 @@ namespace impl {
 
                         Map::iterator it;
                         Map::iterator end;
-                        PyObject* value;
+                        Object value;
                         size_t hash;
                         const Edge* curr;
 
                         Iterator(
                             Map::iterator&& it,
                             Map::iterator&& end,
-                            PyObject* value,
+                            const Object& value,
                             size_t hash
                         ) : it(std::move(it)), end(std::move(end)), value(value),
                             hash(hash), curr(nullptr)
                         {
                             while (this->it != this->end) {
-                                if (instance_check(value, this->it->first)) {
+                                if (instance_check(
+                                    ptr(value),
+                                    this->it->first
+                                )) {
                                     auto lookup = this->it->second.set.find(hash);
                                     if (lookup != this->it->second.set.end()) {
                                         curr = *lookup;
@@ -2224,7 +2224,10 @@ namespace impl {
                         Iterator& operator++() {
                             ++it;
                             while (it != end) {
-                                if (instance_check(value, it->first)) {
+                                if (instance_check(
+                                    ptr(value),
+                                    it->first
+                                )) {
                                     auto lookup = it->second.set.find(hash);
                                     if (lookup != it->second.set.end()) {
                                         curr = *lookup;
@@ -2281,7 +2284,7 @@ namespace impl {
                 /* A range adaptor that yields edges in order, regardless of key. */
                 struct OrderedView {
                     const Edges& self;
-                    PyObject* value;
+                    Object value;
 
                     struct Iterator {
                         using iterator_category = std::input_iterator_tag;
@@ -2294,16 +2297,19 @@ namespace impl {
                         Map::iterator end;
                         EdgeKinds::Set::iterator edge_it;
                         EdgeKinds::Set::iterator edge_end;
-                        PyObject* value;
+                        Object value;
 
                         Iterator(
                             Map::iterator&& it,
                             Map::iterator&& end,
-                            PyObject* value
+                            const Object& value
                         ) : it(std::move(it)), end(std::move(end)), value(value)
                         {
                             while (this->it != this->end) {
-                                if (instance_check(value, this->it->first)) {
+                                if (instance_check(
+                                    ptr(value),
+                                    this->it->first
+                                )) {
                                     edge_it = this->it->second.set.begin();
                                     edge_end = this->it->second.set.end();
                                     break;
@@ -2317,7 +2323,10 @@ namespace impl {
                             if (edge_it == edge_end) {
                                 ++it;
                                 while (it != end) {
-                                    if (instance_check(value, it->first)) {
+                                    if (instance_check(
+                                        ptr(value),
+                                        it->first
+                                    )) {
                                         edge_it = it->second.set.begin();
                                         edge_end = it->second.set.end();
                                         break;
@@ -2387,7 +2396,7 @@ namespace impl {
                         ptr(edge.type),
                         EdgeKinds{}
                     );
-                    auto [inner, success] = outer->second.set.insert(&edge);
+                    auto [_, success] = outer->second.set.emplace(&edge);
                     if (!success) {
                         if (inserted) {
                             map.erase(outer);
@@ -2414,7 +2423,7 @@ namespace impl {
                         ptr(edge.type),
                         EdgeKinds{node}
                     );
-                    auto [inner, success] = outer->second.set.insert(&edge);
+                    auto [_, success] = outer->second.set.emplace(&edge);
                     if (!success) {
                         if (inserted) {
                             map.erase(outer);
@@ -2448,7 +2457,7 @@ namespace impl {
                 coming before optional, which come before variadic.  There is no
                 guarantee that the edges come from a single key, just that they match
                 the observed type. */
-                OrderedView match(PyObject* value) const {
+                OrderedView match(const Object& value) const {
                     return {*this, value};
                 }
 
@@ -2458,7 +2467,7 @@ namespace impl {
                 unique hash.  Rather than matching all possible edges, this view will
                 essentially trace out the specified key, only checking edges that are
                 contained within it. */
-                HashView match(PyObject* value, size_t hash) const {
+                HashView match(const Object& value, size_t hash) const {
                     return {*this, value, hash};
                 }
             };
@@ -2695,7 +2704,7 @@ namespace impl {
             Returns a range adaptor that extracts only the matching functions from the
             metadata set, with extra information encoding their full path through the
             overload trie. */
-            [[nodiscard]] BoundView match(PyObject* value) const {
+            [[nodiscard]] BoundView match(const Object& value) const {
                 return {*this, value};
             }
 
@@ -2740,7 +2749,7 @@ namespace impl {
                             key.hash,
                             1ULL << i,
                             param.name,
-                            reinterpret_borrow<Object>(param.value),
+                            param.value,
                             param.kind,
                             nullptr
                         );
@@ -2873,10 +2882,10 @@ namespace impl {
             }
 
             /* Remove a node from the overload trie and prune any dead-ends that lead
-            to it.  Returns the function that was removed, or nullopt if no matching
+            to it.  Returns the function that was removed, or None if no matching
             function was found. */
             template <typename Container>
-            [[maybe_unused]] std::optional<Object> remove(const Params<Container>& key) {
+            [[maybe_unused]] Object remove(const Params<Container>& key) {
                 // assert the key minimally satisfies the enclosing parameter list
                 assert_valid_args(key);
 
@@ -2885,7 +2894,7 @@ namespace impl {
                     recursive_search(key, hash)
                 );
                 if (result.is(nullptr)) {
-                    return std::nullopt;
+                    return None;
                 }
                 if (key.empty()) {
                     for (const Metadata& data : this->data) {
@@ -2936,7 +2945,7 @@ namespace impl {
             overload interface. */
             struct BoundView {
                 const Overloads& self;
-                PyObject* value;
+                Object value;
 
                 struct Iterator {
                     using iterator_category = std::input_iterator_tag;
@@ -2952,7 +2961,7 @@ namespace impl {
                     std::ranges::sentinel_t<typename Edges::OrderedView> end;
                     std::unordered_set<size_t> visited;
 
-                    Iterator(const Overloads& self, PyObject* value) :
+                    Iterator(const Overloads& self, const Object& value) :
                         self(self),
                         curr(nullptr),
                         view(self.root->positional.match(value)),
@@ -2961,7 +2970,7 @@ namespace impl {
                     {
                         if (it != end) {
                             curr = self.data.find((*it)->hash);
-                            visited.insert(curr->hash);
+                            visited.emplace(curr->hash);
                         }
                     }
 
@@ -2970,7 +2979,7 @@ namespace impl {
                             const Edge* edge = *it;
                             auto lookup = visited.find(edge->hash);
                             if (lookup == visited.end()) {
-                                visited.insert(edge->hash);
+                                visited.emplace(edge->hash);
                                 curr = &*(self.data.find(edge->hash));
                                 return *this;
                             }
@@ -3037,11 +3046,8 @@ namespace impl {
                             throw TypeError(
                                 "expected positional argument at index " +
                                 std::to_string(i) + " to be a subclass of '" +
-                                repr(
-                                    reinterpret_borrow<Object>(callback.type())
-                                ) + "', not: '" + repr(
-                                    reinterpret_borrow<Object>(param.value)
-                                ) + "'"
+                                repr(callback.type()) + "', not: '" +
+                                repr(param.value) + "'"
                             );
                         }
                         mask |= callback.mask;
@@ -3063,11 +3069,8 @@ namespace impl {
                             throw TypeError(
                                 "expected argument '" + std::string(param.name) +
                                 "' to be a subclass of '" +
-                                repr(
-                                    reinterpret_borrow<Object>(callback.type())
-                                ) + "', not: '" + repr(
-                                    reinterpret_borrow<Object>(param.value)
-                                ) + "'"
+                                repr(callback.type()) + "', not: '" +
+                                repr(param.value) + "'"
                             );
                         }
                         mask |= callback.mask;
@@ -3181,31 +3184,21 @@ namespace impl {
                             );
                         }
                     }
-                    if (!issubclass<Expected>(
-                        reinterpret_borrow<Object>(param.value)
-                    )) {
+                    if (!issubclass<Expected>(param.value)) {
                         if (ArgTraits<T>::name.empty()) {
                             throw TypeError(
                                 "expected positional-only argument at index " +
                                 std::to_string(idx) + " to be a subclass of '" +
-                                repr(reinterpret_borrow<Object>(
-                                    ptr(Type<Expected>())
-                                )) + "', not: '" +
-                                repr(reinterpret_borrow<Object>(
-                                    param.value
-                                )) + "'"
+                                repr(Type<Expected>()) + "', not: '" +
+                                repr(param.value) + "'"
                             );
                         } else {
                             throw TypeError(
                                 "expected positional-only argument '" +
                                 ArgTraits<T>::name + "' at index " +
                                 std::to_string(idx) + " to be a subclass of '" +
-                                repr(reinterpret_borrow<Object>(
-                                    ptr(Type<Expected>())
-                                )) + "', not: '" +
-                                repr(reinterpret_borrow<Object>(
-                                    param.value
-                                )) + "'"
+                                repr(Type<Expected>()) + "', not: '" +
+                                repr(param.value) + "'"
                             );
                         }
                     }
@@ -3242,19 +3235,13 @@ namespace impl {
                             std::to_string(idx) + " must not have a default value"
                         );
                     }
-                    if (!issubclass<Expected>(
-                        reinterpret_borrow<Object>(param.value)
-                    )) {
+                    if (!issubclass<Expected>(param.value)) {
                         throw TypeError(
                             "expected positional-or-keyword argument '" +
                             ArgTraits<T>::name + "' at index " +
                             std::to_string(idx) + " to be a subclass of '" +
-                            repr(reinterpret_borrow<Object>(
-                                ptr(Type<Expected>())
-                            )) + "', not: '" +
-                            repr(reinterpret_borrow<Object>(
-                                param.value
-                            )) + "'"
+                            repr(Type<Expected>()) + "', not: '" +
+                            repr(param.value) + "'"
                         );
                     }
                     ++idx;
@@ -3288,19 +3275,13 @@ namespace impl {
                             "default value"
                         );
                     }
-                    if (!issubclass<Expected>(
-                        reinterpret_borrow<Object>(param.value)
-                    )) {
+                    if (!issubclass<Expected>(param.value)) {
                         throw TypeError(
                             "expected keyword-only argument '" + ArgTraits<T>::name +
                             "' at index " + std::to_string(idx) +
                             " to be a subclass of '" +
-                            repr(reinterpret_borrow<Object>(
-                                ptr(Type<Expected>())
-                            )) + "', not: '" +
-                            repr(reinterpret_borrow<Object>(
-                                param.value
-                            )) + "'"
+                            repr(Type<Expected>()) + "', not: '" +
+                            repr(param.value) + "'"
                         );
                     }
                     ++idx;
@@ -3311,31 +3292,21 @@ namespace impl {
                         if (!(param.pos() || param.args())) {
                             break;
                         }
-                        if (!issubclass<Expected>(
-                            reinterpret_borrow<Object>(param.value)
-                        )) {
+                        if (!issubclass<Expected>(param.value)) {
                             if (param.name.empty()) {
                                 throw TypeError(
                                     "expected variadic positional argument at index " +
                                     std::to_string(idx) + " to be a subclass of '" +
-                                    repr(reinterpret_borrow<Object>(
-                                        ptr(Type<Expected>())
-                                    )) + "', not: '" +
-                                    repr(reinterpret_borrow<Object>(
-                                        param.value
-                                    )) + "'"
+                                    repr(Type<Expected>()) + "', not: '" +
+                                    repr(param.value) + "'"
                                 );
                             } else {
                                 throw TypeError(
                                     "expected variadic positional argument '" +
                                     std::string(param.name) + "' at index " +
                                     std::to_string(idx) + " to be a subclass of '" +
-                                    repr(reinterpret_borrow<Object>(
-                                        ptr(Type<Expected>())
-                                    )) + "', not: '" +
-                                    repr(reinterpret_borrow<Object>(
-                                        param.value
-                                    )) + "'"
+                                    repr(Type<Expected>()) + "', not: '" +
+                                    repr(param.value) + "'"
                                 );
                             }
                         }
@@ -3348,19 +3319,13 @@ namespace impl {
                         if (!(param.kw() || param.kwargs())) {
                             break;
                         }
-                        if (!issubclass<Expected>(
-                            reinterpret_borrow<Object>(param.value)
-                        )) {
+                        if (!issubclass<Expected>(param.value)) {
                             throw TypeError(
                                 "expected variadic keyword argument '" +
                                 std::string(param.name) + "' at index " +
                                 std::to_string(idx) + " to be a subclass of '" +
-                                repr(reinterpret_borrow<Object>(
-                                    ptr(Type<Expected>())
-                                )) + "', not: '" +
-                                repr(reinterpret_borrow<Object>(
-                                    param.value
-                                )) + "'"
+                                repr(Type<Expected>()) + "', not: '" +
+                                repr(param.value) + "'"
                             );
                         }
                         ++idx;
@@ -3455,9 +3420,6 @@ namespace impl {
                 return nullptr;
             }
         };
-
-        /// TODO: Param needs to own the PyObject* value and give up on trivial
-        /// destructibility.  That's the only way conversions from C++ are possible
 
         /* A helper that binds C++ arguments to the enclosing signature and performs
         the necessary translation to invoke a matching C++ or Python function. */
@@ -3707,15 +3669,17 @@ namespace impl {
             /* Produce an overload key from the bound arguments, converting them to
             Python. */
             template <size_t J>
-            static Param to_param(Values... values) {
+            static Param _key(size_t& hash, Values... values) {
                 using S = Source<J>;
-                return {
+                Param param = {
                     .name = ArgTraits<S>::name,
                     .value = to_python(
                         impl::unpack_arg<J>(std::forward<Values>(values)...)
                     ),
                     .kind = ArgTraits<S>::kind
                 };
+                hash = hash_combine(hash, param.hash(seed, prime));
+                return param;
             }
 
             /* Conditionally convert a value to an Arg<> annotation when calling the
@@ -3911,7 +3875,7 @@ namespace impl {
                     constexpr size_t diff = I < transition ? transition - I : 0;
                     return []<size_t... Js>(
                         std::index_sequence<Js...>,
-                        PositionalPack<Pos>& positional,
+                        PositionalPack<Arguments, Pos>& positional,
                         Values&&... args
                     ) {
                         std::vector<typename ArgTraits<T>::type> vec;
@@ -4270,15 +4234,23 @@ namespace impl {
             /* Produce an overload key from the bound C++ arguments, which can be used
             to search the overload trie and invoke the resulting function. */
             static Params<std::array<Param, n>> key(Values... values) {
-                return []<size_t... Js>(
-                    std::index_sequence<Js...>,
-                    Values... values
-                ) -> Params<std::array<Param, n>> {
-                    return {to_param<Js>(std::forward<Values>(values))...};
-                }(
-                    std::make_index_sequence<n>{},
-                    std::forward<Values>(values)...
-                );
+                size_t hash = 0;
+                return {
+                    .value = []<size_t... Js>(
+                        std::index_sequence<Js...>,
+                        size_t& hash,
+                        Values... values
+                     ) {
+                        return Params<std::array<Param, n>>{
+                            _key<Js>(hash, std::forward<Values>(values))...
+                        };
+                    }(
+                        std::make_index_sequence<n>{},
+                        hash,
+                        std::forward<Values>(values)...
+                    ),
+                    .hash = hash
+                };
             }
 
             /* Invoke a C++ function from C++ using Python-style arguments. */
