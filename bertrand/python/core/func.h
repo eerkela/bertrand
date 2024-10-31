@@ -4480,7 +4480,7 @@ namespace impl {
             }
 
             /* Invoke a C++ function from C++ using Python-style arguments. */
-            template <typename Func, impl::is<Defaults> T>
+            template <impl::is<Defaults> T, typename Func>
                 requires (
                     std::is_invocable_v<Func, Args...> &&
                     proper_argument_order &&
@@ -4513,7 +4513,7 @@ namespace impl {
                         auto keyword = keyword_pack<Arguments, Bound::kwargs_idx>(
                             std::forward<Values>(values)...
                         );
-                        Pack<Args...> pack {cpp<Is>(
+                        pack bound {cpp<Is>(
                             std::forward<T>(defaults),
                             positional,
                             keyword,
@@ -4521,29 +4521,29 @@ namespace impl {
                         )...};
                         positional.validate();
                         keyword.validate();
-                        return std::move(pack)(func);
+                        return std::move(bound)(func);
                     } else if constexpr (Bound::has_args) {
                         auto positional = positional_pack<Arguments, Bound::args_idx>(
                             std::forward<Values>(values)...
                         );
-                        Pack<Args...> pack {cpp<Is>(
+                        pack bound {cpp<Is>(
                             std::forward<T>(defaults),
                             positional,
                             std::forward<Values>(values)...
                         )...};
                         positional.validate();
-                        return std::move(pack)(func);
+                        return std::move(bound)(func);
                     } else if constexpr (Bound::has_kwargs) {
                         auto keyword = keyword_pack<Arguments, Bound::kwargs_idx>(
                             std::forward<Values>(values)...
                         );
-                        Pack<Args...> pack {cpp<Is>(
+                        pack bound {cpp<Is>(
                             std::forward<T>(defaults),
                             keyword,
                             std::forward<Values>(values)...
                         )...};
                         keyword.validate();
-                        return std::move(pack)(func);
+                        return std::move(bound)(func);
                     } else {
                         /// NOTE: left-to-right evaluation order is not required if
                         /// runtime parameter packs are not given.
@@ -4944,7 +4944,7 @@ namespace impl {
                         /// out any conflicting arguments if not.
                     }
 
-                    Pack<Args...> pack {translate<Is>(defaults)...};
+                    pack bound {translate<Is>(defaults)...};
                     /// TODO: validate the pack here, before calling the function
                     /// and after evaluating the translate<Is> calls.  I might also
                     /// need to use an out parameter to track the maximum positional
@@ -5438,7 +5438,7 @@ template <typename Func, typename... Args>
     )
 constexpr decltype(auto) call(Func&& func, Args&&... args) {
     return typename impl::get_signature<Func>::template Bind<Args...>{}(
-        {},
+        Defaults<Func>{},
         std::forward<Func>(func),
         std::forward<Args>(args)...
     );
@@ -5483,276 +5483,6 @@ constexpr decltype(auto) call(
 }
 
 
-namespace impl {
-
-    /// TODO: partial needs a more robust way of tracking which arguments have already
-    /// been bound, possibly as an index sequence of the arguments that have been
-    /// accounted for.  The reordering logic then just equates to generating an
-    /// index sequence over the combined arguments, and then iterating in the order
-    /// set by the function's signature.  That's only a slight modification of the
-    /// reorder logic, since the order would now be set by the index sequence without
-    /// ambiguities.
-
-    template <has_signature Func, typename... Args>
-    struct Partial {
-    private:
-        using Tuple = std::tuple<std::remove_cvref_t<Args>...>;
-
-        template <typename... Values>
-        struct complete {
-            template <typename out, size_t, size_t>
-            struct reorder { using type = out; };
-            template <typename... out, size_t I, size_t J>
-                requires (I < sizeof...(Args) && J >= sizeof...(Values))
-            struct reorder<Pack<out...>, I, J> {
-                using type = reorder<
-                    Pack<out..., unpack_type<I, Args...>>,
-                    I + 1,
-                    J
-                >::type;
-                static constexpr decltype(auto) operator()(
-                    const Tuple& parts,
-                    Values... args
-                ) {
-                    if constexpr (std::is_lvalue_reference_v<unpack_type<I, Args...>>) {
-                        return std::get<I>(parts);
-                    } else {
-                        return std::remove_reference_t<unpack_type<I, Args...>>(
-                            std::get<I>(parts)
-                        );
-                    }
-                }
-                static constexpr decltype(auto) operator()(
-                    Tuple&& parts,
-                    Values... args
-                ) {
-                    if constexpr (std::is_lvalue_reference_v<unpack_type<I, Args...>>) {
-                        return std::get<I>(parts);
-                    } else {
-                        return std::remove_reference_t<unpack_type<I, Args...>>(
-                            std::move(std::get<I>(parts))
-                        );
-                    }
-                }
-            };
-            template <typename... out, size_t I, size_t J>
-                requires (I >= sizeof...(Args) && J < sizeof...(Values))
-            struct reorder<Pack<out...>, I, J> {
-                using type = reorder<
-                    Pack<out..., unpack_type<J, Values...>>,
-                    I,
-                    J + 1
-                >::type;
-                static constexpr decltype(auto) operator()(
-                    const Tuple& parts,
-                    Values... args
-                ) {
-                    return unpack_arg<J>(std::forward<Values>(args)...);
-                }
-            };
-            template <typename... out, size_t I, size_t J>
-                requires (I < sizeof...(Args) && J < sizeof...(Values))
-            struct reorder<Pack<out...>, I, J> {
-                template <typename L, typename R>
-                struct merge {
-                    static constexpr size_t new_I = I + 1;
-                    static constexpr size_t new_J = J;
-                    using type = L;
-                    static constexpr decltype(auto) operator()(
-                        const Tuple& parts,
-                        Values... args
-                    ) {
-                        if constexpr (std::is_lvalue_reference_v<L>) {
-                            return std::get<I>(parts);
-                        } else {
-                            return std::remove_reference_t<L>(std::get<I>(parts));
-                        }
-                    }
-                    static constexpr decltype(auto) operator()(
-                        Tuple&& parts,
-                        Values... args
-                    ) {
-                        if constexpr (std::is_lvalue_reference_v<L>) {
-                            return std::get<I>(parts);
-                        } else {
-                            return std::remove_reference_t<L>(std::move(
-                                std::get<I>(parts)
-                            ));
-                        }
-                    }
-                };
-                template <typename L, typename R>
-                    requires (ArgTraits<L>::args() && ArgTraits<R>::posonly())
-                struct merge<L, R> {
-                    static constexpr size_t new_I = I;
-                    static constexpr size_t new_J = J + 1;
-                    using type = R;
-                    static constexpr decltype(auto) operator()(
-                        const Tuple& parts,
-                        Values... args
-                    ) {
-                        return unpack_arg<J>(std::forward<Values>(args)...);
-                    }
-                };
-                template <typename L, typename R>
-                    requires (ArgTraits<L>::kw() && (
-                        ArgTraits<R>::posonly() || ArgTraits<R>::args()
-                    ))
-                struct merge<L, R> {
-                    static constexpr size_t new_I = I;
-                    static constexpr size_t new_J = J + 1;
-                    using type = R;
-                    static constexpr decltype(auto) operator()(
-                        const Tuple&& parts,
-                        Values... args
-                    ) {
-                        return unpack_arg<J>(std::forward<Values>(args)...);
-                    }
-                };
-                template <typename L, typename R>
-                    requires (ArgTraits<L>::kwargs() && (
-                        ArgTraits<R>::posonly() || ArgTraits<R>::args() || ArgTraits<R>::kw()
-                    ))
-                struct merge<L, R> {
-                    static constexpr size_t new_I = I;
-                    static constexpr size_t new_J = J + 1;
-                    using type = R;
-                    static constexpr decltype(auto) operator()(
-                        const Tuple& parts,
-                        Values... args
-                    ) {
-                        return unpack_arg<J>(std::forward<Values>(args)...);
-                    }
-                };
-
-                using L = unpack_type<I, Args...>;
-                using R = unpack_type<J, Values...>;
-                using type = reorder<
-                    Pack<out..., typename merge<L, R>::type>,
-                    merge<L, R>::new_I,
-                    merge<L, R>::new_J
-                >::type;
-
-                /// TODO: these should be lifted into a separate helper class that
-                /// isn't so deeply nested, and should accept the function + default
-                /// values.  Once the reordering is complete, the function will
-                /// be called.
-                static constexpr decltype(auto) operator()(
-                    const Tuple& parts,
-                    Values... args
-                ) {
-                    return merge<L, R>{}(parts, std::forward<Values>(args)...);
-                }
-                static constexpr decltype(auto) operator()(
-                    Tuple&& parts,
-                    Values... args
-                ) {
-                    return merge<L, R>{}(std::move(parts), std::forward<Values>(args)...);
-                }
-            };
-            using type = reorder<Pack<>, 0, 0>::type;
-            template <typename>
-            static constexpr bool _enable = false;
-            template <typename... Ordered>
-            static constexpr bool _enable<Pack<Ordered...>> = callable<Func, Ordered...>;
-            static constexpr bool enable = _enable<type>;
-
-            /// TODO: rather than using pairwise indices (which suffer from a
-            /// termination problem), I should use a single index sequence over the
-            /// target signature, and then make the decision on which value to use
-            /// by comparing to the current index.
-
-            /// TODO: the way to do this is to apply an approach similar to Defaults,
-            /// where the tuple stores a custom type that carries a compile time
-            /// index tracking the argument's position in the target signature.  Then,
-            /// I can use another index over just the bound arguments, and compare
-            /// the current element's index label to the index sequence being
-            /// generated.  If it is, then we substitute that value, increment the
-            /// tracking index, and continue until all arguments have been exhausted.
-            /// Otherwise, we always take the next value from the call site.
-
-            template <size_t, size_t>
-            struct call;
-        };
-
-    public:
-        static constexpr size_t n = sizeof...(Args);
-        /// TODO: other introspection fields forwarded from Arguments<>
-
-        impl::get_signature<Func>::Defaults defaults;
-        std::remove_cvref_t<Func> func;
-        Tuple parts;
-
-        [[nodiscard]] std::remove_cvref_t<Func>& operator*() {
-            return func;
-        }
-
-        [[nodiscard]] constexpr const std::remove_cvref_t<Func>& operator*() const {
-            return func;
-        }
-
-        [[nodiscard]] std::remove_cvref_t<Func>* operator->() {
-            return &func;
-        }
-
-        [[nodiscard]] constexpr const std::remove_cvref_t<Func>* operator->() const {
-            return &func;
-        }
-
-        template <size_t I> requires (I < sizeof...(Args))
-        [[nodiscard]] constexpr decltype(auto) get() const {
-            return std::get<I>(parts);
-        }
-
-        template <size_t I> requires (I < sizeof...(Args))
-        [[nodiscard]] decltype(auto) get() && {
-            return std::move(std::get<I>(parts));
-        }
-
-        template <typename T> requires (std::same_as<T, std::remove_cvref_t<Args>> || ...)
-        [[nodiscard]] constexpr decltype(auto) get() const {
-            return std::get<std::remove_cvref_t<T>>(parts);
-        }
-
-        template <typename T> requires (std::same_as<T, std::remove_cvref_t<Args>> || ...)
-        [[nodiscard]] decltype(auto) get() && {
-            return std::move(std::get<std::remove_cvref_t<T>>(parts));
-        }
-
-        template <typename... Values> requires (complete<Values...>::enable)
-        constexpr decltype(auto) operator()(Values&&... values) const {
-            using call = complete<Values...>::template reorder<Pack<>, 0, 0>;
-            return call{}(
-                defaults,
-                func,
-                parts,
-                std::forward<Values>(values)...
-            );
-        }
-
-        template <typename... Values> requires (complete<Values...>::enable)
-        constexpr decltype(auto) operator()(Values&&... values) && {
-            using call = complete<Values...>::template reorder<Pack<>, 0, 0>;
-            return call{}(
-                std::move(defaults),
-                std::move(func),
-                std::move(parts),
-                std::forward<Values>(values)...
-            );
-        }
-    };
-
-}
-
-
-/// TODO: the idea is correct for partials, but the execution is slightly off.  I
-/// probably need a more sophisticated way of tracking which arguments have already
-/// been bound, and make sure that they are not considered when binding the remaining
-/// arguments.  So you should be able to fill in a positional argument in the middle
-/// of the signature, and when you call the function, it will just skip over those
-/// arguments, rather than trying to bind them again.
-
-
 /* A template constraint that controls whether the `py::partial()` operator is enabled
 for a given C++ function and argument list. */
 template <typename Func, typename... Args>
@@ -5768,31 +5498,21 @@ concept partially_callable =
     impl::get_signature<Func>::template Bind<Args...>::partial;
 
 
-/* Construct a partial function object that captures a C++ function and a subset of its
-arguments, which can be used to invoke the function later with the remaining arguments.
-Arguments are given in the same style as `call()`, and will be stored internally
-within the partial object, forcing a copy in the case of lvalue inputs.  When the
-partial is called, an additional copy may be made if the function expects a temporary
-or rvalue reference, so as not to modify the stored arguments.  If the partial is
-called as an rvalue (by moving it, for example), then the second copy can be avoided,
-and the stored arguments will be moved directly into the function call.
+/// TODO: the idea is correct for partials, but the execution is slightly off.  I
+/// probably need a more sophisticated way of tracking which arguments have already
+/// been bound, and make sure that they are not considered when binding the remaining
+/// arguments.  So you should be able to fill in a positional argument in the middle
+/// of the signature, and when you call the function, it will just skip over those
+/// arguments, rather than trying to bind them again.
 
-Note that the function signature cannot contain any template parameters (including auto
-arguments), as the function signature must be known unambiguously at compile time to
-implement the required matching.
 
-The returned partial is a thin proxy that only implements the call operator and a
-handful of introspection methods.  It also allows transparent access to the decorated
-function via the `*` and `->` operators. */
-template <typename Func, typename... Args> requires (partially_callable<Func, Args...>)
-constexpr auto partial(Func&& func, Args&&... args) -> impl::Partial<Func, Args...> {
-    return {
-        .defaults = {},
-        .func = std::forward<Func>(func),
-        .parts = {std::forward<Args>(args)...}
-    };
-}
-
+/// TODO: partial needs a more robust way of tracking which arguments have already
+/// been bound, possibly as an index sequence of the arguments that have been
+/// accounted for.  The reordering logic then just equates to generating an
+/// index sequence over the combined arguments, and then iterating in the order
+/// set by the function's signature.  That's only a slight modification of the
+/// reorder logic, since the order would now be set by the index sequence without
+/// ambiguities.
 
 /* Construct a partial function object that captures a C++ function and a subset of its
 arguments, which can be used to invoke the function later with the remaining arguments.
@@ -5811,43 +5531,277 @@ The returned partial is a thin proxy that only implements the call operator and 
 handful of introspection methods.  It also allows transparent access to the decorated
 function via the `*` and `->` operators. */
 template <typename Func, typename... Args> requires (partially_callable<Func, Args...>)
-constexpr auto partial(const Defaults<Func>& defaults, Func&& func, Args&&... args)
-    -> impl::Partial<Func, Args...>
-{
-    return {
-        .defaults = defaults,
-        .func = std::forward<Func>(func),
-        .parts = {std::forward<Args>(args)...}
+struct partial {
+private:
+    using Tuple = std::tuple<std::remove_cvref_t<Args>...>;
+
+    template <typename... Values>
+    struct complete {
+        template <typename out, size_t, size_t>
+        struct reorder { using type = out; };
+        template <typename... out, size_t I, size_t J>
+            requires (I < sizeof...(Args) && J >= sizeof...(Values))
+        struct reorder<pack<out...>, I, J> {
+            using type = reorder<
+                pack<out..., impl::unpack_type<I, Args...>>,
+                I + 1,
+                J
+            >::type;
+            static constexpr decltype(auto) operator()(
+                const Tuple& parts,
+                Values... args
+            ) {
+                if constexpr (std::is_lvalue_reference_v<impl::unpack_type<I, Args...>>) {
+                    return std::get<I>(parts);
+                } else {
+                    return std::remove_reference_t<impl::unpack_type<I, Args...>>(
+                        std::get<I>(parts)
+                    );
+                }
+            }
+            static constexpr decltype(auto) operator()(
+                Tuple&& parts,
+                Values... args
+            ) {
+                if constexpr (std::is_lvalue_reference_v<impl::unpack_type<I, Args...>>) {
+                    return std::get<I>(parts);
+                } else {
+                    return std::remove_reference_t<impl::unpack_type<I, Args...>>(
+                        std::move(std::get<I>(parts))
+                    );
+                }
+            }
+        };
+        template <typename... out, size_t I, size_t J>
+            requires (I >= sizeof...(Args) && J < sizeof...(Values))
+        struct reorder<pack<out...>, I, J> {
+            using type = reorder<
+                pack<out..., impl::unpack_type<J, Values...>>,
+                I,
+                J + 1
+            >::type;
+            static constexpr decltype(auto) operator()(
+                const Tuple& parts,
+                Values... args
+            ) {
+                return unpack_arg<J>(std::forward<Values>(args)...);
+            }
+        };
+        template <typename... out, size_t I, size_t J>
+            requires (I < sizeof...(Args) && J < sizeof...(Values))
+        struct reorder<pack<out...>, I, J> {
+            template <typename L, typename R>
+            struct merge {
+                static constexpr size_t new_I = I + 1;
+                static constexpr size_t new_J = J;
+                using type = L;
+                static constexpr decltype(auto) operator()(
+                    const Tuple& parts,
+                    Values... args
+                ) {
+                    if constexpr (std::is_lvalue_reference_v<L>) {
+                        return std::get<I>(parts);
+                    } else {
+                        return std::remove_reference_t<L>(std::get<I>(parts));
+                    }
+                }
+                static constexpr decltype(auto) operator()(
+                    Tuple&& parts,
+                    Values... args
+                ) {
+                    if constexpr (std::is_lvalue_reference_v<L>) {
+                        return std::get<I>(parts);
+                    } else {
+                        return std::remove_reference_t<L>(std::move(
+                            std::get<I>(parts)
+                        ));
+                    }
+                }
+            };
+            template <typename L, typename R>
+                requires (impl::ArgTraits<L>::args() && impl::ArgTraits<R>::posonly())
+            struct merge<L, R> {
+                static constexpr size_t new_I = I;
+                static constexpr size_t new_J = J + 1;
+                using type = R;
+                static constexpr decltype(auto) operator()(
+                    const Tuple& parts,
+                    Values... args
+                ) {
+                    return unpack_arg<J>(std::forward<Values>(args)...);
+                }
+            };
+            template <typename L, typename R>
+                requires (impl::ArgTraits<L>::kw() && (
+                    impl::ArgTraits<R>::posonly() || impl::ArgTraits<R>::args()
+                ))
+            struct merge<L, R> {
+                static constexpr size_t new_I = I;
+                static constexpr size_t new_J = J + 1;
+                using type = R;
+                static constexpr decltype(auto) operator()(
+                    const Tuple&& parts,
+                    Values... args
+                ) {
+                    return unpack_arg<J>(std::forward<Values>(args)...);
+                }
+            };
+            template <typename L, typename R>
+                requires (impl::ArgTraits<L>::kwargs() && (
+                    impl::ArgTraits<R>::posonly() ||
+                    impl::ArgTraits<R>::args() ||
+                    impl::ArgTraits<R>::kw()
+                ))
+            struct merge<L, R> {
+                static constexpr size_t new_I = I;
+                static constexpr size_t new_J = J + 1;
+                using type = R;
+                static constexpr decltype(auto) operator()(
+                    const Tuple& parts,
+                    Values... args
+                ) {
+                    return unpack_arg<J>(std::forward<Values>(args)...);
+                }
+            };
+
+            using L = impl::unpack_type<I, Args...>;
+            using R = impl::unpack_type<J, Values...>;
+            using type = reorder<
+                pack<out..., typename merge<L, R>::type>,
+                merge<L, R>::new_I,
+                merge<L, R>::new_J
+            >::type;
+
+            /// TODO: these should be lifted into a separate helper class that
+            /// isn't so deeply nested, and should accept the function + default
+            /// values.  Once the reordering is complete, the function will
+            /// be called.
+            static constexpr decltype(auto) operator()(
+                const Tuple& parts,
+                Values... args
+            ) {
+                return merge<L, R>{}(parts, std::forward<Values>(args)...);
+            }
+            static constexpr decltype(auto) operator()(
+                Tuple&& parts,
+                Values... args
+            ) {
+                return merge<L, R>{}(std::move(parts), std::forward<Values>(args)...);
+            }
+        };
+        using type = reorder<pack<>, 0, 0>::type;
+        template <typename>
+        static constexpr bool _enable = false;
+        template <typename... Ordered>
+        static constexpr bool _enable<pack<Ordered...>> = callable<Func, Ordered...>;
+        static constexpr bool enable = _enable<type>;
+
+        /// TODO: rather than using pairwise indices (which suffer from a
+        /// termination problem), I should use a single index sequence over the
+        /// target signature, and then make the decision on which value to use
+        /// by comparing to the current index.
+
+        /// TODO: the way to do this is to apply an approach similar to Defaults,
+        /// where the tuple stores a custom type that carries a compile time
+        /// index tracking the argument's position in the target signature.  Then,
+        /// I can use another index over just the bound arguments, and compare
+        /// the current element's index label to the index sequence being
+        /// generated.  If it is, then we substitute that value, increment the
+        /// tracking index, and continue until all arguments have been exhausted.
+        /// Otherwise, we always take the next value from the call site.
+
+        template <size_t, size_t>
+        struct call;
     };
-}
+
+    impl::get_signature<Func>::Defaults defaults;
+    std::remove_cvref_t<Func> func;
+    Tuple parts;
+
+public:
+    static constexpr size_t n = sizeof...(Args);
+    /// TODO: other introspection fields forwarded from Arguments<>
+
+    partial(Func func, Args... args) :
+        func(std::forward<Func>(func)),
+        parts(std::forward<Args>(args)...) {}
+
+    partial(const Defaults<Func>& defaults, Func func, Args... args) :
+        defaults(defaults),
+        func(std::forward<Func>(func)),
+        parts(std::forward<Args>(args)...) {}
+
+    partial (Defaults<Func>&& defaults, Func func, Args... args) :
+        defaults(std::move(defaults)),
+        func(std::forward<Func>(func)),
+        parts(std::forward<Args>(args)...) {}
+
+    [[nodiscard]] std::remove_cvref_t<Func>& operator*() {
+        return func;
+    }
+
+    [[nodiscard]] constexpr const std::remove_cvref_t<Func>& operator*() const {
+        return func;
+    }
+
+    [[nodiscard]] std::remove_cvref_t<Func>* operator->() {
+        return &func;
+    }
+
+    [[nodiscard]] constexpr const std::remove_cvref_t<Func>* operator->() const {
+        return &func;
+    }
+
+    template <size_t I> requires (I < sizeof...(Args))
+    [[nodiscard]] constexpr decltype(auto) get() const {
+        return std::get<I>(parts);
+    }
+
+    template <size_t I> requires (I < sizeof...(Args))
+    [[nodiscard]] decltype(auto) get() && {
+        return std::move(std::get<I>(parts));
+    }
+
+    template <typename T> requires (std::same_as<T, std::remove_cvref_t<Args>> || ...)
+    [[nodiscard]] constexpr decltype(auto) get() const {
+        return std::get<std::remove_cvref_t<T>>(parts);
+    }
+
+    template <typename T> requires (std::same_as<T, std::remove_cvref_t<Args>> || ...)
+    [[nodiscard]] decltype(auto) get() && {
+        return std::move(std::get<std::remove_cvref_t<T>>(parts));
+    }
+
+    template <typename... Values> requires (complete<Values...>::enable)
+    constexpr decltype(auto) operator()(Values&&... values) const {
+        using call = complete<Values...>::template reorder<pack<>, 0, 0>;
+        return call{}(
+            defaults,
+            func,
+            parts,
+            std::forward<Values>(values)...
+        );
+    }
+
+    template <typename... Values> requires (complete<Values...>::enable)
+    constexpr decltype(auto) operator()(Values&&... values) && {
+        using call = complete<Values...>::template reorder<pack<>, 0, 0>;
+        return call{}(
+            std::move(defaults),
+            std::move(func),
+            std::move(parts),
+            std::forward<Values>(values)...
+        );
+    }
+};
 
 
-/* Construct a partial function object that captures a C++ function and a subset of its
-arguments, which can be used to invoke the function later with the remaining arguments.
-Arguments are given in the same style as `call()`, and will be stored internally
-within the partial object, forcing a copy in the case of lvalue inputs.  When the
-partial is called, an additional copy may be made if the function expects a temporary
-or rvalue reference, so as not to modify the stored arguments.  If the partial is
-called as an rvalue (by moving it, for example), then the second copy can be avoided,
-and the stored arguments will be moved directly into the function call.
-
-Note that the function signature cannot contain any template parameters (including auto
-arguments), as the function signature must be known unambiguously at compile time to
-implement the required matching.
-
-The returned partial is a thin proxy that only implements the call operator and a
-handful of introspection methods.  It also allows transparent access to the decorated
-function via the `*` and `->` operators. */
-template <typename Func, typename... Args> requires (partially_callable<Func, Args...>)
-constexpr auto partial(Defaults<Func>&& defaults, Func&& func, Args&&... args)
-    -> impl::Partial<Func, Args...>
-{
-    return {
-        .defaults = std::move(defaults),
-        .func = std::forward<Func>(func),
-        .parts = {std::forward<Args>(args)...}
-    };
-}
+template <typename Func, typename... Args>
+partial(Func&& func, Args&&... args) -> partial<Func, Args...>;
+template <typename Func, typename... Args>
+partial(const Defaults<Func>&, Func&& func, Args&&... args) -> partial<Func, Args...>;
+template <typename Func, typename... Args>
+partial(Defaults<Func>&&, Func&& func, Args&&... args) -> partial<Func, Args...>;
 
 
 template <typename Self, typename... Args>

@@ -236,7 +236,7 @@ namespace impl {
         object, and the keys are stored directly as members, retaining their original
         value categories without any extra copies/moves. */
         Self m_self;
-        Pack<Key...> m_key;
+        pack<Key...> m_key;
 
         /* The wrapper's `m_ptr` member is lazily evaluated to avoid repeated lookups.
         Replacing it with a computed property will trigger a __getitem__ lookup the
