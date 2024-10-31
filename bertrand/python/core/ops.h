@@ -284,7 +284,7 @@ template <StaticStr Name, impl::python Self>
         )
     )
 [[nodiscard]] auto getattr(Self&& self) -> __getattr__<Self, Name>::type {
-    if constexpr (impl::has_call_operator<__getattr__<Self, Name>>) {
+    if constexpr (std::is_invocable_v<__getattr__<Self, Name>, Self>) {
         return __getattr__<Self, Name>{}(std::forward<Self>(self));
 
     } else {
@@ -327,7 +327,8 @@ template <StaticStr Name, impl::python Self>
     Self&& self,
     const typename __getattr__<Self, Name>::type& default_value
 ) -> __getattr__<Self, Name>::type {
-    if constexpr (impl::has_call_operator<__getattr__<Self, Name>>) {
+    using Return = __getattr__<Self, Name>::type;
+    if constexpr (std::is_invocable_v<__getattr__<Self, Name>, Self, const Return&>) {
         return __getattr__<Self, Name>{}(std::forward<Self>(self), default_value);
 
     } else {
@@ -355,17 +356,17 @@ template <StaticStr Name, impl::python Self, typename Value>
         __setattr__<Self, Name, Value>::enable &&
         std::is_void_v<typename __setattr__<Self, Name, Value>::type> && (
             std::is_invocable_r_v<void, __setattr__<Self, Name, Value>, Self, Value> || (
-                !impl::has_call_operator<__setattr__<Self, Name, Value>> &&
+                !std::is_invocable_v<__setattr__<Self, Name, Value>, Self, Value> &&
                 impl::has_cpp<typename std::remove_cvref_t<typename __getattr__<Self, Name>::type>> &&
                 std::is_assignable_v<typename std::remove_cvref_t<typename __getattr__<Self, Name>::type>&, Value>
             ) || (
-                !impl::has_call_operator<__setattr__<Self, Name, Value>> &&
+                !std::is_invocable_v<__setattr__<Self, Name, Value>, Self, Value> &&
                 !impl::has_cpp<typename std::remove_cvref_t<typename __getattr__<Self, Name>::type>>
             )
         )
     )
 void setattr(Self&& self, Value&& value) {
-    if constexpr (impl::has_call_operator<__setattr__<Self, Name, Value>>) {
+    if constexpr (std::is_invocable_v<__setattr__<Self, Name, Value>, Self, Value>) {
         __setattr__<Self, Name, Value>{}(
             std::forward<Self>(self),
             std::forward<Value>(value)
@@ -395,11 +396,11 @@ template <StaticStr Name, impl::python Self>
         __delattr__<Self, Name>::enable && 
         std::is_void_v<typename __delattr__<Self, Name>::type> && (
             std::is_invocable_r_v<void, __delattr__<Self, Name>, Self> ||
-            !impl::has_call_operator<__delattr__<Self, Name>>
+            !std::is_invocable_v<__delattr__<Self, Name>, Self>
         )
     )
 void delattr(Self&& self) {
-    if constexpr (impl::has_call_operator<__delattr__<Self, Name>>) {
+    if constexpr (std::is_invocable_v<__delattr__<Self, Name>, Self>) {
         __delattr__<Self, Name>{}(std::forward<Self>(self));
 
     } else {
@@ -427,17 +428,17 @@ template <typename Key, typename Container>
         __contains__<Container, Key>::enable &&
         std::same_as<typename __contains__<Container, Key>::type, bool> && (
             std::is_invocable_r_v<bool, __contains__<Container, Key>, Container, Key> || (
-                !impl::has_call_operator<__contains__<Container, Key>> &&
+                !std::is_invocable_v<__contains__<Container, Key>, Container, Key> &&
                 impl::has_cpp<Container> &&
                 impl::has_contains<impl::cpp_type<Container>, impl::cpp_type<Key>>
             ) || (
-                !impl::has_call_operator<__contains__<Container, Key>> &&
+                !std::is_invocable_v<__contains__<Container, Key>, Container, Key> &&
                 !impl::has_cpp<Container>
             )
         )
     )
 [[nodiscard]] bool in(Key&& key, Container&& container) {
-    if constexpr (impl::has_call_operator<__contains__<Container, Key>>) {
+    if constexpr (std::is_invocable_v<__contains__<Container, Key>, Container, Key>) {
         return __contains__<Container, Key>{}(
             std::forward<Container>(container),
             std::forward<Key>(key)
@@ -468,11 +469,11 @@ template <typename Self, typename Key>
         __contains__<Self, Key>::enable &&
         std::same_as<typename __contains__<Self, Key>::type, bool> && (
             std::is_invocable_r_v<bool, __contains__<Self, Key>, Self, Key> || (
-                !impl::has_call_operator<__contains__<Self, Key>> &&
+                !std::is_invocable_v<__contains__<Self, Key>, Self, Key> &&
                 impl::has_cpp<Self> &&
                 impl::has_contains<impl::cpp_type<Self>, impl::cpp_type<Key>>
             ) || (
-                !impl::has_call_operator<__contains__<Self, Key>> &&
+                !std::is_invocable_v<__contains__<Self, Key>, Self, Key> &&
                 !impl::has_cpp<Self>
             )
         )
@@ -488,7 +489,7 @@ else fails, falls back to demangling the result of typeid(obj).name(). */
 template <typename Self>
     requires (!__repr__<Self>::enable || (
         std::convertible_to<typename __repr__<Self>::type, std::string> && (
-            !impl::has_call_operator<__repr__<Self>> ||
+            !std::is_invocable_v<__repr__<Self>> ||
             std::is_invocable_r_v<std::string, __repr__<Self>, Self>
         )
     ))
@@ -544,17 +545,17 @@ template <typename Self>
         __len__<Self>::enable &&
         std::convertible_to<typename __len__<Self>::type, size_t> && (
             std::is_invocable_r_v<size_t, __len__<Self>, Self> || (
-                !impl::has_call_operator<__len__<Self>> &&
+                !std::is_invocable_v<__len__<Self>, Self> &&
                 impl::has_cpp<Self> &&
                 impl::has_size<impl::cpp_type<Self>>
             ) || (
-                !impl::has_call_operator<__len__<Self>> &&
+                !std::is_invocable_v<__len__<Self>, Self> &&
                 !impl::has_cpp<Self>
             )
         )
     )
 [[nodiscard]] size_t len(Self&& obj) {
-    if constexpr (impl::has_call_operator<__len__<Self>>) {
+    if constexpr (std::is_invocable_v<__len__<Self>, Self>) {
         return __len__<Self>{}(std::forward<Self>(obj));
 
     } else if constexpr (impl::has_cpp<Self>) {
@@ -587,11 +588,11 @@ template <typename Self>
         __len__<Self>::enable &&
         std::convertible_to<typename __len__<Self>::type, size_t> && (
             std::is_invocable_r_v<size_t , __len__<Self>, Self> || (
-                !impl::has_call_operator<__len__<Self>> &&
+                !std::is_invocable_v<__len__<Self>, Self> &&
                 impl::has_cpp<Self> &&
                 impl::has_size<impl::cpp_type<Self>>
             ) || (
-                !impl::has_call_operator<__len__<Self>> &&
+                !std::is_invocable_v<__len__<Self>, Self> &&
                 !impl::has_cpp<Self>
             )
         )
@@ -616,18 +617,18 @@ template <typename Self>
         __abs__<Self>::enable &&
         std::convertible_to<typename __abs__<Self>::type, Object> && (
             std::is_invocable_r_v<typename __abs__<Self>::type, __abs__<Self>, Self> || (
-                !impl::has_call_operator<__abs__<Self>> &&
+                !std::is_invocable_v<__abs__<Self>, Self> &&
                 impl::has_cpp<Self> &&
                 impl::abs_returns<impl::cpp_type<Self>, typename __abs__<Self>::type>
             ) || (
-                !impl::has_call_operator<__abs__<Self>> &&
+                !std::is_invocable_v<__abs__<Self>, Self> &&
                 !impl::has_cpp<Self> &&
                 std::derived_from<typename __abs__<Self>::type, Object>
             )
         )
     )
 [[nodiscard]] decltype(auto) abs(Self&& self) {
-    if constexpr (impl::has_call_operator<__abs__<Self>>) {
+    if constexpr (std::is_invocable_v<__abs__<Self>, Self>) {
         return __abs__<Self>{}(std::forward<Self>(self));
 
     } else if constexpr (impl::has_cpp<Self>) {
@@ -662,18 +663,18 @@ template <impl::python Self>
         __invert__<Self>::enable &&
         std::convertible_to<typename __invert__<Self>::type, Object> && (
             std::is_invocable_r_v<typename __invert__<Self>::type, __invert__<Self>, Self> || (
-                !impl::has_call_operator<__invert__<Self>> &&
+                !std::is_invocable_v<__invert__<Self>, Self> &&
                 impl::has_cpp<Self> &&
                 impl::invert_returns<impl::cpp_type<Self>, typename __invert__<Self>::type>
             ) || (
-                !impl::has_call_operator<__invert__<Self>> &&
+                !std::is_invocable_v<__invert__<Self>, Self> &&
                 !impl::has_cpp<Self> &&
                 std::derived_from<typename __invert__<Self>::type, Object>
             )
         )
     )
 decltype(auto) operator~(Self&& self) {
-    if constexpr (impl::has_call_operator<__invert__<Self>>) {
+    if constexpr (std::is_invocable_v<__invert__<Self>, Self>) {
         return __invert__<Self>{}(std::forward<Self>(self));
 
     } else if constexpr (impl::has_cpp<Self>) {
@@ -698,18 +699,18 @@ template <impl::python Self>
         __pos__<Self>::enable &&
         std::convertible_to<typename __pos__<Self>::type, Object> && (
             std::is_invocable_r_v<typename __pos__<Self>::type, __pos__<Self>, Self> || (
-                !impl::has_call_operator<__pos__<Self>> &&
+                !std::is_invocable_v<__pos__<Self>, Self> &&
                 impl::has_cpp<Self> &&
                 impl::pos_returns<impl::cpp_type<Self>, typename __pos__<Self>::type>
             ) || (
-                !impl::has_call_operator<__pos__<Self>> &&
+                !std::is_invocable_v<__pos__<Self>, Self> &&
                 !impl::has_cpp<Self> &&
                 std::derived_from<typename __pos__<Self>::type, Object>
             )
         )
     )
 decltype(auto) operator+(Self&& self) {
-    if constexpr (impl::has_call_operator<__pos__<Self>>) {
+    if constexpr (std::is_invocable_v<__pos__<Self>, Self>) {
         return __pos__<Self>{}(std::forward<Self>(self));
 
     } else if constexpr (impl::has_cpp<Self>) {
@@ -734,18 +735,18 @@ template <impl::python Self>
         __neg__<Self>::enable &&
         std::convertible_to<typename __neg__<Self>::type, Object> && (
             std::is_invocable_r_v<typename __neg__<Self>::type, __neg__<Self>, Self> || (
-                !impl::has_call_operator<__neg__<Self>> &&
+                !std::is_invocable_v<__neg__<Self>, Self> &&
                 impl::has_cpp<Self> &&
                 impl::neg_returns<impl::cpp_type<Self>, typename __neg__<Self>::type>
             ) || (
-                !impl::has_call_operator<__neg__<Self>> &&
+                !std::is_invocable_v<__neg__<Self>, Self> &&
                 !impl::has_cpp<Self> &&
                 std::derived_from<typename __neg__<Self>::type, Object>
             )
         )
     )
 decltype(auto) operator-(Self&& self) {
-    if constexpr (impl::has_call_operator<__neg__<Self>>) {
+    if constexpr (std::is_invocable_v<__neg__<Self>, Self>) {
         return __neg__<Self>{}(std::forward<Self>(self));
 
     } else if constexpr (impl::has_cpp<Self>) {
@@ -772,18 +773,18 @@ template <impl::python Self>
         __increment__<Self>::enable &&
         std::convertible_to<typename __increment__<Self>::type, Object> && (
             std::is_invocable_r_v<typename __increment__<Self>::type, __increment__<Self>, Self> || (
-                !impl::has_call_operator<__increment__<Self>> &&
+                !std::is_invocable_v<__increment__<Self>, Self> &&
                 impl::has_cpp<Self> &&
                 impl::preincrement_returns<impl::cpp_type<Self>, typename __increment__<Self>::type>
             ) || (
-                !impl::has_call_operator<__increment__<Self>> &&
+                !std::is_invocable_v<__increment__<Self>, Self> &&
                 !impl::has_cpp<Self> &&
                 std::same_as<typename __increment__<Self>::type, Self>
             )
         )
     )
 decltype(auto) operator++(Self&& self) {
-    if constexpr (impl::has_call_operator<__increment__<Self>>) {
+    if constexpr (std::is_invocable_v<__increment__<Self>, Self>) {
         return __increment__<Self>{}(std::forward<Self>(self));
 
     } else if constexpr (impl::has_cpp<Self>) {
@@ -818,18 +819,18 @@ template <impl::python Self>
         __decrement__<Self>::enable &&
         std::convertible_to<typename __decrement__<Self>::type, Object> && (
             std::is_invocable_r_v<typename __decrement__<Self>::type, __decrement__<Self>, Self> || (
-                !impl::has_call_operator<__decrement__<Self>> &&
+                !std::is_invocable_v<__decrement__<Self>, Self> &&
                 impl::has_cpp<Self> &&
                 impl::predecrement_returns<impl::cpp_type<Self>, typename __decrement__<Self>::type>
             ) || (
-                !impl::has_call_operator<__decrement__<Self>> &&
+                !std::is_invocable_v<__decrement__<Self>, Self> &&
                 !impl::has_cpp<Self> &&
                 std::same_as<typename __decrement__<Self>::type, Self>
             )
         )
     )
 decltype(auto) operator--(Self&& self) {
-    if constexpr (impl::has_call_operator<__decrement__<Self>>) {
+    if constexpr (std::is_invocable_v<__decrement__<Self>, Self>) {
         return __decrement__<Self>{}(std::forward<Self>(self));
 
     } else if constexpr (impl::has_cpp<Self>) {
@@ -863,18 +864,18 @@ template <typename L, typename R>
         __lt__<L, R>::enable &&
         std::convertible_to<typename __lt__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __lt__<L, R>::type, __lt__<L, R>, L, R> || (
-                !impl::has_call_operator<__lt__<L, R>> &&
+                !std::is_invocable_v<__lt__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::lt_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __lt__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__lt__<L, R>> &&
+                !std::is_invocable_v<__lt__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 std::derived_from<typename __lt__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) operator<(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__lt__<L, R>>) {
+    if constexpr (std::is_invocable_v<__lt__<L, R>, L, R>) {
         return __lt__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -902,18 +903,18 @@ template <typename L, typename R>
         __le__<L, R>::enable &&
         std::convertible_to<typename __le__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __le__<L, R>::type, __le__<L, R>, L, R> || (
-                !impl::has_call_operator<__le__<L, R>> &&
+                !std::is_invocable_v<__le__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::le_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __le__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__le__<L, R>> &&
+                !std::is_invocable_v<__le__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 std::derived_from<typename __le__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) operator<=(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__le__<L, R>>) {
+    if constexpr (std::is_invocable_v<__le__<L, R>, L, R>) {
         return __le__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -941,18 +942,18 @@ template <typename L, typename R>
         __eq__<L, R>::enable &&
         std::convertible_to<typename __eq__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __eq__<L, R>::type, __eq__<L, R>, L, R> || (
-                !impl::has_call_operator<__eq__<L, R>> &&
+                !std::is_invocable_v<__eq__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::eq_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __eq__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__eq__<L, R>> &&
+                !std::is_invocable_v<__eq__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 std::derived_from<typename __eq__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) operator==(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__eq__<L, R>>) {
+    if constexpr (std::is_invocable_v<__eq__<L, R>, L, R>) {
         return __eq__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -980,18 +981,18 @@ template <typename L, typename R>
         __ne__<L, R>::enable &&
         std::convertible_to<typename __ne__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __ne__<L, R>::type, __ne__<L, R>, L, R> || (
-                !impl::has_call_operator<__ne__<L, R>> &&
+                !std::is_invocable_v<__ne__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::ne_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __ne__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__ne__<L, R>> &&
+                !std::is_invocable_v<__ne__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 std::derived_from<typename __ne__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) operator!=(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__ne__<L, R>>) {
+    if constexpr (std::is_invocable_v<__ne__<L, R>, L, R>) {
         return __ne__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1019,18 +1020,18 @@ template <typename L, typename R>
         __ge__<L, R>::enable &&
         std::convertible_to<typename __ge__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __ge__<L, R>::type, __ge__<L, R>, L, R> || (
-                !impl::has_call_operator<__ge__<L, R>> &&
+                !std::is_invocable_v<__ge__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::ge_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __ge__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__ge__<L, R>> &&
+                !std::is_invocable_v<__ge__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 std::derived_from<typename __ge__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) operator>=(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__ge__<L, R>>) {
+    if constexpr (std::is_invocable_v<__ge__<L, R>, L, R>) {
         return __ge__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1058,18 +1059,18 @@ template <typename L, typename R>
         __gt__<L, R>::enable &&
         std::convertible_to<typename __gt__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __gt__<L, R>::type, __gt__<L, R>, L, R> || (
-                !impl::has_call_operator<__gt__<L, R>> &&
+                !std::is_invocable_v<__gt__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::gt_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __gt__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__gt__<L, R>> &&
+                !std::is_invocable_v<__gt__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 std::derived_from<typename __gt__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) operator>(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__gt__<L, R>>) {
+    if constexpr (std::is_invocable_v<__gt__<L, R>, L, R>) {
         return __gt__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1097,18 +1098,18 @@ template <typename L, typename R>
         __add__<L, R>::enable &&
         std::convertible_to<typename __add__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __add__<L, R>::type, __add__<L, R>, L, R> || (
-                !impl::has_call_operator<__add__<L, R>> &&
+                !std::is_invocable_v<__add__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::add_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __add__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__add__<L, R>> &&
+                !std::is_invocable_v<__add__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 std::derived_from<typename __add__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) operator+(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__add__<L, R>>) {
+    if constexpr (std::is_invocable_v<__add__<L, R>, L, R>) {
         return __add__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1135,18 +1136,18 @@ template <impl::python L, typename R>
         !std::is_const_v<std::remove_reference_t<L>> &&
         std::convertible_to<typename __iadd__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __iadd__<L, R>::type, __iadd__<L, R>, L, R> || (
-                !impl::has_call_operator<__iadd__<L, R>> &&
+                !std::is_invocable_v<__iadd__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::iadd_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __iadd__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__iadd__<L, R>> &&
+                !std::is_invocable_v<__iadd__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::inherits<typename __iadd__<L, R>::type, L>
             )
         )
     )
 decltype(auto) operator+=(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__iadd__<L, R>>) {
+    if constexpr (std::is_invocable_v<__iadd__<L, R>, L, R>) {
         return __iadd__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1177,18 +1178,18 @@ template <typename L, typename R>
         __sub__<L, R>::enable &&
         std::convertible_to<typename __sub__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __sub__<L, R>::type, __sub__<L, R>, L, R> || (
-                !impl::has_call_operator<__sub__<L, R>> &&
+                !std::is_invocable_v<__sub__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::sub_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __sub__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__sub__<L, R>> &&
+                !std::is_invocable_v<__sub__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 std::derived_from<typename __sub__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) operator-(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__sub__<L, R>>) {
+    if constexpr (std::is_invocable_v<__sub__<L, R>, L, R>) {
         return __sub__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1215,18 +1216,18 @@ template <impl::python L, typename R>
         !std::is_const_v<std::remove_reference_t<L>> &&
         std::convertible_to<typename __isub__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __isub__<L, R>::type, __isub__<L, R>, L, R> || (
-                !impl::has_call_operator<__isub__<L, R>> &&
+                !std::is_invocable_v<__isub__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::isub_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __isub__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__isub__<L, R>> &&
+                !std::is_invocable_v<__isub__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::inherits<typename __isub__<L, R>::type, L>
             )
         )
     )
 decltype(auto) operator-=(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__isub__<L, R>>) {
+    if constexpr (std::is_invocable_v<__isub__<L, R>, L, R>) {
         return __isub__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1257,18 +1258,18 @@ template <typename L, typename R>
         __mul__<L, R>::enable &&
         std::convertible_to<typename __mul__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __mul__<L, R>::type, __mul__<L, R>, L, R> || (
-                !impl::has_call_operator<__mul__<L, R>> &&
+                !std::is_invocable_v<__mul__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::mul_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __mul__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__mul__<L, R>> &&
+                !std::is_invocable_v<__mul__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 std::derived_from<typename __mul__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) operator*(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__mul__<L, R>>) {
+    if constexpr (std::is_invocable_v<__mul__<L, R>, L, R>) {
         return __mul__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1295,18 +1296,18 @@ template <impl::python L, typename R>
         !std::is_const_v<std::remove_reference_t<L>> &&
         std::convertible_to<typename __imul__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __imul__<L, R>::type, __imul__<L, R>, L, R> || (
-                !impl::has_call_operator<__imul__<L, R>> &&
+                !std::is_invocable_v<__imul__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::imul_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __imul__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__imul__<L, R>> &&
+                !std::is_invocable_v<__imul__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::inherits<typename __imul__<L, R>::type, L>
             )
         )
     )
 decltype(auto) operator*=(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__imul__<L, R>>) {
+    if constexpr (std::is_invocable_v<__imul__<L, R>, L, R>) {
         return __imul__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1335,18 +1336,18 @@ template <typename Base, typename Exp>
         __pow__<Base, Exp>::enable &&
         std::convertible_to<typename __pow__<Base, Exp>::type, Object> && (
             std::is_invocable_r_v<typename __pow__<Base, Exp>::type, __pow__<Base, Exp>, Base, Exp> || (
-                !impl::has_call_operator<__pow__<Base, Exp>> &&
+                !std::is_invocable_v<__pow__<Base, Exp>, Base, Exp> &&
                 (impl::has_cpp<Base> && impl::has_cpp<Exp>) &&
                 impl::pow_returns<impl::cpp_type<Base>, impl::cpp_type<Exp>, typename __pow__<Base, Exp>::type>
             ) && (
-                !impl::has_call_operator<__pow__<Base, Exp>> &&
+                !std::is_invocable_v<__pow__<Base, Exp>, Base, Exp> &&
                 !(impl::has_cpp<Base> && impl::has_cpp<Exp>) &&
                 std::derived_from<typename __pow__<Base, Exp>::type, Object>
             )
         )
     )
 decltype(auto) pow(Base&& base, Exp&& exp) {
-    if constexpr (impl::has_call_operator<__pow__<Base, Exp>>) {
+    if constexpr (std::is_invocable_v<__pow__<Base, Exp>, Base, Exp>) {
         return __pow__<Base, Exp>{}(std::forward<Base>(base), std::forward<Exp>(exp));
 
     } else if constexpr (impl::has_cpp<Base> && impl::has_cpp<Exp>) {
@@ -1431,14 +1432,14 @@ template <typename Base, typename Exp, typename Mod>
                 Exp,
                 Mod
             > || (
-                !impl::has_call_operator<__pow__<Base, Exp, Mod>> &&
+                !std::is_invocable_v<__pow__<Base, Exp, Mod>, Base, Exp, Mod> &&
                 std::derived_from<typename __pow__<Base, Exp, Mod>::type, Object>
             )
         )
     )
 decltype(auto) pow(Base&& base, Exp&& exp, Mod&& mod) {
-    if constexpr (impl::has_call_operator<__pow__<Base, Exp>>) {
-        return __pow__<Base, Exp>{}(
+    if constexpr (std::is_invocable_v<__pow__<Base, Exp, Mod>, Base, Exp, Mod>) {
+        return __pow__<Base, Exp, Mod>{}(
             std::forward<Base>(base),
             std::forward<Exp>(exp),
             std::forward<Mod>(mod)
@@ -1483,18 +1484,18 @@ template <typename L, typename R>
         __truediv__<L, R>::enable &&
         std::convertible_to<typename __truediv__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __truediv__<L, R>::type, __truediv__<L, R>, L, R> || (
-                !impl::has_call_operator<__truediv__<L, R>> &&
+                !std::is_invocable_v<__truediv__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::truediv_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __truediv__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__truediv__<L, R>> &&
+                !std::is_invocable_v<__truediv__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 std::derived_from<typename __truediv__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) operator/(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__truediv__<L, R>>) {
+    if constexpr (std::is_invocable_v<__truediv__<L, R>, L, R>) {
         return __truediv__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1521,18 +1522,18 @@ template <impl::python L, typename R>
         !std::is_const_v<std::remove_reference_t<L>> &&
         std::convertible_to<typename __itruediv__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __itruediv__<L, R>::type, __itruediv__<L, R>, L, R> || (
-                !impl::has_call_operator<__itruediv__<L, R>> &&
+                !std::is_invocable_v<__itruediv__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::itruediv_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __itruediv__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__itruediv__<L, R>> &&
+                !std::is_invocable_v<__itruediv__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::inherits<typename __itruediv__<L, R>::type, L>
             )
         )
     )
 decltype(auto) operator/=(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__itruediv__<L, R>>) {
+    if constexpr (std::is_invocable_v<__itruediv__<L, R>, L, R>) {
         return __itruediv__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1560,13 +1561,13 @@ template <typename L, typename R>
         __floordiv__<L, R>::enable &&
         std::convertible_to<typename __floordiv__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __floordiv__<L, R>::type, __floordiv__<L, R>, L, R> || (
-                !impl::has_call_operator<__floordiv__<L, R>> &&
+                !std::is_invocable_v<__floordiv__<L, R>, L, R> &&
                 std::derived_from<typename __floordiv__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) floordiv(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__floordiv__<L, R>>) {
+    if constexpr (std::is_invocable_v<__floordiv__<L, R>, L, R>) {
         return __floordiv__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
     } else {
         PyObject* result = PyNumber_FloorDivide(
@@ -1586,13 +1587,13 @@ template <impl::python L, typename R>
         __ifloordiv__<L, R>::enable &&
         std::convertible_to<typename __ifloordiv__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __ifloordiv__<L, R>::type, __ifloordiv__<L, R>, L, R> || (
-                !impl::has_call_operator<__ifloordiv__<L, R>> &&
+                !std::is_invocable_v<__ifloordiv__<L, R>, L, R> &&
                 std::derived_from<typename __ifloordiv__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) ifloordiv(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__ifloordiv__<L, R>>) {
+    if constexpr (std::is_invocable_v<__ifloordiv__<L, R>, L, R>) {
         return __ifloordiv__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else {
@@ -1617,18 +1618,18 @@ template <typename L, typename R>
         __mod__<L, R>::enable &&
         std::convertible_to<typename __mod__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __mod__<L, R>::type, __mod__<L, R>, L, R> || (
-                !impl::has_call_operator<__mod__<L, R>> &&
+                !std::is_invocable_v<__mod__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::mod_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __mod__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__mod__<L, R>> &&
+                !std::is_invocable_v<__mod__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 std::derived_from<typename __mod__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) operator%(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__mod__<L, R>>) {
+    if constexpr (std::is_invocable_v<__mod__<L, R>, L, R>) {
         return __mod__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1655,18 +1656,18 @@ template <impl::python L, typename R>
         !std::is_const_v<std::remove_reference_t<L>> &&
         std::convertible_to<typename __imod__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __imod__<L, R>::type, __imod__<L, R>, L, R> || (
-                !impl::has_call_operator<__imod__<L, R>> &&
+                !std::is_invocable_v<__imod__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::imod_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __imod__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__imod__<L, R>> &&
+                !std::is_invocable_v<__imod__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::inherits<typename __imod__<L, R>::type, L>
             )
         )
     )
 decltype(auto) operator%=(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__imod__<L, R>>) {
+    if constexpr (std::is_invocable_v<__imod__<L, R>, L, R>) {
         return __imod__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1697,18 +1698,18 @@ template <typename L, typename R>
         __lshift__<L, R>::enable &&
         std::convertible_to<typename __lshift__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __lshift__<L, R>::type, __lshift__<L, R>, L, R> || (
-                !impl::has_call_operator<__lshift__<L, R>> &&
+                !std::is_invocable_v<__lshift__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::lshift_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __lshift__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__lshift__<L, R>> &&
+                !std::is_invocable_v<__lshift__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 std::derived_from<typename __lshift__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) operator<<(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__lshift__<L, R>>) {
+    if constexpr (std::is_invocable_v<__lshift__<L, R>, L, R>) {
         return __lshift__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1734,18 +1735,18 @@ template <impl::python L, typename R>
         __ilshift__<L, R>::enable &&
         std::convertible_to<typename __ilshift__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __ilshift__<L, R>::type, __ilshift__<L, R>, L, R> || (
-                !impl::has_call_operator<__ilshift__<L, R>> &&
+                !std::is_invocable_v<__ilshift__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::ilshift_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __ilshift__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__ilshift__<L, R>> &&
+                !std::is_invocable_v<__ilshift__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 std::derived_from<typename __ilshift__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) operator<<=(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__ilshift__<L, R>>) {
+    if constexpr (std::is_invocable_v<__ilshift__<L, R>, L, R>) {
         return __ilshift__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1774,18 +1775,18 @@ template <typename L, typename R>
         __rshift__<L, R>::enable &&
         std::convertible_to<typename __rshift__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __rshift__<L, R>::type, __rshift__<L, R>, L, R> || (
-                !impl::has_call_operator<__rshift__<L, R>> &&
+                !std::is_invocable_v<__rshift__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::rshift_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __rshift__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__rshift__<L, R>> &&
+                !std::is_invocable_v<__rshift__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 std::derived_from<typename __rshift__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) operator>>(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__rshift__<L, R>>) {
+    if constexpr (std::is_invocable_v<__rshift__<L, R>, L, R>) {
         return __rshift__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1811,18 +1812,18 @@ template <impl::python L, typename R>
         __irshift__<L, R>::enable &&
         std::convertible_to<typename __irshift__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __irshift__<L, R>::type, __irshift__<L, R>, L, R> || (
-                !impl::has_call_operator<__irshift__<L, R>> &&
+                !std::is_invocable_v<__irshift__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::irshift_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __irshift__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__irshift__<L, R>> &&
+                !std::is_invocable_v<__irshift__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 std::derived_from<typename __irshift__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) operator>>=(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__irshift__<L, R>>) {
+    if constexpr (std::is_invocable_v<__irshift__<L, R>, L, R>) {
         return __irshift__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1851,18 +1852,18 @@ template <typename L, typename R>
         __and__<L, R>::enable &&
         std::convertible_to<typename __and__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __and__<L, R>::type, __and__<L, R>, L, R> || (
-                !impl::has_call_operator<__and__<L, R>> &&
+                !std::is_invocable_v<__and__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::and_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __and__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__and__<L, R>> &&
+                !std::is_invocable_v<__and__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 std::derived_from<typename __and__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) operator&(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__and__<L, R>>) {
+    if constexpr (std::is_invocable_v<__and__<L, R>, L, R>) {
         return __and__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1889,18 +1890,18 @@ template <impl::python L, typename R>
         !std::is_const_v<std::remove_reference_t<L>> &&
         std::convertible_to<typename __iand__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __iand__<L, R>::type, __iand__<L, R>, L, R> || (
-                !impl::has_call_operator<__iand__<L, R>> &&
+                !std::is_invocable_v<__iand__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::iand_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __iand__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__iand__<L, R>> &&
+                !std::is_invocable_v<__iand__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::inherits<typename __iand__<L, R>::type, L>
             )
         )
     )
 decltype(auto) operator&=(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__iand__<L, R>>) {
+    if constexpr (std::is_invocable_v<__iand__<L, R>, L, R>) {
         return __iand__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1931,18 +1932,18 @@ template <typename L, typename R>
         __or__<L, R>::enable &&
         std::convertible_to<typename __or__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __or__<L, R>::type, __or__<L, R>, L, R> || (
-                !impl::has_call_operator<__or__<L, R>> &&
+                !std::is_invocable_v<__or__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::or_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __or__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__or__<L, R>> &&
+                !std::is_invocable_v<__or__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 std::derived_from<typename __or__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) operator|(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__or__<L, R>>) {
+    if constexpr (std::is_invocable_v<__or__<L, R>, L, R>) {
         return __or__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -1969,18 +1970,18 @@ template <impl::python L, typename R>
         !std::is_const_v<std::remove_reference_t<L>> &&
         std::convertible_to<typename __ior__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __ior__<L, R>::type, __ior__<L, R>, L, R> || (
-                !impl::has_call_operator<__ior__<L, R>> &&
+                !std::is_invocable_v<__ior__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::ior_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __ior__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__ior__<L, R>> &&
+                !std::is_invocable_v<__ior__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::inherits<typename __ior__<L, R>::type, L>
             )
         )
     )
 decltype(auto) operator|=(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__ior__<L, R>>) {
+    if constexpr (std::is_invocable_v<__ior__<L, R>, L, R>) {
         return __ior__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -2011,18 +2012,18 @@ template <typename L, typename R>
         __xor__<L, R>::enable &&
         std::convertible_to<typename __xor__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __xor__<L, R>::type, __xor__<L, R>, L, R> || (
-                !impl::has_call_operator<__xor__<L, R>> &&
+                !std::is_invocable_v<__xor__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::xor_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __xor__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__xor__<L, R>> &&
+                !std::is_invocable_v<__xor__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 std::derived_from<typename __xor__<L, R>::type, Object>
             )
         )
     )
 decltype(auto) operator^(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__xor__<L, R>>) {
+    if constexpr (std::is_invocable_v<__xor__<L, R>, L, R>) {
         return __xor__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -2049,18 +2050,18 @@ template <impl::python L, typename R>
         !std::is_const_v<std::remove_reference_t<L>> &&
         std::convertible_to<typename __ixor__<L, R>::type, Object> && (
             std::is_invocable_r_v<typename __ixor__<L, R>::type, __ixor__<L, R>, L, R> || (
-                !impl::has_call_operator<__ixor__<L, R>> &&
+                !std::is_invocable_v<__ixor__<L, R>, L, R> &&
                 (impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::ixor_returns<impl::cpp_type<L>, impl::cpp_type<R>, typename __ixor__<L, R>::type>
             ) || (
-                !impl::has_call_operator<__ixor__<L, R>> &&
+                !std::is_invocable_v<__ixor__<L, R>, L, R> &&
                 !(impl::has_cpp<L> && impl::has_cpp<R>) &&
                 impl::inherits<typename __ixor__<L, R>::type, L>
             )
         )
     )
 decltype(auto) operator^=(L&& lhs, R&& rhs) {
-    if constexpr (impl::has_call_operator<__ixor__<L, R>>) {
+    if constexpr (std::is_invocable_v<__ixor__<L, R>, L, R>) {
         return __ixor__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (impl::has_cpp<L> && impl::has_cpp<R>) {
@@ -2092,16 +2093,16 @@ namespace std {
         requires (py::__hash__<T>::enable && (
             std::is_invocable_r_v<size_t, py::__hash__<T>, T> ||
             (
-                !py::impl::has_call_operator<py::__hash__<T>> &&
+                !std::is_invocable_v<py::__hash__<T>, T> &&
                 py::impl::has_cpp<T> && py::impl::hashable<py::impl::cpp_type<T>>
             ) || (
-                !py::impl::has_call_operator<py::__hash__<T>> &&
+                !std::is_invocable_v<py::__hash__<T>, T> &&
                 !py::impl::has_cpp<T>
             )
         ))
     struct hash<T> {
         static constexpr size_t operator()(T obj) {
-            if constexpr (py::impl::has_call_operator<py::__hash__<T>>) {
+            if constexpr (std::is_invocable_v<py::__hash__<T>, T>) {
                 return py::__hash__<T>{}(std::forward<T>(obj));
 
             } else if constexpr (py::impl::has_cpp<T>) {

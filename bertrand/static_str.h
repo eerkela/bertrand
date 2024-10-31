@@ -274,6 +274,10 @@ public:
 
     // NOTE: hash is computed entirely at compile time
 
+    constexpr const char* data() const {
+        return buffer;
+    }
+
     consteval size_t hash() const {
         size_t result = 0xcbf29ce484222325;  // typical 64-bit FNV basis
         for (size_t i = 0; i < N; ++i) {

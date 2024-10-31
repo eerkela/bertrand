@@ -1218,7 +1218,7 @@ namespace impl {
         template <typename T, typename... Ts>
         struct _collisions<T, Ts...> {
             static constexpr bool operator()(size_t idx, size_t seed, size_t prime) {
-                if constexpr (ArgTraits<T>::kw) {
+                if constexpr (ArgTraits<T>::kw()) {
                     size_t hash = fnv1a(
                         ArgTraits<T>::name,
                         seed,
@@ -1400,7 +1400,7 @@ namespace impl {
         ) {
             using T = at<I>;
             if constexpr (ArgTraits<T>::kw()) {
-                table[keyword_modulus(hash(ArgTraits<T>::name.buffer))] = {
+                table[keyword_modulus(hash(ArgTraits<T>::name.data()))] = {
                     .name = ArgTraits<T>::name,
                     .mask = ArgTraits<T>::variadic() ? 0ULL : 1ULL << I,
                     .isinstance = [](const Object& value) -> bool {
@@ -1754,6 +1754,8 @@ namespace impl {
             template <typename... Values>
             using Bind = Inner::template Bind<Values...>;
 
+            static_assert(Bind<Arg<"y", double>>::enable);
+
             /* Given an index into the enclosing signature, find the corresponding index
             in the defaults tuple if that index corresponds to a default value. */
             template <size_t I> requires (ArgTraits<typename Arguments::at<I>>::opt())
@@ -2052,7 +2054,7 @@ namespace impl {
             and all optional arguments have been accounted for. */
             template <typename... Values> requires (Bind<Values...>::enable)
             constexpr Defaults(Values&&... values) : values(build(
-                std::make_index_sequence<Inner::n>{},
+                std::index_sequence_for<Values...>{},
                 std::forward<Values>(values)...
             )) {}
             constexpr Defaults(const Defaults& other) = default;
@@ -3522,55 +3524,8 @@ namespace impl {
             /* Recursively check whether the source arguments conform to Python calling
             conventions (i.e. no positional arguments after a keyword, no duplicate
             keywords, etc.), fully satisfy the target signature, and are convertible to
-            the expected types, after accounting for parameter packs in both signatures.
-
-            The actual algorithm is quite complex, especially since it is evaluated at
-            compile time via template recursion and must validate both signatures at
-            once.  Here's a rough outline of how it works:
-
-                1.  Generate two indices, I and J, which are used to traverse over the
-                    target and source signatures, respectively.
-                2.  For each I, J, inspect the target argument at index I:
-                    a.  If the target argument is positional-only, check that the
-                        source argument is not a keyword, otherwise check that the
-                        target argument is marked as optional.
-                    b.  If the target argument is positional-or-keyword, check that the
-                        source argument meets the criteria for (a), or that the source
-                        signature contains a matching keyword argument.
-                    c.  If the target argument is keyword-only, check that the source's
-                        positional arguments have been exhausted, and that the source
-                        signature contains a matching keyword argument or the target
-                        argument is marked as optional.
-                    d.  If the target argument is variadic positional, recur until all
-                        source positional arguments have been exhausted, ensuring that
-                        each is convertible to the target type.
-                    e.  If the target argument is variadic keyword, recur until all
-                        source keyword arguments have been exhausted, ensuring that
-                        each is convertible to the target type.
-                3.  Then inspect the source argument at index J:
-                    a.  If the source argument is positional, check that it is
-                        convertible to the target type.
-                    b.  If the source argument is keyword, check that the target
-                        signature contains a matching keyword argument, and that the
-                        source argument is convertible to the target type.
-                    c.  If the source argument is variadic positional, recur until all
-                        target positional arguments have been exhausted, ensuring that
-                        each is convertible from the source type.
-                    d.  If the source argument is variadic keyword, recur until all
-                        target keyword arguments have been exhausted, ensuring that
-                        each is convertible from the source type.
-                4.  Advance to the next argument pair and repeat until all arguments
-                    have been checked.  If there are more target arguments than source
-                    arguments, then the remaining target arguments must be optional or
-                    variadic.  If there are more source arguments than target
-                    arguments, then we return false, as the only way to satisfy the
-                    target signature is for it to include variadic arguments, which
-                    would have avoided this case.
-
-            If all of these conditions are met, then the call operator is enabled and
-            the arguments can be translated by the reordering operators listed below.
-            Otherwise, the call operator is disabled and the arguments are rejected in
-            a way that allows LSPs to provide informative feedback to the user. */
+            the expected types, after accounting for parameter packs in both
+            signatures. */
             template <size_t I, size_t J>
             static consteval bool enable_recursive() {
                 // both lists are satisfied
@@ -3625,7 +3580,7 @@ namespace impl {
                         if constexpr (duplicate_name || missing) {
                             return false;
                         }
-                    } else if constexpr (ArgTraits<T>::kwonly()) {
+                    } else if constexpr (ArgTraits<T>::kw()) {
                         constexpr bool extra_positional = (
                             ArgTraits<S>::posonly() || ArgTraits<S>::args()
                         );
@@ -3698,6 +3653,126 @@ namespace impl {
 
                     // advance to next argument pair
                     return enable_recursive<I + 1, J + 1>();
+                }
+            }
+
+            /* Recursively check whether the source arguments conform to Python calling
+            conventions (i.e. no positional arguments after a keyword, no duplicate
+            keywords, etc.), partially match the target signature, and are convertible
+            to the expected types, after accounting for parameter packs in both
+            signatures. */
+            template <size_t I, size_t J>
+            static consteval bool partial_recursive() {
+                // both lists are satisfied
+                if constexpr (I >= Arguments::n && J >= Bound::n) {
+                    return true;
+
+                // there are extra source arguments
+                } else if constexpr (I >= Arguments::n) {
+                    return false;
+
+                // there are extra unmatched target arguments
+                } else if constexpr (J >= Bound::n) {
+                    using T = Target<I>;
+                    if constexpr (ArgTraits<T>::kwargs()) {
+                        return consume_target_kwargs<Bound::kw_idx, T>;
+                    } else {
+                        return partial_recursive<I + 1, J>();
+                    }
+
+                // both lists have arguments remaining
+                } else {
+                    using T = Target<I>;
+                    using S = Source<J>;
+
+                    // ensure target arguments do not conflict + expand parameter packs
+                    // over source arguments
+                    if constexpr (ArgTraits<T>::posonly()) {
+                        constexpr bool duplicate_name = (
+                            ArgTraits<T>::name != "" &&
+                            Bound::template has<ArgTraits<T>::name>
+                        );
+                        if constexpr (duplicate_name) {
+                            return false;
+                        }
+                    } else if constexpr (ArgTraits<T>::pos()) {
+                        constexpr bool duplicate_name = (
+                            ArgTraits<T>::name != "" &&
+                            (ArgTraits<S>::posonly() || ArgTraits<S>::args()) &&
+                            Bound::template has<ArgTraits<T>::name>
+                        );
+                        if constexpr (duplicate_name) {
+                            return false;
+                        }
+                    } else if constexpr (ArgTraits<T>::kw()) {
+                        constexpr bool extra_positional = (
+                            ArgTraits<S>::posonly() || ArgTraits<S>::args()
+                        );
+                        if constexpr (extra_positional) {
+                            return false;
+                        }
+                    } else if constexpr (ArgTraits<T>::args()) {
+                        return consume_target_args<J, T> && partial_recursive<
+                            I + 1,
+                            Bound::has_kw ? Bound::kw_idx : Bound::kwargs_idx
+                        >();  // skip ahead to source keywords
+                    } else if constexpr (ArgTraits<T>::kwargs()) {
+                        return consume_target_kwargs<
+                            Bound::has_kw ? Bound::kw_idx : Bound::kwargs_idx,
+                            T
+                        >;  // end of expression
+                    } else {
+                        static_assert(false);
+                        return false;  // not reachable
+                    }
+
+                    // ensure source arguments match targets & expand parameter packs
+                    // over target arguments.
+                    if constexpr (ArgTraits<S>::posonly()) {
+                        constexpr bool not_convertible = !std::convertible_to<
+                            typename ArgTraits<S>::type,
+                            typename ArgTraits<T>::type
+                        >;
+                        if constexpr (not_convertible) {
+                            return false;
+                        }
+                    } else if constexpr (ArgTraits<T>::kw()) {
+                        constexpr StaticStr name = ArgTraits<S>::name;
+                        if constexpr (Arguments::template has<name>) {
+                            constexpr size_t idx = Arguments::template idx<name>;
+                            constexpr bool not_convertible = !std::convertible_to<
+                                typename ArgTraits<S>::type,
+                                typename ArgTraits<Target<idx>>::type
+                            >;
+                            if constexpr (not_convertible) {
+                                return false;
+                            }
+                        } else if constexpr (Arguments::has_kwargs) {
+                            constexpr bool not_convertible = !std::convertible_to<
+                                typename ArgTraits<S>::type,
+                                typename ArgTraits<Target<Arguments::kwargs_idx>>::type
+                            >;
+                            if constexpr (not_convertible) {
+                                return false;
+                            }
+                        } else {
+                            return false;
+                        }
+                    } else if constexpr (ArgTraits<T>::args()) {
+                        return consume_source_args<I, S> && partial_recursive<
+                            Arguments::has_kwonly ?
+                                Arguments::kwonly_idx : Arguments::kwargs_idx,
+                            J + 1
+                        >();  // skip to target keywords
+                    } else if constexpr (ArgTraits<T>::kwargs()) {
+                        return consume_source_kwargs<I, S>;  // end of expression
+                    } else {
+                        static_assert(false);
+                        return false;  // not reachable
+                    }
+
+                    // advance to next argument pair
+                    return partial_recursive<I + 1, J + 1>();
                 }
             }
 
@@ -4270,9 +4345,6 @@ namespace impl {
             template <size_t I> requires (I < n)
             using at = Bound::template at<I>;
 
-            /// TODO: break out the proper_argument_order, etc. checks into separate
-            /// conditions that can be used to provide more detailed error messages.
-
             static constexpr bool proper_argument_order = Bound::proper_argument_order;
             static constexpr bool no_duplicate_arguments = Bound::no_duplicate_arguments;
             static constexpr bool no_qualified_arg_annotations =
@@ -4280,11 +4352,10 @@ namespace impl {
 
             /* Call operator is only enabled if source arguments are well-formed and
             match the target signature. */
-            static constexpr bool enable =
-                Bound::proper_argument_order &&
-                Bound::no_duplicate_arguments &&
-                Bound::no_qualified_arg_annotations &&
-                enable_recursive<0, 0>();
+            static constexpr bool enable = enable_recursive<0, 0>();
+
+            /* A separate constraint is needed for `py::partial()`. */
+            static constexpr bool partial = partial_recursive<0, 0>();
 
             /* Produce an overload key from the bound C++ arguments, which can be used
             to search the overload trie and invoke a resulting function. */
@@ -4310,7 +4381,13 @@ namespace impl {
 
             /* Invoke a C++ function from C++ using Python-style arguments. */
             template <typename Func>
-                requires (enable && std::is_invocable_v<Func, Args...>)
+                requires (
+                    std::is_invocable_v<Func, Args...> &&
+                    proper_argument_order &&
+                    no_duplicate_arguments &&
+                    no_qualified_arg_annotations &&
+                    enable
+                )
             static decltype(auto) operator()(
                 const Defaults& defaults,
                 Func&& func,
@@ -4386,7 +4463,13 @@ namespace impl {
             /* Invoke a Python function from C++ using Python-style arguments.  This
             will always return a new reference to a raw Python object, or throw a
             runtime error if the arguments are malformed in some way. */
-            template <typename = void> requires (enable)
+            template <typename = void>
+                requires (
+                    proper_argument_order &&
+                    no_duplicate_arguments &&
+                    no_qualified_arg_annotations &&
+                    enable
+                )
             static PyObject* operator()(
                 PyObject* func,
                 Values... values
@@ -5213,6 +5296,453 @@ namespace impl {
     template <typename Sig>
     concept no_qualified_args = Sig::no_qualified_args;
 
+}
+
+
+/* A template constraint that controls whether the `py::call()` operator is enabled
+for a given C++ function and argument list. */
+template <typename Func, typename... Args>
+concept callable =
+    impl::has_signature<Func> &&
+    impl::args_fit_within_bitset<impl::get_signature<Func>> &&
+    impl::proper_argument_order<impl::get_signature<Func>> &&
+    impl::no_duplicate_arguments<impl::get_signature<Func>> &&
+    impl::no_qualified_arg_annotations<impl::get_signature<Func>> &&
+    impl::get_signature<Func>::template Bind<Args...>::proper_argument_order &&
+    impl::get_signature<Func>::template Bind<Args...>::no_duplicate_arguments &&
+    impl::get_signature<Func>::template Bind<Args...>::no_qualified_arg_annotations &&
+    impl::get_signature<Func>::template Bind<Args...>::enable;
+
+
+/* Introspect a function signature to retrieve a tuple capable of storing default
+values for all argument annotations that are marked as `::opt`.  An object of this
+type can be passed to the `call` function to provide default values for arguments that
+are not present at the call site.  The tuple itself can be constructed using the same
+keyword argument and parameter pack semantics as the `call()` operator itself. */
+template <impl::has_signature Func>
+using Defaults = impl::get_signature<Func>::Defaults;
+
+
+/// TODO: these extra forms with no/movable defaults have to be implemented in Bind<>.
+
+
+/* Invoke a C++ function with Python-style calling conventions, including keyword
+arguments and/or parameter packs, which are resolved at compile time.  Note that the
+function signature cannot contain any template parameters (including auto arguments),
+as the function signature must be known unambiguously at compile time to implement the
+required matching. */
+template <typename Func, typename... Args>
+    requires (
+        callable<Func, Args...> &&
+        impl::get_signature<Func>::n_opt == 0
+    )
+decltype(auto) call(Func&& func, Args&&... args) {
+    return typename impl::get_signature<Func>::template Bind<Args...>{}(
+        {},
+        std::forward<Func>(func),
+        std::forward<Args>(args)...
+    );
+}
+
+
+/* Invoke a C++ function with Python-style calling conventions, including keyword
+arguments and/or parameter packs, which are resolved at compile time.  Note that the
+function signature cannot contain any template parameters (including auto arguments),
+as the function signature must be known unambiguously at compile time to implement the
+required matching. */
+template <typename Func, typename... Args> requires (callable<Func, Args...>)
+decltype(auto) call(const Defaults<Func>& defaults, Func&& func, Args&&... args) {
+    return typename impl::get_signature<Func>::template Bind<Args...>{}(
+        defaults,
+        std::forward<Func>(func),
+        std::forward<Args>(args)...
+    );
+}
+
+
+/* Invoke a C++ function with Python-style calling conventions, including keyword
+arguments and/or parameter packs, which are resolved at compile time.  Note that the
+function signature cannot contain any template parameters (including auto arguments),
+as the function signature must be known unambiguously at compile time to implement the
+required matching. */
+template <typename Func, typename... Args> requires (callable<Func, Args...>)
+decltype(auto) call(Defaults<Func>&& defaults, Func&& func, Args&&... args) {
+    return typename impl::get_signature<Func>::template Bind<Args...>{}(
+        std::move(defaults),
+        std::forward<Func>(func),
+        std::forward<Args>(args)...
+    );
+}
+
+
+namespace impl {
+
+    template <has_signature Func, typename... Args>
+    struct Partial {
+    private:
+
+        template <typename... Values>
+        struct complete {
+            template <typename out, size_t, size_t>
+            struct reorder { using type = out; };
+            template <typename... out, size_t I, size_t J>
+                requires (I < sizeof...(Args))
+            struct reorder<Pack<out...>, I, J> {
+                using type = reorder<
+                    Pack<out..., unpack_type<I, Args...>>,
+                    I + 1,
+                    J
+                >::type;
+            };
+            template <typename... out, size_t I, size_t J>
+                requires (J < sizeof...(Values))
+            struct reorder<Pack<out...>, I, J> {
+                using type = reorder<
+                    Pack<out..., unpack_type<J, Values...>>,
+                    I,
+                    J + 1
+                >::type;
+            };
+            template <typename... out, size_t I, size_t J>
+                requires (I < sizeof...(Args) && J < sizeof...(Values))
+            struct reorder<Pack<out...>, I, J> {
+                template <typename L, typename R>
+                struct merge {
+                    static constexpr size_t new_I = I + 1;
+                    static constexpr size_t new_J = J;
+                    using type = L;
+                    static constexpr decltype(auto) operator()(
+                        const std::tuple<Args...>& parts,
+                        Values... args
+                    ) {
+                        if constexpr (std::is_lvalue_reference_v<L>) {
+                            return std::get<I>(parts);
+                        } else {
+                            return std::remove_reference_t<L>(std::get<I>(parts));
+                        }
+                    }
+                    static constexpr decltype(auto) operator()(
+                        std::tuple<Args...>&& parts,
+                        Values... args
+                    ) {
+                        if constexpr (std::is_lvalue_reference_v<L>) {
+                            return std::get<I>(parts);
+                        } else {
+                            return std::remove_reference_t<L>(std::move(
+                                std::get<I>(parts)
+                            ));
+                        }
+                    }
+                };
+                template <typename L, typename R>
+                    requires (ArgTraits<L>::args() && ArgTraits<R>::posonly())
+                struct merge<L, R> {
+                    static constexpr size_t new_I = I;
+                    static constexpr size_t new_J = J + 1;
+                    using type = R;
+                    static constexpr decltype(auto) operator()(
+                        const std::tuple<Args...>& parts,
+                        Values... args
+                    ) {
+                        return unpack_arg<J>(std::forward<Values>(args)...);
+                    }
+                    static constexpr decltype(auto) operator()(
+                        std::tuple<Args...>&& parts,
+                        Values... args
+                    ) {
+                        return unpack_arg<J>(std::forward<Values>(args)...);
+                    }
+                };
+                template <typename L, typename R>
+                    requires (ArgTraits<L>::kw() && (
+                        ArgTraits<R>::posonly() || ArgTraits<R>::args()
+                    ))
+                struct merge<L, R> {
+                    static constexpr size_t new_I = I;
+                    static constexpr size_t new_J = J + 1;
+                    using type = R;
+                    static constexpr decltype(auto) operator()(
+                        const std::tuple<Args...>&& parts,
+                        Values... args
+                    ) {
+                        return unpack_arg<J>(std::forward<Values>(args)...);
+                    }
+                    static constexpr decltype(auto) operator()(
+                        std::tuple<Args...>& parts,
+                        Values... args
+                    ) {
+                        return unpack_arg<J>(std::forward<Values>(args)...);
+                    }
+                };
+                template <typename L, typename R>
+                    requires (ArgTraits<L>::kwargs() && (
+                        ArgTraits<R>::posonly() || ArgTraits<R>::args() || ArgTraits<R>::kw()
+                    ))
+                struct merge<L, R> {
+                    static constexpr size_t new_I = I;
+                    static constexpr size_t new_J = J + 1;
+                    using type = R;
+                    static constexpr decltype(auto) operator()(
+                        const std::tuple<Args...>& parts,
+                        Values... args
+                    ) {
+                        return unpack_arg<J>(std::forward<Values>(args)...);
+                    }
+                    static constexpr decltype(auto) operator()(
+                        std::tuple<Args...>&& parts,
+                        Values... args
+                    ) {
+                        return unpack_arg<J>(std::forward<Values>(args)...);
+                    }
+                };
+
+                using L = unpack_type<I, Args...>;
+                using R = unpack_type<J, Values...>;
+                using type = reorder<
+                    Pack<out..., typename merge<L, R>::type>,
+                    merge<L, R>::new_I,
+                    merge<L, R>::new_J
+                >::type;
+
+                static constexpr decltype(auto) operator()(
+                    const std::tuple<Args...>& parts,
+                    Values... args
+                ) {
+                    return merge<L, R>{}(parts, std::forward<Values>(args)...);
+                }
+                static constexpr decltype(auto) operator()(
+                    std::tuple<Args...>&& parts,
+                    Values... args
+                ) {
+                    return merge<L, R>{}(std::move(parts), std::forward<Values>(args)...);
+                }
+            };
+            using type = reorder<Pack<>, 0, 0>::type;
+            template <typename>
+            static constexpr bool _enable = false;
+            template <typename... Ordered>
+            static constexpr bool _enable<Pack<Ordered...>> = callable<Func, Ordered...>;
+            static constexpr bool enable = _enable<type>;
+        };
+
+    public:
+        static constexpr size_t n = sizeof...(Args);
+        /// TODO: other introspection methods
+
+        impl::get_signature<Func>::Defaults defaults;
+        std::remove_cvref_t<Func> func;
+        std::tuple<std::remove_cvref_t<Args>...> parts;
+
+        [[nodiscard]] std::remove_cvref_t<Func>& operator*() {
+            return func;
+        }
+
+        [[nodiscard]] const std::remove_cvref_t<Func>& operator*() const {
+            return func;
+        }
+
+        [[nodiscard]] std::remove_cvref_t<Func>* operator->() {
+            return &func;
+        }
+
+        [[nodiscard]] const std::remove_cvref_t<Func>* operator->() const {
+            return &func;
+        }
+
+        template <size_t I> requires (I < sizeof...(Args))
+        [[nodiscard]] decltype(auto) get() const {
+            return std::get<I>(parts);
+        }
+
+        template <size_t I> requires (I < sizeof...(Args))
+        [[nodiscard]] decltype(auto) get() && {
+            return std::move(std::get<I>(parts));
+        }
+
+        template <typename T> requires (std::same_as<T, std::remove_cvref_t<Args>> || ...)
+        [[nodiscard]] decltype(auto) get() const {
+            return std::get<std::remove_cvref_t<T>>(parts);
+        }
+
+        template <typename T> requires (std::same_as<T, std::remove_cvref_t<Args>> || ...)
+        [[nodiscard]] decltype(auto) get() && {
+            return std::move(std::get<std::remove_cvref_t<T>>(parts));
+        }
+
+        template <typename... Values> requires (complete<Values...>::enable)
+        [[nodiscard]] decltype(auto) operator()(Values&&... values) const {
+            using call = complete<Values...>::template reorder<Pack<>, 0, 0>;
+            return call{}(parts, std::forward<Values>(values)...);
+        }
+
+        template <typename... Values> requires (complete<Values...>::enable)
+        [[nodiscard]] decltype(auto) operator()(Values&&... values) && {
+            using call = complete<Values...>::template reorder<Pack<>, 0, 0>;
+            return call{}(std::move(parts), std::forward<Values>(values)...);
+        }
+    };
+
+}
+
+
+/* A template constraint that controls whether the `py::partial()` operator is enabled
+for a given C++ function and argument list. */
+template <typename Func, typename... Args>
+concept partially_callable =
+    impl::has_signature<Func> &&
+    impl::args_fit_within_bitset<impl::get_signature<Func>> &&
+    impl::proper_argument_order<impl::get_signature<Func>> &&
+    impl::no_duplicate_arguments<impl::get_signature<Func>> &&
+    impl::no_qualified_arg_annotations<impl::get_signature<Func>> &&
+    impl::get_signature<Func>::template Bind<Args...>::proper_argument_order &&
+    impl::get_signature<Func>::template Bind<Args...>::no_duplicate_arguments &&
+    impl::get_signature<Func>::template Bind<Args...>::no_qualified_arg_annotations &&
+    impl::get_signature<Func>::template Bind<Args...>::partial;
+
+
+/* Construct a partial function object that captures a C++ function and a subset of its
+arguments, which can be used to invoke the function later with the remaining arguments.
+Arguments are given in the same style as `call()`, and will be stored internally
+within the partial object, forcing a copy in the case of lvalue inputs.  When the
+partial is called, an additional copy may be made if the function expects a temporary
+or rvalue reference, so as not to modify the stored arguments.  If the partial is
+called as an rvalue (by moving it, for example), then the second copy can be avoided,
+and the stored arguments will be moved directly into the function call.
+
+Note that the function signature cannot contain any template parameters (including auto
+arguments), as the function signature must be known unambiguously at compile time to
+implement the required matching.
+
+The returned partial is a thin proxy that only implements the call operator and a
+handful of introspection methods.  It also allows transparent access to the decorated
+function via the `*` and `->` operators. */
+template <typename Func, typename... Args> requires (partially_callable<Func, Args...>)
+auto partial(Func&& func, Args&&... args) -> impl::Partial<Func, Args...> {
+    return {
+        {},
+        std::forward<Func>(func),
+        std::forward<Args>(args)...
+    };
+}
+
+
+/* Construct a partial function object that captures a C++ function and a subset of its
+arguments, which can be used to invoke the function later with the remaining arguments.
+Arguments are given in the same style as `call()`, and will be stored internally
+within the partial object, forcing a copy in the case of lvalue inputs.  When the
+partial is called, an additional copy may be made if the function expects a temporary
+or rvalue reference, so as not to modify the stored arguments.  If the partial is
+called as an rvalue (by moving it, for example), then the second copy can be avoided,
+and the stored arguments will be moved directly into the function call.
+
+Note that the function signature cannot contain any template parameters (including auto
+arguments), as the function signature must be known unambiguously at compile time to
+implement the required matching.
+
+The returned partial is a thin proxy that only implements the call operator and a
+handful of introspection methods.  It also allows transparent access to the decorated
+function via the `*` and `->` operators. */
+template <typename Func, typename... Args> requires (partially_callable<Func, Args...>)
+auto partial(const Defaults<Func>& defaults, Func&& func, Args&&... args)
+    -> impl::Partial<Func, Args...>
+{
+    return {
+        defaults,
+        std::forward<Func>(func),
+        std::forward<Args>(args)...
+    };
+}
+
+
+/* Construct a partial function object that captures a C++ function and a subset of its
+arguments, which can be used to invoke the function later with the remaining arguments.
+Arguments are given in the same style as `call()`, and will be stored internally
+within the partial object, forcing a copy in the case of lvalue inputs.  When the
+partial is called, an additional copy may be made if the function expects a temporary
+or rvalue reference, so as not to modify the stored arguments.  If the partial is
+called as an rvalue (by moving it, for example), then the second copy can be avoided,
+and the stored arguments will be moved directly into the function call.
+
+Note that the function signature cannot contain any template parameters (including auto
+arguments), as the function signature must be known unambiguously at compile time to
+implement the required matching.
+
+The returned partial is a thin proxy that only implements the call operator and a
+handful of introspection methods.  It also allows transparent access to the decorated
+function via the `*` and `->` operators. */
+template <typename Func, typename... Args> requires (partially_callable<Func, Args...>)
+auto partial(Defaults<Func>&& defaults, Func&& func, Args&&... args)
+    -> impl::Partial<Func, Args...>
+{
+    return {
+        std::move(defaults),
+        std::forward<Func>(func),
+        std::forward<Args>(args)...
+    };
+}
+
+
+template <typename Self, typename... Args>
+    requires (
+        __call__<Self, Args...>::enable &&
+        std::convertible_to<typename __call__<Self, Args...>::type, Object> && (
+            std::is_invocable_r_v<
+                typename __call__<Self, Args...>::type,
+                __call__<Self, Args...>,
+                Self,
+                Args...
+            > || (
+                !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
+                impl::has_cpp<Self> &&
+                std::is_invocable_r_v<
+                    typename __call__<Self, Args...>::type,
+                    impl::cpp_type<Self>,
+                    Args...
+                >
+            ) || (
+                !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
+                !impl::has_cpp<Self> &&
+                std::derived_from<typename __call__<Self, Args...>::type, Object> &&
+                __getattr__<Self, "__call__">::enable &&
+                impl::inherits<typename __getattr__<Self, "__call__">::type, impl::FunctionTag>
+            )
+        )
+    )
+decltype(auto) Object::operator()(this Self&& self, Args&&... args) {
+    if constexpr (std::is_invocable_v<__call__<Self, Args...>, Self, Args...>) {
+        return __call__<Self, Args...>{}(
+            std::forward<Self>(self),
+            std::forward<Args>(args)...
+        );
+
+    } else if constexpr (impl::has_cpp<Self>) {
+        return from_python(std::forward<Self>(self))(
+            std::forward<Args>(args)...
+        );
+    } else {
+        return getattr<"__call__">(std::forward<Self>(self))(
+            std::forward<Args>(args)...
+        );
+    }
+}
+
+
+template <impl::is<Object> Self, std::convertible_to<Object>... Args>
+Object __call__<Self, Args...>::operator()(Self self, Args... args) {
+    return impl::Arguments<
+        Arg<"args", Object>::args,
+        Arg<"kwargs", Object>::kwargs
+    >::template Bind<Args...>{}(ptr(self), std::forward<Args>(args)...);
+}
+
+
+////////////////////////
+////    FUNCTION    ////
+////////////////////////
+
+
+namespace impl {
+
     /* A `@classmethod` descriptor for a C++ function type, which references an
     unbound function and produces bound equivalents that pass the enclosing type as a
     `self` argument when accessed. */
@@ -5998,82 +6528,6 @@ mirrors C++ semantics and enables structural typing via `isinstance()` and
     };
 
 }  // namespace impl
-
-
-/* A template constraint that controls whether the `py::call()` operator is enabled
-for a given C++ function and argument list. */
-template <typename Func, typename... Args>
-concept callable =
-    impl::has_signature<Func> &&
-    impl::args_fit_within_bitset<impl::get_signature<Func>> &&
-    impl::proper_argument_order<impl::get_signature<Func>> &&
-    impl::no_duplicate_arguments<impl::get_signature<Func>> &&
-    impl::no_qualified_arg_annotations<impl::get_signature<Func>> &&
-    impl::get_signature<Func>::template Bind<Args...>::proper_argument_order &&
-    impl::get_signature<Func>::template Bind<Args...>::no_duplicate_arguments &&
-    impl::get_signature<Func>::template Bind<Args...>::no_qualified_arg_annotations &&
-    impl::get_signature<Func>::template Bind<Args...>::enable;
-
-
-/* Introspect a function signature to retrieve a tuple capable of storing default
-values for all argument annotations that are marked as `::opt`.  An object of this
-type can be passed to the `call` function to provide default values for arguments that
-are not present at the call site.  The tuple itself can be constructed using the same
-keyword argument and parameter pack semantics as the `call()` operator itself. */
-template <impl::has_signature Func>
-using Defaults = impl::get_signature<Func>::Defaults;
-
-
-/// TODO: these extra forms with no/movable defaults have to be implemented in Bind<>.
-
-
-/* Invoke a C++ function with Python-style calling conventions, including keyword
-arguments and/or parameter packs, which are resolved at compile time.  Note that the
-function signature cannot contain any template parameters (including auto arguments),
-as the function signature must be known unambiguously at compile time to implement the
-required matching. */
-template <typename Func, typename... Args>
-    requires (
-        callable<Func, Args...> &&
-        impl::get_signature<Func>::n_opt == 0
-    )
-decltype(auto) call(Func&& func, Args&&... args) {
-    return typename impl::get_signature<Func>::template Bind<Args...>{}(
-        {},
-        std::forward<Func>(func),
-        std::forward<Args>(args)...
-    );
-}
-
-
-/* Invoke a C++ function with Python-style calling conventions, including keyword
-arguments and/or parameter packs, which are resolved at compile time.  Note that the
-function signature cannot contain any template parameters (including auto arguments),
-as the function signature must be known unambiguously at compile time to implement the
-required matching. */
-template <typename Func, typename... Args> requires (callable<Func, Args...>)
-decltype(auto) call(const Defaults<Func>& defaults, Func&& func, Args&&... args) {
-    return typename impl::get_signature<Func>::template Bind<Args...>{}(
-        defaults,
-        std::forward<Func>(func),
-        std::forward<Args>(args)...
-    );
-}
-
-
-/* Invoke a C++ function with Python-style calling conventions, including keyword
-arguments and/or parameter packs, which are resolved at compile time.  Note that the
-function signature cannot contain any template parameters (including auto arguments),
-as the function signature must be known unambiguously at compile time to implement the
-required matching. */
-template <typename Func, typename... Args> requires (callable<Func, Args...>)
-decltype(auto) call(Defaults<Func>&& defaults, Func&& func, Args&&... args) {
-    return typename impl::get_signature<Func>::template Bind<Args...>{}(
-        std::move(defaults),
-        std::forward<Func>(func),
-        std::forward<Args>(args)...
-    );
-}
 
 
 template <typename F = Object(*)(

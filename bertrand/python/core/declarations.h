@@ -3504,7 +3504,7 @@ namespace impl {
                     Self,
                     Key...
                 > || (
-                    !has_call_operator<__getitem__<Self, Key...>> &&
+                    !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
                     has_cpp<Self> &&
                     lookup_yields<
                         cpp_type<Self>&,
@@ -3512,7 +3512,7 @@ namespace impl {
                         Key...
                     >
                 ) || (
-                    !has_call_operator<__getitem__<Self, Key...>> &&
+                    !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
                     !has_cpp<Self> &&
                     std::derived_from<typename __getitem__<Self, Key...>::type, Object>
                 )

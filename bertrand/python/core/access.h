@@ -19,7 +19,7 @@ template <typename Self, StaticStr Name>
         __delattr__<Self, Name>::enable &&
         std::is_void_v<typename __delattr__<Self, Name>::type> && (
             std::is_invocable_r_v<void, __delattr__<Self, Name>, Self> ||
-            !impl::has_call_operator<__delattr__<Self, Name>>
+            !std::is_invocable_v<__delattr__<Self, Name>, Self>
         )
     )
 void del(impl::Attr<Self, Name>&& attr);
@@ -30,7 +30,7 @@ template <typename Self, typename... Key>
         __delitem__<Self, Key...>::enable &&
         std::is_void_v<typename __delitem__<Self, Key...>::type> && (
             std::is_invocable_r_v<void, __delitem__<Self, Key...>, Self, Key...> ||
-            !impl::has_call_operator<__delitem__<Self, Key...>>
+            !std::is_invocable_v<__delitem__<Self, Key...>, Self, Key...>
         )
     )
 void del(impl::Item<Self, Key...>&& item);
@@ -77,7 +77,7 @@ namespace impl {
                 __delattr__<S, N>::enable &&
                 std::is_void_v<typename __delattr__<S, N>::type> && (
                     std::is_invocable_r_v<void, __delattr__<S, N>, S> ||
-                    !impl::has_call_operator<__delattr__<S, N>>
+                    !std::is_invocable_v<__delattr__<S, N>, S>
                 )
             )
         friend void py::del(Attr<S, N>&& item);
@@ -106,7 +106,7 @@ namespace impl {
         void _set_ptr(PyObject* value) { Base::m_ptr = value; }
         PyObject* _get_ptr() {
             if (Base::m_ptr == nullptr) {
-                if constexpr (has_call_operator<__getattr__<Self, Name>>) {
+                if constexpr (std::is_invocable_v<__getattr__<Self, Name>, Self>) {
                     Base::m_ptr = release(__getattr__<Self, Name>{}(
                         std::forward<Self>(m_self))
                     );
@@ -141,17 +141,17 @@ namespace impl {
                 __setattr__<Self, Name, Value>::enable &&
                 std::is_void_v<typename __setattr__<Self, Name, Value>::type> && (
                     std::is_invocable_r_v<void, __setattr__<Self, Name, Value>, Self, Value> || (
-                        !impl::has_call_operator<__setattr__<Self, Name, Value>> &&
+                        !std::is_invocable_v<__setattr__<Self, Name, Value>, Self, Value> &&
                         impl::has_cpp<Base> &&
                         std::is_assignable_v<cpp_type<Base>&, Value>
                     ) || (
-                        !impl::has_call_operator<__setattr__<Self, Name, Value>> &&
+                        !std::is_invocable_v<__setattr__<Self, Name, Value>, Self, Value> &&
                         !impl::has_cpp<Base>
                     )
                 )
             )
         Attr& operator=(Value&& value) && {
-            if constexpr (has_call_operator<__setattr__<Self, Name, Value>>) {
+            if constexpr (std::is_invocable_v<__setattr__<Self, Name, Value>, Self, Value>) {
                 __setattr__<Self, Name, Value>{}(
                     std::forward<Self>(m_self),
                     std::forward<Value>(value)
@@ -192,7 +192,7 @@ namespace impl {
                     Self,
                     Key...
                 > || (
-                    !has_call_operator<__getitem__<Self, Key...>> &&
+                    !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
                     has_cpp<Self> &&
                     lookup_yields<
                         cpp_type<Self>&,
@@ -200,7 +200,7 @@ namespace impl {
                         Key...
                     >
                 ) || (
-                    !has_call_operator<__getitem__<Self, Key...>> &&
+                    !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
                     !has_cpp<Self> &&
                     std::derived_from<typename __getitem__<Self, Key...>::type, Object>
                 )
@@ -215,7 +215,7 @@ namespace impl {
                 __delitem__<S, K...>::enable &&
                 std::is_void_v<typename __delitem__<S, K...>::type> && (
                     std::is_invocable_r_v<void, __delitem__<S, K...>, S, K...> ||
-                    !impl::has_call_operator<__delitem__<S, K...>>
+                    !std::is_invocable_v<__delitem__<S, K...>, S, K...>
                 )
             )
         friend void py::del(Item<S, K...>&& item);
@@ -246,7 +246,7 @@ namespace impl {
         PyObject* _get_ptr() {
             if (Base::m_ptr == nullptr) {
                 Base::m_ptr = std::move(m_key)([&](Key... key) {
-                    if constexpr (has_call_operator<__getitem__<Self, Key...>>) {
+                    if constexpr (std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...>) {
                         return release(__getitem__<Self, Key...>{}(
                             std::forward<Self>(m_self),
                             std::forward<Key>(key)...
@@ -299,18 +299,18 @@ namespace impl {
                 __setitem__<Self, Value, Key...>::enable &&
                 std::is_void_v<typename __setitem__<Self, Value, Key...>::type> && (
                     std::is_invocable_r_v<void, __setitem__<Self, Value, Key...>, Self, Value, Key...> || (
-                        !impl::has_call_operator<__setitem__<Self, Value, Key...>> &&
+                        !std::is_invocable_v<__setitem__<Self, Value, Key...>, Self, Value, Key...> &&
                         impl::has_cpp<Base> &&
                         supports_item_assignment<cpp_type<Self>&, Value, Key...>
                     ) || (
-                        !impl::has_call_operator<__setitem__<Self, Value, Key...>> &&
+                        !std::is_invocable_v<__setitem__<Self, Value, Key...>, Self, Value, Key...> &&
                         !impl::has_cpp<Base>
                     )
                 )
             )
         Item& operator=(Value&& value) && {
             std::move(m_key)([&](Key... key) {
-                if constexpr (has_call_operator<__setitem__<Self, Value, Key...>>) {
+                if constexpr (std::is_invocable_v<__setitem__<Self, Value, Key...>, Self, Value, Key...>) {
                     __setitem__<Self, Value, Key...>{}(
                         std::forward<Self>(m_self),
                         std::forward<Value>(value),
@@ -368,7 +368,7 @@ template <typename Self, typename... Key>
                 Self,
                 Key...
             > || (
-                !impl::has_call_operator<__getitem__<Self, Key...>> &&
+                !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
                 impl::has_cpp<Self> &&
                 impl::lookup_yields<
                     impl::cpp_type<Self>&,
@@ -376,14 +376,17 @@ template <typename Self, typename... Key>
                     Key...
                 >
             ) || (
-                !impl::has_call_operator<__getitem__<Self, Key...>> &&
+                !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
                 !impl::has_cpp<Self> &&
                 std::derived_from<typename __getitem__<Self, Key...>::type, Object>
             )
         )
     )
 decltype(auto) Object::operator[](this Self&& self, Key&&... key) {
-    if constexpr (impl::has_cpp<Self> && impl::has_call_operator<__getitem__<Self, Key...>>) {
+    if constexpr (
+        impl::has_cpp<Self> &&
+        std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...>
+    ) {
         return __getitem__<Self, Key...>{}(
             std::forward<Self>(self),
             std::forward<Key>(key)...
@@ -407,11 +410,11 @@ template <typename Self, StaticStr Name>
         __delattr__<Self, Name>::enable &&
         std::is_void_v<typename __delattr__<Self, Name>::type> && (
             std::is_invocable_r_v<void, __delattr__<Self, Name>, Self> ||
-            !impl::has_call_operator<__delattr__<Self, Name>>
+            !std::is_invocable_v<__delattr__<Self, Name>, Self>
         )
     )
 void del(impl::Attr<Self, Name>&& attr) {
-    if constexpr (impl::has_call_operator<__delattr__<Self, Name>>) {
+    if constexpr (std::is_invocable_v<__delattr__<Self, Name>, Self>) {
         __delattr__<Self, Name>{}(std::forward<Self>(attr.m_self));
 
     } else {
@@ -437,12 +440,12 @@ template <typename Self, typename... Key>
         __delitem__<Self, Key...>::enable &&
         std::is_void_v<typename __delitem__<Self, Key...>::type> && (
             std::is_invocable_r_v<void, __delitem__<Self, Key...>, Self, Key...> ||
-            !impl::has_call_operator<__delitem__<Self, Key...>>
+            !std::is_invocable_v<__delitem__<Self, Key...>, Self, Key...>
         )
     )
 void del(impl::Item<Self, Key...>&& item) {
     std::move(item.m_key)([&](Key... key) {
-        if constexpr (impl::has_call_operator<__delitem__<Self, Key...>>) {
+        if constexpr (std::is_invocable_v<__delitem__<Self, Key...>, Self, Key...>) {
             __delitem__<Self, Key...>{}(
                 std::forward<Self>(item.m_self),
                 std::forward<Key>(key)...

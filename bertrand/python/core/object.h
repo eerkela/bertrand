@@ -633,11 +633,11 @@ public:
             __contains__<Self, Key>::enable &&
             std::same_as<typename __contains__<Self, Key>::type, bool> && (
                 std::is_invocable_r_v<bool, __contains__<Self, Key>, Self, Key> || (
-                    !impl::has_call_operator<__contains__<Self, Key>> &&
+                    !std::is_invocable_v<__contains__<Self, Key>, Self, Key> &&
                     impl::has_cpp<Self> &&
                     impl::has_contains<impl::cpp_type<Self>, impl::cpp_type<Key>>
                 ) || (
-                    !impl::has_call_operator<__contains__<Self, Key>> &&
+                    !std::is_invocable_v<__contains__<Self, Key>, Self, Key> &&
                     !impl::has_cpp<Self>
                 )
             )
@@ -679,7 +679,7 @@ public:
                     Self,
                     Key...
                 > || (
-                    !impl::has_call_operator<__getitem__<Self, Key...>> &&
+                    !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
                     impl::has_cpp<Self> &&
                     impl::lookup_yields<
                         impl::cpp_type<Self>&,
@@ -687,7 +687,7 @@ public:
                         Key...
                     >
                 ) || (
-                    !impl::has_call_operator<__getitem__<Self, Key...>> &&
+                    !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
                     !impl::has_cpp<Self> &&
                     std::derived_from<typename __getitem__<Self, Key...>::type, Object>
                 )
@@ -698,54 +698,33 @@ public:
     /* Call operator.  This can be enabled for specific argument signatures and return
     types via the __call__ control struct, enabling static type safety for callable
     Python objects in C++. */
-    template <typename Self, typename... Args> requires (__call__<Self, Args...>::enable)
-    auto operator()(this Self&& self, Args&&... args) -> __call__<Self, Args...>::type;  // {
-        /// TODO: move this to func.h
-
-        // using call = __call__<Self, Args...>;
-        // using Return = typename call::type;
-        // static_assert(
-        //     std::is_void_v<Return> || std::derived_from<Return, Object>,
-        //     "Call operator must return either void or a py::Object subclass.  "
-        //     "Check your specialization of __call__ for the given arguments and "
-        //     "ensure that it is derived from py::Object."
-        // );
-        // if constexpr (impl::has_call_operator<call>) {
-        //     return call{}(std::forward<Self>(self), std::forward<Args>(args)...);
-
-        // /// TODO: maybe all of these special cases can be implemented as specializations
-        // /// of their respective control structures in type.h???
-        // } else if constexpr (impl::has_cpp<Self>) {
-        //     static_assert(
-        //         std::is_invocable_r_v<Return, impl::cpp_type<Self>, Args...>,
-        //         "__call__<Self, Args...> is enabled for operands whose C++ "
-        //         "representations have no viable overload for `Self(Args...)`"
-        //     );
-        //     /// TODO: this needs to do argument translation similar to below for
-        //     /// Python functions.  This will necessarily involve some kind of
-        //     /// unpacking.  Or will it if the C++ call operator only accepts
-        //     /// positional arguments?  I'll still have to account for variadic
-        //     /// unpacking one way or another.
-        //     if constexpr (std::is_void_v<Return>) {
-        //         from_python(self)(from_python(std::forward<Args>(args))...);
-        //     } else {
-        //         return from_python(self)(from_python(std::forward<Args>(args))...);
-        //     }
-
-        // } else {
-        //     if constexpr (std::is_void_v<Return>) {
-        //         Function<Return(*)(Args...)>::template invoke_py<Return>(
-        //             ptr(self),
-        //             std::forward<Args>(args)...
-        //         );
-        //     } else {
-        //         return Function<Return(*)(Args...)>::template invoke_py<Return>(
-        //             ptr(self),
-        //             std::forward<Args>(args)...
-        //         );
-        //     }
-        // }
-    // }
+    template <typename Self, typename... Args>
+        requires (
+            __call__<Self, Args...>::enable &&
+            std::convertible_to<typename __call__<Self, Args...>::type, Object> && (
+                std::is_invocable_r_v<
+                    typename __call__<Self, Args...>::type,
+                    __call__<Self, Args...>,
+                    Self,
+                    Args...
+                > || (
+                    !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
+                    impl::has_cpp<Self> &&
+                    std::is_invocable_r_v<
+                        typename __call__<Self, Args...>::type,
+                        impl::cpp_type<Self>,
+                        Args...
+                    >
+                ) || (
+                    !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
+                    !impl::has_cpp<Self> &&
+                    std::derived_from<typename __call__<Self, Args...>::type, Object> &&
+                    __getattr__<Self, "__call__">::enable &&
+                    impl::inherits<typename __getattr__<Self, "__call__">::type, impl::FunctionTag>
+                )
+            )
+        )
+    decltype(auto) operator()(this Self&& self, Args&&... args);
 
 };
 
@@ -962,7 +941,9 @@ struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <impl::is<Object> Self, StaticStr Name> requires (!impl::is_const<Self>)
 struct __delattr__<Self, Name>                              : Returns<void> {};
 template <impl::is<Object> Self, std::convertible_to<Object>... Args>
-struct __call__<Self, Args...>                              : Returns<Object> {};
+struct __call__<Self, Args...>                              : Returns<Object> {
+    static Object operator()(Self, Args...);
+};
 template <impl::is<Object> Self>
 struct __iter__<Self>                                       : Returns<Object> {};
 template <impl::is<Object> Self>
