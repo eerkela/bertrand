@@ -1637,6 +1637,10 @@ namespace impl {
 
     public:
 
+        /// TODO: maybe the best way to provide default values is to force the use
+        /// of keyword arguments, regardless of the status in the original signature.
+        /// That is much more explicit and easier to read.
+
         /* A tuple holding the default value for every argument in the enclosing
         parameter list that is marked as optional. */
         struct Defaults {
@@ -1753,8 +1757,6 @@ namespace impl {
             sub-signature's normal Bind<> machinery. */
             template <typename... Values>
             using Bind = Inner::template Bind<Values...>;
-
-            static_assert(Bind<Arg<"y", double>>::enable);
 
             /* Given an index into the enclosing signature, find the corresponding index
             in the defaults tuple if that index corresponds to a default value. */
@@ -3839,8 +3841,8 @@ namespace impl {
              * extras that are not included in the target signature.
              */
 
-            template <size_t I>
-            static constexpr Target<I> cpp(const Defaults& defaults, Values... values) {
+            template <size_t I, typename D>
+            static constexpr Target<I> cpp(D&& defaults, Values... values) {
                 using T = Target<I>;
                 constexpr StaticStr name = ArgTraits<T>::name;
                 constexpr size_t transition = std::min(Bound::kw_idx, Bound::kwargs_idx);
@@ -3851,9 +3853,16 @@ namespace impl {
                             impl::unpack_arg<I>(std::forward<Values>(values)...)
                         );
                     } else {
-                        return to_arg<I>(
-                            defaults.template get<I>()
-                        );
+                        constexpr size_t idx = Defaults::template find<I>;
+                        if constexpr (std::is_lvalue_reference_v<D>) {
+                            return to_arg<I>(
+                                std::forward<D>(defaults).template get<idx>()
+                            );
+                        } else {
+                            return to_arg<I>(std::move(
+                                std::forward<D>(defaults).template get<idx>()
+                            ));
+                        }
                     }
 
                 } else if constexpr (ArgTraits<T>::pos()) {
@@ -3868,7 +3877,16 @@ namespace impl {
                             )
                         );
                     } else {
-                        return to_arg<I>(defaults.template get<I>());
+                        constexpr size_t idx = Defaults::template find<I>;
+                        if constexpr (std::is_lvalue_reference_v<D>) {
+                            return to_arg<I>(
+                                std::forward<D>(defaults).template get<idx>()
+                            );
+                        } else {
+                            return to_arg<I>(std::move(
+                                std::forward<D>(defaults).template get<idx>()
+                            ));
+                        }
                     }
 
                 } else if constexpr (ArgTraits<T>::kw()) {
@@ -3879,7 +3897,16 @@ namespace impl {
                             )
                         );
                     } else {
-                        return to_arg<I>(defaults.template get<I>());
+                        constexpr size_t idx = Defaults::template find<I>;
+                        if constexpr (std::is_lvalue_reference_v<D>) {
+                            return to_arg<I>(
+                                std::forward<D>(defaults).template get<idx>()
+                            );
+                        } else {
+                            return to_arg<I>(std::move(
+                                std::forward<D>(defaults).template get<idx>()
+                            ));
+                        }
                     }
 
                 } else if constexpr (ArgTraits<T>::args()) {
@@ -3919,9 +3946,9 @@ namespace impl {
                 }
             }
 
-            template <size_t I, typename Pos>
+            template <size_t I, typename D, typename Pos>
             static constexpr Target<I> cpp(
-                const Defaults& defaults,
+                D&& defaults,
                 PositionalPack<Arguments, Pos>& positional,
                 Values... values
             ) {
@@ -3939,7 +3966,16 @@ namespace impl {
                             return to_arg<I>(positional.value());
                         }
                         if constexpr (ArgTraits<T>::opt()) {
-                            return to_arg<I>(defaults.template get<I>());
+                            constexpr size_t idx = Defaults::template find<I>;
+                            if constexpr (std::is_lvalue_reference_v<D>) {
+                                return to_arg<I>(
+                                    std::forward<D>(defaults).template get<idx>()
+                                );
+                            } else {
+                                return to_arg<I>(std::move(
+                                    std::forward<D>(defaults).template get<idx>()
+                                ));
+                            }
                         } else {
                             throw TypeError(
                                 "no match for positional-only parameter at index " +
@@ -3971,8 +4007,17 @@ namespace impl {
                                 )
                             );
                         } else {
+                            constexpr size_t idx = Defaults::template find<I>;
                             if constexpr (ArgTraits<T>::opt()) {
-                                return to_arg<I>(defaults.template get<I>());
+                                if constexpr (std::is_lvalue_reference_v<D>) {
+                                    return to_arg<I>(
+                                        std::forward<D>(defaults).template get<idx>()
+                                    );
+                                } else {
+                                    return to_arg<I>(std::move(
+                                        std::forward<D>(defaults).template get<idx>()
+                                    ));
+                                }
                             } else {
                                 throw TypeError(
                                     "no match for parameter '" + name +
@@ -3983,7 +4028,10 @@ namespace impl {
                     }
 
                 } else if constexpr (ArgTraits<T>::kw()) {
-                    return cpp<I>(defaults, std::forward<Values>(values)...);
+                    return cpp<I>(
+                        std::forward<D>(defaults),
+                        std::forward<Values>(values)...
+                    );
 
                 } else if constexpr (ArgTraits<T>::args()) {
                     constexpr size_t diff = I < transition ? transition - I : 0;
@@ -4006,7 +4054,10 @@ namespace impl {
                     );
 
                 } else if constexpr (ArgTraits<T>::kwargs()) {
-                    return cpp<I>(defaults, std::forward<Values>(values)...);
+                    return cpp<I>(
+                        std::forward<D>(defaults),
+                        std::forward<Values>(values)...
+                    );
 
                 } else {
                     static_assert(false, "invalid argument kind");
@@ -4014,9 +4065,9 @@ namespace impl {
                 }
             }
 
-            template <size_t I, typename Kw>
+            template <size_t I, typename D, typename Kw>
             static constexpr Target<I> cpp(
-                const Defaults& defaults,
+                D&& defaults,
                 KeywordPack<Arguments, Kw>& keyword,
                 Values... values
             ) {
@@ -4025,7 +4076,10 @@ namespace impl {
                 constexpr size_t transition = std::min(Bound::kw_idx, Bound::kwargs_idx);
 
                 if constexpr (ArgTraits<T>::posonly()) {
-                    return cpp<I>(defaults, std::forward<Values>(values)...);
+                    return cpp<I>(
+                        std::forward<D>(defaults),
+                        std::forward<Values>(values)...
+                    );
 
                 } else if constexpr (ArgTraits<T>::pos()) {
                     auto node = keyword.extract(name);
@@ -4054,7 +4108,16 @@ namespace impl {
                             )
                         );
                     } else if constexpr (ArgTraits<T>::opt()) {
-                        return to_arg<I>(defaults.template get<I>());
+                        constexpr size_t idx = Defaults::template find<I>;
+                        if constexpr (std::is_lvalue_reference_v<D>) {
+                            return to_arg<I>(
+                                std::forward<D>(defaults).template get<idx>()
+                            );
+                        } else {
+                            return to_arg<I>(std::move(
+                                std::forward<D>(defaults).template get<idx>()
+                            ));
+                        }
                     } else {
                         throw TypeError(
                             "no match for parameter '" + name +
@@ -4085,7 +4148,16 @@ namespace impl {
                             )
                         );
                     } else if constexpr (ArgTraits<T>::opt()) {
-                        return to_arg<I>(defaults.template get<I>());
+                        constexpr size_t idx = Defaults::template find<I>;
+                        if constexpr (std::is_lvalue_reference_v<D>) {
+                            return to_arg<I>(
+                                std::forward<D>(defaults).template get<idx>()
+                            );
+                        } else {
+                            return to_arg<I>(std::move(
+                                std::forward<D>(defaults).template get<idx>()
+                            ));
+                        }
                     } else {
                         throw TypeError(
                             "no match for parameter '" + name +
@@ -4094,7 +4166,10 @@ namespace impl {
                     }
 
                 } else if constexpr (ArgTraits<T>::args()) {
-                    return cpp<I>(defaults, std::forward<Values>(values)...);
+                    return cpp<I>(
+                        std::forward<D>(defaults),
+                        std::forward<Values>(values)...
+                    );
 
                 } else if constexpr (ArgTraits<T>::kwargs()) {
                     return []<size_t... Js>(
@@ -4131,9 +4206,9 @@ namespace impl {
                 }
             }
 
-            template <size_t I, typename Pos, typename Kw>
+            template <size_t I, typename D, typename Pos, typename Kw>
             static constexpr Target<I> cpp(
-                const Defaults& defaults,
+                D&& defaults,
                 PositionalPack<Arguments, Pos>& positional,
                 KeywordPack<Arguments, Kw>& keyword,
                 Values... values
@@ -4143,7 +4218,11 @@ namespace impl {
                 constexpr size_t transition = std::min(Bound::kw_idx, Bound::kwargs_idx);
 
                 if constexpr (ArgTraits<T>::posonly()) {
-                    return cpp<I>(defaults, positional, std::forward<Values>(values)...);
+                    return cpp<I>(
+                        std::forward<D>(defaults),
+                        positional,
+                        std::forward<Values>(values)...
+                    );
 
                 } else if constexpr (ArgTraits<T>::pos()) {
                     auto node = keyword.extract(name);
@@ -4188,7 +4267,16 @@ namespace impl {
                             }
                         } else {
                             if constexpr (ArgTraits<T>::opt()) {
-                                return to_arg<I>(defaults.template get<I>());
+                                constexpr size_t idx = Defaults::template find<I>;
+                                if constexpr (std::is_lvalue_reference_v<D>) {
+                                    return to_arg<I>(
+                                        std::forward<D>(defaults).template get<idx>()
+                                    );
+                                } else {
+                                    return to_arg<I>(std::move(
+                                        std::forward<D>(defaults).template get<idx>()
+                                    ));
+                                }
                             } else {
                                 throw TypeError(
                                     "no match for parameter '" + name +
@@ -4199,13 +4287,25 @@ namespace impl {
                     }
 
                 } else if constexpr (ArgTraits<T>::kw()) {
-                    return cpp<I>(defaults, keyword, std::forward<Values>(values)...);
+                    return cpp<I>(
+                        std::forward<D>(defaults),
+                        keyword,
+                        std::forward<Values>(values)...
+                    );
 
                 } else if constexpr (ArgTraits<T>::args()) {
-                    return cpp<I>(defaults, positional, std::forward<Values>(values)...);
+                    return cpp<I>(
+                        std::forward<D>(defaults),
+                        positional,
+                        std::forward<Values>(values)...
+                    );
 
                 } else if constexpr (ArgTraits<T>::kwargs()) {
-                    return cpp<I>(defaults, keyword, std::forward<Values>(values)...);
+                    return cpp<I>(
+                        std::forward<D>(defaults),
+                        keyword,
+                        std::forward<Values>(values)...
+                    );
 
                 } else {
                     static_assert(false, "invalid argument kind");
@@ -4380,7 +4480,7 @@ namespace impl {
             }
 
             /* Invoke a C++ function from C++ using Python-style arguments. */
-            template <typename Func>
+            template <typename Func, impl::is<Defaults> T>
                 requires (
                     std::is_invocable_v<Func, Args...> &&
                     proper_argument_order &&
@@ -4389,13 +4489,13 @@ namespace impl {
                     enable
                 )
             static decltype(auto) operator()(
-                const Defaults& defaults,
+                T&& defaults,
                 Func&& func,
                 Values... values
             ) {
                 return []<size_t... Is>(
                     std::index_sequence<Is...>,
-                    const Defaults& defaults,
+                    T defaults,
                     Func func,
                     Values... values
                 ) {
@@ -4414,7 +4514,7 @@ namespace impl {
                             std::forward<Values>(values)...
                         );
                         Pack<Args...> pack {cpp<Is>(
-                            defaults,
+                            std::forward<T>(defaults),
                             positional,
                             keyword,
                             std::forward<Values>(values)...
@@ -4427,7 +4527,7 @@ namespace impl {
                             std::forward<Values>(values)...
                         );
                         Pack<Args...> pack {cpp<Is>(
-                            defaults,
+                            std::forward<T>(defaults),
                             positional,
                             std::forward<Values>(values)...
                         )...};
@@ -4438,7 +4538,7 @@ namespace impl {
                             std::forward<Values>(values)...
                         );
                         Pack<Args...> pack {cpp<Is>(
-                            defaults,
+                            std::forward<T>(defaults),
                             keyword,
                             std::forward<Values>(values)...
                         )...};
@@ -4448,13 +4548,13 @@ namespace impl {
                         /// NOTE: left-to-right evaluation order is not required if
                         /// runtime parameter packs are not given.
                         return func(cpp<Is>(
-                            defaults,
+                            std::forward<T>(defaults),
                             std::forward<Values>(values)...
                         )...);
                     }
                 }(
                     std::make_index_sequence<Arguments::n>{},
-                    defaults,
+                    std::forward<T>(defaults),
                     std::forward<Func>(func),
                     std::forward<Values>(values)...
                 );
@@ -5323,7 +5423,7 @@ template <impl::has_signature Func>
 using Defaults = impl::get_signature<Func>::Defaults;
 
 
-/// TODO: these extra forms with no/movable defaults have to be implemented in Bind<>.
+/// TODO: make these reliably constexpr, just like partial().
 
 
 /* Invoke a C++ function with Python-style calling conventions, including keyword
@@ -5336,7 +5436,7 @@ template <typename Func, typename... Args>
         callable<Func, Args...> &&
         impl::get_signature<Func>::n_opt == 0
     )
-decltype(auto) call(Func&& func, Args&&... args) {
+constexpr decltype(auto) call(Func&& func, Args&&... args) {
     return typename impl::get_signature<Func>::template Bind<Args...>{}(
         {},
         std::forward<Func>(func),
@@ -5351,7 +5451,11 @@ function signature cannot contain any template parameters (including auto argume
 as the function signature must be known unambiguously at compile time to implement the
 required matching. */
 template <typename Func, typename... Args> requires (callable<Func, Args...>)
-decltype(auto) call(const Defaults<Func>& defaults, Func&& func, Args&&... args) {
+constexpr decltype(auto) call(
+    const Defaults<Func>& defaults,
+    Func&& func,
+    Args&&... args
+) {
     return typename impl::get_signature<Func>::template Bind<Args...>{}(
         defaults,
         std::forward<Func>(func),
@@ -5366,7 +5470,11 @@ function signature cannot contain any template parameters (including auto argume
 as the function signature must be known unambiguously at compile time to implement the
 required matching. */
 template <typename Func, typename... Args> requires (callable<Func, Args...>)
-decltype(auto) call(Defaults<Func>&& defaults, Func&& func, Args&&... args) {
+constexpr decltype(auto) call(
+    Defaults<Func>&& defaults,
+    Func&& func,
+    Args&&... args
+) {
     return typename impl::get_signature<Func>::template Bind<Args...>{}(
         std::move(defaults),
         std::forward<Func>(func),
@@ -5377,31 +5485,70 @@ decltype(auto) call(Defaults<Func>&& defaults, Func&& func, Args&&... args) {
 
 namespace impl {
 
+    /// TODO: partial needs a more robust way of tracking which arguments have already
+    /// been bound, possibly as an index sequence of the arguments that have been
+    /// accounted for.  The reordering logic then just equates to generating an
+    /// index sequence over the combined arguments, and then iterating in the order
+    /// set by the function's signature.  That's only a slight modification of the
+    /// reorder logic, since the order would now be set by the index sequence without
+    /// ambiguities.
+
     template <has_signature Func, typename... Args>
     struct Partial {
     private:
+        using Tuple = std::tuple<std::remove_cvref_t<Args>...>;
 
         template <typename... Values>
         struct complete {
             template <typename out, size_t, size_t>
             struct reorder { using type = out; };
             template <typename... out, size_t I, size_t J>
-                requires (I < sizeof...(Args))
+                requires (I < sizeof...(Args) && J >= sizeof...(Values))
             struct reorder<Pack<out...>, I, J> {
                 using type = reorder<
                     Pack<out..., unpack_type<I, Args...>>,
                     I + 1,
                     J
                 >::type;
+                static constexpr decltype(auto) operator()(
+                    const Tuple& parts,
+                    Values... args
+                ) {
+                    if constexpr (std::is_lvalue_reference_v<unpack_type<I, Args...>>) {
+                        return std::get<I>(parts);
+                    } else {
+                        return std::remove_reference_t<unpack_type<I, Args...>>(
+                            std::get<I>(parts)
+                        );
+                    }
+                }
+                static constexpr decltype(auto) operator()(
+                    Tuple&& parts,
+                    Values... args
+                ) {
+                    if constexpr (std::is_lvalue_reference_v<unpack_type<I, Args...>>) {
+                        return std::get<I>(parts);
+                    } else {
+                        return std::remove_reference_t<unpack_type<I, Args...>>(
+                            std::move(std::get<I>(parts))
+                        );
+                    }
+                }
             };
             template <typename... out, size_t I, size_t J>
-                requires (J < sizeof...(Values))
+                requires (I >= sizeof...(Args) && J < sizeof...(Values))
             struct reorder<Pack<out...>, I, J> {
                 using type = reorder<
                     Pack<out..., unpack_type<J, Values...>>,
                     I,
                     J + 1
                 >::type;
+                static constexpr decltype(auto) operator()(
+                    const Tuple& parts,
+                    Values... args
+                ) {
+                    return unpack_arg<J>(std::forward<Values>(args)...);
+                }
             };
             template <typename... out, size_t I, size_t J>
                 requires (I < sizeof...(Args) && J < sizeof...(Values))
@@ -5412,7 +5559,7 @@ namespace impl {
                     static constexpr size_t new_J = J;
                     using type = L;
                     static constexpr decltype(auto) operator()(
-                        const std::tuple<Args...>& parts,
+                        const Tuple& parts,
                         Values... args
                     ) {
                         if constexpr (std::is_lvalue_reference_v<L>) {
@@ -5422,7 +5569,7 @@ namespace impl {
                         }
                     }
                     static constexpr decltype(auto) operator()(
-                        std::tuple<Args...>&& parts,
+                        Tuple&& parts,
                         Values... args
                     ) {
                         if constexpr (std::is_lvalue_reference_v<L>) {
@@ -5441,13 +5588,7 @@ namespace impl {
                     static constexpr size_t new_J = J + 1;
                     using type = R;
                     static constexpr decltype(auto) operator()(
-                        const std::tuple<Args...>& parts,
-                        Values... args
-                    ) {
-                        return unpack_arg<J>(std::forward<Values>(args)...);
-                    }
-                    static constexpr decltype(auto) operator()(
-                        std::tuple<Args...>&& parts,
+                        const Tuple& parts,
                         Values... args
                     ) {
                         return unpack_arg<J>(std::forward<Values>(args)...);
@@ -5462,13 +5603,7 @@ namespace impl {
                     static constexpr size_t new_J = J + 1;
                     using type = R;
                     static constexpr decltype(auto) operator()(
-                        const std::tuple<Args...>&& parts,
-                        Values... args
-                    ) {
-                        return unpack_arg<J>(std::forward<Values>(args)...);
-                    }
-                    static constexpr decltype(auto) operator()(
-                        std::tuple<Args...>& parts,
+                        const Tuple&& parts,
                         Values... args
                     ) {
                         return unpack_arg<J>(std::forward<Values>(args)...);
@@ -5483,13 +5618,7 @@ namespace impl {
                     static constexpr size_t new_J = J + 1;
                     using type = R;
                     static constexpr decltype(auto) operator()(
-                        const std::tuple<Args...>& parts,
-                        Values... args
-                    ) {
-                        return unpack_arg<J>(std::forward<Values>(args)...);
-                    }
-                    static constexpr decltype(auto) operator()(
-                        std::tuple<Args...>&& parts,
+                        const Tuple& parts,
                         Values... args
                     ) {
                         return unpack_arg<J>(std::forward<Values>(args)...);
@@ -5504,14 +5633,18 @@ namespace impl {
                     merge<L, R>::new_J
                 >::type;
 
+                /// TODO: these should be lifted into a separate helper class that
+                /// isn't so deeply nested, and should accept the function + default
+                /// values.  Once the reordering is complete, the function will
+                /// be called.
                 static constexpr decltype(auto) operator()(
-                    const std::tuple<Args...>& parts,
+                    const Tuple& parts,
                     Values... args
                 ) {
                     return merge<L, R>{}(parts, std::forward<Values>(args)...);
                 }
                 static constexpr decltype(auto) operator()(
-                    std::tuple<Args...>&& parts,
+                    Tuple&& parts,
                     Values... args
                 ) {
                     return merge<L, R>{}(std::move(parts), std::forward<Values>(args)...);
@@ -5523,21 +5656,38 @@ namespace impl {
             template <typename... Ordered>
             static constexpr bool _enable<Pack<Ordered...>> = callable<Func, Ordered...>;
             static constexpr bool enable = _enable<type>;
+
+            /// TODO: rather than using pairwise indices (which suffer from a
+            /// termination problem), I should use a single index sequence over the
+            /// target signature, and then make the decision on which value to use
+            /// by comparing to the current index.
+
+            /// TODO: the way to do this is to apply an approach similar to Defaults,
+            /// where the tuple stores a custom type that carries a compile time
+            /// index tracking the argument's position in the target signature.  Then,
+            /// I can use another index over just the bound arguments, and compare
+            /// the current element's index label to the index sequence being
+            /// generated.  If it is, then we substitute that value, increment the
+            /// tracking index, and continue until all arguments have been exhausted.
+            /// Otherwise, we always take the next value from the call site.
+
+            template <size_t, size_t>
+            struct call;
         };
 
     public:
         static constexpr size_t n = sizeof...(Args);
-        /// TODO: other introspection methods
+        /// TODO: other introspection fields forwarded from Arguments<>
 
         impl::get_signature<Func>::Defaults defaults;
         std::remove_cvref_t<Func> func;
-        std::tuple<std::remove_cvref_t<Args>...> parts;
+        Tuple parts;
 
         [[nodiscard]] std::remove_cvref_t<Func>& operator*() {
             return func;
         }
 
-        [[nodiscard]] const std::remove_cvref_t<Func>& operator*() const {
+        [[nodiscard]] constexpr const std::remove_cvref_t<Func>& operator*() const {
             return func;
         }
 
@@ -5545,12 +5695,12 @@ namespace impl {
             return &func;
         }
 
-        [[nodiscard]] const std::remove_cvref_t<Func>* operator->() const {
+        [[nodiscard]] constexpr const std::remove_cvref_t<Func>* operator->() const {
             return &func;
         }
 
         template <size_t I> requires (I < sizeof...(Args))
-        [[nodiscard]] decltype(auto) get() const {
+        [[nodiscard]] constexpr decltype(auto) get() const {
             return std::get<I>(parts);
         }
 
@@ -5560,7 +5710,7 @@ namespace impl {
         }
 
         template <typename T> requires (std::same_as<T, std::remove_cvref_t<Args>> || ...)
-        [[nodiscard]] decltype(auto) get() const {
+        [[nodiscard]] constexpr decltype(auto) get() const {
             return std::get<std::remove_cvref_t<T>>(parts);
         }
 
@@ -5570,19 +5720,37 @@ namespace impl {
         }
 
         template <typename... Values> requires (complete<Values...>::enable)
-        [[nodiscard]] decltype(auto) operator()(Values&&... values) const {
+        constexpr decltype(auto) operator()(Values&&... values) const {
             using call = complete<Values...>::template reorder<Pack<>, 0, 0>;
-            return call{}(parts, std::forward<Values>(values)...);
+            return call{}(
+                defaults,
+                func,
+                parts,
+                std::forward<Values>(values)...
+            );
         }
 
         template <typename... Values> requires (complete<Values...>::enable)
-        [[nodiscard]] decltype(auto) operator()(Values&&... values) && {
+        constexpr decltype(auto) operator()(Values&&... values) && {
             using call = complete<Values...>::template reorder<Pack<>, 0, 0>;
-            return call{}(std::move(parts), std::forward<Values>(values)...);
+            return call{}(
+                std::move(defaults),
+                std::move(func),
+                std::move(parts),
+                std::forward<Values>(values)...
+            );
         }
     };
 
 }
+
+
+/// TODO: the idea is correct for partials, but the execution is slightly off.  I
+/// probably need a more sophisticated way of tracking which arguments have already
+/// been bound, and make sure that they are not considered when binding the remaining
+/// arguments.  So you should be able to fill in a positional argument in the middle
+/// of the signature, and when you call the function, it will just skip over those
+/// arguments, rather than trying to bind them again.
 
 
 /* A template constraint that controls whether the `py::partial()` operator is enabled
@@ -5617,11 +5785,11 @@ The returned partial is a thin proxy that only implements the call operator and 
 handful of introspection methods.  It also allows transparent access to the decorated
 function via the `*` and `->` operators. */
 template <typename Func, typename... Args> requires (partially_callable<Func, Args...>)
-auto partial(Func&& func, Args&&... args) -> impl::Partial<Func, Args...> {
+constexpr auto partial(Func&& func, Args&&... args) -> impl::Partial<Func, Args...> {
     return {
-        {},
-        std::forward<Func>(func),
-        std::forward<Args>(args)...
+        .defaults = {},
+        .func = std::forward<Func>(func),
+        .parts = {std::forward<Args>(args)...}
     };
 }
 
@@ -5643,13 +5811,13 @@ The returned partial is a thin proxy that only implements the call operator and 
 handful of introspection methods.  It also allows transparent access to the decorated
 function via the `*` and `->` operators. */
 template <typename Func, typename... Args> requires (partially_callable<Func, Args...>)
-auto partial(const Defaults<Func>& defaults, Func&& func, Args&&... args)
+constexpr auto partial(const Defaults<Func>& defaults, Func&& func, Args&&... args)
     -> impl::Partial<Func, Args...>
 {
     return {
-        defaults,
-        std::forward<Func>(func),
-        std::forward<Args>(args)...
+        .defaults = defaults,
+        .func = std::forward<Func>(func),
+        .parts = {std::forward<Args>(args)...}
     };
 }
 
@@ -5671,13 +5839,13 @@ The returned partial is a thin proxy that only implements the call operator and 
 handful of introspection methods.  It also allows transparent access to the decorated
 function via the `*` and `->` operators. */
 template <typename Func, typename... Args> requires (partially_callable<Func, Args...>)
-auto partial(Defaults<Func>&& defaults, Func&& func, Args&&... args)
+constexpr auto partial(Defaults<Func>&& defaults, Func&& func, Args&&... args)
     -> impl::Partial<Func, Args...>
 {
     return {
-        std::move(defaults),
-        std::forward<Func>(func),
-        std::forward<Args>(args)...
+        .defaults = std::move(defaults),
+        .func = std::forward<Func>(func),
+        .parts = {std::forward<Args>(args)...}
     };
 }
 
@@ -5724,15 +5892,6 @@ decltype(auto) Object::operator()(this Self&& self, Args&&... args) {
             std::forward<Args>(args)...
         );
     }
-}
-
-
-template <impl::is<Object> Self, std::convertible_to<Object>... Args>
-Object __call__<Self, Args...>::operator()(Self self, Args... args) {
-    return impl::Arguments<
-        Arg<"args", Object>::args,
-        Arg<"kwargs", Object>::kwargs
-    >::template Bind<Args...>{}(ptr(self), std::forward<Args>(args)...);
 }
 
 

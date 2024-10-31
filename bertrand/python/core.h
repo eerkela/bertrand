@@ -183,6 +183,13 @@ bool __issubclass__<Derived, Base>::operator()(Derived derived) {
 }
 
 
+template <impl::is<Object> Self, std::convertible_to<Object>... Args>
+Object __call__<Self, Args...>::operator()(Self self, Args... args) {
+    return impl::Arguments<
+        Arg<"args", Object>::args,
+        Arg<"kwargs", Object>::kwargs
+    >::template Bind<Args...>{}(ptr(self), std::forward<Args>(args)...);
+}
 
 
 
