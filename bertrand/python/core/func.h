@@ -1064,29 +1064,30 @@ namespace impl {
         template <size_t, typename...>
         static constexpr bool _proper_argument_order = true;
         template <size_t I, typename T, typename... Ts>
-        static constexpr bool _proper_argument_order<I, T, Ts...> =
-            (ArgTraits<T>::posonly() && (I > kw_idx || I > args_idx || I > kwargs_idx)) ||
-            (ArgTraits<T>::pos() && (I > args_idx || I > kwonly_idx || I > kwargs_idx)) ||
-            (ArgTraits<T>::args() && (I > kwonly_idx || I > kwargs_idx)) ||
-            (ArgTraits<T>::kwonly() && (I > kwargs_idx)) ?
+        static constexpr bool _proper_argument_order<I, T, Ts...> = (
+                ArgTraits<T>::posonly() &&
+                (I > kw_idx || I > args_idx || I > kwargs_idx) ||
+                (!ArgTraits<T>::opt() && I > opt_idx)
+            ) || (
+                ArgTraits<T>::pos() && (
+                    (I > args_idx || I > kwonly_idx || I > kwargs_idx) ||
+                    (!ArgTraits<T>::opt() && I > opt_idx)
+                )
+            ) || (
+                ArgTraits<T>::args() && (I > kwonly_idx || I > kwargs_idx)
+            ) || (
+                ArgTraits<T>::kwonly() && (I > kwargs_idx)
+            ) ?
                 false : _proper_argument_order<I + 1, Ts...>;
 
         template <size_t, typename...>
         static constexpr bool _no_duplicate_arguments = true;
         template <size_t I, typename T, typename... Ts>
         static constexpr bool _no_duplicate_arguments<I, T, Ts...> =
-            (T::name != "" && I != idx<ArgTraits<T>::name>) ||
+            (ArgTraits<T>::name != "" && I != idx<ArgTraits<T>::name>) ||
             (ArgTraits<T>::args() && I != args_idx) ||
             (ArgTraits<T>::kwargs() && I != kwargs_idx) ?
                 false : _no_duplicate_arguments<I + 1, Ts...>;
-
-        /// TODO: no_required_after_default should be merged with proper_argument_order?
-        template <size_t, typename...>
-        static constexpr bool _no_required_after_default = true;
-        template <size_t I, typename T, typename... Ts>
-        static constexpr bool _no_required_after_default<I, T, Ts...> =
-            ArgTraits<T>::pos() && !ArgTraits<T>::opt() && I > opt_idx ?
-                false : _no_required_after_default<I + 1, Ts...>;
 
         template <size_t I, typename... Ts>
         static constexpr bool _compatible() {
@@ -1174,8 +1175,6 @@ namespace impl {
             _proper_argument_order<0, Args...>;
         static constexpr bool no_duplicate_arguments =
             _no_duplicate_arguments<0, Args...>;
-        static constexpr bool no_required_after_default =
-            _no_required_after_default<0, Args...>;
         static constexpr bool no_qualified_arg_annotations =
             !((is_arg<Args> && (
                 std::is_reference_v<Args> ||
@@ -1197,6 +1196,114 @@ namespace impl {
         viable overload of a function with this signature. */
         template <typename... Ts>
         static constexpr bool compatible = _compatible<0, Ts...>(); 
+
+    private:
+
+        /* Get the size of the perfect hash table required to efficiently validate
+        keyword arguments as a power of 2. */
+        static constexpr size_t keyword_table_size = next_power_of_two(2 * n_kw);
+
+        /* Take the modulus with respect to the keyword table by exploiting the power
+        of 2 table size. */
+        static constexpr size_t keyword_modulus(size_t hash) {
+            return hash & (keyword_table_size - 1);
+        }
+
+        /* Given a precomputed keyword index into the hash table, check to see if any
+        subsequent arguments in the parameter list hash to the same index. */
+        template <typename...>
+        struct _collisions {
+            static constexpr bool operator()(size_t, size_t, size_t) { return false; }
+        };
+        template <typename T, typename... Ts>
+        struct _collisions<T, Ts...> {
+            static constexpr bool operator()(size_t idx, size_t seed, size_t prime) {
+                if constexpr (ArgTraits<T>::kw) {
+                    size_t hash = fnv1a(
+                        ArgTraits<T>::name,
+                        seed,
+                        prime
+                    );
+                    return
+                        (keyword_modulus(hash) == idx) ||
+                        _collisions<Ts...>{}(idx, seed, prime);
+                } else {
+                    return _collisions<Ts...>{}(idx, seed, prime);
+                }
+            }
+        };
+
+        /* Check to see if the candidate seed and prime produce any collisions for the
+        observed keyword arguments. */
+        template <typename...>
+        struct collisions {
+            static constexpr bool operator()(size_t, size_t) { return false; }
+        };
+        template <typename T, typename... Ts>
+        struct collisions<T, Ts...> {
+            static constexpr bool operator()(size_t seed, size_t prime) {
+                if constexpr (ArgTraits<T>::kw()) {
+                    size_t hash = fnv1a(
+                        ArgTraits<T>::name,
+                        seed,
+                        prime
+                    );
+                    return _collisions<Ts...>{}(
+                        keyword_modulus(hash),
+                        seed,
+                        prime
+                    ) || collisions<Ts...>{}(seed, prime);
+                } else {
+                    return collisions<Ts...>{}(seed, prime);
+                }
+            }
+        };
+
+        /* Find an FNV-1a seed and prime that produces perfect hashes with respect to
+        the keyword table size. */
+        static constexpr auto hash_components = [] -> std::pair<size_t, size_t> {
+            constexpr size_t recursion_limit = fnv1a_seed + 100'000;
+            size_t seed = fnv1a_seed;
+            size_t prime = fnv1a_prime;
+            size_t i = 0;
+            while (collisions<Args...>{}(seed, prime)) {
+                if (++seed > recursion_limit) {
+                    if (++i == 10) {
+                        std::cerr << "error: unable to find a perfect hash seed "
+                                  << "after 10^6 iterations.  Consider increasing the "
+                                  << "recursion limit or reviewing the keyword "
+                                  << "argument names for potential issues.\n";
+                        std::exit(1);
+                    }
+                    seed = fnv1a_seed;
+                    prime = fnv1a_fallback_primes[i];
+                }
+            }
+            return {seed, prime};
+        }();
+
+    public:
+
+        /* A seed for an FNV-1a hash algorithm that was found to perfectly hash the
+        keyword argument names from the enclosing parameter list. */
+        static constexpr size_t seed = hash_components.first;
+
+        /* A prime for an FNV-1a hash algorithm that was found to perfectly hash the
+        keyword argument names from the enclosing parameter list. */
+        static constexpr size_t prime = hash_components.second;
+
+        /* Hash a byte string according to the FNV-1a algorithm using the seed and
+        prime that were found at compile time to perfectly hash the keyword
+        arguments. */
+        static constexpr size_t hash(const char* str) noexcept {
+            return fnv1a(str, seed, prime);
+        }
+        static constexpr size_t hash(std::string_view str) noexcept {
+            return fnv1a(str.data(), seed, prime);
+        }
+        static constexpr size_t hash(const std::string& str) noexcept {
+            return fnv1a(str.data(), seed, prime);
+        }
 
         /* A single entry in a callback table, storing the argument name, a one-hot
         encoded bitmask specifying this argument's position, a function that can be
@@ -1230,14 +1337,6 @@ namespace impl {
 
     private:
         static constexpr Callback null_callback;
-
-        static bool instance_check(PyObject* obj, PyObject* cls) {
-            int rc = PyObject_IsInstance(obj, cls);
-            if (rc < 0) {
-                Exception::from_python();
-            }
-            return rc;
-        }
 
         /* Populate the positional argument table with an appropriate callback for
         each argument in the parameter list. */
@@ -1291,94 +1390,18 @@ namespace impl {
             return {populate_positional_table<Is>()...};
         }(std::make_index_sequence<n>{});
 
-        /* Get the size of the perfect hash table required to efficiently validate
-        keyword arguments as a power of 2. */
-        static constexpr size_t keyword_table_size = next_power_of_two(2 * n_kw);
-
-        /* Take the modulus with respect to the keyword table by exploiting the power
-        of 2 table size. */
-        static constexpr size_t keyword_modulus(size_t hash) {
-            return hash & (keyword_table_size - 1);
-        }
-
-        /* Given a precomputed keyword index into the hash table, check to see if any
-        subsequent arguments in the parameter list hash to the same index. */
-        template <typename...>
-        static consteval bool _collisions(size_t, size_t, size_t) { return false; }
-        template <typename T, typename... Ts>
-        static consteval bool _collisions(size_t idx, size_t seed, size_t prime) {
-            if constexpr (ArgTraits<T>::kw) {
-                size_t hash = fnv1a(
-                    ArgTraits<T>::name,
-                    seed,
-                    prime
-                );
-                return
-                    (keyword_modulus(hash) == idx) ||
-                    _collisions<Ts...>(idx, seed, prime);
-            } else {
-                return _collisions<Ts...>(idx, seed, prime);
-            }
-        }
-
-        /* Check to see if the candidate seed and prime produce any collisions for the
-        observed keyword arguments. */
-        template <typename...>
-        static consteval bool collisions(size_t seed, size_t prime) { return false; }
-        template <typename T, typename... Ts>
-        static consteval bool collisions(size_t seed, size_t prime) {
-            if constexpr (ArgTraits<T>::kw) {
-                size_t hash = fnv1a(
-                    ArgTraits<T>::name,
-                    seed,
-                    prime
-                );
-                return _collisions<Ts...>(
-                    keyword_modulus(hash),
-                    seed,
-                    prime
-                ) || collisions<Ts...>(seed, prime);
-            } else {
-                return collisions<Ts...>(seed, prime);
-            }
-        }
-
-        /* Find an FNV-1a seed and prime that produces perfect hashes with respect to
-        the keyword table size. */
-        static constexpr auto hash_components = [] -> std::pair<size_t, size_t> {
-            constexpr size_t recursion_limit = fnv1a_seed + 100'000;
-            size_t seed = fnv1a_seed;
-            size_t prime = fnv1a_prime;
-            size_t i = 0;
-            while (collisions<Args...>(seed, prime)) {
-                if (++seed > recursion_limit) {
-                    if (++i == 10) {
-                        std::cerr << "error: unable to find a perfect hash seed "
-                                  << "after 10^6 iterations.  Consider increasing the "
-                                  << "recursion limit or reviewing the keyword "
-                                  << "argument names for potential issues.\n";
-                        std::exit(1);
-                    }
-                    seed = fnv1a_seed;
-                    prime = fnv1a_fallback_primes[i];
-                }
-            }
-            return {seed, prime};
-        }();
-
         /* Populate the keyword table with an appropriate callback for each keyword
         argument in the parameter list. */
         template <size_t I>
-        static consteval void populate_keyword_table(
+        static constexpr void populate_keyword_table(
             std::array<Callback, keyword_table_size>& table,
             size_t seed,
             size_t prime
         ) {
             using T = at<I>;
             if constexpr (ArgTraits<T>::kw()) {
-                constexpr size_t i = keyword_modulus(hash(ArgTraits<T>::name));
-                table[i] = {
-                    .name =ArgTraits<T>::name,
+                table[keyword_modulus(hash(ArgTraits<T>::name.buffer))] = {
+                    .name = ArgTraits<T>::name,
                     .mask = ArgTraits<T>::variadic() ? 0ULL : 1ULL << I,
                     .isinstance = [](const Object& value) -> bool {
                         using U = ArgTraits<T>::type;
@@ -1428,11 +1451,7 @@ namespace impl {
             std::array<Callback, keyword_table_size> table;
             (populate_keyword_table<Is>(table, seed, prime), ...);
             return table;
-        }(
-            std::make_index_sequence<n>{},
-            hash_components.first,
-            hash_components.second
-        );
+        }(std::make_index_sequence<n>{}, seed, prime);
 
         template <size_t I>
         static Param _key(size_t& hash) {
@@ -1448,27 +1467,6 @@ namespace impl {
         }
 
     public:
-
-        /* A seed for an FNV-1a hash algorithm that was found to perfectly hash the
-        keyword argument names from the enclosing parameter list. */
-        static constexpr size_t seed = hash_components.first;
-
-        /* A prime for an FNV-1a hash algorithm that was found to perfectly hash the
-        keyword argument names from the enclosing parameter list. */
-        static constexpr size_t prime = hash_components.second;
-
-        /* Hash a byte string according to the FNV-1a algorithm using the seed and
-        prime that were found at compile time to perfectly hash the keyword
-        arguments. */
-        static constexpr size_t hash(const char* str) noexcept {
-            return fnv1a(str, seed, prime);
-        }
-        static constexpr size_t hash(std::string_view str) noexcept {
-            return fnv1a(str.data(), seed, prime);
-        }
-        static constexpr size_t hash(const std::string& str) noexcept {
-            return fnv1a(str.data(), seed, prime);
-        }
 
         /* Look up a positional argument, returning a callback object that can be used
         to efficiently validate it.  If the index does not correspond to a recognized
@@ -2102,6 +2100,14 @@ namespace impl {
         struct Overloads {
         private:
             struct BoundView;
+
+            static bool instance_check(PyObject* obj, PyObject* cls) {
+                int rc = PyObject_IsInstance(obj, cls);
+                if (rc < 0) {
+                    Exception::from_python();
+                }
+                return rc;
+            }
 
         public:
             struct Metadata;
@@ -3608,8 +3614,8 @@ namespace impl {
                     } else if constexpr (ArgTraits<T>::pos()) {
                         constexpr bool duplicate_name = (
                             ArgTraits<T>::name != "" &&
-                            (ArgTraits<S>::pos() || ArgTraits<S>::args()) &&
-                            Bound::template has<ArgTraits<S>::name>
+                            (ArgTraits<S>::posonly() || ArgTraits<S>::args()) &&
+                            Bound::template has<ArgTraits<T>::name>
                         );
                         constexpr bool missing = (
                             !ArgTraits<T>::opt() &&
@@ -3621,7 +3627,7 @@ namespace impl {
                         }
                     } else if constexpr (ArgTraits<T>::kwonly()) {
                         constexpr bool extra_positional = (
-                            ArgTraits<S>::pos() || ArgTraits<S>::args()
+                            ArgTraits<S>::posonly() || ArgTraits<S>::args()
                         );
                         constexpr bool missing = (
                             !ArgTraits<T>::opt() &&
@@ -3641,12 +3647,13 @@ namespace impl {
                             T
                         >;  // end of expression
                     } else {
+                        static_assert(false);
                         return false;  // not reachable
                     }
 
                     // ensure source arguments match targets & expand parameter packs
                     // over target arguments.
-                    if constexpr (ArgTraits<S>::pos()) {
+                    if constexpr (ArgTraits<S>::posonly()) {
                         constexpr bool not_convertible = !std::convertible_to<
                             typename ArgTraits<S>::type,
                             typename ArgTraits<T>::type
@@ -3685,6 +3692,7 @@ namespace impl {
                     } else if constexpr (ArgTraits<S>::kwargs()) {
                         return consume_source_kwargs<I, S>;  // end of expression
                     } else {
+                        static_assert(false);
                         return false;  // not reachable
                     }
 
@@ -4168,7 +4176,7 @@ namespace impl {
                 constexpr StaticStr name = ArgTraits<S>::name;
                 constexpr size_t transition = std::min(Bound::kw_idx, Bound::kwargs_idx);
 
-                if constexpr (ArgTraits<S>::pos()) {
+                if constexpr (ArgTraits<S>::posonly()) {
                     try {
                         args[J] = release(to_python(
                             impl::unpack_arg<J>(std::forward<Values>(values)...)
@@ -5201,8 +5209,6 @@ namespace impl {
     template <typename Sig>
     concept no_duplicate_arguments = Sig::no_duplicate_arguments;
     template <typename Sig>
-    concept no_required_after_default = Sig::no_required_after_default;
-    template <typename Sig>
     concept no_qualified_arg_annotations = Sig::no_qualified_arg_annotations;
     template <typename Sig>
     concept no_qualified_args = Sig::no_qualified_args;
@@ -6002,7 +6008,6 @@ concept callable =
     impl::args_fit_within_bitset<impl::get_signature<Func>> &&
     impl::proper_argument_order<impl::get_signature<Func>> &&
     impl::no_duplicate_arguments<impl::get_signature<Func>> &&
-    impl::no_required_after_default<impl::get_signature<Func>> &&
     impl::no_qualified_arg_annotations<impl::get_signature<Func>> &&
     impl::get_signature<Func>::template Bind<Args...>::proper_argument_order &&
     impl::get_signature<Func>::template Bind<Args...>::no_duplicate_arguments &&
@@ -6027,9 +6032,14 @@ arguments and/or parameter packs, which are resolved at compile time.  Note that
 function signature cannot contain any template parameters (including auto arguments),
 as the function signature must be known unambiguously at compile time to implement the
 required matching. */
-template <typename Func, typename... Args> requires (callable<Func, Args...>)
+template <typename Func, typename... Args>
+    requires (
+        callable<Func, Args...> &&
+        impl::get_signature<Func>::n_opt == 0
+    )
 decltype(auto) call(Func&& func, Args&&... args) {
     return typename impl::get_signature<Func>::template Bind<Args...>{}(
+        {},
         std::forward<Func>(func),
         std::forward<Args>(args)...
     );
@@ -6075,7 +6085,6 @@ template <typename F = Object(*)(
         impl::no_qualified_args<impl::Signature<F>> &&
         impl::no_duplicate_arguments<impl::Signature<F>> &&
         impl::proper_argument_order<impl::Signature<F>> &&
-        impl::no_required_after_default<impl::Signature<F>> &&
         impl::args_fit_within_bitset<impl::Signature<F>> &&
         impl::args_are_python<impl::Signature<F>> &&
         impl::return_is_python<impl::Signature<F>> &&
@@ -6129,7 +6138,6 @@ struct Interface<Function<F>> : impl::FunctionTag {
             impl::Arguments<A...>::args_are_convertible_to_python &&
             impl::Arguments<A...>::proper_argument_order &&
             impl::Arguments<A...>::no_duplicate_arguments &&
-            impl::Arguments<A...>::no_required_after_default &&
             impl::Arguments<A...>::no_qualified_arg_annotations
         )
     using with_args =
@@ -6486,7 +6494,6 @@ struct Interface<Type<Function<F>>> {
             impl::Arguments<A...>::args_are_convertible_to_python &&
             impl::Arguments<A...>::proper_argument_order &&
             impl::Arguments<A...>::no_duplicate_arguments &&
-            impl::Arguments<A...>::no_required_after_default &&
             impl::Arguments<A...>::no_qualified_arg_annotations
         )
     using with_args = Interface<Function<F>>::template with_args<A...>;
@@ -6894,7 +6901,6 @@ template <typename F>
         impl::no_qualified_args<impl::Signature<F>> &&
         impl::no_duplicate_arguments<impl::Signature<F>> &&
         impl::proper_argument_order<impl::Signature<F>> &&
-        impl::no_required_after_default<impl::Signature<F>> &&
         impl::args_fit_within_bitset<impl::Signature<F>> &&
         impl::args_are_python<impl::Signature<F>> &&
         impl::return_is_python<impl::Signature<F>> &&

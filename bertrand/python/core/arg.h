@@ -37,7 +37,7 @@ namespace impl {
         }
 
         constexpr bool pos() const noexcept {
-            return (flags & POS) & !(flags & VARIADIC);
+            return (flags & POS) & ~(flags & VARIADIC);
         }
 
         constexpr bool args() const noexcept {
@@ -49,7 +49,7 @@ namespace impl {
         }
 
         constexpr bool kw() const noexcept {
-            return (flags & KW) & !(flags & VARIADIC);
+            return (flags & KW) & ~(flags & VARIADIC);
         }
 
         constexpr bool kwargs() const noexcept {
@@ -73,6 +73,19 @@ namespace impl {
         static constexpr ArgKind kind = T::kind | ArgKind::OPT;
 
         type value;
+
+        [[nodiscard]] std::remove_reference_t<type>& operator*() {
+            return value;
+        }
+        [[nodiscard]] const std::remove_reference_t<type>& operator*() const {
+            return value;
+        }
+        [[nodiscard]] std::remove_reference_t<type>* operator->() {
+            return &value;
+        }
+        [[nodiscard]] const std::remove_reference_t<type>* operator->() const {
+            return &value;
+        }
 
         [[nodiscard]] operator type() && {
             if constexpr (std::is_lvalue_reference_v<type>) {
@@ -101,6 +114,19 @@ namespace impl {
 
         type value;
 
+        [[nodiscard]] std::remove_reference_t<type>& operator*() {
+            return value;
+        }
+        [[nodiscard]] const std::remove_reference_t<type>& operator*() const {
+            return value;
+        }
+        [[nodiscard]] std::remove_reference_t<type>* operator->() {
+            return &value;
+        }
+        [[nodiscard]] const std::remove_reference_t<type>* operator->() const {
+            return &value;
+        }
+
         [[nodiscard]] operator type() && {
             if constexpr (std::is_lvalue_reference_v<type>) {
                 return value;
@@ -127,6 +153,19 @@ namespace impl {
         static constexpr ArgKind kind = ArgKind::KW;
 
         type value;
+
+        [[nodiscard]] std::remove_reference_t<type>& operator*() {
+            return value;
+        }
+        [[nodiscard]] const std::remove_reference_t<type>& operator*() const {
+            return value;
+        }
+        [[nodiscard]] std::remove_reference_t<type>* operator->() {
+            return &value;
+        }
+        [[nodiscard]] const std::remove_reference_t<type>* operator->() const {
+            return &value;
+        }
 
         [[nodiscard]] operator type() && {
             if constexpr (std::is_lvalue_reference_v<type>) {
@@ -162,6 +201,19 @@ namespace impl {
 
         std::vector<type> value;
 
+        [[nodiscard]] std::vector<type>& operator*() {
+            return value;
+        }
+        [[nodiscard]] const std::vector<type>& operator*() const {
+            return value;
+        }
+        [[nodiscard]] std::vector<type>* operator->() {
+            return &value;
+        }
+        [[nodiscard]] const std::vector<type>* operator->() const {
+            return &value;
+        }
+
         [[nodiscard]] operator std::vector<type>() && {
             return std::move(value);
         }
@@ -182,6 +234,19 @@ namespace impl {
         static constexpr ArgKind kind = ArgKind::KW | ArgKind::VARIADIC;
 
         std::unordered_map<std::string, T> value;
+
+        [[nodiscard]] std::unordered_map<std::string, T>& operator*() {
+            return value;
+        }
+        [[nodiscard]] const std::unordered_map<std::string, T>& operator*() const {
+            return value;
+        }
+        [[nodiscard]] std::unordered_map<std::string, T>* operator->() {
+            return &value;
+        }
+        [[nodiscard]] const std::unordered_map<std::string, T>* operator->() const {
+            return &value;
+        }
 
         [[nodiscard]] operator std::unordered_map<std::string, T>() && {
             return std::move(value);
@@ -309,6 +374,19 @@ struct Arg {
     static constexpr impl::ArgKind kind = impl::ArgKind::POS | impl::ArgKind::KW;
 
     type value;
+
+    [[nodiscard]] std::remove_reference_t<type>& operator*() {
+        return value;
+    }
+    [[nodiscard]] const std::remove_reference_t<type>& operator*() const {
+        return value;
+    }
+    [[nodiscard]] std::remove_reference_t<type>* operator->() {
+        return &value;
+    }
+    [[nodiscard]] const std::remove_reference_t<type>* operator->() const {
+        return &value;
+    }
 
     /* Argument rvalues are normally generated whenever a function is called.  Making
     them convertible to the underlying type means they can be used to call external
