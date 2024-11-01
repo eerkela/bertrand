@@ -1639,7 +1639,7 @@ namespace impl {
                 static constexpr size_t index = I;
                 std::remove_reference_t<type> value;
 
-                type get(this auto& self) {
+                constexpr type get(this auto& self) {
                     if constexpr (std::is_lvalue_reference_v<type>) {
                         return self.value;
                     } else {
@@ -1783,28 +1783,28 @@ namespace impl {
             /* Get the default value at index I of the tuple.  Use find<> to correlate
             an index from the enclosing signature if needed. */
             template <size_t I> requires (I < n)
-            decltype(auto) get() {
+            constexpr decltype(auto) get() {
                 return std::get<I>(values).get();
             }
 
             /* Get the default value at index I of the tuple.  Use find<> to correlate
             an index from the enclosing signature if needed. */
             template <size_t I> requires (I < n)
-            decltype(auto) get() const {
+            constexpr decltype(auto) get() const {
                 return std::get<I>(values).get();
             }
 
             /* Get the default value associated with the named argument, if it is
             marked as optional. */
             template <StaticStr Name> requires (has<Name>)
-            decltype(auto) get() {
+            constexpr decltype(auto) get() {
                 return std::get<idx<Name>>(values).get();
             }
 
             /* Get the default value associated with the named argument, if it is
             marked as optional. */
             template <StaticStr Name> requires (has<Name>)
-            decltype(auto) get() const {
+            constexpr decltype(auto) get() const {
                 return std::get<idx<Name>>(values).get();
             }
         };
@@ -2454,10 +2454,11 @@ namespace impl {
                 } else if constexpr (K < Bound::n) {
                     using T = Target<I>;
                     using P = unpack_type<K, Values...>;
-                    if constexpr (
+                    constexpr bool missing = (
                         !(ArgTraits<T>::opt() || ArgTraits<T>::variadic()) &&
                         P::target_idx != I
-                    ) {
+                    );
+                    if constexpr (missing) {
                         return false;
                     }
                     return partial_call_recursive<
@@ -2471,7 +2472,7 @@ namespace impl {
                 } else {
                     using T = Target<I>;
                     if constexpr (ArgTraits<T>::opt() || ArgTraits<T>::args()) {
-                        return enable_recursive<I + 1, J>();
+                        return partial_call_recursive<I + 1, J, K, A...>();
                     } else if constexpr (ArgTraits<T>::kwargs()) {
                         return consume_target_kwargs<Bound::kw_idx, T>;
                     } else {
@@ -5624,11 +5625,8 @@ arguments and/or parameter packs, which are resolved at compile time.  Note that
 function signature cannot contain any template parameters (including auto arguments),
 as the function signature must be known unambiguously at compile time to implement the
 required matching. */
-template <typename Func, typename... Args>
-    requires (
-        callable<Func, Args...> &&
-        impl::get_signature<Func>::n_opt == 0
-    )
+template <impl::has_signature Func, typename... Args>
+    requires (callable<Func, Args...> && !Defaults<Func>::n)
 constexpr decltype(auto) call(Func&& func, Args&&... args) {
     return typename impl::get_signature<Func>::template Bind<Args...>{}(
         Defaults<Func>{},
@@ -5643,7 +5641,8 @@ arguments and/or parameter packs, which are resolved at compile time.  Note that
 function signature cannot contain any template parameters (including auto arguments),
 as the function signature must be known unambiguously at compile time to implement the
 required matching. */
-template <typename Func, typename... Args> requires (callable<Func, Args...>)
+template <impl::has_signature Func, typename... Args>
+    requires (callable<Func, Args...>)
 constexpr decltype(auto) call(
     const Defaults<Func>& defaults,
     Func&& func,
@@ -5662,7 +5661,8 @@ arguments and/or parameter packs, which are resolved at compile time.  Note that
 function signature cannot contain any template parameters (including auto arguments),
 as the function signature must be known unambiguously at compile time to implement the
 required matching. */
-template <typename Func, typename... Args> requires (callable<Func, Args...>)
+template <impl::has_signature Func, typename... Args>
+    requires (callable<Func, Args...>)
 constexpr decltype(auto) call(
     Defaults<Func>&& defaults,
     Func&& func,
@@ -5692,8 +5692,6 @@ concept partially_callable =
     !(impl::arg_pack<Args> || ...) &&
     !(impl::kwarg_pack<Args> || ...);
 
-
-/// TODO: partial should force all default arguments to be provided
 
 /* Construct a partial function object that captures a C++ function and a subset of its
 arguments, which can be used to invoke the function later with the remaining arguments.
@@ -5858,30 +5856,19 @@ private:
                             return std::move(element.value);
                         }
                     };
-
-                    if constexpr (impl::ArgTraits<T>::variadic()) {
-                        // variadic args and kwargs can consume multiple arguments from
-                        // the partial list, in which case we recur until there are
-                        // no more arguments to consume at that index, and then do the
-                        // same for the source positional arguments.
-                        return merge<I, J + 1, K + 1>{}(
-                            std::forward<D>(defaults),
-                            std::forward<F>(func),
-                            std::forward<Parts>(parts),
-                            impl::unpack_arg<Prev>(std::forward<A>(args)...)...,
-                            maybe_move(std::get<K>(parts)),
-                            impl::unpack_arg<Next>(std::forward<A>(args)...)...
-                        );
-                    } else {
-                        return merge<I + 1, J + 1, K + 1>{}(
-                            std::forward<D>(defaults),
-                            std::forward<F>(func),
-                            std::forward<Parts>(parts),
-                            impl::unpack_arg<Prev>(std::forward<A>(args)...)...,
-                            maybe_move(std::get<K>(parts)),
-                            impl::unpack_arg<Next>(std::forward<A>(args)...)...
-                        );
-                    }
+                    // variadic args and kwargs can consume multiple arguments from
+                    // the partial list, in which case we recur until there are
+                    // no more arguments to consume at that index, and then do the
+                    // same for the source positional arguments.
+                    constexpr bool advance = !impl::ArgTraits<T>::variadic();
+                    return merge<I + advance, J + 1, K + 1>{}(
+                        std::forward<D>(defaults),
+                        std::forward<F>(func),
+                        std::forward<Parts>(parts),
+                        impl::unpack_arg<Prev>(std::forward<A>(args)...)...,
+                        maybe_move(std::get<K>(parts)),
+                        impl::unpack_arg<J + Next>(std::forward<A>(args)...)...
+                    );
                 }(
                     std::make_index_sequence<J>{},
                     std::make_index_sequence<sizeof...(A) - J>{},
@@ -5908,25 +5895,25 @@ private:
                 constexpr size_t transition = std::min(Bound::kw_idx, Bound::kwargs_idx);
 
                 if constexpr (impl::ArgTraits<T>::posonly()) {
-                    constexpr bool present = J < transition;
-                    return merge<I + 1, J + present, K>{}(
+                    constexpr bool advance = J < transition;
+                    return merge<I + 1, J + advance, K>{}(
                         std::forward<D>(defaults),
                         std::forward<F>(func),
                         std::forward<Parts>(parts),
                         std::forward<A>(args)...
                     );
                 } else if constexpr (impl::ArgTraits<T>::pos()) {
-                    constexpr bool present =
+                    constexpr bool advance =
                         J < transition || Bound::template has<name>;
-                    return merge<I + 1, J + present, K>{}(
+                    return merge<I + 1, J + advance, K>{}(
                         std::forward<D>(defaults),
                         std::forward<F>(func),
                         std::forward<Parts>(parts),
                         std::forward<A>(args)...
                     );
                 } else if constexpr (impl::ArgTraits<T>::kw()) {
-                    constexpr bool present = Bound::template has<name>;
-                    return merge<I + 1, J + present, K>{}(
+                    constexpr bool advance = Bound::template has<name>;
+                    return merge<I + 1, J + advance, K>{}(
                         std::forward<D>(defaults),
                         std::forward<F>(func),
                         std::forward<Parts>(parts),
@@ -6122,18 +6109,6 @@ decltype(auto) Object::operator()(this Self&& self, Args&&... args) {
             std::forward<Args>(args)...
         );
     }
-}
-
-
-inline void test() {
-    partial func(
-        { arg<"y"> = 2 },
-        [](int x, Arg<"y", int>::opt y) {
-            return x + *y;
-        },
-        1
-    );
-    func(2);
 }
 
 
