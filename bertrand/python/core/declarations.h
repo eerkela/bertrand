@@ -124,13 +124,6 @@ namespace impl {
         }
     }
 
-    template <typename T>
-    constexpr bool _is_pack = false;
-    template <typename... Ts>
-    constexpr bool _is_pack<pack<Ts...>> = true;
-    template <typename T>
-    concept is_pack = _is_pack<T>;
-
     template <typename Search, size_t I, typename... Ts>
     static constexpr size_t _index_of = 0;
     template <typename Search, size_t I, typename T, typename... Ts>
@@ -152,23 +145,6 @@ namespace impl {
     };
     template <size_t I, typename... Ts>
     using unpack_type = _unpack_type<I, Ts...>::type;
-
-    template <typename... Ts>
-    struct PackBase {};
-    template <typename T, typename... Ts>
-    struct PackBase<T, Ts...> : PackBase<Ts...> {
-        std::conditional_t<
-            std::is_lvalue_reference_v<T>,
-            T,
-            std::remove_reference_t<T>
-        > value;
-        PackBase(T value, Ts... ts) :
-            PackBase<Ts...>(std::forward<Ts>(ts)...), value(std::forward<T>(value))
-        {}
-    };
-    template <typename T, typename... Ts>
-        requires (std::is_void_v<T> || (std::is_void_v<Ts> || ...))
-    struct PackBase<T, Ts...> {};
 
     template <typename T, typename Self>
     struct _qualify { using type = T; };
@@ -360,6 +336,30 @@ namespace impl {
 
     struct Sentinel {};
 
+    template <typename T>
+    constexpr bool _is_pack = false;
+    template <typename... Ts>
+    constexpr bool _is_pack<pack<Ts...>> = true;
+    template <typename T>
+    concept is_pack = _is_pack<T>;
+
+    template <typename... Ts>
+    struct PackBase {};
+    template <typename T, typename... Ts>
+    struct PackBase<T, Ts...> : PackBase<Ts...> {
+        std::conditional_t<
+            std::is_lvalue_reference_v<T>,
+            T,
+            std::remove_reference_t<T>
+        > value;
+        PackBase(T value, Ts... ts) :
+            PackBase<Ts...>(std::forward<Ts>(ts)...), value(std::forward<T>(value))
+        {}
+    };
+    template <typename T, typename... Ts>
+        requires (std::is_void_v<T> || (std::is_void_v<Ts> || ...))
+    struct PackBase<T, Ts...> {};
+
 }
 
 
@@ -534,7 +534,7 @@ public:
     using deduplicate = _deduplicate<unique>::type;
 
     template <std::convertible_to<Ts>... Us>
-    pack(Us&&... args) : impl::PackBase<Ts...>(std::forward<Us>(args)...) {}
+    explicit pack(Us&&... args) : impl::PackBase<Ts...>(std::forward<Us>(args)...) {}
 
     pack() = delete;
     pack(const pack&) = delete;
@@ -555,7 +555,7 @@ public:
 
 
 template <typename... Ts>
-pack(Ts&&...) -> pack<Ts...>;
+explicit pack(Ts&&...) -> pack<Ts...>;
 
 
 /// TODO: really, what I should do is remove as many of the following forward
