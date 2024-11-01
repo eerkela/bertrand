@@ -1827,26 +1827,33 @@ namespace impl {
             template <size_t, typename>
             static constexpr bool consume_target_args = true;
             template <size_t J, typename T>
-                requires (J < Bound::kw_idx && J < Bound::kwargs_idx)
+                requires (J < std::min(Bound::kw_idx, Bound::kwargs_idx))
             static constexpr bool consume_target_args<J, T> = std::convertible_to<
                 typename ArgTraits<Source<J>>::type,
                 typename ArgTraits<T>::type
             > && consume_target_args<J + 1, T>;
 
+            /// TODO: this error is because the limit is longer than the Bound::
+            /// arguments.  The solution to this is to either swap the order of the
+            /// arguments in the call to Bind<>, or to somehow pass the right type in
+            /// manually.  Swapping the arguments is preferable, and would eliminate
+            /// the need to pass the limit in manually.  It would always be set to
+            /// Bound::n
+
             /* Upon encountering a variadic keyword pack in the target signature,
             recursively traverse the source keyword arguments and extract any that
             aren't present in the target signature, ensuring they are convertible to
             the target type. */
-            template <size_t, typename>
+            template <size_t, typename, size_t>
             static constexpr bool consume_target_kwargs = true;
-            template <size_t J, typename T> requires (J < Bound::n)
-            static constexpr bool consume_target_kwargs<J, T> = (
+            template <size_t J, typename T, size_t limit> requires (J < limit)
+            static constexpr bool consume_target_kwargs<J, T, limit> = (
                 Arguments::template has<ArgTraits<Source<J>>::name> ||
                 std::convertible_to<
                     typename ArgTraits<Source<J>>::type,
                     typename ArgTraits<T>::type
                 >
-            ) && consume_target_kwargs<J + 1, T>;
+            ) && consume_target_kwargs<J + 1, T, limit>;
 
             /* Upon encountering a variadic positional pack in the source signature,
             recursively traverse the target positional arguments and ensure that the source
@@ -1952,7 +1959,7 @@ namespace impl {
                     if constexpr (ArgTraits<T>::opt() || ArgTraits<T>::args()) {
                         return enable_recursive<I + 1, J>();
                     } else if constexpr (ArgTraits<T>::kwargs()) {
-                        return consume_target_kwargs<Bound::kw_idx, T>;
+                        return consume_target_kwargs<Bound::kw_idx, T, Bound::n>;
                     } else {
                         return false;  // a required argument is missing
                     }
@@ -1961,6 +1968,8 @@ namespace impl {
                 } else {
                     using T = Target<I>;
                     using S = Source<J>;
+                    constexpr size_t transition =
+                        std::min(Bound::kw_idx, Bound::kwargs_idx);
 
                     // ensure target arguments are present and do not conflict + expand
                     // parameter packs over source arguments
@@ -2004,12 +2013,13 @@ namespace impl {
                     } else if constexpr (ArgTraits<T>::args()) {
                         return consume_target_args<J, T> && enable_recursive<
                             I + 1,
-                            Bound::has_kw ? Bound::kw_idx : Bound::kwargs_idx
+                            transition
                         >();  // skip ahead to source keywords
                     } else if constexpr (ArgTraits<T>::kwargs()) {
                         return consume_target_kwargs<
-                            Bound::has_kw ? Bound::kw_idx : Bound::kwargs_idx,
-                            T
+                            transition,
+                            T,
+                            Bound::n
                         >;  // end of expression
                     } else {
                         static_assert(false);
@@ -2085,7 +2095,7 @@ namespace impl {
                 } else if constexpr (J >= Bound::n) {
                     using T = Target<I>;
                     if constexpr (ArgTraits<T>::kwargs()) {
-                        return consume_target_kwargs<Bound::kw_idx, T>;
+                        return consume_target_kwargs<Bound::kw_idx, T, Bound::n>;
                     } else {
                         return partial_recursive<I + 1, J>();
                     }
@@ -2094,6 +2104,8 @@ namespace impl {
                 } else {
                     using T = Target<I>;
                     using S = Source<J>;
+                    constexpr size_t transition =
+                        std::min(Bound::kw_idx, Bound::kwargs_idx);
 
                     // ensure target arguments do not conflict + expand parameter packs
                     // over source arguments
@@ -2124,12 +2136,13 @@ namespace impl {
                     } else if constexpr (ArgTraits<T>::args()) {
                         return consume_target_args<J, T> && partial_recursive<
                             I + 1,
-                            Bound::has_kw ? Bound::kw_idx : Bound::kwargs_idx
+                            transition
                         >();  // skip ahead to source keywords
                     } else if constexpr (ArgTraits<T>::kwargs()) {
                         return consume_target_kwargs<
-                            Bound::has_kw ? Bound::kw_idx : Bound::kwargs_idx,
-                            T
+                            transition,
+                            T,
+                            Bound::n
                         >;  // end of expression
                     } else {
                         static_assert(false);
@@ -2190,8 +2203,10 @@ namespace impl {
             signature after accounting for previously-bound partial arguments. */
             template <size_t I, size_t J, size_t K, typename... A>
             static consteval bool partial_call_recursive() {
-                using Bound = Arguments<typename Values::type...>;
-                using Unbound = Arguments<A...>;
+                using Bound = Arguments<typename A::type...>;
+                using Unbound = Arguments<Values...>;
+                constexpr size_t transition =
+                    std::min(Unbound::kw_idx, Unbound::kwargs_idx);
 
                 // all lists are satisfied
                 if constexpr (
@@ -2208,8 +2223,8 @@ namespace impl {
                 // there are both source and partial arguments left to parse
                 } else if constexpr (J < Unbound::n && K < Bound::n) {
                     using T = Target<I>;
-                    using S = unpack_type<J, A...>;
-                    using P = unpack_type<K, Values...>;
+                    using S = Unbound::template at<J>;
+                    using P = Bound::template at<K>;
 
                     // ensure target arguments are present and do not conflict with
                     // source/partial arguments, and expand parameter packs over source
@@ -2258,17 +2273,17 @@ namespace impl {
                             return false;
                         }
                     } else if constexpr (ArgTraits<T>::args()) {
-                        return consume_target_args<J, T> && partial_call_recursive<
-                            I + 1,
-                            Unbound::has_kw ? Unbound::kw_idx : Unbound::kwargs_idx,
-                            Bound::kw_idx,
-                            A...
-                        >();  // skip ahead to source and partial keywords
+                        return
+                            consume_target_args<J, T> &&
+                            partial_call_recursive<
+                                I + 1,
+                                transition,
+                                Bound::kw_idx,
+                                A...
+                            >();  // skip ahead to source and partial keywords
                     } else if constexpr (ArgTraits<T>::kwargs()) {
-                        return consume_target_kwargs<
-                            Unbound::has_kw ? Unbound::kw_idx : Unbound::kwargs_idx,
-                            T
-                        >;  // end of expression
+                        // end of expression
+                        return consume_target_kwargs<transition, T, Unbound::n>;
                     } else {
                         static_assert(false);
                         return false;  // not reachable
@@ -2333,9 +2348,9 @@ namespace impl {
                     return partial_call_recursive<I + 1, J + 1, K, A...>();
 
                 // partial arguments have been exhausted, but source arguments remain
-                } else if constexpr (J < sizeof...(A)) {
+                } else if constexpr (J < Unbound::n) {
                     using T = Target<I>;
-                    using S = unpack_type<J, A...>;
+                    using S = Unbound::template at<J>;
 
                     /// NOTE: this is the same as above, but with every reference to
                     /// P removed
@@ -2379,17 +2394,24 @@ namespace impl {
                             return false;
                         }
                     } else if constexpr (ArgTraits<T>::args()) {
-                        return consume_target_args<J, T> && partial_call_recursive<
-                            I + 1,
-                            Unbound::has_kw ? Unbound::kw_idx : Unbound::kwargs_idx,
-                            Bound::kw_idx,
-                            A...
-                        >();  // skip ahead to source and partial keywords
+                        return 
+                            consume_target_args<J, T> &&
+                            partial_call_recursive<
+                                I + 1,
+                                transition,
+                                Bound::kw_idx,
+                                A...
+                            >();  // skip ahead to source and partial keywords
                     } else if constexpr (ArgTraits<T>::kwargs()) {
-                        return consume_target_kwargs<
-                            Unbound::has_kw ? Unbound::kw_idx : Unbound::kwargs_idx,
-                            T
-                        >;  // end of expression
+                        constexpr bool extra_positional = (
+                            ArgTraits<S>::posonly() || ArgTraits<S>::args()
+                        );
+                        // end of expression
+                        return !extra_positional && consume_target_kwargs<
+                            transition,
+                            T,
+                            Unbound::n
+                        >;
                     } else {
                         static_assert(false);
                         return false;  // not reachable
@@ -2453,7 +2475,7 @@ namespace impl {
                 // source arguments have been exhausted, but partial arguments remain
                 } else if constexpr (K < Bound::n) {
                     using T = Target<I>;
-                    using P = unpack_type<K, Values...>;
+                    using P = Bound::template at<K>;
                     constexpr bool missing = (
                         !(ArgTraits<T>::opt() || ArgTraits<T>::variadic()) &&
                         P::target_idx != I
@@ -2474,7 +2496,7 @@ namespace impl {
                     if constexpr (ArgTraits<T>::opt() || ArgTraits<T>::args()) {
                         return partial_call_recursive<I + 1, J, K, A...>();
                     } else if constexpr (ArgTraits<T>::kwargs()) {
-                        return consume_target_kwargs<Bound::kw_idx, T>;
+                        return consume_target_kwargs<Bound::kw_idx, T, Unbound::n>;
                     } else {
                         return false;  // a required argument is missing
                     }
@@ -2523,7 +2545,7 @@ namespace impl {
                 if constexpr (!Arguments::template has<ArgTraits<Source<idx>>::name>) {
                     map.emplace(
                         ArgTraits<Source<idx>>::name,
-                        impl::unpack_arg<idx>(std::forward<Source>(args)...)
+                        impl::unpack_arg<idx>(std::forward<Values>(args)...)
                     );
                 }
             }
@@ -3163,7 +3185,7 @@ namespace impl {
             /* A third constraint is needed to enable the call operator for
             `py::partial` objects. */
             template <typename... Partial>
-            static constexpr bool partial_call =
+            static constexpr bool with =
                 partial_call_recursive<0, 0, 0, Partial...>();
 
             /* Produce an overload key from the bound C++ arguments, which can be used
@@ -5798,7 +5820,7 @@ private:
         static constexpr bool _enable = false;
         template <typename... Vs>
         static constexpr bool _enable<std::tuple<Vs...>> =
-            sig::template Bind<Vs...>::template partial_call<Values...>;
+            sig::template Bind<Values...>::template with<Vs...>;
         static constexpr bool enable = _enable<Tuple>;
 
         template <size_t K>

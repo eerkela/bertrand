@@ -37,7 +37,7 @@ namespace impl {
         }
 
         constexpr bool pos() const noexcept {
-            return (flags & POS) & ~(flags & VARIADIC);
+            return (flags & (POS | VARIADIC)) == POS;
         }
 
         constexpr bool args() const noexcept {
@@ -49,7 +49,7 @@ namespace impl {
         }
 
         constexpr bool kw() const noexcept {
-            return (flags & KW) & ~(flags & VARIADIC);
+            return (flags & (KW | VARIADIC)) == KW;
         }
 
         constexpr bool kwargs() const noexcept {
