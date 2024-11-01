@@ -113,10 +113,10 @@ namespace impl {
     }
 
     template <size_t I, typename... Ts> requires (I < sizeof...(Ts))
-    static void unpack_arg(Ts&&...) {}
+    static constexpr void unpack_arg(Ts&&...) noexcept {}
 
     template <size_t I, typename T, typename... Ts> requires (I < (sizeof...(Ts) + 1))
-    static decltype(auto) unpack_arg(T&& curr, Ts&&... next) {
+    static constexpr decltype(auto) unpack_arg(T&& curr, Ts&&... next) noexcept {
         if constexpr (I == 0) {
             return std::forward<T>(curr);
         } else {
@@ -143,7 +143,7 @@ namespace impl {
         struct helper<J> { using type = T; };
         using type = helper<I>::type;
     };
-    template <size_t I, typename... Ts>
+    template <size_t I, typename... Ts> requires (I < sizeof...(Ts))
     using unpack_type = _unpack_type<I, Ts...>::type;
 
     template <typename T, typename Self>
@@ -352,8 +352,17 @@ namespace impl {
             T,
             std::remove_reference_t<T>
         > value;
-        PackBase(T value, Ts... ts) :
+        constexpr PackBase(T value, Ts... ts) :
             PackBase<Ts...>(std::forward<Ts>(ts)...), value(std::forward<T>(value))
+        {}
+        constexpr PackBase(PackBase&& other) :
+            PackBase<Ts...>(std::move(other)), value([](PackBase&& other) {
+                if constexpr (std::is_lvalue_reference_v<T>) {
+                    return other.value;
+                } else {
+                    return std::move(other.value);
+                }
+            }())
         {}
     };
     template <typename T, typename... Ts>
@@ -366,17 +375,21 @@ namespace impl {
 /* Save a set of input arguments for later use.  Returns a pack<> container, which
 stores the arguments similar to a `std::tuple`, except that it is capable of storing
 references and cannot be copied or moved.  Calling the pack as an rvalue will perfectly
-forward its values to an input function, without no extra copies, and at most 2 moves
-per element (one when the pack is created and another when it is invoked).
+forward its values to an input function, without any extra copies, and at most 2 moves
+per element (one when the pack is created and another when it is consumed).
 
 Also provides utilities for compile-time argument manipulation wherever arbitrary lists
 of types may be necessary. 
 
 WARNING: Undefined behavior can occur if an lvalue is bound that falls out of scope
-before the pack is invoked.  Such values will not have their lifetimes extended in any
+before the pack is consumed.  Such values will not have their lifetimes extended in any
 way, and it is the user's responsibility to ensure that this is observed at all times.
 Generally speaking, ensuring that no packs are returned out of a local context is
-enough to satisfy this guarantee. */
+enough to satisfy this guarantee.  Typically, this class will be consumed within the
+same context in which it was created, or in a downstream one where all of the objects
+are still in scope, as a way of enforcing a certain order of operations.  Note that
+this guidance does not apply to rvalues and temporaries, which are stored directly
+within the pack for its natural lifetime. */
 template <typename... Ts>
 struct pack : impl::PackBase<Ts...> {
 private:
@@ -534,7 +547,9 @@ public:
     using deduplicate = _deduplicate<unique>::type;
 
     template <std::convertible_to<Ts>... Us>
-    explicit pack(Us&&... args) : impl::PackBase<Ts...>(std::forward<Us>(args)...) {}
+    explicit constexpr pack(Us&&... args) : impl::PackBase<Ts...>(
+        std::forward<Us>(args)...
+    ) {}
 
     pack() = delete;
     pack(const pack&) = delete;

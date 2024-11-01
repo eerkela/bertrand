@@ -74,20 +74,20 @@ namespace impl {
 
         type value;
 
-        [[nodiscard]] std::remove_reference_t<type>& operator*() {
+        [[nodiscard]] constexpr std::remove_reference_t<type>& operator*() {
             return value;
         }
-        [[nodiscard]] const std::remove_reference_t<type>& operator*() const {
+        [[nodiscard]] constexpr const std::remove_reference_t<type>& operator*() const {
             return value;
         }
-        [[nodiscard]] std::remove_reference_t<type>* operator->() {
+        [[nodiscard]] constexpr std::remove_reference_t<type>* operator->() {
             return &value;
         }
-        [[nodiscard]] const std::remove_reference_t<type>* operator->() const {
+        [[nodiscard]] constexpr const std::remove_reference_t<type>* operator->() const {
             return &value;
         }
 
-        [[nodiscard]] operator type() && {
+        [[nodiscard]] constexpr operator type() && {
             if constexpr (std::is_lvalue_reference_v<type>) {
                 return value;
             } else {
@@ -96,7 +96,7 @@ namespace impl {
         }
 
         template <typename U> requires (std::convertible_to<type, U>)
-        [[nodiscard]] operator U() && {
+        [[nodiscard]] constexpr operator U() && {
             if constexpr (std::is_lvalue_reference_v<type>) {
                 return value;
             } else {
@@ -114,20 +114,20 @@ namespace impl {
 
         type value;
 
-        [[nodiscard]] std::remove_reference_t<type>& operator*() {
+        [[nodiscard]] constexpr std::remove_reference_t<type>& operator*() {
             return value;
         }
-        [[nodiscard]] const std::remove_reference_t<type>& operator*() const {
+        [[nodiscard]] constexpr const std::remove_reference_t<type>& operator*() const {
             return value;
         }
-        [[nodiscard]] std::remove_reference_t<type>* operator->() {
+        [[nodiscard]] constexpr std::remove_reference_t<type>* operator->() {
             return &value;
         }
-        [[nodiscard]] const std::remove_reference_t<type>* operator->() const {
+        [[nodiscard]] constexpr const std::remove_reference_t<type>* operator->() const {
             return &value;
         }
 
-        [[nodiscard]] operator type() && {
+        [[nodiscard]] constexpr operator type() && {
             if constexpr (std::is_lvalue_reference_v<type>) {
                 return value;
             } else {
@@ -136,7 +136,7 @@ namespace impl {
         }
 
         template <typename U> requires (std::convertible_to<type, U>)
-        [[nodiscard]] operator U() && {
+        [[nodiscard]] constexpr operator U() && {
             if constexpr (std::is_lvalue_reference_v<type>) {
                 return value;
             } else {
@@ -154,20 +154,20 @@ namespace impl {
 
         type value;
 
-        [[nodiscard]] std::remove_reference_t<type>& operator*() {
+        [[nodiscard]] constexpr std::remove_reference_t<type>& operator*() {
             return value;
         }
-        [[nodiscard]] const std::remove_reference_t<type>& operator*() const {
+        [[nodiscard]] constexpr const std::remove_reference_t<type>& operator*() const {
             return value;
         }
-        [[nodiscard]] std::remove_reference_t<type>* operator->() {
+        [[nodiscard]] constexpr std::remove_reference_t<type>* operator->() {
             return &value;
         }
-        [[nodiscard]] const std::remove_reference_t<type>* operator->() const {
+        [[nodiscard]] constexpr const std::remove_reference_t<type>* operator->() const {
             return &value;
         }
 
-        [[nodiscard]] operator type() && {
+        [[nodiscard]] constexpr operator type() && {
             if constexpr (std::is_lvalue_reference_v<type>) {
                 return value;
             } else {
@@ -176,7 +176,7 @@ namespace impl {
         }
 
         template <typename U> requires (std::convertible_to<type, U>)
-        [[nodiscard]] operator U() && {
+        [[nodiscard]] constexpr operator U() && {
             if constexpr (std::is_lvalue_reference_v<type>) {
                 return value;
             } else {
@@ -204,17 +204,17 @@ namespace impl {
         [[nodiscard]] std::vector<type>& operator*() {
             return value;
         }
-        [[nodiscard]] const std::vector<type>& operator*() const {
+        [[nodiscard]] constexpr const std::vector<type>& operator*() const {
             return value;
         }
         [[nodiscard]] std::vector<type>* operator->() {
             return &value;
         }
-        [[nodiscard]] const std::vector<type>* operator->() const {
+        [[nodiscard]] constexpr const std::vector<type>* operator->() const {
             return &value;
         }
 
-        [[nodiscard]] operator std::vector<type>() && {
+        [[nodiscard]] constexpr operator std::vector<type>() && {
             return std::move(value);
         }
     };
@@ -235,35 +235,23 @@ namespace impl {
 
         std::unordered_map<std::string, T> value;
 
-        [[nodiscard]] std::unordered_map<std::string, T>& operator*() {
+        [[nodiscard]] constexpr std::unordered_map<std::string, T>& operator*() {
             return value;
         }
-        [[nodiscard]] const std::unordered_map<std::string, T>& operator*() const {
+        [[nodiscard]] constexpr const std::unordered_map<std::string, T>& operator*() const {
             return value;
         }
-        [[nodiscard]] std::unordered_map<std::string, T>* operator->() {
+        [[nodiscard]] constexpr std::unordered_map<std::string, T>* operator->() {
             return &value;
         }
-        [[nodiscard]] const std::unordered_map<std::string, T>* operator->() const {
+        [[nodiscard]] constexpr const std::unordered_map<std::string, T>* operator->() const {
             return &value;
         }
 
-        [[nodiscard]] operator std::unordered_map<std::string, T>() && {
+        [[nodiscard]] constexpr operator std::unordered_map<std::string, T>() && {
             return std::move(value);
         }
     };
-
-    /// TODO: these get transformed into iterable views, so that they're easier to
-    /// use when calling a function.  They still use aggregate initialization to
-    /// capture the container, but they also capture a pair of iterators at the same
-    /// time, which will just have to be accounted for in the unpacking operator.
-
-    /// TODO: KwargPack is just an extension of ArgPack, which captures similar
-    /// iterators.
-
-    /// TODO: I might be able to exploit the fact that this syntax is only allowed on
-    /// Python objects, but if I stick with aggregate initialization, then I can
-    /// potentially also enable them for C++ types.
 
     /* A keyword parameter pack obtained by double-dereferencing a Python object. */
     template <mapping_like T> requires (has_size<T>)
@@ -354,6 +342,20 @@ namespace impl {
         }
     };
 
+    template <typename T>
+    static constexpr bool _arg_pack = false;
+    template <typename T>
+    static constexpr bool _arg_pack<ArgPack<T>> = true;
+    template <typename T>
+    concept arg_pack = _arg_pack<std::remove_cvref_t<T>>;
+
+    template <typename T>
+    static constexpr bool _kwarg_pack = false;
+    template <typename T>
+    static constexpr bool _kwarg_pack<KwargPack<T>> = true;
+    template <typename T>
+    concept kwarg_pack = _kwarg_pack<std::remove_cvref_t<T>>;
+
 }
 
 
@@ -375,23 +377,23 @@ struct Arg {
 
     type value;
 
-    [[nodiscard]] std::remove_reference_t<type>& operator*() {
+    [[nodiscard]] constexpr std::remove_reference_t<type>& operator*() {
         return value;
     }
-    [[nodiscard]] const std::remove_reference_t<type>& operator*() const {
+    [[nodiscard]] constexpr const std::remove_reference_t<type>& operator*() const {
         return value;
     }
-    [[nodiscard]] std::remove_reference_t<type>* operator->() {
+    [[nodiscard]] constexpr std::remove_reference_t<type>* operator->() {
         return &value;
     }
-    [[nodiscard]] const std::remove_reference_t<type>* operator->() const {
+    [[nodiscard]] constexpr const std::remove_reference_t<type>* operator->() const {
         return &value;
     }
 
     /* Argument rvalues are normally generated whenever a function is called.  Making
     them convertible to the underlying type means they can be used to call external
     C++ functions that are not aware of Python argument annotations. */
-    [[nodiscard]] operator type() && {
+    [[nodiscard]] constexpr operator type() && {
         if constexpr (std::is_lvalue_reference_v<type>) {
             return value;
         } else {
@@ -402,7 +404,7 @@ struct Arg {
     /* Conversions to other types are also allowed, as long as the underlying type
     supports it. */
     template <typename U> requires (std::convertible_to<type, U>)
-    [[nodiscard]] operator U() && {
+    [[nodiscard]] constexpr operator U() && {
         if constexpr (std::is_lvalue_reference_v<type>) {
             return value;
         } else {
