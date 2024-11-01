@@ -452,7 +452,7 @@ namespace impl {
     template <typename T>
     struct ArgTraits {
         using type                                  = T;
-        using no_opt                                = T;
+        using as_default                            = T;
         static constexpr StaticStr name             = "";
         static constexpr ArgKind kind               = ArgKind::POS;
         static constexpr bool posonly() noexcept    { return kind.posonly(); }
@@ -472,13 +472,15 @@ namespace impl {
     private:
 
         template <typename U>
-        struct _no_opt { using type = U; };
+        struct _as_default { using type = U; };
         template <typename U>
-        struct _no_opt<OptionalArg<U>> { using type = U; };
+        struct _as_default<OptionalArg<U>> {
+            using type = Arg<U::name, typename U::type>::kw;
+        };
 
     public:
         using type                                  = std::remove_cvref_t<T>::type;
-        using no_opt                                = _no_opt<std::remove_cvref_t<T>>::type;
+        using as_default                            = _as_default<std::remove_cvref_t<T>>::type;
         static constexpr StaticStr name             = std::remove_cvref_t<T>::name;
         static constexpr ArgKind kind               = std::remove_cvref_t<T>::kind;
         static constexpr bool posonly() noexcept    { return kind.posonly(); }
