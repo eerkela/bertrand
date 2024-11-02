@@ -62,6 +62,12 @@ struct pack;
 
 
 namespace impl {
+    using bertrand::impl::fnv1a;
+    using bertrand::impl::fnv1a_seed;
+    using bertrand::impl::fnv1a_prime;
+    using bertrand::impl::fnv1a_fallback_primes;
+    using bertrand::impl::static_str;
+
     struct BertrandTag {};
     struct UnionTag : BertrandTag {};
     struct IterTag : BertrandTag {};
@@ -176,68 +182,6 @@ namespace impl {
             n |= (n >> i);
         }
         return ++n;
-    }
-
-    /* Default seed for FNV-1a hash function. */
-    constexpr size_t fnv1a_seed = [] {
-        if constexpr (sizeof(size_t) > 4) {
-            return 14695981039346656037ULL;
-        } else {
-            return 2166136261u;
-        }
-    }();
-
-    /* Default prime for FNV-1a hash function. */
-    constexpr size_t fnv1a_prime = [] {
-        if constexpr (sizeof(size_t) > 4) {
-            return 1099511628211ULL;
-        } else {
-            return 16777619u;
-        }
-    }();
-
-    /* In the vast majority of cases, adjusting the seed is all that's needed to get a
-    good FNV-1a hash, but just in case, we also provide the next 9 primes in case the
-    default value cannot be used. */
-    constexpr std::array<size_t, 10> fnv1a_fallback_primes = [] -> std::array<size_t, 10> {
-        if constexpr (sizeof(size_t) > 4) {
-            return {
-                fnv1a_prime,
-                1099511628221ULL,
-                1099511628227ULL,
-                1099511628323ULL,
-                1099511628329ULL,
-                1099511628331ULL,
-                1099511628359ULL,
-                1099511628401ULL,
-                1099511628403ULL,
-                1099511628427ULL,
-            };
-        } else {
-            return {
-                fnv1a_prime,
-                16777633u,
-                16777639u,
-                16777643u,
-                16777669u,
-                16777679u,
-                16777681u,
-                16777699u,
-                16777711u,
-                16777721,
-            };
-        }
-    }();
-
-    /* A deterministic FNV-1a string hashing function that gives the same results at
-    both compile time and run time. */
-    constexpr size_t fnv1a(const char* str, size_t seed, size_t prime) noexcept {
-        while (*str) {
-            seed ^= static_cast<size_t>(*str);
-            seed *= prime;
-            ++str;
-        }
-        return seed;
     }
 
     /* Merge several hashes into a single value.  Based on `boost::hash_combine()`:
