@@ -9,6 +9,9 @@
 namespace py {
 
 
+/// TODO: add assertions where appropriate to ensure that no object is ever null.
+
+
 namespace impl {
 
     /* Construct a new instance of an inner `Type<Wrapper>::__python__` type using
@@ -98,6 +101,12 @@ template <typename Base, typename Derived>
         std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, Derived>
     )
 [[nodiscard]] constexpr bool issubclass(Derived&& obj) {
+    if constexpr (DEBUG) {
+        assert_(
+            ptr(obj) != nullptr,
+            "issubclass() cannot be called on a null object."
+        );
+    }
     return __issubclass__<Derived, Base>{}(std::forward<Derived>(obj));
 }
 
@@ -114,6 +123,16 @@ template <typename Derived, typename Base>
         std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, Derived, Base>
     )
 [[nodiscard]] constexpr bool issubclass(Derived&& obj, Base&& base) {
+    if constexpr (DEBUG) {
+        assert_(
+            ptr(obj) != nullptr,
+            "left operand to issubclass() cannot be a null object."
+        );
+        assert_(
+            ptr(base) != nullptr,
+            "right operand to issubclass() cannot be a null object."
+        );
+    }
     return __issubclass__<Derived, Base>{}(
         std::forward<Derived>(obj),
         std::forward<Base>(base)
@@ -136,6 +155,12 @@ template <typename Base, typename Derived>
         )
     )
 [[nodiscard]] constexpr bool isinstance(Derived&& obj) {
+    if constexpr (DEBUG) {
+        assert_(
+            ptr(obj) != nullptr,
+            "isinstance() cannot be called on a null object."
+        );
+    }
     if constexpr (std::is_invocable_v<__isinstance__<Derived, Base>, Derived>) {
         return __isinstance__<Derived, Base>{}(std::forward<Derived>(obj));
     } else {
@@ -155,6 +180,16 @@ template <typename Derived, typename Base>
         std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, Derived, Base>
     )
 [[nodiscard]] constexpr bool isinstance(Derived&& obj, Base&& base) {
+    if constexpr (DEBUG) {
+        assert_(
+            ptr(obj) != nullptr,
+            "left operand to isinstance() cannot be a null object."
+        );
+        assert_(
+            ptr(base) != nullptr,
+            "right operand to isinstance() cannot be a null object."
+        );
+    }
     return __isinstance__<Derived, Base>{}(
         std::forward<Derived>(obj),
         std::forward<Base>(base)
@@ -179,8 +214,8 @@ struct __cast__<From, To>                                   : Returns<To> {
 };
 
 
-/* Implicitly convert a Python object into one of its subclasses by applying a runtime
-`isinstance()` check. */
+/* Implicitly convert a Python object into one of its subclasses by applying an
+`isinstance<Derived>()` check. */
 template <impl::inherits<Object> From, std::derived_from<Object> To>
     requires (
         !impl::is<From, To> &&
@@ -188,26 +223,12 @@ template <impl::inherits<Object> From, std::derived_from<Object> To>
     )
 struct __cast__<From, To>                                   : Returns<To> {
     template <size_t I>
-    static size_t find_union_type(
-        std::add_lvalue_reference_t<From> obj,
-        size_t& first
-    ) {
+    static size_t find_union_type(std::add_lvalue_reference_t<From> obj) {
         if constexpr (I < To::n) {
-            Type<typename To::template at<I>> type;
-            if (reinterpret_cast<PyObject*>(Py_TYPE(ptr(obj))) == ptr(type)) {
+            if (isinstance<To::template at<I>>(obj)) {
                 return I;
-            } else if (first == To::n) {
-                int rc = PyObject_IsInstance(
-                    ptr(obj),
-                    ptr(type)
-                );
-                if (rc == -1) {
-                    Exception::to_python();
-                } else if (rc) {
-                    first = I;
-                }
             }
-            return find_union_type<I + 1>(obj, first);
+            return find_union_type<I + 1>(obj);
         } else {
             return To::n;
         }
@@ -215,26 +236,21 @@ struct __cast__<From, To>                                   : Returns<To> {
 
     static auto operator()(From from) {
         if constexpr (impl::inherits<To, impl::UnionTag>) {
-            size_t subclass = To::n;
-            size_t exact = find_union_type<0>(from, subclass);
-            if (exact == To::n) {
-                if (subclass == To::n) {
-                    throw TypeError(
-                        "cannot convert Python object from type '" +
-                        repr(Type<From>()) + "' to type '" +
-                        repr(Type<To>()) + "'"
-                    );
-                } else {
-                    exact = subclass;
-                }
+            size_t index = find_union_type<0>(from);
+            if (index == To::n) {
+                throw TypeError(
+                    "cannot convert Python object from type '" +
+                    repr(Type<From>()) + "' to type '" +
+                    repr(Type<To>()) + "'"
+                );
             }
             if constexpr (std::is_lvalue_reference_v<From>) {
                 To result = reinterpret_borrow<To>(ptr(from));
-                result.m_index = exact;
+                result.m_index = index;
                 return result;
             } else {
                 To result = reinterpret_steal<To>(release(from));
-                result.m_index = exact;
+                result.m_index = index;
                 return result;
             }
 
@@ -284,6 +300,12 @@ template <StaticStr Name, impl::python Self>
         )
     )
 [[nodiscard]] auto getattr(Self&& self) -> __getattr__<Self, Name>::type {
+    if constexpr (DEBUG) {
+        assert_(
+            ptr(self) != nullptr,
+            "Cannot get attribute '" + Name + "' from a null object."
+        );
+    }
     if constexpr (std::is_invocable_v<__getattr__<Self, Name>, Self>) {
         return __getattr__<Self, Name>{}(std::forward<Self>(self));
 
@@ -327,6 +349,12 @@ template <StaticStr Name, impl::python Self>
     Self&& self,
     const typename __getattr__<Self, Name>::type& default_value
 ) -> __getattr__<Self, Name>::type {
+    if constexpr (DEBUG) {
+        assert_(
+            ptr(self) != nullptr,
+            "Cannot get attribute '" + Name + "' from a null object."
+        );
+    }
     using Return = __getattr__<Self, Name>::type;
     if constexpr (std::is_invocable_v<__getattr__<Self, Name>, Self, const Return&>) {
         return __getattr__<Self, Name>{}(std::forward<Self>(self), default_value);
@@ -366,6 +394,12 @@ template <StaticStr Name, impl::python Self, typename Value>
         )
     )
 void setattr(Self&& self, Value&& value) {
+    if constexpr (DEBUG) {
+        assert_(
+            ptr(self) != nullptr,
+            "Cannot assign attribute '" + Name + "' on a null object."
+        );
+    }
     if constexpr (std::is_invocable_v<__setattr__<Self, Name, Value>, Self, Value>) {
         __setattr__<Self, Name, Value>{}(
             std::forward<Self>(self),
@@ -373,6 +407,13 @@ void setattr(Self&& self, Value&& value) {
         );
 
     } else {
+        auto obj = to_python(std::forward<Value>(value));
+        if constexpr (DEBUG) {
+            assert_(
+                ptr(obj) != nullptr,
+                "Cannot assign attribute '" + Name + "' to a null object."
+            );
+        }
         PyObject* name = PyUnicode_FromStringAndSize(Name, Name.size());
         if (name == nullptr) {
             Exception::from_python();
@@ -380,7 +421,7 @@ void setattr(Self&& self, Value&& value) {
         int rc = PyObject_SetAttr(
             ptr(to_python(std::forward<Self>(self))),
             name,
-            ptr(to_python(std::forward<Value>(value)))
+            ptr(obj)
         );
         Py_DECREF(name);
         if (rc) {
@@ -400,6 +441,12 @@ template <StaticStr Name, impl::python Self>
         )
     )
 void delattr(Self&& self) {
+    if constexpr (DEBUG) {
+        assert_(
+            ptr(self) != nullptr,
+            "Cannot delete attribute '" + Name + "' on a null object."
+        );
+    }
     if constexpr (std::is_invocable_v<__delattr__<Self, Name>, Self>) {
         __delattr__<Self, Name>{}(std::forward<Self>(self));
 
@@ -524,7 +571,7 @@ template <typename Self>
 
     } else {
         return
-            "<" + impl::demangle(typeid(obj).name()) + " at " +
+            "<" + bertrand::type_name<Self> + " at " +
             std::to_string(reinterpret_cast<size_t>(&obj)) + ">";
     }
 }

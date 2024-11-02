@@ -52,7 +52,9 @@ namespace impl {
 
 /* Retrieve the raw pointer backing a Python object. */
 template <impl::inherits<Object> T>
-[[nodiscard]] PyObject* ptr(T&& obj);
+[[nodiscard]] PyObject* ptr(T&& obj) {
+    return std::forward<T>(obj).m_ptr;
+}
 
 
 /* Access an internal member of the underlying PyObject* pointer by casting it to its
@@ -63,6 +65,9 @@ accessing an internal field of a moved-from object, or through improper use of
 `release()` or the `reinterpret()` family of functions). */
 template <impl::has_python Self>
 [[nodiscard]] auto reinterpret(Self&& self) {
+    if constexpr (DEBUG) {
+        assert_(ptr(self) != nullptr, "Cannot reinterpret a null object.");
+    }
     using Ptr = std::remove_cvref_t<Self>::__python__;
     return reinterpret_cast<Ptr*>(
         ptr(std::forward<Self>(self))
@@ -73,7 +78,11 @@ template <impl::has_python Self>
 /* Cause a Python object to relinquish ownership over its backing pointer, and then
 return the raw pointer. */
 template <impl::inherits<Object> T> requires (!std::is_const_v<std::remove_reference_t<T>>)
-[[nodiscard]] PyObject* release(T&& obj);
+[[nodiscard]] PyObject* release(T&& obj) {
+    PyObject* temp = obj.m_ptr;
+    obj.m_ptr = nullptr;
+    return temp;
+}
 
 
 /* Steal a reference to a raw Python object. */
@@ -108,13 +117,11 @@ template <impl::has_python T> requires (!std::same_as<impl::python_type<T>, Obje
 [[nodiscard]] decltype(auto) to_python(T&& value) {
     if constexpr (impl::python<T>) {
         return std::forward<T>(value);
-
     } else if constexpr (
         std::is_lvalue_reference_v<T> &&
         impl::is<T, impl::cpp_type<impl::python_type<T>>>
     ) {
         return impl::wrap(std::forward<T>(value));
-
     } else {
         return impl::python_type<T>(std::forward<T>(value));
     }
@@ -149,7 +156,6 @@ template <typename T>
 [[nodiscard]] decltype(auto) from_python(T&& obj) {
     if constexpr (impl::python<T> && impl::has_cpp<T>) {
         return impl::unwrap(std::forward<T>(obj));
-
     } else {
         return std::forward<T>(obj);
     }
@@ -203,6 +209,9 @@ protected:
     friend auto& impl::unwrap(T& obj);
     template <impl::python T> requires (impl::has_cpp<T>)
     friend const auto& impl::unwrap(const T& obj);
+
+    /// TODO: lift the static assertion here into a template constraint applied to/by
+    /// the ctor classes
 
     template <typename T>
     struct implicit_ctor {
@@ -279,6 +288,9 @@ protected:
             std::same_as<Return, T>,
             "constructor must return a new instance of T."
         );
+        if constexpr (DEBUG) {
+            assert_(m_ptr != nullptr, "Implicit constructor cannot return a null object.");
+        }
     }
 
     template <std::derived_from<Object> T, typename... Args>
@@ -291,6 +303,9 @@ protected:
             std::same_as<Return, T>,
             "constructor must return a new instance of T."
         );
+        if constexpr (DEBUG) {
+            assert_(m_ptr != nullptr, "Explicit constructor cannot return a null object.");
+        }
     }
 
     /* A CRTP base class that generates bindings for a new Python type that wraps an
@@ -432,7 +447,7 @@ protected:
         static Type<Derived> __import__();  // {
         //     throw NotImplementedError(
         //         "the __import__() method must be defined for all Python types: "
-        //         + impl::demangle(typeid(CRTP).name())
+        //         + bertrand::type_name<CRTP>
         //     );
         // }
 
@@ -600,6 +615,9 @@ public:
 
     /* Copy assignment operator. */
     Object& operator=(const Object& other) noexcept {
+        if constexpr (DEBUG) {
+            assert_(ptr(other) != nullptr, "Cannot copy-assign from a null object.");
+        }
         if (this != &other) {
             PyObject* temp = m_ptr;
             m_ptr = Py_XNewRef(ptr(other));
@@ -610,6 +628,9 @@ public:
 
     /* Move assignment operator. */
     Object& operator=(Object&& other) noexcept {
+        if constexpr (DEBUG) {
+            assert_(ptr(other) != nullptr, "Cannot move-assign from a null object.");
+        }
         if (this != &other) {
             PyObject* temp = m_ptr;
             m_ptr = ptr(other);
@@ -733,20 +754,6 @@ public:
     decltype(auto) operator()(this Self&& self, Args&&... args);
 
 };
-
-
-template <impl::inherits<Object> T>
-[[nodiscard]] PyObject* ptr(T&& obj) {
-    return std::forward<T>(obj).m_ptr;
-}
-
-
-template <impl::inherits<Object> T> requires (!std::is_const_v<std::remove_reference_t<T>>)
-[[nodiscard]] PyObject* release(T&& obj) {
-    PyObject* temp = obj.m_ptr;
-    obj.m_ptr = nullptr;
-    return temp;
-}
 
 
 template <std::derived_from<Object> T>

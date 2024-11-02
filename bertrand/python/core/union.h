@@ -657,7 +657,7 @@ struct Interface<Union<Types...>> : impl::UnionTag {
     [[nodiscard]] auto get(this auto&& self) -> T {
         if (self.m_index != impl::index_of<T, Types...>) {
             throw TypeError(
-                "bad union access: '" + impl::demangle(typeid(T).name()) +
+                "bad union access: '" + bertrand::type_name<T> +
                 "' is not the active type"
             );
         }
@@ -673,7 +673,7 @@ struct Interface<Union<Types...>> : impl::UnionTag {
         using ref = impl::qualify_lvalue<at<I>, decltype(self)>;
         if (self.m_index != I) {
             throw TypeError(
-                "bad union access: '" + impl::demangle(typeid(at<I>).name()) +
+                "bad union access: '" + bertrand::type_name<at<I>> +
                 "' is not the active type"
             );
         }
@@ -1127,8 +1127,8 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
                 return static_cast<To>(std::forward<decltype(value)>(value));
             } else {
                 throw TypeError(
-                    "cannot convert from '" + impl::demangle(typeid(value).name()) +
-                    "' to '" + impl::demangle(typeid(To).name()) + "'"
+                    "cannot convert from '" + bertrand::type_name<decltype(value)> +
+                    "' to '" + bertrand::type_name<To> + "'"
                 );
             }
         });
@@ -1523,10 +1523,9 @@ struct __issubclass__<Derived, Base> : Returns<bool> {
                             return issubclass<Base>(std::forward<T>(value));
                         } else {
                             throw TypeError(
-                                "unary issubclass<" +
-                                impl::demangle(typeid(Base).name()) +
+                                "unary issubclass<" + bertrand::type_name<Base> +
                                 ">() is not enabled for argument of type '" +
-                                impl::demangle(typeid(T).name()) + "'"
+                                bertrand::type_name<T> + "'"
                             );
                         }
                     }
@@ -1570,8 +1569,8 @@ struct __getattr__<Self, Name> : Returns<typename impl::UnionGetAttr<Self, Name>
                 return getattr<Name>(std::forward<T>(value));
             } else {
                 throw AttributeError(
-                    "'" + impl::demangle(typeid(T).name()) + "' object has no "
-                    "attribute '" + Name + "'"
+                    "'" + bertrand::type_name<T> + "' object has no attribute '" +
+                    Name + "'"
                 );
             }
         });
@@ -1592,7 +1591,7 @@ struct __setattr__<Self, Name, Value> : Returns<void> {
             } else {
                 throw AttributeError(
                     "cannot set attribute '" + Name + "' on object of type '" +
-                    impl::demangle(typeid(T).name()) + "'"
+                    bertrand::type_name<T> + "'"
                 );
             }
         }, std::forward<Value>(value));
@@ -1610,7 +1609,7 @@ struct __delattr__<Self, Name> : Returns<void> {
             } else {
                 throw AttributeError(
                     "cannot delete attribute '" + Name + "' on object of type '" +
-                    impl::demangle(typeid(T).name()) + "'"
+                    bertrand::type_name<T> + "'"
                 );
             }
         }, std::forward<Self>(self));
@@ -1640,7 +1639,7 @@ struct __call__<Self, Args...> : Returns<typename impl::UnionCall<Self, Args...>
                 } else {
                     throw TypeError(
                         "cannot call object of type '" +
-                        impl::demangle(typeid(S).name()) + "' with the given "
+                        bertrand::type_name<S> + "' with the given "
                         "arguments"
                     );
                 }
@@ -1664,7 +1663,7 @@ struct __getitem__<Self, Key...> : Returns<typename impl::UnionGetItem<Self, Key
                 } else {
                     throw KeyError(
                         "cannot get item with the given key(s) from object of type '" +
-                        impl::demangle(typeid(S).name()) + "'"
+                        bertrand::type_name<S> + "'"
                     );
                 }
             },
@@ -1690,7 +1689,7 @@ struct __setitem__<Self, Value, Key...> : Returns<void> {
                 } else {
                     throw KeyError(
                         "cannot set item with the given key(s) on object of type '" +
-                        impl::demangle(typeid(S).name()) + "'"
+                        bertrand::type_name<S> + "'"
                     );
                 }
             },
@@ -1713,7 +1712,7 @@ struct __delitem__<Self, Key...> : Returns<void> {
                 } else {
                     throw KeyError(
                         "cannot delete item with the given key(s) from object of type '" +
-                        impl::demangle(typeid(S).name()) + "'"
+                        bertrand::type_name<S> + "'"
                     );
                 }
             },
@@ -1737,7 +1736,7 @@ struct __hash__<Self> : Returns<size_t> {
                     return hash(std::forward<S>(self));
                 } else {
                     throw TypeError(
-                        "unhashable type: '" + impl::demangle(typeid(S).name()) + "'"
+                        "unhashable type: '" + bertrand::type_name<S> + "'"
                     );
                 }
             },
@@ -1760,8 +1759,7 @@ struct __len__<Self> : Returns<size_t> {
                     return len(std::forward<S>(self));
                 } else {
                     throw TypeError(
-                        "object of type '" + impl::demangle(typeid(S).name()) +
-                        "' has no len()"
+                        "object of type '" + bertrand::type_name<S> + "' has no len()"
                     );
                 }
             },
@@ -1784,7 +1782,7 @@ struct __contains__<Self, Key> : Returns<bool> {
                     return in(std::forward<K>(key), std::forward<S>(self));
                 } else {
                     throw TypeError(
-                        "argument of type '" + impl::demangle(typeid(K).name()) +
+                        "argument of type '" + bertrand::type_name<K> +
                         "' does not support .contains() checks"
                     );
                 }
@@ -1822,7 +1820,7 @@ struct __abs__<Self> : Returns<typename impl::UnionAbs<Self>::type> {
                 } else {
                     throw TypeError(
                         "bad operand type for abs(): '" +
-                        impl::demangle(typeid(S).name()) + "'"
+                        bertrand::type_name<S> + "'"
                     );
                 }
             },
@@ -1843,7 +1841,7 @@ struct __invert__<Self> : Returns<typename impl::UnionInvert<Self>::type> {
                 } else {
                     throw TypeError(
                         "bad operand type for unary ~: '" +
-                        impl::demangle(typeid(S).name()) + "'"
+                        bertrand::type_name<S> + "'"
                     );
                 }
             },
@@ -1864,7 +1862,7 @@ struct __pos__<Self> : Returns<typename impl::UnionPos<Self>::type> {
                 } else {
                     throw TypeError(
                         "bad operand type for unary +: '" +
-                        impl::demangle(typeid(S).name()) + "'"
+                        bertrand::type_name<S> + "'"
                     );
                 }
             },
@@ -1885,7 +1883,7 @@ struct __neg__<Self> : Returns<typename impl::UnionNeg<Self>::type> {
                 } else {
                     throw TypeError(
                         "bad operand type for unary -: '" +
-                        impl::demangle(typeid(S).name()) + "'"
+                        bertrand::type_name<S> + "'"
                     );
                 }
             },
@@ -1905,7 +1903,7 @@ struct __increment__<Self> : Returns<typename impl::UnionIncrement<Self>::type> 
                     return ++std::forward<S>(self);
                 } else {
                     throw TypeError(
-                        "'" + impl::demangle(typeid(S).name()) + "' object cannot be "
+                        "'" + bertrand::type_name<S> + "' object cannot be "
                         "incremented"
                     );
                 }
@@ -1926,7 +1924,7 @@ struct __decrement__<Self> : Returns<typename impl::UnionDecrement<Self>::type> 
                     return --std::forward<S>(self);
                 } else {
                     throw TypeError(
-                        "'" + impl::demangle(typeid(S).name()) + "' object cannot be "
+                        "'" + bertrand::type_name<S> + "' object cannot be "
                         "decremented"
                     );
                 }
@@ -1948,8 +1946,8 @@ struct __lt__<L, R> : Returns<typename impl::UnionLess<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for <: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -1971,8 +1969,8 @@ struct __le__<L, R> : Returns<typename impl::UnionLessEqual<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for <=: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -1994,8 +1992,8 @@ struct __eq__<L, R> : Returns<typename impl::UnionEqual<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for ==: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2017,8 +2015,8 @@ struct __ne__<L, R> : Returns<typename impl::UnionNotEqual<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for !=: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2040,8 +2038,8 @@ struct __ge__<L, R> : Returns<typename impl::UnionGreaterEqual<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for >=: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2063,8 +2061,8 @@ struct __gt__<L, R> : Returns<typename impl::UnionGreater<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for >: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2086,8 +2084,8 @@ struct __add__<L, R> : Returns<typename impl::UnionAdd<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for +: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2109,8 +2107,8 @@ struct __sub__<L, R> : Returns<typename impl::UnionSub<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for -: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2132,8 +2130,8 @@ struct __mul__<L, R> : Returns<typename impl::UnionMul<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for *: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2156,8 +2154,8 @@ struct __pow__<Base, Exp, Mod> : Returns<typename impl::UnionPow<Base, Exp, Mod>
                 } else {
                     throw TypeError(
                         "unsupported operand types for pow(): '" +
-                        impl::demangle(typeid(B).name()) + "' and '" +
-                        impl::demangle(typeid(E).name()) + "'"
+                        bertrand::type_name<B> + "' and '" +
+                        bertrand::type_name<E> + "'"
                     );
                 }
             },
@@ -2181,9 +2179,9 @@ struct __pow__<Base, Exp, Mod> : Returns<typename impl::UnionPow<Base, Exp, Mod>
                 } else {
                     throw TypeError(
                         "unsupported operand types for pow(): '" +
-                        impl::demangle(typeid(B).name()) + "' and '" +
-                        impl::demangle(typeid(E).name()) + "' and '" +
-                        impl::demangle(typeid(M).name()) + "'"
+                        bertrand::type_name<B> + "' and '" +
+                        bertrand::type_name<E> + "' and '" +
+                        bertrand::type_name<M> + "'"
                     );
                 }
             },
@@ -2206,8 +2204,8 @@ struct __truediv__<L, R> : Returns<typename impl::UnionTrueDiv<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for /: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2229,8 +2227,8 @@ struct __floordiv__<L, R> : Returns<typename impl::UnionFloorDiv<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for floordiv(): '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2252,8 +2250,8 @@ struct __mod__<L, R> : Returns<typename impl::UnionMod<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for %: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2275,8 +2273,8 @@ struct __lshift__<L, R> : Returns<typename impl::UnionLShift<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for <<: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2298,8 +2296,8 @@ struct __rshift__<L, R> : Returns<typename impl::UnionRShift<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for >>: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2321,8 +2319,8 @@ struct __and__<L, R> : Returns<typename impl::UnionAnd<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for &: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2344,8 +2342,8 @@ struct __xor__<L, R> : Returns<typename impl::UnionXor<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for ^: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2367,8 +2365,8 @@ struct __or__<L, R> : Returns<typename impl::UnionOr<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for |: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2390,8 +2388,8 @@ struct __iadd__<L, R> : Returns<typename impl::UnionInplaceAdd<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for +=: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2413,8 +2411,8 @@ struct __isub__<L, R> : Returns<typename impl::UnionInplaceSub<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for -=: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2436,8 +2434,8 @@ struct __imul__<L, R> : Returns<typename impl::UnionInplaceMul<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for *=: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2460,8 +2458,8 @@ struct __ipow__<Base, Exp, Mod> : Returns<typename impl::UnionInplacePow<Base, E
                 } else {
                     throw TypeError(
                         "unsupported operand types for ipow(): '" +
-                        impl::demangle(typeid(B).name()) + "' and '" +
-                        impl::demangle(typeid(E).name()) + "'"
+                        bertrand::type_name<B> + "' and '" +
+                        bertrand::type_name<E> + "'"
                     );
                 }
             },
@@ -2485,9 +2483,9 @@ struct __ipow__<Base, Exp, Mod> : Returns<typename impl::UnionInplacePow<Base, E
                 } else {
                     throw TypeError(
                         "unsupported operand types for ipow(): '" +
-                        impl::demangle(typeid(B).name()) + "' and '" +
-                        impl::demangle(typeid(E).name()) + "' and '" +
-                        impl::demangle(typeid(M).name()) + "'"
+                        bertrand::type_name<B> + "' and '" +
+                        bertrand::type_name<E> + "' and '" +
+                        bertrand::type_name<M> + "'"
                     );
                 }
             },
@@ -2510,8 +2508,8 @@ struct __itruediv__<L, R> : Returns<typename impl::UnionInplaceTrueDiv<L, R>::ty
                 } else {
                     throw TypeError(
                         "unsupported operand types for /=: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2533,8 +2531,8 @@ struct __ifloordiv__<L, R> : Returns<typename impl::UnionInplaceFloorDiv<L, R>::
                 } else {
                     throw TypeError(
                         "unsupported operand types for ifloordiv(): '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2556,8 +2554,8 @@ struct __imod__<L, R> : Returns<typename impl::UnionInplaceMod<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for %=: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2579,8 +2577,8 @@ struct __ilshift__<L, R> : Returns<typename impl::UnionInplaceLShift<L, R>::type
                 } else {
                     throw TypeError(
                         "unsupported operand types for <<=: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2602,8 +2600,8 @@ struct __irshift__<L, R> : Returns<typename impl::UnionInplaceRShift<L, R>::type
                 } else {
                     throw TypeError(
                         "unsupported operand types for >>=: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2625,8 +2623,8 @@ struct __iand__<L, R> : Returns<typename impl::UnionInplaceAnd<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for &=: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2648,8 +2646,8 @@ struct __ixor__<L, R> : Returns<typename impl::UnionInplaceXor<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for ^=: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },
@@ -2671,8 +2669,8 @@ struct __ior__<L, R> : Returns<typename impl::UnionInplaceOr<L, R>::type> {
                 } else {
                     throw TypeError(
                         "unsupported operand types for |=: '" +
-                        impl::demangle(typeid(L2).name()) + "' and '" +
-                        impl::demangle(typeid(R2).name()) + "'"
+                        bertrand::type_name<L2> + "' and '" +
+                        bertrand::type_name<R2> + "'"
                     );
                 }
             },

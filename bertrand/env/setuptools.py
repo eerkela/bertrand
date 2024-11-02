@@ -1452,6 +1452,8 @@ class BuildSources(setuptools_build_ext):
             file.
         """
         if not self._bertrand_traceback:
+            # TODO: BERTRAND_NO_TRACEBACK is no longer supported - just use NDEBUG
+            # to indicate a release build instead, which also disables assertions
             return self._bertrand_define_macros + [("BERTRAND_NO_TRACEBACK", None)]
         return self._bertrand_define_macros
 

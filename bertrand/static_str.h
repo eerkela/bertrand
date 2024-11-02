@@ -14,8 +14,23 @@
 #include <tuple>
 #include <utility>
 
+// required for demangling
+#if defined(__GNUC__) || defined(__clang__)
+    #include <cxxabi.h>
+    #include <cstdlib>
+#elif defined(_MSC_VER)
+    #include <windows.h>
+    #include <dbghelp.h>
+    #pragma comment(lib, "dbghelp.lib")
+#endif
+
 
 namespace bertrand {
+
+
+/// TODO: I should attempt to revisit this entire class since I have a way better
+/// grasp on template metaprogramming now.  I think I might be able to make them
+/// work exactly like Python strings, even at compile time.
 
 
 template <size_t N>
@@ -248,8 +263,8 @@ public:
 
     consteval StaticStr() = default;
 
-    consteval StaticStr(const char(&arr)[N + 1]) {
-        std::copy_n(arr, N + 1, buffer);
+    consteval StaticStr(const char* arr) {
+        std::copy_n(arr, N, buffer);
     }
 
     ///////////////////////////
@@ -276,6 +291,10 @@ public:
 
     constexpr const char* data() const {
         return buffer;
+    }
+
+    consteval auto foo() const {
+        return StaticStr{"abc"};
     }
 
     consteval size_t hash() const {
@@ -452,7 +471,7 @@ public:
     // that use templates to get around this.  Perhaps in a future standard, these can
     // be unified, but for now, it's the best we can do.
 
-    const char operator[](ssize_t i) const {
+    constexpr const char operator[](ssize_t i) const {
         return buffer[normalize_index(i)];
     }
 
@@ -532,6 +551,34 @@ public:
 avoid issues with template deduction and `'this' is not a constant expression`
 errors.  Any other approach runs up against some hard limitations in current C++. */
 namespace static_str {
+
+    template <typename T>
+    constexpr auto type_name_array() {
+        #if defined(__clang__)
+            constexpr std::string_view prefix {"[T = "};
+            constexpr std::string_view suffix {"]"};
+            constexpr std::string_view function {__PRETTY_FUNCTION__};
+        #elif defined(__GNUC__)
+            constexpr std::string_view prefix {"with T = "};
+            constexpr std::string_view suffix {"]"};
+            constexpr std::string_view function {__PRETTY_FUNCTION__};
+        #elif defined(_MSC_VER)
+            constexpr std::string_view prefix {"type_name_array<"};
+            constexpr std::string_view suffix {">(void)"};
+            constexpr std::string_view function {__FUNCSIG__};
+        #else
+            # error Unsupported compiler
+        #endif
+
+        constexpr size_t start = function.find(prefix) + prefix.size();
+        constexpr size_t end = function.rfind(suffix);
+        static_assert(start < end);
+
+        constexpr std::string_view name = function.substr(start, (end - start));
+        return []<size_t... Is>(std::index_sequence<Is...>, std::string_view str) {
+            return std::array{str[Is]...};
+        }(std::make_index_sequence<name.size()>{}, name);
+    }
 
     /* A compile-time expression to signify that a particular substring is not present
     during `find<>`, `index<>`, etc. */
@@ -1626,6 +1673,61 @@ namespace static_str {
     }();
 
 }  // namespace static_str
+
+
+/* Gets a C++ type name as a fully-qualified, demangled string computed entirely
+at compile time.  The underlying buffer is baked directly into the final binary. */
+template <typename T>
+constexpr auto type_name = [] {
+    constexpr auto value = static_str::type_name_array<T>();
+    constexpr size_t N = value.size();
+    return StaticStr<N>{value.data()};
+}();
+
+
+inline void test() {
+    constexpr auto s = type_name<StaticStr<5>>;
+    static_assert(s == "bertrand::StaticStr<5>");
+}
+
+
+/// TODO: I can maybe implement a `.demangle()` method directly on `StaticStr`, which
+/// does this at compile time as well.  Also, there has to be a way to attach these
+/// string parsing methods as standard methods on `StaticStr`.
+
+
+/* Demangle a runtime string using the compiler's intrinsics. */
+constexpr std::string demangle(const char* name) {
+    #if defined(__GNUC__) || defined(__clang__)
+        int status = 0;
+        std::unique_ptr<char, void(*)(void*)> res {
+            abi::__cxa_demangle(
+                name,
+                nullptr,
+                nullptr,
+                &status
+            ),
+            std::free
+        };
+        return (status == 0) ? res.get() : name;
+    #elif defined(_MSC_VER)
+        char undecorated_name[1024];
+        if (UnDecorateSymbolName(
+            name,
+            undecorated_name,
+            sizeof(undecorated_name),
+            UNDNAME_COMPLETE
+        )) {
+            return std::string(undecorated_name);
+        } else {
+            return name;
+        }
+    #else
+        return name; // fallback: no demangling
+    #endif
+}
+
+
 }  // namespace bertrand
 
 

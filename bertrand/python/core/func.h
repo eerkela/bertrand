@@ -1358,7 +1358,7 @@ namespace impl {
                     } else {
                         throw TypeError(
                             "C++ type has no Python equivalent: " +
-                            demangle(typeid(U).name())
+                            bertrand::type_name<U>
                         );
                     }
                 },
@@ -1369,7 +1369,7 @@ namespace impl {
                     } else {
                         throw TypeError(
                             "C++ type has no Python equivalent: " +
-                            demangle(typeid(U).name())
+                            bertrand::type_name<U>
                         );
                     }
                 },
@@ -1380,7 +1380,7 @@ namespace impl {
                     } else {
                         throw TypeError(
                             "C++ type has no Python equivalent: " +
-                            demangle(typeid(U).name())
+                            bertrand::type_name<U>
                         );
                     }
                 }
@@ -1411,7 +1411,7 @@ namespace impl {
                         } else {
                             throw TypeError(
                                 "C++ type has no Python equivalent: " +
-                                demangle(typeid(U).name())
+                                bertrand::type_name<U>
                             );
                         }
                     },
@@ -1422,7 +1422,7 @@ namespace impl {
                         } else {
                             throw TypeError(
                                 "C++ type has no Python equivalent: " +
-                                demangle(typeid(U).name())
+                                bertrand::type_name<U>
                             );
                         }
                     },
@@ -1433,7 +1433,7 @@ namespace impl {
                         } else {
                             throw TypeError(
                                 "C++ type has no Python equivalent: " +
-                                demangle(typeid(U).name())
+                                bertrand::type_name<U>
                             );
                         }
                     }
@@ -8723,9 +8723,7 @@ parameter is a type object, and thus the method is a class method.)doc";
         /* Default `repr()` demangles the function name + signature. */
         static PyObject* __repr__(PyFunction* self) noexcept {
             try {
-                constexpr std::string demangled =
-                    impl::demangle(typeid(Function<F>).name());
-                std::string str = "<" + demangled + " at " +
+                std::string str = "<" + bertrand::type_name<Function<F>> + " at " +
                     std::to_string(reinterpret_cast<size_t>(self)) + ">";
                 return PyUnicode_FromStringAndSize(str.c_str(), str.size());
             } catch (...) {
@@ -9806,7 +9804,7 @@ parameter is a type object, and thus the method is a class method.)doc";
             try {
                 std::string str =
                     "<bound method " +
-                    impl::demangle(Py_TYPE(self->__self__)->tp_name) + ".";
+                    bertrand::demangle(Py_TYPE(self->__self__)->tp_name) + ".";
                 Py_ssize_t len;
                 const char* name = PyUnicode_AsUTF8AndSize(
                     self->__wrapped__->name,

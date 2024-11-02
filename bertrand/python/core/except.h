@@ -584,7 +584,7 @@ struct __init__<Exc, Msg>                                   : Returns<Exc> {
 
         // by default, the exception will have an empty traceback, so we need to
         // populate it with C++ frames if directed.
-        #ifndef BERTRAND_NO_TRACEBACK
+        if constexpr (DEBUG) {
             try {
                 PyTracebackObject* trace = impl::build_traceback(
                     cpptrace::generate_trace(1)
@@ -597,7 +597,7 @@ struct __init__<Exc, Msg>                                   : Returns<Exc> {
                 Py_DECREF(result);
                 throw;
             }
-        #endif
+        }
 
         return reinterpret_steal<Exc>(result);
     }
@@ -889,7 +889,7 @@ struct __init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> :
             Exception::from_python();
         }
 
-        #ifndef BERTRAND_NO_TRACEBACK
+        if constexpr (DEBUG) {
             try {
                 PyTracebackObject* trace = impl::build_traceback(
                     cpptrace::generate_trace(1)
@@ -902,7 +902,7 @@ struct __init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> :
                 Py_DECREF(result);
                 throw;
             }
-        #endif
+        }
 
         return reinterpret_steal<UnicodeDecodeError>(result);
     }
@@ -1144,7 +1144,7 @@ struct __init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> :
             Exception::from_python();
         }
 
-        #ifndef BERTRAND_NO_TRACEBACK
+        if constexpr (DEBUG) {
             try {
                 PyTracebackObject* trace = impl::build_traceback(
                     cpptrace::generate_trace(1)
@@ -1157,7 +1157,7 @@ struct __init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> :
                 Py_DECREF(result);
                 throw;
             }
-        #endif
+        }
 
         return reinterpret_steal<UnicodeEncodeError>(result);
     }
@@ -1390,7 +1390,7 @@ struct __init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reason> :
             Exception::from_python();
         }
 
-        #ifndef BERTRAND_NO_TRACEBACK
+        if constexpr (DEBUG) {
             try {
                 PyTracebackObject* trace = impl::build_traceback(
                     cpptrace::generate_trace(1)
@@ -1403,7 +1403,7 @@ struct __init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reason> :
                 Py_DECREF(result);
                 throw;
             }
-        #endif
+        }
 
         return reinterpret_steal<UnicodeTranslateError>(result);
     }
@@ -1467,6 +1467,21 @@ struct __init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reason> :
     std::string result(data, len);
     Py_DECREF(reason);
     return result;
+}
+
+
+/////////////////////////
+////    OPERATORS    ////
+/////////////////////////
+
+
+template <size_t N>
+[[gnu::always_inline]] inline void assert_(bool condition, const char(&message)[N]) {
+    if constexpr (DEBUG) {
+        if (!condition) {
+            throw AssertionError(std::move(message));
+        }
+    }
 }
 
 

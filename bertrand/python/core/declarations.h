@@ -32,16 +32,6 @@
 #include <utility>
 #include <vector>
 
-// required for demangling
-#if defined(__GNUC__) || defined(__clang__)
-    #include <cxxabi.h>
-    #include <cstdlib>
-#elif defined(_MSC_VER)
-    #include <windows.h>
-    #include <dbghelp.h>
-    #pragma comment(lib, "dbghelp.lib")
-#endif
-
 #define Py_BUILD_CORE
 
 #include <Python.h>
@@ -58,6 +48,13 @@
 
 namespace py {
 using bertrand::StaticStr;
+
+
+#ifdef NDEBUG
+    constexpr bool DEBUG = false;
+#else
+    constexpr bool DEBUG = true;
+#endif
 
 
 template <typename... Ts>
@@ -80,37 +77,6 @@ namespace impl {
     struct ItemTag : BertrandTag {};
     struct DictTag : BertrandTag {};
     struct MappingProxyTag : BertrandTag {};
-
-    /* Demangle a C++ type name using the compiler's intrinsics. */
-    static constexpr std::string demangle(const char* name) {
-        #if defined(__GNUC__) || defined(__clang__)
-            int status = 0;
-            std::unique_ptr<char, void(*)(void*)> res {
-                abi::__cxa_demangle(
-                    name,
-                    nullptr,
-                    nullptr,
-                    &status
-                ),
-                std::free
-            };
-            return (status == 0) ? res.get() : name;
-        #elif defined(_MSC_VER)
-            char undecorated_name[1024];
-            if (UnDecorateSymbolName(
-                name,
-                undecorated_name,
-                sizeof(undecorated_name),
-                UNDNAME_COMPLETE
-            )) {
-                return std::string(undecorated_name);
-            } else {
-                return name;
-            }
-        #else
-            return name; // fallback: no demangling
-        #endif
-    }
 
     template <size_t I, typename... Ts> requires (I < sizeof...(Ts))
     static constexpr void unpack_arg(Ts&&...) noexcept {}
@@ -372,6 +338,14 @@ namespace impl {
 }
 
 
+/* A python-style `assert` statement in C++, which is optimized away if built with
+`-DNDEBUG` (i.e. release mode).  The only difference between this and the built-in
+`assert()` macro is that this raises a `py::AssertionError` with a coherent
+traceback for cross-language support. */
+template <size_t N>
+[[gnu::always_inline]] void assert_(bool, const char(&)[N]);
+
+
 /* Save a set of input arguments for later use.  Returns a pack<> container, which
 stores the arguments similar to a `std::tuple`, except that it is capable of storing
 references and cannot be copied or moved.  Calling the pack as an rvalue will perfectly
@@ -571,6 +545,11 @@ public:
 
 template <typename... Ts>
 explicit pack(Ts&&...) -> pack<Ts...>;
+
+
+///////////////////////////////
+////    CONTROL STRUCTS    ////
+///////////////////////////////
 
 
 /// TODO: really, what I should do is remove as many of the following forward

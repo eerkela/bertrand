@@ -1575,7 +1575,7 @@ void impl::ModuleTag::def<CRTP, ModName>::Bindings::register_exception(
 
     // append C++ frames to the head (least recent end) of the existing traceback
     // if directed.
-    #ifndef BERTRAND_NO_TRACEBACK
+    if constexpr (DEBUG) {
         try {
             PyTracebackObject* front = impl::build_traceback(
                 cpptrace::generate_trace(1),
@@ -1588,7 +1588,7 @@ void impl::ModuleTag::def<CRTP, ModName>::Bindings::register_exception(
         } catch (...) {
             // if cpptrace somehow fails, ignore it and continue
         }
-    #endif
+    }
 
     // search the global exception map for the exception type, and invoke its callback,
     // which will throw the appropriate C++ exception type
@@ -1615,7 +1615,7 @@ void impl::ModuleTag::def<CRTP, ModName>::Bindings::register_exception(
         );
     }
     thread->current_exception = nullptr;
-    #ifndef BERTRAND_NO_TRACEBACK
+    if constexpr (DEBUG) {
         try {
             PyTracebackObject* front = impl::build_traceback(
                 cpptrace::generate_trace(1),
@@ -1626,7 +1626,7 @@ void impl::ModuleTag::def<CRTP, ModName>::Bindings::register_exception(
                 Py_DECREF(front);
             }
         } catch (...) {}
-    #endif
+    }
     using Mod = Module<"bertrand.python">::__python__;
     Module<"bertrand.python"> python;
     Mod* mod = reinterpret_cast<Mod*>(ptr(python));
