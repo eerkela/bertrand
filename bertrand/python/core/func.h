@@ -1275,7 +1275,7 @@ namespace impl {
                     prime = fnv1a_fallback_primes[i];
                 }
             }
-            return std::pair<size_t, size_t>{seed, prime};
+            return std::make_pair(seed, prime);
         }();
         static_assert(
             hash_components.has_value(),
@@ -1833,13 +1833,6 @@ namespace impl {
                 typename ArgTraits<T>::type
             > && consume_target_args<J + 1, T>;
 
-            /// TODO: this error is because the limit is longer than the Bound::
-            /// arguments.  The solution to this is to either swap the order of the
-            /// arguments in the call to Bind<>, or to somehow pass the right type in
-            /// manually.  Swapping the arguments is preferable, and would eliminate
-            /// the need to pass the limit in manually.  It would always be set to
-            /// Bound::n
-
             /* Upon encountering a variadic keyword pack in the target signature,
             recursively traverse the source keyword arguments and extract any that
             aren't present in the target signature, ensuring they are convertible to
@@ -2016,7 +2009,8 @@ namespace impl {
                             transition
                         >();  // skip ahead to source keywords
                     } else if constexpr (ArgTraits<T>::kwargs()) {
-                        return consume_target_kwargs<
+                        constexpr bool extra_positional = J < transition;
+                        return !extra_positional && consume_target_kwargs<
                             transition,
                             T,
                             Bound::n
@@ -2139,7 +2133,8 @@ namespace impl {
                             transition
                         >();  // skip ahead to source keywords
                     } else if constexpr (ArgTraits<T>::kwargs()) {
-                        return consume_target_kwargs<
+                        constexpr bool extra_positional = J < transition;
+                        return !extra_positional && consume_target_kwargs<
                             transition,
                             T,
                             Bound::n
@@ -2181,14 +2176,9 @@ namespace impl {
                         } else {
                             return false;
                         }
-                    } else if constexpr (ArgTraits<S>::args()) {
-                        return consume_source_args<I, S> && partial_recursive<
-                            Arguments::has_kwonly ?
-                                Arguments::kwonly_idx : Arguments::kwargs_idx,
-                            J + 1
-                        >();  // skip to target keywords
-                    } else if constexpr (ArgTraits<S>::kwargs()) {
-                        return consume_source_kwargs<I, S>;  // end of expression
+                    } else if constexpr (ArgTraits<S>::variadic()) {
+                        // variadic parameter packs cannot be bound to a partial
+                        return false;
                     } else {
                         static_assert(false);
                         return false;  // not reachable
@@ -2224,7 +2214,7 @@ namespace impl {
                 } else if constexpr (J < Unbound::n && K < Bound::n) {
                     using T = Target<I>;
                     using S = Unbound::template at<J>;
-                    using P = Bound::template at<K>;
+                    using P = unpack_type<K, A...>;
 
                     // ensure target arguments are present and do not conflict with
                     // source/partial arguments, and expand parameter packs over source
@@ -2283,7 +2273,20 @@ namespace impl {
                             >();  // skip ahead to source and partial keywords
                     } else if constexpr (ArgTraits<T>::kwargs()) {
                         // end of expression
-                        return consume_target_kwargs<transition, T, Unbound::n>;
+                        constexpr bool extra_positional = J < transition;
+                        constexpr bool duplicate_keywords = []<size_t... Js>(
+                            std::index_sequence<Js...>
+                        ) {
+                            return (Bound::template has<
+                                ArgTraits<Source<Js + transition>
+                            >::name> || ...);
+                        }(std::make_index_sequence<Unbound::n - transition>{});
+                        return !extra_positional && !duplicate_keywords &&
+                            consume_target_kwargs<
+                                transition,
+                                T,
+                                Unbound::n
+                            >;
                     } else {
                         static_assert(false);
                         return false;  // not reachable
@@ -2403,15 +2406,21 @@ namespace impl {
                                 A...
                             >();  // skip ahead to source and partial keywords
                     } else if constexpr (ArgTraits<T>::kwargs()) {
-                        constexpr bool extra_positional = (
-                            ArgTraits<S>::posonly() || ArgTraits<S>::args()
-                        );
                         // end of expression
-                        return !extra_positional && consume_target_kwargs<
-                            transition,
-                            T,
-                            Unbound::n
-                        >;
+                        constexpr bool extra_positional = J < transition;
+                        constexpr bool duplicate_keywords = []<size_t... Js>(
+                            std::index_sequence<Js...>
+                        ) {
+                            return (Bound::template has<
+                                ArgTraits<Source<Js + transition>>::name
+                            > || ...);
+                        }(std::make_index_sequence<Unbound::n - transition>{});
+                        return !extra_positional && !duplicate_keywords &&
+                            consume_target_kwargs<
+                                transition,
+                                T,
+                                Unbound::n
+                            >;
                     } else {
                         static_assert(false);
                         return false;  // not reachable
@@ -2475,7 +2484,7 @@ namespace impl {
                 // source arguments have been exhausted, but partial arguments remain
                 } else if constexpr (K < Bound::n) {
                     using T = Target<I>;
-                    using P = Bound::template at<K>;
+                    using P = unpack_type<K, A...>;
                     constexpr bool missing = (
                         !(ArgTraits<T>::opt() || ArgTraits<T>::variadic()) &&
                         P::target_idx != I

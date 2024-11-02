@@ -418,7 +418,7 @@ namespace impl {
 
     /* A singleton argument factory that allows arguments to be constructed via
     familiar assignment syntax, which extends the lifetime of temporaries. */
-    template <StaticStr Name>
+    template <StaticStr Name> requires (!Name.empty())
     struct ArgFactory {
         template <typename T>
         constexpr Arg<Name, T> operator=(T&& value) const {
