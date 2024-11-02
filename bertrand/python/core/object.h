@@ -55,6 +55,21 @@ template <impl::inherits<Object> T>
 [[nodiscard]] PyObject* ptr(T&& obj);
 
 
+/* Access an internal member of the underlying PyObject* pointer by casting it to its
+internal `__python__` representation.  The Bertrand object model and type safety
+guarantees should ensure that this is safe for general use, but it is possible to
+invoke undefined behavior if the underlying pointer is improperly initialized (by
+accessing an internal field of a moved-from object, or through improper use of
+`release()` or the `reinterpret()` family of functions). */
+template <impl::has_python Self>
+[[nodiscard]] auto reinterpret(Self&& self) {
+    using Ptr = std::remove_cvref_t<Self>::__python__;
+    return reinterpret_cast<Ptr*>(
+        ptr(std::forward<Self>(self))
+    );
+}
+
+
 /* Cause a Python object to relinquish ownership over its backing pointer, and then
 return the raw pointer. */
 template <impl::inherits<Object> T> requires (!std::is_const_v<std::remove_reference_t<T>>)
@@ -602,15 +617,6 @@ public:
             Py_XDECREF(temp);
         }
         return *this;
-    }
-
-    /* Access an internal member of the underlying PyObject* pointer. */
-    template <impl::has_python Self>
-    [[nodiscard]] auto operator->(this Self&& self) {
-        using Ptr = std::remove_cvref_t<Self>::__python__;
-        return reinterpret_cast<Ptr*>(
-            ptr(std::forward<Self>(self))
-        );
     }
 
     /* Check for exact pointer identity. */

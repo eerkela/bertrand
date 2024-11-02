@@ -318,20 +318,20 @@ struct __call__<Self, Context>                              : Returns<Dict<Str, 
 
 /* Get the first line number of the function. */
 [[nodiscard]] inline Py_ssize_t Interface<Code>::_get_line_number(this auto&& self) noexcept {
-    return self->co_firstlineno;
+    return reinterpret(self)->co_firstlineno;
 }
 
 
 /* Get the number of positional arguments for the function. */
 [[nodiscard]] inline Py_ssize_t Interface<Code>::_get_argcount(this auto&& self) noexcept {
-    return self->co_argcount;
+    return reinterpret(self)->co_argcount;
 }
 
 
 /* Get the number of positional-only arguments for the function, including those with
 default values.  Does not include variable positional or keyword arguments. */
 [[nodiscard]] inline Py_ssize_t Interface<Code>::_get_posonlyargcount(this auto&& self) noexcept {
-    return self->co_posonlyargcount;
+    return reinterpret(self)->co_posonlyargcount;
 }
 
 
@@ -339,25 +339,25 @@ default values.  Does not include variable positional or keyword arguments. */
 default values.  Does not include positional-only or variable positional/keyword
 arguments. */
 [[nodiscard]] inline Py_ssize_t Interface<Code>::_get_kwonlyargcount(this auto&& self) noexcept {
-    return self->co_kwonlyargcount;
+    return reinterpret(self)->co_kwonlyargcount;
 }
 
 
 /* Get the number of local variables used by the function (including all parameters). */
 [[nodiscard]] inline Py_ssize_t Interface<Code>::_get_nlocals(this auto&& self) noexcept {
-    return self->co_nlocals;
+    return reinterpret(self)->co_nlocals;
 }
 
 
 /* Get the required stack space for the code object. */
 [[nodiscard]] inline Py_ssize_t Interface<Code>::_get_stacksize(this auto&& self) noexcept {
-    return self->co_stacksize;
+    return reinterpret(self)->co_stacksize;
 }
 
 
 /* Get an integer encoding flags for the Python interpreter. */
 [[nodiscard]] inline int Interface<Code>::_get_flags(this auto&& self) noexcept {
-    return self->co_flags;
+    return reinterpret(self)->co_flags;
 }
 
 

@@ -95,9 +95,9 @@ namespace impl {
         )
     [[nodiscard]] auto wrap(T& obj) -> python_type<T> {
         using Wrapper = __cast__<T>::type;
-        using Variant = decltype(ptr(std::declval<Wrapper>())->m_cpp);
+        using Variant = decltype(reinterpret(std::declval<Wrapper>())->m_cpp);
         Type<Wrapper> type;
-        PyTypeObject* type_ptr = ptr(type);
+        PyTypeObject* type_ptr = reinterpret(type);
         PyObject* self = type_ptr->tp_alloc(type_ptr, 0);
         if (self == nullptr) {
             Exception::from_python();
@@ -115,9 +115,9 @@ namespace impl {
         )
     [[nodiscard]] auto wrap(const T& obj) -> python_type<T> {
         using Wrapper = __cast__<T>::type;
-        using Variant = decltype(ptr(std::declval<Wrapper>())->m_cpp);
+        using Variant = decltype(reinterpret(std::declval<Wrapper>())->m_cpp);
         Type<Wrapper> type;
-        PyTypeObject* type_ptr = ptr(type);
+        PyTypeObject* type_ptr = reinterpret(type);
         PyObject* self = type_ptr->tp_alloc(type_ptr, 0);
         if (self == nullptr) {
             Exception::from_python();
@@ -142,7 +142,7 @@ namespace impl {
                         );
                     }
                 },
-                obj->m_cpp
+                reinterpret(obj)->m_cpp
             );
         } else {
             return obj;
@@ -159,7 +159,7 @@ namespace impl {
                     [](const CppType& cpp) -> const CppType& { return cpp; },
                     [](const CppType* cpp) -> const CppType& { return *cpp; }
                 },
-                obj->m_cpp
+                reinterpret(obj)->m_cpp
             );
         } else {
             return obj;

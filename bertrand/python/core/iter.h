@@ -55,14 +55,15 @@ public:
             return reinterpret_steal<Begin>(next);
 
         } else {
-            if (self->begin == self->end) {
+            auto inner = reinterpret(self);
+            if (inner->begin == inner->end) {
                 throw StopIteration();
             }
-            ++(self->begin);
-            if (self->begin == self->end) {
+            ++(inner->begin);
+            if (inner->begin == inner->end) {
                 throw StopIteration();
             }
-            return *(self->begin);
+            return *(inner->begin);
         }
     }
 };
@@ -592,7 +593,7 @@ template <impl::python Self>
 
     } else if constexpr (impl::inherits<Self, impl::IterTag>) {
         if constexpr (!std::is_void_v<typename std::remove_reference_t<Self>::end_type>) {
-            return self->begin;
+            return reinterpret(self)->begin;
         } else {
             using T = __iter__<Self>::type;
             PyObject* iter = PyObject_GetIter(ptr(self));
@@ -652,7 +653,7 @@ template <impl::python Self>
 
     } else if constexpr (impl::inherits<Self, impl::IterTag>) {
         if constexpr (!std::is_void_v<typename std::remove_reference_t<Self>::end_type>) {
-            return self->end;
+            return reinterpret(self)->end;
         } else {
             return py::impl::Sentinel{};
         }

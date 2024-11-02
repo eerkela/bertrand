@@ -8,6 +8,7 @@
 #include "arg.h"
 #include "iter.h"
 
+#include "access.h"
 
 namespace py {
 
@@ -3326,6 +3327,8 @@ namespace impl {
                     /// evaluation of the arguments, which is necessary to account for
                     /// side effects related to parameter packs.
                     if constexpr (Bound::has_args && Bound::has_kwargs) {
+                        /// TODO: are args/kwargs even used here?  They probably need
+                        /// to be passed to the python() method similar to the others?
                         const auto& args = impl::unpack_arg<Bound::args_idx>(
                             std::forward<Values>(values)...
                         );
@@ -5744,6 +5747,7 @@ template <typename Func, typename... Args> requires (partially_callable<Func, Ar
 struct partial {
 private:
     using sig = impl::get_signature<Func>;
+    using partial_args = impl::Arguments<Args...>;
 
     /* Represents a value stored in the arguments tuple, which can be cross-referenced
     with the function's target signature through the compile-time indices. */
@@ -5989,7 +5993,7 @@ private:
         }
     };
 
-    impl::get_signature<Func>::Defaults defaults;
+    sig::Defaults defaults;
     std::remove_cvref_t<Func> func;
     Tuple parts;
 
@@ -6008,7 +6012,11 @@ private:
 
 public:
     static constexpr size_t n = sizeof...(Args);
-    /// TODO: other introspection fields forwarded from Arguments<>
+    /// TODO: other introspection fields forwarded from Arguments<>.  These should
+    /// probably be similar to the introspection fields in `py::Function<>`, except
+    /// that they should account for the bound partial arguments.  `n` would be
+    /// reduced by the number of arguments in the partial, and the other fields
+    /// will be adjusted accordingly.
 
     template <impl::is<Func> F> requires (Defaults<F>::n == 0)
     explicit constexpr partial(F&& func, Args... args) :
@@ -6055,15 +6063,14 @@ public:
         return std::move(std::get<I>(parts));
     }
 
-    /// TODO: replace std::same_as<>... with has<T>
-    template <typename T> requires (std::same_as<T, std::remove_cvref_t<Args>> || ...)
+    template <StaticStr name> requires (partial_args::template has<name>)
     [[nodiscard]] constexpr decltype(auto) get() const {
-        return std::get<std::remove_cvref_t<T>>(parts);
+        return std::get<partial_args::template idx<name>>(parts);
     }
 
-    template <typename T> requires (std::same_as<T, std::remove_cvref_t<Args>> || ...)
+    template <StaticStr name> requires (partial_args::template has<name>)
     [[nodiscard]] decltype(auto) get() && {
-        return std::move(std::get<std::remove_cvref_t<T>>(parts));
+        return std::move(std::get<partial_args::template idx<name>>(parts));
     }
 
     template <typename... Values> requires (call<Values...>::enable)
@@ -6140,6 +6147,20 @@ decltype(auto) Object::operator()(this Self&& self, Args&&... args) {
             std::forward<Args>(args)...
         );
     }
+}
+
+
+inline void test() {
+    constexpr auto y = arg<"y">;
+    constexpr auto z = arg<"z">;
+    constexpr partial func(
+        { z = 3 },
+        [](Arg<"x", int>::pos x, Arg<"y", int> y, Arg<"z", int>::kw::opt z) {
+            return *x + *y + *z;
+        },
+        1
+    );
+    constexpr auto r = func(z = 3, y = 2);
 }
 
 

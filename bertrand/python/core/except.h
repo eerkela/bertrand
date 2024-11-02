@@ -305,7 +305,15 @@ struct __iter__<Self>                                       : Returns<Frame> {
         return self.curr == nullptr;
     }
 
+    [[nodiscard]] friend bool operator==(impl::Sentinel, const __iter__& self) {
+        return self.curr == nullptr;
+    }
+
     [[nodiscard]] friend bool operator!=(const __iter__& self, impl::Sentinel) {
+        return self.curr != nullptr;
+    }
+
+    [[nodiscard]] friend bool operator!=(impl::Sentinel, const __iter__& self) {
         return self.curr != nullptr;
     }
 };
