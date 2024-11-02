@@ -447,7 +447,7 @@ protected:
         static Type<Derived> __import__();  // {
         //     throw NotImplementedError(
         //         "the __import__() method must be defined for all Python types: "
-        //         + bertrand::type_name<CRTP>
+        //         + type_name<CRTP>
         //     );
         // }
 

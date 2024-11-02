@@ -571,8 +571,9 @@ template <typename Self>
 
     } else {
         return
-            "<" + bertrand::type_name<Self> + " at " +
-            std::to_string(reinterpret_cast<size_t>(&obj)) + ">";
+            "<" + type_name<Self> + " at " + std::to_string(
+                reinterpret_cast<size_t>(&obj)
+            ) + ">";
     }
 }
 

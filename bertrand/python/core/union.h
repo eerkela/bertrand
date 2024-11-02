@@ -657,8 +657,7 @@ struct Interface<Union<Types...>> : impl::UnionTag {
     [[nodiscard]] auto get(this auto&& self) -> T {
         if (self.m_index != impl::index_of<T, Types...>) {
             throw TypeError(
-                "bad union access: '" + bertrand::type_name<T> +
-                "' is not the active type"
+                "bad union access: '" + type_name<T> + "' is not the active type"
             );
         }
         if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
@@ -673,8 +672,7 @@ struct Interface<Union<Types...>> : impl::UnionTag {
         using ref = impl::qualify_lvalue<at<I>, decltype(self)>;
         if (self.m_index != I) {
             throw TypeError(
-                "bad union access: '" + bertrand::type_name<at<I>> +
-                "' is not the active type"
+                "bad union access: '" + type_name<at<I>> + "' is not the active type"
             );
         }
         if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
@@ -1127,8 +1125,8 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
                 return static_cast<To>(std::forward<decltype(value)>(value));
             } else {
                 throw TypeError(
-                    "cannot convert from '" + bertrand::type_name<decltype(value)> +
-                    "' to '" + bertrand::type_name<To> + "'"
+                    "cannot convert from '" + type_name<decltype(value)> + "' to '" +
+                    type_name<To> + "'"
                 );
             }
         });
@@ -1523,9 +1521,9 @@ struct __issubclass__<Derived, Base> : Returns<bool> {
                             return issubclass<Base>(std::forward<T>(value));
                         } else {
                             throw TypeError(
-                                "unary issubclass<" + bertrand::type_name<Base> +
+                                "unary issubclass<" + type_name<Base> +
                                 ">() is not enabled for argument of type '" +
-                                bertrand::type_name<T> + "'"
+                                type_name<T> + "'"
                             );
                         }
                     }
@@ -1569,8 +1567,7 @@ struct __getattr__<Self, Name> : Returns<typename impl::UnionGetAttr<Self, Name>
                 return getattr<Name>(std::forward<T>(value));
             } else {
                 throw AttributeError(
-                    "'" + bertrand::type_name<T> + "' object has no attribute '" +
-                    Name + "'"
+                    "'" + type_name<T> + "' object has no attribute '" + Name + "'"
                 );
             }
         });
@@ -1591,7 +1588,7 @@ struct __setattr__<Self, Name, Value> : Returns<void> {
             } else {
                 throw AttributeError(
                     "cannot set attribute '" + Name + "' on object of type '" +
-                    bertrand::type_name<T> + "'"
+                    type_name<T> + "'"
                 );
             }
         }, std::forward<Value>(value));
@@ -1609,7 +1606,7 @@ struct __delattr__<Self, Name> : Returns<void> {
             } else {
                 throw AttributeError(
                     "cannot delete attribute '" + Name + "' on object of type '" +
-                    bertrand::type_name<T> + "'"
+                    type_name<T> + "'"
                 );
             }
         }, std::forward<Self>(self));
@@ -1638,9 +1635,8 @@ struct __call__<Self, Args...> : Returns<typename impl::UnionCall<Self, Args...>
                     return std::forward<S>(self)(std::forward<A>(args)...);
                 } else {
                     throw TypeError(
-                        "cannot call object of type '" +
-                        bertrand::type_name<S> + "' with the given "
-                        "arguments"
+                        "cannot call object of type '" + type_name<S> +
+                        "' with the given arguments"
                     );
                 }
             },
@@ -1663,7 +1659,7 @@ struct __getitem__<Self, Key...> : Returns<typename impl::UnionGetItem<Self, Key
                 } else {
                     throw KeyError(
                         "cannot get item with the given key(s) from object of type '" +
-                        bertrand::type_name<S> + "'"
+                        type_name<S> + "'"
                     );
                 }
             },
@@ -1689,7 +1685,7 @@ struct __setitem__<Self, Value, Key...> : Returns<void> {
                 } else {
                     throw KeyError(
                         "cannot set item with the given key(s) on object of type '" +
-                        bertrand::type_name<S> + "'"
+                        type_name<S> + "'"
                     );
                 }
             },
@@ -1712,7 +1708,7 @@ struct __delitem__<Self, Key...> : Returns<void> {
                 } else {
                     throw KeyError(
                         "cannot delete item with the given key(s) from object of type '" +
-                        bertrand::type_name<S> + "'"
+                        type_name<S> + "'"
                     );
                 }
             },
@@ -1736,7 +1732,7 @@ struct __hash__<Self> : Returns<size_t> {
                     return hash(std::forward<S>(self));
                 } else {
                     throw TypeError(
-                        "unhashable type: '" + bertrand::type_name<S> + "'"
+                        "unhashable type: '" + type_name<S> + "'"
                     );
                 }
             },
@@ -1759,7 +1755,7 @@ struct __len__<Self> : Returns<size_t> {
                     return len(std::forward<S>(self));
                 } else {
                     throw TypeError(
-                        "object of type '" + bertrand::type_name<S> + "' has no len()"
+                        "object of type '" + type_name<S> + "' has no len()"
                     );
                 }
             },
@@ -1782,8 +1778,8 @@ struct __contains__<Self, Key> : Returns<bool> {
                     return in(std::forward<K>(key), std::forward<S>(self));
                 } else {
                     throw TypeError(
-                        "argument of type '" + bertrand::type_name<K> +
-                        "' does not support .contains() checks"
+                        "argument of type '" + type_name<K> +
+                        "' does not support .in() checks"
                     );
                 }
             },
@@ -1819,8 +1815,7 @@ struct __abs__<Self> : Returns<typename impl::UnionAbs<Self>::type> {
                     return abs(std::forward<S>(self));
                 } else {
                     throw TypeError(
-                        "bad operand type for abs(): '" +
-                        bertrand::type_name<S> + "'"
+                        "bad operand type for abs(): '" + type_name<S> + "'"
                     );
                 }
             },
@@ -1840,8 +1835,7 @@ struct __invert__<Self> : Returns<typename impl::UnionInvert<Self>::type> {
                     return ~std::forward<S>(self);
                 } else {
                     throw TypeError(
-                        "bad operand type for unary ~: '" +
-                        bertrand::type_name<S> + "'"
+                        "bad operand type for unary ~: '" + type_name<S> + "'"
                     );
                 }
             },
@@ -1861,8 +1855,7 @@ struct __pos__<Self> : Returns<typename impl::UnionPos<Self>::type> {
                     return +std::forward<S>(self);
                 } else {
                     throw TypeError(
-                        "bad operand type for unary +: '" +
-                        bertrand::type_name<S> + "'"
+                        "bad operand type for unary +: '" + type_name<S> + "'"
                     );
                 }
             },
@@ -1882,8 +1875,7 @@ struct __neg__<Self> : Returns<typename impl::UnionNeg<Self>::type> {
                     return -std::forward<S>(self);
                 } else {
                     throw TypeError(
-                        "bad operand type for unary -: '" +
-                        bertrand::type_name<S> + "'"
+                        "bad operand type for unary -: '" + type_name<S> + "'"
                     );
                 }
             },
@@ -1903,8 +1895,7 @@ struct __increment__<Self> : Returns<typename impl::UnionIncrement<Self>::type> 
                     return ++std::forward<S>(self);
                 } else {
                     throw TypeError(
-                        "'" + bertrand::type_name<S> + "' object cannot be "
-                        "incremented"
+                        "'" + type_name<S> + "' object cannot be incremented"
                     );
                 }
             },
@@ -1924,8 +1915,7 @@ struct __decrement__<Self> : Returns<typename impl::UnionDecrement<Self>::type> 
                     return --std::forward<S>(self);
                 } else {
                     throw TypeError(
-                        "'" + bertrand::type_name<S> + "' object cannot be "
-                        "decremented"
+                        "'" + type_name<S> + "' object cannot be decremented"
                     );
                 }
             },
@@ -1945,9 +1935,8 @@ struct __lt__<L, R> : Returns<typename impl::UnionLess<L, R>::type> {
                     return std::forward<L2>(lhs) < std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for <: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for <: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -1968,9 +1957,8 @@ struct __le__<L, R> : Returns<typename impl::UnionLessEqual<L, R>::type> {
                     return std::forward<L2>(lhs) <= std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for <=: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for <=: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -1991,9 +1979,8 @@ struct __eq__<L, R> : Returns<typename impl::UnionEqual<L, R>::type> {
                     return std::forward<L2>(lhs) == std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for ==: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for ==: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2014,9 +2001,8 @@ struct __ne__<L, R> : Returns<typename impl::UnionNotEqual<L, R>::type> {
                     return std::forward<L2>(lhs) != std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for !=: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for !=: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2037,9 +2023,8 @@ struct __ge__<L, R> : Returns<typename impl::UnionGreaterEqual<L, R>::type> {
                     return std::forward<L2>(lhs) >= std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for >=: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for >=: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2060,9 +2045,8 @@ struct __gt__<L, R> : Returns<typename impl::UnionGreater<L, R>::type> {
                     return std::forward<L2>(lhs) > std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for >: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for >: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2083,9 +2067,8 @@ struct __add__<L, R> : Returns<typename impl::UnionAdd<L, R>::type> {
                     return std::forward<L2>(lhs) + std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for +: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for +: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2106,9 +2089,8 @@ struct __sub__<L, R> : Returns<typename impl::UnionSub<L, R>::type> {
                     return std::forward<L2>(lhs) - std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for -: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for -: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2129,9 +2111,8 @@ struct __mul__<L, R> : Returns<typename impl::UnionMul<L, R>::type> {
                     return std::forward<L2>(lhs) * std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for *: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for *: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2153,9 +2134,8 @@ struct __pow__<Base, Exp, Mod> : Returns<typename impl::UnionPow<Base, Exp, Mod>
                     return pow(std::forward<B>(base), std::forward<E>(exp));
                 } else {
                     throw TypeError(
-                        "unsupported operand types for pow(): '" +
-                        bertrand::type_name<B> + "' and '" +
-                        bertrand::type_name<E> + "'"
+                        "unsupported operand types for pow(): '" + type_name<B> +
+                        "' and '" + type_name<E> + "'"
                     );
                 }
             },
@@ -2178,10 +2158,8 @@ struct __pow__<Base, Exp, Mod> : Returns<typename impl::UnionPow<Base, Exp, Mod>
                     );
                 } else {
                     throw TypeError(
-                        "unsupported operand types for pow(): '" +
-                        bertrand::type_name<B> + "' and '" +
-                        bertrand::type_name<E> + "' and '" +
-                        bertrand::type_name<M> + "'"
+                        "unsupported operand types for pow(): '" + type_name<B> +
+                        "' and '" + type_name<E> + "' and '" + type_name<M> + "'"
                     );
                 }
             },
@@ -2203,9 +2181,8 @@ struct __truediv__<L, R> : Returns<typename impl::UnionTrueDiv<L, R>::type> {
                     return std::forward<L2>(lhs) / std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for /: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for /: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2226,9 +2203,8 @@ struct __floordiv__<L, R> : Returns<typename impl::UnionFloorDiv<L, R>::type> {
                     return floordiv(std::forward<L2>(lhs), std::forward<R2>(rhs));
                 } else {
                     throw TypeError(
-                        "unsupported operand types for floordiv(): '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for floordiv(): '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2249,9 +2225,8 @@ struct __mod__<L, R> : Returns<typename impl::UnionMod<L, R>::type> {
                     return std::forward<L2>(lhs) % std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for %: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for %: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2272,9 +2247,8 @@ struct __lshift__<L, R> : Returns<typename impl::UnionLShift<L, R>::type> {
                     return std::forward<L2>(lhs) << std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for <<: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for <<: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2295,9 +2269,8 @@ struct __rshift__<L, R> : Returns<typename impl::UnionRShift<L, R>::type> {
                     return std::forward<L2>(lhs) >> std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for >>: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for >>: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2318,9 +2291,8 @@ struct __and__<L, R> : Returns<typename impl::UnionAnd<L, R>::type> {
                     return std::forward<L2>(lhs) & std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for &: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for &: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2341,9 +2313,8 @@ struct __xor__<L, R> : Returns<typename impl::UnionXor<L, R>::type> {
                     return std::forward<L2>(lhs) ^ std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for ^: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for ^: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2364,9 +2335,8 @@ struct __or__<L, R> : Returns<typename impl::UnionOr<L, R>::type> {
                     return std::forward<L2>(lhs) | std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for |: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for |: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2387,9 +2357,8 @@ struct __iadd__<L, R> : Returns<typename impl::UnionInplaceAdd<L, R>::type> {
                     return std::forward<L2>(lhs) += std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for +=: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for +=: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2410,9 +2379,8 @@ struct __isub__<L, R> : Returns<typename impl::UnionInplaceSub<L, R>::type> {
                     return std::forward<L2>(lhs) -= std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for -=: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for -=: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2433,9 +2401,8 @@ struct __imul__<L, R> : Returns<typename impl::UnionInplaceMul<L, R>::type> {
                     return std::forward<L2>(lhs) *= std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for *=: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for *=: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2457,9 +2424,8 @@ struct __ipow__<Base, Exp, Mod> : Returns<typename impl::UnionInplacePow<Base, E
                     return ipow(std::forward<B>(base), std::forward<E>(exp));
                 } else {
                     throw TypeError(
-                        "unsupported operand types for ipow(): '" +
-                        bertrand::type_name<B> + "' and '" +
-                        bertrand::type_name<E> + "'"
+                        "unsupported operand types for ipow(): '" + type_name<B> +
+                        "' and '" + type_name<E> + "'"
                     );
                 }
             },
@@ -2482,10 +2448,8 @@ struct __ipow__<Base, Exp, Mod> : Returns<typename impl::UnionInplacePow<Base, E
                     );
                 } else {
                     throw TypeError(
-                        "unsupported operand types for ipow(): '" +
-                        bertrand::type_name<B> + "' and '" +
-                        bertrand::type_name<E> + "' and '" +
-                        bertrand::type_name<M> + "'"
+                        "unsupported operand types for ipow(): '" + type_name<B> +
+                        "' and '" + type_name<E> + "' and '" + type_name<M> + "'"
                     );
                 }
             },
@@ -2507,9 +2471,8 @@ struct __itruediv__<L, R> : Returns<typename impl::UnionInplaceTrueDiv<L, R>::ty
                     return std::forward<L2>(lhs) /= std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for /=: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for /=: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2531,8 +2494,7 @@ struct __ifloordiv__<L, R> : Returns<typename impl::UnionInplaceFloorDiv<L, R>::
                 } else {
                     throw TypeError(
                         "unsupported operand types for ifloordiv(): '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        type_name<L2> + "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2553,9 +2515,8 @@ struct __imod__<L, R> : Returns<typename impl::UnionInplaceMod<L, R>::type> {
                     return std::forward<L2>(lhs) %= std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for %=: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for %=: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2576,9 +2537,8 @@ struct __ilshift__<L, R> : Returns<typename impl::UnionInplaceLShift<L, R>::type
                     return std::forward<L2>(lhs) <<= std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for <<=: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for <<=: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2599,9 +2559,8 @@ struct __irshift__<L, R> : Returns<typename impl::UnionInplaceRShift<L, R>::type
                     return std::forward<L2>(lhs) >>= std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for >>=: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for >>=: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2622,9 +2581,8 @@ struct __iand__<L, R> : Returns<typename impl::UnionInplaceAnd<L, R>::type> {
                     return std::forward<L2>(lhs) &= std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for &=: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for &=: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2645,9 +2603,8 @@ struct __ixor__<L, R> : Returns<typename impl::UnionInplaceXor<L, R>::type> {
                     return std::forward<L2>(lhs) ^= std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for ^=: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for ^=: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },
@@ -2668,9 +2625,8 @@ struct __ior__<L, R> : Returns<typename impl::UnionInplaceOr<L, R>::type> {
                     return std::forward<L2>(lhs) |= std::forward<R2>(rhs);
                 } else {
                     throw TypeError(
-                        "unsupported operand types for |=: '" +
-                        bertrand::type_name<L2> + "' and '" +
-                        bertrand::type_name<R2> + "'"
+                        "unsupported operand types for |=: '" + type_name<L2> +
+                        "' and '" + type_name<R2> + "'"
                     );
                 }
             },

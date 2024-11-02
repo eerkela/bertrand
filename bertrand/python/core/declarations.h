@@ -48,6 +48,8 @@
 
 namespace py {
 using bertrand::StaticStr;
+using bertrand::type_name;
+using bertrand::demangle;
 
 
 #ifdef NDEBUG

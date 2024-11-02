@@ -1357,8 +1357,7 @@ namespace impl {
                         return isinstance<std::remove_cvref_t<python_type<U>>>(value);
                     } else {
                         throw TypeError(
-                            "C++ type has no Python equivalent: " +
-                            bertrand::type_name<U>
+                            "C++ type has no Python equivalent: " + type_name<U>
                         );
                     }
                 },
@@ -1368,8 +1367,7 @@ namespace impl {
                         return issubclass<std::remove_cvref_t<python_type<U>>>(type);
                     } else {
                         throw TypeError(
-                            "C++ type has no Python equivalent: " +
-                            bertrand::type_name<U>
+                            "C++ type has no Python equivalent: " + type_name<U>
                         );
                     }
                 },
@@ -1379,8 +1377,7 @@ namespace impl {
                         return Type<std::remove_cvref_t<python_type<U>>>();
                     } else {
                         throw TypeError(
-                            "C++ type has no Python equivalent: " +
-                            bertrand::type_name<U>
+                            "C++ type has no Python equivalent: " + type_name<U>
                         );
                     }
                 }
@@ -1410,8 +1407,7 @@ namespace impl {
                             return isinstance<std::remove_cvref_t<python_type<U>>>(value);
                         } else {
                             throw TypeError(
-                                "C++ type has no Python equivalent: " +
-                                bertrand::type_name<U>
+                                "C++ type has no Python equivalent: " + type_name<U>
                             );
                         }
                     },
@@ -1421,8 +1417,7 @@ namespace impl {
                             return issubclass<std::remove_cvref_t<python_type<U>>>(type);
                         } else {
                             throw TypeError(
-                                "C++ type has no Python equivalent: " +
-                                bertrand::type_name<U>
+                                "C++ type has no Python equivalent: " + type_name<U>
                             );
                         }
                     },
@@ -1432,8 +1427,7 @@ namespace impl {
                             return Type<std::remove_cvref_t<python_type<U>>>();
                         } else {
                             throw TypeError(
-                                "C++ type has no Python equivalent: " +
-                                bertrand::type_name<U>
+                                "C++ type has no Python equivalent: " + type_name<U>
                             );
                         }
                     }
@@ -8723,7 +8717,7 @@ parameter is a type object, and thus the method is a class method.)doc";
         /* Default `repr()` demangles the function name + signature. */
         static PyObject* __repr__(PyFunction* self) noexcept {
             try {
-                std::string str = "<" + bertrand::type_name<Function<F>> + " at " +
+                std::string str = "<" + type_name<Function<F>> + " at " +
                     std::to_string(reinterpret_cast<size_t>(self)) + ">";
                 return PyUnicode_FromStringAndSize(str.c_str(), str.size());
             } catch (...) {
@@ -9804,7 +9798,7 @@ parameter is a type object, and thus the method is a class method.)doc";
             try {
                 std::string str =
                     "<bound method " +
-                    bertrand::demangle(Py_TYPE(self->__self__)->tp_name) + ".";
+                    demangle(Py_TYPE(self->__self__)->tp_name) + ".";
                 Py_ssize_t len;
                 const char* name = PyUnicode_AsUTF8AndSize(
                     self->__wrapped__->name,
