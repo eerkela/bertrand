@@ -2912,13 +2912,15 @@ namespace impl {
                         /// NOTE: since the pack's .extract() method is destructive,
                         /// the only remaining elements are those that were not
                         /// consumed, which can be directly moved into the result
-                        for (auto it = keyword.begin(); it != keyword.end();) {
+                        auto it = keyword.begin();
+                        auto end = keyword.end();
+                        while (it != end) {
                             // postfix ++ required to increment before invalidation
                             auto node = keyword.extract(it++);
                             auto rc = map.insert(node);
                             if (!rc.inserted) {
                                 throw TypeError(
-                                    "duplicate value for parameter '" + key + "'"
+                                    "duplicate value for parameter '" + node.key() + "'"
                                 );
                             }
                         }
@@ -3256,7 +3258,7 @@ namespace impl {
                         )...};
                         positional.validate();
                         keyword.validate();
-                        return std::move(bound)(func);
+                        return std::move(bound)(std::forward<Func>(func));
                     } else if constexpr (Bound::has_args) {
                         auto positional = positional_pack<Arguments, Bound::args_idx>(
                             std::forward<Values>(values)...
@@ -3267,7 +3269,7 @@ namespace impl {
                             std::forward<Values>(values)...
                         )...};
                         positional.validate();
-                        return std::move(bound)(func);
+                        return std::move(bound)(std::forward<Func>(func));
                     } else if constexpr (Bound::has_kwargs) {
                         auto keyword = keyword_pack<Arguments, Bound::kwargs_idx>(
                             std::forward<Values>(values)...
@@ -3278,11 +3280,11 @@ namespace impl {
                             std::forward<Values>(values)...
                         )...};
                         keyword.validate();
-                        return std::move(bound)(func);
+                        return std::move(bound)(std::forward<Func>(func));
                     } else {
                         /// NOTE: left-to-right evaluation order is not required if
                         /// runtime parameter packs are not given.
-                        return func(cpp<Is>(
+                        return std::forward<Func>(func)(cpp<Is>(
                             std::forward<T>(defaults),
                             std::forward<Values>(values)...
                         )...);
@@ -3445,6 +3447,312 @@ namespace impl {
                     std::make_index_sequence<Bound::n>{},
                     func,
                     std::forward<Values>(values)...
+                );
+            }
+        };
+
+        /* A helper that binds a Python vectorcall array to the enclosing signature
+        and performs the necessary translation to invoke a matching C++ function. */
+        struct Vectorcall {
+        private:
+            using Kwargs = std::unordered_map<std::string_view, PyObject*>;
+
+            Kwargs get_kwargs() const {
+                Kwargs map;
+                map.reserve(kwcount);
+                for (size_t i = 0; i < kwcount; ++i) {
+                    Py_ssize_t len;
+                    const char* name = PyUnicode_AsUTF8AndSize(
+                        PyTuple_GET_ITEM(kwnames, i),
+                        &len
+                    );
+                    if (name == nullptr) {
+                        Exception::from_python();
+                    }
+                    map.emplace(
+                        std::string_view{name, static_cast<size_t>(len)},
+                        args[nargs + i]
+                    );
+                }
+                return map;
+            }
+
+            /* The translate() method is used to convert an index sequence over the
+             * enclosing signature into the corresponding values pulled from either an
+             * array of Python vectorcall arguments or the function's defaults.  The
+             * array has the same layout as the one described in Bind<>::python(),
+             * but interacting with it is slightly harder because we're translating
+             * from dynamic to static typing, rather than the other way around.
+             */
+
+            template <size_t I, is<Defaults> D>
+            at<I> translate(D&& defaults) const {
+                using T = at<I>;
+                constexpr StaticStr name = ArgTraits<T>::name;
+
+                if constexpr (ArgTraits<T>::pos()) {
+                    if (I < nargs) {
+                        return to_arg<I>(reinterpret_borrow<Object>(args[I]));
+                    }
+                    if constexpr (ArgTraits<T>::opt()) {
+                        return to_arg<I>(
+                            std::forward<D>(defaults).template get<I>()
+                        );
+                    } else if constexpr (ArgTraits<T>::posonly()) {
+                        throw TypeError(
+                            "missing required positional-only argument at index " +
+                            std::to_string(I)
+                        );
+                    } else {
+                        throw TypeError(
+                            "missing required argument '" + name + "' at index " +
+                            std::to_string(I)
+                        );
+                    }
+
+                } else if constexpr (ArgTraits<T>::kw()) {
+                    if constexpr (ArgTraits<T>::opt()) {
+                        return to_arg<I>(
+                            std::forward<D>(defaults).template get<I>()
+                        );
+                    } else {
+                        throw TypeError(
+                            "missing required keyword-only argument '" + name + "'"
+                        );
+                    }
+
+                } else if constexpr (ArgTraits<T>::args()) {
+                    std::vector<typename ArgTraits<T>::type> vec;
+                    vec.reserve(nargs - I);
+                    for (size_t i = I; i < nargs; ++i) {
+                        vec.emplace_back(reinterpret_borrow<Object>(args[i]));
+                    }
+                    return to_arg<I>(std::move(vec));
+
+                } else if constexpr (ArgTraits<T>::kwargs()) {
+                    return to_arg<I>(std::unordered_map<
+                        std::string,
+                        typename ArgTraits<T>::type
+                    >{});
+
+                } else {
+                    static_assert(false, "invalid argument kind");
+                    std::unreachable();
+                }
+            }
+
+            template <size_t I, is<Defaults> D>
+            at<I> translate(D&& defaults, Kwargs& kwargs) const {
+                using T = at<I>;
+                constexpr StaticStr name = ArgTraits<T>::name;
+
+                if constexpr (ArgTraits<T>::posonly()) {
+                    if (I < nargs) {
+                        return to_arg<I>(reinterpret_borrow<Object>(args[I]));
+                    }
+                    if constexpr (ArgTraits<T>::opt()) {
+                        return to_arg<I>(
+                            std::forward<D>(defaults).template get<I>()
+                        );
+                    } else {
+                        throw TypeError(
+                            "missing required positional-only argument at index " +
+                            std::to_string(I)
+                        );
+                    }
+
+                } else if constexpr (ArgTraits<T>::pos()) {
+                    if (I < nargs) {
+                        return to_arg<I>(reinterpret_borrow<Object>(args[I]));
+                    } else {
+                        auto node = kwargs.extract(name);
+                        if (node) {
+                            return to_arg<I>(
+                                reinterpret_borrow<Object>(node.mapped())
+                            );
+                        }
+                    }
+                    if constexpr (ArgTraits<T>::opt()) {
+                        return to_arg<I>(
+                            std::forward<D>(defaults).template get<I>()
+                        );
+                    } else {
+                        throw TypeError(
+                            "missing required argument '" + name + "' at index " +
+                            std::to_string(I)
+                        );
+                    }
+
+                } else if constexpr (ArgTraits<T>::kw()) {
+                    auto node = kwargs.extract(name);
+                    if (node) {
+                        return to_arg<I>(
+                            reinterpret_borrow<Object>(node.mapped())
+                        );
+                    }
+                    if constexpr (ArgTraits<T>::opt()) {
+                        return to_arg<I>(
+                            std::forward<D>(defaults).template get<I>()
+                        );
+                    } else {
+                        throw TypeError(
+                            "missing required keyword-only argument '" + name + "'"
+                        );
+                    }
+
+                } else if constexpr (ArgTraits<T>::args()) {
+                    if (I < nargs) {
+                        std::vector<typename ArgTraits<T>::type> vec;
+                        vec.reserve(nargs - I);
+                        for (size_t i = I; i < nargs; ++i) {
+                            vec.emplace_back(reinterpret_borrow<Object>(args[i]));
+                        }
+                        return to_arg<I>(std::move(vec));
+                    }
+                    return to_arg<I>(std::vector<typename ArgTraits<T>::type>{});
+
+                } else if constexpr (ArgTraits<T>::kwargs()) {
+                    if (!kwargs.empty()) {
+                        std::unordered_map<std::string, typename ArgTraits<T>::type> map;
+                        auto it = kwargs.begin();
+                        auto end = kwargs.end();
+                        while (it != end) {
+                            // postfix ++ required to increment before invalidation
+                            auto node = kwargs.extract(it++);
+                            auto rc = map.insert(node);
+                            if (!rc.inserted) {
+                                throw TypeError(
+                                    "duplicate value for parameter '" +
+                                    std::string(node.key()) + "'"
+                                );
+                            }
+                        }
+                        return to_arg<I>(std::move(map));
+                    }
+                    return to_arg<I>(std::unordered_map<
+                        std::string,
+                        typename ArgTraits<T>::type
+                    >{});
+
+                } else {
+                    static_assert(false, "invalid argument kind");
+                    std::unreachable();
+                }
+            }
+
+        public:
+            PyObject* const* args;
+            size_t nargs;
+            PyObject* kwnames;
+            size_t kwcount;
+            size_t offset;
+
+            Vectorcall(PyObject* const* args, size_t nargsf, PyObject* kwnames) :
+                args(args),
+                nargs(PyVectorcall_NARGS(nargsf)),
+                kwnames(kwnames),
+                kwcount(kwnames ? PyTuple_GET_SIZE(kwnames) : 0),
+                offset(nargsf & PY_VECTORCALL_ARGUMENTS_OFFSET)
+            {}
+
+            /// TODO: basically, this class implements the Python call operator when
+            /// there are no overloads.  The key() will be generated and if an overload
+            /// is found, the vectorcall argument array held here will be perfectly
+            /// forwarded.  Otherwise, we will invoke the call operator on the default
+            /// implementation, and return the result directly to Python.
+
+            /* Produce an overload key from the Python arguments, which can be used to
+            search the overload trie and invoke a resulting function. */
+            Params<std::vector<Param>> key() const {
+                size_t hash = 0;
+                std::vector<Param> vec;
+                vec.reserve(nargs + kwcount);
+                for (size_t i = 0; i < nargs; ++i) {
+                    vec.emplace_back(
+                        "",
+                        reinterpret_borrow<Object>(args[i]),
+                        ArgKind::POS
+                    );
+                    hash = hash_combine(hash, vec.back().hash(seed, prime));
+                }
+                for (size_t i = 0; i < kwcount; ++i) {
+                    Py_ssize_t len;
+                    const char* name = PyUnicode_AsUTF8AndSize(
+                        PyTuple_GET_ITEM(kwnames, i),
+                        &len
+                    );
+                    if (name == nullptr) {
+                        Exception::from_python();
+                    }
+                    vec.emplace_back(
+                        std::string_view(name, len),
+                        reinterpret_borrow<Object>(args[nargs + i]),
+                        ArgKind::KW
+                    );
+                    hash = hash_combine(hash, vec.back().hash(seed, prime));
+                }
+                return {
+                    .value = std::move(vec),
+                    .hash = hash
+                };
+            }
+
+            /* Invoke a C++ function from Python using Python-style arguments. */
+            template <is<Defaults> T, typename Func>
+                requires (std::is_invocable_v<Func, Args...>)
+            decltype(auto) operator()(T&& defaults, Func&& func) const {
+                return [&]<size_t... Is>(
+                    std::index_sequence<Is...>,
+                    T defaults,
+                    Func func
+                ) {
+                    if constexpr (!Arguments::has_args) {
+                        if (nargs > Arguments::n_pos) {
+                            size_t idx = nargs - 1;
+                            std::string message =
+                                "unexpected positional arguments: [" +
+                                repr(reinterpret_borrow<Object>(args[idx]));
+                            while (++idx < nargs) {
+                                message += ", " + repr(
+                                    reinterpret_borrow<Object>(args[idx])
+                                );
+                            }
+                            message += "]";
+                            throw TypeError(message);
+                        }
+                    }
+                    if (kwnames) {
+                        Kwargs kwargs = get_kwargs();
+                        if constexpr (Arguments::has_kwargs) {
+                            return std::forward<Func>(func)(
+                                translate<Is>(std::forward<T>(defaults), kwargs)...
+                            );
+                        } else {
+                            pack bound {
+                                translate<Is>(std::forward<T>(defaults), kwargs)...
+                            };
+                            if (!kwargs.empty()) {
+                                auto it = kwargs.begin();
+                                auto end = kwargs.end();
+                                std::string message =
+                                    "unexpected keyword arguments: ['" +
+                                    std::string(it->first);
+                                while (++it != end) {
+                                    message += "', '" + std::string(it->first);
+                                }
+                                message += "']";
+                                throw TypeError(message);
+                            }
+                            return std::move(bound)(std::forward<Func>(func));
+                        }
+                    }
+                    return std::forward<Func>(func)(
+                        translate<Is>(std::forward<T>(defaults))...
+                    );
+                }(
+                    std::make_index_sequence<Arguments::n>{},
+                    std::forward<T>(defaults),
+                    std::forward<Func>(func)
                 );
             }
         };
@@ -4929,260 +5237,6 @@ namespace impl {
                 return result;
             }
         };
-
-        /* A helper that binds a Python vectorcall array to the enclosing signature
-        and performs the necessary translation to invoke a matching C++ function. */
-        struct Vectorcall {
-        private:
-
-            /// TODO: rewrite documentation
-
-            /* The py_to_cpp() method is used to convert an index sequence over the
-            * enclosing signature into the corresponding values pulled from either an
-            * array of Python vectorcall arguments or the function's defaults.  This
-            * requires us to parse an array of PyObject* pointers with a binary layout
-            * that looks something like this:
-            *
-            *                          ( kwnames tuple )
-            *      -------------------------------------
-            *      | x | p | p | p |...| k | k | k |...|
-            *      -------------------------------------
-            *            ^             ^
-            *            |             nargs ends here
-            *            *args starts here
-            *
-            * Where 'x' is an optional first element that can be temporarily written to
-            * in order to efficiently forward the `self` argument for bound methods,
-            * etc.  The presence of this argument is determined by the
-            * PY_VECTORCALL_ARGUMENTS_OFFSET flag, which is encoded in nargs.  You can
-            * check for its presence by bitwise AND-ing against nargs, and the true
-            * number of arguments must be extracted using `PyVectorcall_NARGS(nargs)`
-            * to account for this.
-            *
-            * If PY_VECTORCALL_ARGUMENTS_OFFSET is set and 'x' is written to, then it must
-            * always be reset to its original value before the function returns.  This
-            * allows for nested forwarding/scoping using the same argument list, with no
-            * extra allocations.
-            */
-
-            /// TODO: pass in a `std::unordered_map<std::string_view, PyObject*>` that
-            /// represents the keyword arguments, and might be destructively searched,
-            /// because this is also going to have to handle argument validation.
-            /// in a sane way, and allow kwargs packs to be easily constructed.
-
-            template <size_t I>
-            at<I> translate(const Defaults& defaults) const {
-                using T = at<I>;
-                constexpr StaticStr name = ArgTraits<T>::name;
-
-                if constexpr (ArgTraits<T>::posonly()) {
-                    if (I < nargs) {
-                        return to_arg<I>(reinterpret_borrow<Object>(args[I]));
-                    }
-                    if constexpr (ArgTraits<T>::opt()) {
-                        return to_arg<I>(defaults.template get<I>());
-                    } else {
-                        throw TypeError(
-                            "missing required positional-only argument at index " +
-                            std::to_string(I)
-                        );
-                    }
-
-                } else if constexpr (ArgTraits<T>::pos()) {
-                    if (I < nargs) {
-                        return to_arg<I>(reinterpret_borrow<Object>(args[I]));
-                    } else if (kwnames != nullptr) {
-                        /// TODO: rather than iterating over the kwnames tuple, I should
-                        /// take a second to build a
-                        /// `std::unordered_map<std::string_view, PyObject*>`, which
-                        /// can be passed to this method and efficiently searched.
-
-                        for (size_t i = 0; i < kwcount; ++i) {
-                            const char* kwname = PyUnicode_AsUTF8(
-                                PyTuple_GET_ITEM(kwnames, i)
-                            );
-                            if (kwname == nullptr) {
-                                Exception::from_python();
-                            } else if (std::strcmp(kwname, name) == 0) {
-                                return to_arg<I>(
-                                    reinterpret_borrow<Object>(args[nargs + i])
-                                );
-                            }
-                        }
-                    }
-                    if constexpr (ArgTraits<T>::opt()) {
-                        return to_arg<I>(defaults.template get<I>());
-                    } else {
-                        throw TypeError(
-                            "missing required argument '" + name + "' at index " +
-                            std::to_string(I)
-                        );
-                    }
-
-                } else if constexpr (ArgTraits<T>::kw()) {
-                    if (kwnames != nullptr) {
-                        for (size_t i = 0; i < kwcount; ++i) {
-                            const char* kwname = PyUnicode_AsUTF8(
-                                PyTuple_GET_ITEM(kwnames, i)
-                            );
-                            if (kwname == nullptr) {
-                                Exception::from_python();
-                            } else if (std::strcmp(kwname, name) == 0) {
-                                return to_arg<I>(
-                                    reinterpret_borrow<Object>(args[i])
-                                );
-                            }
-                        }
-                    }
-                    if constexpr (ArgTraits<T>::opt()) {
-                        return to_arg<I>(defaults.template get<I>());
-                    } else {
-                        throw TypeError(
-                            "missing required keyword-only argument '" + name + "'"
-                        );
-                    }
-
-                } else if constexpr (ArgTraits<T>::args()) {
-                    std::vector<typename ArgTraits<T>::type> vec;
-                    vec.reserve(nargs - I);
-                    for (size_t i = I; i < nargs; ++i) {
-                        vec.emplace_back(reinterpret_borrow<Object>(args[i]));
-                    }
-                    return to_arg<I>(std::move(vec));
-
-                } else if constexpr (ArgTraits<T>::kwargs()) {
-                    std::unordered_map<std::string, typename ArgTraits<T>::type> map;
-                    if (kwnames != nullptr) {
-                        auto sequence = std::make_index_sequence<Arguments::n_kw>{};
-                        for (size_t i = 0; i < kwcount; ++i) {
-                            Py_ssize_t length;
-                            const char* kwname = PyUnicode_AsUTF8AndSize(
-                                PyTuple_GET_ITEM(kwnames, i),
-                                &length
-                            );
-                            if (kwname == nullptr) {
-                                Exception::from_python();
-                            } else if (!Arguments::callback(kwname)) {
-                                map.emplace(
-                                    std::string(kwname, length),
-                                    reinterpret_borrow<Object>(args[nargs + i])
-                                );
-                            }
-                        }
-                    }
-                    return to_arg<I>(std::move(map));
-
-                } else {
-                    static_assert(false, "invalid argument kind");
-                    std::unreachable();
-                }
-            }
-
-        public:
-            PyObject* const* args;
-            size_t nargs;
-            PyObject* kwnames;
-            size_t kwcount;
-            size_t offset;
-
-            Vectorcall(PyObject* const* args, size_t nargsf, PyObject* kwnames) :
-                args(args),
-                nargs(PyVectorcall_NARGS(nargsf)),
-                kwnames(kwnames),
-                kwcount(kwnames ? PyTuple_GET_SIZE(kwnames) : 0),
-                offset(nargsf & PY_VECTORCALL_ARGUMENTS_OFFSET)
-            {}
-
-            /// TODO: basically, this class implements the Python call operator when
-            /// there are no overloads.  The key() will be generated and if an overload
-            /// is found, the vectorcall argument array held here will be perfectly
-            /// forwarded.  Otherwise, we will invoke the call operator on the default
-            /// implementation, and return the result directly to Python.
-
-            /// TODO: in the Python case, I probably shouldn't implement error-handling
-            /// after the fact, but rather while the arguments are being unpacked.  It
-            /// might be possible to initialize into a pack, then do the validation,
-            /// and then use the pack to call the function.
-            /// -> In fact, that might be the only way to avoid undefined behavior,
-            /// and force strict left->right evaluation of arguments.
-
-            /* Produce an overload key from the Python arguments, which can be used to
-            search the overload trie and invoke a resulting function. */
-            Params<std::vector<Param>> key() const {
-                size_t hash = 0;
-                std::vector<Param> vec;
-                vec.reserve(nargs + kwcount);
-                for (size_t i = 0; i < nargs; ++i) {
-                    Param param = {
-                        .name = "",
-                        .value = reinterpret_borrow<Object>(args[i]),
-                        .kind = ArgKind::POS
-                    };
-                    hash = hash_combine(hash, param.hash(seed, prime));
-                    vec.emplace_back(std::move(param));
-                }
-                for (size_t i = 0; i < kwcount; ++i) {
-                    Py_ssize_t len;
-                    const char* name = PyUnicode_AsUTF8AndSize(
-                        PyTuple_GET_ITEM(kwnames, i),
-                        &len
-                    );
-                    if (name == nullptr) {
-                        Exception::from_python();
-                    }
-                    Param param = {
-                        .name = std::string_view(name, len),
-                        .value = reinterpret_borrow<Object>(args[nargs + i]),
-                        .kind = ArgKind::KW
-                    };
-                    hash = hash_combine(hash, param.hash(seed, prime));
-                    vec.emplace_back(std::move(param));
-                }
-                return {
-                    .value = std::move(vec),
-                    .hash = hash
-                };
-            }
-
-            template <typename Func>
-                requires (
-                    std::is_invocable_v<Func, Args...> &&
-                    std::convertible_to<std::invoke_result_t<Func, Args...>, Object>
-                )
-            auto operator()(const Defaults& defaults, Func&& func) -> Object {
-                return [&]<size_t... Is>(
-                    std::index_sequence<Is...>,
-                    const Defaults& defaults,
-                    Func func
-                ) {
-                    if (kwnames) {
-                        /// TODO: build a std::unordered_map of the keyword arguments
-                        /// before calling the function, which destructively iterates
-                        /// over it.  Afterwards, assert that it is empty, and print
-                        /// out any conflicting arguments if not.
-                    }
-
-                    pack bound {translate<Is>(defaults)...};
-                    /// TODO: validate the pack here, before calling the function
-                    /// and after evaluating the translate<Is> calls.  I might also
-                    /// need to use an out parameter to track the maximum positional
-                    /// index, so that I can validate that no extra positional
-                    /// arguments are given before calling the function.
-
-                    if constexpr (std::is_void_v<std::invoke_result_t<Func, Args...>>) {
-
-                        func((..., translate<Is>(defaults)));
-                        return None;
-                    } else {
-                        return to_python(func(translate<Is>(defaults)...));
-                    }
-                }(
-                    std::make_index_sequence<Arguments::n>{},
-                    defaults,
-                    std::forward<Func>(func)
-                );
-            }
-        };
     };
 
     /* Convert a non-member function pointer into a member function pointer of the
@@ -6141,20 +6195,6 @@ decltype(auto) Object::operator()(this Self&& self, Args&&... args) {
             std::forward<Args>(args)...
         );
     }
-}
-
-
-inline void test() {
-    constexpr auto y = arg<"y">;
-    constexpr auto z = arg<"z">;
-    constexpr partial func(
-        { z = 3 },
-        [](Arg<"x", int>::pos x, Arg<"y", int> y, Arg<"z", int>::kw::opt z) {
-            return *x + *y + *z;
-        },
-        1
-    );
-    constexpr auto r = func(z = 3, y = 2);
 }
 
 
