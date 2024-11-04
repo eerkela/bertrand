@@ -284,14 +284,6 @@ namespace impl {
 }
 
 
-/* A python-style `assert` statement in C++, which is optimized away if built with
-`-DNDEBUG` (i.e. release mode).  The only difference between this and the built-in
-`assert()` macro is that this raises a `py::AssertionError` with a coherent
-traceback for cross-language support. */
-template <size_t N>
-[[gnu::always_inline]] void assert_(bool, const char(&)[N]);
-
-
 /* Save a set of input arguments for later use.  Returns a pack<> container, which
 stores the arguments similar to a `std::tuple`, except that it is capable of storing
 references and cannot be copied or moved.  Calling the pack as an rvalue will perfectly
@@ -402,24 +394,24 @@ private:
     };
 
     template <typename result, size_t I>
-    struct _get { using type = result; };
+    struct _get_base { using type = result; };
     template <typename... Us, size_t I> requires (I < sizeof...(Ts))
-    struct _get<impl::PackBase<Us...>, I> {
-        using type = _get<
+    struct _get_base<impl::PackBase<Us...>, I> {
+        using type = _get_base<
             impl::PackBase<Us...,
             impl::unpack_type<I, Ts...>>,
             I + 1
         >::type;
     };
     template <size_t I> requires (I < sizeof...(Ts))
-    using get = _get<impl::PackBase<>, I>::type;
+    using get_base = _get_base<impl::PackBase<>, I>::type;
 
     template <size_t I> requires (I < sizeof...(Ts))
     decltype(auto) forward() {
         if constexpr (std::is_lvalue_reference_v<impl::unpack_type<I, Ts...>>) {
-            return get<I>::value;
+            return get_base<I>::value;
         } else {
-            return std::move(get<I>::value);
+            return std::move(get_base<I>::value);
         }
     }
 
@@ -491,6 +483,14 @@ public:
 
 template <typename... Ts>
 explicit pack(Ts&&...) -> pack<Ts...>;
+
+
+/* A python-style `assert` statement in C++, which is optimized away if built with
+`-DNDEBUG` (i.e. release mode).  The only difference between this and the built-in
+`assert()` macro is that this raises a `py::AssertionError` with a coherent
+traceback for cross-language support. */
+template <size_t N>
+[[gnu::always_inline]] void assert_(bool, const char(&)[N]);
 
 
 ///////////////////////////////

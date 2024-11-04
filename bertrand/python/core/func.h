@@ -838,13 +838,16 @@ namespace impl {
                 using type = ArgTraits<Arguments::at<I>>::type;
                 static constexpr StaticStr name = ArgTraits<Arguments::at<I>>::name;
                 static constexpr size_t index = I;
-                std::remove_reference_t<type> value;
+                std::remove_cvref_t<type> value;
 
-                constexpr type get(this auto& self) {
-                    if constexpr (std::is_lvalue_reference_v<type>) {
-                        return self.value;
-                    } else {
+                constexpr type get(this auto&& self) {
+                    if constexpr (
+                        std::is_rvalue_reference_v<type> &&
+                        std::is_lvalue_reference_v<decltype(self)>
+                    ) {
                         return std::remove_cvref_t<type>(self.value);
+                    } else {
+                        return std::forward<decltype(self)>(self).value;
                     }
                 }
             };
@@ -989,37 +992,26 @@ namespace impl {
             constexpr Defaults(const Defaults& other) = default;
             constexpr Defaults(Defaults&& other) = default;
 
-            /// TODO: if the defaults tuple is given as an rvalue, then we can directly
-            /// move the values when the function is called instead of copying them.
-            /// This behavior can be encoded directly into these helpers by providing
-            /// rvalue-only overloads for Defaults.get<>() and Value.get().
-
             /* Get the default value at index I of the tuple.  Use find<> to correlate
-            an index from the enclosing signature if needed. */
+            an index from the enclosing signature if needed.  If the defaults container
+            is used as an lvalue, then this will either directly reference the internal
+            value if the corresponding argument expects an lvalue, or a copy if it
+            expects an unqualified or rvalue type.  If the defaults container is given
+            as an rvalue instead, then the copy will be optimized to a move. */
             template <size_t I> requires (I < n)
-            constexpr decltype(auto) get() {
-                return std::get<I>(values).get();
-            }
-
-            /* Get the default value at index I of the tuple.  Use find<> to correlate
-            an index from the enclosing signature if needed. */
-            template <size_t I> requires (I < n)
-            constexpr decltype(auto) get() const {
-                return std::get<I>(values).get();
+            constexpr decltype(auto) get(this auto&& self) {
+                return std::get<I>(std::forward<decltype(self)>(self).values).get();
             }
 
             /* Get the default value associated with the named argument, if it is
-            marked as optional. */
+            marked as optional.  If the defaults container is used as an lvalue, then
+            this will either directly reference the internal value if the corresponding
+            argument expects an lvalue, or a copy if it expects an unqualified or
+            rvalue type.  If the defaults container is given as an rvalue instead, then
+            the copy will be optimized to a move. */
             template <StaticStr Name> requires (has<Name>)
-            constexpr decltype(auto) get() {
-                return std::get<idx<Name>>(values).get();
-            }
-
-            /* Get the default value associated with the named argument, if it is
-            marked as optional. */
-            template <StaticStr Name> requires (has<Name>)
-            constexpr decltype(auto) get() const {
-                return std::get<idx<Name>>(values).get();
+            constexpr decltype(auto) get(this auto&& self) {
+                return std::get<idx<Name>>(std::forward<decltype(self)>(self).values).get();
             }
         };
 
@@ -1736,6 +1728,17 @@ namespace impl {
                     static constexpr size_t partial_idx = K;
                     using type = T;
                     std::remove_cvref_t<type> value;
+
+                    constexpr type get(this auto&& self) {
+                        if constexpr (
+                            std::is_rvalue_reference_v<type> &&
+                            std::is_lvalue_reference_v<decltype(self)>
+                        ) {
+                            return std::remove_cvref_t<type>(self.value);
+                        } else {
+                            return std::forward<decltype(self)>(self).value;
+                        }
+                    }
                 };
 
                 /* Parses the partial arguments and identifies their indices in the
@@ -2039,13 +2042,6 @@ namespace impl {
                             A... args
                         ) {
                             using T = Arguments::template at<I>;
-                            constexpr auto maybe_move = [](auto&& entry) {
-                                if constexpr (std::is_lvalue_reference_v<P>) {
-                                    return entry.value;
-                                } else {
-                                    return std::move(entry.value);
-                                }
-                            };
                             // variadic args and kwargs can consume multiple arguments from
                             // the partial list, in which case we recur until there are
                             // no more arguments to consume at that index, and then do the
@@ -2056,7 +2052,7 @@ namespace impl {
                                 std::forward<F>(func),
                                 std::forward<P>(parts),
                                 impl::unpack_arg<Prev>(std::forward<A>(args)...)...,
-                                maybe_move(std::get<K>(std::forward<P>(parts))),
+                                std::get<K>(std::forward<P>(parts)).get(),
                                 impl::unpack_arg<J + Next>(std::forward<A>(args)...)...
                             );
                         }(
@@ -2185,52 +2181,29 @@ namespace impl {
                 static constexpr bool can_convert = _can_convert<0, 0>;
 
                 template <size_t I> requires (I < std::tuple_size_v<Tuple>)
-                [[nodiscard]] constexpr decltype(auto) get() const {
-                    return std::get<I>(parts).value;
-                }
-
-                template <size_t I> requires (I < std::tuple_size_v<Tuple>)
-                [[nodiscard]] decltype(auto) get() && {
-                    return std::move(std::get<I>(parts).value);
+                [[nodiscard]] constexpr decltype(auto) get(this auto&& self) {
+                    return std::get<I>(std::forward<decltype(self)>(self).parts).get();
                 }
 
                 template <StaticStr name> requires (Arguments<Parts...>::template has<name>)
-                [[nodiscard]] constexpr decltype(auto) get() const {
-                    return std::get<Arguments<Parts...>::template idx<name>>(parts).value;
+                [[nodiscard]] constexpr decltype(auto) get(this auto&& self) {
+                    return std::get<Arguments<Parts...>::template idx<name>>(
+                        std::forward<decltype(self)>(self).parts
+                    ).get();
                 }
 
-                template <StaticStr name> requires (Arguments<Parts...>::template has<name>)
-                [[nodiscard]] decltype(auto) get() && {
-                    return std::move(
-                        std::get<Arguments<Parts...>::template idx<name>>(parts).value
-                    );
-                }
-
-                template <is<Defaults> D, typename F>
+                template <is<Defaults> D, typename F, typename... A>
                 constexpr decltype(auto) operator()(
+                    this auto&& self,
                     D&& defaults,
                     F&& func,
-                    Values... values
-                ) const {
+                    A&&... values
+                ) {
                     return merge<0, 0, 0>{}(
                         std::forward<D>(defaults),
                         std::forward<F>(func),
-                        parts,
-                        std::forward<Values>(values)...
-                    );
-                }
-
-                template <is<Defaults> D, typename F>
-                constexpr decltype(auto) operator()(
-                    D&& defaults,
-                    F&& func,
-                    Values... values
-                ) && {
-                    return merge<0, 0, 0>{}(
-                        std::forward<D>(defaults),
-                        std::forward<F>(func),
-                        std::move(parts),
-                        std::forward<Values>(values)...
+                        std::forward<decltype(self)>(self).parts,
+                        std::forward<A>(values)...
                     );
                 }
             };
@@ -4807,10 +4780,6 @@ template <impl::has_signature Func>
 using Defaults = impl::get_signature<Func>::Defaults;
 
 
-/// TODO: all of this needs extensive testing in a variety of scenarios, including
-/// constexpr contexts, and with various types of functions and arguments.
-
-
 /* Invoke a C++ function with Python-style calling conventions, including keyword
 arguments and/or parameter packs, which are resolved at compile time.  Note that the
 function signature cannot contain any template parameters (including auto arguments),
@@ -4995,28 +4964,32 @@ public:
             Bind<Values...>::satisfies_required_args &&
             Bind<Values...>::can_convert
         )
-    constexpr decltype(auto) operator()(Values&&... values) const {
-        return parts(defaults, func, std::forward<Values>(values)...);
-    }
-
-    template <typename... Values>
-        requires (
-            sig::template Bind<Values...>::proper_argument_order &&
-            sig::template Bind<Values...>::no_qualified_arg_annotations &&
-            sig::template Bind<Values...>::no_duplicate_arguments &&
-            Bind<Values...>::no_extra_positional_args &&
-            Bind<Values...>::no_extra_keyword_args &&
-            Bind<Values...>::no_conflicting_values &&
-            Bind<Values...>::satisfies_required_args &&
-            Bind<Values...>::can_convert
-        )
-    constexpr decltype(auto) operator()(Values&&... values) && {
-        return std::move(parts)(
-            std::move(defaults),
-            std::move(func),
+    constexpr decltype(auto) operator()(this auto&& self, Values&&... values) {
+        return std::forward<decltype(self)>(self).parts(
+            std::forward<decltype(self)>(self).defaults,
+            std::forward<decltype(self)>(self).func,
             std::forward<Values>(values)...
         );
     }
+
+    // template <typename... Values>
+    //     requires (
+    //         sig::template Bind<Values...>::proper_argument_order &&
+    //         sig::template Bind<Values...>::no_qualified_arg_annotations &&
+    //         sig::template Bind<Values...>::no_duplicate_arguments &&
+    //         Bind<Values...>::no_extra_positional_args &&
+    //         Bind<Values...>::no_extra_keyword_args &&
+    //         Bind<Values...>::no_conflicting_values &&
+    //         Bind<Values...>::satisfies_required_args &&
+    //         Bind<Values...>::can_convert
+    //     )
+    // constexpr decltype(auto) operator()(Values&&... values) && {
+    //     return std::move(parts)(
+    //         std::move(defaults),
+    //         std::move(func),
+    //         std::forward<Values>(values)...
+    //     );
+    // }
 };
 
 
