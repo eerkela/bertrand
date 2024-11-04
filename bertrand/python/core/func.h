@@ -5005,6 +5005,17 @@ template <typename Func, typename... Args> requires (partially_callable<Func, Ar
 explicit partial(Defaults<Func>&&, Func&& func, Args&&... args) -> partial<Func, Args...>;
 
 
+inline void test() {
+    auto func = partial(
+        { arg<"y"> = 2 },
+        [](Arg<"x", int> x, Arg<"y", int&>::opt y) {
+            return *x + *y;
+        }
+    );
+    func(1);
+}
+
+
 ////////////////////////
 ////    FUNCTION    ////
 ////////////////////////

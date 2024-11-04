@@ -4226,7 +4226,7 @@ namespace impl {
         struct _as_default { using type = U; };
         template <typename U>
         struct _as_default<OptionalArg<U>> {
-            using type = Arg<U::name, typename U::type>::kw;
+            using type = Arg<U::name, typename std::remove_cvref_t<typename U::type>>::kw;
         };
 
     public:
