@@ -5,7 +5,6 @@
 #include "object.h"
 #include "except.h"
 #include "ops.h"
-#include "arg.h"
 #include "iter.h"
 
 
@@ -4735,6 +4734,51 @@ namespace impl {
 }
 
 
+template <typename Self, typename... Args>
+    requires (
+        __call__<Self, Args...>::enable &&
+        std::convertible_to<typename __call__<Self, Args...>::type, Object> && (
+            std::is_invocable_r_v<
+                typename __call__<Self, Args...>::type,
+                __call__<Self, Args...>,
+                Self,
+                Args...
+            > || (
+                !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
+                impl::has_cpp<Self> &&
+                std::is_invocable_r_v<
+                    typename __call__<Self, Args...>::type,
+                    impl::cpp_type<Self>,
+                    Args...
+                >
+            ) || (
+                !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
+                !impl::has_cpp<Self> &&
+                std::derived_from<typename __call__<Self, Args...>::type, Object> &&
+                __getattr__<Self, "__call__">::enable &&
+                impl::inherits<typename __getattr__<Self, "__call__">::type, impl::FunctionTag>
+            )
+        )
+    )
+decltype(auto) Object::operator()(this Self&& self, Args&&... args) {
+    if constexpr (std::is_invocable_v<__call__<Self, Args...>, Self, Args...>) {
+        return __call__<Self, Args...>{}(
+            std::forward<Self>(self),
+            std::forward<Args>(args)...
+        );
+
+    } else if constexpr (impl::has_cpp<Self>) {
+        return from_python(std::forward<Self>(self))(
+            std::forward<Args>(args)...
+        );
+    } else {
+        return getattr<"__call__">(std::forward<Self>(self))(
+            std::forward<Args>(args)...
+        );
+    }
+}
+
+
 /* A template constraint that controls whether the `py::call()` operator is enabled
 for a given C++ function and argument list. */
 template <typename Func, typename... Args>
@@ -4986,51 +5030,6 @@ template <typename Func, typename... Args> requires (partially_callable<Func, Ar
 explicit partial(const Defaults<Func>&, Func&& func, Args&&... args) -> partial<Func, Args...>;
 template <typename Func, typename... Args> requires (partially_callable<Func, Args...>)
 explicit partial(Defaults<Func>&&, Func&& func, Args&&... args) -> partial<Func, Args...>;
-
-
-template <typename Self, typename... Args>
-    requires (
-        __call__<Self, Args...>::enable &&
-        std::convertible_to<typename __call__<Self, Args...>::type, Object> && (
-            std::is_invocable_r_v<
-                typename __call__<Self, Args...>::type,
-                __call__<Self, Args...>,
-                Self,
-                Args...
-            > || (
-                !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
-                impl::has_cpp<Self> &&
-                std::is_invocable_r_v<
-                    typename __call__<Self, Args...>::type,
-                    impl::cpp_type<Self>,
-                    Args...
-                >
-            ) || (
-                !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
-                !impl::has_cpp<Self> &&
-                std::derived_from<typename __call__<Self, Args...>::type, Object> &&
-                __getattr__<Self, "__call__">::enable &&
-                impl::inherits<typename __getattr__<Self, "__call__">::type, impl::FunctionTag>
-            )
-        )
-    )
-decltype(auto) Object::operator()(this Self&& self, Args&&... args) {
-    if constexpr (std::is_invocable_v<__call__<Self, Args...>, Self, Args...>) {
-        return __call__<Self, Args...>{}(
-            std::forward<Self>(self),
-            std::forward<Args>(args)...
-        );
-
-    } else if constexpr (impl::has_cpp<Self>) {
-        return from_python(std::forward<Self>(self))(
-            std::forward<Args>(args)...
-        );
-    } else {
-        return getattr<"__call__">(std::forward<Self>(self))(
-            std::forward<Args>(args)...
-        );
-    }
-}
 
 
 ////////////////////////
