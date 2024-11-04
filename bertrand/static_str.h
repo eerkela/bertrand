@@ -1369,51 +1369,41 @@ public:
         const StaticStr& self,
         const StaticStr<M>& other
     ) {
-        if constexpr (N != M) {
-            return false;
-        } else {
-            size_t i = 0;
-            while (i < self.size()) {
+        if constexpr (N == M) {
+            for (size_t i = 0; i < N; ++i) {
                 if (self[i] != other[i]) {
                     return false;
                 }
-                ++i;
             }
             return true;
         }
+        return false;
     }
     template <size_t M>
     friend consteval bool operator==(
         const StaticStr& self,
         const char(&other)[M]
     ) {
-        if constexpr (N != (M - 1)) {
-            return false;
-        } else {
-            size_t i = 0;
-            while (i < self.size()) {
+        if constexpr (N == (M - 1)) {
+            for (size_t i = 0; i < N; ++i) {
                 if (self[i] != other[i]) {
                     return false;
                 }
-                ++i;
             }
             return true;
         }
+        return false;
     }
     template <size_t M>
     friend consteval bool operator==(
         const char(&other)[M],
         const StaticStr& self
     ) {
-        if constexpr (N != (M - 1)) {
-            return false;
-        } else {
-            size_t i = 0;
-            while (i < self.size()) {
+        if constexpr (N == (M - 1)) {
+            for (size_t i = 0; i < N; ++i) {
                 if (self[i] != other[i]) {
                     return false;
                 }
-                ++i;
             }
             return true;
         }
@@ -1424,54 +1414,45 @@ public:
         const StaticStr& self,
         const StaticStr<M>& other
     ) {
-        if constexpr (N != M) {
-            return false;
-        } else {
-            size_t i = 0;
-            while (i < self.size()) {
-                if (self[i] == other[i]) {
-                    return false;
+        if constexpr (N == M) {
+            for (size_t i = 0; i < N; ++i) {
+                if (self[i] != other[i]) {
+                    return true;
                 }
-                ++i;
             }
-            return true;
+            return false;
         }
+        return true;
     }
     template <size_t M>
     friend consteval bool operator!=(
         const StaticStr& self,
         const char(&other)[M]
     ) {
-        if constexpr (N != (M - 1)) {
-            return false;
-        } else {
-            size_t i = 0;
-            while (i < self.size()) {
-                if (self[i] == other[i]) {
-                    return false;
+        if constexpr (N == (M - 1)) {
+            for (size_t i = 0; i < N; ++i) {
+                if (self[i] != other[i]) {
+                    return true;
                 }
-                ++i;
             }
-            return true;
+            return false;
         }
+        return true;
     }
     template <size_t M>
     friend consteval bool operator!=(
         const char(&other)[M],
         const StaticStr& self
     ) {
-        if constexpr (N != (M - 1)) {
-            return false;
-        } else {
-            size_t i = 0;
-            while (i < self.size()) {
-                if (self[i] == other[i]) {
-                    return false;
+        if constexpr (N == (M - 1)) {
+            for (size_t i = 0; i < N; ++i) {
+                if (self[i] != other[i]) {
+                    return true;
                 }
-                ++i;
             }
-            return true;
+            return false;
         }
+        return true;
     }
 
     template <size_t M>
