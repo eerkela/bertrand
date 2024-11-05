@@ -38,18 +38,6 @@ void del(impl::Item<Self, Key...>&& item);
 
 namespace impl {
 
-    template <typename T>
-    concept lazily_evaluated = is_attr<T> || is_item<T>;
-
-    template <typename T>
-    struct lazy_type_helper {};
-    template <is_attr T>
-    struct lazy_type_helper<T> { using type = attr_type<T>; };
-    template <is_item T>
-    struct lazy_type_helper<T> { using type = item_type<T>; };
-    template <lazily_evaluated T>
-    using lazy_type = lazy_type_helper<std::remove_cvref_t<T>>::type;
-
     /* A proxy for the result of an attribute lookup that is controlled by the
     `__getattr__`, `__setattr__`, and `__delattr__` control structs.
 
@@ -82,18 +70,18 @@ namespace impl {
             )
         friend void py::del(Attr<S, N>&& item);
         template <impl::inherits<Object> T>
-        friend PyObject* ptr(T&&);
+        friend PyObject* py::ptr(T&&);
         template <impl::inherits<Object> T>
             requires (!std::is_const_v<std::remove_reference_t<T>>)
-        friend PyObject* release(T&&);
+        friend PyObject* py::release(T&&);
         template <std::derived_from<Object> T>
-        friend T reinterpret_borrow(PyObject*);
+        friend T py::reinterpret_borrow(PyObject*);
         template <std::derived_from<Object> T>
-        friend T reinterpret_steal(PyObject*);
+        friend T py::reinterpret_steal(PyObject*);
         template <impl::python T> requires (impl::has_cpp<T>)
-        friend auto& impl::unwrap(T& obj);
+        friend auto& py::impl::unwrap(T& obj);
         template <impl::python T> requires (impl::has_cpp<T>)
-        friend const auto& impl::unwrap(const T& obj);
+        friend const auto& py::impl::unwrap(const T& obj);
 
         /* m_self inherits the same const/volatile/reference qualifiers as the original
         object. */
@@ -220,17 +208,17 @@ namespace impl {
             )
         friend void py::del(Item<S, K...>&& item);
         template <impl::inherits<Object> T>
-        friend PyObject* ptr(T&&);
+        friend PyObject* py::ptr(T&&);
         template <impl::inherits<Object> T> requires (!std::is_const_v<std::remove_reference_t<T>>)
-        friend PyObject* release(T&&);
+        friend PyObject* py::release(T&&);
         template <std::derived_from<Object> T>
-        friend T reinterpret_borrow(PyObject*);
+        friend T py::reinterpret_borrow(PyObject*);
         template <std::derived_from<Object> T>
-        friend T reinterpret_steal(PyObject*);
+        friend T py::reinterpret_steal(PyObject*);
         template <impl::python T> requires (impl::has_cpp<T>)
-        friend auto& impl::unwrap(T& obj);
+        friend auto& py::impl::unwrap(T& obj);
         template <impl::python T> requires (impl::has_cpp<T>)
-        friend const auto& impl::unwrap(const T& obj);
+        friend const auto& py::impl::unwrap(const T& obj);
 
         /* m_self inherits the same const/volatile/reference qualifiers as the original
         object, and the keys are stored directly as members, retaining their original
@@ -477,54 +465,8 @@ void del(impl::Item<Self, Key...>&& item) {
 }
 
 
-/* Implicitly convert a lazily-evaluated attribute or item wrapper to any type that the
-wrapped object can be converted to. */
-template <impl::lazily_evaluated From, typename To>
-    requires (std::convertible_to<impl::lazy_type<From>, To>)
-struct __cast__<From, To>                                   : Returns<To> {
-    static To operator()(From from) {
-        if constexpr (impl::python<To>) {
-            if constexpr (std::is_lvalue_reference_v<From>) {
-                return impl::implicit_cast<To>(
-                    reinterpret_borrow<impl::lazy_type<From>>(ptr(from))
-                );
-           } else {
-                return impl::implicit_cast<To>(
-                    reinterpret_steal<impl::lazy_type<From>>(release(from))
-                );
-            }
-        } else {
-            return impl::implicit_cast<To>(
-                from_python(std::forward<From>(from))
-            );
-        }
-    }
-};
-
-
-/* Explicitly convert a lazily-evaluated attribute or item wrapper to any type that the
-wrapped object can be converted to. */
-template <impl::lazily_evaluated From, typename To>
-    requires (impl::explicitly_convertible_to<impl::lazy_type<From>, To>)
-struct __explicit_cast__<From, To>                          : Returns<To> {
-    static To operator()(From from) {
-        if constexpr (impl::python<To>) {
-            if constexpr (std::is_lvalue_reference_v<From>) {
-                return static_cast<To>(
-                    reinterpret_borrow<impl::lazy_type<From>>(ptr(from))
-                );
-            } else {
-                return static_cast<To>(
-                    reinterpret_steal<impl::lazy_type<From>>(release(from))
-                );
-            }
-        } else {
-            return static_cast<To>(
-                from_python(std::forward<From>(from))
-            );
-        }
-    }
-};
+/// TODO: perhaps all of these could be avoided by exploiting inheritance for the
+/// root control structs, which would help avoid ambiguities.
 
 
 template <impl::lazily_evaluated Derived, impl::lazily_evaluated Base>

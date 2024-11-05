@@ -175,6 +175,13 @@ namespace impl {
     template <typename T, typename Self>
     using qualify_pointer = std::add_pointer_t<std::remove_reference_t<qualify<T, Self>>>;
 
+    template <typename T>
+    struct _remove_rvalue { using type = T; };
+    template <typename T>
+    struct _remove_rvalue<T&&> { using type = T; };
+    template <typename T>
+    using remove_rvalue = _remove_rvalue<T>::type;
+
     /* Round a number up to the next power of two unless it is one already. */
     template <std::unsigned_integral T>
     constexpr T next_power_of_two(T n) noexcept {
@@ -3487,6 +3494,18 @@ namespace impl {
     concept is_item = item_helper<std::remove_cvref_t<T>>::enable;
     template <is_item T>
     using item_type = item_helper<std::remove_cvref_t<T>>::type;
+
+    template <typename T>
+    concept lazily_evaluated = is_attr<T> || is_item<T>;
+
+    template <typename T>
+    struct lazy_type_helper {};
+    template <is_attr T>
+    struct lazy_type_helper<T> { using type = attr_type<T>; };
+    template <is_item T>
+    struct lazy_type_helper<T> { using type = item_type<T>; };
+    template <lazily_evaluated T>
+    using lazy_type = lazy_type_helper<std::remove_cvref_t<T>>::type;
 
     /// TODO: eventually I should reconsider the following concepts and potentially
     /// standardize them in some way.  Ideally, I can fully remove them and replace
