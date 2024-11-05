@@ -5695,6 +5695,9 @@ namespace impl {
     /// a staticmethod will simply be returned as the descriptor, and it becomes
     /// easy to differentiate.
 
+    /// TODO: The __instancecheck__ and __subclasscheck__ methods should probably
+    /// just convert the type to an intersection and the forward accordingly.
+
     /* A `@classmethod` descriptor for a C++ function type, which references an
     unbound function and produces bound equivalents that pass the enclosing type as a
     `self` argument when accessed. */
@@ -5939,22 +5942,16 @@ type check.)doc";
 
         static PyObject* __or__(PyObject* lhs, PyObject* rhs) noexcept {
             try {
-                Object bertrand = reinterpret_steal<Object>(PyImport_Import(
-                    ptr(template_string<"bertrand">())
-                ));
-                if (bertrand.is(nullptr)) {
-                    Exception::from_python();
-                }
                 if (PyType_IsSubtype(Py_TYPE(lhs), &__type__)) {
-                    Object intersection = getattr<"Intersection">(bertrand)[
-                        reinterpret_cast<ClassMethod*>(lhs)->structural_type()
-                    ];
-                    return PyNumber_Or(ptr(intersection), rhs);
+                    return PyNumber_Or(
+                        ptr(reinterpret_cast<ClassMethod*>(lhs)->structural_type()),
+                        rhs
+                    );
                 }
-                Object intersection = getattr<"Intersection">(bertrand)[
-                    reinterpret_cast<ClassMethod*>(rhs)->structural_type()
-                ];
-                return PyNumber_Or(lhs, ptr(intersection));
+                return PyNumber_Or(
+                    lhs,
+                    ptr(reinterpret_cast<ClassMethod*>(rhs)->structural_type())
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -5963,45 +5960,27 @@ type check.)doc";
 
         static PyObject* __and__(PyObject* lhs, PyObject* rhs) noexcept {
             try {
-                Object bertrand = reinterpret_steal<Object>(PyImport_Import(
-                    ptr(template_string<"bertrand">())
-                ));
-                if (bertrand.is(nullptr)) {
-                    Exception::from_python();
-                }
                 if (PyType_IsSubtype(Py_TYPE(lhs), &__type__)) {
-                    Object intersection = getattr<"Intersection">(bertrand)[
-                        reinterpret_cast<ClassMethod*>(lhs)->structural_type()
-                    ];
-                    return PyNumber_And(ptr(intersection), rhs);
+                    return PyNumber_And(
+                        ptr(reinterpret_cast<ClassMethod*>(lhs)->structural_type()),
+                        rhs
+                    );
                 }
-                Object intersection = getattr<"Intersection">(bertrand)[
-                    reinterpret_cast<ClassMethod*>(rhs)->structural_type()
-                ];
-                return PyNumber_And(lhs, ptr(intersection));
+                return PyNumber_And(
+                    lhs,
+                    ptr(reinterpret_cast<ClassMethod*>(rhs)->structural_type())
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
             }
         }
 
-        /// TODO: __isinstance__ and __issubclass__, which have to be registered as
-        /// methods.
-        /// -> These need to do something slightly more complicated than just forwarding
-        /// the type check.  If `isinstance()` is called on an instance of some type,
-        /// then the type check will receive a bound method, which would need to be
-        /// handled somehow.  If `issubclass()` is called on a type, then it will
-        /// receive the unbound method descriptor instead.
-
         static PyObject* __instancecheck__(ClassMethod* self, PyObject* obj) noexcept {
             try {
-                Object attr = self->get_attribute(obj);
-                if (attr.is(nullptr)) {
-                    Py_RETURN_FALSE;
-                }
                 int rc = PyObject_IsInstance(
-                    ptr(attr),
-                    ptr(self->member_function_type)
+                    obj,
+                    ptr(self->structural_type())
                 );
                 if (rc < 0) {
                     return nullptr;
@@ -6015,13 +5994,9 @@ type check.)doc";
 
         static PyObject* __subclasscheck__(ClassMethod* self, PyObject* cls) noexcept {
             try {
-                Object attr = self->get_attribute(cls);
-                if (attr.is(nullptr)) {
-                    Py_RETURN_FALSE;
-                }
                 int rc = PyObject_IsSubclass(
-                    ptr(attr),
-                    ptr(self->member_function_type)
+                    cls,
+                    ptr(self->structural_type())
                 );
                 if (rc < 0) {
                     return nullptr;
@@ -6086,6 +6061,12 @@ type check.)doc";
         }
 
         Object structural_type() const {
+            Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+                ptr(template_string<"bertrand">())
+            ));
+            if (bertrand.is(nullptr)) {
+                Exception::from_python();
+            }
             Object self_type = getattr<"_self_type">(func);
             if (self_type.is(None)) {
                 throw TypeError("function must accept at least one positional argument");
@@ -6127,21 +6108,7 @@ type check.)doc";
             if (result.is(nullptr)) {
                 Exception::from_python();
             }
-            return result;
-        }
-
-        Object get_attribute(PyObject* obj) const {
-            Object name = getattr<"__name__">(func);
-            if (PyObject_HasAttr(obj, ptr(name))) {
-                Object attr = reinterpret_steal<Object>(
-                    PyObject_GetAttr(obj, ptr(func))
-                );
-                if (attr.is(nullptr)) {
-                    Exception::from_python();
-                }
-                return attr;
-            }
-            return reinterpret_steal<Object>(nullptr);
+            return getattr<"Intersection">(bertrand)[result];
         }
 
         inline static PyNumberMethods number = {
@@ -6401,22 +6368,16 @@ type check.)doc";
 
         static PyObject* __or__(PyObject* lhs, PyObject* rhs) noexcept {
             try {
-                Object bertrand = reinterpret_steal<Object>(PyImport_Import(
-                    ptr(template_string<"bertrand">())
-                ));
-                if (bertrand.is(nullptr)) {
-                    Exception::from_python();
-                }
                 if (PyType_IsSubtype(Py_TYPE(lhs), &__type__)) {
-                    Object intersection = getattr<"Intersection">(bertrand)[
-                        reinterpret_cast<StaticMethod*>(lhs)->structural_type()
-                    ];
-                    return PyNumber_Or(ptr(intersection), rhs);
+                    return PyNumber_Or(
+                        ptr(reinterpret_cast<StaticMethod*>(lhs)->structural_type()),
+                        rhs
+                    );
                 }
-                Object intersection = getattr<"Intersection">(bertrand)[
-                    reinterpret_cast<StaticMethod*>(rhs)->structural_type()
-                ];
-                return PyNumber_Or(lhs, ptr(intersection));
+                return PyNumber_Or(
+                    lhs,
+                    ptr(reinterpret_cast<StaticMethod*>(rhs)->structural_type())
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -6425,22 +6386,16 @@ type check.)doc";
 
         static PyObject* __and__(PyObject* lhs, PyObject* rhs) noexcept {
             try {
-                Object bertrand = reinterpret_steal<Object>(PyImport_Import(
-                    ptr(template_string<"bertrand">())
-                ));
-                if (bertrand.is(nullptr)) {
-                    Exception::from_python();
-                }
                 if (PyType_IsSubtype(Py_TYPE(lhs), &__type__)) {
-                    Object intersection = getattr<"Intersection">(bertrand)[
-                        reinterpret_cast<StaticMethod*>(rhs)->structural_type()
-                    ];
-                    return PyNumber_And(ptr(intersection), rhs);
+                    return PyNumber_And(
+                        ptr(reinterpret_cast<StaticMethod*>(lhs)->structural_type()),
+                        rhs
+                    );
                 }
-                Object intersection = getattr<"Intersection">(bertrand)[
-                    reinterpret_cast<StaticMethod*>(rhs)->structural_type()
-                ];
-                return PyNumber_And(lhs, ptr(intersection));
+                return PyNumber_And(
+                    lhs,
+                    ptr(reinterpret_cast<StaticMethod*>(rhs)->structural_type())
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -6449,13 +6404,9 @@ type check.)doc";
 
         static PyObject* __instancecheck__(StaticMethod* self, PyObject* obj) noexcept {
             try {
-                Object attr = self->get_attribute(obj);
-                if (attr.is(nullptr)) {
-                    Py_RETURN_FALSE;
-                }
                 int rc = PyObject_IsInstance(
-                    ptr(attr),
-                    ptr(self->func)
+                    obj,
+                    ptr(self->structural_type())
                 );
                 if (rc < 0) {
                     return nullptr;
@@ -6469,13 +6420,9 @@ type check.)doc";
 
         static PyObject* __subclasscheck__(StaticMethod* self, PyObject* cls) noexcept {
             try {
-                Object attr = self->get_attribute(cls);
-                if (attr.is(nullptr)) {
-                    Py_RETURN_FALSE;
-                }
                 int rc = PyObject_IsSubclass(
-                    ptr(attr),
-                    ptr(self->func)
+                    cls,
+                    ptr(self->structural_type())
                 );
                 if (rc < 0) {
                     return nullptr;
@@ -6500,6 +6447,12 @@ type check.)doc";
     private:
 
         Object structural_type() const {
+            Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+                ptr(template_string<"bertrand">())
+            ));
+            if (bertrand.is(nullptr)) {
+                Exception::from_python();
+            }
             Object result = reinterpret_steal<Object>(PySlice_New(
                 ptr(getattr<"__name__">(func)),
                 reinterpret_cast<PyObject*>(Py_TYPE(ptr(func))),
@@ -6508,21 +6461,7 @@ type check.)doc";
             if (result.is(nullptr)) {
                 Exception::from_python();
             }
-            return result;
-        }
-
-        Object get_attribute(PyObject* obj) const {
-            Object name = getattr<"__name__">(func);
-            if (PyObject_HasAttr(obj, ptr(name))) {
-                Object attr = reinterpret_steal<Object>(
-                    PyObject_GetAttr(obj, ptr(func))
-                );
-                if (attr.is(nullptr)) {
-                    Exception::from_python();
-                }
-                return attr;
-            }
-            return reinterpret_steal<Object>(nullptr);
+            return getattr<"Intersection">(bertrand)[result];
         }
 
         inline static PyNumberMethods number = {
@@ -6841,22 +6780,16 @@ structural type check.)doc";
 
         static PyObject* __or__(PyObject* lhs, PyObject* rhs) noexcept {
             try {
-                Object bertrand = reinterpret_steal<Object>(PyImport_Import(
-                    ptr(template_string<"bertrand">())
-                ));
-                if (bertrand.is(nullptr)) {
-                    Exception::from_python();
-                }
                 if (PyType_IsSubtype(Py_TYPE(lhs), &__type__)) {
-                    Object intersection = getattr<"Intersection">(bertrand)[
-                        reinterpret_cast<Property*>(lhs)->structural_type()
-                    ];
-                    return PyNumber_Or(ptr(intersection), rhs);
+                    return PyNumber_Or(
+                        ptr(reinterpret_cast<Property*>(lhs)->structural_type()),
+                        rhs
+                    );
                 }
-                Object intersection = getattr<"Intersection">(bertrand)[
-                    reinterpret_cast<Property*>(rhs)->structural_type()
-                ];
-                return PyNumber_Or(lhs, ptr(intersection));
+                return PyNumber_Or(
+                    lhs,
+                    ptr(reinterpret_cast<Property*>(rhs)->structural_type())
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -6865,22 +6798,16 @@ structural type check.)doc";
 
         static PyObject* __and__(PyObject* lhs, PyObject* rhs) noexcept {
             try {
-                Object bertrand = reinterpret_steal<Object>(PyImport_Import(
-                    ptr(template_string<"bertrand">())
-                ));
-                if (bertrand.is(nullptr)) {
-                    Exception::from_python();
-                }
                 if (PyType_IsSubtype(Py_TYPE(lhs), &__type__)) {
-                    Object intersection = getattr<"Intersection">(bertrand)[
-                        reinterpret_cast<Property*>(rhs)->structural_type()
-                    ];
-                    return PyNumber_And(ptr(intersection), rhs);
+                    return PyNumber_And(
+                        ptr(reinterpret_cast<Property*>(lhs)->structural_type()),
+                        rhs
+                    );
                 }
-                Object intersection = getattr<"Intersection">(bertrand)[
-                    reinterpret_cast<Property*>(rhs)->structural_type()
-                ];
-                return PyNumber_And(lhs, ptr(intersection));
+                return PyNumber_And(
+                    lhs,
+                    ptr(reinterpret_cast<Property*>(rhs)->structural_type())
+                );
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -6889,13 +6816,9 @@ structural type check.)doc";
 
         static PyObject* __instancecheck__(Property* self, PyObject* obj) noexcept {
             try {
-                Object attr = self->get_attribute(obj);
-                if (attr.is(nullptr)) {
-                    Py_RETURN_FALSE;
-                }
                 int rc = PyObject_IsInstance(
-                    ptr(attr),
-                    ptr(self->fget)
+                    obj,
+                    ptr(self->structural_type())
                 );
                 if (rc < 0) {
                     return nullptr;
@@ -6909,13 +6832,9 @@ structural type check.)doc";
 
         static PyObject* __subclasscheck__(Property* self, PyObject* cls) noexcept {
             try {
-                Object attr = self->get_attribute(cls);
-                if (attr.is(nullptr)) {
-                    Py_RETURN_FALSE;
-                }
                 int rc = PyObject_IsSubclass(
-                    ptr(attr),
-                    ptr(self->fget)
+                    cls,
+                    ptr(self->structural_type())
                 );
                 if (rc < 0) {
                     return nullptr;
@@ -6940,6 +6859,12 @@ structural type check.)doc";
     private:
 
         Object structural_type() const {
+            Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+                ptr(template_string<"bertrand">())
+            ));
+            if (bertrand.is(nullptr)) {
+                Exception::from_python();
+            }
             Object self_type = getattr<"_self_type">(fget);
             if (self_type.is(None)) {
                 throw TypeError("getter must accept at least one positional argument");
@@ -6952,21 +6877,7 @@ structural type check.)doc";
             if (result.is(nullptr)) {
                 Exception::from_python();
             }
-            return result;
-        }
-
-        Object get_attribute(PyObject* obj) const {
-            Object name = getattr<"__name__">(fget);
-            if (PyObject_HasAttr(obj, ptr(name))) {
-                Object attr = reinterpret_steal<Object>(
-                    PyObject_GetAttr(obj, ptr(fget))
-                );
-                if (attr.is(nullptr)) {
-                    Exception::from_python();
-                }
-                return attr;
-            }
-            return reinterpret_steal<Object>(nullptr);
+            return getattr<"Intersection">(bertrand)[result];
         }
 
         /// TODO: these may need to be properties, so that assigning to a
