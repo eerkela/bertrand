@@ -2483,11 +2483,11 @@ namespace impl {
 
             Kwargs get_kwargs() const {
                 Kwargs map;
-                map.reserve(kwcount);
-                for (size_t i = 0; i < kwcount; ++i) {
+                map.reserve(m_kwcount);
+                for (size_t i = 0; i < m_kwcount; ++i) {
                     Py_ssize_t len;
                     const char* name = PyUnicode_AsUTF8AndSize(
-                        PyTuple_GET_ITEM(kwnames, i),
+                        PyTuple_GET_ITEM(m_kwnames, i),
                         &len
                     );
                     if (name == nullptr) {
@@ -2495,7 +2495,7 @@ namespace impl {
                     }
                     map.emplace(
                         std::string_view{name, static_cast<size_t>(len)},
-                        args[nargs + i]
+                        m_args[m_nargs + i]
                     );
                 }
                 return map;
@@ -2507,8 +2507,8 @@ namespace impl {
                 constexpr StaticStr name = ArgTraits<T>::name;
 
                 if constexpr (ArgTraits<T>::pos()) {
-                    if (I < nargs) {
-                        return to_arg<I>(reinterpret_borrow<Object>(args[I]));
+                    if (I < m_nargs) {
+                        return to_arg<I>(reinterpret_borrow<Object>(m_args[I]));
                     }
                     if constexpr (ArgTraits<T>::opt()) {
                         return to_arg<I>(
@@ -2539,9 +2539,9 @@ namespace impl {
 
                 } else if constexpr (ArgTraits<T>::args()) {
                     std::vector<typename ArgTraits<T>::type> vec;
-                    vec.reserve(nargs - I);
-                    for (size_t i = I; i < nargs; ++i) {
-                        vec.emplace_back(reinterpret_borrow<Object>(args[i]));
+                    vec.reserve(m_nargs - I);
+                    for (size_t i = I; i < m_nargs; ++i) {
+                        vec.emplace_back(reinterpret_borrow<Object>(m_args[i]));
                     }
                     return to_arg<I>(std::move(vec));
 
@@ -2563,8 +2563,8 @@ namespace impl {
                 constexpr StaticStr name = ArgTraits<T>::name;
 
                 if constexpr (ArgTraits<T>::posonly()) {
-                    if (I < nargs) {
-                        return to_arg<I>(reinterpret_borrow<Object>(args[I]));
+                    if (I < m_nargs) {
+                        return to_arg<I>(reinterpret_borrow<Object>(m_args[I]));
                     }
                     if constexpr (ArgTraits<T>::opt()) {
                         return to_arg<I>(
@@ -2578,8 +2578,8 @@ namespace impl {
                     }
 
                 } else if constexpr (ArgTraits<T>::pos()) {
-                    if (I < nargs) {
-                        return to_arg<I>(reinterpret_borrow<Object>(args[I]));
+                    if (I < m_nargs) {
+                        return to_arg<I>(reinterpret_borrow<Object>(m_args[I]));
                     } else if (auto node = kwargs.extract(name)) {
                         return to_arg<I>(
                             reinterpret_borrow<Object>(node.mapped())
@@ -2613,11 +2613,11 @@ namespace impl {
                     }
 
                 } else if constexpr (ArgTraits<T>::args()) {
-                    if (I < nargs) {
+                    if (I < m_nargs) {
                         std::vector<typename ArgTraits<T>::type> vec;
-                        vec.reserve(nargs - I);
-                        for (size_t i = I; i < nargs; ++i) {
-                            vec.emplace_back(reinterpret_borrow<Object>(args[i]));
+                        vec.reserve(m_nargs - I);
+                        for (size_t i = I; i < m_nargs; ++i) {
+                            vec.emplace_back(reinterpret_borrow<Object>(m_args[i]));
                         }
                         return to_arg<I>(std::move(vec));
                     }
@@ -2652,53 +2652,103 @@ namespace impl {
                 }
             }
 
+            PyObject* m_kwnames;
+            size_t m_kwcount;
+            size_t m_nargs;
+            size_t m_flags;
+            std::vector<PyObject*> m_args;
+
+            /* Convert the input arguments into bertrand types and build an overload
+            key at the same time. */
+            static std::vector<PyObject*> convert(
+                PyObject* const* args,
+                size_t nargs,
+                size_t kwcount
+            ) {
+                /// TODO: I'm sure this can be done more efficiently than by importing
+                /// the bertrand module and calling it explicitly, but I won't be able
+                /// to implement that until modules are done.
+                Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+                    ptr(template_string<"bertrand">())
+                ));
+                if (bertrand.is(nullptr)) {
+                    Exception::from_python();
+                }
+                std::vector<PyObject*> vec;
+                vec.reserve(nargs + kwcount);
+                for (size_t i = 0; i < nargs; ++i) {
+                    vec.emplace_back(PyObject_CallOneArg(
+                        ptr(bertrand),
+                        args[i]
+                    ));
+                    if (vec.back() == nullptr) {
+                        for (size_t j = 0; j < i; ++j) {
+                            Py_DECREF(vec[j]);
+                        }
+                        Exception::from_python();
+                    }
+                }
+                for (size_t i = 0; i < kwcount; ++i) {
+                    vec.emplace_back(PyObject_CallOneArg(
+                        ptr(bertrand),
+                        args[nargs + i]
+                    ));
+                    if (vec.back() == nullptr) {
+                        for (size_t j = 0, end = nargs + i; j < end; ++j) {
+                            Py_DECREF(vec[j]);
+                        }
+                        Exception::from_python();
+                    }
+                }
+                return vec;
+            }
+
         public:
-            PyObject* const* args;
-            size_t nargs;
-            PyObject* kwnames;
-            size_t kwcount;
-            size_t offset;
 
             Vectorcall(PyObject* const* args, size_t nargsf, PyObject* kwnames) :
-                args(args),
-                nargs(PyVectorcall_NARGS(nargsf)),
-                kwnames(kwnames),
-                kwcount(kwnames ? PyTuple_GET_SIZE(kwnames) : 0),
-                offset(nargsf & PY_VECTORCALL_ARGUMENTS_OFFSET)
+                m_kwnames(kwnames),
+                m_kwcount(kwnames ? PyTuple_GET_SIZE(kwnames) : 0),
+                m_nargs(PyVectorcall_NARGS(nargsf)),
+                m_flags(nargsf & PY_VECTORCALL_ARGUMENTS_OFFSET),
+                m_args(convert(
+                    args,
+                    m_nargs,
+                    m_kwcount
+                ))
             {}
 
-            /// TODO: basically, this class implements the Python call operator when
-            /// there are no overloads.  The key() will be generated and if an overload
-            /// is found, the vectorcall argument array held here will be perfectly
-            /// forwarded.  Otherwise, we will invoke the call operator on the default
-            /// implementation, and return the result directly to Python.
+            ~Vectorcall() {
+                for (PyObject* arg : m_args) {
+                    Py_DECREF(arg);
+                }
+            }
 
             /* Produce an overload key from the Python arguments, which can be used to
             search the overload trie and invoke a resulting function. */
             Params<std::vector<Param>> key() const {
                 size_t hash = 0;
                 std::vector<Param> vec;
-                vec.reserve(nargs + kwcount);
-                for (size_t i = 0; i < nargs; ++i) {
+                vec.reserve(m_args.size());
+                for (size_t i = 0; i < m_nargs; ++i) {
                     vec.emplace_back(
                         "",
-                        reinterpret_borrow<Object>(args[i]),
+                        reinterpret_borrow<Object>(m_args[i]),
                         ArgKind::POS
                     );
                     hash = hash_combine(hash, vec.back().hash(seed, prime));
                 }
-                for (size_t i = 0; i < kwcount; ++i) {
+                for (size_t i = 0; i < m_kwcount; ++i) {
                     Py_ssize_t len;
                     const char* name = PyUnicode_AsUTF8AndSize(
-                        PyTuple_GET_ITEM(kwnames, i),
+                        PyTuple_GET_ITEM(m_kwnames, i),
                         &len
                     );
                     if (name == nullptr) {
                         Exception::from_python();
                     }
                     vec.emplace_back(
-                        std::string_view(name, len),
-                        reinterpret_borrow<Object>(args[nargs + i]),
+                        std::string_view{name, static_cast<size_t>(len)},
+                        reinterpret_borrow<Object>(m_args[m_nargs + i]),
                         ArgKind::KW
                     );
                     hash = hash_combine(hash, vec.back().hash(seed, prime));
@@ -2709,39 +2759,43 @@ namespace impl {
                 };
             }
 
+            PyObject* const* args() const { return m_args.data(); }
+            size_t nargsf() const { return m_nargs | m_flags; }
+            PyObject* kwnames() const { return m_kwnames; }
+
             /* Invoke a C++ function from Python using Python-style arguments. */
-            template <is<Defaults> T, typename Func>
+            template <is<Defaults> D, typename Func>
                 requires (std::is_invocable_v<Func, Args...>)
-            decltype(auto) operator()(T&& defaults, Func&& func) const {
+            decltype(auto) operator()(D&& defaults, Func&& func) const {
                 return [&]<size_t... Is>(
                     std::index_sequence<Is...>,
-                    T defaults,
+                    D defaults,
                     Func func
                 ) {
                     if constexpr (!Arguments::has_args) {
-                        if (nargs > Arguments::n_pos) {
-                            size_t idx = nargs - 1;
+                        if (m_nargs > Arguments::n_pos) {
+                            size_t idx = m_nargs - 1;
                             std::string message =
                                 "unexpected positional arguments: [" +
-                                repr(reinterpret_borrow<Object>(args[idx]));
-                            while (++idx < nargs) {
+                                repr(reinterpret_borrow<Object>(m_args[idx]));
+                            while (++idx < m_nargs) {
                                 message += ", " + repr(
-                                    reinterpret_borrow<Object>(args[idx])
+                                    reinterpret_borrow<Object>(m_args[idx])
                                 );
                             }
                             message += "]";
                             throw TypeError(message);
                         }
                     }
-                    if (kwnames) {
+                    if (m_kwnames) {
                         Kwargs kwargs = get_kwargs();
                         if constexpr (Arguments::has_kwargs) {
                             return std::forward<Func>(func)(
-                                translate<Is>(std::forward<T>(defaults), kwargs)...
+                                translate<Is>(std::forward<D>(defaults), kwargs)...
                             );
                         } else {
                             pack bound {
-                                translate<Is>(std::forward<T>(defaults), kwargs)...
+                                translate<Is>(std::forward<D>(defaults), kwargs)...
                             };
                             if (!kwargs.empty()) {
                                 auto it = kwargs.begin();
@@ -2759,11 +2813,11 @@ namespace impl {
                         }
                     }
                     return std::forward<Func>(func)(
-                        translate<Is>(std::forward<T>(defaults))...
+                        translate<Is>(std::forward<D>(defaults))...
                     );
                 }(
                     std::make_index_sequence<Arguments::n>{},
-                    std::forward<T>(defaults),
+                    std::forward<D>(defaults),
                     std::forward<Func>(func)
                 );
             }
@@ -3339,6 +3393,9 @@ namespace impl {
                 cache.clear();
             }
 
+            /// TODO: these return Objects, not PyObject* pointers.  Rather than
+            /// nullptr, it returns None to refer to the base overload.
+
             /* Search the overload trie for a matching signature, as if calling the
             function.  An `isinstance()` check is performed on each parameter when
             searching the trie.
@@ -3628,32 +3685,30 @@ namespace impl {
                 cache.clear();
             }
 
-            /* Remove a node from the overload trie and prune any dead-ends that lead
-            to it.  Returns the function that was removed, or `None` if no matching
-            function was found.
-
-            This method uses the same semantics as `search_instance()` to find the
-            target node, and will apply an `isinstance()` check to each argument to
-            navigate the trie.  Note that variadic parameter packs must be expanded
-            prior to calling this function.
-
-            The `.remove()` method of `py::Function<>` will delegate to this method
-            after constructing a key from the input arguments, in order to remove a
-            dynamic overload from the trie. */
-            template <typename Container>
-            [[maybe_unused]] Object remove_instance(const Params<Container>& key) {
-                assert_valid_args<instance>(key);
-                return remove_node<instance>(key);
-            }
-
-            /* Equivalent to `remove_instance()`, except that the key is assumed to
-            contain Python type objects rather than instances, and the trie will be
-            searched by applying `issubclass()` rather than `isinstance()`.  This is
-            used by the `py::Function<>` index deletion operator. */
-            template <typename Container>
-            [[maybe_unused]] Object remove_subclass(const Params<Container>& key) {
-                assert_valid_args<subclass>(key);
-                return remove_node<subclass>(key);
+            /* Remove a function from the overload trie and prune any dead-ends that
+            lead to it. */
+            void remove(const Object& func) {
+                for (const Metadata& metadata : data) {
+                    if (metadata.func.is(func)) {
+                        Node* curr = root.get();
+                        for (const Edge& edge : metadata.path) {
+                            curr->remove(metadata.hash);
+                            if (edge.node->func == ptr(func)) {
+                                edge.node->func = nullptr;
+                            }
+                            curr = edge.node.get();
+                        }
+                        if (root->func == ptr(func)) {
+                            root->func = nullptr;
+                        }
+                        data.erase(metadata.hash);
+                        if (data.empty()) {
+                            root.reset();
+                        }
+                        return;
+                    }
+                }
+                throw KeyError(repr(func));
             }
 
         private:
@@ -4211,43 +4266,6 @@ namespace impl {
                     static_assert(false, "invalid argument kind");
                 }
             }
-
-            template <typename check, typename Container> requires (valid_check<check>)
-            Object remove_node(const Params<Container>& key) {
-                size_t hash;
-                Object result = reinterpret_borrow<Object>(
-                    recursive_search<check>(key, hash)
-                );
-                if (result.is(nullptr)) {
-                    return None;
-                }
-                if (key.empty()) {
-                    for (const Metadata& data : this->data) {
-                        if (!data.required) {
-                            hash = data.hash;
-                            break;
-                        }
-                    }
-                }
-
-                const Metadata& metadata = *(data.find(hash));
-                Node* curr = root.get();
-                for (const Edge& edge : metadata.path) {
-                    curr->remove(hash);
-                    if (edge.node->func == ptr(result)) {
-                        edge.node->func = nullptr;
-                    }
-                    curr = edge.node.get();
-                }
-                if (root->func == ptr(result)) {
-                    root->func = nullptr;
-                }
-                data.erase(hash);
-                if (data.empty()) {
-                    root.reset();
-                }
-                return result;
-            }
         };
     };
 
@@ -4660,28 +4678,34 @@ namespace impl {
     template <has_signature T>
     using get_signature = GetSignature<T>::type;
 
-    template <typename Sig>
-    concept function_pointer_like = Sig::enable;
-    template <typename Sig>
-    concept args_fit_within_bitset = Sig::n <= 64;
-    template <typename Sig>
-    concept args_are_python = Sig::args_are_python;
-    template <typename Sig>
-    concept args_are_convertible_to_python = Sig::args_are_convertible_to_python;
-    template <typename Sig>
-    concept no_qualified_return = Sig::no_qualified_return;
-    template <typename Sig>
-    concept return_is_python = Sig::return_is_python;
-    template <typename Sig>
-    concept return_is_convertible_to_python = Sig::return_is_convertible_to_python;
-    template <typename Sig>
-    concept proper_argument_order = Sig::proper_argument_order;
-    template <typename Sig>
-    concept no_duplicate_arguments = Sig::no_duplicate_arguments;
-    template <typename Sig>
-    concept no_qualified_arg_annotations = Sig::no_qualified_arg_annotations;
-    template <typename Sig>
-    concept no_qualified_args = Sig::no_qualified_args;
+    template <typename F>
+    concept function_pointer_like = Signature<F>::enable;
+    template <typename F>
+    concept args_fit_within_bitset = has_signature<F> && get_signature<F>::n <= 64;
+    template <typename F>
+    concept args_are_python = has_signature<F> && get_signature<F>::args_are_python;
+    template <typename F>
+    concept args_are_convertible_to_python =
+        has_signature<F> && get_signature<F>::args_are_convertible_to_python;  /// TODO: delete?
+    template <typename F>
+    concept no_qualified_return = has_signature<F> && get_signature<F>::no_qualified_return;
+    template <typename F>
+    concept return_is_python = has_signature<F> && get_signature<F>::return_is_python;
+    template <typename F>
+    concept return_is_convertible_to_python =
+        has_signature<F> && get_signature<F>::return_is_convertible_to_python;
+    template <typename F>
+    concept proper_argument_order =
+        has_signature<F> && get_signature<F>::proper_argument_order;
+    template <typename F>
+    concept no_duplicate_arguments =
+        has_signature<F> && get_signature<F>::no_duplicate_arguments;
+    template <typename F>
+    concept no_qualified_arg_annotations =
+        has_signature<F> && get_signature<F>::no_qualified_arg_annotations;
+    template <typename F>
+    concept no_qualified_args =
+        has_signature<F> && get_signature<F>::no_qualified_args;
 
 }
 
@@ -4733,21 +4757,21 @@ decltype(auto) Object::operator()(this Self&& self, Args&&... args) {
 
 /* A template constraint that controls whether the `py::call()` operator is enabled
 for a given C++ function and argument list. */
-template <typename Func, typename... Args>
+template <typename F, typename... Args>
 concept callable =
-    impl::has_signature<Func> &&
-    impl::args_fit_within_bitset<impl::get_signature<Func>> &&
-    impl::proper_argument_order<impl::get_signature<Func>> &&
-    impl::no_qualified_arg_annotations<impl::get_signature<Func>> &&
-    impl::no_duplicate_arguments<impl::get_signature<Func>> &&
-    impl::get_signature<Func>::template Bind<Args...>::proper_argument_order &&
-    impl::get_signature<Func>::template Bind<Args...>::no_qualified_arg_annotations &&
-    impl::get_signature<Func>::template Bind<Args...>::no_duplicate_arguments &&
-    impl::get_signature<Func>::template Bind<Args...>::no_conflicting_values &&
-    impl::get_signature<Func>::template Bind<Args...>::no_extra_positional_args &&
-    impl::get_signature<Func>::template Bind<Args...>::no_extra_keyword_args &&
-    impl::get_signature<Func>::template Bind<Args...>::satisfies_required_args &&
-    impl::get_signature<Func>::template Bind<Args...>::can_convert;
+    impl::has_signature<F> &&
+    impl::args_fit_within_bitset<F> &&
+    impl::proper_argument_order<F> &&
+    impl::no_qualified_arg_annotations<F> &&
+    impl::no_duplicate_arguments<F> &&
+    impl::get_signature<F>::template Bind<Args...>::proper_argument_order &&
+    impl::get_signature<F>::template Bind<Args...>::no_qualified_arg_annotations &&
+    impl::get_signature<F>::template Bind<Args...>::no_duplicate_arguments &&
+    impl::get_signature<F>::template Bind<Args...>::no_conflicting_values &&
+    impl::get_signature<F>::template Bind<Args...>::no_extra_positional_args &&
+    impl::get_signature<F>::template Bind<Args...>::no_extra_keyword_args &&
+    impl::get_signature<F>::template Bind<Args...>::satisfies_required_args &&
+    impl::get_signature<F>::template Bind<Args...>::can_convert;
 
 
 /* Introspect a function signature to retrieve a tuple capable of storing default
@@ -4755,8 +4779,8 @@ values for all argument annotations that are marked as `::opt`.  An object of th
 type can be passed to the `call` function to provide default values for arguments that
 are not present at the call site.  The tuple itself can be constructed using the same
 keyword argument and parameter pack semantics as the `call()` operator itself. */
-template <impl::has_signature Func>
-using Defaults = impl::get_signature<Func>::Defaults;
+template <impl::has_signature F>
+using Defaults = impl::get_signature<F>::Defaults;
 
 
 /* Invoke a C++ function with Python-style calling conventions, including keyword
@@ -4764,12 +4788,12 @@ arguments and/or parameter packs, which are resolved at compile time.  Note that
 function signature cannot contain any template parameters (including auto arguments),
 as the function signature must be known unambiguously at compile time to implement the
 required matching. */
-template <impl::has_signature Func, typename... Args>
-    requires (callable<Func, Args...> && Defaults<Func>::n == 0)
-constexpr decltype(auto) call(Func&& func, Args&&... args) {
-    return typename impl::get_signature<Func>::template Bind<Args...>{}(
-        Defaults<Func>{},
-        std::forward<Func>(func),
+template <impl::has_signature F, typename... Args>
+    requires (callable<F, Args...> && Defaults<F>::n == 0)
+constexpr decltype(auto) call(F&& func, Args&&... args) {
+    return typename impl::get_signature<F>::template Bind<Args...>{}(
+        Defaults<F>{},
+        std::forward<F>(func),
         std::forward<Args>(args)...
     );
 }
@@ -4780,16 +4804,16 @@ arguments and/or parameter packs, which are resolved at compile time.  Note that
 function signature cannot contain any template parameters (including auto arguments),
 as the function signature must be known unambiguously at compile time to implement the
 required matching. */
-template <impl::has_signature Func, typename... Args>
-    requires (callable<Func, Args...>)
+template <impl::has_signature F, typename... Args>
+    requires (callable<F, Args...>)
 constexpr decltype(auto) call(
-    const Defaults<Func>& defaults,
-    Func&& func,
+    const Defaults<F>& defaults,
+    F&& func,
     Args&&... args
 ) {
-    return typename impl::get_signature<Func>::template Bind<Args...>{}(
+    return typename impl::get_signature<F>::template Bind<Args...>{}(
         defaults,
-        std::forward<Func>(func),
+        std::forward<F>(func),
         std::forward<Args>(args)...
     );
 }
@@ -4800,16 +4824,16 @@ arguments and/or parameter packs, which are resolved at compile time.  Note that
 function signature cannot contain any template parameters (including auto arguments),
 as the function signature must be known unambiguously at compile time to implement the
 required matching. */
-template <impl::has_signature Func, typename... Args>
-    requires (callable<Func, Args...>)
+template <impl::has_signature F, typename... Args>
+    requires (callable<F, Args...>)
 constexpr decltype(auto) call(
-    Defaults<Func>&& defaults,
-    Func&& func,
+    Defaults<F>&& defaults,
+    F&& func,
     Args&&... args
 ) {
-    return typename impl::get_signature<Func>::template Bind<Args...>{}(
+    return typename impl::get_signature<F>::template Bind<Args...>{}(
         std::move(defaults),
-        std::forward<Func>(func),
+        std::forward<F>(func),
         std::forward<Args>(args)...
     );
 }
@@ -4817,22 +4841,22 @@ constexpr decltype(auto) call(
 
 /* A template constraint that controls whether the `py::partial()` operator is enabled
 for a given C++ function and argument list. */
-template <typename Func, typename... Args>
+template <typename F, typename... Args>
 concept partially_callable =
-    impl::has_signature<Func> &&
     !(impl::arg_pack<Args> || ...) &&
     !(impl::kwarg_pack<Args> || ...) &&
-    impl::args_fit_within_bitset<impl::get_signature<Func>> &&
-    impl::proper_argument_order<impl::get_signature<Func>> &&
-    impl::no_qualified_arg_annotations<impl::get_signature<Func>> &&
-    impl::no_duplicate_arguments<impl::get_signature<Func>> &&
-    impl::get_signature<Func>::template Bind<Args...>::proper_argument_order &&
-    impl::get_signature<Func>::template Bind<Args...>::no_qualified_arg_annotations &&
-    impl::get_signature<Func>::template Bind<Args...>::no_duplicate_arguments &&
-    impl::get_signature<Func>::template Bind<Args...>::no_conflicting_values &&
-    impl::get_signature<Func>::template Bind<Args...>::no_extra_positional_args &&
-    impl::get_signature<Func>::template Bind<Args...>::no_extra_keyword_args &&
-    impl::get_signature<Func>::template Bind<Args...>::can_convert;
+    impl::has_signature<F> &&
+    impl::args_fit_within_bitset<F> &&
+    impl::proper_argument_order<F> &&
+    impl::no_qualified_arg_annotations<F> &&
+    impl::no_duplicate_arguments<F> &&
+    impl::get_signature<F>::template Bind<Args...>::proper_argument_order &&
+    impl::get_signature<F>::template Bind<Args...>::no_qualified_arg_annotations &&
+    impl::get_signature<F>::template Bind<Args...>::no_duplicate_arguments &&
+    impl::get_signature<F>::template Bind<Args...>::no_conflicting_values &&
+    impl::get_signature<F>::template Bind<Args...>::no_extra_positional_args &&
+    impl::get_signature<F>::template Bind<Args...>::no_extra_keyword_args &&
+    impl::get_signature<F>::template Bind<Args...>::can_convert;
 
 
 /* Construct a partial function object that captures a C++ function and a subset of its
@@ -4973,18 +4997,62 @@ explicit partial(Defaults<Func>&&, Func&& func, Args&&... args) -> partial<Func,
 template <typename F = Object(*)(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)>
     requires (
         impl::function_pointer_like<F> &&
-        impl::args_fit_within_bitset<impl::Signature<F>> &&
-        impl::no_qualified_args<impl::Signature<F>> &&
-        impl::no_qualified_return<impl::Signature<F>> &&
-        impl::proper_argument_order<impl::Signature<F>> &&
-        impl::no_duplicate_arguments<impl::Signature<F>> &&
-        impl::args_are_python<impl::Signature<F>> &&
-        impl::return_is_python<impl::Signature<F>>
+        impl::args_fit_within_bitset<F> &&
+        impl::no_qualified_args<F> &&
+        impl::no_qualified_return<F> &&
+        impl::proper_argument_order<F> &&
+        impl::no_duplicate_arguments<F> &&
+        impl::args_are_python<F> &&
+        impl::return_is_python<F>
     )
 struct Function;
 
 
+template <typename F, typename... Partial>
+    requires (partially_callable<F, Partial...> && Defaults<F>::n == 0)
+Function(F&&, Partial&&...)
+    -> Function<typename impl::get_signature<F>::to_ptr::type>;
+
+template <typename F, typename... Partial> requires (partially_callable<F, Partial...>)
+Function(Defaults<F>, F&&, Partial&&...)
+    -> Function<typename impl::get_signature<F>::to_ptr::type>;
+
+template <typename F, typename... Partial>
+    requires (partially_callable<F, Partial...> && Defaults<F>::n == 0)
+Function(std::string, F&&, Partial&&...)
+    -> Function<typename impl::get_signature<F>::to_ptr::type>;
+
+template <typename F, typename... Partial> requires (partially_callable<F, Partial...>)
+Function(std::string, Defaults<F>, F&&, Partial&&...)
+    -> Function<typename impl::get_signature<F>::to_ptr::type>;
+
+template <typename F, typename... Partial>
+    requires (partially_callable<F, Partial...> && Defaults<F>::n == 0)
+Function(std::string, std::string, F&&, Partial&&...)
+    -> Function<typename impl::get_signature<F>::to_ptr::type>;
+
+template <typename F, typename... Partial> requires (partially_callable<F, Partial...>)
+Function(std::string, std::string, Defaults<F>, F&&, Partial&&...)
+    -> Function<typename impl::get_signature<F>::to_ptr::type>;
+
+
 namespace impl {
+
+    /* decorators with and without arguments:
+
+    def name(_func=None, *, key1=value1, key2=value2, ...):
+        def decorator_name(func):
+            ...  # Create and return a wrapper function.
+            return func
+
+        if _func is None:
+            return decorator_name
+        else:
+            return decorator_name(_func)
+
+    */
+    /// TODO: ^ that is really hard to do from C++, particularly as it relates to
+    /// function capture.
 
     /* Inspect an annotated Python function and extract its inline type hints so that
     they can be translated into a corresponding parameter list. */
@@ -5863,6 +5931,22 @@ check.)doc";
             PyObject* kwnames
         ) noexcept {
             try {
+                /// TODO: accept a single, optional positional-only argument plus
+                /// optional keyword-only args.  Then, within the body of this
+                /// function, create another function that takes a single argument,
+                /// which is the actual decorator itself.  This gets complicated, but
+                /// is necessary to allow easy use from Python itself.
+
+                /// TODO: maybe I return a PyFunction here?  I can maybe use the Code
+                /// constructor to create the internal function?  That gets a little
+                /// spicy, but maybe I can use py::Function<> itself instead?  That
+                /// would allow me to use a capturing lambda here, which is much
+                /// closer to the Python syntax.  That would require a forward
+                /// declaration here, though.  And/or the CTAD constructors would
+                /// need to be moved up above this point.
+
+
+
                 if (kwnames) {
                     PyErr_SetString(
                         PyExc_TypeError,
@@ -7261,6 +7345,13 @@ structural type check.)doc";
             return Py_NewRef(ptr(self->fdel));
         }
 
+        /// TODO: Property::__call__() should also accept optional setter/deleter/
+        /// docstring as keyword-only arguments, so that you can use
+        /// `@func.property(setter=fset, deleter=fdel, doc="docstring")`.
+
+        /// TODO: in fact, each of the previous descriptors' call operators may want
+        /// to accept an optional docstring.
+
         static PyObject* __call__(
             Property* self,
             PyObject* const* args,
@@ -7568,239 +7659,239 @@ structural type check.)doc";
         .tp_vectorcall_offset = offsetof(Property, __vectorcall__),
     };
 
-    /* The Python `bertrand.Function[]` template interface type, which holds all
-    instantiations, each of which inherit from this class, and allows for CTAD-like
-    construction via the `__new__()` operator.  Has no interface otherwise, requiring
-    the user to manually instantiate it as if it were a C++ template. */
-    struct FunctionTemplates : PyObject {
+    // /* The Python `bertrand.Function[]` template interface type, which holds all
+    // instantiations, each of which inherit from this class, and allows for CTAD-like
+    // construction via the `__new__()` operator.  Has no interface otherwise, requiring
+    // the user to manually instantiate it as if it were a C++ template. */
+    // struct FunctionTemplates : PyObject {
 
-        /// TODO: this HAS to be a heap type because it is an instance of the metaclass,
-        /// and therefore always has mutable state.
-        /// -> Maybe when writing bindings, this is just given as a function to the
-        /// binding generator, and it would be responsible for implementing the
-        /// template interface's CTAD constructor, and it would use Python-style
-        /// argument annotations just like any other function.
+    //     /// TODO: this HAS to be a heap type because it is an instance of the metaclass,
+    //     /// and therefore always has mutable state.
+    //     /// -> Maybe when writing bindings, this is just given as a function to the
+    //     /// binding generator, and it would be responsible for implementing the
+    //     /// template interface's CTAD constructor, and it would use Python-style
+    //     /// argument annotations just like any other function.
 
-        /// TODO: Okay, the way to do this is to have the bindings automatically
-        /// populate tp_new with an overloadable function, and then the user can
-        /// register overloads directly from Python.  The function you supply to the
-        /// binding helper would be inserted as the base case, which defaults to
-        /// raising a TypeError if the user tries to instantiate the template.  If
-        /// that is the case, then I might be able to automatically register overloads
-        /// as each type is instantiated, in a way that doesn't cause errors if the
-        /// overload conflicts with an existing one.
-        /// -> If I implement that using argument annotations, then this gets
-        /// substantially simpler as well, since I don't need to extract the arguments
-        /// manually.
+    //     /// TODO: Okay, the way to do this is to have the bindings automatically
+    //     /// populate tp_new with an overloadable function, and then the user can
+    //     /// register overloads directly from Python.  The function you supply to the
+    //     /// binding helper would be inserted as the base case, which defaults to
+    //     /// raising a TypeError if the user tries to instantiate the template.  If
+    //     /// that is the case, then I might be able to automatically register overloads
+    //     /// as each type is instantiated, in a way that doesn't cause errors if the
+    //     /// overload conflicts with an existing one.
+    //     /// -> If I implement that using argument annotations, then this gets
+    //     /// substantially simpler as well, since I don't need to extract the arguments
+    //     /// manually.
 
-        /// TODO: remember to set tp_vectorcall to this method, so I don't need to
-        /// implement real __new__/__init__ constructors.
-        static PyObject* __new__(
-            FunctionTemplates* self,
-            PyObject* const* args,
-            size_t nargsf,
-            PyObject* kwnames
-        ) {
-            try {
-                size_t nargs = PyVectorcall_NARGS(nargsf);
-                size_t kwcount = kwnames ? PyTuple_GET_SIZE(kwnames) : 0;
-                if (nargs != 1) {
-                    throw TypeError(
-                        "expected a single, positional-only argument, but "
-                        "received " + std::to_string(nargs)
-                    );
-                }
-                PyObject* func = args[0];
-                Object name = reinterpret_steal<Object>(nullptr);
-                Object doc = reinterpret_steal<Object>(nullptr);
-                if (kwcount) {
-                    for (size_t i = 0; i < kwcount; ++i) {
-                        PyObject* key = PyTuple_GET_ITEM(kwnames, i);
-                        int is_name = PyObject_RichCompareBool(
-                            key,
-                            ptr(template_string<"name">()),
-                            Py_EQ
-                        );
-                        if (is_name < 0) {
-                            Exception::from_python();
-                        } else if (is_name) {
-                            name = reinterpret_borrow<Object>(args[nargs + i]);
-                            if (!PyUnicode_Check(ptr(name))) {
-                                throw TypeError(
-                                    "expected 'name' to be a string, but received " +
-                                    repr(name)
-                                );
-                            }
-                        }
-                        int is_doc = PyObject_RichCompareBool(
-                            key,
-                            ptr(template_string<"doc">()),
-                            Py_EQ
-                        );
-                        if (is_doc < 0) {
-                            Exception::from_python();
-                        } else if (is_doc) {
-                            doc = reinterpret_borrow<Object>(args[nargs + i]);
-                            if (!PyUnicode_Check(ptr(doc))) {
-                                throw TypeError(
-                                    "expected 'doc' to be a string, but received " +
-                                    repr(doc)
-                                );
-                            }
-                        }
-                        if (!is_name && !is_doc) {
-                            throw TypeError(
-                                "unexpected keyword argument '" +
-                                repr(reinterpret_borrow<Object>(key)) + "'"
-                            );
-                        }
-                    }
-                }
+    //     /// TODO: remember to set tp_vectorcall to this method, so I don't need to
+    //     /// implement real __new__/__init__ constructors.
+    //     static PyObject* __new__(
+    //         FunctionTemplates* self,
+    //         PyObject* const* args,
+    //         size_t nargsf,
+    //         PyObject* kwnames
+    //     ) {
+    //         try {
+    //             size_t nargs = PyVectorcall_NARGS(nargsf);
+    //             size_t kwcount = kwnames ? PyTuple_GET_SIZE(kwnames) : 0;
+    //             if (nargs != 1) {
+    //                 throw TypeError(
+    //                     "expected a single, positional-only argument, but "
+    //                     "received " + std::to_string(nargs)
+    //                 );
+    //             }
+    //             PyObject* func = args[0];
+    //             Object name = reinterpret_steal<Object>(nullptr);
+    //             Object doc = reinterpret_steal<Object>(nullptr);
+    //             if (kwcount) {
+    //                 for (size_t i = 0; i < kwcount; ++i) {
+    //                     PyObject* key = PyTuple_GET_ITEM(kwnames, i);
+    //                     int is_name = PyObject_RichCompareBool(
+    //                         key,
+    //                         ptr(template_string<"name">()),
+    //                         Py_EQ
+    //                     );
+    //                     if (is_name < 0) {
+    //                         Exception::from_python();
+    //                     } else if (is_name) {
+    //                         name = reinterpret_borrow<Object>(args[nargs + i]);
+    //                         if (!PyUnicode_Check(ptr(name))) {
+    //                             throw TypeError(
+    //                                 "expected 'name' to be a string, but received " +
+    //                                 repr(name)
+    //                             );
+    //                         }
+    //                     }
+    //                     int is_doc = PyObject_RichCompareBool(
+    //                         key,
+    //                         ptr(template_string<"doc">()),
+    //                         Py_EQ
+    //                     );
+    //                     if (is_doc < 0) {
+    //                         Exception::from_python();
+    //                     } else if (is_doc) {
+    //                         doc = reinterpret_borrow<Object>(args[nargs + i]);
+    //                         if (!PyUnicode_Check(ptr(doc))) {
+    //                             throw TypeError(
+    //                                 "expected 'doc' to be a string, but received " +
+    //                                 repr(doc)
+    //                             );
+    //                         }
+    //                     }
+    //                     if (!is_name && !is_doc) {
+    //                         throw TypeError(
+    //                             "unexpected keyword argument '" +
+    //                             repr(reinterpret_borrow<Object>(key)) + "'"
+    //                         );
+    //                     }
+    //                 }
+    //             }
 
-                // inspect the input function and subscript the template interface to
-                // get the correct specialization
-                impl::Inspect signature = {
-                    func,
-                    impl::fnv1a_seed,
-                    impl::fnv1a_prime
-                };
-                Object specialization = reinterpret_steal<Object>(
-                    PyObject_GetItem(
-                        self,
-                        ptr(signature.template_key())
-                    )
-                );
-                if (specialization.is(nullptr)) {
-                    Exception::from_python();
-                }
+    //             // inspect the input function and subscript the template interface to
+    //             // get the correct specialization
+    //             impl::Inspect signature = {
+    //                 func,
+    //                 impl::fnv1a_seed,
+    //                 impl::fnv1a_prime
+    //             };
+    //             Object specialization = reinterpret_steal<Object>(
+    //                 PyObject_GetItem(
+    //                     self,
+    //                     ptr(signature.template_key())
+    //                 )
+    //             );
+    //             if (specialization.is(nullptr)) {
+    //                 Exception::from_python();
+    //             }
 
-                // if the parameter list contains unions, then we need to default-
-                // initialize the specialization and then register separate overloads
-                // for each path through the parameter list.  Note that if the function
-                // is the only argument and already exactly matches the deduced type,
-                // then we can just return it directly to avoid unnecessary nesting.
-                Object result = reinterpret_steal<Object>(nullptr);
-                if (signature.size() > 1) {
-                    if (!kwcount) {
-                        if (specialization.is(
-                            reinterpret_cast<PyObject*>(Py_TYPE(func))
-                        )) {
-                            return release(specialization);
-                        }
-                        result = reinterpret_steal<Object>(PyObject_CallNoArgs(
-                            ptr(specialization)
-                        ));
-                    } else if (name.is(nullptr)) {
-                        PyObject* args[] = {
-                            nullptr,
-                            ptr(doc),
-                        };
-                        result = reinterpret_steal<Object>(PyObject_Vectorcall(
-                            ptr(specialization),
-                            args,
-                            kwcount | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                            kwnames
-                        ));
-                    } else if (doc.is(nullptr)) {
-                        PyObject* args[] = {
-                            nullptr,
-                            ptr(name),
-                        };
-                        result = reinterpret_steal<Object>(PyObject_Vectorcall(
-                            ptr(specialization),
-                            args,
-                            kwcount | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                            kwnames
-                        ));
-                    } else {
-                        PyObject* args[] = {
-                            nullptr,
-                            ptr(name),
-                            ptr(doc),
-                        };
-                        result = reinterpret_steal<Object>(PyObject_Vectorcall(
-                            ptr(specialization),
-                            args,
-                            kwcount | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                            kwnames
-                        ));
-                    }
-                    if (result.is(nullptr)) {
-                        Exception::from_python();
-                    }
-                    Object rc = reinterpret_steal<Object>(PyObject_CallMethodOneArg(
-                        ptr(result),
-                        ptr(impl::template_string<"overload">()),
-                        func
-                    ));
-                    if (rc.is(nullptr)) {
-                        Exception::from_python();
-                    }
-                    return release(result);
-                }
+    //             // if the parameter list contains unions, then we need to default-
+    //             // initialize the specialization and then register separate overloads
+    //             // for each path through the parameter list.  Note that if the function
+    //             // is the only argument and already exactly matches the deduced type,
+    //             // then we can just return it directly to avoid unnecessary nesting.
+    //             Object result = reinterpret_steal<Object>(nullptr);
+    //             if (signature.size() > 1) {
+    //                 if (!kwcount) {
+    //                     if (specialization.is(
+    //                         reinterpret_cast<PyObject*>(Py_TYPE(func))
+    //                     )) {
+    //                         return release(specialization);
+    //                     }
+    //                     result = reinterpret_steal<Object>(PyObject_CallNoArgs(
+    //                         ptr(specialization)
+    //                     ));
+    //                 } else if (name.is(nullptr)) {
+    //                     PyObject* args[] = {
+    //                         nullptr,
+    //                         ptr(doc),
+    //                     };
+    //                     result = reinterpret_steal<Object>(PyObject_Vectorcall(
+    //                         ptr(specialization),
+    //                         args,
+    //                         kwcount | PY_VECTORCALL_ARGUMENTS_OFFSET,
+    //                         kwnames
+    //                     ));
+    //                 } else if (doc.is(nullptr)) {
+    //                     PyObject* args[] = {
+    //                         nullptr,
+    //                         ptr(name),
+    //                     };
+    //                     result = reinterpret_steal<Object>(PyObject_Vectorcall(
+    //                         ptr(specialization),
+    //                         args,
+    //                         kwcount | PY_VECTORCALL_ARGUMENTS_OFFSET,
+    //                         kwnames
+    //                     ));
+    //                 } else {
+    //                     PyObject* args[] = {
+    //                         nullptr,
+    //                         ptr(name),
+    //                         ptr(doc),
+    //                     };
+    //                     result = reinterpret_steal<Object>(PyObject_Vectorcall(
+    //                         ptr(specialization),
+    //                         args,
+    //                         kwcount | PY_VECTORCALL_ARGUMENTS_OFFSET,
+    //                         kwnames
+    //                     ));
+    //                 }
+    //                 if (result.is(nullptr)) {
+    //                     Exception::from_python();
+    //                 }
+    //                 Object rc = reinterpret_steal<Object>(PyObject_CallMethodOneArg(
+    //                     ptr(result),
+    //                     ptr(impl::template_string<"overload">()),
+    //                     func
+    //                 ));
+    //                 if (rc.is(nullptr)) {
+    //                     Exception::from_python();
+    //                 }
+    //                 return release(result);
+    //             }
 
-                // otherwise, we can initialize the specialization directly, which
-                // captures the function and uses it as the base case
-                if (!kwcount) {
-                    if (specialization.is(
-                        reinterpret_cast<PyObject*>(Py_TYPE(func))
-                    )) {
-                        return release(specialization);
-                    }
-                    result = reinterpret_steal<Object>(PyObject_CallOneArg(
-                        ptr(specialization),
-                        func
-                    ));
-                } else if (name.is(nullptr)) {
-                    PyObject* args[] = {
-                        nullptr,
-                        func,
-                        ptr(doc),
-                    };
-                    result = reinterpret_steal<Object>(PyObject_Vectorcall(
-                        ptr(specialization),
-                        args,
-                        kwcount + 1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        kwnames
-                    ));
-                } else if (doc.is(nullptr)) {
-                    PyObject* args[] = {
-                        nullptr,
-                        func,
-                        ptr(name),
-                    };
-                    result = reinterpret_steal<Object>(PyObject_Vectorcall(
-                        ptr(specialization),
-                        args,
-                        kwcount + 1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        kwnames
-                    ));
-                } else {
-                    PyObject* args[] = {
-                        nullptr,
-                        func,
-                        ptr(name),
-                        ptr(doc),
-                    };
-                    result = reinterpret_steal<Object>(PyObject_Vectorcall(
-                        ptr(specialization),
-                        args,
-                        kwcount + 1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        kwnames
-                    ));
-                }
-                if (result.is(nullptr)) {
-                    Exception::from_python();
-                }
-                return release(result);
+    //             // otherwise, we can initialize the specialization directly, which
+    //             // captures the function and uses it as the base case
+    //             if (!kwcount) {
+    //                 if (specialization.is(
+    //                     reinterpret_cast<PyObject*>(Py_TYPE(func))
+    //                 )) {
+    //                     return release(specialization);
+    //                 }
+    //                 result = reinterpret_steal<Object>(PyObject_CallOneArg(
+    //                     ptr(specialization),
+    //                     func
+    //                 ));
+    //             } else if (name.is(nullptr)) {
+    //                 PyObject* args[] = {
+    //                     nullptr,
+    //                     func,
+    //                     ptr(doc),
+    //                 };
+    //                 result = reinterpret_steal<Object>(PyObject_Vectorcall(
+    //                     ptr(specialization),
+    //                     args,
+    //                     kwcount + 1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+    //                     kwnames
+    //                 ));
+    //             } else if (doc.is(nullptr)) {
+    //                 PyObject* args[] = {
+    //                     nullptr,
+    //                     func,
+    //                     ptr(name),
+    //                 };
+    //                 result = reinterpret_steal<Object>(PyObject_Vectorcall(
+    //                     ptr(specialization),
+    //                     args,
+    //                     kwcount + 1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+    //                     kwnames
+    //                 ));
+    //             } else {
+    //                 PyObject* args[] = {
+    //                     nullptr,
+    //                     func,
+    //                     ptr(name),
+    //                     ptr(doc),
+    //                 };
+    //                 result = reinterpret_steal<Object>(PyObject_Vectorcall(
+    //                     ptr(specialization),
+    //                     args,
+    //                     kwcount + 1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+    //                     kwnames
+    //                 ));
+    //             }
+    //             if (result.is(nullptr)) {
+    //                 Exception::from_python();
+    //             }
+    //             return release(result);
 
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
+    //         } catch (...) {
+    //             Exception::to_python();
+    //             return nullptr;
+    //         }
+    //     }
 
-    };
+    // };
 
 }  // namespace impl
 
@@ -8548,16 +8639,20 @@ syntax highlighting and LSP support. */
 template <typename F>
     requires (
         impl::function_pointer_like<F> &&
-        impl::args_fit_within_bitset<impl::Signature<F>> &&
-        impl::no_qualified_args<impl::Signature<F>> &&
-        impl::no_qualified_return<impl::Signature<F>> &&
-        impl::proper_argument_order<impl::Signature<F>> &&
-        impl::no_duplicate_arguments<impl::Signature<F>> &&
-        impl::args_are_python<impl::Signature<F>> &&
-        impl::return_is_python<impl::Signature<F>>
+        impl::args_fit_within_bitset<F> &&
+        impl::no_qualified_args<F> &&
+        impl::no_qualified_return<F> &&
+        impl::proper_argument_order<F> &&
+        impl::no_duplicate_arguments<F> &&
+        impl::args_are_python<F> &&
+        impl::return_is_python<F>
     )
 struct Function : Object, Interface<Function<F>> {
 private:
+
+    /// TODO: Arguments::Overloads should be moved here?  It might even be moved
+    /// within the unbound PyFunction type, since that's the only place where it is
+    /// used.
 
     /* Non-member function type. */
     template <typename Sig>
@@ -8612,8 +8707,8 @@ parameter is a type object, and thus the method is a class method.)doc";
         vectorcallfunc __vectorcall__ = reinterpret_cast<vectorcallfunc>(&__call__);
         Object pyfunc = None;
         Object pysignature = None;
-        Object member_function_type = None;
         /// TODO: cache the member function type for structural |, &, isinstance(), and issubclass()
+        Object member_type = None;
         Object name = None;
         Object docstring = None;
         Sig::Defaults defaults;
@@ -8624,13 +8719,11 @@ parameter is a type object, and thus the method is a class method.)doc";
         explicit PyFunction(
             Object&& name,
             Object&& docstring,
-            std::function<typename Sig::to_value::type>&& func,
-            Sig::Defaults&& defaults
+            Sig::Defaults&& defaults,
+            std::function<typename Sig::to_value::type>&& func
         ) : defaults(std::move(defaults)), func(std::move(func)),
             name(std::move(name)), docstring(std::move(docstring))
         {}
-
-        /// TODO: no idea whether this is being handled correctly.  It seems hard.
 
         /* Exposes a Python function to C++ by generating a capturing lambda wrapper,
         after a quick signature validation.  The function must exactly match the
@@ -8671,12 +8764,9 @@ parameter is a type object, and thus the method is a class method.)doc";
             Py_INCREF(this->pyfunc);
         }
 
-        /// TODO: maybe not necessary, since it's handled in the def helper
-        static void __dealloc__(PyFunction* self) noexcept {
-            PyObject_GC_UnTrack(self);
-            self->~PyFunction();
-            Py_TYPE(self)->tp_free(self);
-        }
+        template <StaticStr ModName>
+        static Type<Function> __export__(Module<ModName> bindings);
+        static Type<Function> __import__();
 
         static PyObject* __new__(
             PyTypeObject* cls,
@@ -8777,10 +8867,6 @@ parameter is a type object, and thus the method is a class method.)doc";
             }
         }
 
-        template <StaticStr ModName>
-        static Type<Function> __export__(Module<ModName> bindings);
-        static Type<Function> __import__(); 
-
         /* Call the function from Python. */
         static PyObject* __call__(
             PyFunction* self,
@@ -8788,26 +8874,63 @@ parameter is a type object, and thus the method is a class method.)doc";
             size_t nargsf,
             PyObject* kwnames
         ) noexcept {
-            /// TODO: this will have to convert all of the arguments to bertrand types
-            /// before proceeding, since Python doesn't retain enough type information
-            /// to disambiguate containers based on their contents, and thus the whole
-            /// caching mechanism would not work correctly.  The only way to fix this
-            /// is to modify call_key to do the translation before hashing the
-            /// arguments and searching the trie.
-            /// -> What I may be able to do in the future is implement a similar level
-            /// of static analysis in Python as I currently have in C++, and then
-            /// substitute the call for a private method that does not do any
-            /// conversions or search the overload trie, since all of that should be
-            /// able to be resolved at compile time via static analysis.  In that case,
-            /// this would be a direct function call
-
             try {
+                /// convert the vectorcall arguments into bertrand types
+                typename Sig::Vectorcall vectorcall {args, nargsf, kwnames};
 
+                // check for overloads and forward if one is found
+                if (self->overloads.root) {
+                    PyObject* overload = self->overloads.search_instance(
+                        vectorcall.key()
+                    );
+                    if (overload) {
+                        return PyObject_Vectorcall(
+                            overload,
+                            vectorcall.args(),
+                            vectorcall.nargsf(),
+                            vectorcall.kwnames()
+                        );
+                    }
+                }
 
+                // if this function wraps a captured Python function, then we can
+                // immediately forward to it as an optimization
+                if (!self->pyfunc.is(None)) {
+                    return PyObject_Vectorcall(
+                        ptr(self->pyfunc),
+                        vectorcall.args(),
+                        vectorcall.nargsf(),
+                        vectorcall.kwnames()
+                    );
+                }
 
-                // forward to private API for underlying call
-                return _call(self, args, nargsf, kwnames);
+                // otherwise, we fall back to the base C++ implementation, which
+                // translates the arguments according to the template signature
+                return release(to_python(
+                    vectorcall(self->defaults, self->func)
+                ));
 
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        /* Simulate a function call, returning the overload that would be chosen if
+        the function were to be called with the given arguments, or None if they are
+        malformed. */
+        static PyObject* resolve(
+            PyFunction* self,
+            PyObject* const* args,
+            size_t nargsf,
+            PyObject* kwnames
+        ) noexcept {
+            try {
+                typename Sig::Vectorcall vectorcall {args, nargsf, kwnames};
+                std::optional<PyObject*> func =
+                    self->overloads.get_instance(vectorcall.key());
+                PyObject* value = func.value_or(Py_None);
+                return Py_NewRef(value ? value : self);
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -8856,17 +8979,17 @@ parameter is a type object, and thus the method is a class method.)doc";
             }
         }
 
-        /* Get a parameter list that identifies this function within another function's
-        overload trie.  This is one component of the function's template signature,
-        alongside a preceding return type and member class. */
-        static PyObject* key(PyFunction* self, void*) noexcept {
-            /// TODO: .key() should incorporate most of the logic from __template__,
-            /// which can reuse it.
+        /* Remove an overload from this function.  Throws a KeyError if the function
+        is not found. */
+        static PyObject* remove(PyFunction* self, PyObject* func) noexcept {
+            try {
+                self->overloads.remove(reinterpret_borrow<Object>(func));
+                Py_RETURN_NONE;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
         }
-
-        /// TOOD: func.resolve(*args, **kwargs) - just like call operator, but
-        /// returns the function that would be called if those arguments were
-        /// given.
 
         /* Manually clear the function's overload trie from Python. */
         static PyObject* clear(PyFunction* self) noexcept {
@@ -8891,23 +9014,21 @@ parameter is a type object, and thus the method is a class method.)doc";
         }
 
         static PyObject* __getitem__(PyFunction* self, PyObject* specifier) noexcept {
-            if (PyTuple_Check(specifier)) {
-                Py_INCREF(specifier);
-            } else {
-                specifier = PyTuple_Pack(1, specifier);
-                if (specifier == nullptr) {
-                    return nullptr;
-                }
-            }
             try {
-                Object key = reinterpret_steal<Object>(specifier);
-                std::optional<PyObject*> func = self->overloads.get_subclass(
-                    subscript_key(key)
-                );
-                if (func.has_value()) {
-                    return Py_NewRef(func.value() ? func.value() : self);
+                if (PyTuple_Check(specifier)) {
+                    Py_INCREF(specifier);
+                } else {
+                    specifier = PyTuple_Pack(1, specifier);
+                    if (specifier == nullptr) {
+                        return nullptr;
+                    }
                 }
-                Py_RETURN_NONE;
+                auto key = subscript_key(
+                    reinterpret_borrow<Object>(specifier)
+                );
+                std::optional<PyObject*> func = self->overloads.get_subclass(key);
+                PyObject* value = func.value_or(Py_None);
+                return Py_NewRef(value ? value : self);
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -8919,26 +9040,37 @@ parameter is a type object, and thus the method is a class method.)doc";
             PyObject* specifier,
             PyObject* value
         ) noexcept {
-            if (value) {
-                PyErr_SetString(
-                    PyExc_TypeError,
-                    "functions do not support item assignment: use "
-                    "`@func.overload` to register an overload instead"
-                );
-                return -1;
-            }
-            if (PyTuple_Check(specifier)) {
-                Py_INCREF(specifier);
-            } else {
-                specifier = PyTuple_Pack(1, specifier);
-                if (specifier == nullptr) {
+            try {
+                if (value) {
+                    PyErr_SetString(
+                        PyExc_TypeError,
+                        "functions do not support item assignment: use "
+                        "`@func.overload` to register an overload instead"
+                    );
                     return -1;
                 }
-            }
-            try {
-                std::optional<Object> func = self->overloads.remove(
-                    subscript_key(reinterpret_steal<Object>(specifier))
+                if (PyTuple_Check(specifier)) {
+                    Py_INCREF(specifier);
+                } else {
+                    specifier = PyTuple_Pack(1, specifier);
+                    if (specifier == nullptr) {
+                        return -1;
+                    }
+                }
+                auto key = subscript_key(
+                    reinterpret_borrow<Object>(specifier)
                 );
+                Object func = reinterpret_borrow<Object>(
+                    self->overloads.search_subclass(key)
+                );
+                if (func.is(nullptr)) {
+                    PyErr_SetString(
+                        PyExc_ValueError,
+                        "cannot delete a function's base overload"
+                    );
+                    return -1;
+                }
+                self->overloads.remove(func);
                 return 0;
             } catch (...) {
                 Exception::to_python();
@@ -8946,14 +9078,14 @@ parameter is a type object, and thus the method is a class method.)doc";
             }
         }
 
-        static Py_ssize_t __len__(PyFunction* self) noexcept {
-            return self->overloads.data.size();
-        }
-
         static int __bool__(PyFunction* self) noexcept {
             /// NOTE: `bool()` typically forwards to `len()`, which would cause
             /// functions to erroneously evaluate to false in some circumstances.
             return true;
+        }
+
+        static Py_ssize_t __len__(PyFunction* self) noexcept {
+            return self->overloads.data.size();
         }
 
         static PyObject* __iter__(PyFunction* self) noexcept {
@@ -8988,7 +9120,7 @@ parameter is a type object, and thus the method is a class method.)doc";
         /* Attach a function to a type as an instance method descriptor.  Accepts the
         type to attach to, which can be provided by calling this method as a decorator
         from Python. */
-        static PyObject* method(PyFunction* self, PyObject* cls) noexcept {
+        static PyObject* method(PyFunction* self, void*) noexcept {
             try {
                 if constexpr (Sig::n < 1 || !(
                     impl::ArgTraits<typename Sig::template at<0>>::pos() ||
@@ -9088,7 +9220,8 @@ parameter is a type object, and thus the method is a class method.)doc";
         }
 
         /// TODO: .property needs to be converted into a getset descriptor that
-        /// returns an unbound descriptor object.
+        /// returns an unbound descriptor object.  The special binding logic is thus
+        /// implemented in the descriptor's call operator.
 
         /* Attach a function to a type as a getset descriptor.  Accepts a type object
         to attach to, which can be provided by calling this method as a decorator from
@@ -9522,126 +9655,14 @@ parameter is a type object, and thus the method is a class method.)doc";
     private:
 
         /* Implements the Python constructor without any safety checks. */
-        /// TODO: do stuff
-
-        /* Implements the Python call operator without any safety checks. */
-        static PyObject* _call(
-            PyFunction* self,
-            PyObject* const* args,
-            size_t nargsf,
-            PyObject* kwnames
-        ) noexcept {
-            try {
-                // check for overloads and forward if one is found
-                if (!self->overloads.data.empty()) {
-                    PyObject* overload = self->overloads.search(
-                        call_key(args, nargsf, kwnames)
-                    );
-                    if (overload) {
-                        return PyObject_Vectorcall(
-                            overload,
-                            args,
-                            nargsf,
-                            kwnames
-                        );
-                    }
-                }
-
-                // if this function wraps a captured Python function, then we can
-                // immediately forward to it as an optimization
-                if (!self->pyfunc.is(nullptr)) {
-                    return PyObject_Vectorcall(
-                        ptr(self->pyfunc),
-                        args,
-                        nargsf,
-                        kwnames
-                    );
-                }
-
-                /// TODO: fix the last bugs in the call operator.
-
-                // otherwise, we fall back to the base C++ implementation, which
-                // requires us to translate the Python arguments according to the
-                // template signature
-                return []<size_t... Is>(
-                    std::index_sequence<Is...>,
-                    PyFunction* self,
-                    PyObject* const* args,
-                    Py_ssize_t nargsf,
-                    PyObject* kwnames
-                ) {
-                    size_t nargs = PyVectorcall_NARGS(nargsf);
-                    if constexpr (!Sig::has_args) {
-                        constexpr size_t expected = Sig::n - Sig::n_kwonly;
-                        if (nargs > expected) {
-                            throw TypeError(
-                                "expected at most " + std::to_string(expected) +
-                                " positional arguments, but received " +
-                                std::to_string(nargs)
-                            );
-                        }
-                    }
-                    size_t kwcount = kwnames ? PyTuple_GET_SIZE(kwnames) : 0;
-                    if constexpr (!Sig::has_kwargs) {
-                        for (size_t i = 0; i < kwcount; ++i) {
-                            Py_ssize_t len;
-                            const char* name = PyUnicode_AsUTF8AndSize(
-                                PyTuple_GET_ITEM(kwnames, i),
-                                &len
-                            );
-                            if (name == nullptr) {
-                                Exception::from_python();
-                            } else if (!Sig::callback(std::string_view(name, len))) {
-                                throw TypeError(
-                                    "unexpected keyword argument '" +
-                                    std::string(name, len) + "'"
-                                );
-                            }
-                        }
-                    }
-                    if constexpr (std::is_void_v<typename Sig::Return>) {
-                        self->func(
-                            {impl::Arguments<Target...>::template from_python<Is>(
-                                self->defaults,
-                                args,
-                                nargs,
-                                kwnames,
-                                kwcount
-                            )}...
-                        );
-                        Py_RETURN_NONE;
-                    } else {
-                        return release(to_python(
-                            self->func(
-                                {impl::Arguments<Target...>::template from_python<Is>(
-                                    self->defaults,
-                                    args,
-                                    nargs,
-                                    kwnames,
-                                    kwcount
-                                )}...
-                            )
-                        ));
-                    }
-                }(
-                    std::make_index_sequence<Sig::n>{},
-                    self,
-                    args,
-                    nargsf,
-                    kwnames
-                );
-
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
+        /// TODO: not sure if this is strictly necessary?  I think it's called from bound
+        /// methods to accelerate them?
 
         static PyObject* _self_type(PyFunction* self, void*) noexcept {
             if constexpr (Sig::n == 0 || !(Sig::has_pos || Sig::has_args)) {
                 Py_RETURN_NONE;
             } else {
-                using T = ArgTraits<typename Sig::template at<0>>::type;
+                using T = impl::ArgTraits<typename Sig::template at<0>>::type;
                 return release(Type<T>());
             }
         }
@@ -9944,105 +9965,6 @@ parameter is a type object, and thus the method is a class method.)doc";
             return default_value;
         }
 
-        template <size_t I>
-        static Object build_parameter(PyFunction* self, const Object& Parameter) {
-            using T = Sig::template at<I>;
-            using Traits = impl::ArgTraits<T>;
-
-            Object name = reinterpret_steal<Object>(
-                PyUnicode_FromStringAndSize(
-                    Traits::name,
-                    Traits::name.size()
-                )
-            );
-            if (name.is(nullptr)) {
-                Exception::from_python();
-            }
-
-            Object kind;
-            if constexpr (Traits::kwonly()) {
-                kind = getattr<"KEYWORD_ONLY">(Parameter);
-            } else if constexpr (Traits::kw()) {
-                kind = getattr<"POSITIONAL_OR_KEYWORD">(Parameter);
-            } else if constexpr (Traits::pos()) {
-                kind = getattr<"POSITIONAL_ONLY">(Parameter);
-            } else if constexpr (Traits::args()) {
-                kind = getattr<"VAR_POSITIONAL">(Parameter);
-            } else if constexpr (Traits::kwargs()) {
-                kind = getattr<"VAR_KEYWORD">(Parameter);
-            } else {
-                throw TypeError("unrecognized argument kind");
-            }
-
-            Object default_value = self->defaults.template get<I>();
-            Type<typename Traits::type> annotation;
-
-            PyObject* args[] = {
-                nullptr,
-                ptr(name),
-                ptr(kind),
-                ptr(default_value),
-                ptr(annotation),
-            };
-            Object kwnames = reinterpret_steal<Object>(
-                PyTuple_Pack(4,
-                    ptr(impl::template_string<"name">()),
-                    ptr(impl::template_string<"kind">()),
-                    ptr(impl::template_string<"default">()),
-                    ptr(impl::template_string<"annotation">())
-                )
-            );
-            Object result = reinterpret_steal<Object>(PyObject_Vectorcall(
-                ptr(Parameter),
-                args + 1,
-                0 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                ptr(kwnames)
-            ));
-            if (result.is(nullptr)) {
-                Exception::from_python();
-            }
-            return result;
-        }
-
-        static impl::Params<std::vector<impl::Param>> call_key(
-            PyObject* const* args,
-            Py_ssize_t nargsf,
-            PyObject* kwnames
-        ) {
-            size_t hash = 0;
-            Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
-            Py_ssize_t kwcount = kwnames ? PyTuple_GET_SIZE(kwnames) : 0;
-            std::vector<impl::Param> key;
-            key.reserve(nargs + kwcount);
-
-            for (Py_ssize_t i = 0; i < nargs; ++i) {
-                PyObject* arg = args[i];
-                key.emplace_back(
-                    "",
-                    reinterpret_cast<PyObject*>(Py_TYPE(arg)),
-                    impl::ArgKind::POS
-                );
-                hash = impl::hash_combine(
-                    hash,
-                    key.back().hash(Sig::seed, Sig::prime)
-                );
-            }
-
-            for (Py_ssize_t i = 0; i < kwcount; ++i) {
-                PyObject* name = PyTuple_GET_ITEM(kwnames, i);
-                key.emplace_back(
-                    impl::get_parameter_name(name),
-                    reinterpret_cast<PyObject*>(Py_TYPE(args[nargs + i])),
-                    impl::ArgKind::KW
-                );
-                hash = impl::hash_combine(
-                    hash,
-                    key.back().hash(Sig::seed, Sig::prime)
-                );
-            }
-            return {std::move(key), hash};
-        }
-
         static impl::Params<std::vector<impl::Param>> subscript_key(
             const Object& specifier
         ) {
@@ -10174,6 +10096,66 @@ parameter is a type object, and thus the method is a class method.)doc";
             return getattr<"Intersection">(bertrand)[result];
         }
 
+        template <size_t I>
+        static Object build_parameter(PyFunction* self, const Object& Parameter) {
+            using T = Sig::template at<I>;
+            using Traits = impl::ArgTraits<T>;
+
+            Object name = reinterpret_steal<Object>(
+                PyUnicode_FromStringAndSize(
+                    Traits::name,
+                    Traits::name.size()
+                )
+            );
+            if (name.is(nullptr)) {
+                Exception::from_python();
+            }
+
+            Object kind;
+            if constexpr (Traits::kwonly()) {
+                kind = getattr<"KEYWORD_ONLY">(Parameter);
+            } else if constexpr (Traits::kw()) {
+                kind = getattr<"POSITIONAL_OR_KEYWORD">(Parameter);
+            } else if constexpr (Traits::pos()) {
+                kind = getattr<"POSITIONAL_ONLY">(Parameter);
+            } else if constexpr (Traits::args()) {
+                kind = getattr<"VAR_POSITIONAL">(Parameter);
+            } else if constexpr (Traits::kwargs()) {
+                kind = getattr<"VAR_KEYWORD">(Parameter);
+            } else {
+                throw TypeError("unrecognized argument kind");
+            }
+
+            Object default_value = self->defaults.template get<I>();
+            Type<typename Traits::type> annotation;
+
+            PyObject* args[] = {
+                nullptr,
+                ptr(name),
+                ptr(kind),
+                ptr(default_value),
+                ptr(annotation),
+            };
+            Object kwnames = reinterpret_steal<Object>(
+                PyTuple_Pack(4,
+                    ptr(impl::template_string<"name">()),
+                    ptr(impl::template_string<"kind">()),
+                    ptr(impl::template_string<"default">()),
+                    ptr(impl::template_string<"annotation">())
+                )
+            );
+            Object result = reinterpret_steal<Object>(PyObject_Vectorcall(
+                ptr(Parameter),
+                args + 1,
+                0 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                ptr(kwnames)
+            ));
+            if (result.is(nullptr)) {
+                Exception::from_python();
+            }
+            return result;
+        }
+
         inline static PyNumberMethods number = {
             .nb_bool = reinterpret_cast<inquiry>(&__bool__),
             .nb_and = reinterpret_cast<binaryfunc>(&__and__),
@@ -10181,14 +10163,6 @@ parameter is a type object, and thus the method is a class method.)doc";
         };
 
         inline static PyMethodDef methods[] = {
-            {
-                "key",
-                reinterpret_cast<PyCFunction>(&key),
-                METH_NOARGS,
-                PyDoc_STR(
-R"doc()doc"
-                )
-            },
             {
                 "overload",
                 reinterpret_cast<PyCFunction>(&overload),
@@ -10885,139 +10859,152 @@ public:
 /// extra argument is given and is not convertible to the first parameter type, then
 /// we issue a compile error, and if the extra argument is not given at all, then we
 /// interpret it as a static function.
+/// -> This can be done by specializing the CTAD guides such that if exactly one
+/// partial argument is given, the function type deduces to a member function?
+/// -> Actually, with the partial binding apparatus, it *might* be possible to
+/// eliminate member function types entirely, although I'm not sure if that's
+/// appropriate everywhere.  If possible, though, then it would cut down on the
+/// number of types I need to generate, bring the template signature into line with
+/// `std::function`, and potentially simplify the implementation.
 
-
-/// TODO: so providing the extra `self` argument would be a way to convert a static
-/// function pointer into a member function pointer.  The only problem is what happens
-/// if the first argument type is `std::string`?  Perhaps you need to pass the self
-/// parameter as an initializer list.  Alternatively, the initializer list could be
-/// necessary for the function name/docstring, which would prevent conflicts with
-/// the `self` wrapper.
-
-/// -> What if you provide self as an initializer list, together with the function
-/// itself?
-
+/// TODO: alternatively, I could generalize the member function syntax to account for
+/// all pre-bound partial arguments.  So:
 
 /*
-    /// TODO: I don't know if this syntax is even possible, actually.
+    Function<Int(*)(Arg<"x", Int>, Arg<"y", Int>::opt)> func(
+        "subtract",
+        "a static function",
+        { arg<"y"> = 2 },
+        [](Arg<"x", Int> x, Arg<"y", Int>::opt y) {
+            return *x - *y;
+        }
+    );
 
-    auto func = py::Function(
+    Function<Int(Int::*)(Arg<"x", Int>, Arg<"y", Int>::opt)> func(
+        "subtract",
+        "a member function",
+        { arg<"y"> = 2 },
+        [](Arg<"x", Int> x, Arg<"y", Int>::opt y) {
+            return *x - *y;
+        },
+        1
+    );
+
+    Function<Int(pack<Int, Int>::*)(Arg<"x", Int>, Arg<"y", Int>::opt)> func(
         "subtract",
         "a simple example function",
-        {
-            foo,
-            [](py::Arg<"x", const Foo&> x, py::Arg<"y", int>::opt y) {
-                return x.value - y.value;
-            }
+        { arg<"y"> = 2 },
+        [](Arg<"x", Int> x, Arg<"y", Int>::opt y) {
+            return *x - *y;
         },
-        py::arg<"y"> = 2
+        1,
+        2
     );
 */
 
+/// That ensures that no information is lost, and is fully generalizable, but it does
+/// restrict conversions a bit.
 
-/* CTAD guides for construction from function pointer types. */
-template <typename Func, typename... Defaults>
-    requires (
-        impl::Signature<Func>::enable &&
-        impl::Signature<Func>::Defaults::template Bind<Defaults...>::enable
-    )
-Function(Func, Defaults&&...)
-    -> Function<typename impl::Signature<Func>::type>;
-template <typename Func, typename... Defaults>
-    requires (
-        impl::Signature<Func>::enable &&
-        impl::Signature<Func>::Defaults::template Bind<Defaults...>::enable
-    )
-Function(std::string, Func, Defaults&&...)
-    -> Function<typename impl::Signature<Func>::type>;
-template <typename Func, typename... Defaults>
-    requires (
-        impl::Signature<Func>::enable &&
-        impl::Signature<Func>::Defaults::template Bind<Defaults...>::enable
-    )
-Function(std::string, std::string, Func, Defaults&&...)
-    -> Function<typename impl::Signature<Func>::type>;
+/// TODO: an alternative is to use the partial mechanism to remove arguments from the
+/// signature, rather than further encoding them.
 
+/*
+    Function<Int(*)(Arg<"x", Int>, Arg<"y", Int>::opt)> func(
+        "subtract",
+        "a static function",
+        { arg<"y"> = 2 },
+        [](Arg<"x", Int> x, Arg<"y", Int>::opt y) {
+            return *x - *y;
+        }
+    );
 
-/// TODO: if you pass in a static function + a self parameter, then CTAD will deduce to
-/// a member function of the appropriate type.
+    Function<Int(*)(Arg<"y", Int>::opt)> func(
+        "subtract",
+        "a member function",
+        { arg<"y"> = 2 },
+        [](Arg<"x", Int> x, Arg<"y", Int>::opt y) {
+            return *x - *y;
+        },
+        1
+    );
 
+    Function<Int(*)()> func(
+        "subtract",
+        "a simple example function",
+        { arg<"y"> = 2 },
+        [](Arg<"x", Int> x, Arg<"y", Int>::opt y) {
+            return *x - *y;
+        },
+        1,
+        2
+    );
+*/
 
-/// TODO: modify these to account for conversion from static functions to member functions
-template <typename Self, typename Func, typename... Defaults>
-    requires (
-        impl::Signature<Func>::enable &&
-        (impl::Signature<Func>::has_self ?
-            std::same_as<Self, typename impl::Signature<Func>::Self> :
-            impl::Signature<Func>::n > 0 && std::convertible_to<
-                Self,
-                typename impl::ArgTraits<typename impl::Signature<Func>::template at<0>>::type
-            >
-        ) &&
-        impl::Signature<Func>::Defaults::template Bind<Defaults...>::enable
-    )
-Function(std::pair<Self&&, Func>, Defaults&&...)
-    -> Function<typename impl::Signature<Func>::type>;
-template <typename Self, typename Func, typename... Defaults>
-    requires (
-        impl::Signature<Func>::enable &&
-        std::same_as<Self, typename impl::Signature<Func>::Self> &&
-        impl::Signature<Func>::Defaults::template Bind<Defaults...>::enable
-    )
-Function(std::string, std::pair<Self&&, Func>, Defaults&&...)
-    -> Function<typename impl::Signature<Func>::type>;
-template <typename Self, typename Func, typename... Defaults>
-    requires (
-        impl::Signature<Func>::enable &&
-        std::same_as<Self, typename impl::Signature<Func>::Self> &&
-        impl::Signature<Func>::Defaults::template Bind<Defaults...>::enable
-    )
-Function(std::string, std::string, std::pair<Self&&, Func>, Defaults&&...)
-    -> Function<typename impl::Signature<Func>::type>;
+/// That's probably better overall, and means the template signature always reflects
+/// the actual function signature when the function is called, which is a plus.  It
+/// also means I can potentially remove the function pointer type?
+
+/// -> I can't do that because the internal `std::function` has to retain all of the
+/// type information for how the function is called, so no arguments can be removed.
+/// Instead, I need to go with either the first syntax or introduce a Bound<>
+/// annotation that indicates that a parameter has already been bound to a given
+/// argument.  Maybe that's another extension of `Arg<>`?
 
 
-/* CTAD guides for construction from function objects implementing a call operator. */
-template <typename Func, typename... Defaults>
-    requires (
-        !impl::Signature<Func>::enable &&
-        !impl::inherits<Func, impl::FunctionTag> &&
-        impl::has_call_operator<Func> &&
-        impl::Signature<decltype(&Func::operator())>::enable &&
-        impl::Signature<decltype(&Func::operator())>::Defaults::
-            template Bind<Defaults...>::enable
-    )
-Function(Func, Defaults&&...)
-    -> Function<typename impl::Signature<decltype(&Func::operator())>::type>;
-template <typename Func, typename... Defaults>
-    requires (
-        !impl::Signature<Func>::enable &&
-        !impl::inherits<Func, impl::FunctionTag> &&
-        impl::has_call_operator<Func> &&
-        impl::Signature<decltype(&Func::operator())>::enable &&
-        impl::Signature<decltype(&Func::operator())>::Defaults::
-            template Bind<Defaults...>::enable
-    )
-Function(std::string, Func, Defaults&&...)
-    -> Function<typename impl::Signature<decltype(&Func::operator())>::type>;
-template <typename Func, typename... Defaults>
-    requires (
-        !impl::Signature<Func>::enable &&
-        !impl::inherits<Func, impl::FunctionTag> &&
-        impl::has_call_operator<Func> &&
-        impl::Signature<decltype(&Func::operator())>::enable &&
-        impl::Signature<decltype(&Func::operator())>::Defaults::
-            template Bind<Defaults...>::enable
-    )
-Function(std::string, std::string, Func, Defaults&&...)
-    -> Function<typename impl::Signature<decltype(&Func::operator())>::type>;
 
 
 template <impl::inherits<impl::FunctionTag> F>
 struct __template__<F> {
     using Func = std::remove_reference_t<F>;
 
+    /* Functions use a special template syntax in Python to reflect C++ signatures as
+     * symmetrically as as possible.  Here's an example:
+     *
+     *      Function[::int, "x": int, "y": int: ...]
+     *
+     * This describes a function which returns an integer and accepts two integer
+     * arguments, `x` and `y`, the second of which is optional (indicated by ellipsis
+     * following the type).  The first element describes the return type, as well as
+     * the type of a possible `self` argument for member functions, with the following
+     * syntax:
+     *
+     *      Function[Foo::int, "x": int, "y": int: ...]
+     *
+     * This describes the same function as before, but bound to class `Foo` as an
+     * instance method.  Class methods are described by binding to `type[Foo]` instead,
+     * and static methods use the same syntax as regular functions.  If the return
+     * type is void, it can be replaced with `None`, which is the default for an empty
+     * slice:
+     *
+     *      Function[::, "name": str]
+     *
+     * It is also possible to omit an argument name, in which case the argument will
+     * be anonymous and positional-only:
+     *
+     *      Function[::int, int, int: ...]
+     *
+     * Trailing `...` syntax can still be used to mark an optional positional-only
+     * argument.  Alternatively, a `"/"` delimiter can be used according to Python
+     * syntax, in order to explicitly name positional-only arguments:
+     *
+     *      Function[::int, "x": int, "/", "y": int: ...]
+     *
+     * In this case, the `x` argument is positional-only, while `y` can be passed as
+     * either a positional or keyword argument.  A `"*"` delimiter can be used to
+     * separate positional-or-keyword arguments from keyword-only arguments:
+     *
+     *      Function[::int, "x": int, "*", "y": int: ...]
+     *
+     * Lastly, prepending `*` or `**` to an argument name will mark it as a variadic
+     * positional or keyword argument, respectively:
+     *
+     *      Function[::int, "*args": int, "**kwargs": str]
+     *
+     * Such arguments cannot have default values.
+     */
+
     template <size_t I, size_t PosOnly, size_t KwOnly>
-    static void get(PyObject* tuple, size_t& offset) {
+    static void populate(PyObject* tuple, size_t& offset) {
         using T = Func::template at<I>;
         Type<typename impl::ArgTraits<T>::type> type;
 
@@ -11165,33 +11152,31 @@ struct __template__<F> {
         }
 
         Object rtype = std::is_void_v<typename Func::Return> ?
-            reinterpret_borrow<Object>(Py_None) :
+            Object(None) :
             Object(Type<typename impl::ArgTraits<typename Func::Return>::type>());
         if constexpr (Func::has_self) {
-            PyObject* slice = PySlice_New(
+            Object slice = reinterpret_steal<Object>(PySlice_New(
                 Type<typename impl::ArgTraits<typename Func::Self>::type>(),
-                issubclass<Func::Self, impl::TypeTag>() ?
-                    reinterpret_cast<PyObject*>(&PyType_Type) :
-                    Py_None,
+                Py_None,
                 ptr(rtype)
-            );
-            if (slice == nullptr) {
+            ));
+            if (slice.is(nullptr)) {
                 Exception::from_python();
             }
-            PyTuple_SET_ITEM(ptr(result), 0, slice);
+            PyTuple_SET_ITEM(ptr(result), 0, release(slice));
         } else {
-            PyObject* slice = PySlice_New(
+            Object slice = reinterpret_steal<Object>(PySlice_New(
                 Py_None,
                 Py_None,
                 ptr(rtype)
-            );
-            if (slice == nullptr) {
+            ));
+            if (slice.is(nullptr)) {
                 Exception::from_python();
             }
-            PyTuple_SET_ITEM(ptr(result), 0, slice);
+            PyTuple_SET_ITEM(ptr(result), 0, release(slice));
         }
 
-        constexpr size_t PosOnly = Func::has_posonly ? 
+        constexpr size_t transition = Func::has_posonly ? 
             std::min({Func::args_idx, Func::kw_idx, Func::kwargs_idx}) :
             Func::n;
 
@@ -11200,11 +11185,12 @@ struct __template__<F> {
             PyObject* list
         ) {
             size_t offset = 1;
-            (get<Is, PosOnly, Func::kwonly_idx>(list, offset), ...);
+            (populate<Is, transition, Func::kwonly_idx>(list, offset), ...);
         }(std::make_index_sequence<Func::n>{}, ptr(result));
         return result;
     }
 };
+
 
 
 
