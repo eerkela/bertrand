@@ -14,6 +14,12 @@ namespace py {
 
 namespace impl {
 
+    /// TODO: All of the functions that are used with this interface must accept
+    /// only named Arg<> annotations for consistency with Python.  Also, I should never
+    /// need to consider member functions, since they should be covered by the partial
+    /// interface, which will be handled by CTAD.
+    /// -> Unannotated arguments are automatically converted to Arg<>::pos annotations.
+
     /* Validate a C++ string that represents an argument name, throwing an error if it
     cannot be used. */
     inline std::string_view get_parameter_name(std::string_view str) {
@@ -895,7 +901,7 @@ namespace impl {
                 (I == T::index) ? 0 : 1 + _find<I, std::tuple<Ts...>>;
 
             template <size_t J, typename... Values>
-            static constexpr decltype(auto) translate(Values&&... values) {
+            static constexpr decltype(auto) collect(Values&&... values) {
                 using Bound = Arguments<Values...>;
                 using T = Inner::template at<J>;
                 return impl::unpack_arg<Bound::template idx<ArgTraits<T>::name>>(
@@ -981,7 +987,7 @@ namespace impl {
                 std::index_sequence<Js...>,
                 Values... values
             ) -> Tuple {
-                return {{translate<Js>(std::forward<Values>(values)...)}...};
+                return {{collect<Js>(std::forward<Values>(values)...)}...};
             }(std::index_sequence_for<Values...>{}, std::forward<Values>(values)...)) {}
             constexpr Defaults(const Defaults& other) = default;
             constexpr Defaults(Defaults&& other) = default;
@@ -1008,6 +1014,18 @@ namespace impl {
                 return std::get<idx<Name>>(std::forward<decltype(self)>(self).values).get();
             }
         };
+
+        /* A tuple holding a sequence of partial arguments to apply to the enclosing
+        parameter list when the function is called. */
+
+        /// TODO: ideally, the partial logic would be lifted up here and handled
+        /// similarly to Defaults.  Then, that entire package would be fed into Bind<>
+        /// for the final call.  When a py::Function is constructed with one or more
+        /// ::bind<> arguments, it would instantiate one of these tuples.  The hard
+        /// part is figuring out how to generate one of these from Python, which
+        /// I currently have no idea how to do, since I don't have access to compile
+        /// time in that case.  The partial tuple would thus have to be reconstructed
+        /// from the function signature somehow.
 
         /* A helper that binds C++ arguments to the enclosing signature and performs
         the necessary translation to invoke a matching C++ or Python function. */
@@ -2476,7 +2494,7 @@ namespace impl {
         };
 
         /* A helper that binds a Python vectorcall array to the enclosing signature
-        and performs the necessary translation to invoke a matching C++ function. */
+        and performs the translation necessary to invoke a matching C++ function. */
         struct Vectorcall {
         private:
             using Kwargs = std::unordered_map<std::string_view, PyObject*>;
@@ -2502,7 +2520,7 @@ namespace impl {
             }
 
             template <size_t I, is<Defaults> D>
-            at<I> translate(D&& defaults) const {
+            at<I> collect(D&& defaults) const {
                 using T = at<I>;
                 constexpr StaticStr name = ArgTraits<T>::name;
 
@@ -2558,7 +2576,7 @@ namespace impl {
             }
 
             template <size_t I, is<Defaults> D>
-            at<I> translate(D&& defaults, Kwargs& kwargs) const {
+            at<I> collect(D&& defaults, Kwargs& kwargs) const {
                 using T = at<I>;
                 constexpr StaticStr name = ArgTraits<T>::name;
 
@@ -2723,6 +2741,10 @@ namespace impl {
                 }
             }
 
+            PyObject* const* args() const { return m_args.data(); }
+            size_t nargsf() const { return m_nargs | m_flags; }
+            PyObject* kwnames() const { return m_kwnames; }
+
             /* Produce an overload key from the Python arguments, which can be used to
             search the overload trie and invoke a resulting function. */
             Params<std::vector<Param>> key() const {
@@ -2759,10 +2781,6 @@ namespace impl {
                 };
             }
 
-            PyObject* const* args() const { return m_args.data(); }
-            size_t nargsf() const { return m_nargs | m_flags; }
-            PyObject* kwnames() const { return m_kwnames; }
-
             /* Invoke a C++ function from Python using Python-style arguments. */
             template <is<Defaults> D, typename Func>
                 requires (std::is_invocable_v<Func, Args...>)
@@ -2791,11 +2809,11 @@ namespace impl {
                         Kwargs kwargs = get_kwargs();
                         if constexpr (Arguments::has_kwargs) {
                             return std::forward<Func>(func)(
-                                translate<Is>(std::forward<D>(defaults), kwargs)...
+                                collect<Is>(std::forward<D>(defaults), kwargs)...
                             );
                         } else {
                             pack bound {
-                                translate<Is>(std::forward<D>(defaults), kwargs)...
+                                collect<Is>(std::forward<D>(defaults), kwargs)...
                             };
                             if (!kwargs.empty()) {
                                 auto it = kwargs.begin();
@@ -2813,7 +2831,7 @@ namespace impl {
                         }
                     }
                     return std::forward<Func>(func)(
-                        translate<Is>(std::forward<D>(defaults))...
+                        collect<Is>(std::forward<D>(defaults))...
                     );
                 }(
                     std::make_index_sequence<Arguments::n>{},
@@ -4419,8 +4437,6 @@ namespace impl {
         using type = R(*)(A...);
         static constexpr bool enable = true;
         static constexpr bool has_self = false;
-        static constexpr bool return_is_convertible_to_python =
-            std::convertible_to<R, Object>;
         template <typename T>
         static constexpr bool can_make_member = to_member_func<R(*)(A...), T>::enable;
         using Return = R;
@@ -4464,8 +4480,6 @@ namespace impl {
             std::is_volatile_v<std::remove_reference_t<R>>
         );
         static constexpr bool return_is_python = inherits<R, Object>;
-        static constexpr bool return_is_convertible_to_python =
-            std::convertible_to<R, Object>;
         template <typename T>
         static constexpr bool can_make_member = to_member_func<R(*)(A...), T>::enable;
         using Return = R;
@@ -4513,8 +4527,6 @@ namespace impl {
             std::is_volatile_v<std::remove_reference_t<R>>
         );
         static constexpr bool return_is_python = inherits<R, Object>;
-        static constexpr bool return_is_convertible_to_python =
-            std::convertible_to<R, Object>;
         template <typename T>
         static constexpr bool can_make_member = to_member_func<R(*)(A...), T>::enable;
         using Return = R;
@@ -4562,8 +4574,6 @@ namespace impl {
             std::is_volatile_v<std::remove_reference_t<R>>
         );
         static constexpr bool return_is_python = inherits<R, Object>;
-        static constexpr bool return_is_convertible_to_python =
-            std::convertible_to<R, Object>;
         template <typename T>
         static constexpr bool can_make_member = to_member_func<R(*)(A...), T>::enable;
         using Return = R;
@@ -4611,8 +4621,6 @@ namespace impl {
             std::is_volatile_v<std::remove_reference_t<R>>
         );
         static constexpr bool return_is_python = inherits<R, Object>;
-        static constexpr bool return_is_convertible_to_python =
-            std::convertible_to<R, Object>;
         template <typename T>
         static constexpr bool can_make_member = to_member_func<R(*)(A...), T>::enable;
         using Return = R;
@@ -4691,9 +4699,6 @@ namespace impl {
     concept no_qualified_return = has_signature<F> && get_signature<F>::no_qualified_return;
     template <typename F>
     concept return_is_python = has_signature<F> && get_signature<F>::return_is_python;
-    template <typename F>
-    concept return_is_convertible_to_python =
-        has_signature<F> && get_signature<F>::return_is_convertible_to_python;
     template <typename F>
     concept proper_argument_order =
         has_signature<F> && get_signature<F>::proper_argument_order;
@@ -4859,6 +4864,22 @@ concept partially_callable =
     impl::get_signature<F>::template Bind<Args...>::can_convert;
 
 
+/// TODO: I can force the partial function to accept only Arg<> annotations, and then
+/// encode the partial arguments directly into the signature.  CTAD can then deduce
+/// the partial arguments from the signature and generate a new signature using
+/// Arg<"name", type>::bind<type> for each partial argument.  The same strategy could
+/// be applied to Function<> in order to represent bound methods and partials
+/// uniformly.
+/// -> If I do that, the partial would have to store the function as a `std::function`
+/// wrapper, so as to erase its type.  In fact, I might be able to have the Function<>
+/// type directly store a partial<> object, which would unify some of the interface.
+/// The C++ call operator could then be implemented as a call directly to the partial
+/// object, after checking for overloads, etc.
+/// -> Maybe I keep partial the way it is for maximum efficiency, and then just template
+/// it on the `std::function` type when I need to store it in a Function<> object.
+/// That should offer the best of both worlds.
+
+
 /* Construct a partial function object that captures a C++ function and a subset of its
 arguments, which can be used to invoke the function later with the remaining arguments.
 Arguments and default values are given in the same style as `call()`, and will be
@@ -4876,7 +4897,7 @@ The returned partial is a thin proxy that only implements the call operator and 
 handful of introspection methods.  It also allows transparent access to the decorated
 function via the `*` and `->` operators. */
 template <typename Func, typename... Args> requires (partially_callable<Func, Args...>)
-struct partial {
+struct func {
 private:
     using sig = impl::get_signature<Func>;
     using bound = sig::template Bind<Args...>;
@@ -4902,19 +4923,19 @@ public:
     /// key, which completes the interface.
 
     template <impl::is<Func> F> requires (Defaults<F>::n == 0)
-    explicit constexpr partial(F&& func, Args... args) :
+    explicit constexpr func(F&& func, Args... args) :
         defaults(),
         func(std::forward<F>(func)),
         parts(std::forward<Args>(args)...)
     {}
 
-    explicit constexpr partial(const Defaults<Func>& defaults, Func func, Args... args) :
+    explicit constexpr func(const Defaults<Func>& defaults, Func func, Args... args) :
         defaults(defaults),
         func(std::forward<Func>(func)),
         parts(std::forward<Args>(args)...)
     {}
 
-    explicit constexpr partial (Defaults<Func>&& defaults, Func func, Args... args) :
+    explicit constexpr func(Defaults<Func>&& defaults, Func func, Args... args) :
         defaults(std::move(defaults)),
         func(std::forward<Func>(func)),
         parts(std::forward<Args>(args)...)
@@ -4977,16 +4998,14 @@ public:
 };
 
 
-template <typename Func>
-    requires (partially_callable<Func> && Defaults<Func>::n == 0)
-explicit partial(Func&& func) -> partial<Func>;
-template <typename Func, typename... Args>
-    requires (partially_callable<Func, Args...> && Defaults<Func>::n == 0)
-explicit partial(Func&& func, Args&&... args) -> partial<Func, Args...>;
-template <typename Func, typename... Args> requires (partially_callable<Func, Args...>)
-explicit partial(const Defaults<Func>&, Func&& func, Args&&... args) -> partial<Func, Args...>;
-template <typename Func, typename... Args> requires (partially_callable<Func, Args...>)
-explicit partial(Defaults<Func>&&, Func&& func, Args&&... args) -> partial<Func, Args...>;
+template <typename F> requires (partially_callable<F> && Defaults<F>::n == 0)
+explicit func(F&&) -> func<F>;
+template <typename F, typename... A> requires (partially_callable<F, A...> && Defaults<F>::n == 0)
+explicit func(F&&, A&&...) -> func<F, A...>;
+template <typename F, typename... A> requires (partially_callable<F, A...>)
+explicit func(Defaults<F>&&, F&&, A&&...) -> func<F, A...>;
+template <typename F, typename... A> requires (partially_callable<F, A...>)
+explicit func(const Defaults<F>&, F&&, A&&...) -> func<F, A...>;
 
 
 ////////////////////////
@@ -4994,7 +5013,7 @@ explicit partial(Defaults<Func>&&, Func&& func, Args&&... args) -> partial<Func,
 ////////////////////////
 
 
-template <typename F = Object(*)(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)>
+template <typename F = Object(Arg<"*args", Object>, Arg<"**kwargs", Object>)>
     requires (
         impl::function_pointer_like<F> &&
         impl::args_fit_within_bitset<F> &&
@@ -5006,6 +5025,14 @@ template <typename F = Object(*)(Arg<"args", Object>::args, Arg<"kwargs", Object
         impl::return_is_python<F>
     )
 struct Function;
+
+
+/// TODO: CTAD guides take in a function annotated with Arg<>, which has no bound
+/// arguments, as well as a list of partial arguments.  It then extends the annotation
+/// for each argument, synthesizing a new signature that binds the partial arguments
+/// and discards any defaults that might be present for those arguments.  The
+/// synthesized signature is what is then used to construct and call the Function<>
+/// object.
 
 
 template <typename F, typename... Partial>
@@ -8650,10 +8677,6 @@ template <typename F>
 struct Function : Object, Interface<Function<F>> {
 private:
 
-    /// TODO: Arguments::Overloads should be moved here?  It might even be moved
-    /// within the unbound PyFunction type, since that's the only place where it is
-    /// used.
-
     /* Non-member function type. */
     template <typename Sig>
     struct PyFunction : def<PyFunction<Sig>, Function>, PyObject {
@@ -8867,7 +8890,11 @@ parameter is a type object, and thus the method is a class method.)doc";
             }
         }
 
-        /* Call the function from Python. */
+        /// TODO: implement a private _call() method that avoids conversions and
+        /// directly invokes the function with the preconverted vectorcall arguments.
+        /// That would make the overload system signficantly faster, since it avoids
+        /// extra heap allocations and overload checks.
+
         static PyObject* __call__(
             PyFunction* self,
             PyObject* const* args,
@@ -8916,6 +8943,22 @@ parameter is a type object, and thus the method is a class method.)doc";
             }
         }
 
+        /* Bind a set of arguments to this function, producing a partial function that
+        injects them 
+         */
+        static PyObject* bind(
+            PyFunction* self,
+            PyObject* const* args,
+            size_t nargsf,
+            PyObject* kwnames
+        ) noexcept {
+            /// TODO: get the types of all the arguments, confirm that they match the
+            /// enclosing signature, and then produce a corresponding function type,
+            /// which will probably involve a private constructor call.  I might be
+            /// able to determine the type ahead of time, and then call its Python-level
+            /// constructor to do the validation + error handling.
+        }
+
         /* Simulate a function call, returning the overload that would be chosen if
         the function were to be called with the given arguments, or None if they are
         malformed. */
@@ -8947,32 +8990,16 @@ parameter is a type object, and thus the method is a class method.)doc";
         static PyObject* overload(PyFunction* self, PyObject* func) noexcept {
             try {
                 Object obj = reinterpret_borrow<Object>(func);
-                impl::Inspect signature = {func, Sig::seed, Sig::prime};
-                for (PyObject* rtype : signature.returns()) {
-                    Object type = reinterpret_borrow<Object>(rtype);
-                    if (!issubclass<typename Sig::Return>(type)) {
-                        std::string message =
-                            "overload return type '" + repr(type) + "' is not a "
-                            "subclass of " + repr(Type<typename Sig::Return>());
-                        PyErr_SetString(PyExc_TypeError, message.c_str());
-                        return nullptr;
-                    }
+                impl::Inspect signature(obj, Sig::seed, Sig::prime);
+                if (!issubclass<typename Sig::Return>(signature.returns())) {
+                    std::string message =
+                        "overload return type '" + repr(signature.returns()) +
+                        "' is not a subclass of " +
+                        repr(Type<typename Sig::Return>());
+                    PyErr_SetString(PyExc_TypeError, message.c_str());
+                    return nullptr;
                 }
-                auto it = signature.begin();
-                auto end = signature.end();
-                try {
-                    while (it != end) {
-                        self->overloads.insert(*it, obj);
-                        ++it;
-                    }
-                } catch (...) {
-                    auto it2 = signature.begin();
-                    while (it2 != it) {
-                        self->overloads.remove(*it2);
-                        ++it2;
-                    }
-                    throw;
-                }
+                self->overloads.insert(signature.key(), obj);
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -10212,12 +10239,6 @@ R"doc()doc"
                 )
             },
             {
-                "_call",
-                reinterpret_cast<PyCFunction>(&_call),
-                METH_FASTCALL | METH_KEYWORDS,
-                nullptr
-            },
-            {
                 "_bind_method",
                 reinterpret_cast<PyCFunction>(&_bind_method),
                 METH_FASTCALL,
@@ -10379,7 +10400,6 @@ of their underlying `py::Function` representation.)doc"
             },
             {nullptr}
         };
-
     };
 
     /* Bound member function type.  Must be constructed with a corresponding `self`

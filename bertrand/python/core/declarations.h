@@ -3782,9 +3782,23 @@ namespace impl {
             (Broadcast<Condition, Ts, R>::value && ...);
     };
 
-    /////////////////////////
-    ////    ARGUMENTS    ////
-    /////////////////////////
+}
+
+
+/* Allows anonymous access to a Python wrapper for a given C++ type, assuming it has
+one.  The result always corresponds to the return type of the unary `__cast__` control
+structure, and reflects the Python type that would be constructed if an instance of `T`
+were converted to `Object`. */
+template <impl::has_python T>
+using obj = impl::python_type<T>;
+
+
+/////////////////////////
+////    ARGUMENTS    ////
+/////////////////////////
+
+
+namespace impl {
 
     struct ArgKind {
         enum Flags : uint8_t {
@@ -3797,7 +3811,7 @@ namespace impl {
         constexpr ArgKind(uint8_t flags = 0) noexcept :
             flags(static_cast<Flags>(flags))
         {}
-    
+
         constexpr operator uint8_t() const noexcept {
             return flags;
         }
@@ -3835,12 +3849,69 @@ namespace impl {
         }
     };
 
-    template <typename T>
+    constexpr bool isalpha(char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    }
+
+    constexpr bool isalnum(char c) {
+        return isalpha(c) || (c >= '0' && c <= '9');
+    }
+
+    template <size_t, StaticStr>
+    constexpr bool validate_arg_name = true;
+    template <size_t I, StaticStr Name> requires (I < Name.size())
+    constexpr bool validate_arg_name<I, Name> =
+        (isalnum(Name[I]) || Name[I] == '_') && validate_arg_name<I + 1, Name>;
+
+    template <StaticStr Name>
+    constexpr bool _arg_name = !Name.empty() && (
+        (isalpha(Name[0]) || Name[0] == '_') &&
+        validate_arg_name<1, Name>
+    );
+
+    template <StaticStr Name>
+    constexpr bool _variadic_args_name =
+        Name.size() > 1 &&
+        Name[0] == '*' &&
+        (isalpha(Name[1]) || Name[1] == '_') &&
+        validate_arg_name<2, Name>;
+
+    template <StaticStr Name>
+    constexpr bool _variadic_kwargs_name =
+        Name.size() > 2 &&
+        Name[0] == '*' &&
+        Name[1] == '*' &&
+        (isalpha(Name[2]) || Name[2] == '_') &&
+        validate_arg_name<3, Name>;
+
+    template <StaticStr Name>
+    concept arg_name =
+        _arg_name<Name> || _variadic_args_name<Name> || _variadic_kwargs_name<Name>;
+
+    template <StaticStr Name>
+    concept variadic_args_name =
+        arg_name<Name> &&
+        !_arg_name<Name> &&
+        _variadic_args_name<Name> &&
+        !_variadic_kwargs_name<Name>;
+
+    template <StaticStr Name>
+    concept variadic_kwargs_name =
+        arg_name<Name> &&
+        !_arg_name<Name> &&
+        !_variadic_args_name<Name> &&
+        _variadic_kwargs_name<Name>;
+
+    template <typename Arg, typename... Ts>
+    struct BoundArg;
+
+    template <typename Arg>
     struct OptionalArg {
-        using type = T::type;
-        using opt = OptionalArg;
-        static constexpr StaticStr name = T::name;
-        static constexpr ArgKind kind = T::kind | ArgKind::OPT;
+        static constexpr StaticStr name = Arg::name;
+        static constexpr ArgKind kind = Arg::kind | ArgKind::OPT;
+        using type = Arg::type;
+        template <typename U>
+        using bind = BoundArg<OptionalArg, U>;
 
         type value;
 
@@ -3877,10 +3948,12 @@ namespace impl {
 
     template <StaticStr Name, typename T>
     struct PositionalArg {
-        using type = T;
-        using opt = OptionalArg<PositionalArg>;
         static constexpr StaticStr name = Name;
         static constexpr ArgKind kind = ArgKind::POS;
+        using type = T;
+        using opt = OptionalArg<PositionalArg>;
+        template <typename U>
+        using bind = BoundArg<PositionalArg, U>;
 
         type value;
 
@@ -3917,10 +3990,12 @@ namespace impl {
 
     template <StaticStr Name, typename T>
     struct KeywordArg {
-        using type = T;
-        using opt = OptionalArg<KeywordArg>;
         static constexpr StaticStr name = Name;
         static constexpr ArgKind kind = ArgKind::KW;
+        using type = T;
+        using opt = OptionalArg<KeywordArg>;
+        template <typename U>
+        using bind = BoundArg<KeywordArg, U>;
 
         type value;
 
@@ -3952,74 +4027,6 @@ namespace impl {
             } else {
                 return std::move(value);
             }
-        }
-    };
-
-    template <StaticStr Name, typename T>
-    struct VarArgs {
-        using type = std::conditional_t<
-            std::is_rvalue_reference_v<T>,
-            std::remove_reference_t<T>,
-            std::conditional_t<
-                std::is_lvalue_reference_v<T>,
-                std::reference_wrapper<T>,
-                T
-            >
-        >;
-        static constexpr StaticStr name = Name;
-        static constexpr ArgKind kind = ArgKind::POS | ArgKind::VARIADIC;
-
-        std::vector<type> value;
-
-        [[nodiscard]] std::vector<type>& operator*() {
-            return value;
-        }
-        [[nodiscard]] constexpr const std::vector<type>& operator*() const {
-            return value;
-        }
-        [[nodiscard]] std::vector<type>* operator->() {
-            return &value;
-        }
-        [[nodiscard]] constexpr const std::vector<type>* operator->() const {
-            return &value;
-        }
-
-        [[nodiscard]] constexpr operator std::vector<type>() && {
-            return std::move(value);
-        }
-    };
-
-    template <StaticStr Name, typename T>
-    struct VarKwargs {
-        using type = std::conditional_t<
-            std::is_rvalue_reference_v<T>,
-            std::remove_reference_t<T>,
-            std::conditional_t<
-                std::is_lvalue_reference_v<T>,
-                std::reference_wrapper<T>,
-                T
-            >
-        >;
-        static constexpr StaticStr name = Name;
-        static constexpr ArgKind kind = ArgKind::KW | ArgKind::VARIADIC;
-
-        std::unordered_map<std::string, T> value;
-
-        [[nodiscard]] constexpr std::unordered_map<std::string, T>& operator*() {
-            return value;
-        }
-        [[nodiscard]] constexpr const std::unordered_map<std::string, T>& operator*() const {
-            return value;
-        }
-        [[nodiscard]] constexpr std::unordered_map<std::string, T>* operator->() {
-            return &value;
-        }
-        [[nodiscard]] constexpr const std::unordered_map<std::string, T>* operator->() const {
-            return &value;
-        }
-
-        [[nodiscard]] constexpr operator std::unordered_map<std::string, T>() && {
-            return std::move(value);
         }
     };
 
@@ -4113,16 +4120,16 @@ namespace impl {
     };
 
     template <typename T>
-    static constexpr bool _arg_pack = false;
+    constexpr bool _arg_pack = false;
     template <typename T>
-    static constexpr bool _arg_pack<ArgPack<T>> = true;
+    constexpr bool _arg_pack<ArgPack<T>> = true;
     template <typename T>
     concept arg_pack = _arg_pack<std::remove_cvref_t<T>>;
 
     template <typename T>
-    static constexpr bool _kwarg_pack = false;
+    constexpr bool _kwarg_pack = false;
     template <typename T>
-    static constexpr bool _kwarg_pack<KwargPack<T>> = true;
+    constexpr bool _kwarg_pack<KwargPack<T>> = true;
     template <typename T>
     concept kwarg_pack = _kwarg_pack<std::remove_cvref_t<T>>;
 
@@ -4133,17 +4140,16 @@ namespace impl {
 argument to a `py::Function`.  Uses aggregate initialization to extend the lifetime of
 temporaries.  Can also be used to indicate structural members in a `py::Union` or
 `py::Intersection` type, or named members in a `py::Tuple` type. */
-template <StaticStr Name, typename T> requires (!Name.empty())
+template <StaticStr Name, typename T> requires (impl::arg_name<Name>)
 struct Arg {
-    using type = T;
-    using pos = impl::PositionalArg<Name, T>;
-    using args = impl::VarArgs<Name, T>;
-    using kw = impl::KeywordArg<Name, T>;
-    using kwargs = impl::VarKwargs<Name, T>;
-    using opt = impl::OptionalArg<Arg>;
-
     static constexpr StaticStr name = Name;
     static constexpr impl::ArgKind kind = impl::ArgKind::POS | impl::ArgKind::KW;
+    using type = T;
+    using pos = impl::PositionalArg<Name, T>;
+    using kw = impl::KeywordArg<Name, T>;
+    using opt = impl::OptionalArg<Arg>;
+    template <typename U>
+    using bind = impl::BoundArg<Arg, U>;
 
     type value;
 
@@ -4197,23 +4203,21 @@ namespace impl {
     };
 
     template <typename T>
-    static constexpr bool _is_arg = false;
+    constexpr bool _is_arg = false;
     template <typename T>
-    static constexpr bool _is_arg<OptionalArg<T>> = true;
+    constexpr bool _is_arg<OptionalArg<T>> = true;
+    template <typename Arg, typename... Ts>
+    constexpr bool _is_arg<BoundArg<Arg, Ts...>> = true;
     template <StaticStr Name, typename T>
-    static constexpr bool _is_arg<PositionalArg<Name, T>> = true;
+    constexpr bool _is_arg<PositionalArg<Name, T>> = true;
     template <StaticStr Name, typename T>
-    static constexpr bool _is_arg<Arg<Name, T>> = true;
+    constexpr bool _is_arg<Arg<Name, T>> = true;
     template <StaticStr Name, typename T>
-    static constexpr bool _is_arg<KeywordArg<Name, T>> = true;
-    template <StaticStr Name, typename T>
-    static constexpr bool _is_arg<VarArgs<Name, T>> = true;
-    template <StaticStr Name, typename T>
-    static constexpr bool _is_arg<VarKwargs<Name, T>> = true;
+    constexpr bool _is_arg<KeywordArg<Name, T>> = true;
     template <typename T>
-    static constexpr bool _is_arg<ArgPack<T>> = true;
+    constexpr bool _is_arg<ArgPack<T>> = true;
     template <typename T>
-    static constexpr bool _is_arg<KwargPack<T>> = true;
+    constexpr bool _is_arg<KwargPack<T>> = true;
     template <typename T>
     concept is_arg = _is_arg<std::remove_cvref_t<T>>;
 
@@ -4223,6 +4227,9 @@ namespace impl {
     struct ArgTraits {
         using type                                  = T;
         using as_default                            = T;
+        using as_unbound                            = T;
+        using bound_types                           = pack<>;
+        static constexpr bool bound                 = false;
         static constexpr StaticStr name             = "";
         static constexpr ArgKind kind               = ArgKind::POS;
         static constexpr bool posonly() noexcept    { return kind.posonly(); }
@@ -4248,9 +4255,23 @@ namespace impl {
             using type = Arg<U::name, typename std::remove_cvref_t<typename U::type>>::kw;
         };
 
+        template <typename U>
+        struct _bound {
+            using unbound = U;
+            using types = pack<>;
+        };
+        template <typename U, typename... Us>
+        struct _bound<BoundArg<U, Us...>> {
+            using unbound = U;
+            using types = pack<Us...>;
+        };
+
     public:
         using type                                  = std::remove_cvref_t<T>::type;
         using as_default                            = _as_default<std::remove_cvref_t<T>>::type;
+        using as_unbound                            = _bound<std::remove_cvref_t<T>>::unbound;
+        using bound_types                           = _bound<std::remove_cvref_t<T>>::types;
+        static constexpr bool bound                 = bound_types::n > 0;
         static constexpr StaticStr name             = std::remove_cvref_t<T>::name;
         static constexpr ArgKind kind               = std::remove_cvref_t<T>::kind;
         static constexpr bool posonly() noexcept    { return kind.posonly(); }
@@ -4263,15 +4284,184 @@ namespace impl {
         static constexpr bool variadic() noexcept   { return kind.variadic(); }
     };
 
+    template <is_arg Arg, typename T>
+        requires (
+            !variadic_args_name<std::remove_cvref_t<Arg>::name> &&
+            !variadic_kwargs_name<std::remove_cvref_t<Arg>::name>
+        )
+    struct BoundArg<Arg, T> {
+        static constexpr StaticStr name = Arg::name;
+        static constexpr ArgKind kind = Arg::kind;
+        using type = Arg::type;
+
+        type value;
+
+        [[nodiscard]] constexpr std::remove_reference_t<type>& operator*() {
+            return value;
+        }
+        [[nodiscard]] constexpr const std::remove_reference_t<type>& operator*() const {
+            return value;
+        }
+        [[nodiscard]] constexpr std::remove_reference_t<type>* operator->() {
+            return &value;
+        }
+        [[nodiscard]] constexpr const std::remove_reference_t<type>* operator->() const {
+            return &value;
+        }
+
+        [[nodiscard]] constexpr operator type() && {
+            if constexpr (std::is_lvalue_reference_v<type>) {
+                return value;
+            } else {
+                return std::move(value);
+            }
+        }
+
+        template <typename U> requires (std::convertible_to<type, U>)
+        [[nodiscard]] constexpr operator U() && {
+            if constexpr (std::is_lvalue_reference_v<type>) {
+                return value;
+            } else {
+                return std::move(value);
+            }
+        }
+    };
+
+    template <is_arg Arg, typename... Ts>
+        requires (
+            variadic_args_name<std::remove_cvref_t<Arg>::name> &&
+            !variadic_kwargs_name<std::remove_cvref_t<Arg>::name>
+        )
+    struct BoundArg<Arg, Ts...> {
+        static constexpr StaticStr name = std::remove_cvref_t<Arg>::name;
+        static constexpr impl::ArgKind kind = impl::ArgKind::POS | impl::ArgKind::VARIADIC;
+        using type = std::conditional_t<
+            std::is_lvalue_reference_v<typename std::remove_cvref_t<Arg>::type>,
+            std::reference_wrapper<typename std::remove_cvref_t<Arg>::type>,
+            std::remove_reference_t<typename std::remove_cvref_t<Arg>::type>
+        >;
+
+        std::vector<type> value;
+
+        [[nodiscard]] std::vector<type>& operator*() {
+            return value;
+        }
+        [[nodiscard]] constexpr const std::vector<type>& operator*() const {
+            return value;
+        }
+        [[nodiscard]] std::vector<type>* operator->() {
+            return &value;
+        }
+        [[nodiscard]] constexpr const std::vector<type>* operator->() const {
+            return &value;
+        }
+
+        [[nodiscard]] constexpr operator std::vector<type>() && {
+            return std::move(value);
+        }
+    };
+
+    template <is_arg Arg, typename... Ts>
+        requires (
+            !variadic_args_name<std::remove_cvref_t<Arg>::name> &&
+            variadic_kwargs_name<std::remove_cvref_t<Arg>::name>
+        )
+    struct BoundArg<Arg, Ts...> {
+        static constexpr StaticStr name = std::remove_cvref_t<Arg>::name;
+        static constexpr ArgKind kind = ArgKind::KW | ArgKind::VARIADIC;
+        using type = std::conditional_t<
+            std::is_lvalue_reference_v<typename std::remove_cvref_t<Arg>::type>,
+            std::reference_wrapper<typename std::remove_cvref_t<Arg>::type>,
+            std::remove_reference_t<typename std::remove_cvref_t<Arg>::type>
+        >;
+
+        std::unordered_map<std::string, type> value;
+
+        [[nodiscard]] constexpr std::unordered_map<std::string, type>& operator*() {
+            return value;
+        }
+        [[nodiscard]] constexpr const std::unordered_map<std::string, type>& operator*() const {
+            return value;
+        }
+        [[nodiscard]] constexpr std::unordered_map<std::string, type>* operator->() {
+            return &value;
+        }
+        [[nodiscard]] constexpr const std::unordered_map<std::string, type>* operator->() const {
+            return &value;
+        }
+
+        [[nodiscard]] constexpr operator std::unordered_map<std::string, type>() && {
+            return std::move(value);
+        }
+    };
+
 }
 
 
-/* Allows anonymous access to a Python wrapper for a given C++ type, assuming it has
-one.  The result always corresponds to the return type of the unary `__cast__` control
-structure, and reflects the Python type that would be constructed if an instance of `T`
-were converted to `Object`. */
-template <impl::has_python T>
-using obj = impl::python_type<T>;
+template <StaticStr Name, typename T> requires (impl::variadic_args_name<Name>)
+struct Arg<Name, T> {
+    static constexpr StaticStr name = Name;
+    static constexpr impl::ArgKind kind = impl::ArgKind::POS | impl::ArgKind::VARIADIC;
+    using type = std::conditional_t<
+        std::is_lvalue_reference_v<T>,
+        std::reference_wrapper<T>,
+        std::remove_reference_t<T>
+    >;
+    template <typename... Us> requires ((impl::ArgTraits<Us>::posonly() && ...))
+    using bind = impl::BoundArg<Arg, Us...>;
+
+    std::vector<type> value;
+
+    [[nodiscard]] std::vector<type>& operator*() {
+        return value;
+    }
+    [[nodiscard]] constexpr const std::vector<type>& operator*() const {
+        return value;
+    }
+    [[nodiscard]] std::vector<type>* operator->() {
+        return &value;
+    }
+    [[nodiscard]] constexpr const std::vector<type>* operator->() const {
+        return &value;
+    }
+
+    [[nodiscard]] constexpr operator std::vector<type>() && {
+        return std::move(value);
+    }
+};
+
+
+template <StaticStr Name, typename T> requires (impl::variadic_kwargs_name<Name>)
+struct Arg<Name, T> {
+    static constexpr StaticStr name = Name;
+    static constexpr impl::ArgKind kind = impl::ArgKind::KW | impl::ArgKind::VARIADIC;
+    using type = std::conditional_t<
+        std::is_lvalue_reference_v<T>,
+        std::reference_wrapper<T>,
+        std::remove_reference_t<T>
+    >;
+    template <typename... Us> requires ((impl::ArgTraits<Us>::kw() && ...))
+    using bind = impl::BoundArg<Arg, Us...>;
+
+    std::unordered_map<std::string, T> value;
+
+    [[nodiscard]] constexpr std::unordered_map<std::string, T>& operator*() {
+        return value;
+    }
+    [[nodiscard]] constexpr const std::unordered_map<std::string, T>& operator*() const {
+        return value;
+    }
+    [[nodiscard]] constexpr std::unordered_map<std::string, T>* operator->() {
+        return &value;
+    }
+    [[nodiscard]] constexpr const std::unordered_map<std::string, T>* operator->() const {
+        return &value;
+    }
+
+    [[nodiscard]] constexpr operator std::unordered_map<std::string, T>() && {
+        return std::move(value);
+    }
+};
 
 
 /* A compile-time factory for binding keyword arguments with Python syntax.  constexpr
