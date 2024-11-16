@@ -730,8 +730,11 @@ namespace impl {
             }
         };
 
-        template <typename Signature, typename Pack>
-        struct PositionalPack {
+        struct PosPackTag {};
+        struct KwPackTag {};
+
+        template <typename Pack>
+        struct PositionalPack : PosPackTag {
             std::ranges::iterator_t<const Pack&> begin;
             std::ranges::sentinel_t<const Pack&> end;
             size_t size;
@@ -744,7 +747,7 @@ namespace impl {
             {}
 
             void validate() {
-                if constexpr (!Signature::has_args) {
+                if constexpr (!has_args) {
                     if (begin != end) {
                         std::string message =
                             "too many arguments in positional parameter pack: ['" +
@@ -767,30 +770,29 @@ namespace impl {
             }
         };
 
-        template <typename Signature, typename Pack>
-        struct KeywordPack {
+        template <typename Pack>
+        struct KeywordPack : KwPackTag {
             using Map = std::unordered_map<std::string, typename Pack::mapped_type>;
             Map map;
 
             KeywordPack(const Pack& pack) :
-                map([]<size_t... Is>(std::index_sequence<Is...>, const Pack& pack) {
+                map([](const Pack& pack) {
                     Map map;
                     map.reserve(pack.size());
                     for (auto&& [key, value] : pack) {
                         auto [_, inserted] = map.emplace(key, value);
                         if (!inserted) {
                             throw TypeError(
-                                "duplicate keyword argument: '" + repr(key) +
-                                "'"
+                                "duplicate keyword argument: '" + repr(key) + "'"
                             );
                         }
-                        return map;
                     }
-                }(std::make_index_sequence<Signature::n>{}, pack))
+                    return map;
+                }(pack))
             {}
 
             void validate() {
-                if constexpr (!Signature::has_kwargs) {
+                if constexpr (!has_kwargs) {
                     if (!map.empty()) {
                         auto it = map.begin();
                         auto end = map.end();
@@ -812,20 +814,18 @@ namespace impl {
             auto end() { return map.end(); }
         };
 
-        template <typename Signature, size_t J, typename... Values>
-            requires (J < sizeof...(Values))
+        template <size_t J, typename... Values> requires (J < sizeof...(Values))
         static auto positional_pack(Values&&... values) {
             using Pack = std::remove_cvref_t<unpack_type<J, Values...>>;
-            return PositionalPack<Signature, Pack>{
+            return PositionalPack<Pack>{
                 unpack_arg<J>(std::forward<Values>(values)...)
             };
         }
-
-        template <typename Signature, size_t J, typename... Values>
-            requires (J < sizeof...(Values))
+ 
+        template <size_t J, typename... Values> requires (J < sizeof...(Values))
         static auto keyword_pack(Values&&... values) {
             using Pack = std::remove_cvref_t<unpack_type<J, Values...>>;
-            return KeywordPack<Signature, Pack>{
+            return KeywordPack<Pack>{
                 unpack_arg<J>(std::forward<Values>(values)...)
             };
         }
@@ -1028,13 +1028,16 @@ namespace impl {
         private:
             using Part = Arguments<Parts...>;
 
+            /// TODO: how are keyword names stored in this case?
+
             /* Represents a value stored in the partial tuple, which can be
             cross-referenced with the target signature through compile-time
             indices. */
-            template <size_t I, size_t K, typename T>
+            template <size_t I, size_t K, StaticStr Name, typename T>
             struct Entry {
                 static constexpr size_t target_idx = I;
                 static constexpr size_t partial_idx = K;
+                static constexpr StaticStr name = Name;
                 using type = T;
                 std::remove_cvref_t<type> value;
 
@@ -1051,19 +1054,34 @@ namespace impl {
             struct collect<std::tuple<out...>, K, P, Ps...> {
                 template <typename P2>
                 struct find {
-                    using type = Entry<std::min(K, Arguments::args_idx), K, P2>;
+                    using type = Entry<
+                        std::min(K, Arguments::args_idx),
+                        K,
+                        ArgTraits<P2>::name,
+                        typename ArgTraits<P2>::type
+                    >;
                 };
                 template <typename P2> requires (impl::ArgTraits<P2>::kw())
                 struct find<P2> {
                     template <StaticStr name>
                     struct match {
-                        using type = Entry<Arguments::kwargs_idx, K, P2>;
+                        using type = Entry<
+                            Arguments::kwargs_idx,
+                            K,
+                            name,
+                            typename ArgTraits<P2>::type
+                        >;
                     };
                     template <StaticStr name> requires (Arguments::template has<name>)
                     struct match<name> {
-                        using type = Entry<Arguments::template idx<name>, K, P2>;
+                        using type = Entry<
+                            Arguments::template idx<name>,
+                            K,
+                            name,
+                            typename ArgTraits<P2>::type
+                        >;
                     };
-                    using type = match<impl::ArgTraits<P2>::name>::type;
+                    using type = match<ArgTraits<P2>::name>::type;
                 };
                 using type = collect<
                     std::tuple<out..., typename find<P>::type>,
@@ -1118,6 +1136,12 @@ namespace impl {
 
             Tuple values;
 
+            template <size_t>
+            static constexpr size_t target_idx = std::numeric_limits<size_t>::max();
+            template <size_t K> requires (K < std::tuple_size_v<Tuple>)
+            static constexpr size_t target_idx<K> =
+                std::tuple_element_t<K, Tuple>::target_idx;
+
             template <size_t J>
             static constexpr auto build(Parts... parts) -> std::tuple_element_t<J, Tuple> {
                 constexpr size_t idx = std::tuple_element_t<J, Tuple>::partial_idx;
@@ -1142,9 +1166,12 @@ namespace impl {
             constexpr Partial(const Partial& other) = default;
             constexpr Partial(Partial&& other) = default;
 
-            template <size_t I> requires (I < std::tuple_size_v<Tuple>)
+            template <size_t K> requires (K < std::tuple_size_v<Tuple>)
+            static constexpr StaticStr name = std::tuple_element_t<K, Tuple>::name;
+
+            template <size_t K> requires (K < std::tuple_size_v<Tuple>)
             [[nodiscard]] constexpr decltype(auto) get(this auto&& self) {
-                return std::get<I>(std::forward<decltype(self)>(self).parts).get();
+                return std::get<K>(std::forward<decltype(self)>(self).parts).get();
             }
 
             template <StaticStr name> requires (Arguments<Parts...>::template has<name>)
@@ -1185,12 +1212,14 @@ namespace impl {
                         std::min(Bound::args_idx, Bound::kw_idx),
                         Bound::kwargs_idx
                     ))
-                static constexpr bool _no_extra_positional_args<I, J> =
-                    I < std::min(Arguments::kwonly_idx, Arguments::kwargs_idx) &&
-                    _no_extra_positional_args<
-                        I + 1,
-                        J + !in_partial<I>
-                    >;
+                static constexpr bool _no_extra_positional_args<I, J> = [] {
+                    return
+                        I < std::min(Arguments::kwonly_idx, Arguments::kwargs_idx) &&
+                        _no_extra_positional_args<
+                            I + 1,
+                            J + !in_partial<I>
+                        >;
+                }();
 
                 template <size_t, size_t>
                 static constexpr bool _no_conflicting_values = true;
@@ -1199,40 +1228,44 @@ namespace impl {
                         std::min(Arguments::args_idx, Arguments::kwonly_idx),
                         Arguments::kwargs_idx
                     ))
-                static constexpr bool _no_conflicting_values<I, J> = (
-                    in_partial<I> || ArgTraits<Arguments::at<I>>::name == "" || !(
-                        Bound::template has<ArgTraits<Arguments::at<I>>::name> && (
-                            ArgTraits<Arguments::at<I>>::posonly() ||
-                            J < std::min(Bound::kw_idx, Bound::kwargs_idx)
+                static constexpr bool _no_conflicting_values<I, J> = [] {
+                    return (
+                        in_partial<I> || ArgTraits<Arguments::at<I>>::name == "" || !(
+                            Bound::template has<ArgTraits<Arguments::at<I>>::name> && (
+                                ArgTraits<Arguments::at<I>>::posonly() ||
+                                J < std::min(Bound::kw_idx, Bound::kwargs_idx)
+                            )
                         )
-                    )
-                ) && _no_conflicting_values<
-                    J == Bound::args_idx ?
-                        std::min(Arguments::kwonly_idx, Arguments::kwargs_idx) :
-                        I + 1,
-                    J + !in_partial<I>
-                >;
+                    ) && _no_conflicting_values<
+                        J == Bound::args_idx ?
+                            std::min(Arguments::kwonly_idx, Arguments::kwargs_idx) :
+                            I + 1,
+                        J + !in_partial<I>
+                    >;
+                }();
 
                 template <size_t, size_t>
                 static constexpr bool _satisfies_required_args = true;
                 template <size_t I, size_t J> requires (I < Arguments::n)
-                static constexpr bool _satisfies_required_args<I, J> = (
-                    in_partial<I> || ArgTraits<Arguments::at<I>>::opt() ||
-                    (
-                        ArgTraits<Arguments::at<I>>::pos() &&
-                            J < std::min(Bound::kw_idx, Bound::kwargs_idx)
-                    ) || (
-                        ArgTraits<Arguments::at<I>>::kw() &&
-                            Bound::template has<ArgTraits<Arguments::at<I>>::name>
-                    )
-                ) && _satisfies_required_args<
-                    J == Bound::args_idx ?
-                        std::min(Arguments::kwonly_idx, Arguments::kwargs_idx) :
-                        I + 1,
-                    I == Arguments::args_idx ?
-                        std::min(Bound::kw_idx, Bound::kwargs_idx) :
-                        J + !in_partial<I>
-                >;
+                static constexpr bool _satisfies_required_args<I, J> = [] {
+                    return (
+                        in_partial<I> || ArgTraits<Arguments::at<I>>::opt() ||
+                        (
+                            ArgTraits<Arguments::at<I>>::pos() &&
+                                J < std::min(Bound::kw_idx, Bound::kwargs_idx)
+                        ) || (
+                            ArgTraits<Arguments::at<I>>::kw() &&
+                                Bound::template has<ArgTraits<Arguments::at<I>>::name>
+                        )
+                    ) && _satisfies_required_args<
+                        J == Bound::args_idx ?
+                            std::min(Arguments::kwonly_idx, Arguments::kwargs_idx) :
+                            I + 1,
+                        I == Arguments::args_idx ?
+                            std::min(Bound::kw_idx, Bound::kwargs_idx) :
+                            J + !in_partial<I>
+                    >;
+                }();
 
                 template <size_t, size_t>
                 static constexpr bool _can_convert = true;
@@ -1350,11 +1383,17 @@ namespace impl {
                     }
                 }();
 
-                template <size_t K>
-                static constexpr size_t target_idx = std::numeric_limits<size_t>::max();
-                template <size_t K> requires (K < std::tuple_size_v<Tuple>)
-                static constexpr size_t target_idx<K> =
-                    std::tuple_element_t<K, Tuple>::target_idx;
+                template <typename... A>
+                static constexpr bool pos_pack_idx = 0;
+                template <typename A, typename... As>
+                static constexpr bool pos_pack_idx<A, As...> =
+                    inherits<A, PosPackTag> ? 0 : pos_pack_idx<As...> + 1;
+
+                template <typename... A>
+                static constexpr bool kw_pack_idx = 0;
+                template <typename A, typename... As>
+                static constexpr bool kw_pack_idx<A, As...> =
+                    inherits<A, KwPackTag> ? 0 : kw_pack_idx<As...> + 1;
 
                 /* Invoking the function involves a 3-way merge of the partial
                 arguments, source arguments, and default values, in that order of
@@ -1362,54 +1401,8 @@ namespace impl {
                 signature, such that it can be passed directly to a matching function.
                 This is done by modifying the input parameters at compile time via fold
                 expressions and template metaprogramming. */
-                template <size_t, size_t, size_t>
-                struct merge {  // terminal case
-                    template <typename D, typename P, typename F, typename... A>
-                    static constexpr decltype(auto) operator()(
-                        D&& defaults,
-                        P&& parts,
-                        F&& func,
-                        A&&... args
-                    ) {
-                        return std::forward<F>(func)(std::forward<A>(args)...);
-                    }
-
-                    template <typename D, typename P, typename F, typename Kw, typename... A>
-                    static constexpr decltype(auto) operator()(
-                        D&& defaults,
-                        P&& parts,
-                        F&& func,
-                        KeywordPack<Arguments, Kw>& keyword,
-                        A&&... args
-                    ) {
-                        keyword.validate();
-                        return std::forward<F>(func)(std::forward<A>(args)...);
-                    }
-                };
                 template <size_t I, size_t J, size_t K>
-                    requires (
-                        I < Arguments::n &&
-                        (K < std::tuple_size_v<Tuple> && target_idx<K> == I)
-                    )
-                struct merge<I, J, K> {  // insert partial argument
-                    template <size_t K2>
-                    static constexpr size_t consecutive = 0;
-                    template <size_t K2>
-                        requires (K2 < std::tuple_size_v<Tuple> && target_idx<K2> == I)
-                    static constexpr size_t consecutive<K2> = consecutive<K2 + 1> + 1;
-
-                    /// TODO: if we're inserting into a target *args or **kwargs pack,
-                    /// then this will need to also account for source arguments.  It
-                    /// also always needs to increment the target index, since the
-                    /// terminal function expects the arguments to be well-formed by
-                    /// the end of the call.  That also means that target variadic packs
-                    /// will have to remove arguments from the source list as they are
-                    /// parsed, such that by the time the terminal function is called,
-                    /// the source list exactly matches the target list.  That can be
-                    /// done by generating index sequences and slicing the parameter
-                    /// pack appropriately.  Note that the keyword reordering logic
-                    /// will have to be applied in-place in much the same way.
-
+                struct call {  // terminal case
                     template <typename D, typename P, typename F, typename... A>
                     static constexpr decltype(auto) operator()(
                         D&& defaults,
@@ -1417,13 +1410,13 @@ namespace impl {
                         F&& func,
                         A&&... args
                     ) {
-                        using T = Arguments::template at<I>;
-                        using parameters = Arguments<A...>;
-
-                        if constexpr (ArgTraits<T>::args()) {
-                            constexpr size_t transition =
-                                std::min(parameters::kw_idx, parameters::kwargs_idx);
-                            constexpr size_t diff = J < transition ? transition - J : 0;
+                        /// NOTE: positional packs are naturally filtered out the first
+                        /// time a positional argument is replaced with a default, or
+                        /// when variadic *args are encountered, whichever comes first.
+                        /// If neither of these conditions are met, then the pack must
+                        /// be empty, and will be filtered out of the final call.
+                        if constexpr (pos_pack_idx<A...> < sizeof...(A)) {
+                            constexpr size_t idx = pos_pack_idx<A...>;
                             return []<
                                 size_t... Prev,
                                 size_t... Next,
@@ -1439,23 +1432,297 @@ namespace impl {
                                 F2&& func,
                                 A2&&... args
                             ) {
-                                std::vector<typename ArgTraits<T>::type> vec;
-                                if constexpr (
-                                    parameters::has_args && parameters::args_idx >= J
-                                ) {
-                                    /// TODO: get args, generate a positional pack,
-                                    /// and populate the vector using it, generating
-                                    /// two separate index sequences and then calling
-                                    /// the vector's insert() method on the remaining
-                                    /// iterators.
-                                } else {
-                                    vec.reserve(consecutive<K> + diff);
+                                auto& positional = unpack_arg<idx>(
+                                    std::forward<A2>(args)...
+                                );
+                                positional.validate();
+                                return call<I, J, K>(
+                                    std::forward<D2>(defaults),
+                                    std::forward<P2>(parts),
+                                    std::forward<F2>(func),
+                                    unpack_arg<Prev>(std::forward<A2>(args)...)...,
+                                    unpack_arg<idx + 1 + Next>(std::forward<A2>(args)...)...
+                                );
+                            }(
+                                std::make_index_sequence<J>{},
+                                std::make_index_sequence<sizeof...(A) - (idx + 1)>{},
+                                std::forward<D>(defaults),
+                                std::forward<P>(parts),
+                                std::forward<F>(func),
+                                std::forward<A>(args)...
+                            );
+
+                        /// NOTE: keyword packs are naturally filtered out when
+                        /// variadic **kwargs are encountered, and never in any other
+                        /// circumstance, due to the unordered nature of keyword
+                        /// arguments.  If the pack is not encountered by this point,
+                        /// then it must be empty, and will be filtered out of the
+                        /// final call.
+                        } else if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
+                            constexpr size_t idx = kw_pack_idx<A...>;
+                            return []<
+                                size_t... Prev,
+                                size_t... Next,
+                                typename D2,
+                                typename P2,
+                                typename F2,
+                                typename... A2
+                            >(
+                                std::index_sequence<Prev...>,
+                                std::index_sequence<Next...>,
+                                D2&& defaults,
+                                P2&& parts,
+                                F2&& func,
+                                A2&&... args
+                            ) {
+                                auto& keyword = unpack_arg<idx>(
+                                    std::forward<A2>(args)...
+                                );
+                                keyword.validate();
+                                return call<I, J, K>(
+                                    std::forward<D2>(defaults),
+                                    std::forward<P2>(parts),
+                                    std::forward<F2>(func),
+                                    unpack_arg<Prev>(std::forward<A2>(args)...)...,
+                                    unpack_arg<idx + 1 + Next>(std::forward<A2>(args)...)...
+                                );
+                            }(
+                                std::make_index_sequence<J>{},
+                                std::make_index_sequence<sizeof...(A) - (idx + 1)>{},
+                                std::forward<D>(defaults),
+                                std::forward<P>(parts),
+                                std::forward<F>(func),
+                                std::forward<A>(args)...
+                            );
+
+                        /// NOTE: otherwise, the parameters must exactly match the
+                        /// target signature, as guaranteed by prior template
+                        /// constraints and call<> logic.
+                        } else {
+                            return std::forward<F>(func)(std::forward<A>(args)...);
+                        }
+                    }
+
+                    /// TODO: Python overload
+                };
+                template <size_t I, size_t J, size_t K>
+                    requires (
+                        I < Arguments::n &&
+                        (K < std::tuple_size_v<Tuple> && target_idx<K> == I)
+                    )
+                struct call<I, J, K> {  // insert partial argument
+                    template <size_t K2>
+                    static constexpr size_t consecutive = 0;
+                    template <size_t K2>
+                        requires (K2 < std::tuple_size_v<Tuple> && target_idx<K2> == I)
+                    static constexpr size_t consecutive<K2> = consecutive<K2 + 1> + 1;
+
+                    /// NOTE: positional arguments are ordered by default, so we just
+                    /// consume any leftovers.  However, if one is a source positional
+                    /// pack, then we need to account for its size, which can only be
+                    /// known at runtime.
+
+                    template <size_t J2, typename T, typename... A>
+                    static void _var_positional(std::vector<T>& out, A&&... args) {
+                        if constexpr (J2 == pos_pack_idx<A...>) {
+                            auto& pack = unpack_arg<J2>(std::forward<A>(args)...);
+                            out.insert(out.end(), pack.begin(), pack.end());
+                        } else {
+                            out.emplace_back(
+                                unpack_arg<J2>(std::forward<A>(args)...)
+                            );
+                        }
+                    }
+
+                    template <typename P, typename... A>
+                    static auto var_positional(P&& parts, A&&... args) {
+                        using T = Arguments::at<I>;
+                        using parameters = Arguments<A...>;
+                        constexpr size_t transition =
+                            std::min(parameters::kw_idx, parameters::kwargs_idx);
+                        constexpr size_t diff = J < transition ? transition - J : 0;
+
+                        // allocate variadic positional array
+                        std::vector<typename ArgTraits<T>::type> out;
+                        if constexpr (pos_pack_idx<A...> < sizeof...(A)) {
+                            out.reserve(
+                                consecutive<K> +
+                                (diff - 1) +
+                                unpack_arg<pos_pack_idx<A...>>(
+                                    std::forward<A>(args)...
+                                ).size()
+                            );
+                        } else {
+                            out.reserve(consecutive<K> + diff);
+                        }
+
+                        // consume partial args
+                        []<size_t... Ks, typename P2>(
+                            std::index_sequence<Ks...>,
+                            std::vector<typename ArgTraits<T>::type>& out,
+                            P2&& parts
+                        ) {
+                            (out.emplace_back(
+                                std::forward<P2>(parts).template get<K + Ks>()
+                            ), ...);
+                        }(
+                            std::make_index_sequence<consecutive<K>>{},
+                            out,
+                            std::forward<P>(parts)
+                        );
+
+                        // consume source args + parameter packs
+                        []<size_t... Js, typename... A2>(
+                            std::index_sequence<Js...>,
+                            std::vector<typename ArgTraits<T>::type>& out,
+                            A2&&... args
+                        ) {
+                            (
+                                _var_positional<J + Js>(
+                                    out,
+                                    std::forward<A2>(args)...
+                                ),
+                                ...
+                            );
+                        }(
+                            std::make_index_sequence<diff>{},
+                            out,
+                            std::forward<A>(args)...
+                        );
+                        return out;
+                    }
+
+                    /// NOTE: because the source arguments are reordered as call<> is
+                    /// executed, any remaining source arguments must be part of the
+                    /// variadic kwargs.  We don't need to consider source keyword
+                    /// packs here, since those use a separate overload handled in the
+                    /// top-level call operator.
+
+                    template <size_t J2, typename T, typename... A>
+                    static void _var_keyword(
+                        std::unordered_map<std::string, T>& out,
+                        A&&... args
+                    ) {
+                        if constexpr (J2 == kw_pack_idx<A...>) {
+                            auto& pack = unpack_arg<J2>(std::forward<A>(args)...);
+                            auto it = pack.begin();
+                            auto end = pack.end();
+                            while (it != end) {
+                                // postfix ++ required to increment before invalidation
+                                auto node = pack.extract(it++);
+                                auto rc = out.insert(node);
+                                if (!rc.inserted) {
+                                    throw TypeError(
+                                        "duplicate value for parameter '" +
+                                        node.key() + "'"
+                                    );
                                 }
+                            }
+                        } else {
+                            out.emplace(
+                                ArgTraits<typename Bound::template at<J2>>::name,
+                                unpack_arg<J2>(std::forward<A>(args)...)
+                            );
+                        }
+                    }
 
+                    template <typename P, typename... A>
+                    static auto var_keyword(P&& parts, A&&... args) {
+                        using T = Arguments::at<I>;
+                        using parameters = Arguments<A...>;
+                        constexpr size_t diff = Bound::n - J;
 
-                                /// TODO: create a vector, insert the partial arguments,
-                                /// and then merge the source arguments out to Bound::kw_idx,
-                                /// eliminating them from the input list when forwarding.
+                        // allocate variadic keyword map
+                        std::unordered_map<std::string, typename ArgTraits<T>::type> out;
+                        if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
+                            out.reserve(
+                                consecutive<K> +
+                                (diff - 1) +
+                                unpack_arg<kw_pack_idx<A...>>(
+                                    std::forward<A>(args)...
+                                ).size()
+                            );
+                        } else {
+                            out.reserve(consecutive<K> + diff);
+                        }
+
+                        // consume partial kwargs
+                        []<size_t... Ks, typename P2>(
+                            std::index_sequence<Ks...>,
+                            std::unordered_map<std::string, typename ArgTraits<T>::type>& out,
+                            P2&& parts,
+                            A&&... args
+                        ) {
+                            (out.emplace(
+                                Partial::name<K + Ks>,
+                                std::forward<P2>(parts).template get<K + Ks>()
+                            ), ...);
+                        }(
+                            std::make_index_sequence<consecutive<K>>{},
+                            out,
+                            std::forward<P>(parts)
+                        );
+
+                        // consume source kwargs
+                        []<size_t... Js, typename... A2>(
+                            std::index_sequence<Js...>,
+                            std::unordered_map<std::string, typename ArgTraits<T>::type>& out,
+                            A2&&... args
+                        ) {
+                            (
+                                _var_keyword<J + Js>(
+                                    out,
+                                    std::forward<A2>(args)...
+                                ),
+                                ...
+                            );
+                        }(
+                            std::make_index_sequence<diff>{},
+                            out,
+                            std::forward<A>(args)...
+                        );
+                        return out;
+                    }
+
+                    template <typename D, typename P, typename F, typename... A>
+                    static constexpr decltype(auto) operator()(
+                        D&& defaults,
+                        P&& parts,
+                        F&& func,
+                        A&&... args
+                    ) {
+                        using T = Arguments::template at<I>;
+                        using parameters = Arguments<A...>;
+
+                        if constexpr (ArgTraits<T>::args()) {
+                            constexpr size_t transition =
+                                std::min(parameters::kw_idx, parameters::kwargs_idx);
+                            return []<
+                                size_t... Prev,
+                                size_t... Next,
+                                typename D2,
+                                typename P2,
+                                typename F2,
+                                typename... A2
+                            >(
+                                std::index_sequence<Prev...>,
+                                std::index_sequence<Next...>,
+                                D2&& defaults,
+                                P2&& parts,
+                                F2&& func,
+                                A2&&... args
+                            ) {
+                                return call<I + 1, J + 1, K + consecutive<K>>{}(
+                                    std::forward<D2>(defaults),
+                                    std::forward<P2>(parts),
+                                    std::forward<F2>(func),
+                                    unpack_arg<Prev>(std::forward<A2>(args)...)...,
+                                    to_arg<I>(var_positional(
+                                        std::forward<P2>(parts),
+                                        std::forward<A2>(args)...
+                                    )),
+                                    unpack_arg<transition + Next>(std::forward<A2>(args)...)...
+                                );
                             }(
                                 std::make_index_sequence<J>{},
                                 std::make_index_sequence<sizeof...(A) - transition>{},
@@ -1479,10 +1746,16 @@ namespace impl {
                                 F2&& func,
                                 A2&&... args
                             ) {
-                                /// NOTE: keywords are reordered as merge<> is executed
-                                /// and **kwargs must be the last argument in the
-                                /// target list, meaning that any remaining source
-                                /// arguments must be placed in the keyword pack.
+                                return call<I + 1, J + 1, K + consecutive<K>>{}(
+                                    std::forward<D2>(defaults),
+                                    std::forward<P2>(parts),
+                                    std::forward<F2>(func),
+                                    unpack_arg<Prev>(std::forward<A2>(args)...)...,
+                                    to_arg<I>(var_keyword(
+                                        std::forward<P2>(parts),
+                                        std::forward<A2>(args)...
+                                    ))
+                                );
                             }(
                                 std::make_index_sequence<J>{},
                                 std::forward<D>(defaults),
@@ -1507,12 +1780,14 @@ namespace impl {
                                 F2&& func,
                                 A2&&... args
                             ) {
-                                return merge<I + 1, J + 1, K + 1>{}(
+                                return call<I + 1, J + 1, K + 1>{}(
                                     std::forward<D2>(defaults),
                                     std::forward<P2>(parts),
                                     std::forward<F2>(func),
                                     impl::unpack_arg<Prev>(std::forward<A>(args)...)...,
-                                    std::get<K>(std::forward<P2>(parts)).get(),
+                                    to_arg<I>(
+                                        std::forward<P2>(parts).template get<K>()
+                                    ),
                                     impl::unpack_arg<J + Next>(std::forward<A>(args)...)...
                                 );
                             }(
@@ -1525,13 +1800,21 @@ namespace impl {
                             );
                         }
                     }
+
+                    /// TODO: Python overload
                 };
                 template <size_t I, size_t J, size_t K>
                     requires (
                         I < Arguments::n &&
                         !(K < std::tuple_size_v<Tuple> && target_idx<K> == I)
                     )
-                struct merge<I, J, K> {  // forward source argument
+                struct call<I, J, K> {  // forward source argument or default value
+                    /// TODO: positional parameter packs can insert into the source
+                    /// arguments in a way that jumps to the first keyword argument,
+                    /// similar to above.  In this case, however, it will need to
+                    /// consume multiple target arguments, rather than multiple
+                    /// source arguments, which inverts some of the logic.
+
                     template <typename D, typename P, typename F, typename... A>
                     static constexpr decltype(auto) operator()(
                         D&& defaults,
@@ -1548,7 +1831,7 @@ namespace impl {
                         );
                         if constexpr (impl::ArgTraits<T>::posonly()) {
                             constexpr bool advance = J < cutoff;
-                            return merge<I + 1, J + advance, K>{}(
+                            return call<I + 1, J + advance, K>{}(
                                 std::forward<D>(defaults),
                                 std::forward<P>(parts),
                                 std::forward<F>(func),
@@ -1557,7 +1840,7 @@ namespace impl {
                         } else if constexpr (impl::ArgTraits<T>::pos()) {
                             constexpr bool advance =
                                 J < cutoff || Bound::template has<name>;
-                            return merge<I + 1, J + advance, K>{}(
+                            return call<I + 1, J + advance, K>{}(
                                 std::forward<D>(defaults),
                                 std::forward<P>(parts),
                                 std::forward<F>(func),
@@ -1565,14 +1848,14 @@ namespace impl {
                             );
                         } else if constexpr (impl::ArgTraits<T>::kw()) {
                             constexpr bool advance = Bound::template has<name>;
-                            return merge<I + 1, J + advance, K>{}(
+                            return call<I + 1, J + advance, K>{}(
                                 std::forward<D>(defaults),
                                 std::forward<P>(parts),
                                 std::forward<F>(func),
                                 std::forward<A>(args)...
                             );
                         } else if constexpr (impl::ArgTraits<T>::args()) {
-                            return merge<I + 1, cutoff, K>{}(
+                            return call<I + 1, cutoff, K>{}(
                                 std::forward<D>(defaults),
                                 std::forward<P>(parts),
                                 std::forward<F>(func),
@@ -1582,7 +1865,7 @@ namespace impl {
                             // kwargs don't require any special treatment, since
                             // keywords are fundamentally unordered, and will be caught
                             // later
-                            return merge<I + 1, J + 1, K>{}(
+                            return call<I + 1, J + 1, K>{}(
                                 std::forward<D>(defaults),
                                 std::forward<P>(parts),
                                 std::forward<F>(func),
@@ -1594,38 +1877,6 @@ namespace impl {
                         }
                     }
                 };
-
-                /* Get the base size of a **kwargs map by counting the number of C++
-                keyword arguments that are not present in the target signature. */
-                template <typename...>
-                static constexpr size_t _n_foreign_kwargs = 0;
-                template <typename T, typename... Ts>
-                static constexpr size_t _n_foreign_kwargs<T, Ts...> =
-                    _n_foreign_kwargs<Ts...>;
-                template <typename T, typename... Ts> requires (ArgTraits<T>::kw())
-                static constexpr size_t _n_foreign_kwargs<T, Ts...> =
-                    _n_foreign_kwargs<Ts...> +
-                    (Arguments::template has<ArgTraits<T>::name>);
-                static constexpr size_t n_foreign_kwargs = _n_foreign_kwargs<Values...>;
-
-                /* Initialize a **kwargs map in the target arguments by collecting all
-                keyword arguments that don't appear in the target parameter list.  The
-                result can then be moved into the **kwargs argument annotation. */
-                template <size_t J, typename T>
-                static constexpr void build_kwargs(
-                    std::unordered_map<std::string, T>& map,
-                    Values... args
-                ) {
-                    constexpr size_t idx = Bound::kw_idx + J;
-                    if constexpr (!Arguments::template has<ArgTraits<
-                        typename Bound::template at<idx>
-                    >::name>) {
-                        map.emplace(
-                            ArgTraits<typename Bound::template at<idx>>::name,
-                            impl::unpack_arg<idx>(std::forward<Values>(args)...)
-                        );
-                    }
-                }
 
                 /* The cpp() method is used to convert an index sequence over the
                  * enclosing signature into the corresponding values pulled from either
