@@ -730,11 +730,8 @@ namespace impl {
             }
         };
 
-        struct PosPackTag {};
-        struct KwPackTag {};
-
         template <typename Pack>
-        struct PositionalPack : PosPackTag {
+        struct PositionalPack {
             std::ranges::iterator_t<const Pack&> begin;
             std::ranges::sentinel_t<const Pack&> end;
             size_t size;
@@ -771,7 +768,7 @@ namespace impl {
         };
 
         template <typename Pack>
-        struct KeywordPack : KwPackTag {
+        struct KeywordPack {
             using Map = std::unordered_map<std::string, typename Pack::mapped_type>;
             Map map;
 
@@ -813,6 +810,22 @@ namespace impl {
             auto begin() { return map.begin(); }
             auto end() { return map.end(); }
         };
+
+        template <typename T>
+        static constexpr bool _is_positional_pack = false;
+        template <typename T>
+        static constexpr bool _is_positional_pack<PositionalPack<T>> = true;
+        template <typename T>
+        static constexpr bool is_positional_pack =
+            _is_positional_pack<std::remove_cvref_t<T>>;
+
+        template <typename T>
+        static constexpr bool _is_keyword_pack = false;
+        template <typename T>
+        static constexpr bool _is_keyword_pack<KeywordPack<T>> = true;
+        template <typename T>
+        static constexpr bool is_keyword_pack =
+            _is_keyword_pack<std::remove_cvref_t<T>>;
 
         template <typename Pack>
         static auto positional_pack(Pack&& pack) {
@@ -1024,15 +1037,13 @@ namespace impl {
         private:
             using Part = Arguments<Parts...>;
 
-            /// TODO: how are keyword names stored in this case?
-
             /* Represents a value stored in the partial tuple, which can be
             cross-referenced with the target signature through compile-time
             indices. */
             template <size_t I, size_t K, StaticStr Name, typename T>
             struct Entry {
                 static constexpr size_t target_idx = I;
-                static constexpr size_t partial_idx = K;
+                static constexpr size_t origin_idx = K;
                 static constexpr StaticStr name = Name;
                 using type = T;
                 std::remove_cvref_t<type> value;
@@ -1129,19 +1140,20 @@ namespace impl {
             };
 
             using Tuple = sort<typename collect<std::tuple<>, 0, Parts...>::type>::type;
-
             Tuple values;
 
             template <size_t>
-            static constexpr size_t target_idx = std::numeric_limits<size_t>::max();
+            static constexpr size_t target_idx = Arguments::n;
             template <size_t K> requires (K < std::tuple_size_v<Tuple>)
             static constexpr size_t target_idx<K> =
                 std::tuple_element_t<K, Tuple>::target_idx;
 
             template <size_t J>
-            static constexpr auto build(Parts... parts) -> std::tuple_element_t<J, Tuple> {
-                constexpr size_t idx = std::tuple_element_t<J, Tuple>::partial_idx;
-                return {impl::unpack_arg<idx>(std::forward<Parts>(parts)...)};
+            static constexpr auto build(Parts... parts) {
+                constexpr size_t idx = std::tuple_element_t<J, Tuple>::origin_idx;
+                return std::tuple_element_t<J, Tuple>{
+                    impl::unpack_arg<idx>(std::forward<Parts>(parts)...)
+                };
             }
 
         public:
@@ -1384,21 +1396,21 @@ namespace impl {
                 static constexpr bool pos_pack_idx = 0;
                 template <typename A, typename... As>
                 static constexpr bool pos_pack_idx<A, As...> =
-                    inherits<A, PosPackTag> ? 0 : pos_pack_idx<As...> + 1;
+                    is_positional_pack<A> ? 0 : pos_pack_idx<As...> + 1;
 
                 template <typename... A>
                 static constexpr bool kw_pack_idx = 0;
                 template <typename A, typename... As>
                 static constexpr bool kw_pack_idx<A, As...> =
-                    inherits<A, KwPackTag> ? 0 : kw_pack_idx<As...> + 1;
+                    is_keyword_pack<A> ? 0 : kw_pack_idx<As...> + 1;
 
                 /* Invoking a function involves a 3-way merge of the partial arguments,
                 source arguments, and default values, in that order of precedence.  The
                 result is guaranteed to exactly match the enclosing signature, such
-                that it can be passed directly to a matching function with the intended
+                that it can be passed to a matching function with the intended
                 semantics.  This is done by inserting, removing, and reordering
                 parameters from the argument list at compile time using index sequences
-                and fold expressions, which are inlined into the final call. */
+                and fold expressions, which can be inlined into the final call. */
                 template <size_t I, size_t J, size_t K>
                 struct call {  // terminal case
                     template <typename D, typename P, typename F, typename... A>
@@ -1504,7 +1516,7 @@ namespace impl {
                         I < Arguments::n &&
                         (K < std::tuple_size_v<Tuple> && target_idx<K> == I)
                     )
-                struct call<I, J, K> {  // insert partial argument
+                struct call<I, J, K> {  // insert partial argument(s)
                     template <size_t K2>
                     static constexpr size_t consecutive = 0;
                     template <size_t K2>
@@ -1791,7 +1803,7 @@ namespace impl {
                         I < Arguments::n &&
                         !(K < std::tuple_size_v<Tuple> && target_idx<K> == I)
                     )
-                struct call<I, J, K> {  // forward source argument or default value
+                struct call<I, J, K> {  // forward source argument(s) or default value
                     template <typename D, typename P, typename F, typename... A>
                     static constexpr std::invoke_result_t<F, Args...> operator()(
                         D&& defaults,
@@ -2394,500 +2406,6 @@ namespace impl {
                     }
                 };
 
-                /* The cpp() method is used to convert an index sequence over the
-                 * enclosing signature into the corresponding values pulled from either
-                 * the call site or the function's defaults.  It is complicated by the
-                 * presence of variadic parameter packs in both the target signature
-                 * and the call arguments, which have to be handled as a cross product
-                 * of possible combinations.
-                 *
-                 * Unless a variadic parameter pack is given at the call site, all of
-                 * these are resolved entirely at compile time by reordering the
-                 * arguments using template recursion.  However, because the size of a
-                 * variadic parameter pack cannot be determined at compile time, calls
-                 * that use these will have to extract values at runtime, and may
-                 * therefore raise an error if a corresponding value does not exist in
-                 * the parameter pack, or if there are extras that are not included in
-                 * the target signature.
-                 */
-
-                template <size_t I, is<Defaults> D>
-                static constexpr Arguments::at<I> cpp(
-                    D&& defaults,
-                    Values... values
-                ) {
-                    using T = Arguments::at<I>;
-                    constexpr StaticStr name = ArgTraits<T>::name;
-                    constexpr size_t transition = std::min(Bound::kw_idx, Bound::kwargs_idx);
-
-                    if constexpr (ArgTraits<T>::posonly()) {
-                        if constexpr (I < transition) {
-                            return to_arg<I>(
-                                impl::unpack_arg<I>(std::forward<Values>(values)...)
-                            );
-                        } else {
-                            constexpr size_t idx = Defaults::template find<I>;
-                            if constexpr (std::is_lvalue_reference_v<D>) {
-                                return to_arg<I>(
-                                    std::forward<D>(defaults).template get<idx>()
-                                );
-                            } else {
-                                return to_arg<I>(std::move(
-                                    std::forward<D>(defaults).template get<idx>()
-                                ));
-                            }
-                        }
-
-                    } else if constexpr (ArgTraits<T>::pos()) {
-                        if constexpr (I < transition) {
-                            return to_arg<I>(
-                                impl::unpack_arg<I>(std::forward<Values>(values)...)
-                            );
-                        } else if constexpr (Bound::template has<name>) {
-                            return to_arg<I>(
-                                impl::unpack_arg<Bound::template idx<name>>(
-                                    std::forward<Values>(values)...
-                                )
-                            );
-                        } else {
-                            constexpr size_t idx = Defaults::template find<I>;
-                            if constexpr (std::is_lvalue_reference_v<D>) {
-                                return to_arg<I>(
-                                    std::forward<D>(defaults).template get<idx>()
-                                );
-                            } else {
-                                return to_arg<I>(std::move(
-                                    std::forward<D>(defaults).template get<idx>()
-                                ));
-                            }
-                        }
-
-                    } else if constexpr (ArgTraits<T>::kw()) {
-                        if constexpr (Bound::template has<name>) {
-                            return to_arg<I>(
-                                impl::unpack_arg<Bound::template idx<name>>(
-                                    std::forward<Values>(values)...
-                                )
-                            );
-                        } else {
-                            constexpr size_t idx = Defaults::template find<I>;
-                            if constexpr (std::is_lvalue_reference_v<D>) {
-                                return to_arg<I>(
-                                    std::forward<D>(defaults).template get<idx>()
-                                );
-                            } else {
-                                return to_arg<I>(std::move(
-                                    std::forward<D>(defaults).template get<idx>()
-                                ));
-                            }
-                        }
-
-                    } else if constexpr (ArgTraits<T>::args()) {
-                        constexpr size_t diff = I < transition ? transition - I : 0;
-                        return []<size_t... Js>(
-                            std::index_sequence<Js...>,
-                            Values&&... args
-                        ) {
-                            std::vector<typename ArgTraits<T>::type> vec;
-                            vec.reserve(diff);
-                            (vec.emplace_back(impl::unpack_arg<I + Js>(
-                                std::forward<Values>(args)...
-                            )), ...);
-                            return to_arg<I>(std::move(vec));
-                        }(
-                            std::make_index_sequence<diff>{},
-                            std::forward<Values>(values)...
-                        );
-
-                    } else if constexpr (ArgTraits<T>::kwargs()) {
-                        return []<size_t... Js>(
-                            std::index_sequence<Js...>,
-                            Values&&... args
-                        ) {
-                            std::unordered_map<std::string, typename ArgTraits<T>::type> map;
-                            map.reserve(n_foreign_kwargs);
-                            (build_kwargs<Js>(map, std::forward<Values>(args)...), ...);
-                            return to_arg<I>(std::move(map));
-                        }(
-                            std::make_index_sequence<Bound::n - Bound::kw_idx>{},
-                            std::forward<Values>(values)...
-                        );
-
-                    } else {
-                        static_assert(false, "invalid argument kind");
-                        std::unreachable();
-                    }
-                }
-
-                template <size_t I, is<Defaults> D, typename Pos>
-                static constexpr Arguments::at<I> cpp(
-                    D&& defaults,
-                    PositionalPack<Arguments, Pos>& positional,
-                    Values... values
-                ) {
-                    using T = Arguments::at<I>;
-                    constexpr StaticStr name = ArgTraits<T>::name;
-                    constexpr size_t transition = std::min(Bound::kw_idx, Bound::kwargs_idx);
-
-                    if constexpr (ArgTraits<T>::posonly()) {
-                        if constexpr (I < transition) {
-                            return to_arg<I>(
-                                impl::unpack_arg<I>(std::forward<Values>(values)...)
-                            );
-                        } else {
-                            if (positional.has_value()) {
-                                return to_arg<I>(positional.value());
-                            }
-                            if constexpr (ArgTraits<T>::opt()) {
-                                constexpr size_t idx = Defaults::template find<I>;
-                                if constexpr (std::is_lvalue_reference_v<D>) {
-                                    return to_arg<I>(
-                                        std::forward<D>(defaults).template get<idx>()
-                                    );
-                                } else {
-                                    return to_arg<I>(std::move(
-                                        std::forward<D>(defaults).template get<idx>()
-                                    ));
-                                }
-                            } else {
-                                throw TypeError(
-                                    "no match for positional-only parameter at index " +
-                                    std::to_string(I)
-                                );
-                            }
-                        }
-
-                    } else if constexpr (ArgTraits<T>::pos()) {
-                        if constexpr (I < transition) {
-                            return to_arg<I>(
-                                impl::unpack_arg<I>(std::forward<Values>(values)...)
-                            );
-                        } else {
-                            if (positional.has_value()) {
-                                if constexpr (Bound::template has<name>) {
-                                    throw TypeError(
-                                        "conflicting values for parameter '" + name +
-                                        "' at index " + std::to_string(I)
-                                    );
-                                } else {
-                                    return to_arg<I>(positional.value());
-                                }
-                            }
-                            if constexpr (Bound::template has<name>) {
-                                return to_arg<I>(
-                                    impl::unpack_arg<Bound::template idx<name>>(
-                                        std::forward<Values>(values)...
-                                    )
-                                );
-                            } else {
-                                constexpr size_t idx = Defaults::template find<I>;
-                                if constexpr (ArgTraits<T>::opt()) {
-                                    if constexpr (std::is_lvalue_reference_v<D>) {
-                                        return to_arg<I>(
-                                            std::forward<D>(defaults).template get<idx>()
-                                        );
-                                    } else {
-                                        return to_arg<I>(std::move(
-                                            std::forward<D>(defaults).template get<idx>()
-                                        ));
-                                    }
-                                } else {
-                                    throw TypeError(
-                                        "no match for parameter '" + name +
-                                        "' at index " + std::to_string(I)
-                                    );
-                                }
-                            }
-                        }
-
-                    } else if constexpr (ArgTraits<T>::kw()) {
-                        return cpp<I>(
-                            std::forward<D>(defaults),
-                            std::forward<Values>(values)...
-                        );
-
-                    } else if constexpr (ArgTraits<T>::args()) {
-                        constexpr size_t diff = I < transition ? transition - I : 0;
-                        return []<size_t... Js>(
-                            std::index_sequence<Js...>,
-                            PositionalPack<Arguments, Pos>& positional,
-                            Values&&... args
-                        ) {
-                            std::vector<typename ArgTraits<T>::type> vec;
-                            vec.reserve(diff + (positional.size - positional.consumed));
-                            (vec.emplace_back(impl::unpack_arg<I + Js>(
-                                std::forward<Values>(args)...
-                            )), ...);
-                            vec.insert(vec.end(), positional.begin, positional.end);
-                            return to_arg<I>(std::move(vec));
-                        }(
-                            std::make_index_sequence<diff>{},
-                            positional,
-                            std::forward<Values>(values)...
-                        );
-
-                    } else if constexpr (ArgTraits<T>::kwargs()) {
-                        return cpp<I>(
-                            std::forward<D>(defaults),
-                            std::forward<Values>(values)...
-                        );
-
-                    } else {
-                        static_assert(false, "invalid argument kind");
-                        std::unreachable();
-                    }
-                }
-
-                template <size_t I, is<Defaults> D, typename Kw>
-                static constexpr Arguments::at<I> cpp(
-                    D&& defaults,
-                    KeywordPack<Arguments, Kw>& keyword,
-                    Values... values
-                ) {
-                    using T = Arguments::at<I>;
-                    constexpr StaticStr name = ArgTraits<T>::name;
-                    constexpr size_t transition = std::min(Bound::kw_idx, Bound::kwargs_idx);
-
-                    if constexpr (ArgTraits<T>::posonly()) {
-                        return cpp<I>(
-                            std::forward<D>(defaults),
-                            std::forward<Values>(values)...
-                        );
-
-                    } else if constexpr (ArgTraits<T>::pos()) {
-                        auto node = keyword.extract(name);
-                        if (node) {
-                            if constexpr (I < transition || Bound::template has<name>) {
-                                throw TypeError(
-                                    "conflicting value for parameter '" + name +
-                                    "' at index " + std::to_string(I)
-                                );
-                            } else if constexpr (std::is_lvalue_reference_v<
-                                typename ArgTraits<T>::type
-                            >) {
-                                return to_arg<I>(node.mapped());
-                            } else {
-                                return to_arg<I>(std::move(node.mapped()));
-                            }
-                        }
-                        if constexpr (I < transition) {
-                            return to_arg<I>(
-                                impl::unpack_arg<I>(std::forward<Values>(values)...)
-                            );
-                        } else if constexpr (Bound::template has<name>) {
-                            return to_arg<I>(
-                                impl::unpack_arg<Bound::template idx<name>>(
-                                    std::forward<Values>(values)...
-                                )
-                            );
-                        } else if constexpr (ArgTraits<T>::opt()) {
-                            constexpr size_t idx = Defaults::template find<I>;
-                            if constexpr (std::is_lvalue_reference_v<D>) {
-                                return to_arg<I>(
-                                    std::forward<D>(defaults).template get<idx>()
-                                );
-                            } else {
-                                return to_arg<I>(std::move(
-                                    std::forward<D>(defaults).template get<idx>()
-                                ));
-                            }
-                        } else {
-                            throw TypeError(
-                                "no match for parameter '" + name +
-                                "' at index " + std::to_string(I)
-                            );
-                        }
-
-                    } else if constexpr (ArgTraits<T>::kw()) {
-                        auto node = keyword.extract(name);
-                        if (node) {
-                            if constexpr (Bound::template has<name>) {
-                                throw TypeError(
-                                    "conflicting value for parameter '" + name +
-                                    "' at index " + std::to_string(I)
-                                );
-                            } else if constexpr (std::is_lvalue_reference_v<
-                                typename ArgTraits<T>::type
-                            >) {
-                                return to_arg<I>(node.mapped());
-                            } else {
-                                return to_arg<I>(std::move(node.mapped()));
-                            }
-                        }
-                        if constexpr (Bound::template has<name>) {
-                            return to_arg<I>(
-                                impl::unpack_arg<Bound::template idx<name>>(
-                                    std::forward<Values>(values)...
-                                )
-                            );
-                        } else if constexpr (ArgTraits<T>::opt()) {
-                            constexpr size_t idx = Defaults::template find<I>;
-                            if constexpr (std::is_lvalue_reference_v<D>) {
-                                return to_arg<I>(
-                                    std::forward<D>(defaults).template get<idx>()
-                                );
-                            } else {
-                                return to_arg<I>(std::move(
-                                    std::forward<D>(defaults).template get<idx>()
-                                ));
-                            }
-                        } else {
-                            throw TypeError(
-                                "no match for parameter '" + name +
-                                "' at index " + std::to_string(I)
-                            );
-                        }
-
-                    } else if constexpr (ArgTraits<T>::args()) {
-                        return cpp<I>(
-                            std::forward<D>(defaults),
-                            std::forward<Values>(values)...
-                        );
-
-                    } else if constexpr (ArgTraits<T>::kwargs()) {
-                        return []<size_t... Js>(
-                            std::index_sequence<Js...>,
-                            KeywordPack<Arguments, Kw>& keyword,
-                            Values&&... values
-                        ) {
-                            std::unordered_map<std::string, typename ArgTraits<T>::type> map;
-                            map.reserve(n_foreign_kwargs + keyword.size());
-                            (build_kwargs<Js>(map, std::forward<Values>(values)...), ...);
-                            /// NOTE: since the pack's .extract() method is destructive,
-                            /// the only remaining elements are those that were not
-                            /// consumed, which can be directly moved into the result
-                            auto it = keyword.begin();
-                            auto end = keyword.end();
-                            while (it != end) {
-                                // postfix ++ required to increment before invalidation
-                                auto node = keyword.extract(it++);
-                                auto rc = map.insert(node);
-                                if (!rc.inserted) {
-                                    throw TypeError(
-                                        "duplicate value for parameter '" + node.key() + "'"
-                                    );
-                                }
-                            }
-                            return to_arg<I>(std::move(map));
-                        }(
-                            std::make_index_sequence<Bound::n - Bound::kw_idx>{},
-                            keyword,
-                            std::forward<Values>(values)...
-                        );
-
-                    } else {
-                        static_assert(false, "invalid argument kind");
-                        std::unreachable();
-                    }
-                }
-
-                template <size_t I, is<Defaults> D, typename Pos, typename Kw>
-                static constexpr Arguments::at<I> cpp(
-                    D&& defaults,
-                    PositionalPack<Arguments, Pos>& positional,
-                    KeywordPack<Arguments, Kw>& keyword,
-                    Values... values
-                ) {
-                    using T = Arguments::at<I>;
-                    constexpr StaticStr name = ArgTraits<T>::name;
-                    constexpr size_t transition = std::min(Bound::kw_idx, Bound::kwargs_idx);
-
-                    if constexpr (ArgTraits<T>::posonly()) {
-                        return cpp<I>(
-                            std::forward<D>(defaults),
-                            positional,
-                            std::forward<Values>(values)...
-                        );
-
-                    } else if constexpr (ArgTraits<T>::pos()) {
-                        auto node = keyword.extract(name);
-                        if constexpr (I < transition) {
-                            if (node) {
-                                throw TypeError(
-                                    "conflicting values for parameter '" + name +
-                                    "' at index " + std::to_string(I)
-                                );
-                            }
-                            return to_arg<I>(
-                                impl::unpack_arg<I>(std::forward<Values>(values)...)
-                            );
-                        } else if constexpr (Bound::template has<name>) {
-                            if (node || positional.has_value()) {
-                                throw TypeError(
-                                    "conflicting values for parameter '" + name +
-                                    "' at index " + std::to_string(I)
-                                );
-                            }
-                            return to_arg<I>(
-                                impl::unpack_arg<Bound::template idx<name>>(
-                                    std::forward<Values>(values)...
-                                )
-                            );
-                        } else {
-                            if (positional.has_value()) {
-                                if (node) {
-                                    throw TypeError(
-                                        "conflicting values for parameter '" + name +
-                                        "' at index " + std::to_string(I)
-                                    );
-                                }
-                                return to_arg<I>(positional.value());
-                            } else if (node) {
-                                if constexpr (std::is_lvalue_reference_v<
-                                    typename ArgTraits<T>::type
-                                >) {
-                                    return to_arg<I>(node.mapped());
-                                } else {
-                                    return to_arg<I>(std::move(node.mapped()));
-                                }
-                            } else {
-                                if constexpr (ArgTraits<T>::opt()) {
-                                    constexpr size_t idx = Defaults::template find<I>;
-                                    if constexpr (std::is_lvalue_reference_v<D>) {
-                                        return to_arg<I>(
-                                            std::forward<D>(defaults).template get<idx>()
-                                        );
-                                    } else {
-                                        return to_arg<I>(std::move(
-                                            std::forward<D>(defaults).template get<idx>()
-                                        ));
-                                    }
-                                } else {
-                                    throw TypeError(
-                                        "no match for parameter '" + name +
-                                        "' at index " + std::to_string(I)
-                                    );
-                                }
-                            }
-                        }
-
-                    } else if constexpr (ArgTraits<T>::kw()) {
-                        return cpp<I>(
-                            std::forward<D>(defaults),
-                            keyword,
-                            std::forward<Values>(values)...
-                        );
-
-                    } else if constexpr (ArgTraits<T>::args()) {
-                        return cpp<I>(
-                            std::forward<D>(defaults),
-                            positional,
-                            std::forward<Values>(values)...
-                        );
-
-                    } else if constexpr (ArgTraits<T>::kwargs()) {
-                        return cpp<I>(
-                            std::forward<D>(defaults),
-                            keyword,
-                            std::forward<Values>(values)...
-                        );
-
-                    } else {
-                        static_assert(false, "invalid argument kind");
-                        std::unreachable();
-                    }
-                }
-
                 /* The python() method is used to populate a Python vectorcall argument
                  * array according to a C++ call site.  Such an array can then be used
                  * to efficiently call a Python function using the vectorcall protocol,
@@ -3093,8 +2611,8 @@ namespace impl {
                     /// NOTE: source positional and keyword packs are always converted
                     /// into PositionalPack and KeywordPack objects, respectively,
                     /// which are destructively searched over the course of the call
-                    /// algorithm and validated at the end, just before calling the
-                    /// target function.
+                    /// algorithm and validated empty at the end, just before calling
+                    /// the target function, wherein they are omitted.
                     if constexpr (Bound::has_args && Bound::has_kwargs) {
                         return []<size_t... Prev, size_t... Next>(
                             std::index_sequence<Prev...>,
@@ -3202,7 +2720,7 @@ namespace impl {
                 }
 
                 /// TODO: invoking a Python function from C++ should also take partial
-                /// arguments into account, which necessitates a kind of merge<>
+                /// arguments into account, which necessitates a special kind of call<>
                 /// algorithm that builds up a vectorcall array rather than inserting
                 /// into a parameter pack.
 
@@ -3363,9 +2881,11 @@ namespace impl {
                     );
                 }
 
+                /// TODO: key() will also need to account for partial arguments?
+
                 /* Produce an overload key from the bound C++ arguments, which can be
                 used to search the overload trie and invoke a resulting function. */
-                static Params<std::array<Param, n>> key(Values... values) {
+                static constexpr Params<std::array<Param, n>> key(Values... values) {
                     size_t hash = 0;
                     return {
                         .value = []<size_t... Js>(
@@ -3386,9 +2906,47 @@ namespace impl {
                 }
             };
 
-            /// TODO: calling the partial object will invoke Bind<>?
+            template <impl::is<Defaults> D, typename F, typename... Values>
+                requires (
+                    std::is_invocable_v<F, Args...> &&
+                    Bind<Values...>::proper_argument_order &&
+                    Bind<Values...>::no_qualified_arg_annotations &&
+                    Bind<Values...>::no_duplicate_arguments &&
+                    Bind<Values...>::no_conflicting_values &&
+                    Bind<Values...>::no_extra_positional_args &&
+                    Bind<Values...>::no_extra_keyword_args &&
+                    Bind<Values...>::satisfies_required_args &&
+                    Bind<Values...>::can_convert
+                )
+            constexpr std::invoke_result_t<F, Args...> operator()(
+                this auto&& self,
+                D&& defaults,
+                F&& func,
+                Values&&... args
+            ) {
+                return Bind<Values...>{}(
+                    std::forward<D>(defaults),
+                    std::forward<decltype(self)>(self),
+                    std::forward<F>(func),
+                    std::forward<Values>(args)...
+                );
+            }
+
+            /// TODO: implement another call operator that takes a Python vectorcall
+            /// signature and applies the Vectorcall logic with the partials taken
+            /// into account.
 
         };
+
+        /// TODO: implement an algorithm which will extract a Partial<> signature
+        /// from the inline annotations in Args... and expose it as a simple
+        /// ::partial member.  That would be used to determine the correct partial
+        /// arguments from a Python Function[] specialization, so that they could be
+        /// faithfully constructed whenever a function is created.
+
+        /// TODO: Vectorcall may need to be nested within Partial<> as well?
+        /// -> Probably, yes, since that's how bound methods will be called from
+        /// Python.
 
         /* A helper that binds a Python vectorcall array to the enclosing signature
         and performs the translation necessary to invoke a matching C++ function. */
@@ -3737,6 +3295,13 @@ namespace impl {
                 );
             }
         };
+
+        /// TODO: partial arguments will have to be provided to the Overload trie
+        /// iterators, such that they can be automatically inserted when traversing
+        /// the trie, and only matching functions will be returned.  This might mess
+        /// with caching, since in practice, we would always need to include the
+        /// partial arguments in the key in order to make the hash stable and
+        /// unambiguous.
 
         /* A Trie-based data structure that describes a collection of dynamic overloads
         for a `py::Function` object, which will be dispatched to when called from
