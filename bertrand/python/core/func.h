@@ -104,140 +104,6 @@ namespace impl {
         auto cend() const noexcept { return std::ranges::cend(value); }
     };
 
-    template <typename R, typename... A>
-    struct SignatureBase {
-        using Return = R;
-    };
-
-    template <typename T>
-    constexpr bool _canonical_function_type = false;
-    template <typename R, typename... Args>
-    constexpr bool _canonical_function_type<R(Args...)> = true;
-
-    template <typename F>
-    concept canonical_function_type = _canonical_function_type<F>;
-
-    struct defTag {};
-
-}
-
-    /* Introspect an annotated C++ function signature to extract compile-time type
-    information about its parameters and allow a matching function to be called safely
-    from both languages with the same, Python-style syntax.  Also defines supporting
-    data structures to allow for dynamic function overloading and first-class partial
-    binding. */
-    template <typename T>
-    struct Signature {
-        static constexpr bool enable = false;
-    };
-
-    /* The canonical form of `py::Signature`, which encapsulates all of the internal
-    call machinery, most of which is evaluated at compile time.  All other
-    specializations should redirect to this form in order to avoid reimplementing the
-    nuts and bolts of the function system. */
-    template <typename Return, typename... Args>
-        /// TODO: can add requires clauses here to make sure none of the Args are
-        /// bound?
-    struct Signature<Return(Args...)> : impl::SignatureBase<Return, Args...> {
-        static constexpr bool enable = true;
-        using normalized = Return(Args...);
-
-        template <typename R>
-        using with_return = Signature<R(Args...)>;
-
-        template <typename... A>
-        using with_args = Signature<Return(A...)>;
-
-        template <typename Func>
-        static constexpr bool invocable = std::is_invocable_r_v<Func, Return, Args...>;
-
-        static constexpr bool no_qualified_return = !(
-            std::is_reference_v<Return> ||
-            std::is_const_v<std::remove_reference_t<Return>> ||
-            std::is_volatile_v<std::remove_reference_t<Return>>
-        );
-        static constexpr bool return_is_python = impl::inherits<Return, Object>;
-
-        /// TODO: this will need a compile-time facility to check whether any arguments
-        /// are partially bound.  There's no need to constrain the signature in this
-        /// case, it just becomes another compile-time predicate that I can use for
-        /// downstream validation.
-
-
-        // template <typename R, typename... A>
-        // static constexpr bool compatible =
-        //     std::convertible_to<R, Return> &&
-        //     (Arguments<A...>::template compatible<A> && ...);
-
-        // static std::function<Return(Args...)> capture(PyObject* obj) {
-        //     return [obj](Args... args) -> Return {
-        //         /// TODO: figure out how to do this with the partial stuff
-        //         using Call = typename Arguments<Args...>::template Bind<Args...>;
-        //         PyObject* result = Call{}(obj, std::forward<A>(args)...);
-        //         if constexpr (std::is_void_v<R>) {
-        //             Py_DECREF(result);
-        //         } else {
-        //             return reinterpret_steal<Object>(result);
-        //         }
-        //     };
-        // }
-
-        /// TODO: the contents of Arguments should go here
-    };
-
-    /// NOTE: py::Signature<> contains all of the logic necessary to introspect and
-    /// invoke functions from both languages with the same consistent call semantics.
-    /// By default, it is enabled for all trivially-introspectable function types,
-    /// meaning that the function does not accept template parameters or participate
-    /// in an overload set.  It is possible to support these cases by specializing
-    /// py::Signature<> for the desired function types, and then redirecting to a
-    /// canonical signature via inheritance.  Doing so will allow the non-trivial
-    /// function to be used as the initializer for a `py::def` statement, and possibly
-    /// also `py::Function` if the normalized signature meets the requirements.
-    template <typename R, typename... A>
-    struct Signature<R(A...) noexcept> : Signature<R(A...)> {};
-    template <typename R, typename... A>
-    struct Signature<R(*)(A...)> : Signature<R(A...)> {};
-    template <typename R, typename... A>
-    struct Signature<R(*)(A...) noexcept> : Signature<R(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...)> : Signature<R(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) &> : Signature<R(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) noexcept> : Signature<R(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) & noexcept> : Signature<R(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const> : Signature<R(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const &> : Signature<R(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const noexcept> : Signature<R(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const & noexcept> : Signature<R(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile> : Signature<R(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile &> : Signature<R(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile noexcept> : Signature<R(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile & noexcept> : Signature<R(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile> : Signature<R(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile &> : Signature<R(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile noexcept> : Signature<R(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile & noexcept> : Signature<R(A...)> {};
-    template <impl::has_call_operator T>
-    struct Signature<T> : Signature<decltype(&std::remove_reference_t<T>::operator())> {};
-
-
-namespace impl {
-
     /// TODO: when copying this over, make sure all of the helper types are lower case
     /// verbs, so Signature<F>::partial{}, Signature<F>::bind{parts...}(), etc.  Maybe
     /// ::bind directly is the reference to the annotated partial, meaning it would
@@ -253,6 +119,21 @@ namespace impl {
     ///         initialize it and delegate to its call operator like normal.
     /// Signature<F>::bind<...> aliases to Signature<F>::parts::bind<...> for convenience
     /// and readability in error messages.
+
+    template <typename T>
+    constexpr bool _canonical_function_type = false;
+    template <typename R, typename... Args>
+    constexpr bool _canonical_function_type<R(Args...)> = true;
+
+    template <typename F>
+    concept canonical_function_type = _canonical_function_type<F>;
+
+    struct defTag {};
+
+    template <typename R>
+    struct SignatureBase {
+        using Return = R;
+    };
 
     /* Introspect an annotated C++ function signature to extract compile-time type
     information about its parameters, and allow a matching function to be called safely
@@ -396,7 +277,7 @@ namespace impl {
         /// really careful when validating functions
 
         template <StaticStr Name>
-        static constexpr bool has                   = _idx<Name, Args...> != n;
+        static constexpr bool has                   = n > _idx<Name, Args...>;
         static constexpr bool has_posonly           = n_posonly > 0;
         static constexpr bool has_pos               = n_pos > 0;
         static constexpr bool has_kw                = n_kw > 0;
@@ -406,8 +287,8 @@ namespace impl {
         static constexpr bool has_opt_pos           = n_opt_pos > 0;
         static constexpr bool has_opt_kw            = n_opt_kw > 0;
         static constexpr bool has_opt_kwonly        = n_opt_kwonly > 0;
-        static constexpr bool has_args              = _args_idx<Args...> != n;
-        static constexpr bool has_kwargs            = _kwargs_idx<Args...> != n;
+        static constexpr bool has_args              = n > _args_idx<Args...>;
+        static constexpr bool has_kwargs            = n > _kwargs_idx<Args...>;
 
         template <StaticStr Name> requires (has<Name>)
         static constexpr size_t idx                 = _idx<Name, Args...>;
@@ -587,9 +468,7 @@ namespace impl {
 
         /* Find an FNV-1a seed and prime that produces perfect hashes with respect to
         the keyword table size. */
-        static constexpr auto hash_components = []
-            -> std::optional<std::pair<size_t, size_t>>
-        {
+        static constexpr auto hash_components = [] -> std::tuple<size_t, size_t, bool> {
             constexpr size_t recursion_limit = fnv1a_seed + 100'000;
             size_t seed = fnv1a_seed;
             size_t prime = fnv1a_prime;
@@ -597,22 +476,23 @@ namespace impl {
             while (collisions<Args...>{}(seed, prime)) {
                 if (++seed > recursion_limit) {
                     if (++i == 10) {
-                        return std::nullopt;
+                        return {0, 0, false};
                     }
                     seed = fnv1a_seed;
                     prime = fnv1a_fallback_primes[i];
                 }
             }
-            return std::make_pair(seed, prime);
+            return {seed, prime, true};
         }();
         static_assert(
-            hash_components.has_value(),
+            std::get<2>(hash_components),
             "error: unable to find a perfect hash seed after 10^6 iterations.  "
             "Consider increasing the recursion limit or reviewing the keyword "
             "argument names for potential issues.\n"
         );
 
     public:
+        static constexpr bool args_fit_within_bitset = n <= 64;
         static constexpr bool args_are_convertible_to_python =
             (std::convertible_to<typename ArgTraits<Args>::type, Object> && ...);
         static constexpr bool proper_argument_order =
@@ -636,6 +516,11 @@ namespace impl {
         static constexpr bool args_are_python =
             (inherits<typename ArgTraits<Args>::type, Object> && ...);
 
+        /// TODO: this is where we implement a check to see if any of the arguments are
+        /// bound to a partial.  That will require manually creating an impl::BoundArg<>
+        /// type that can wrap around anonymous positional-only arguments given in
+        /// C++ style.
+
         /* A template constraint that evaluates true if another signature represents a
         viable overload of a function with this signature. */
         template <typename... Ts>
@@ -643,11 +528,11 @@ namespace impl {
 
         /* A seed for an FNV-1a hash algorithm that was found to perfectly hash the
         keyword argument names from the enclosing parameter list. */
-        static constexpr size_t seed = hash_components->first;
+        static constexpr size_t seed = std::get<0>(hash_components);
 
         /* A prime for an FNV-1a hash algorithm that was found to perfectly hash the
         keyword argument names from the enclosing parameter list. */
-        static constexpr size_t prime = hash_components->second;
+        static constexpr size_t prime = std::get<1>(hash_components);
 
         /* Hash a byte string according to the FNV-1a algorithm using the seed and
         prime that were found at compile time to perfectly hash the keyword
@@ -662,10 +547,10 @@ namespace impl {
             return fnv1a(str.data(), seed, prime);
         }
 
-        /* A single entry in a callback table, storing the argument name, a one-hot
-        encoded bitmask specifying this argument's position, a function that can be
-        used to validate the argument, and a lazy function that can be used to retrieve
-        its corresponding Python type. */
+        /* A single entry in a callback table, storing the argument name (which may be
+        empty), a one-hot encoded bitmask specifying this argument's position, a
+        function that can be used to validate the argument, and a lazy function that
+        can be used to retrieve its corresponding Python type. */
         struct Callback {
             std::string_view name;
             uint64_t mask = 0;
@@ -689,7 +574,7 @@ namespace impl {
         Note that this mask effectively limits the number of arguments that a function
         can accept to 64, which is a reasonable limit for most functions.  The
         performance benefits justify the limitation, and if you need more than 64
-        arguments, you should probably be using a different design pattern. */
+        arguments, you should probably be using a different design pattern anyways. */
         static constexpr uint64_t required = []<size_t... Is>(
             std::index_sequence<Is...>
         ) {
@@ -838,7 +723,7 @@ namespace impl {
         positional argument, a null callback will be returned that evaluates to false
         under boolean logic.  If the parameter list accepts variadic positional
         arguments, then the variadic argument's callback will be returned instead. */
-        static constexpr Callback& callback(size_t i) noexcept {
+        static constexpr const Callback& callback(size_t i) noexcept {
             if constexpr (has_args) {
                 return i < args_idx ? positional_table[i] : positional_table[args_idx];
             } else if constexpr (has_kwonly) {
@@ -853,7 +738,7 @@ namespace impl {
         callback will be returned that evaluates to false under boolean logic.  If the
         parameter list accepts variadic keyword arguments, then the variadic argument's
         callback will be returned instead. */
-        static constexpr Callback& callback(std::string_view name) noexcept {
+        static constexpr const Callback& callback(std::string_view name) noexcept {
             const Callback& callback = keyword_table[
                 keyword_modulus(hash(name.data()))
             ];
@@ -882,7 +767,7 @@ namespace impl {
             is used to correlate the default value with its corresponding argument in
             the enclosing signature. */
             template <size_t I>
-            struct Value {
+            struct Entry {
                 using type = ArgTraits<Arguments::at<I>>::type;
                 static constexpr StaticStr name = ArgTraits<Arguments::at<I>>::name;
                 static constexpr size_t index = I;
@@ -917,7 +802,7 @@ namespace impl {
             };
             using Inner = extract<Arguments<>, Args...>::type;
 
-            /* Build a std::tuple of Value<I> instances to hold the default values
+            /* Build a std::tuple of Entry<I> instances to hold the default values
             themselves. */
             template <typename out, size_t, typename...>
             struct collect { using type = out; };
@@ -929,7 +814,7 @@ namespace impl {
                 };
                 template <typename U> requires (ArgTraits<U>::opt())
                 struct tuple<U> {
-                    using type = std::tuple<out..., Value<I>>;
+                    using type = std::tuple<out..., Entry<I>>;
                 };
                 using type = collect<typename tuple<T>::type, I + 1, Ts...>::type;
             };
@@ -996,7 +881,7 @@ namespace impl {
             /* Bind an argument list to the default values tuple using the
             sub-signature's normal Bind<> machinery. */
             template <typename... Values>
-            using Bind = Inner::template Bind<Values...>;
+            using bind = Inner::template bind<Values...>;
 
             /* Given an index into the enclosing signature, find the corresponding index
             in the defaults tuple if that index corresponds to a default value. */
@@ -1015,22 +900,20 @@ namespace impl {
                 requires (
                     !(arg_pack<Values> || ...) &&
                     !(kwarg_pack<Values> || ...) &&
-                    Bind<Values...>::proper_argument_order &&
-                    Bind<Values...>::no_qualified_arg_annotations &&
-                    Bind<Values...>::no_duplicate_arguments &&
-                    Bind<Values...>::no_conflicting_values &&
-                    Bind<Values...>::no_extra_positional_args &&
-                    Bind<Values...>::no_extra_keyword_args &&
-                    Bind<Values...>::satisfies_required_args &&
-                    Bind<Values...>::can_convert
+                    bind<Values...>::proper_argument_order &&
+                    bind<Values...>::no_qualified_arg_annotations &&
+                    bind<Values...>::no_duplicate_arguments &&
+                    bind<Values...>::no_conflicting_values &&
+                    bind<Values...>::no_extra_positional_args &&
+                    bind<Values...>::no_extra_keyword_args &&
+                    bind<Values...>::satisfies_required_args &&
+                    bind<Values...>::can_convert
                 )
             constexpr Defaults(Values&&... values) : values(
-                []<size_t... Js>(std::index_sequence<Js...>, Values... values) -> Tuple {
-                    return {{build<Js>(std::forward<Values>(values)...)}...};
+                []<size_t... Js>(std::index_sequence<Js...>, auto&&... values) -> Tuple {
+                    return {{build<Js>(std::forward<decltype(values)>(values)...)}...};
                 }(std::index_sequence_for<Values...>{}, std::forward<Values>(values)...)
             ) {}
-            constexpr Defaults(const Defaults& other) = default;
-            constexpr Defaults(Defaults&& other) = default;
 
             /* Get the default value at index I of the tuple.  Use find<> to correlate
             an index from the enclosing signature if needed.  If the defaults container
@@ -1063,6 +946,11 @@ namespace impl {
         ///         Signature<decltype(func)>::defaults{} defaults;
         ///         Signature<decltype(func)>::partial{...} func;
         ///         func(defaults, func, 3, 4);
+        /// -> Something like this can be done, but constructing the Signature<> would
+        /// equate to initializing the base partial<> by introspecting the arguments
+        /// and extracting all that have been partially bound.  The Signature<> object
+        /// would then just store one of these internally, and forward to its call,
+        /// ::bind<>, etc.
 
         /* A tuple holding a sequence of partial arguments to supply to the enclosing
         parameter list when the function is invoked.  One of these must be supplied
@@ -1124,10 +1012,10 @@ namespace impl {
                             typename ArgTraits<P2>::type
                         >;
                     };
-                    template <StaticStr name> requires (Arguments::template has<name>)
+                    template <StaticStr name> requires (Arguments::has<name>)
                     struct match<name> {
                         using type = Entry<
-                            Arguments::template idx<name>,
+                            Arguments::idx<name>,
                             K,
                             name,
                             typename ArgTraits<P2>::type
@@ -1201,8 +1089,13 @@ namespace impl {
                 };
             }
 
+            /// TODO: there has to be a way to merge the partial arguments into the
+            /// enclosing signature.  Perhaps this is added in the Signature<> class,
+            /// where I have access to the proper return type?  That partial<> class
+            /// could inherit from this one and act appropriately.
+
         public:
-            using type = Tuple;
+            using type = Tuple;  /// TODO: can I delete this?
 
             static constexpr size_t n               = Arguments<Parts...>::n;
             static constexpr size_t n_pos           = Arguments<Parts...>::n_pos;
@@ -1230,13 +1123,11 @@ namespace impl {
                     Partial<>::template Bind<Ps...>::no_extra_keyword_args &&
                     Partial<>::template Bind<Ps...>::can_convert
                 )
-            constexpr Partial(Parts... parts) : values(
-                []<size_t... Js>(std::index_sequence<Js...>, Parts... parts) -> Tuple {
-                    return {{build<Js>(std::forward<Parts>(parts)...)}...};
-                }(std::index_sequence_for<Parts...>{}, std::forward<Parts>(parts)...)
+            constexpr Partial(Ps&&... parts) : values(
+                []<size_t... Js>(std::index_sequence<Js...>, auto&&... parts) -> Tuple {
+                    return {{build<Js>(std::forward<decltype(parts)>(parts)...)}...};
+                }(std::index_sequence_for<Ps...>{}, std::forward<Ps>(parts)...)
             ) {}
-            constexpr Partial(const Partial& other) = default;
-            constexpr Partial(Partial&& other) = default;
 
             /* Get the name of the partial argument at index K. */
             template <size_t K> requires (K < std::tuple_size_v<Tuple>)
@@ -1328,9 +1219,9 @@ namespace impl {
 
                 template <StaticStr name>
                 static constexpr bool has_partial = false;
-                template <StaticStr name> requires (Arguments::template has<name>)
+                template <StaticStr name> requires (Arguments::has<name>)
                 static constexpr bool has_partial<name> =
-                    in_partial<Arguments::template idx<name>>;
+                    in_partial<Arguments::idx<name>>;
 
                 template <size_t, size_t>
                 static constexpr bool _no_extra_positional_args = true;
@@ -1418,7 +1309,7 @@ namespace impl {
                         return []<size_t... Js>(std::index_sequence<Js...>) {
                             return (
                                 (
-                                    Arguments::template has<ArgTraits<
+                                    Arguments::has<ArgTraits<
                                         typename Bound::template at<Bound::kw_idx + Js>
                                     >::name> || std::convertible_to<
                                         typename ArgTraits<
@@ -1446,8 +1337,8 @@ namespace impl {
                         constexpr StaticStr name = ArgTraits<
                             typename Bound::template at<J>
                         >::name;
-                        if constexpr (Arguments::template has<name>) {
-                            constexpr size_t idx = Arguments::template idx<name>;
+                        if constexpr (Arguments::has<name>) {
+                            constexpr size_t idx = Arguments::idx<name>;
                             if constexpr (!std::convertible_to<
                                 typename ArgTraits<typename Bound::template at<J>>::type,
                                 typename ArgTraits<Arguments::at<idx>>::type
@@ -2126,7 +2017,7 @@ namespace impl {
                             A&&... args
                         ) {
                             using parameters = Arguments<A...>;
-                            using T = Arguments::template at<I>;
+                            using T = Arguments::at<I>;
                             try {
                                 array[idx] = release(to_python(
                                     std::forward<P>(parts).template get<K>()
@@ -2200,7 +2091,7 @@ namespace impl {
                             A&&... args
                         ) {
                             using parameters = Arguments<A...>;
-                            using T = Arguments::template at<I>;
+                            using T = Arguments::at<I>;
                             constexpr StaticStr name = ArgTraits<T>::name;
                             constexpr size_t pos_range = std::min({
                                 pos_pack_idx<A...>,
@@ -2809,7 +2700,7 @@ namespace impl {
                             A&&... args
                         ) {
                             using parameters = Arguments<A...>;
-                            using T = Arguments::template at<I>;
+                            using T = Arguments::at<I>;
                             constexpr StaticStr name = ArgTraits<T>::name;
                             constexpr size_t pos_range = std::min({
                                 pos_pack_idx<A...>,
@@ -3427,7 +3318,7 @@ namespace impl {
                 static constexpr bool no_extra_keyword_args = Arguments::has_kwargs ||
                     []<size_t... Js>(std::index_sequence<Js...>) {
                         return (
-                            Arguments::template has<ArgTraits<
+                            Arguments::has<ArgTraits<
                                 typename Bound::template at<Bound::kw_idx + Js>
                             >::name> && ...
                         );
@@ -3925,10 +3816,6 @@ namespace impl {
                     };
                 }
             };
-
-            /// TODO: the vectorcall logic can still use a simple index sequence over
-            /// the target signature, but it will also have to account for the partial
-            /// arguments.
 
             /// TODO: When building the Vectorcall object, the input should be a
             /// Python-style vectorcall array and kwnames tuple, which are then
@@ -4659,10 +4546,10 @@ namespace impl {
 
         /// TODO: CTAD for Partial, such that constructing a Partial object can be
         /// expressed as:
-        ///         Signature<Func>::partial{args...}
+        ///         Signature<Func>::Partial{args...}
         /// In fact, the `py::def` class will delegate straight to this in its
         /// constructor, along with initializing
-        ///         Signature<Func>::defaults{defaults...}
+        ///         Signature<Func>::Defaults{defaults...}
         /// at the same time.  Its call operator then just boils down to calling the
         /// partial with the correct function (copied or moved from the initializer)
         /// and default values, without any extra logic.  All the crazy stuff is
@@ -6135,6 +6022,9 @@ namespace impl {
             }
         };
 
+        /// TODO: the extract_partial, constructor, and call operator(s) should be
+        /// moved up to Signature<>, so that this class remains as simple as possible.
+
     private:
 
         /// TODO: this probably has to distinguish between partials that are provided
@@ -6164,23 +6054,159 @@ namespace impl {
 
     public:
         /* Individual arguments in the target signature may indicate the presence of a
-        partial argument using the `::bind<>` extension to the `Arg` annotation type.
+        partial argument using the `::Bind<>` extension to the `Arg` annotation type.
         These are analyzed and extracted into a corresponding `Partial<...>`
         specialization for convenience, with Arg<> annotations indicating keywords
         within the partial signature.  The annotated partial can then be created by
         constructing the alias, whereupon it can be called with the observed arguments
         to complete the signature:
 
-            Signature<R(Arg<"x", int>::bind<int>, Arg<"y", int>)>::partial{1}(2)
+            Signature<R(Arg<"x", int>::Bind<int>, Arg<"y", int>)>::partial{1}(2)
 
         This 'canonical' partial is what is stored internally within a `py::Function`
         object, such that bound functions can be transferred to and from Python in an
         unambiguous fashion, with the correct partial logic embedded in both type
         systems at the same time. */
         using partial = extract_partial<Args...>;
+
+        /* Binding directly to the signature delegates to the canonical partial and
+        always reflects the expected call signature. */
+        template <typename... Values>
+        using Bind = partial::template Bind<Values...>;
+
+        partial parts;
+
+        template <typename... Parts>
+        Arguments(Parts&&...) : parts(std::forward<Parts>(Parts)...) {}
+
     };
 
 }
+
+
+/* Introspect an annotated C++ function signature to extract compile-time type
+information about its parameters and allow a matching function to be called safely
+from both languages with the same, Python-style syntax.  Also defines supporting
+data structures to allow for dynamic function overloading and first-class partial
+binding. */
+template <typename T>
+struct Signature {
+    static constexpr bool enable = false;
+};
+
+
+/* The canonical form of `py::Signature`, which encapsulates all of the internal
+call machinery, most of which is evaluated at compile time.  All other
+specializations should redirect to this form in order to avoid reimplementing the
+nuts and bolts of the function system. */
+template <typename Return, typename... Args>
+struct Signature<Return(Args...)> :
+    impl::SignatureBase<Return>,
+    impl::Arguments<Args...>
+{
+    static constexpr bool enable = true;
+    using normalized = Return(Args...);
+
+    template <typename R>
+    using with_return = Signature<R(Args...)>;
+
+    template <typename... A>
+    using with_args = Signature<Return(A...)>;
+
+    template <typename Func>
+    static constexpr bool invocable = std::is_invocable_r_v<Func, Return, Args...>;
+
+    static constexpr bool no_qualified_return = !(
+        std::is_reference_v<Return> ||
+        std::is_const_v<std::remove_reference_t<Return>> ||
+        std::is_volatile_v<std::remove_reference_t<Return>>
+    );
+    static constexpr bool return_is_python = impl::inherits<Return, Object>;
+
+    /// TODO: this should also include a constraint that checks whether bound
+    /// arguments are present in the signature.
+
+    template <typename... Parts>
+    struct Partial : impl::Arguments<Args...>::template Partial<Parts...> {
+        /// TODO: merge the partial arguments into the signature, and allow for
+        /// chaining to some extent.
+        using signature = Signature;
+
+        using impl::Arguments<Args...>::template Partial<Parts...>::Partial;
+    };
+
+
+    // template <typename R, typename... A>
+    // static constexpr bool compatible =
+    //     std::convertible_to<R, Return> &&
+    //     (Arguments<A...>::template compatible<A> && ...);
+
+    // static std::function<Return(Args...)> capture(PyObject* obj) {
+    //     return [obj](Args... args) -> Return {
+    //         /// TODO: figure out how to do this with the partial stuff
+    //         using Call = typename Arguments<Args...>::template Bind<Args...>;
+    //         PyObject* result = Call{}(obj, std::forward<A>(args)...);
+    //         if constexpr (std::is_void_v<R>) {
+    //             Py_DECREF(result);
+    //         } else {
+    //             return reinterpret_steal<Object>(result);
+    //         }
+    //     };
+    // }
+
+    /// TODO: the contents of Arguments should go here
+};
+
+
+/// NOTE: py::Signature<> contains all of the logic necessary to introspect and
+/// invoke functions from both languages with the same consistent call semantics.
+/// By default, it is enabled for all trivially-introspectable function types,
+/// meaning that the function does not accept template parameters or participate
+/// in an overload set.  It is possible to support these cases by specializing
+/// py::Signature<> for the desired function types, and then redirecting to a
+/// canonical signature via inheritance.  Doing so will allow the non-trivial
+/// function to be used as the initializer for a `py::def` statement, and possibly
+/// also `py::Function` if the normalized signature meets the requirements.
+template <typename R, typename... A>
+struct Signature<R(A...) noexcept> : Signature<R(A...)> {};
+template <typename R, typename... A>
+struct Signature<R(*)(A...)> : Signature<R(A...)> {};
+template <typename R, typename... A>
+struct Signature<R(*)(A...) noexcept> : Signature<R(A...)> {};
+template <typename R, typename C, typename... A>
+struct Signature<R(C::*)(A...)> : Signature<R(A...)> {};
+template <typename R, typename C, typename... A>
+struct Signature<R(C::*)(A...) &> : Signature<R(A...)> {};
+template <typename R, typename C, typename... A>
+struct Signature<R(C::*)(A...) noexcept> : Signature<R(A...)> {};
+template <typename R, typename C, typename... A>
+struct Signature<R(C::*)(A...) & noexcept> : Signature<R(A...)> {};
+template <typename R, typename C, typename... A>
+struct Signature<R(C::*)(A...) const> : Signature<R(A...)> {};
+template <typename R, typename C, typename... A>
+struct Signature<R(C::*)(A...) const &> : Signature<R(A...)> {};
+template <typename R, typename C, typename... A>
+struct Signature<R(C::*)(A...) const noexcept> : Signature<R(A...)> {};
+template <typename R, typename C, typename... A>
+struct Signature<R(C::*)(A...) const & noexcept> : Signature<R(A...)> {};
+template <typename R, typename C, typename... A>
+struct Signature<R(C::*)(A...) volatile> : Signature<R(A...)> {};
+template <typename R, typename C, typename... A>
+struct Signature<R(C::*)(A...) volatile &> : Signature<R(A...)> {};
+template <typename R, typename C, typename... A>
+struct Signature<R(C::*)(A...) volatile noexcept> : Signature<R(A...)> {};
+template <typename R, typename C, typename... A>
+struct Signature<R(C::*)(A...) volatile & noexcept> : Signature<R(A...)> {};
+template <typename R, typename C, typename... A>
+struct Signature<R(C::*)(A...) const volatile> : Signature<R(A...)> {};
+template <typename R, typename C, typename... A>
+struct Signature<R(C::*)(A...) const volatile &> : Signature<R(A...)> {};
+template <typename R, typename C, typename... A>
+struct Signature<R(C::*)(A...) const volatile noexcept> : Signature<R(A...)> {};
+template <typename R, typename C, typename... A>
+struct Signature<R(C::*)(A...) const volatile & noexcept> : Signature<R(A...)> {};
+template <impl::has_call_operator T>
+struct Signature<T> : Signature<decltype(&std::remove_reference_t<T>::operator())> {};
 
 
 /* A template constraint that controls whether the `py::call()` operator is enabled
@@ -6192,14 +6218,14 @@ concept callable =
     Signature<F>::proper_argument_order &&
     Signature<F>::no_qualified_arg_annotations &&
     Signature<F>::no_duplicate_arguments &&
-    Signature<F>::template bind<Args...>::proper_argument_order &&
-    Signature<F>::template bind<Args...>::no_qualified_arg_annotations &&
-    Signature<F>::template bind<Args...>::no_duplicate_arguments &&
-    Signature<F>::template bind<Args...>::no_conflicting_values &&
-    Signature<F>::template bind<Args...>::no_extra_positional_args &&
-    Signature<F>::template bind<Args...>::no_extra_keyword_args &&
-    Signature<F>::template bind<Args...>::satisfies_required_args &&
-    Signature<F>::template bind<Args...>::can_convert;
+    Signature<F>::template Bind<Args...>::proper_argument_order &&
+    Signature<F>::template Bind<Args...>::no_qualified_arg_annotations &&
+    Signature<F>::template Bind<Args...>::no_duplicate_arguments &&
+    Signature<F>::template Bind<Args...>::no_conflicting_values &&
+    Signature<F>::template Bind<Args...>::no_extra_positional_args &&
+    Signature<F>::template Bind<Args...>::no_extra_keyword_args &&
+    Signature<F>::template Bind<Args...>::satisfies_required_args &&
+    Signature<F>::template Bind<Args...>::can_convert;
 
 
 /* Invoke a C++ function with Python-style calling conventions, including keyword
@@ -6211,11 +6237,11 @@ template <typename F, typename... Args>
     requires (
         callable<F, Args...> &&
         Signature<F>::no_partial_args &&
-        Signature<F>::defaults::n == 0
+        Signature<F>::Defaults::n == 0
     )
 constexpr decltype(auto) call(F&& func, Args&&... args) {
     return Signature<F>{}(
-        Signature<F>::defaults{},
+        typename Signature<F>::Defaults{},
         std::forward<F>(func),
         std::forward<Args>(args)...
     );
@@ -6233,7 +6259,7 @@ template <typename F, typename... Args>
         Signature<F>::no_partial_args
     )
 constexpr decltype(auto) call(
-    const Signature<F>::defaults& defaults,
+    const typename Signature<F>::Defaults& defaults,
     F&& func,
     Args&&... args
 ) {
@@ -6256,7 +6282,7 @@ template <typename F, typename... Args>
         Signature<F>::no_partial_args
     )
 constexpr decltype(auto) call(
-    Signature<F>::defaults&& defaults,
+    typename Signature<F>::Defaults&& defaults,
     F&& func,
     Args&&... args
 ) {
@@ -6279,13 +6305,13 @@ concept partially_callable =
     Signature<F>::proper_argument_order &&
     Signature<F>::no_qualified_arg_annotations &&
     Signature<F>::no_duplicate_arguments &&
-    Signature<F>::template bind<Args...>::proper_argument_order &&
-    Signature<F>::template bind<Args...>::no_qualified_arg_annotations &&
-    Signature<F>::template bind<Args...>::no_duplicate_arguments &&
-    Signature<F>::template bind<Args...>::no_conflicting_values &&
-    Signature<F>::template bind<Args...>::no_extra_positional_args &&
-    Signature<F>::template bind<Args...>::no_extra_keyword_args &&
-    Signature<F>::template bind<Args...>::can_convert;
+    Signature<F>::template Bind<Args...>::proper_argument_order &&
+    Signature<F>::template Bind<Args...>::no_qualified_arg_annotations &&
+    Signature<F>::template Bind<Args...>::no_duplicate_arguments &&
+    Signature<F>::template Bind<Args...>::no_conflicting_values &&
+    Signature<F>::template Bind<Args...>::no_extra_positional_args &&
+    Signature<F>::template Bind<Args...>::no_extra_keyword_args &&
+    Signature<F>::template Bind<Args...>::can_convert;
 
 
 /// TODO: I can force the partial function to accept only Arg<> annotations, and then
@@ -6326,13 +6352,12 @@ template <typename Func, typename... Args>
         Signature<Func>::no_partial_args
     )
 struct def : impl::defTag {
-private:
-    Signature<Func>::defaults defaults;
-    std::remove_cvref_t<Func> func;
-    Signature<Func>::partial<Args...> parts;
+    using partial = Signature<Func>::template Partial<Args...>;
+    using signature = partial::signature;
 
-public:
-    using signature = Signature<Func>::partial<Args...>::signature;
+    typename Signature<Func>::Defaults defaults;
+    std::remove_cvref_t<Func> func;
+    partial parts;
 
     /// TODO: this class should also expose `.bind()` and `.unbind()`, as well as the
     /// `>>` operator for chaining.  Also, all of this logic needs to be updated so
@@ -6346,26 +6371,34 @@ public:
     /// will be adjusted accordingly.
 
     template <typename... Values>
-    using Bind = sig::template Bind<Values...>::template with_partial<Args...>;
+    using Bind = partial::template Bind<Values...>;
     /// TODO: ideally, this Bind<> struct would expose a call operator that does all
     /// the necessary argument manipulation, so it can be used symmetrically to the
     /// other Bind<> implementations.  It might also allow the creation of an overload
     /// key, which completes the interface.
 
-    template <impl::is<Func> F> requires (Defaults<F>::n == 0)
+    template <impl::is<Func> F> requires (Signature<F>::Defaults::n == 0)
     explicit constexpr def(F&& func, Args... args) :
         defaults(),
         func(std::forward<F>(func)),
         parts(std::forward<Args>(args)...)
     {}
 
-    explicit constexpr def(const Defaults<Func>& defaults, Func func, Args... args) :
+    explicit constexpr def(
+        const typename Signature<Func>::Defaults& defaults,
+        Func func,
+        Args... args
+    ) :
         defaults(defaults),
         func(std::forward<Func>(func)),
         parts(std::forward<Args>(args)...)
     {}
 
-    explicit constexpr def(Defaults<Func>&& defaults, Func func, Args... args) :
+    explicit constexpr def(
+        typename Signature<Func>::Defaults&& defaults,
+        Func func,
+        Args... args
+    ) :
         defaults(std::move(defaults)),
         func(std::forward<Func>(func)),
         parts(std::forward<Args>(args)...)
@@ -6397,21 +6430,21 @@ public:
         return std::move(parts).template get<I>();
     }
 
-    template <StaticStr name> requires (bound::template has<name>)
+    template <StaticStr name> requires (partial::template has<name>)
     [[nodiscard]] constexpr decltype(auto) get() const {
         return parts.template get<name>();
     }
 
-    template <StaticStr name> requires (bound::template has<name>)
+    template <StaticStr name> requires (partial::template has<name>)
     [[nodiscard]] decltype(auto) get() && {
         return std::move(parts).template get<name>();
     }
 
     template <typename... Values>
         requires (
-            sig::template Bind<Values...>::proper_argument_order &&
-            sig::template Bind<Values...>::no_qualified_arg_annotations &&
-            sig::template Bind<Values...>::no_duplicate_arguments &&
+            Bind<Values...>::proper_argument_order &&
+            Bind<Values...>::no_qualified_arg_annotations &&
+            Bind<Values...>::no_duplicate_arguments &&
             Bind<Values...>::no_extra_positional_args &&
             Bind<Values...>::no_extra_keyword_args &&
             Bind<Values...>::no_conflicting_values &&
@@ -6428,18 +6461,34 @@ public:
 };
 
 
+/// TODO: first deduction guide is unnecessary, or I need to add more to the last 2.
+/// One or the other.
 template <typename F>
-    requires (partially_callable<F> && Signature<F>::defaults::n == 0)
+    requires (
+        partially_callable<F> &&
+        Signature<F>::no_partial_args &&
+        Signature<F>::Defaults::n == 0
+    )
 explicit def(F&&) -> def<F>;
 template <typename F, typename... A>
-    requires (partially_callable<F, A...> && Signature<F>::defaults::n == 0)
+    requires (
+        partially_callable<F, A...> &&
+        Signature<F>::no_partial_args &&
+        Signature<F>::Defaults::n == 0
+    )
 explicit def(F&&, A&&...) -> def<F, A...>;
 template <typename F, typename... A>
-    requires (partially_callable<F, A...>)
-explicit def(Defaults<F>&&, F&&, A&&...) -> func<F, A...>;
+    requires (
+        partially_callable<F, A...> &&
+        Signature<F>::no_partial_args
+    )
+explicit def(typename Signature<F>::Defaults&&, F&&, A&&...) -> def<F, A...>;
 template <typename F, typename... A>
-    requires (partially_callable<F, A...>)
-explicit def(const Defaults<F>&, F&&, A&&...) -> def<F, A...>;
+    requires (
+        partially_callable<F, A...> &&
+        Signature<F>::no_partial_args
+    )
+explicit def(const typename Signature<F>::Defaults&, F&&, A&&...) -> def<F, A...>;
 
 
 template <impl::inherits<impl::defTag> T>
