@@ -104,30 +104,96 @@ namespace impl {
         auto cend() const noexcept { return std::ranges::cend(value); }
     };
 
+    template <typename R, typename... A>
+    struct SignatureBase {
+        using Return = R;
+    };
+
+    template <typename T>
+    constexpr bool _canonical_function_type = false;
+    template <typename R, typename... Args>
+    constexpr bool _canonical_function_type<R(Args...)> = true;
+
+    template <typename F>
+    concept canonical_function_type = _canonical_function_type<F>;
+
+    struct defTag {};
+
 }
 
-    /// TODO: specializing Signature<> is how you would add support for function
-    /// objects that don't have a trivially-introspectable call operator, as is the
-    /// case for templated lambdas or functions that have multiple overloads for the
-    /// call operator.  Specializing Signature<> would be how you would handle these.
-    /// I'm going to have to do that internally for py::def
-
     /* Introspect an annotated C++ function signature to extract compile-time type
-    information about its parameters, and allow a matching function to be called safely
-    from both languages with Python-style syntax, dynamic function overloading, and
-    first-class partial binding. */
+    information about its parameters and allow a matching function to be called safely
+    from both languages with the same, Python-style syntax.  Also defines supporting
+    data structures to allow for dynamic function overloading and first-class partial
+    binding. */
     template <typename T>
     struct Signature {
         static constexpr bool enable = false;
     };
 
+    /* The canonical form of `py::Signature`, which encapsulates all of the internal
+    call machinery, most of which is evaluated at compile time.  All other
+    specializations should redirect to this form in order to avoid reimplementing the
+    nuts and bolts of the function system. */
     template <typename Return, typename... Args>
-    struct Signature<Return(Args...)> {
+        /// TODO: can add requires clauses here to make sure none of the Args are
+        /// bound?
+    struct Signature<Return(Args...)> : impl::SignatureBase<Return, Args...> {
         static constexpr bool enable = true;
+        using normalized = Return(Args...);
+
+        template <typename R>
+        using with_return = Signature<R(Args...)>;
+
+        template <typename... A>
+        using with_args = Signature<Return(A...)>;
+
+        template <typename Func>
+        static constexpr bool invocable = std::is_invocable_r_v<Func, Return, Args...>;
+
+        static constexpr bool no_qualified_return = !(
+            std::is_reference_v<Return> ||
+            std::is_const_v<std::remove_reference_t<Return>> ||
+            std::is_volatile_v<std::remove_reference_t<Return>>
+        );
+        static constexpr bool return_is_python = impl::inherits<Return, Object>;
+
+        /// TODO: this will need a compile-time facility to check whether any arguments
+        /// are partially bound.  There's no need to constrain the signature in this
+        /// case, it just becomes another compile-time predicate that I can use for
+        /// downstream validation.
+
+
+        // template <typename R, typename... A>
+        // static constexpr bool compatible =
+        //     std::convertible_to<R, Return> &&
+        //     (Arguments<A...>::template compatible<A> && ...);
+
+        // static std::function<Return(Args...)> capture(PyObject* obj) {
+        //     return [obj](Args... args) -> Return {
+        //         /// TODO: figure out how to do this with the partial stuff
+        //         using Call = typename Arguments<Args...>::template Bind<Args...>;
+        //         PyObject* result = Call{}(obj, std::forward<A>(args)...);
+        //         if constexpr (std::is_void_v<R>) {
+        //             Py_DECREF(result);
+        //         } else {
+        //             return reinterpret_steal<Object>(result);
+        //         }
+        //     };
+        // }
 
         /// TODO: the contents of Arguments should go here
     };
 
+    /// NOTE: py::Signature<> contains all of the logic necessary to introspect and
+    /// invoke functions from both languages with the same consistent call semantics.
+    /// By default, it is enabled for all trivially-introspectable function types,
+    /// meaning that the function does not accept template parameters or participate
+    /// in an overload set.  It is possible to support these cases by specializing
+    /// py::Signature<> for the desired function types, and then redirecting to a
+    /// canonical signature via inheritance.  Doing so will allow the non-trivial
+    /// function to be used as the initializer for a `py::def` statement, and possibly
+    /// also `py::Function` if the normalized signature meets the requirements.
     template <typename R, typename... A>
     struct Signature<R(A...) noexcept> : Signature<R(A...)> {};
     template <typename R, typename... A>
@@ -168,14 +234,25 @@ namespace impl {
     struct Signature<R(C::*)(A...) const volatile & noexcept> : Signature<R(A...)> {};
     template <impl::has_call_operator T>
     struct Signature<T> : Signature<decltype(&std::remove_reference_t<T>::operator())> {};
-    /// TODO: add a specialization for py::def after it has been fully defined that
-    /// circumvents the restriction on the call operator not having template args.
-    /// In fact, that might be a sustainable solution even for public use, if you
-    /// want to allow def<> to accept a callable object that uses templates.  What
-    /// you would do is specialize Signature<> for that type, and translate it into
-    /// the appropriate Python signature according to your own rules.
+
 
 namespace impl {
+
+    /// TODO: when copying this over, make sure all of the helper types are lower case
+    /// verbs, so Signature<F>::partial{}, Signature<F>::bind{parts...}(), etc.  Maybe
+    /// ::bind directly is the reference to the annotated partial, meaning it would
+    /// have to be initialized with the exact same arrangement of arguments.
+
+    /// TODO:
+    /// Signature<F>::defaults{values...};
+    /// Signature<F>::overloads{};
+    /// Signature<F>::vectorcall{array, nargsf, kwnames}(args...);
+    /// Signature<F>::partial{args...};  <- partially binds the function
+    /// Signature<F>{parts...}(args...);  <- initializes the signature in canonical form?
+    ///     ->  Signature will hold the canonical partial within it, then directly
+    ///         initialize it and delegate to its call operator like normal.
+    /// Signature<F>::bind<...> aliases to Signature<F>::parts::bind<...> for convenience
+    /// and readability in error messages.
 
     /* Introspect an annotated C++ function signature to extract compile-time type
     information about its parameters, and allow a matching function to be called safely
@@ -6103,476 +6180,6 @@ namespace impl {
         using partial = extract_partial<Args...>;
     };
 
-    /* Convert a non-member function pointer into a member function pointer of the
-    given, cvref-qualified type.  Passing void as the enclosing class will return the
-    non-member function pointer as-is. */
-    template <typename, typename>
-    struct to_member_func { static constexpr bool enable = false; };
-    template <typename R, typename... A, typename Self>
-        requires (std::is_void_v<std::remove_cvref_t<Self>>)
-    struct to_member_func<R(*)(A...), Self> {
-        static constexpr bool enable = true;
-        using type = R(*)(A...);
-    };
-    template <typename R, typename... A, typename Self>
-        requires (std::is_void_v<std::remove_cvref_t<Self>>)
-    struct to_member_func<R(*)(A...) noexcept, Self> {
-        static constexpr bool enable = true;
-        using type = R(*)(A...) noexcept;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...), Self> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...);
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...) noexcept, Self> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) noexcept;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...), Self&> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) &;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...) noexcept, Self&> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) & noexcept;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...), Self&&> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) &&;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...) noexcept, Self&&> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) && noexcept;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...), const Self> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) const;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...) noexcept, const Self> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) const noexcept;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...), const Self&> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) const &;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...) noexcept, const Self&> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) const & noexcept;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...), const Self&&> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) const &&;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...) noexcept, const Self&&> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) const && noexcept;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...), volatile Self> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) volatile;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...) noexcept, volatile Self> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) volatile noexcept;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...), volatile Self&> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) volatile &;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...) noexcept, volatile Self&> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) volatile & noexcept;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...), volatile Self&&> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) volatile &&;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...) noexcept, volatile Self&&> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) volatile && noexcept;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...), const volatile Self> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...) noexcept, const volatile Self> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile noexcept;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...), const volatile Self&> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile &;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...) noexcept, const volatile Self&> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile & noexcept;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...), const volatile Self&&> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile &&;
-    };
-    template <typename R, typename... A, typename Self>
-    struct to_member_func<R(*)(A...) noexcept, const volatile Self&&> {
-        static constexpr bool enable = true;
-        using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile && noexcept;
-    };
-
-    /* Introspect the proper signature for a py::Function instance from a generic
-    function pointer. */
-    template <typename T>
-    struct Signature : BertrandTag {
-        using type = T;
-        static constexpr bool enable = false;
-    };
-    template <typename R, typename... A>
-    struct Signature<R(*)(A...)> : Arguments<A...> {
-        using type = R(*)(A...);
-        static constexpr bool enable = true;
-        static constexpr bool has_self = false;
-        template <typename T>
-        static constexpr bool can_make_member = to_member_func<R(*)(A...), T>::enable;
-        using Return = R;
-        using Self = void;
-        using to_ptr = Signature;
-        using to_value = Signature<R(A...)>;
-        template <typename R2>
-        using with_return = Signature<R2(*)(A...)>;
-        template <typename C> requires (can_make_member<C>)
-        using with_self = Signature<typename to_member_func<R(*)(A...), C>::type>;
-        template <typename... A2>
-        using with_args = Signature<R(*)(A2...)>;
-        template <typename R2, typename... A2>
-        static constexpr bool compatible =
-            std::convertible_to<R2, R> &&
-            (Arguments<A...>::template compatible<A2> && ...);
-        template <typename Func>
-        static constexpr bool invocable = std::is_invocable_r_v<Func, R, A...>;
-        static std::function<R(A...)> capture(PyObject* obj) {
-            return [obj](A... args) -> R {
-                using Call = typename Arguments<A...>::template Bind<A...>;
-                PyObject* result = Call{}(obj, std::forward<A>(args)...);
-                if constexpr (std::is_void_v<R>) {
-                    Py_DECREF(result);
-                } else {
-                    return reinterpret_steal<Object>(result);
-                }
-            };
-        }
-    };
-    template <typename R, typename... A>
-    struct Signature<R(*)(A...) noexcept> : Signature<R(*)(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...)> : Arguments<C&, A...> {
-        using type = R(C::*)(A...);
-        static constexpr bool enable = true;
-        static constexpr bool has_self = true;
-        static constexpr bool no_qualified_return = !(
-            std::is_reference_v<R> ||
-            std::is_const_v<std::remove_reference_t<R>> ||
-            std::is_volatile_v<std::remove_reference_t<R>>
-        );
-        static constexpr bool return_is_python = inherits<R, Object>;
-        template <typename T>
-        static constexpr bool can_make_member = to_member_func<R(*)(A...), T>::enable;
-        using Return = R;
-        using Self = C&;
-        using to_ptr = Signature<R(*)(Self, A...)>;
-        using to_value = Signature<R(Self, A...)>;
-        template <typename R2>
-        using with_return = Signature<R2(C::*)(A...)>;
-        template <typename C2> requires (can_make_member<C2>)
-        using with_self = Signature<typename to_member_func<R(*)(A...), C2>::type>;
-        template <typename... A2>
-        using with_args = Signature<R(C::*)(A2...)>;
-        template <typename R2, typename... A2>
-        static constexpr bool compatible =
-            std::convertible_to<R2, R> &&
-            (Arguments<Self, A...>::template compatible<A2> && ...);
-        template <typename Func>
-        static constexpr bool invocable = std::is_invocable_r_v<Func, R, Self, A...>;
-        static std::function<R(Self, A...)> capture(PyObject* obj) {
-            return [obj](Self self, A... args) -> R {
-                using Call = typename Arguments<Self, A...>::template Bind<Self, A...>;
-                PyObject* result = Call{}(obj, self, std::forward<A>(args)...);
-                if constexpr (std::is_void_v<R>) {
-                    Py_DECREF(result);
-                } else {
-                    return reinterpret_steal<Object>(result);
-                }
-            };
-        }
-    };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) noexcept> : Signature<R(C::*)(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) &> : Signature<R(C::*)(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) & noexcept> : Signature<R(C::*)(A...)> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const> : Arguments<const C&, A...> {
-        using type = R(C::*)(A...) const;
-        static constexpr bool enable = true;
-        static constexpr bool has_self = true;
-        static constexpr bool no_qualified_return = !(
-            std::is_reference_v<R> ||
-            std::is_const_v<std::remove_reference_t<R>> ||
-            std::is_volatile_v<std::remove_reference_t<R>>
-        );
-        static constexpr bool return_is_python = inherits<R, Object>;
-        template <typename T>
-        static constexpr bool can_make_member = to_member_func<R(*)(A...), T>::enable;
-        using Return = R;
-        using Self = const C&;
-        using to_ptr = Signature<R(*)(Self, A...)>;
-        using to_value = Signature<R(Self, A...)>;
-        template <typename R2>
-        using with_return = Signature<R2(C::*)(A...) const>;
-        template <typename C2> requires (can_make_member<C2>)
-        using with_self = Signature<typename to_member_func<R(*)(A...), C2>::type>;
-        template <typename... A2>
-        using with_args = Signature<R(C::*)(A2...) const>;
-        template <typename R2, typename... A2>
-        static constexpr bool compatible =
-            std::convertible_to<R2, R> &&
-            (Arguments<Self, A...>::template compatible<A2> && ...);
-        template <typename Func>
-        static constexpr bool invocable = std::is_invocable_r_v<Func, R, Self, A...>;
-        static std::function<R(Self, A...)> capture(PyObject* obj) {
-            return [obj](Self self, A... args) -> R {
-                using Call = typename Arguments<Self, A...>::template Bind<Self, A...>;
-                PyObject* result = Call{}(obj, self, std::forward<A>(args)...);
-                if constexpr (std::is_void_v<R>) {
-                    Py_DECREF(result);
-                } else {
-                    return reinterpret_steal<Object>(result);
-                }
-            };
-        }
-    };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const noexcept> : Signature<R(C::*)(A...) const> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const &> : Signature<R(C::*)(A...) const> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const & noexcept> : Signature<R(C::*)(A...) const> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile> : Arguments<volatile C&, A...> {
-        using type = R(C::*)(A...) volatile;
-        static constexpr bool enable = true;
-        static constexpr bool has_self = true;
-        static constexpr bool no_qualified_return = !(
-            std::is_reference_v<R> ||
-            std::is_const_v<std::remove_reference_t<R>> ||
-            std::is_volatile_v<std::remove_reference_t<R>>
-        );
-        static constexpr bool return_is_python = inherits<R, Object>;
-        template <typename T>
-        static constexpr bool can_make_member = to_member_func<R(*)(A...), T>::enable;
-        using Return = R;
-        using Self = volatile C&;
-        using to_ptr = Signature<R(*)(Self, A...)>;
-        using to_value = Signature<R(Self, A...)>;
-        template <typename R2>
-        using with_return = Signature<R2(C::*)(A...) volatile>;
-        template <typename C2> requires (can_make_member<C2>)
-        using with_self = Signature<typename to_member_func<R(*)(A...), C2>::type>;
-        template <typename... A2>
-        using with_args = Signature<R(C::*)(A2...) volatile>;
-        template <typename R2, typename... A2>
-        static constexpr bool compatible =
-            std::convertible_to<R2, R> &&
-            (Arguments<Self, A...>::template compatible<A2> && ...);
-        template <typename Func>
-        static constexpr bool invocable = std::is_invocable_r_v<Func, R, Self, A...>;
-        static std::function<R(Self, A...)> capture(PyObject* obj) {
-            return [obj](Self self, A... args) -> R {
-                using Call = typename Arguments<Self, A...>::template Bind<Self, A...>;
-                PyObject* result = Call{}(obj, self, std::forward<A>(args)...);
-                if constexpr (std::is_void_v<R>) {
-                    Py_DECREF(result);
-                } else {
-                    return reinterpret_steal<Object>(result);
-                }
-            };
-        }
-    };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile noexcept> : Signature<R(C::*)(A...) volatile> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile &> : Signature<R(C::*)(A...) volatile> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile & noexcept> : Signature<R(C::*)(A...) volatile> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile> : Arguments<const volatile C&, A...> {
-        using type = R(C::*)(A...) const volatile;
-        static constexpr bool enable = true;
-        static constexpr bool has_self = true;
-        static constexpr bool no_qualified_return = !(
-            std::is_reference_v<R> ||
-            std::is_const_v<std::remove_reference_t<R>> ||
-            std::is_volatile_v<std::remove_reference_t<R>>
-        );
-        static constexpr bool return_is_python = inherits<R, Object>;
-        template <typename T>
-        static constexpr bool can_make_member = to_member_func<R(*)(A...), T>::enable;
-        using Return = R;
-        using Self = const volatile C&;
-        using to_ptr = Signature<R(*)(Self, A...)>;
-        using to_value = Signature<R(Self, A...)>;
-        template <typename R2>
-        using with_return = Signature<R2(C::*)(A...) const volatile>;
-        template <typename C2> requires (can_make_member<C2>)
-        using with_self = Signature<typename to_member_func<R(*)(A...), C2>::type>;
-        template <typename... A2>
-        using with_args = Signature<R(C::*)(A2...) const volatile>;
-        template <typename R2, typename... A2>
-        static constexpr bool compatible =
-            std::convertible_to<R2, R> &&
-            (Arguments<Self, A...>::template compatible<A2> && ...);
-        template <typename Func>
-        static constexpr bool invocable = std::is_invocable_r_v<Func, R, Self, A...>;
-        static std::function<R(Self, A...)> capture(PyObject* obj) {
-            return [obj](Self self, A... args) -> R {
-                using Call = typename Arguments<Self, A...>::template Bind<Self, A...>;
-                PyObject* result = Call{}(obj, self, std::forward<A>(args)...);
-                if constexpr (std::is_void_v<R>) {
-                    Py_DECREF(result);
-                } else {
-                    return reinterpret_steal<Object>(result);
-                }
-            };
-        }
-    };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile noexcept> : Signature<R(C::*)(A...) const volatile> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile &> : Signature<R(C::*)(A...) const volatile> {};
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile & noexcept> : Signature<R(C::*)(A...) const volatile> {}; 
-
-    template <typename T>
-    struct GetSignature {
-        static constexpr bool enable = false;
-        using type = void;
-    };
-    template <typename T> requires (Signature<std::remove_cvref_t<T>>::enable)
-    struct GetSignature<T> {
-        static constexpr bool enable = true;
-        using type = Signature<std::remove_cvref_t<T>>::template with_self<void>;
-    };
-    template <has_call_operator T>
-    struct GetSignature<T> {
-    private:
-        using U = decltype(&std::remove_cvref_t<T>::operator());
-
-    public:
-        static constexpr bool enable = GetSignature<U>::enable;
-        using type = GetSignature<U>::type;
-    };
-    /// TODO: add a specialization for `py::Function<>` that avoids problems with
-    /// the call operator being templated, which would ordinarily cause any attempt to
-    /// get the signature to fail.
-
-    template <typename T>
-    concept has_signature = GetSignature<T>::enable;
-    template <has_signature T>
-    using get_signature = GetSignature<T>::type;
-
-    template <typename F>
-    concept function_pointer_like = Signature<F>::enable;
-    template <typename F>
-    concept args_fit_within_bitset = has_signature<F> && get_signature<F>::n <= 64;
-    template <typename F>
-    concept args_are_python = has_signature<F> && get_signature<F>::args_are_python;
-    template <typename F>
-    concept args_are_convertible_to_python =
-        has_signature<F> && get_signature<F>::args_are_convertible_to_python;  /// TODO: delete?
-    template <typename F>
-    concept no_qualified_return = has_signature<F> && get_signature<F>::no_qualified_return;
-    template <typename F>
-    concept return_is_python = has_signature<F> && get_signature<F>::return_is_python;
-    template <typename F>
-    concept proper_argument_order =
-        has_signature<F> && get_signature<F>::proper_argument_order;
-    template <typename F>
-    concept no_duplicate_arguments =
-        has_signature<F> && get_signature<F>::no_duplicate_arguments;
-    template <typename F>
-    concept no_qualified_arg_annotations =
-        has_signature<F> && get_signature<F>::no_qualified_arg_annotations;
-    template <typename F>
-    concept no_qualified_args =
-        has_signature<F> && get_signature<F>::no_qualified_args;
-
-}
-
-
-template <typename Self, typename... Args>
-    requires (
-        __call__<Self, Args...>::enable &&
-        std::convertible_to<typename __call__<Self, Args...>::type, Object> && (
-            std::is_invocable_r_v<
-                typename __call__<Self, Args...>::type,
-                __call__<Self, Args...>,
-                Self,
-                Args...
-            > || (
-                !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
-                impl::has_cpp<Self> &&
-                std::is_invocable_r_v<
-                    typename __call__<Self, Args...>::type,
-                    impl::cpp_type<Self>,
-                    Args...
-                >
-            ) || (
-                !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
-                !impl::has_cpp<Self> &&
-                std::derived_from<typename __call__<Self, Args...>::type, Object> &&
-                __getattr__<Self, "__call__">::enable &&
-                impl::inherits<typename __getattr__<Self, "__call__">::type, impl::FunctionTag>
-            )
-        )
-    )
-decltype(auto) Object::operator()(this Self&& self, Args&&... args) {
-    if constexpr (std::is_invocable_v<__call__<Self, Args...>, Self, Args...>) {
-        return __call__<Self, Args...>{}(
-            std::forward<Self>(self),
-            std::forward<Args>(args)...
-        );
-
-    } else if constexpr (impl::has_cpp<Self>) {
-        return from_python(std::forward<Self>(self))(
-            std::forward<Args>(args)...
-        );
-    } else {
-        return getattr<"__call__">(std::forward<Self>(self))(
-            std::forward<Args>(args)...
-        );
-    }
 }
 
 
@@ -6580,32 +6187,19 @@ decltype(auto) Object::operator()(this Self&& self, Args&&... args) {
 for a given C++ function and argument list. */
 template <typename F, typename... Args>
 concept callable =
-    impl::has_signature<F> &&
-    impl::args_fit_within_bitset<F> &&
-    impl::proper_argument_order<F> &&
-    impl::no_qualified_arg_annotations<F> &&
-    impl::no_duplicate_arguments<F> &&
-    impl::get_signature<F>::template Bind<Args...>::proper_argument_order &&
-    impl::get_signature<F>::template Bind<Args...>::no_qualified_arg_annotations &&
-    impl::get_signature<F>::template Bind<Args...>::no_duplicate_arguments &&
-    impl::get_signature<F>::template Bind<Args...>::no_conflicting_values &&
-    impl::get_signature<F>::template Bind<Args...>::no_extra_positional_args &&
-    impl::get_signature<F>::template Bind<Args...>::no_extra_keyword_args &&
-    impl::get_signature<F>::template Bind<Args...>::satisfies_required_args &&
-    impl::get_signature<F>::template Bind<Args...>::can_convert;
-
-
-/// TODO: no need for a py::Defaults<> class if Signature<> is lowered down from
-/// impl::.  You'd then just do Signature<F>::defaults.
-
-
-/* Introspect a function signature to retrieve a tuple capable of storing default
-values for all argument annotations that are marked as `::opt`.  An object of this
-type can be passed to the `call` function to provide default values for arguments that
-are not present at the call site.  The tuple itself can be constructed using the same
-keyword argument and parameter pack semantics as the `call()` operator itself. */
-template <impl::has_signature F>
-using Defaults = impl::get_signature<F>::Defaults;
+    Signature<F>::enable &&
+    Signature<F>::args_fit_within_bitset &&
+    Signature<F>::proper_argument_order &&
+    Signature<F>::no_qualified_arg_annotations &&
+    Signature<F>::no_duplicate_arguments &&
+    Signature<F>::template bind<Args...>::proper_argument_order &&
+    Signature<F>::template bind<Args...>::no_qualified_arg_annotations &&
+    Signature<F>::template bind<Args...>::no_duplicate_arguments &&
+    Signature<F>::template bind<Args...>::no_conflicting_values &&
+    Signature<F>::template bind<Args...>::no_extra_positional_args &&
+    Signature<F>::template bind<Args...>::no_extra_keyword_args &&
+    Signature<F>::template bind<Args...>::satisfies_required_args &&
+    Signature<F>::template bind<Args...>::can_convert;
 
 
 /* Invoke a C++ function with Python-style calling conventions, including keyword
@@ -6613,18 +6207,15 @@ arguments and/or parameter packs, which are resolved at compile time.  Note that
 function signature cannot contain any template parameters (including auto arguments),
 as the function signature must be known unambiguously at compile time to implement the
 required matching. */
-template <impl::has_signature F, typename... Args>
-    requires (callable<F, Args...> && Defaults<F>::n == 0)
+template <typename F, typename... Args>
+    requires (
+        callable<F, Args...> &&
+        Signature<F>::no_partial_args &&
+        Signature<F>::defaults::n == 0
+    )
 constexpr decltype(auto) call(F&& func, Args&&... args) {
-    /// TODO:
-    /// return typename impl::Signature<F>::partial{}(
-    ///     Defaults<F>{},
-    ///     std::forward<F>(func),
-    ///     std::forward<Args>(args)...
-    /// )
-
-    return typename impl::get_signature<F>::template Bind<Args...>{}(
-        Defaults<F>{},
+    return Signature<F>{}(
+        Signature<F>::defaults{},
         std::forward<F>(func),
         std::forward<Args>(args)...
     );
@@ -6636,14 +6227,17 @@ arguments and/or parameter packs, which are resolved at compile time.  Note that
 function signature cannot contain any template parameters (including auto arguments),
 as the function signature must be known unambiguously at compile time to implement the
 required matching. */
-template <impl::has_signature F, typename... Args>
-    requires (callable<F, Args...>)
+template <typename F, typename... Args>
+    requires (
+        callable<F, Args...> &&
+        Signature<F>::no_partial_args
+    )
 constexpr decltype(auto) call(
-    const Defaults<F>& defaults,
+    const Signature<F>::defaults& defaults,
     F&& func,
     Args&&... args
 ) {
-    return typename impl::get_signature<F>::template Bind<Args...>{}(
+    return Signature<F>{}(
         defaults,
         std::forward<F>(func),
         std::forward<Args>(args)...
@@ -6656,14 +6250,17 @@ arguments and/or parameter packs, which are resolved at compile time.  Note that
 function signature cannot contain any template parameters (including auto arguments),
 as the function signature must be known unambiguously at compile time to implement the
 required matching. */
-template <impl::has_signature F, typename... Args>
-    requires (callable<F, Args...>)
+template <typename F, typename... Args>
+    requires (
+        callable<F, Args...> &&
+        Signature<F>::no_partial_args
+    )
 constexpr decltype(auto) call(
-    Defaults<F>&& defaults,
+    Signature<F>::defaults&& defaults,
     F&& func,
     Args&&... args
 ) {
-    return typename impl::get_signature<F>::template Bind<Args...>{}(
+    return Signature<F>{}(
         std::move(defaults),
         std::forward<F>(func),
         std::forward<Args>(args)...
@@ -6677,18 +6274,18 @@ template <typename F, typename... Args>
 concept partially_callable =
     !(impl::arg_pack<Args> || ...) &&
     !(impl::kwarg_pack<Args> || ...) &&
-    impl::has_signature<F> &&
-    impl::args_fit_within_bitset<F> &&
-    impl::proper_argument_order<F> &&
-    impl::no_qualified_arg_annotations<F> &&
-    impl::no_duplicate_arguments<F> &&
-    impl::get_signature<F>::template Bind<Args...>::proper_argument_order &&
-    impl::get_signature<F>::template Bind<Args...>::no_qualified_arg_annotations &&
-    impl::get_signature<F>::template Bind<Args...>::no_duplicate_arguments &&
-    impl::get_signature<F>::template Bind<Args...>::no_conflicting_values &&
-    impl::get_signature<F>::template Bind<Args...>::no_extra_positional_args &&
-    impl::get_signature<F>::template Bind<Args...>::no_extra_keyword_args &&
-    impl::get_signature<F>::template Bind<Args...>::can_convert;
+    Signature<F>::enable &&
+    Signature<F>::args_fit_within_bitset &&
+    Signature<F>::proper_argument_order &&
+    Signature<F>::no_qualified_arg_annotations &&
+    Signature<F>::no_duplicate_arguments &&
+    Signature<F>::template bind<Args...>::proper_argument_order &&
+    Signature<F>::template bind<Args...>::no_qualified_arg_annotations &&
+    Signature<F>::template bind<Args...>::no_duplicate_arguments &&
+    Signature<F>::template bind<Args...>::no_conflicting_values &&
+    Signature<F>::template bind<Args...>::no_extra_positional_args &&
+    Signature<F>::template bind<Args...>::no_extra_keyword_args &&
+    Signature<F>::template bind<Args...>::can_convert;
 
 
 /// TODO: I can force the partial function to accept only Arg<> annotations, and then
@@ -6707,11 +6304,6 @@ concept partially_callable =
 /// That should offer the best of both worlds.
 
 
-namespace impl {
-    struct defTag {};
-}
-
-
 /* Construct a partial function object that captures a C++ function and a subset of its
 arguments, which can be used to invoke the function later with the remaining arguments.
 Arguments and default values are given in the same style as `call()`, and will be
@@ -6728,21 +6320,23 @@ implement the required matching.
 The returned partial is a thin proxy that only implements the call operator and a
 handful of introspection methods.  It also allows transparent access to the decorated
 function via the `*` and `->` operators. */
-template <typename Func, typename... Args> requires (partially_callable<Func, Args...>)
+template <typename Func, typename... Args>
+    requires (
+        partially_callable<Func, Args...> &&
+        Signature<Func>::no_partial_args
+    )
 struct def : impl::defTag {
 private:
-    using sig = impl::get_signature<Func>;
-    using bound = sig::template Bind<Args...>;
-    using partial_args = sig::template Bind<>::template with_partial<Args...>;
-
-    sig::Defaults defaults;
+    Signature<Func>::defaults defaults;
     std::remove_cvref_t<Func> func;
-    partial_args parts;
+    Signature<Func>::partial<Args...> parts;
 
 public:
-    using signature = Signature<Func>;
+    using signature = Signature<Func>::partial<Args...>::signature;
 
-
+    /// TODO: this class should also expose `.bind()` and `.unbind()`, as well as the
+    /// `>>` operator for chaining.  Also, all of this logic needs to be updated so
+    /// that these things have a usable public interface.
 
     static constexpr size_t n = sizeof...(Args);
     /// TODO: other introspection fields forwarded from Arguments<>.  These should
@@ -6852,6 +6446,51 @@ template <impl::inherits<impl::defTag> T>
 struct Signature<T> : std::remove_reference_t<T>::signature {};
 
 
+template <typename Self, typename... Args>
+    requires (
+        __call__<Self, Args...>::enable &&
+        std::convertible_to<typename __call__<Self, Args...>::type, Object> && (
+            std::is_invocable_r_v<
+                typename __call__<Self, Args...>::type,
+                __call__<Self, Args...>,
+                Self,
+                Args...
+            > || (
+                !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
+                impl::has_cpp<Self> &&
+                std::is_invocable_r_v<
+                    typename __call__<Self, Args...>::type,
+                    impl::cpp_type<Self>,
+                    Args...
+                >
+            ) || (
+                !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
+                !impl::has_cpp<Self> &&
+                std::derived_from<typename __call__<Self, Args...>::type, Object> &&
+                __getattr__<Self, "__call__">::enable &&
+                impl::inherits<typename __getattr__<Self, "__call__">::type, impl::FunctionTag>
+            )
+        )
+    )
+decltype(auto) Object::operator()(this Self&& self, Args&&... args) {
+    if constexpr (std::is_invocable_v<__call__<Self, Args...>, Self, Args...>) {
+        return __call__<Self, Args...>{}(
+            std::forward<Self>(self),
+            std::forward<Args>(args)...
+        );
+
+    } else if constexpr (impl::has_cpp<Self>) {
+        return from_python(std::forward<Self>(self))(
+            std::forward<Args>(args)...
+        );
+    } else {
+        return getattr<"__call__">(std::forward<Self>(self))(
+            std::forward<Args>(args)...
+        );
+    }
+}
+
+
 ////////////////////////
 ////    FUNCTION    ////
 ////////////////////////
@@ -6859,14 +6498,14 @@ struct Signature<T> : std::remove_reference_t<T>::signature {};
 
 template <typename F = Object(Arg<"*args", Object>, Arg<"**kwargs", Object>)>
     requires (
-        impl::function_pointer_like<F> &&
-        impl::args_fit_within_bitset<F> &&
-        impl::no_qualified_args<F> &&
-        impl::no_qualified_return<F> &&
-        impl::proper_argument_order<F> &&
-        impl::no_duplicate_arguments<F> &&
-        impl::args_are_python<F> &&
-        impl::return_is_python<F>
+        impl::canonical_function_type<F> &&
+        Signature<F>::args_fit_within_bitset &&
+        Signature<F>::no_qualified_args &&
+        Signature<F>::no_qualified_return &&
+        Signature<F>::proper_argument_order &&
+        Signature<F>::no_duplicate_arguments &&
+        Signature<F>::args_are_python &&
+        Signature<F>::return_is_python
     )
 struct Function;
 
@@ -10509,14 +10148,14 @@ enforced throughout the codebase, in a way that allows static analyzers to give 
 syntax highlighting and LSP support. */
 template <typename F>
     requires (
-        impl::function_pointer_like<F> &&
-        impl::args_fit_within_bitset<F> &&
-        impl::no_qualified_args<F> &&
-        impl::no_qualified_return<F> &&
-        impl::proper_argument_order<F> &&
-        impl::no_duplicate_arguments<F> &&
-        impl::args_are_python<F> &&
-        impl::return_is_python<F>
+        impl::canonical_function_type<F> &&
+        Signature<F>::args_fit_within_bitset &&
+        Signature<F>::no_qualified_args &&
+        Signature<F>::no_qualified_return &&
+        Signature<F>::proper_argument_order &&
+        Signature<F>::no_duplicate_arguments &&
+        Signature<F>::args_are_python &&
+        Signature<F>::return_is_python
     )
 struct Function : Object, Interface<Function<F>> {
 private:
