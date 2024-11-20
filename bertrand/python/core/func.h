@@ -4,10 +4,10 @@
 #include "declarations.h"
 #include "object.h"
 #include "except.h"
+#include "arg.h"
 #include "ops.h"
 #include "access.h"
 #include "iter.h"
-#include <ranges>
 
 
 namespace py {
@@ -270,6 +270,8 @@ namespace impl {
         static constexpr size_t n_opt_pos           = _n_opt_pos<Args...>;
         static constexpr size_t n_opt_kw            = _n_opt_kw<Args...>;
         static constexpr size_t n_opt_kwonly        = _n_opt_kwonly<Args...>;
+
+        /// TODO: n_opt and co. should only be accessible through ::defaults?
 
         /// TODO: has<> may need to restrict itself to keyword arguments only, not
         /// named positional-only arguments.  Either that or I just need to be
@@ -935,6 +937,12 @@ namespace impl {
             }
         };
 
+        /// TODO: Partial<> can be implemented as a private type, and then a public
+        /// ::bind<> alias can be used to expose it in a chainable fashion.  The
+        /// empty bind<> references the partial encoded in the enclosing signature,
+        /// which will usually be empty.  Then, you can chain bind<> aliases to
+        /// arrive at the correct partial function type, which is necessary to 
+
         /* A tuple holding a sequence of partial arguments to supply to the enclosing
         parameter list when the function is invoked.  One of these must be supplied
         every time a function is called, which amounts to a 3-way merge between the
@@ -1078,6 +1086,12 @@ namespace impl {
             /// could inherit from this one and act appropriately.
 
         public:
+            /// TODO: these should all be inverted using the annotated function signature,
+            /// such that chaining ::partial<> calls will account for the partial
+            /// arguments that have already been filled in, so you can do some really
+            /// powerful metaprogramming, like currying until the function signature
+            /// has no remaining optional arguments, etc.
+
             static constexpr size_t n               = Arguments<Parts...>::n;
             static constexpr size_t n_pos           = Arguments<Parts...>::n_pos;
             static constexpr size_t n_kw            = Arguments<Parts...>::n_kw;
@@ -1096,6 +1110,27 @@ namespace impl {
 
             template <typename... Values>
             struct Bind;
+
+            /// TODO: the ::partial<> chaining behavior needs to account for positional
+            /// vs keyword arguments.  So the following:
+            ///     Signature<...>::partial<int, Arg<"x", int>>::partial<int>
+            /// Will fill in a subsequent positional argument, rather than causing an
+            /// error.  That feature allows for proper currying, which is a cool thing
+            /// to support.
+            /// TODO: ::partial<> should be renamed to ::bind<> to better reflect the
+            /// semantics in the public function API.  The current ::Bind<> should be
+            /// renamed to either call<> or invoke<> to better reflect its purpose.
+            /// If call<> is used, then the private ::call<> type should be renamed
+            /// accordingly to avoid any confusion.
+
+            template <typename... Values>
+                requires (
+                    Bind<Parts..., Values...>::no_conflicting_values &&
+                    Bind<Parts..., Values...>::no_extra_positional_args &&
+                    Bind<Parts..., Values...>::no_extra_keyword_args &&
+                    Bind<Parts..., Values...>::can_convert
+                )
+            using partial = Partial<Parts..., Values...>;
 
             template <std::convertible_to<Parts>... Ps>
                 requires (
