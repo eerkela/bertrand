@@ -140,7 +140,7 @@ namespace impl {
     first-class partial binding. */
     template <typename... Args>
     struct Arguments : BertrandTag {
-    private:
+    protected:
         template <typename...>
         static constexpr size_t _n_posonly = 0;
         template <typename T, typename... Ts>
@@ -165,41 +165,23 @@ namespace impl {
         static constexpr size_t _n_kwonly<T, Ts...> =
             _n_kwonly<Ts...> + ArgTraits<T>::kwonly();
 
-        template <typename...>
-        static constexpr size_t _n_opt = 0;
-        template <typename T, typename... Ts>
-        static constexpr size_t _n_opt<T, Ts...> =
-            _n_opt<Ts...> + ArgTraits<T>::opt();
-
-        template <typename...>
-        static constexpr size_t _n_opt_posonly = 0;
-        template <typename T, typename... Ts>
-        static constexpr size_t _n_opt_posonly<T, Ts...> =
-            _n_opt_posonly<Ts...> + (ArgTraits<T>::posonly() && ArgTraits<T>::opt());
-
-        template <typename...>
-        static constexpr size_t _n_opt_pos = 0;
-        template <typename T, typename... Ts>
-        static constexpr size_t _n_opt_pos<T, Ts...> =
-            _n_opt_pos<Ts...> + (ArgTraits<T>::pos() && ArgTraits<T>::opt());
-
-        template <typename...>
-        static constexpr size_t _n_opt_kw = 0;
-        template <typename T, typename... Ts>
-        static constexpr size_t _n_opt_kw<T, Ts...> =
-            _n_opt_kw<Ts...> + (ArgTraits<T>::kw() && ArgTraits<T>::opt());
-
-        template <typename...>
-        static constexpr size_t _n_opt_kwonly = 0;
-        template <typename T, typename... Ts>
-        static constexpr size_t _n_opt_kwonly<T, Ts...> =
-            _n_opt_kwonly<Ts...> + (ArgTraits<T>::kwonly() && ArgTraits<T>::opt());
-
         template <StaticStr, typename...>
         static constexpr size_t _idx = 0;
         template <StaticStr Name, typename T, typename... Ts>
         static constexpr size_t _idx<Name, T, Ts...> =
             ArgTraits<T>::name == Name ? 0 : _idx<Name, Ts...> + 1;
+
+        template <typename...>
+        static constexpr size_t _posonly_idx = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t _posonly_idx<T, Ts...> =
+            ArgTraits<T>::posonly() ? 0 : _posonly_idx<Ts...> + 1;
+
+        template <typename...>
+        static constexpr size_t _pos_idx = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t _pos_idx<T, Ts...> =
+            ArgTraits<T>::pos() ? 0 : _pos_idx<Ts...> + 1;
 
         template <typename...>
         static constexpr size_t _args_idx = 0;
@@ -225,53 +207,12 @@ namespace impl {
         static constexpr size_t _kwargs_idx<T, Ts...> =
             ArgTraits<T>::kwargs() ? 0 : _kwargs_idx<Ts...> + 1;
 
-        template <typename...>
-        static constexpr size_t _opt_idx = 0;
-        template <typename T, typename... Ts>
-        static constexpr size_t _opt_idx<T, Ts...> =
-            ArgTraits<T>::opt() ? 0 : _opt_idx<Ts...> + 1;
-
-        template <typename...>
-        static constexpr size_t _opt_posonly_idx = 0;
-        template <typename T, typename... Ts>
-        static constexpr size_t _opt_posonly_idx<T, Ts...> =
-            ArgTraits<T>::posonly() && ArgTraits<T>::opt() ?
-                0 : _opt_posonly_idx<Ts...> + 1;
-
-        template <typename...>
-        static constexpr size_t _opt_pos_idx = 0;
-        template <typename T, typename... Ts>
-        static constexpr size_t _opt_pos_idx<T, Ts...> =
-            ArgTraits<T>::pos() && ArgTraits<T>::opt() ?
-                0 : _opt_pos_idx<Ts...> + 1;
-
-        template <typename...>
-        static constexpr size_t _opt_kw_idx = 0;
-        template <typename T, typename... Ts>
-        static constexpr size_t _opt_kw_idx<T, Ts...> =
-            ArgTraits<T>::kw() && ArgTraits<T>::opt() ?
-                0 : _opt_kw_idx<Ts...> + 1;
-
-        template <typename...>
-        static constexpr size_t _opt_kwonly_idx = 0;
-        template <typename T, typename... Ts>
-        static constexpr size_t _opt_kwonly_idx<T, Ts...> =
-            ArgTraits<T>::kwonly() && ArgTraits<T>::opt() ?
-                0 : _opt_kwonly_idx<Ts...> + 1;
-
     public:
         static constexpr size_t n                   = sizeof...(Args);
         static constexpr size_t n_posonly           = _n_posonly<Args...>;
         static constexpr size_t n_pos               = _n_pos<Args...>;
         static constexpr size_t n_kw                = _n_kw<Args...>;
         static constexpr size_t n_kwonly            = _n_kwonly<Args...>;
-        static constexpr size_t n_opt               = _n_opt<Args...>;
-        static constexpr size_t n_opt_posonly       = _n_opt_posonly<Args...>;
-        static constexpr size_t n_opt_pos           = _n_opt_pos<Args...>;
-        static constexpr size_t n_opt_kw            = _n_opt_kw<Args...>;
-        static constexpr size_t n_opt_kwonly        = _n_opt_kwonly<Args...>;
-
-        /// TODO: n_opt and co. should only be accessible through ::defaults?
 
         /// TODO: has<> may need to restrict itself to keyword arguments only, not
         /// named positional-only arguments.  Either that or I just need to be
@@ -283,42 +224,253 @@ namespace impl {
         static constexpr bool has_pos               = n_pos > 0;
         static constexpr bool has_kw                = n_kw > 0;
         static constexpr bool has_kwonly            = n_kwonly > 0;
-        static constexpr bool has_opt               = n_opt > 0;
-        static constexpr bool has_opt_posonly       = n_opt_posonly > 0;
-        static constexpr bool has_opt_pos           = n_opt_pos > 0;
-        static constexpr bool has_opt_kw            = n_opt_kw > 0;
-        static constexpr bool has_opt_kwonly        = n_opt_kwonly > 0;
         static constexpr bool has_args              = n > _args_idx<Args...>;
         static constexpr bool has_kwargs            = n > _kwargs_idx<Args...>;
 
         template <StaticStr Name> requires (has<Name>)
         static constexpr size_t idx                 = _idx<Name, Args...>;
+        static constexpr size_t posonly_idx         = _posonly_idx<Args...>;
+        static constexpr size_t pos_idx             = _pos_idx<Args...>;
         static constexpr size_t kw_idx              = _kw_idx<Args...>;
         static constexpr size_t kwonly_idx          = _kwonly_idx<Args...>;
-        static constexpr size_t opt_idx             = _opt_idx<Args...>;
-        static constexpr size_t opt_posonly_idx     = _opt_posonly_idx<Args...>;
-        static constexpr size_t opt_pos_idx         = _opt_pos_idx<Args...>;
-        static constexpr size_t opt_kw_idx          = _opt_kw_idx<Args...>;
-        static constexpr size_t opt_kwonly_idx      = _opt_kwonly_idx<Args...>;
         static constexpr size_t args_idx            = _args_idx<Args...>;
         static constexpr size_t kwargs_idx          = _kwargs_idx<Args...>;
 
         template <size_t I> requires (I < n)
         using at = unpack_type<I, Args...>;
 
-    private:
+        /* A tuple holding a default value for every argument in the enclosing
+        parameter list that is marked as optional.  One of these must be provided
+        whenever a C++ function is invoked, and constructing one requires that the
+        initializers exactly match a subsignature consisting only of the optional
+        arguments.  The values must be provided as keyword arguments for clarity.  The
+        result may be empty if there are no optional arguments in the target signature,
+        in which case the constructor will be optimized out. */
+        struct Defaults {
+        protected:
+            template <typename...>
+            static constexpr size_t _n_posonly = 0;
+            template <typename T, typename... Ts>
+            static constexpr size_t _n_posonly<T, Ts...> =
+                _n_posonly<Ts...> + (ArgTraits<T>::posonly() && ArgTraits<T>::opt());
+
+            template <typename...>
+            static constexpr size_t _n_pos = 0;
+            template <typename T, typename... Ts>
+            static constexpr size_t _n_pos<T, Ts...> =
+                _n_pos<Ts...> + (ArgTraits<T>::pos() && ArgTraits<T>::opt());
+
+            template <typename...>
+            static constexpr size_t _n_kw = 0;
+            template <typename T, typename... Ts>
+            static constexpr size_t _n_kw<T, Ts...> =
+                _n_kw<Ts...> + (ArgTraits<T>::kw() && ArgTraits<T>::opt());
+
+            template <typename...>
+            static constexpr size_t _n_kwonly = 0;
+            template <typename T, typename... Ts>
+            static constexpr size_t _n_kwonly<T, Ts...> =
+                _n_kwonly<Ts...> + (ArgTraits<T>::kwonly() && ArgTraits<T>::opt());
+
+            template <typename...>
+            static constexpr size_t _posonly_idx = 0;
+            template <typename T, typename... Ts>
+            static constexpr size_t _posonly_idx<T, Ts...> =
+                ArgTraits<T>::posonly() && ArgTraits<T>::opt() ?
+                    0 : _posonly_idx<Ts...> + 1;
+
+            template <typename...>
+            static constexpr size_t _pos_idx = 0;
+            template <typename T, typename... Ts>
+            static constexpr size_t _pos_idx<T, Ts...> =
+                ArgTraits<T>::pos() && ArgTraits<T>::opt() ?
+                    0 : _pos_idx<Ts...> + 1;
+
+            template <typename...>
+            static constexpr size_t _kw_idx = 0;
+            template <typename T, typename... Ts>
+            static constexpr size_t _kw_idx<T, Ts...> =
+                ArgTraits<T>::kw() && ArgTraits<T>::opt() ?
+                    0 : _kw_idx<Ts...> + 1;
+
+            template <typename...>
+            static constexpr size_t _kwonly_idx = 0;
+            template <typename T, typename... Ts>
+            static constexpr size_t _kwonly_idx<T, Ts...> =
+                ArgTraits<T>::kwonly() && ArgTraits<T>::opt() ?
+                    0 : _kwonly_idx<Ts...> + 1;
+
+            template <size_t, typename>
+            static constexpr size_t _find = 0;
+            template <size_t I, typename T, typename... Ts>
+            static constexpr size_t _find<I, std::tuple<T, Ts...>> =
+                (I == T::index) ? 0 : 1 + _find<I, std::tuple<Ts...>>;
+
+            /* The type of a single value in the defaults tuple.  The templated index
+            is used to correlate the default value with its corresponding argument in
+            the enclosing signature. */
+            template <size_t I>
+            struct Entry {
+                using type = ArgTraits<Arguments::at<I>>::type;
+                static constexpr StaticStr name = ArgTraits<Arguments::at<I>>::name;
+                static constexpr size_t index = I;
+                std::remove_cvref_t<type> value;
+
+                constexpr remove_rvalue<type> get(this auto&& self) {
+                    return std::forward<decltype(self)>(self).value;
+                }
+            };
+
+            /* Build a sub-signature holding only the arguments marked as optional from
+            the enclosing signature.  This will be a specialization of the enclosing
+            class, which is used to bind arguments to this class's constructor using
+            the same semantics as the function's call operator. */
+            template <typename out, typename...>
+            struct extract { using type = out; };
+            template <typename... out, typename T, typename... Ts>
+            struct extract<Arguments<out...>, T, Ts...> {
+                template <typename>
+                struct sub_signature {
+                    using type = Arguments<out...>;
+                };
+                template <typename U> requires (ArgTraits<U>::opt())
+                struct sub_signature<U> {
+                    using type =
+                        Arguments<
+                            out...,
+                            typename ArgTraits<U>::as_default
+                        >;
+                };
+                using type = extract<typename sub_signature<T>::type, Ts...>::type;
+            };
+            using Inner = extract<Arguments<>, Args...>::type;
+
+            /* Build a std::tuple of Entry<I> instances to hold the default values
+            themselves. */
+            template <typename out, size_t, typename...>
+            struct collect { using type = out; };
+            template <typename... out, size_t I, typename T, typename... Ts>
+            struct collect<std::tuple<out...>, I, T, Ts...> {
+                template <typename U>
+                struct tuple {
+                    using type = std::tuple<out...>;
+                };
+                template <typename U> requires (ArgTraits<U>::opt())
+                struct tuple<U> {
+                    using type = std::tuple<out..., Entry<I>>;
+                };
+                using type = collect<typename tuple<T>::type, I + 1, Ts...>::type;
+            };
+
+            using Tuple = collect<std::tuple<>, 0, Args...>::type;
+            Tuple values;
+
+            template <size_t I, typename... Values>
+            static constexpr decltype(auto) build(Values&&... values) {
+                using T = Inner::template at<I>;
+                constexpr size_t idx =
+                    Arguments<Values...>::template idx<ArgTraits<T>::name>;
+                return unpack_arg<idx>(std::forward<Values>(values)...);
+            }
+
+        public:
+            static constexpr size_t n               = Inner::n;
+            static constexpr size_t n_posonly       = _n_posonly<Args...>;
+            static constexpr size_t n_pos           = _n_pos<Args...>;
+            static constexpr size_t n_kw            = _n_kw<Args...>;
+            static constexpr size_t n_kwonly        = _n_kwonly<Args...>;
+
+            template <StaticStr Name>
+            static constexpr bool has               = Inner::template has<Name>;
+            static constexpr bool has_posonly       = n_posonly > 0;
+            static constexpr bool has_pos           = n_pos > 0;
+            static constexpr bool has_kw            = n_kw > 0;
+            static constexpr bool has_kwonly        = n_kwonly > 0;
+
+            template <StaticStr Name> requires (has<Name>)
+            static constexpr size_t idx             = Inner::template idx<Name>;
+            static constexpr size_t posonly_idx     = _posonly_idx<Args...>;
+            static constexpr size_t pos_idx         = _pos_idx<Args...>;
+            static constexpr size_t kw_idx          = _kw_idx<Args...>;
+            static constexpr size_t kwonly_idx      = _kwonly_idx<Args...>;
+
+            /* Given an index into the enclosing signature, find the corresponding index
+            in the defaults tuple if that index is marked as optional. */
+            template <size_t I> requires (ArgTraits<typename Arguments::at<I>>::opt())
+            static constexpr size_t find = _find<I, Tuple>;
+
+            /* Given an index into the defaults tuple, find the corresponding index in
+            the enclosing parameter list. */
+            template <size_t I> requires (I < n)
+            static constexpr size_t rfind = std::tuple_element<I, Tuple>::type::index;
+
+            template <size_t I> requires (I < n)
+            using at = Arguments::at<rfind<I>>;
+
+            /* Bind an argument list to the default values to enable the constructor. */
+            template <typename... Values>
+            using call = Inner::template call<Values...>;
+
+            /* The default values constructor takes Python-style arguments just like
+            the call operator, and is only enabled if the call signature is well-formed
+            and all optional arguments have been accounted for.  All values must be
+            given as keyword arguments for clarity, regardless of their original status
+            within the enclosing parameter list. */
+            template <typename... Values>
+                requires (
+                    !(arg_pack<Values> || ...) &&
+                    !(kwarg_pack<Values> || ...) &&
+                    call<Values...>::proper_argument_order &&
+                    call<Values...>::no_qualified_arg_annotations &&
+                    call<Values...>::no_duplicate_arguments &&
+                    call<Values...>::no_conflicting_values &&
+                    call<Values...>::no_extra_positional_args &&
+                    call<Values...>::no_extra_keyword_args &&
+                    call<Values...>::satisfies_required_args &&
+                    call<Values...>::can_convert
+                )
+            constexpr Defaults(Values&&... values) : values(
+                []<size_t... Is>(std::index_sequence<Is...>, auto&&... values) -> Tuple {
+                    return {{build<Is>(std::forward<decltype(values)>(values)...)}...};
+                }(std::make_index_sequence<n>{}, std::forward<Values>(values)...)
+            ) {}
+
+            /* Get the default value at index I of the tuple.  Use find<> to correlate
+            an index from the enclosing signature if needed.  If the defaults container
+            is used as an lvalue, then this will either directly reference the internal
+            value if the corresponding argument expects an lvalue, or a copy if it
+            expects an unqualified or rvalue type.  If the defaults container is given
+            as an rvalue instead, then the copy will be optimized to a move. */
+            template <size_t I> requires (I < n)
+            constexpr decltype(auto) get(this auto&& self) {
+                return std::get<I>(std::forward<decltype(self)>(self).values).get();
+            }
+
+            /* Get the default value associated with the named argument, if it is
+            marked as optional.  If the defaults container is used as an lvalue, then
+            this will either directly reference the internal value if the corresponding
+            argument expects an lvalue, or a copy if it expects an unqualified or
+            rvalue type.  If the defaults container is given as an rvalue instead, then
+            the copy will be optimized to a move. */
+            template <StaticStr Name> requires (has<Name>)
+            constexpr decltype(auto) get(this auto&& self) {
+                return std::get<idx<Name>>(std::forward<decltype(self)>(self).values).get();
+            }
+        };
+
+    protected:
         template <size_t, typename...>
         static constexpr bool _proper_argument_order = true;
         template <size_t I, typename T, typename... Ts>
-        static constexpr bool _proper_argument_order<I, T, Ts...> =
-            (
+        static constexpr bool _proper_argument_order<I, T, Ts...> = [] {
+            return (
                 ArgTraits<T>::posonly() &&
                 (I > kw_idx || I > args_idx || I > kwargs_idx) ||
-                (!ArgTraits<T>::opt() && I > opt_idx)
+                (!ArgTraits<T>::opt() && I > Defaults::pos_idx)
             ) || (
                 ArgTraits<T>::pos() && (
                     (I > args_idx || I > kwonly_idx || I > kwargs_idx) ||
-                    (!ArgTraits<T>::opt() && I > opt_idx)
+                    (!ArgTraits<T>::opt() && I > Defaults::pos_idx)
                 )
             ) || (
                 ArgTraits<T>::args() && (I > kwonly_idx || I > kwargs_idx)
@@ -326,15 +478,18 @@ namespace impl {
                 ArgTraits<T>::kwonly() && (I > kwargs_idx)
             ) ?
                 false : _proper_argument_order<I + 1, Ts...>;
+        }();
 
         template <size_t, typename...>
         static constexpr bool _no_duplicate_arguments = true;
         template <size_t I, typename T, typename... Ts>
-        static constexpr bool _no_duplicate_arguments<I, T, Ts...> =
-            (ArgTraits<T>::name != "" && I != idx<ArgTraits<T>::name>) ||
-            (ArgTraits<T>::args() && I != args_idx) ||
-            (ArgTraits<T>::kwargs() && I != kwargs_idx) ?
-                false : _no_duplicate_arguments<I + 1, Ts...>;
+        static constexpr bool _no_duplicate_arguments<I, T, Ts...> = [] {
+            return
+                (ArgTraits<T>::name != "" && I != idx<ArgTraits<T>::name>) ||
+                (ArgTraits<T>::args() && I != args_idx) ||
+                (ArgTraits<T>::kwargs() && I != kwargs_idx) ?
+                    false : _no_duplicate_arguments<I + 1, Ts...>;
+        }();
 
         template <size_t I, typename... Ts>
         static constexpr bool _compatible() {
@@ -420,7 +575,7 @@ namespace impl {
         }
 
         /* Check to see if the candidate seed and prime produce any collisions for the
-        observed keyword arguments. */
+        target keyword arguments. */
         template <typename...>
         struct collisions {
             static constexpr bool operator()(size_t, size_t) { return false; }
@@ -582,8 +737,8 @@ namespace impl {
             return (_required<Is> | ...);
         }(std::make_index_sequence<n>{});
 
-    private:
-        static constexpr Callback null_callback;
+    protected:
+        static constexpr Callback null_check;
 
         template <size_t I>
         static consteval Callback populate_positional_table() {
@@ -696,12 +851,10 @@ namespace impl {
 
         template <size_t I>
         static Param _key(size_t& hash) {
-            using T = at<I>;
-            constexpr Callback& callback = positional_table[I];
             Param param = {
-                .name = ArgTraits<T>::name,
-                .value = callback.type(),
-                .kind = ArgTraits<T>::kind
+                .name = ArgTraits<at<I>>::name,
+                .value = positional_table[I].type(),
+                .kind = ArgTraits<at<I>>::kind
             };
             hash = hash_combine(hash, param.hash(seed, prime));
             return param;
@@ -719,18 +872,22 @@ namespace impl {
             };
         }
 
+        /// TODO: Callback can be renamed to check(), such that the final syntax is
+        /// always some variation of Signature<F>::check(i).isinstance(value), or
+        /// something similar.
+
         /* Look up a positional argument, returning a callback object that can be used
         to efficiently validate it.  If the index does not correspond to a recognized
         positional argument, a null callback will be returned that evaluates to false
         under boolean logic.  If the parameter list accepts variadic positional
         arguments, then the variadic argument's callback will be returned instead. */
-        static constexpr const Callback& callback(size_t i) noexcept {
+        static constexpr const Callback& check(size_t i) noexcept {
             if constexpr (has_args) {
                 return i < args_idx ? positional_table[i] : positional_table[args_idx];
             } else if constexpr (has_kwonly) {
-                return i < kwonly_idx ? positional_table[i] : null_callback;
+                return i < kwonly_idx ? positional_table[i] : null_check;
             } else {
-                return i < kwargs_idx ? positional_table[i] : null_callback;
+                return i < kwargs_idx ? positional_table[i] : null_check;
             }
         }
 
@@ -739,7 +896,7 @@ namespace impl {
         callback will be returned that evaluates to false under boolean logic.  If the
         parameter list accepts variadic keyword arguments, then the variadic argument's
         callback will be returned instead. */
-        static constexpr const Callback& callback(std::string_view name) noexcept {
+        static constexpr const Callback& check(std::string_view name) noexcept {
             const Callback& callback = keyword_table[
                 keyword_modulus(hash(name.data()))
             ];
@@ -749,199 +906,19 @@ namespace impl {
                 if constexpr (has_kwargs) {
                     return keyword_table[kwargs_idx];
                 } else {
-                    return null_callback;
+                    return null_check;
                 }
             }
         }
-
-        /* A tuple holding a default value for every argument in the enclosing
-        parameter list that is marked as optional.  One of these must be provided
-        whenever a C++ function is invoked, and constructing one requires that the
-        initializers exactly match a subsignature consisting only of the optional
-        arguments.  The values must be provided as keyword arguments for clarity.  The
-        result may be empty if there are no optional arguments in the target signature,
-        in which case the constructor will be optimized out. */
-        struct Defaults {
-        private:
-            /* The type of a single value in the defaults tuple.  The templated index
-            is used to correlate the default value with its corresponding argument in
-            the enclosing signature. */
-            template <size_t I>
-            struct Entry {
-                using type = ArgTraits<Arguments::at<I>>::type;
-                static constexpr StaticStr name = ArgTraits<Arguments::at<I>>::name;
-                static constexpr size_t index = I;
-                std::remove_cvref_t<type> value;
-
-                constexpr remove_rvalue<type> get(this auto&& self) {
-                    return std::forward<decltype(self)>(self).value;
-                }
-            };
-
-            /* Build a sub-signature holding only the arguments marked as optional from
-            the enclosing signature.  This will be a specialization of the enclosing
-            class, which is used to bind arguments to this class's constructor using
-            the same semantics as the function's call operator. */
-            template <typename out, typename...>
-            struct extract { using type = out; };
-            template <typename... out, typename T, typename... Ts>
-            struct extract<Arguments<out...>, T, Ts...> {
-                template <typename>
-                struct sub_signature {
-                    using type = Arguments<out...>;
-                };
-                template <typename U> requires (ArgTraits<U>::opt())
-                struct sub_signature<U> {
-                    using type =
-                        Arguments<
-                            out...,
-                            typename ArgTraits<U>::as_default
-                        >;
-                };
-                using type = extract<typename sub_signature<T>::type, Ts...>::type;
-            };
-            using Inner = extract<Arguments<>, Args...>::type;
-
-            /* Build a std::tuple of Entry<I> instances to hold the default values
-            themselves. */
-            template <typename out, size_t, typename...>
-            struct collect { using type = out; };
-            template <typename... out, size_t I, typename T, typename... Ts>
-            struct collect<std::tuple<out...>, I, T, Ts...> {
-                template <typename U>
-                struct tuple {
-                    using type = std::tuple<out...>;
-                };
-                template <typename U> requires (ArgTraits<U>::opt())
-                struct tuple<U> {
-                    using type = std::tuple<out..., Entry<I>>;
-                };
-                using type = collect<typename tuple<T>::type, I + 1, Ts...>::type;
-            };
-
-            using Tuple = collect<std::tuple<>, 0, Args...>::type;
-            Tuple values;
-
-            template <size_t, typename>
-            static constexpr size_t _find = 0;
-            template <size_t I, typename T, typename... Ts>
-            static constexpr size_t _find<I, std::tuple<T, Ts...>> =
-                (I == T::index) ? 0 : 1 + _find<I, std::tuple<Ts...>>;
-
-            template <size_t I, typename... Values>
-            static constexpr decltype(auto) build(Values&&... values) {
-                using T = Inner::template at<I>;
-                constexpr size_t idx =
-                    Arguments<Values...>::template idx<ArgTraits<T>::name>;
-                return unpack_arg<idx>(std::forward<Values>(values)...);
-            }
-
-        public:
-            static constexpr size_t n               = Inner::n;
-            static constexpr size_t n_posonly       = Inner::n_posonly;
-            static constexpr size_t n_pos           = Inner::n_pos;
-            static constexpr size_t n_kw            = Inner::n_kw;
-            static constexpr size_t n_kwonly        = Inner::n_kwonly;
-            static constexpr size_t n_opt           = 0;
-            static constexpr size_t n_opt_posonly   = 0;
-            static constexpr size_t n_opt_pos       = 0;
-            static constexpr size_t n_opt_kw        = 0;
-            static constexpr size_t n_opt_kwonly    = 0;
-
-            template <StaticStr Name>
-            static constexpr bool has               = Inner::template has<Name>;
-            static constexpr bool has_posonly       = Inner::has_posonly;
-            static constexpr bool has_pos           = Inner::has_pos;
-            static constexpr bool has_kw            = Inner::has_kw;
-            static constexpr bool has_kwonly        = Inner::has_kwonly;
-            static constexpr bool has_opt           = false;
-            static constexpr bool has_opt_posonly   = false;
-            static constexpr bool has_opt_pos       = false;
-            static constexpr bool has_opt_kw        = false;
-            static constexpr bool has_opt_kwonly    = false;
-            static constexpr bool has_args          = false;
-            static constexpr bool has_kwargs        = false;
-
-            template <StaticStr Name> requires (has<Name>)
-            static constexpr size_t idx             = Inner::template idx<Name>;
-            static constexpr size_t kw_idx          = Inner::kw_idx;
-            static constexpr size_t kwonly_idx      = Inner::kwonly_idx;
-            static constexpr size_t opt_idx         = n;
-            static constexpr size_t opt_posonly_idx = n;
-            static constexpr size_t opt_pos_idx     = n;
-            static constexpr size_t opt_kw_idx      = n;
-            static constexpr size_t opt_kwonly_idx  = n;
-            static constexpr size_t args_idx        = n;
-            static constexpr size_t kwargs_idx      = n;
-
-            template <size_t I> requires (I < n)
-            using at = Inner::template at<I>;
-
-            /* Bind an argument list to the default values tuple using the
-            sub-signature's normal Bind<> machinery. */
-            template <typename... Values>
-            using Bind = Inner::template Bind<Values...>;
-
-            /* Given an index into the enclosing signature, find the corresponding index
-            in the defaults tuple if that index corresponds to a default value. */
-            template <size_t I> requires (ArgTraits<typename Arguments::at<I>>::opt())
-            static constexpr size_t find = _find<I, Tuple>;
-
-            /* Given an index into the defaults tuple, find the corresponding index in
-            the enclosing parameter list. */
-            template <size_t I> requires (I < n)
-            static constexpr size_t rfind = std::tuple_element<I, Tuple>::type::index;
-
-            /* The default values' constructor takes Python-style arguments just like
-            the call operator, and is only enabled if the call signature is well-formed
-            and all optional arguments have been accounted for. */
-            template <typename... Values>
-                requires (
-                    !(arg_pack<Values> || ...) &&
-                    !(kwarg_pack<Values> || ...) &&
-                    Bind<Values...>::proper_argument_order &&
-                    Bind<Values...>::no_qualified_arg_annotations &&
-                    Bind<Values...>::no_duplicate_arguments &&
-                    Bind<Values...>::no_conflicting_values &&
-                    Bind<Values...>::no_extra_positional_args &&
-                    Bind<Values...>::no_extra_keyword_args &&
-                    Bind<Values...>::satisfies_required_args &&
-                    Bind<Values...>::can_convert
-                )
-            constexpr Defaults(Values&&... values) : values(
-                []<size_t... Is>(std::index_sequence<Is...>, auto&&... values) -> Tuple {
-                    return {{build<Is>(std::forward<decltype(values)>(values)...)}...};
-                }(std::make_index_sequence<Inner::n>{}, std::forward<Values>(values)...)
-            ) {}
-
-            /* Get the default value at index I of the tuple.  Use find<> to correlate
-            an index from the enclosing signature if needed.  If the defaults container
-            is used as an lvalue, then this will either directly reference the internal
-            value if the corresponding argument expects an lvalue, or a copy if it
-            expects an unqualified or rvalue type.  If the defaults container is given
-            as an rvalue instead, then the copy will be optimized to a move. */
-            template <size_t I> requires (I < n)
-            constexpr decltype(auto) get(this auto&& self) {
-                return std::get<I>(std::forward<decltype(self)>(self).values).get();
-            }
-
-            /* Get the default value associated with the named argument, if it is
-            marked as optional.  If the defaults container is used as an lvalue, then
-            this will either directly reference the internal value if the corresponding
-            argument expects an lvalue, or a copy if it expects an unqualified or
-            rvalue type.  If the defaults container is given as an rvalue instead, then
-            the copy will be optimized to a move. */
-            template <StaticStr Name> requires (has<Name>)
-            constexpr decltype(auto) get(this auto&& self) {
-                return std::get<idx<Name>>(std::forward<decltype(self)>(self).values).get();
-            }
-        };
 
         /// TODO: Partial<> can be implemented as a private type, and then a public
         /// ::bind<> alias can be used to expose it in a chainable fashion.  The
         /// empty bind<> references the partial encoded in the enclosing signature,
         /// which will usually be empty.  Then, you can chain bind<> aliases to
-        /// arrive at the correct partial function type, which is necessary to 
+        /// arrive at the correct partial function type, which is necessary to allow
+        /// for proper currying, etc.  This should maybe be lifted up to Signature<F>
+        /// however, since it requires a subclass anyways to properly handle the return
+        /// type. 
 
         /* A tuple holding a sequence of partial arguments to supply to the enclosing
         parameter list when the function is invoked.  One of these must be supplied
@@ -5136,10 +5113,10 @@ namespace impl {
 
         /// TODO: CTAD for Partial, such that constructing a Partial object can be
         /// expressed as:
-        ///         Signature<Func>::Partial{args...}
+        ///         Signature<Func>::bind{args...}
         /// In fact, the `py::def` class will delegate straight to this in its
         /// constructor, along with initializing
-        ///         Signature<Func>::Defaults{defaults...}
+        ///         Signature<Func>::defaults{defaults...}
         /// at the same time.  Its call operator then just boils down to calling the
         /// partial with the correct function (copied or moved from the initializer)
         /// and default values, without any extra logic.  All the crazy stuff is
@@ -5151,12 +5128,6 @@ namespace impl {
         /// common case that there are no partial arguments, that means it will usually
         /// deduce to `py::def<(lambda at 0x9287391732)>`
 
-        /// TODO: Signature<> should never accept argument annotations that include
-        /// partial arguments?  Each partial object can expose just a standard function
-        /// type (not a Signature<>) that does this, and then that would be fed into
-        /// the CTAD constructor for py::Function, but the underlying function must not
-        /// specify any bound arguments to avoid ambiguity.
-
         /// TODO: partial arguments will have to be provided to the Overload trie
         /// iterators, such that they can be automatically inserted when traversing
         /// the trie, and only matching functions will be returned.  This might mess
@@ -5167,9 +5138,10 @@ namespace impl {
         /// to properly insert the partial arguments when building the key, which is
         /// not always simple, but is at least centralized in the Partial<> class.
 
-        /* A Trie-based data structure that describes a collection of dynamic overloads
-        for a `py::Function` object, which will be dispatched to when called from
-        either Python or C++. */
+        /* A Trie-based data structure containing a pool of dynamic overloads for a
+        `py::Function` object, which will be dispatched to when the function is called
+        from either Python or C++.  This uses a standardized key() format to allow for
+        efficient caching. */
         struct Overloads {
         private:
             struct BoundView;
@@ -6153,67 +6125,67 @@ namespace impl {
                 for (size_t i = 0, n = key.size(); i < n; ++i) {
                     const Param& param = key[i];
                     if (param.name.empty()) {
-                        const Callback& callback = Arguments::callback(i);
-                        if (!callback) {
+                        const Callback& check = Arguments::check(i);
+                        if (!check) {
                             throw TypeError(
                                 "received unexpected positional argument at index " +
                                 std::to_string(i)
                             );
                         }
                         if constexpr (std::same_as<check, instance>) {
-                            if (!callback.isinstance(param.value)) {
+                            if (!check.isinstance(param.value)) {
                                 throw TypeError(
                                     "expected positional argument at index " +
                                     std::to_string(i) + " to be a subclass of '" +
-                                    repr(callback.type()) + "', not: '" +
+                                    repr(check.type()) + "', not: '" +
                                     repr(param.value) + "'"
                                 );
                             }
                         } else {
-                            if (!callback.issubclass(param.value)) {
+                            if (!check.issubclass(param.value)) {
                                 throw TypeError(
                                     "expected positional argument at index " +
                                     std::to_string(i) + " to be a subclass of '" +
-                                    repr(callback.type()) + "', not: '" +
+                                    repr(check.type()) + "', not: '" +
                                     repr(param.value) + "'"
                                 );
                             }
                         }
-                        mask |= callback.mask;
+                        mask |= check.mask;
                     } else {
-                        const Callback& callback = Arguments::callback(param.name);
-                        if (!callback) {
+                        const Callback& check = Arguments::check(param.name);
+                        if (!check) {
                             throw TypeError(
                                 "received unexpected keyword argument: '" +
                                 std::string(param.name) + "'"
                             );
                         }
-                        if (mask & callback.mask) {
+                        if (mask & check.mask) {
                             throw TypeError(
                                 "received multiple values for argument '" +
                                 std::string(param.name) + "'"
                             );
                         }
                         if constexpr (std::same_as<check, instance>) {
-                            if (!callback.isinstance(param.value)) {
+                            if (!check.isinstance(param.value)) {
                                 throw TypeError(
                                     "expected argument '" + std::string(param.name) +
                                     "' to be a subclass of '" +
-                                    repr(callback.type()) + "', not: '" +
+                                    repr(check.type()) + "', not: '" +
                                     repr(param.value) + "'"
                                 );
                             }
                         } else {
-                            if (!callback.issubclass(param.value)) {
+                            if (!check.issubclass(param.value)) {
                                 throw TypeError(
                                     "expected argument '" + std::string(param.name) +
                                     "' to be a subclass of '" +
-                                    repr(callback.type()) + "', not: '" +
+                                    repr(check.type()) + "', not: '" +
                                     repr(param.value) + "'"
                                 );
                             }
                         }
-                        mask |= callback.mask;
+                        mask |= check.mask;
                     }
                 }
                 if ((mask & Arguments::required) != Arguments::required) {
@@ -6222,11 +6194,11 @@ namespace impl {
                     size_t i = 0;
                     while (i < n) {
                         if (missing & (1ULL << i)) {
-                            const Callback& callback = positional_table[i];
-                            if (callback.name.empty()) {
+                            const Callback& check = positional_table[i];
+                            if (check.name.empty()) {
                                 msg += "<parameter " + std::to_string(i) + ">";
                             } else {
-                                msg += "'" + std::string(callback.name) + "'";
+                                msg += "'" + std::string(check.name) + "'";
                             }
                             ++i;
                             break;
@@ -6235,11 +6207,11 @@ namespace impl {
                     }
                     while (i < n) {
                         if (missing & (1ULL << i)) {
-                            const Callback& callback = positional_table[i];
-                            if (callback.name.empty()) {
+                            const Callback& check = positional_table[i];
+                            if (check.name.empty()) {
                                 msg += ", <parameter " + std::to_string(i) + ">";
                             } else {
-                                msg += ", '" + std::string(callback.name) + "'";
+                                msg += ", '" + std::string(check.name) + "'";
                             }
                         }
                         ++i;
@@ -6255,37 +6227,37 @@ namespace impl {
                 for (size_t i = 0, n = key.size(); i < n; ++i) {
                     const Param& param = key[i];
                     if (param.name.empty()) {
-                        const Callback& callback = Arguments::callback(i);
+                        const Callback& check = Arguments::check(i);
                         if constexpr (std::same_as<check, instance>) {
-                            if (!callback || !callback.isinstance(param.value)) {
+                            if (!check || !check.isinstance(param.value)) {
                                 return false;
                             }
                         } else {
-                            if (!callback || !callback.issubclass(param.value)) {
+                            if (!check || !check.issubclass(param.value)) {
                                 return false;
                             }
                         }
-                        mask |= callback.mask;
+                        mask |= check.mask;
                     } else {
-                        const Callback& callback = Arguments::callback(param.name);
+                        const Callback& check = Arguments::check(param.name);
                         if constexpr (std::same_as<check, instance>) {
                             if (
-                                !callback ||
-                                (mask & callback.mask) ||
-                                !callback.isinstance(param.value)
+                                !check ||
+                                (mask & check.mask) ||
+                                !check.isinstance(param.value)
                             ) {
                                 return false;
                             }
                         } else {
                             if (
-                                !callback ||
-                                (mask & callback.mask) ||
-                                !callback.issubclass(param.value)
+                                !check ||
+                                (mask & check.mask) ||
+                                !check.issubclass(param.value)
                             ) {
                                 return false;
                             }
                         }
-                        mask |= callback.mask;
+                        mask |= check.mask;
                     }
                 }
                 if ((mask & required) != required) {
@@ -6615,7 +6587,7 @@ namespace impl {
         /// TODO: the extract_partial, constructor, and call operator(s) should be
         /// moved up to Signature<>, so that this class remains as simple as possible.
 
-    private:
+    protected:
 
         /// TODO: this probably has to distinguish between partials that are provided
         /// as positional args and those that are provided as keyword args, and somehow
@@ -6643,6 +6615,15 @@ namespace impl {
         };
 
     public:
+        /// TODO: these should be raised up to Signature<> so that they gain access
+        /// to the normalized signature exposed in the subclass, which might be where
+        /// all the chaining logic needs to go as well.
+
+        /// TODO: also, implementing something like the __signature__ property can also
+        /// be standardized at the Signature<F> level, via a to_python() method that
+        /// returns an `inspect.Signature` instance adapted from the normalized C++
+        /// signature.
+
         /* Individual arguments in the target signature may indicate the presence of a
         partial argument using the `::Bind<>` extension to the `Arg` annotation type.
         These are analyzed and extracted into a corresponding `Partial<...>`
