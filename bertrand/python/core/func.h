@@ -2399,7 +2399,7 @@ namespace impl {
             template <size_t I, size_t K, StaticStr Name, typename T>
             struct Entry {
                 static constexpr size_t target_idx = I;
-                static constexpr size_t origin_idx = K;
+                static constexpr size_t partial_idx = K;
                 static constexpr StaticStr name = Name;
                 using type = T;
                 std::remove_cvref_t<type> value;
@@ -2420,7 +2420,7 @@ namespace impl {
                     using type = Entry<
                         std::min(K, Sig::args_idx),
                         K,
-                        ArgTraits<P2>::name,
+                        "",
                         typename ArgTraits<P2>::type
                     >;
                 };
@@ -2506,16 +2506,11 @@ namespace impl {
 
             template <size_t J>
             static constexpr auto build(Parts... parts) {
-                constexpr size_t idx = std::tuple_element_t<J, Tuple>::origin_idx;
+                constexpr size_t idx = std::tuple_element_t<J, Tuple>::partial_idx;
                 return std::tuple_element_t<J, Tuple>{
                     unpack_arg<idx>(std::forward<Parts>(parts)...)
                 };
             }
-
-            /// TODO: there has to be a way to merge the partial arguments into the
-            /// enclosing signature.  Perhaps this is added in the Signature<> class,
-            /// where I have access to the proper return type?  That partial<> class
-            /// could inherit from this one and act appropriately.
 
         public:
             /// TODO: these should all be inverted using the annotated function signature,
@@ -2541,7 +2536,9 @@ namespace impl {
             using at = Sig<Return, Parts...>::template at<I>;
 
             template <typename... Values>
-            struct Bind;
+            struct Invoke;
+
+            using signature = Invoke<>::signature;
 
             /// TODO: the ::partial<> chaining behavior needs to account for positional
             /// vs keyword arguments.  So the following:
@@ -2557,19 +2554,20 @@ namespace impl {
 
             // template <typename... Values>
             //     requires (
-            //         Bind<Parts..., Values...>::no_conflicting_values &&
-            //         Bind<Parts..., Values...>::no_extra_positional_args &&
-            //         Bind<Parts..., Values...>::no_extra_keyword_args &&
-            //         Bind<Parts..., Values...>::can_convert
+            ///        TODO: proper argument order, etc?
+            //         Invoke<Parts..., Values...>::no_conflicting_values &&
+            //         Invoke<Parts..., Values...>::no_extra_positional_args &&
+            //         Invoke<Parts..., Values...>::no_extra_keyword_args &&
+            //         Invoke<Parts..., Values...>::can_convert
             //     )
-            // using partial = Partial<Parts..., Values...>;
+            // using Bind = Partial<Parts..., Values...>;
 
             template <std::convertible_to<Parts>... Ps>
                 requires (
-                    Partial<>::template Bind<Ps...>::no_conflicting_values &&
-                    Partial<>::template Bind<Ps...>::no_extra_positional_args &&
-                    Partial<>::template Bind<Ps...>::no_extra_keyword_args &&
-                    Partial<>::template Bind<Ps...>::can_convert
+                    Partial<>::template Invoke<Ps...>::no_conflicting_values &&
+                    Partial<>::template Invoke<Ps...>::no_extra_positional_args &&
+                    Partial<>::template Invoke<Ps...>::no_extra_keyword_args &&
+                    Partial<>::template Invoke<Ps...>::can_convert
                 )
             constexpr Partial(Ps&&... parts) : values(
                 []<size_t... Js>(std::index_sequence<Js...>, auto&&... parts) -> Tuple {
@@ -2599,14 +2597,14 @@ namespace impl {
             template <typename P, inherits<Defaults> D, typename F, typename... Values>
                 requires (
                     std::is_invocable_v<F, Args...> &&
-                    Bind<Values...>::proper_argument_order &&
-                    Bind<Values...>::no_qualified_arg_annotations &&
-                    Bind<Values...>::no_duplicate_arguments &&
-                    Bind<Values...>::no_conflicting_values &&
-                    Bind<Values...>::no_extra_positional_args &&
-                    Bind<Values...>::no_extra_keyword_args &&
-                    Bind<Values...>::satisfies_required_args &&
-                    Bind<Values...>::can_convert
+                    Invoke<Values...>::proper_argument_order &&
+                    Invoke<Values...>::no_qualified_arg_annotations &&
+                    Invoke<Values...>::no_duplicate_arguments &&
+                    Invoke<Values...>::no_conflicting_values &&
+                    Invoke<Values...>::no_extra_positional_args &&
+                    Invoke<Values...>::no_extra_keyword_args &&
+                    Invoke<Values...>::satisfies_required_args &&
+                    Invoke<Values...>::can_convert
                 )
             constexpr std::invoke_result_t<F, Args...> operator()(
                 this P&& parts,
@@ -2614,7 +2612,7 @@ namespace impl {
                 F&& func,
                 Values&&... args
             ) {
-                return Bind<Values...>{}(
+                return Invoke<Values...>{}(
                     std::forward<P>(parts),
                     std::forward<D>(defaults),
                     std::forward<F>(func),
@@ -2625,21 +2623,21 @@ namespace impl {
             /* Invoke a Python function using the partial arguments. */
             template <typename P, typename... Values>
                 requires (
-                    Bind<Values...>::proper_argument_order &&
-                    Bind<Values...>::no_qualified_arg_annotations &&
-                    Bind<Values...>::no_duplicate_arguments &&
-                    Bind<Values...>::no_conflicting_values &&
-                    Bind<Values...>::no_extra_positional_args &&
-                    Bind<Values...>::no_extra_keyword_args &&
-                    Bind<Values...>::satisfies_required_args &&
-                    Bind<Values...>::can_convert
+                    Invoke<Values...>::proper_argument_order &&
+                    Invoke<Values...>::no_qualified_arg_annotations &&
+                    Invoke<Values...>::no_duplicate_arguments &&
+                    Invoke<Values...>::no_conflicting_values &&
+                    Invoke<Values...>::no_extra_positional_args &&
+                    Invoke<Values...>::no_extra_keyword_args &&
+                    Invoke<Values...>::satisfies_required_args &&
+                    Invoke<Values...>::can_convert
                 )
             Object operator()(
                 this P&& parts,
                 PyObject* func,
                 Values&&... args
             ) {
-                return Bind<Values...>{}(
+                return Invoke<Values...>{}(
                     std::forward<P>(parts),
                     func,
                     std::forward<Values>(args)...
@@ -2652,9 +2650,9 @@ namespace impl {
             metaprogramming needed to call an arbitrary C++ or Python function directly
             from C++ with Python-style arguments. */
             template <typename... Values>
-            struct Bind {
+            struct Invoke {
             protected:
-                using Bound = Sig<Return, Values...>;
+                using Source = Sig<Return, Values...>;
 
                 template <size_t I, size_t K>
                 static constexpr bool _in_partial = false;
@@ -2674,9 +2672,9 @@ namespace impl {
                 static constexpr bool _no_extra_positional_args = true;
                 template <size_t I, size_t J>
                     requires (J < std::min({
-                        Bound::args_idx,
-                        Bound::kw_idx,
-                        Bound::kwargs_idx
+                        Source::args_idx,
+                        Source::kw_idx,
+                        Source::kwargs_idx
                     }))
                 static constexpr bool _no_extra_positional_args<I, J> = [] {
                     return
@@ -2698,13 +2696,13 @@ namespace impl {
                 static constexpr bool _no_conflicting_values<I, J> = [] {
                     return (
                         in_partial<I> || ArgTraits<Sig::at<I>>::name == "" || !(
-                            Bound::template has<ArgTraits<Sig::at<I>>::name> && (
+                            Source::template has<ArgTraits<Sig::at<I>>::name> && (
                                 ArgTraits<Sig::at<I>>::posonly() ||
-                                J < std::min(Bound::kw_idx, Bound::kwargs_idx)
+                                J < std::min(Source::kw_idx, Source::kwargs_idx)
                             )
                         )
                     ) && _no_conflicting_values<
-                        J == Bound::args_idx ?
+                        J == Source::args_idx ?
                             std::min(Sig::kwonly_idx, Sig::kwargs_idx) :
                             I + 1,
                         J + !in_partial<I>
@@ -2719,33 +2717,33 @@ namespace impl {
                         in_partial<I> || ArgTraits<Sig::at<I>>::opt() ||
                         (
                             ArgTraits<Sig::at<I>>::pos() &&
-                                J < std::min(Bound::kw_idx, Bound::kwargs_idx)
+                                J < std::min(Source::kw_idx, Source::kwargs_idx)
                         ) || (
                             ArgTraits<Sig::at<I>>::kw() &&
-                                Bound::template has<ArgTraits<Sig::at<I>>::name>
+                                Source::template has<ArgTraits<Sig::at<I>>::name>
                         )
                     ) && _satisfies_required_args<
-                        J == Bound::args_idx ?
+                        J == Source::args_idx ?
                             std::min(Sig::kwonly_idx, Sig::kwargs_idx) :
                             I + 1,
                         I == Sig::args_idx ?
-                            std::min(Bound::kw_idx, Bound::kwargs_idx) :
+                            std::min(Source::kw_idx, Source::kwargs_idx) :
                             J + !in_partial<I>
                     >;
                 }();
 
                 template <size_t, size_t>
                 static constexpr bool _can_convert = true;
-                template <size_t I, size_t J> requires (I < Sig::n && J < Bound::n)
+                template <size_t I, size_t J> requires (I < Sig::n && J < Source::n)
                 static constexpr bool _can_convert<I, J> = [] {
                     if constexpr (ArgTraits<Sig::at<I>>::args()) {
                         constexpr size_t source_kw =
-                            std::min(Bound::kw_idx, Bound::kwargs_idx);
+                            std::min(Source::kw_idx, Source::kwargs_idx);
                         return []<size_t... Js>(std::index_sequence<Js...>) {
                             return (
                                 std::convertible_to<
                                     typename ArgTraits<
-                                        typename Bound::template at<J + Js>
+                                        typename Source::template at<J + Js>
                                     >::type,
                                     typename ArgTraits<Sig::at<I>>::type
                                 > && ...
@@ -2758,37 +2756,37 @@ namespace impl {
                             return (
                                 (
                                     Sig::has<ArgTraits<
-                                        typename Bound::template at<Bound::kw_idx + Js>
+                                        typename Source::template at<Source::kw_idx + Js>
                                     >::name> || std::convertible_to<
                                         typename ArgTraits<
-                                            typename Bound::template at<Bound::kw_idx + Js>
+                                            typename Source::template at<Source::kw_idx + Js>
                                         >::type,
                                         typename ArgTraits<Sig::at<I>>::type
                                     >
                                 ) && ...
                             );
-                        }(std::make_index_sequence<Bound::n - Bound::kw_idx>{}) &&
+                        }(std::make_index_sequence<Source::n - Source::kw_idx>{}) &&
                             _can_convert<I + 1, J>;
 
                     } else if constexpr (in_partial<I>) {
                         return _can_convert<I + 1, J>;
 
                     } else if constexpr (ArgTraits<
-                        typename Bound::template at<J>
+                        typename Source::template at<J>
                     >::posonly()) {
                         return std::convertible_to<
-                            typename ArgTraits<typename Bound::template at<J>>::type,
+                            typename ArgTraits<typename Source::template at<J>>::type,
                             typename ArgTraits<Sig::at<I>>::type
                         > && _can_convert<I + 1, J + 1>;
 
-                    } else if constexpr (ArgTraits<typename Bound::template at<J>>::kw()) {
+                    } else if constexpr (ArgTraits<typename Source::template at<J>>::kw()) {
                         constexpr StaticStr name = ArgTraits<
-                            typename Bound::template at<J>
+                            typename Source::template at<J>
                         >::name;
                         if constexpr (Sig::has<name>) {
                             constexpr size_t idx = Sig::idx<name>;
                             if constexpr (!std::convertible_to<
-                                typename ArgTraits<typename Bound::template at<J>>::type,
+                                typename ArgTraits<typename Source::template at<J>>::type,
                                 typename ArgTraits<Sig::at<idx>>::type
                             >) {
                                 return false;
@@ -2796,7 +2794,7 @@ namespace impl {
                         }
                         return _can_convert<I + 1, J + 1>;
 
-                    } else if constexpr (ArgTraits<typename Bound::template at<J>>::args()) {
+                    } else if constexpr (ArgTraits<typename Source::template at<J>>::args()) {
                         constexpr size_t target_kw =
                             std::min(Sig::kwonly_idx, Sig::kwargs_idx);
                         return []<size_t... Is>(std::index_sequence<Is...>) {
@@ -2804,7 +2802,7 @@ namespace impl {
                                 (
                                     in_partial<I + Is> || std::convertible_to<
                                         typename ArgTraits<
-                                            typename Bound::template at<J>
+                                            typename Source::template at<J>
                                         >::type,
                                         typename ArgTraits<Sig::at<I + Is>>::type
                                     >
@@ -2813,18 +2811,18 @@ namespace impl {
                         }(std::make_index_sequence<I < target_kw ? target_kw - I : 0>{}) &&
                             _can_convert<target_kw, J + 1>;
 
-                    } else if constexpr (ArgTraits<typename Bound::template at<J>>::kwargs()) {
+                    } else if constexpr (ArgTraits<typename Source::template at<J>>::kwargs()) {
                         constexpr size_t cutoff = std::min({
-                            Bound::args_idx,
-                            Bound::kwonly_idx,
-                            Bound::kwargs_idx
+                            Source::args_idx,
+                            Source::kwonly_idx,
+                            Source::kwargs_idx
                         });
-                        constexpr size_t target_kw = Bound::has_args ?
+                        constexpr size_t target_kw = Source::has_args ?
                             Sig::kwonly_idx :
                             []<size_t... Ks>(std::index_sequence<Ks...>) {
                                 return std::max(
                                     Sig::kw_idx,
-                                    Bound::n_posonly + (0 + ... + (
+                                    Source::n_posonly + (0 + ... + (
                                         std::tuple_element_t<
                                             Ks,
                                             Tuple
@@ -2834,10 +2832,10 @@ namespace impl {
                             }(std::make_index_sequence<std::tuple_size_v<Tuple>>{});
                         return []<size_t... Is>(std::index_sequence<Is...>) {
                             return ((
-                                in_partial<target_kw + Is> || Bound::template has<
+                                in_partial<target_kw + Is> || Source::template has<
                                     ArgTraits<Sig::at<target_kw + Is>>::name
                                 > || std::convertible_to<
-                                    typename ArgTraits<typename Bound::template at<J>>::type,
+                                    typename ArgTraits<typename Source::template at<J>>::type,
                                     typename ArgTraits<Sig::at<target_kw + Is>>::type
                                 >
                             ) && ...);
@@ -2965,6 +2963,21 @@ namespace impl {
 
                 template <size_t I, size_t J, size_t K>
                 struct call {  // terminal case
+                    template <typename out>
+                    struct normalize { using type = out; };
+
+                    /// TODO: there also has to be an algorithm to compute the return
+                    /// type of the ::bind() constructor.  That might be accomplished
+                    /// via just a decltype() statement?
+
+                    template <typename P, typename... A>
+                    static auto bind(
+                        P&& parts,
+                        A&&... args
+                    ) {
+                        return Partial<A...>{std::forward<A>(args)...};
+                    }
+
                     /* Invoking a C++ function involves a 3-way merge of the partial
                     arguments, source arguments, and default values, in that order of
                     precedence.  By the end, the parameters are guaranteed to exactly
@@ -3158,6 +3171,159 @@ namespace impl {
                     template <size_t K2>
                         requires (K2 < std::tuple_size_v<Tuple> && target_idx<K2> == I)
                     static constexpr size_t consecutive<K2> = consecutive<K2 + 1> + 1;
+
+                    template <typename>
+                    struct normalize;
+                    template <typename R, typename... out>
+                    struct normalize<R(out...)> {
+                        template <typename P, size_t>
+                        struct bind {
+                            template <typename>
+                            struct finalize;
+                            template <typename... Ts>
+                            struct finalize<pack<Ts...>> {
+                                using type = Sig::at<I>::template bind<Ts...>;
+                            };
+                            using type = finalize<P>::type;
+                        };
+                        template <typename... final, size_t K2>
+                            requires (K2 < consecutive<K>)
+                        struct bind<pack<final...>, K2> {
+                            using entry = std::tuple_element_t<K2, Tuple>;
+                            using T = unpack_type<entry::partial_idx, Parts...>;
+                            using type = bind<pack<final..., T>, K2 + 1>::type;
+                        };
+                        using next = call<I + 1, J, K + consecutive<K>>;
+                        using func = R(out..., typename bind<pack<>, K>::type);
+                        using type = next::template normalize<func>::type;
+                    };
+
+                    template <typename P, typename... A>
+                    static auto bind(
+                        P&& parts,
+                        A&&... args
+                    ) {
+                        using T = Sig::at<I>;
+                        if constexpr (ArgTraits<T>::args()) {
+                            constexpr size_t transition = Sig<Return, A...>::kw_idx;
+                            return []<size_t... Prev, size_t... Ks, size_t... Next>(
+                                std::index_sequence<Prev...>,
+                                std::index_sequence<Ks...>,
+                                std::index_sequence<Next...>,
+                                auto&& parts,
+                                auto&&... args
+                            ) {
+                                return call<
+                                    I + 1,
+                                    transition + consecutive<K>,
+                                    K + consecutive<K>
+                                >::bind(
+                                    std::forward<decltype(parts)>(parts),
+                                    unpack_arg<Prev>(
+                                        std::forward<decltype(args)>(args)
+                                    )...,
+                                    std::forward<decltype(parts)>(
+                                        parts
+                                    ).template get<K + Ks>()...,
+                                    unpack_arg<transition + Next>(
+                                        std::forward<decltype(args)>(args)
+                                    )...
+                                );
+                            }(
+                                std::make_index_sequence<J>{},
+                                std::make_index_sequence<consecutive<K>>{},
+                                std::make_index_sequence<sizeof...(A) - transition>{},
+                                std::forward<P>(parts),
+                                std::forward<A>(args)...
+                            );
+
+                        } else if constexpr (ArgTraits<T>::kwargs()) {
+                            return []<size_t... Prev, size_t... Ks, size_t... Next>(
+                                std::index_sequence<Prev...>,
+                                std::index_sequence<Ks...>,
+                                auto&& parts,
+                                auto&&... args
+                            ) {
+                                return call<
+                                    I + 1,
+                                    sizeof...(A) + consecutive<K>,
+                                    K + consecutive<K>
+                                >::bind(
+                                    std::forward<decltype(parts)>(parts),
+                                    unpack_arg<Prev>(
+                                        std::forward<decltype(args)>(args)
+                                    )...,
+                                    arg<std::tuple_element_t<K + Ks, Tuple>::name> =
+                                        std::forward<decltype(parts)>(
+                                            parts
+                                        ).template get<K + Ks>()...,
+                                    unpack_arg<J + Next>(
+                                        std::forward<decltype(args)>(args)
+                                    )...
+                                );
+                            }(
+                                std::make_index_sequence<J>{},
+                                std::make_index_sequence<consecutive<K>>{},
+                                std::make_index_sequence<sizeof...(A) - J>{},
+                                std::forward<P>(parts),
+                                std::forward<A>(args)...
+                            );
+
+                        } else {
+                            return []<size_t... Prev, size_t... Next>(
+                                std::index_sequence<Prev...>,
+                                std::index_sequence<Next...>,
+                                auto&& parts,
+                                auto&&... args
+                            ) {
+                                using bound = std::tuple_element_t<K, Tuple>;
+                                using orig = unpack_type<
+                                    bound::partial_idx,
+                                    Parts...
+                                >;
+                                // demote keywords in the original partial into
+                                // positional arguments in the new partial if the next
+                                // source arg is positional and the target arg can be
+                                // both positional or keyword
+                                if constexpr (!ArgTraits<orig>::kw() && !(
+                                    (J < Sig<Return, A...>::kw_idx) &&
+                                    (ArgTraits<T>::pos() && ArgTraits<T>::kw())
+                                )) {
+                                    return call<I + 1, J + 1, K + 1>::bind(
+                                        std::forward<decltype(parts)>(parts),
+                                        unpack_arg<Prev>(
+                                            std::forward<decltype(args)>(args)
+                                        )...,
+                                        arg<ArgTraits<orig>::name> =
+                                            std::forward<decltype(parts)>(
+                                                parts
+                                            ).template get<K>(),
+                                        unpack_arg<J + Next>(
+                                            std::forward<decltype(args)>(args)
+                                        )...
+                                    );
+                                } else {
+                                    return call<I + 1, J + 1, K + 1>::bind(
+                                        std::forward<decltype(parts)>(parts),
+                                        unpack_arg<Prev>(
+                                            std::forward<decltype(args)>(args)
+                                        )...,
+                                        std::forward<decltype(parts)>(
+                                            parts
+                                        ).template get<K>(),
+                                        unpack_arg<J + Next>(
+                                            std::forward<decltype(args)>(args)
+                                        )...
+                                    );
+                                }
+                            }(
+                                std::make_index_sequence<J>{},
+                                std::make_index_sequence<sizeof...(A) - J>{},
+                                std::forward<P>(parts),
+                                std::forward<A>(args)...
+                            );
+                        }
+                    }
 
                     struct cpp {
                         template <typename P, typename D, typename F, typename... A>
@@ -3381,7 +3547,7 @@ namespace impl {
                         template <typename P, typename... A>
                         static auto variadic_keywords(P&& parts, A&&... args) {
                             using T = Sig::at<I>;
-                            constexpr size_t diff = Bound::n - J;
+                            constexpr size_t diff = Source::n - J;
 
                             // allocate variadic keyword map
                             using map = std::unordered_map<
@@ -3451,7 +3617,7 @@ namespace impl {
                             ) {
                                 return next + consecutive<K>;
                             } else if constexpr (ArgTraits<Sig::at<I>>::kw()) {
-                                return next + (J >= Bound::kw_idx);
+                                return next + (J >= Source::kw_idx);
                             } else {
                                 return next;
                             }
@@ -3582,6 +3748,37 @@ namespace impl {
                                     "' at index " + std::to_string(I)
                                 );
                             }
+                        }
+                    }
+
+                    template <typename>
+                    struct normalize;
+                    template <typename R, typename... out>
+                    struct normalize<R(out...)> {
+                        using type = call<
+                            I + 1,
+                            J,
+                            K
+                        >::template normalize<R(out..., Sig::at<I>)>::type;
+                    };
+
+                    template <typename P, typename... A>
+                    static auto bind(
+                        P&& parts,
+                        A&&... args
+                    ) {
+                        using T = Sig::at<I>;
+                        if constexpr (ArgTraits<T>::args()) {
+                            /// TODO: implement
+
+                        } else if constexpr (ArgTraits<T>::kwargs()) {
+                            /// TODO: implement
+
+                        } else {
+                            return call<I + 1, J + 1, K>::bind(
+                                std::forward<P>(parts),
+                                std::forward<A>(args)...
+                            );
                         }
                     }
 
@@ -4126,7 +4323,7 @@ namespace impl {
                         template <typename... A>
                         static auto variadic_keywords(A&&... args) {
                             using T = Sig::at<I>;
-                            constexpr size_t diff = Bound::n - J;
+                            constexpr size_t diff = Source::n - J;
 
                             // allocate variadic keyword map
                             using map = std::unordered_map<
@@ -4175,7 +4372,7 @@ namespace impl {
                             /// values will be promoted to keywords in order to allow
                             /// Python to insert the correct defaults, without needing
                             /// to manually specify them here.
-                            if constexpr (J == Bound::args_idx) {
+                            if constexpr (J == Source::args_idx) {
                                 return call<
                                     std::min(
                                         Sig::kwonly_idx,
@@ -5282,47 +5479,47 @@ namespace impl {
 
             public:
                 static constexpr size_t n               = sizeof...(Values);
-                static constexpr size_t n_pos           = Bound::n_pos;
-                static constexpr size_t n_kw            = Bound::n_kw;
+                static constexpr size_t n_pos           = Source::n_pos;
+                static constexpr size_t n_kw            = Source::n_kw;
 
                 template <StaticStr Name>
-                static constexpr bool has               = Bound::template has<Name>;
-                static constexpr bool has_pos           = Bound::has_pos;
-                static constexpr bool has_args          = Bound::has_args;
-                static constexpr bool has_kw            = Bound::has_kw;
-                static constexpr bool has_kwargs        = Bound::has_kwargs;
+                static constexpr bool has               = Source::template has<Name>;
+                static constexpr bool has_pos           = Source::has_pos;
+                static constexpr bool has_args          = Source::has_args;
+                static constexpr bool has_kw            = Source::has_kw;
+                static constexpr bool has_kwargs        = Source::has_kwargs;
 
                 template <StaticStr Name> requires (has<Name>)
-                static constexpr size_t idx             = Bound::template idx<Name>;
-                static constexpr size_t args_idx        = Bound::args_idx;
-                static constexpr size_t kw_idx          = Bound::kw_idx;
-                static constexpr size_t kwargs_idx      = Bound::kwargs_idx;
+                static constexpr size_t idx             = Source::template idx<Name>;
+                static constexpr size_t args_idx        = Source::args_idx;
+                static constexpr size_t kw_idx          = Source::kw_idx;
+                static constexpr size_t kwargs_idx      = Source::kwargs_idx;
 
                 template <size_t I> requires (I < n)
-                using at = Bound::template at<I>;
+                using at = Source::template at<I>;
 
                 static constexpr bool proper_argument_order =
-                    Bound::proper_argument_order;
+                    Source::proper_argument_order;
 
                 static constexpr bool no_qualified_arg_annotations =
-                    Bound::no_qualified_arg_annotations;
+                    Source::no_qualified_arg_annotations;
 
                 static constexpr bool no_duplicate_arguments =
-                    Bound::no_duplicate_arguments;
+                    Source::no_duplicate_arguments;
 
                 static constexpr bool no_extra_positional_args =
-                    Sig::has_args || !Bound::has_posonly ||
+                    Sig::has_args || !Source::has_posonly ||
                     _no_extra_positional_args<0, 0>;
 
                 static constexpr bool no_extra_keyword_args = Sig::has_kwargs ||
                     []<size_t... Js>(std::index_sequence<Js...>) {
                         return (
                             Sig::has<ArgTraits<
-                                typename Bound::template at<Bound::kw_idx + Js>
+                                typename Source::template at<Source::kw_idx + Js>
                             >::name> && ...
                         );
-                    }(std::make_index_sequence<Bound::has_kw ?
-                        std::min(Bound::n, Bound::kwargs_idx) - Bound::kw_idx :
+                    }(std::make_index_sequence<Source::has_kw ?
+                        std::min(Source::n, Source::kwargs_idx) - Source::kw_idx :
                         0
                     >{});
 
@@ -5336,6 +5533,8 @@ namespace impl {
 
                 static constexpr bool can_convert = _can_convert<0, 0>;
 
+                using signature = call<0, 0, 0>::template normalize<Return()>::type;
+
                 /* Produce an overload key from the bound C++ arguments, which can be
                 used to search the overload trie and invoke a resulting function. */
                 template <inherits<Partial> P>
@@ -5344,37 +5543,37 @@ namespace impl {
                     Values... values
                 ) {
                     std::vector<Param> out;
-                    if constexpr (Bound::has_args && Bound::has_kwargs) {
+                    if constexpr (Source::has_args && Source::has_kwargs) {
                         out.reserve(
                             Partial::n +
-                            (Bound::n - 2) +
-                            unpack_arg<Bound::args_idx>(
+                            (Source::n - 2) +
+                            unpack_arg<Source::args_idx>(
                                 std::forward<Values>(values)...
                             ).size() +
-                            unpack_arg<Bound::kwargs_idx>(
+                            unpack_arg<Source::kwargs_idx>(
                                 std::forward<Values>(values)...
                             ).size()
                         );
-                    } else if constexpr (Bound::has_args) {
+                    } else if constexpr (Source::has_args) {
                         out.reserve(
                             Partial::n +
-                            (Bound::n - 1) +
-                            unpack_arg<Bound::args_idx>(
+                            (Source::n - 1) +
+                            unpack_arg<Source::args_idx>(
                                 std::forward<Values>(values)...
                             ).size()
                         );
-                    } else if constexpr (Bound::has_kwargs) {
+                    } else if constexpr (Source::has_kwargs) {
                         out.reserve(
                             Partial::n +
-                            (Bound::n - 1) +
-                            unpack_arg<Bound::kwargs_idx>(
+                            (Source::n - 1) +
+                            unpack_arg<Source::kwargs_idx>(
                                 std::forward<Values>(values)...
                             ).size()
                         );
                     } else {
                         out.reserve(
                             Partial::n +
-                            Bound::n
+                            Source::n
                         );
                     }
                     return call<0, 0, 0>::python::key(
@@ -5409,7 +5608,7 @@ namespace impl {
                     /// destructively iterated over within the call algorithm and
                     /// validated empty just before calling the target function,
                     /// wherein they are omitted.
-                    if constexpr (Bound::has_args && Bound::has_kwargs) {
+                    if constexpr (Source::has_args && Source::has_kwargs) {
                         return []<size_t... Prev, size_t... Next>(
                             std::index_sequence<Prev...>,
                             std::index_sequence<Next...>,
@@ -5425,20 +5624,20 @@ namespace impl {
                                 unpack_arg<Prev>(
                                     std::forward<decltype(args)>(args)...
                                 )...,
-                                PositionalPack(unpack_arg<Bound::args_idx>(
+                                PositionalPack(unpack_arg<Source::args_idx>(
                                     std::forward<decltype(args)>(args)...
                                 )),
-                                unpack_arg<Bound::args_idx + 1 + Next>(
+                                unpack_arg<Source::args_idx + 1 + Next>(
                                     std::forward<decltype(args)>(args)...
                                 )...,
-                                KeywordPack(unpack_arg<Bound::kwargs_idx>(
+                                KeywordPack(unpack_arg<Source::kwargs_idx>(
                                     std::forward<decltype(args)>(args)...
                                 ))
                             );
                         }(
-                            std::make_index_sequence<Bound::args_idx>{},
+                            std::make_index_sequence<Source::args_idx>{},
                             std::make_index_sequence<
-                                Bound::kwargs_idx - (Bound::args_idx + 1)
+                                Source::kwargs_idx - (Source::args_idx + 1)
                             >{},
                             std::forward<P>(parts),
                             std::forward<D>(defaults),
@@ -5446,7 +5645,7 @@ namespace impl {
                             std::forward<Values>(args)...
                         );
 
-                    } else if constexpr (Bound::has_args) {
+                    } else if constexpr (Source::has_args) {
                         return []<size_t... Prev, size_t... Next>(
                             std::index_sequence<Prev...>,
                             std::index_sequence<Next...>,
@@ -5462,23 +5661,23 @@ namespace impl {
                                 unpack_arg<Prev>(
                                     std::forward<decltype(args)>(args)...
                                 )...,
-                                PositionalPack(unpack_arg<Bound::args_idx>(
+                                PositionalPack(unpack_arg<Source::args_idx>(
                                     std::forward<decltype(args)>(args)...
                                 )),
-                                unpack_arg<Bound::args_idx + 1 + Next>(
+                                unpack_arg<Source::args_idx + 1 + Next>(
                                     std::forward<decltype(args)>(args)...
                                 )...
                             );
                         }(
-                            std::make_index_sequence<Bound::args_idx>{},
-                            std::make_index_sequence<Bound::n - (Bound::args_idx + 1)>{},
+                            std::make_index_sequence<Source::args_idx>{},
+                            std::make_index_sequence<Source::n - (Source::args_idx + 1)>{},
                             std::forward<P>(parts),
                             std::forward<D>(defaults),
                             std::forward<F>(func),
                             std::forward<Values>(args)...
                         );
 
-                    } else if constexpr (Bound::has_kwargs) {
+                    } else if constexpr (Source::has_kwargs) {
                         return []<size_t... Prev>(
                             std::index_sequence<Prev...>,
                             auto&& parts,
@@ -5493,12 +5692,12 @@ namespace impl {
                                 unpack_arg<Prev>(
                                     std::forward<decltype(args)>(args)...
                                 )...,
-                                KeywordPack(unpack_arg<Bound::kwargs_idx>(
+                                KeywordPack(unpack_arg<Source::kwargs_idx>(
                                     std::forward<decltype(args)>(args)...
                                 ))
                             );
                         }(
-                            std::make_index_sequence<Bound::kwargs_idx>{},
+                            std::make_index_sequence<Source::kwargs_idx>{},
                             std::forward<P>(parts),
                             std::forward<D>(defaults),
                             std::forward<F>(func),
@@ -5552,7 +5751,7 @@ namespace impl {
                     /// allocation if the exact number of arguments is known at
                     /// compile time (i.e. there are no positional or keyword unpacking
                     /// operators in the argument list).
-                    if constexpr (Bound::has_args && Bound::has_kwargs) {
+                    if constexpr (Source::has_args && Source::has_kwargs) {
                         return []<size_t... Prev, size_t... Next>(
                             std::index_sequence<Prev...>,
                             std::index_sequence<Next...>,
@@ -5562,19 +5761,19 @@ namespace impl {
                         ) {
                             size_t size =
                                 Partial::n +
-                                (Bound::n - 2) +
-                                unpack_arg<Bound::args_idx>(
+                                (Source::n - 2) +
+                                unpack_arg<Source::args_idx>(
                                     std::forward<decltype(args)>(args)...
                                 ).size() +
-                                unpack_arg<Bound::kwargs_idx>(
+                                unpack_arg<Source::kwargs_idx>(
                                     std::forward<decltype(args)>(args)...
                                 ).size();
                             PyObject** array = ++heap_array(size);
                             try {
                                 size_t kw_size =
                                     call<0, 0, 0>::python::n_partial_keywords +
-                                    Bound::n_kw +
-                                    unpack_arg<Bound::kwargs_idx>(
+                                    Source::n_kw +
+                                    unpack_arg<Source::kwargs_idx>(
                                         std::forward<decltype(args)>(args)...
                                     ).size();
                                 if (kw_size) {
@@ -5590,13 +5789,13 @@ namespace impl {
                                             unpack_arg<Prev>(
                                                 std::forward<decltype(args)>(args)...
                                             )...,
-                                            PositionalPack(unpack_arg<Bound::args_idx>(
+                                            PositionalPack(unpack_arg<Source::args_idx>(
                                                 std::forward<decltype(args)>(args)...
                                             )),
-                                            unpack_arg<Bound::args_idx + 1 + Next>(
+                                            unpack_arg<Source::args_idx + 1 + Next>(
                                                 std::forward<decltype(args)>(args)...
                                             )...,
-                                            KeywordPack(unpack_arg<Bound::kwargs_idx>(
+                                            KeywordPack(unpack_arg<Source::kwargs_idx>(
                                                 std::forward<decltype(args)>(args)...
                                             ))
                                         );
@@ -5618,13 +5817,13 @@ namespace impl {
                                         unpack_arg<Prev>(
                                             std::forward<decltype(args)>(args)...
                                         )...,
-                                        PositionalPack(unpack_arg<Bound::args_idx>(
+                                        PositionalPack(unpack_arg<Source::args_idx>(
                                             std::forward<decltype(args)>(args)...
                                         )),
-                                        unpack_arg<Bound::args_idx + 1 + Next>(
+                                        unpack_arg<Source::args_idx + 1 + Next>(
                                             std::forward<decltype(args)>(args)...
                                         )...,
-                                        KeywordPack(unpack_arg<Bound::kwargs_idx>(
+                                        KeywordPack(unpack_arg<Source::kwargs_idx>(
                                             std::forward<decltype(args)>(args)...
                                         ))
                                     );
@@ -5636,16 +5835,16 @@ namespace impl {
                                 throw;
                             }
                         }(
-                            std::make_index_sequence<Bound::args_idx>{},
+                            std::make_index_sequence<Source::args_idx>{},
                             std::make_index_sequence<
-                                Bound::kwargs_idx - (Bound::args_idx + 1)
+                                Source::kwargs_idx - (Source::args_idx + 1)
                             >{},
                             std::forward<P>(parts),
                             func,
                             std::forward<Values>(args)...
                         );
 
-                    } else if constexpr (Bound::has_args) {
+                    } else if constexpr (Source::has_args) {
                         return []<size_t... Prev, size_t... Next>(
                             std::index_sequence<Prev...>,
                             std::index_sequence<Next...>,
@@ -5655,15 +5854,15 @@ namespace impl {
                         ) {
                             size_t size =
                                 Partial::n +
-                                (Bound::n - 1) +
-                                unpack_arg<Bound::args_idx>(
+                                (Source::n - 1) +
+                                unpack_arg<Source::args_idx>(
                                     std::forward<decltype(args)>(args)...
                                 ).size();
                             PyObject** array = ++heap_array(size);
                             try {
                                 constexpr size_t kw_size =
                                     call<0, 0, 0>::python::n_partial_keywords +
-                                    Bound::n_kw;
+                                    Source::n_kw;
                                 if constexpr (kw_size) {
                                     PyObject* kwnames = PyTuple_New(kw_size);
                                     try {
@@ -5677,10 +5876,10 @@ namespace impl {
                                             unpack_arg<Prev>(
                                                 std::forward<decltype(args)>(args)...
                                             )...,
-                                            PositionalPack(unpack_arg<Bound::args_idx>(
+                                            PositionalPack(unpack_arg<Source::args_idx>(
                                                 std::forward<decltype(args)>(args)...
                                             )),
-                                            unpack_arg<Bound::args_idx + 1 + Next>(
+                                            unpack_arg<Source::args_idx + 1 + Next>(
                                                 std::forward<decltype(args)>(args)...
                                             )...
                                         );
@@ -5702,10 +5901,10 @@ namespace impl {
                                         unpack_arg<Prev>(
                                             std::forward<decltype(args)>(args)...
                                         )...,
-                                        PositionalPack(unpack_arg<Bound::args_idx>(
+                                        PositionalPack(unpack_arg<Source::args_idx>(
                                             std::forward<decltype(args)>(args)...
                                         )),
-                                        unpack_arg<Bound::args_idx + 1 + Next>(
+                                        unpack_arg<Source::args_idx + 1 + Next>(
                                             std::forward<decltype(args)>(args)...
                                         )...
                                     );
@@ -5717,14 +5916,14 @@ namespace impl {
                                 throw;
                             }
                         }(
-                            std::make_index_sequence<Bound::args_idx>{},
-                            std::make_index_sequence<Bound::n - (Bound::args_idx + 1)>{},
+                            std::make_index_sequence<Source::args_idx>{},
+                            std::make_index_sequence<Source::n - (Source::args_idx + 1)>{},
                             std::forward<P>(parts),
                             func,
                             std::forward<Values>(args)...
                         );
 
-                    } else if constexpr (Bound::has_kwargs) {
+                    } else if constexpr (Source::has_kwargs) {
                         return []<size_t... Prev>(
                             std::index_sequence<Prev...>,
                             auto&& parts,
@@ -5733,16 +5932,16 @@ namespace impl {
                         ) {
                             size_t size =
                                 Partial::n +
-                                (Bound::n - 1) +
-                                unpack_arg<Bound::kwargs_idx>(
+                                (Source::n - 1) +
+                                unpack_arg<Source::kwargs_idx>(
                                     std::forward<decltype(args)>(args)...
                                 ).size();
                             PyObject** array = ++heap_array(size);
                             try {
                                 size_t kw_size =
                                     call<0, 0, 0>::python::n_partial_keywords +
-                                    Bound::n_kw +
-                                    unpack_arg<Bound::kwargs_idx>(
+                                    Source::n_kw +
+                                    unpack_arg<Source::kwargs_idx>(
                                         std::forward<decltype(args)>(args)...
                                     ).size();
                                 if (kw_size) {
@@ -5758,7 +5957,7 @@ namespace impl {
                                             unpack_arg<Prev>(
                                                 std::forward<decltype(args)>(args)...
                                             )...,
-                                            KeywordPack(unpack_arg<Bound::kwargs_idx>(
+                                            KeywordPack(unpack_arg<Source::kwargs_idx>(
                                                 std::forward<decltype(args)>(args)...
                                             ))
                                         );
@@ -5780,7 +5979,7 @@ namespace impl {
                                         unpack_arg<Prev>(
                                             std::forward<decltype(args)>(args)...
                                         )...,
-                                        KeywordPack(unpack_arg<Bound::kwargs_idx>(
+                                        KeywordPack(unpack_arg<Source::kwargs_idx>(
                                             std::forward<decltype(args)>(args)...
                                         ))
                                     );
@@ -5792,19 +5991,19 @@ namespace impl {
                                 throw;
                             }
                         }(
-                            std::make_index_sequence<Bound::kwargs_idx>{},
+                            std::make_index_sequence<Source::kwargs_idx>{},
                             std::forward<P>(parts),
                             func,
                             std::forward<Values>(args)...
                         );
 
                     } else {
-                        constexpr size_t size = Partial::n + Bound::n;
+                        constexpr size_t size = Partial::n + Source::n;
                         PyObject* array[size + 1];
                         array[0] = nullptr;
                         ++array;
                         constexpr size_t kw_size =
-                            call<0, 0, 0>::python::n_partial_keywords + Bound::n_kw;
+                            call<0, 0, 0>::python::n_partial_keywords + Source::n_kw;
                         if constexpr (kw_size) {
                             PyObject* kwnames = PyTuple_New(kw_size);
                             try {
@@ -7365,12 +7564,12 @@ namespace impl {
         /* Binding a signature returns a partial type that appends the new partial
         arguments to the current ones, to allow for easy chaining/currying. */
         template <typename... A>
-        using Bind = partial::template Bind<A...>;
+        using Bind = partial::template Bind<A...>::signature;
 
         /* Unbinding a signature strips any partial arguments that have been encoded
         into the target annotations, returning the same type of partial object as
         Bind<>, for symmetry. */
-        using Unbind = Partial<>;
+        using Unbind = Partial<>::signature;
 
         Sig(const partial& parts) : parts(parts) {}
         Sig(partial&& parts) : parts(std::move(parts)) {}
@@ -7540,6 +7739,11 @@ template <typename Return, typename... Args>
 struct Signature<Return(Args...)> : impl::Sig<Return, Args...> {
     static constexpr bool enable = true;
     using normalize = Return(Args...);
+
+    using impl::Sig<Return, Args...>::Sig;
+
+
+
 
     // template <typename... A>
     // using bind = impl::Sig<Return, Args...>::template Bind<A...>;
