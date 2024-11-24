@@ -218,6 +218,20 @@ namespace impl {
         static constexpr size_t _kwargs_idx<T, Ts...> =
             ArgTraits<T>::kwargs() ? 0 : _kwargs_idx<Ts...> + 1;
 
+        /* Represents a value stored in the defaults or partials tuple, which can be
+        cross-referenced with the target signature through compile-time indices. */
+        template <size_t I, StaticStr Name, typename T>
+        struct Element {
+            static constexpr size_t index = I;
+            static constexpr StaticStr name = Name;
+            using type = T;
+            std::remove_cvref_t<type> value;
+
+            constexpr remove_rvalue<type> get(this auto&& self) {
+                return std::forward<decltype(self)>(self).value;
+            }
+        };
+
     public:
         static constexpr size_t n                   = sizeof...(Args);
         static constexpr size_t n_posonly           = _n_posonly<Args...>;
@@ -334,69 +348,59 @@ namespace impl {
             static constexpr size_t _find<I, std::tuple<T, Ts...>> =
                 (I == T::index) ? 0 : 1 + _find<I, std::tuple<Ts...>>;
 
-            /* The type of a single value in the defaults tuple.  The templated index
-            is used to correlate the default value with its corresponding argument in
-            the enclosing signature. */
-            template <size_t I>
-            struct Entry {
-                using type = ArgTraits<Sig::at<I>>::type;
-                static constexpr StaticStr name = ArgTraits<Sig::at<I>>::name;
-                static constexpr size_t index = I;
-                std::remove_cvref_t<type> value;
-
-                constexpr remove_rvalue<type> get(this auto&& self) {
-                    return std::forward<decltype(self)>(self).value;
-                }
-            };
-
             /* Build a sub-signature holding only the arguments marked as optional from
             the enclosing signature.  This will be a specialization of the enclosing
             class, which is used to bind arguments to this class's constructor using
             the same semantics as the function's call operator. */
             template <typename out, typename...>
             struct extract { using type = out; };
-            template <typename... out, typename T, typename... Ts>
-            struct extract<Sig<out...>, T, Ts...> {
+            template <typename... out, typename A, typename... As>
+            struct extract<Sig<out...>, A, As...> {
                 template <typename>
                 struct sub_signature { using type = Sig<out...>; };
-                template <typename U> requires (ArgTraits<U>::opt())
-                struct sub_signature<U> {
-                    using type =
-                        Sig<
-                            out...,
-                            typename ArgTraits<U>::as_default
-                        >;
+                template <typename T> requires (ArgTraits<T>::opt())
+                struct sub_signature<T> {
+                    template <typename D>
+                    struct to_default { using type = D; };
+                    template <typename D> requires (ArgTraits<D>::opt())
+                    struct to_default<D> {
+                        using type = Arg<
+                            ArgTraits<D>::name,
+                            typename ArgTraits<D>::type
+                        >::kw;
+                    };
+                    using type = Sig<out..., typename to_default<T>::type>;
                 };
-                using type = extract<typename sub_signature<T>::type, Ts...>::type;
+                using type = extract<typename sub_signature<A>::type, As...>::type;
             };
             using Inner = extract<Sig<Defaults>, Args...>::type;
 
-            /* Build a std::tuple of Entry<I> instances to hold the default values
+            /* Build a std::tuple of Elements instances to hold the default values
             themselves. */
             template <typename out, size_t, typename...>
             struct collect { using type = out; };
-            template <typename... out, size_t I, typename T, typename... Ts>
-            struct collect<std::tuple<out...>, I, T, Ts...> {
-                template <typename U>
-                struct tuple {
-                    using type = std::tuple<out...>;
+            template <typename... out, size_t I, typename A, typename... As>
+            struct collect<std::tuple<out...>, I, A, As...> {
+                template <typename>
+                struct tuple { using type = std::tuple<out...>; };
+                template <typename T> requires (ArgTraits<T>::opt())
+                struct tuple<T> {
+                    using type = std::tuple<
+                        out...,
+                        Element<I, ArgTraits<T>::name, typename ArgTraits<T>::type>
+                    >;
                 };
-                template <typename U> requires (ArgTraits<U>::opt())
-                struct tuple<U> {
-                    using type = std::tuple<out..., Entry<I>>;
-                };
-                using type = collect<typename tuple<T>::type, I + 1, Ts...>::type;
+                using type = collect<typename tuple<A>::type, I + 1, As...>::type;
             };
 
             using Tuple = collect<std::tuple<>, 0, Args...>::type;
             Tuple values;
 
-            template <size_t I, typename... Values>
-            static constexpr decltype(auto) build(Values&&... values) {
-                using T = Inner::template at<I>;
-                constexpr size_t idx =
-                    Sig<Defaults, Values...>::template idx<ArgTraits<T>::name>;
-                return unpack_arg<idx>(std::forward<Values>(values)...);
+            template <size_t J, typename... As>
+            static constexpr decltype(auto) build(As&&... args) {
+                using T = std::tuple_element_t<J, Tuple>;
+                constexpr size_t idx = Sig<void, As...>::template idx<T::name>;
+                return unpack_arg<idx>(std::forward<As>(args)...);
             }
 
         public:
@@ -420,6 +424,9 @@ namespace impl {
             static constexpr size_t kw_idx          = _kw_idx<Args...>;
             static constexpr size_t kwonly_idx      = _kwonly_idx<Args...>;
 
+            template <size_t I> requires (I < n)
+            using at = Inner::template at<I>;
+
             /* Given an index into the enclosing signature, find the corresponding index
             in the defaults tuple if that index is marked as optional. */
             template <size_t I> requires (ArgTraits<typename Sig::at<I>>::opt())
@@ -427,38 +434,30 @@ namespace impl {
 
             /* Given an index into the defaults tuple, find the corresponding index in
             the enclosing parameter list. */
-            template <size_t I> requires (I < n)
-            static constexpr size_t rfind = std::tuple_element<I, Tuple>::type::index;
-
-            template <size_t I> requires (I < n)
-            using at = Sig::at<rfind<I>>;
+            template <size_t J> requires (J < n)
+            static constexpr size_t rfind = std::tuple_element<J, Tuple>::type::index;
 
             /* Bind an argument list to the default values to enable the constructor. */
             template <typename... Values>
-            using call = Inner::template call<Values...>;
+            using Invoke = Inner::template Invoke<Values...>;
 
-            /* The default values constructor takes Python-style arguments just like
-            the call operator, and is only enabled if the call signature is well-formed
-            and all optional arguments have been accounted for.  All values must be
-            given as keyword arguments for clarity, regardless of their original status
-            within the enclosing parameter list. */
-            template <typename... Values>
+            template <typename... As>
                 requires (
-                    !(arg_pack<Values> || ...) &&
-                    !(kwarg_pack<Values> || ...) &&
-                    call<Values...>::proper_argument_order &&
-                    call<Values...>::no_qualified_arg_annotations &&
-                    call<Values...>::no_duplicate_arguments &&
-                    call<Values...>::no_conflicting_values &&
-                    call<Values...>::no_extra_positional_args &&
-                    call<Values...>::no_extra_keyword_args &&
-                    call<Values...>::satisfies_required_args &&
-                    call<Values...>::can_convert
+                    !(arg_pack<As> || ...) &&
+                    !(kwarg_pack<As> || ...) &&
+                    Invoke<As...>::proper_argument_order &&
+                    Invoke<As...>::no_qualified_arg_annotations &&
+                    Invoke<As...>::no_duplicate_arguments &&
+                    Invoke<As...>::no_conflicting_values &&
+                    Invoke<As...>::no_extra_positional_args &&
+                    Invoke<As...>::no_extra_keyword_args &&
+                    Invoke<As...>::satisfies_required_args &&
+                    Invoke<As...>::can_convert
                 )
-            constexpr Defaults(Values&&... values) : values(
-                []<size_t... Is>(std::index_sequence<Is...>, auto&&... values) -> Tuple {
-                    return {{build<Is>(std::forward<decltype(values)>(values)...)}...};
-                }(std::make_index_sequence<n>{}, std::forward<Values>(values)...)
+            constexpr Defaults(As&&... args) : values(
+                []<size_t... Js>(std::index_sequence<Js...>, auto&&... args) -> Tuple {
+                    return {{build<Js>(std::forward<decltype(args)>(args)...)}...};
+                }(std::index_sequence_for<As...>{}, std::forward<As>(args)...)
             ) {}
 
             /* Get the default value at index I of the tuple.  Use find<> to correlate
@@ -467,9 +466,9 @@ namespace impl {
             value if the corresponding argument expects an lvalue, or a copy if it
             expects an unqualified or rvalue type.  If the defaults container is given
             as an rvalue instead, then the copy will be optimized to a move. */
-            template <size_t I> requires (I < n)
+            template <size_t J> requires (J < n)
             constexpr decltype(auto) get(this auto&& self) {
-                return std::get<I>(std::forward<decltype(self)>(self).values).get();
+                return std::get<J>(std::forward<decltype(self)>(self).values).get();
             }
 
             /* Get the default value associated with the named argument, if it is
@@ -478,6 +477,163 @@ namespace impl {
             argument expects an lvalue, or a copy if it expects an unqualified or
             rvalue type.  If the defaults container is given as an rvalue instead, then
             the copy will be optimized to a move. */
+            template <StaticStr Name> requires (has<Name>)
+            constexpr decltype(auto) get(this auto&& self) {
+                return std::get<idx<Name>>(std::forward<decltype(self)>(self).values).get();
+            }
+        };
+
+        /* A tuple holding a partial value for every bound argument in the enclosing
+        parameter list.  One of these must be provided whenever a C++ function is
+        invoked, and constructing one requires that the initializers match a
+        subsignature consisting only of the optional arguments as positional-only and
+        keyword-only parameters for clarity.  The result may be empty if there are no
+        bound arguments in the enclosing signature, in which case the constructor will
+        be optimized out. */
+        struct Partial {
+        private:
+            /// TODO: count/index helpers just like Defaults
+
+            /* Build a sub-signature holding only the bound arguments from the
+            enclosing signature.  This will be a specialization of the enclosing class,
+            which is used to bind arguments to this class's constructor using the same
+            semantics as the function's call operator. */
+            template <typename out, typename...>
+            struct extract { using type = out; };
+            template <typename... out, typename A, typename... As>
+            struct extract<Sig<out...>, A, As...> {
+                template <typename>
+                struct sub_signature { using type = Sig<out...>; };
+                template <typename T> requires (ArgTraits<T>::bound())
+                struct sub_signature<T> {
+                    template <typename>
+                    struct extend;
+                    template <typename... Ps>
+                    struct extend<pack<Ps...>> {
+                        template <typename P>
+                        struct to_partial { using type = P; };
+                        template <typename P> requires (ArgTraits<P>::kw())
+                        struct to_partial<P> {
+                            using type = Arg<
+                                ArgTraits<P>::name,
+                                typename ArgTraits<P>::type
+                            >::kw;
+                        };
+                        using type = Sig<out..., typename to_partial<Ps>::type...>;
+                    };
+                    using type = extend<typename ArgTraits<T>::bound_to>::type;
+                };
+                using type = extract<
+                    typename sub_signature<A>::type,
+                    As...
+                >::type;
+            };
+            using Inner = extract<Sig<Partial>, Args...>::type;
+
+            /* Build a std::tuple of Elements that hold the bound values in a way that
+            can be cross-referenced with the target signature. */
+            template <typename out, size_t, typename...>
+            struct collect { using type = out; };
+            template <typename... out, size_t I, typename A, typename... As>
+            struct collect<std::tuple<out...>, I, A, As...> {
+                template <typename>
+                struct tuple { using type = std::tuple<out...>; };
+                template <typename T> requires (ArgTraits<T>::bound())
+                struct tuple<T> {
+                    template <typename>
+                    struct extend;
+                    template <typename... Ps>
+                    struct extend<pack<Ps...>> {
+                        using type = std::tuple<
+                            out...,
+                            Element<
+                                I,
+                                ArgTraits<Ps>::name,
+                                typename ArgTraits<Ps>::type
+                            >...
+                        >;
+                    };
+                    using type = extend<typename ArgTraits<T>::bound_to>::type;
+                };
+                using type = collect<typename tuple<A>::type, I + 1, As...>::type;
+            };
+
+            using Tuple = collect<std::tuple<>, 0, Args...>::type;
+            Tuple values;
+
+            template <size_t K, typename... As>
+            static constexpr decltype(auto) build(As&&... args) {
+                using T = std::tuple_element_t<K, Tuple>;
+                if constexpr (T::name.empty()) {
+                    return unpack_arg<K>(std::forward<As>(args)...);
+                } else {
+                    constexpr size_t idx = Sig<void, As...>::template idx<T::name>;
+                    return unpack_arg<idx>(std::forward<As>(args)...);
+                }
+            }
+
+        public:
+            static constexpr size_t n               = Inner::n;
+            static constexpr size_t n_posonly       = Inner::n_posonly;
+            static constexpr size_t n_pos           = Inner::n_pos;
+            static constexpr size_t n_kw            = Inner::n_kw;
+            static constexpr size_t n_kwonly        = Inner::n_kwonly;
+
+            template <StaticStr Name>
+            static constexpr bool has               = Inner::template has<Name>;
+            static constexpr bool has_posonly       = Inner::has_posonly;
+            static constexpr bool has_pos           = Inner::has_pos;
+            static constexpr bool has_kw            = Inner::has_kw;
+            static constexpr bool has_kwonly        = Inner::has_kwonly;
+
+            template <StaticStr Name> requires (has<Name>)
+            static constexpr size_t idx             = Inner::template idx<Name>;
+            static constexpr size_t posonly_idx     = Inner::posonly_idx;
+            static constexpr size_t pos_idx         = Inner::pos_idx;
+            static constexpr size_t kw_idx          = Inner::kw_idx;
+            static constexpr size_t kwonly_idx      = Inner::kwonly_idx;
+
+            template <size_t K> requires (K < n)
+            using at = Inner::template at<K>;
+
+            template <typename... As>
+            using Invoke = Inner::template Invoke<As...>;
+
+            template <typename... As>
+                requires (
+                    !(arg_pack<As> || ...) &&
+                    !(kwarg_pack<As> || ...) &&
+                    Invoke<As...>::proper_argument_order &&
+                    Invoke<As...>::no_qualified_arg_annotations &&
+                    Invoke<As...>::no_duplicate_arguments &&
+                    Invoke<As...>::no_conflicting_values &&
+                    Invoke<As...>::no_extra_positional_args &&
+                    Invoke<As...>::no_extra_keyword_args &&
+                    Invoke<As...>::satisfies_required_args &&
+                    Invoke<As...>::can_convert
+                )
+            constexpr Partial(As&&... args) : values(
+                []<size_t... Ks>(std::index_sequence<Ks...>, auto&&... args) -> Tuple {
+                    return {{build<Ks>(std::forward<decltype(args)>(args)...)}...};
+                }(std::index_sequence_for<As...>{}, std::forward<As>(args)...)
+            ) {}
+
+            /* Get the bound value at index K of the tuple.  If the partials are
+            forwarded as an lvalue, then this will either directly reference the
+            internal value if the corresponding argument expects an lvalue, or a copy
+            if it expects an unqualified or rvalue type.  If the partials are given as
+            an rvalue instead, then the copy will instead be optimized to a move. */
+            template <size_t K> requires (K < n)
+            constexpr decltype(auto) get(this auto&& self) {
+                return std::get<K>(std::forward<decltype(self)>(self).values).get();
+            }
+
+            /* Get the bound value associated with the named argument, if it was given
+            as a keyword argument.  If the partials are forwarded as an lvalue, then
+            this will either directly reference the internal value if the corresponding
+            argument expects an lvalue, or a copy if it expects an unqualified or rvalue
+            type.  If the partials are given as an rvalue instead, then the copy will be
+            optimized to a move. */
             template <StaticStr Name> requires (has<Name>)
             constexpr decltype(auto) get(this auto&& self) {
                 return std::get<idx<Name>>(std::forward<decltype(self)>(self).values).get();
@@ -2376,6 +2532,27 @@ namespace impl {
         };
 
     protected:
+        /// TODO: there's still lots of value in putting all of this within a helper
+        /// class called Partial, but it doesn't need to accept any template arguments,
+        /// and would work pretty much just like ::Defaults.  It should be as simple
+        /// as possible as a result, ideally only a couple hundred lines.  Invoke<> and
+        /// Vectorcall can be implemented outside it.  Partial might then become a
+        /// public type, possibly alongside Invoke<> and Vectorcall.
+        /// -> Then, the overall signature ::n, etc. will not include any of the
+        /// partial arguments, and ::Partial::n will hold the partial arguments, etc.
+
+
+
+
+
+        /// TODO: there will need to be a bunch of template constraints to make sure
+        /// that the partial arguments are valid for the target signature.  Probably
+        /// the best way to do that is to build up a sub-signature of just the partial
+        /// arguments, and then use that to validate similar to ::Defaults.  This would
+        /// only include posonly and kwonly arguments.
+
+
+
         /* A tuple holding a sequence of partial arguments to supply to the enclosing
         parameter list when the function is invoked.  One of these must be supplied
         every time a function is called, which amounts to a 3-way merge between the
@@ -2393,6 +2570,11 @@ namespace impl {
             )
         struct Partial {
         protected:
+            /// TODO: all the Tuple logic could be moved up to Signature pretty easily.
+            /// The only change is that rather than iterating over Parts..., it would
+            /// have to iterate over the target signature and extract out all the
+            /// bound arguments.
+
             /* Represents a value stored in the partial tuple, which can be
             cross-referenced with the target signature through compile-time
             indices. */
@@ -2513,11 +2695,17 @@ namespace impl {
             }
 
         public:
+            template <typename... Values>
+            struct Invoke;
+
+            using signature = Invoke<>::signature;
             /// TODO: these should all be inverted using the annotated function signature,
-            /// such that chaining ::partial<> calls will account for the partial
+            /// such that chaining ::Bind<> calls will account for the partial
             /// arguments that have already been filled in, so you can do some really
             /// powerful metaprogramming, like currying until the function signature
             /// has no remaining optional arguments, etc.
+            /// -> This can be naturally avoided by rolling the partial logic into the
+            /// corresponding Signature<> fields.
 
             static constexpr size_t n               = Sig<Return, Parts...>::n;
             static constexpr size_t n_pos           = Sig<Return, Parts...>::n_pos;
@@ -2534,11 +2722,6 @@ namespace impl {
 
             template <size_t I> requires (I < n)
             using at = Sig<Return, Parts...>::template at<I>;
-
-            template <typename... Values>
-            struct Invoke;
-
-            using signature = Invoke<>::signature;
 
             /// TODO: the ::partial<> chaining behavior needs to account for positional
             /// vs keyword arguments.  So the following:
@@ -2574,6 +2757,33 @@ namespace impl {
                     return {{build<Js>(std::forward<decltype(parts)>(parts)...)}...};
                 }(std::index_sequence_for<Ps...>{}, std::forward<Ps>(parts)...)
             ) {}
+
+            /// TODO: implement proper constraints for these
+
+            /* Unbinding a signature strips any partial arguments that have been encoded
+            into the target annotations, returning the same type of partial object as
+            Bind<>, for symmetry. */
+            using Unbind = Partial<>;
+
+            /* A compile-time equivalent to `.bind()`, which describes the merged
+            partial type that would be produced if that method were called with the
+            given arguments. */
+            template <typename... Values>
+            using Bind = decltype(std::declval<Partial>().bind(std::declval<Values>()...));
+
+            /* Produce another partial by merging the new args with those of this
+            partial.  This method allows partials to be incrementally chained, as you
+            would when implementing function currying, for example. */
+            template <typename... Values>
+            auto bind(this auto&& self, Values&&... args) {
+                return Invoke<Values...>::bind(
+                    std::forward<decltype(self)>(self),
+                    std::forward<Values>(args)...
+                );
+            }
+
+            /// TODO: get() would be boiled into the signature itself, and name<> can
+            /// be completely eliminated and replaced with std::tuple_element_t<...>.
 
             /* Get the name of the partial argument at index K. */
             template <size_t K> requires (K < std::tuple_size_v<Tuple>)
@@ -2965,10 +3175,6 @@ namespace impl {
                 struct call {  // terminal case
                     template <typename out>
                     struct normalize { using type = out; };
-
-                    /// TODO: there also has to be an algorithm to compute the return
-                    /// type of the ::bind() constructor.  That might be accomplished
-                    /// via just a decltype() statement?
 
                     template <typename P, typename... A>
                     static auto bind(
@@ -5478,6 +5684,8 @@ namespace impl {
                 };
 
             public:
+                using signature = call<0, 0, 0>::template normalize<Return()>::type;
+
                 static constexpr size_t n               = sizeof...(Values);
                 static constexpr size_t n_pos           = Source::n_pos;
                 static constexpr size_t n_kw            = Source::n_kw;
@@ -5532,8 +5740,6 @@ namespace impl {
                     _satisfies_required_args<0, 0>;
 
                 static constexpr bool can_convert = _can_convert<0, 0>;
-
-                using signature = call<0, 0, 0>::template normalize<Return()>::type;
 
                 /* Produce an overload key from the bound C++ arguments, which can be
                 used to search the overload trie and invoke a resulting function. */
@@ -7525,15 +7731,6 @@ namespace impl {
             };
         };
 
-        /// TODO: this probably has to distinguish between partials that are provided
-        /// as positional args and those that are provided as keyword args, and somehow
-        /// encode that into the type system somehow.
-        /// Actually, this can already be done by providing an Arg<"name", T> to the
-        /// Arg::bind<> template, which is then intercepted here.
-
-        /// TODO: this whole thing needs to be lowered into the Partial<>::Bind<> merge
-        /// algorithm.
-
         /* Extract any partial arguments that are encoded in the target signature using
         `::bind<>` extensions, and form a corresponding partial type.  This is the
         canonical partial that must be constructed whenever a signature is
@@ -7561,28 +7758,25 @@ namespace impl {
         partial parts;
 
     public:
-        /* Binding a signature returns a partial type that appends the new partial
-        arguments to the current ones, to allow for easy chaining/currying. */
-        template <typename... A>
-        using Bind = partial::template Bind<A...>::signature;
+        Sig(const partial& parts) : parts(parts) {}
+        Sig(partial&& parts) : parts(std::move(parts)) {}
 
         /* Unbinding a signature strips any partial arguments that have been encoded
         into the target annotations, returning the same type of partial object as
         Bind<>, for symmetry. */
-        using Unbind = Partial<>::signature;
+        using Unbind = Partial<>;
 
-        Sig(const partial& parts) : parts(parts) {}
-        Sig(partial&& parts) : parts(std::move(parts)) {}
+        /* Binding a signature returns a partial type that appends the new partial
+        arguments to the current ones, to allow for easy chaining/currying. */
+        template <typename... A>
+        using Bind = partial::template Bind<A...>;
 
         /* Construct a partial object by binding the given arguments to the enclosing
         signature using the same chaining logic as `Bind<>`, which describes this
         method's return type.   */
         template <typename... A>
-        auto bind(this auto&& self, A&&... args) -> Bind<A...> {
-            /// TODO: 3-way merge with the current partial arguments, requiring
-            /// extensions to the Partial<> class.
-            return Bind<A...>::bind(
-                std::forward<decltype(self)>(self).parts,
+        auto bind(this auto&& self, A&&... args) {
+            return std::forward<decltype(self)>(self).parts.bind(
                 std::forward<A>(args)...
             );
         }

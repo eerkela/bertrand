@@ -525,7 +525,6 @@ namespace impl {
         static constexpr bool opt() noexcept        { return kind.opt(); }
         static constexpr bool variadic() noexcept   { return kind.variadic(); }
 
-        using as_default                            = T;
         template <typename... Vs> requires (can_bind_arg<T, Vs...>)
         using bind                                  = BoundArg<T, Vs...>;
         using unbind                                = T;
@@ -537,14 +536,6 @@ namespace impl {
     template <is_arg T>
     struct ArgTraits<T> {
     private:
-
-        template <typename U>
-        struct _as_default { using type = U; };
-        template <typename U>
-        struct _as_default<OptionalArg<U>> {
-            using type = Arg<U::name, typename std::remove_cvref_t<typename U::type>>::kw;
-        };
-
         template <typename U>
         struct _bound {
             template <typename... Vs>
@@ -574,7 +565,6 @@ namespace impl {
         static constexpr bool opt() noexcept        { return kind.opt(); }
         static constexpr bool variadic() noexcept   { return kind.variadic(); }
 
-        using as_default                            = _as_default<std::remove_cvref_t<T>>::type;
         template <typename... Vs> requires (can_bind_arg<T, Vs...>)
         using bind                                  = _bound<std::remove_cvref_t<T>>::template bind<Vs...>;
         using unbind                                = _bound<std::remove_cvref_t<T>>::unbind;
