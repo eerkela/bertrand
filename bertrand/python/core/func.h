@@ -218,8 +218,6 @@ namespace impl {
         static constexpr size_t _kwargs_idx<T, Ts...> =
             ArgTraits<T>::kwargs() ? 0 : _kwargs_idx<Ts...> + 1;
 
-        /* Represents a value stored in the defaults or partials tuple, which can be
-        cross-referenced with the target signature through compile-time indices. */
         template <size_t I, StaticStr Name, typename T>
         struct Element {
             static constexpr size_t index = I;
@@ -483,163 +481,6 @@ namespace impl {
             }
         };
 
-        /* A tuple holding a partial value for every bound argument in the enclosing
-        parameter list.  One of these must be provided whenever a C++ function is
-        invoked, and constructing one requires that the initializers match a
-        subsignature consisting only of the optional arguments as positional-only and
-        keyword-only parameters for clarity.  The result may be empty if there are no
-        bound arguments in the enclosing signature, in which case the constructor will
-        be optimized out. */
-        struct Partial {
-        private:
-            /// TODO: count/index helpers just like Defaults
-
-            /* Build a sub-signature holding only the bound arguments from the
-            enclosing signature.  This will be a specialization of the enclosing class,
-            which is used to bind arguments to this class's constructor using the same
-            semantics as the function's call operator. */
-            template <typename out, typename...>
-            struct extract { using type = out; };
-            template <typename... out, typename A, typename... As>
-            struct extract<Sig<out...>, A, As...> {
-                template <typename>
-                struct sub_signature { using type = Sig<out...>; };
-                template <typename T> requires (ArgTraits<T>::bound())
-                struct sub_signature<T> {
-                    template <typename>
-                    struct extend;
-                    template <typename... Ps>
-                    struct extend<pack<Ps...>> {
-                        template <typename P>
-                        struct to_partial { using type = P; };
-                        template <typename P> requires (ArgTraits<P>::kw())
-                        struct to_partial<P> {
-                            using type = Arg<
-                                ArgTraits<P>::name,
-                                typename ArgTraits<P>::type
-                            >::kw;
-                        };
-                        using type = Sig<out..., typename to_partial<Ps>::type...>;
-                    };
-                    using type = extend<typename ArgTraits<T>::bound_to>::type;
-                };
-                using type = extract<
-                    typename sub_signature<A>::type,
-                    As...
-                >::type;
-            };
-            using Inner = extract<Sig<Partial>, Args...>::type;
-
-            /* Build a std::tuple of Elements that hold the bound values in a way that
-            can be cross-referenced with the target signature. */
-            template <typename out, size_t, typename...>
-            struct collect { using type = out; };
-            template <typename... out, size_t I, typename A, typename... As>
-            struct collect<std::tuple<out...>, I, A, As...> {
-                template <typename>
-                struct tuple { using type = std::tuple<out...>; };
-                template <typename T> requires (ArgTraits<T>::bound())
-                struct tuple<T> {
-                    template <typename>
-                    struct extend;
-                    template <typename... Ps>
-                    struct extend<pack<Ps...>> {
-                        using type = std::tuple<
-                            out...,
-                            Element<
-                                I,
-                                ArgTraits<Ps>::name,
-                                typename ArgTraits<Ps>::type
-                            >...
-                        >;
-                    };
-                    using type = extend<typename ArgTraits<T>::bound_to>::type;
-                };
-                using type = collect<typename tuple<A>::type, I + 1, As...>::type;
-            };
-
-            using Tuple = collect<std::tuple<>, 0, Args...>::type;
-            Tuple values;
-
-            template <size_t K, typename... As>
-            static constexpr decltype(auto) build(As&&... args) {
-                using T = std::tuple_element_t<K, Tuple>;
-                if constexpr (T::name.empty()) {
-                    return unpack_arg<K>(std::forward<As>(args)...);
-                } else {
-                    constexpr size_t idx = Sig<void, As...>::template idx<T::name>;
-                    return unpack_arg<idx>(std::forward<As>(args)...);
-                }
-            }
-
-        public:
-            static constexpr size_t n               = Inner::n;
-            static constexpr size_t n_posonly       = Inner::n_posonly;
-            static constexpr size_t n_pos           = Inner::n_pos;
-            static constexpr size_t n_kw            = Inner::n_kw;
-            static constexpr size_t n_kwonly        = Inner::n_kwonly;
-
-            template <StaticStr Name>
-            static constexpr bool has               = Inner::template has<Name>;
-            static constexpr bool has_posonly       = Inner::has_posonly;
-            static constexpr bool has_pos           = Inner::has_pos;
-            static constexpr bool has_kw            = Inner::has_kw;
-            static constexpr bool has_kwonly        = Inner::has_kwonly;
-
-            template <StaticStr Name> requires (has<Name>)
-            static constexpr size_t idx             = Inner::template idx<Name>;
-            static constexpr size_t posonly_idx     = Inner::posonly_idx;
-            static constexpr size_t pos_idx         = Inner::pos_idx;
-            static constexpr size_t kw_idx          = Inner::kw_idx;
-            static constexpr size_t kwonly_idx      = Inner::kwonly_idx;
-
-            template <size_t K> requires (K < n)
-            using at = Inner::template at<K>;
-
-            template <typename... As>
-            using Invoke = Inner::template Invoke<As...>;
-
-            template <typename... As>
-                requires (
-                    !(arg_pack<As> || ...) &&
-                    !(kwarg_pack<As> || ...) &&
-                    Invoke<As...>::proper_argument_order &&
-                    Invoke<As...>::no_qualified_arg_annotations &&
-                    Invoke<As...>::no_duplicate_arguments &&
-                    Invoke<As...>::no_conflicting_values &&
-                    Invoke<As...>::no_extra_positional_args &&
-                    Invoke<As...>::no_extra_keyword_args &&
-                    Invoke<As...>::satisfies_required_args &&
-                    Invoke<As...>::can_convert
-                )
-            constexpr Partial(As&&... args) : values(
-                []<size_t... Ks>(std::index_sequence<Ks...>, auto&&... args) -> Tuple {
-                    return {{build<Ks>(std::forward<decltype(args)>(args)...)}...};
-                }(std::index_sequence_for<As...>{}, std::forward<As>(args)...)
-            ) {}
-
-            /* Get the bound value at index K of the tuple.  If the partials are
-            forwarded as an lvalue, then this will either directly reference the
-            internal value if the corresponding argument expects an lvalue, or a copy
-            if it expects an unqualified or rvalue type.  If the partials are given as
-            an rvalue instead, then the copy will instead be optimized to a move. */
-            template <size_t K> requires (K < n)
-            constexpr decltype(auto) get(this auto&& self) {
-                return std::get<K>(std::forward<decltype(self)>(self).values).get();
-            }
-
-            /* Get the bound value associated with the named argument, if it was given
-            as a keyword argument.  If the partials are forwarded as an lvalue, then
-            this will either directly reference the internal value if the corresponding
-            argument expects an lvalue, or a copy if it expects an unqualified or rvalue
-            type.  If the partials are given as an rvalue instead, then the copy will be
-            optimized to a move. */
-            template <StaticStr Name> requires (has<Name>)
-            constexpr decltype(auto) get(this auto&& self) {
-                return std::get<idx<Name>>(std::forward<decltype(self)>(self).values).get();
-            }
-        };
-
     protected:
         template <size_t, typename...>
         static constexpr bool _proper_argument_order = true;
@@ -690,13 +531,17 @@ namespace impl {
         target keyword arguments. */
         template <typename...>
         struct collisions {
-            static constexpr bool operator()(size_t, size_t) { return false; }
+            static constexpr bool operator()(size_t, size_t) {
+                return false;
+            }
         };
         template <typename T, typename... Ts>
         struct collisions<T, Ts...> {
             template <typename...>
             struct scan {
-                static constexpr bool operator()(size_t, size_t, size_t) { return false; }
+                static constexpr bool operator()(size_t, size_t, size_t) {
+                    return false;
+                }
             };
             template <typename U, typename... Us>
             struct scan<U, Us...> {
@@ -829,6 +674,175 @@ namespace impl {
                 return false;
             }
         }();
+
+        /* A tuple holding a partial value for every bound argument in the enclosing
+        parameter list.  One of these must be provided whenever a C++ function is
+        invoked, and constructing one requires that the initializers match a
+        subsignature consisting only of the optional arguments as positional-only and
+        keyword-only parameters for clarity.  The result may be empty if there are no
+        bound arguments in the enclosing signature, in which case the constructor will
+        be optimized out. */
+        struct Partial {
+            /// TODO: count/index helpers just like Defaults?  Actually, can this entire
+            /// class be made private instead?
+
+            /* Build a sub-signature holding only the bound arguments from the
+            enclosing signature.  This will be a specialization of the enclosing class,
+            which is used to bind arguments to this class's constructor using the same
+            semantics as the function's call operator. */
+            template <typename out, typename...>
+            struct extract { using type = out; };
+            template <typename... out, typename A, typename... As>
+            struct extract<Sig<out...>, A, As...> {
+                template <typename>
+                struct sub_signature { using type = Sig<out...>; };
+                template <typename T> requires (ArgTraits<T>::bound())
+                struct sub_signature<T> {
+                    template <typename>
+                    struct extend;
+                    template <typename... Ps>
+                    struct extend<pack<Ps...>> {
+                        template <typename P>
+                        struct to_partial { using type = P; };
+                        template <typename P> requires (ArgTraits<P>::kw())
+                        struct to_partial<P> {
+                            using type = Arg<
+                                ArgTraits<P>::name,
+                                typename ArgTraits<P>::type
+                            >::kw;
+                        };
+                        using type = Sig<out..., typename to_partial<Ps>::type...>;
+                    };
+                    using type = extend<typename ArgTraits<T>::bound_to>::type;
+                };
+                using type = extract<
+                    typename sub_signature<A>::type,
+                    As...
+                >::type;
+            };
+            using Inner = extract<Sig<Partial>, Args...>::type;
+
+            /* Build a std::tuple of Elements that hold the bound values in a way that
+            can be cross-referenced with the target signature. */
+            template <typename out, size_t, typename...>
+            struct collect { using type = out; };
+            template <typename... out, size_t I, typename A, typename... As>
+            struct collect<std::tuple<out...>, I, A, As...> {
+                template <typename>
+                struct tuple { using type = std::tuple<out...>; };
+                template <typename T> requires (ArgTraits<T>::bound())
+                struct tuple<T> {
+                    template <typename>
+                    struct extend;
+                    template <typename... Ps>
+                    struct extend<pack<Ps...>> {
+                        using type = std::tuple<
+                            out...,
+                            Element<
+                                I,
+                                ArgTraits<Ps>::name,
+                                typename ArgTraits<Ps>::type
+                            >...
+                        >;
+                    };
+                    using type = extend<typename ArgTraits<T>::bound_to>::type;
+                };
+                using type = collect<typename tuple<A>::type, I + 1, As...>::type;
+            };
+
+            using Tuple = collect<std::tuple<>, 0, Args...>::type;
+            Tuple values;
+
+            template <size_t K, typename... As>
+            static constexpr decltype(auto) build(As&&... args) {
+                using T = std::tuple_element_t<K, Tuple>;
+                if constexpr (T::name.empty()) {
+                    return unpack_arg<K>(std::forward<As>(args)...);
+                } else {
+                    constexpr size_t idx = Sig<void, As...>::template idx<T::name>;
+                    return unpack_arg<idx>(std::forward<As>(args)...);
+                }
+            }
+
+            static constexpr size_t n               = Inner::n;
+            static constexpr size_t n_posonly       = Inner::n_posonly;
+            static constexpr size_t n_pos           = Inner::n_pos;
+            static constexpr size_t n_kw            = Inner::n_kw;
+            static constexpr size_t n_kwonly        = Inner::n_kwonly;
+
+            template <StaticStr Name>
+            static constexpr bool has               = Inner::template has<Name>;
+            static constexpr bool has_posonly       = Inner::has_posonly;
+            static constexpr bool has_pos           = Inner::has_pos;
+            static constexpr bool has_kw            = Inner::has_kw;
+            static constexpr bool has_kwonly        = Inner::has_kwonly;
+
+            template <StaticStr Name> requires (has<Name>)
+            static constexpr size_t idx             = Inner::template idx<Name>;
+            static constexpr size_t posonly_idx     = Inner::posonly_idx;
+            static constexpr size_t pos_idx         = Inner::pos_idx;
+            static constexpr size_t kw_idx          = Inner::kw_idx;
+            static constexpr size_t kwonly_idx      = Inner::kwonly_idx;
+
+            template <size_t K> requires (K < n)
+            using at = Inner::template at<K>;
+
+            template <typename... As>
+            using Invoke = Inner::template Invoke<As...>;
+
+            template <typename... As>
+                requires (
+                    !(arg_pack<As> || ...) &&
+                    !(kwarg_pack<As> || ...) &&
+                    Invoke<As...>::proper_argument_order &&
+                    Invoke<As...>::no_qualified_arg_annotations &&
+                    Invoke<As...>::no_duplicate_arguments &&
+                    Invoke<As...>::no_conflicting_values &&
+                    Invoke<As...>::no_extra_positional_args &&
+                    Invoke<As...>::no_extra_keyword_args &&
+                    Invoke<As...>::satisfies_required_args &&
+                    Invoke<As...>::can_convert
+                )
+            constexpr Partial(As&&... args) : values(
+                []<size_t... Ks>(std::index_sequence<Ks...>, auto&&... args) -> Tuple {
+                    return {{build<Ks>(std::forward<decltype(args)>(args)...)}...};
+                }(std::index_sequence_for<As...>{}, std::forward<As>(args)...)
+            ) {}
+
+            /* Get the bound value at index K of the tuple.  If the partials are
+            forwarded as an lvalue, then this will either directly reference the
+            internal value if the corresponding argument expects an lvalue, or a copy
+            if it expects an unqualified or rvalue type.  If the partials are given as
+            an rvalue instead, then the copy will instead be optimized to a move. */
+            template <size_t K> requires (K < n)
+            constexpr decltype(auto) get(this auto&& self) {
+                return std::get<K>(std::forward<decltype(self)>(self).values).get();
+            }
+
+            /* Get the bound value associated with the named argument, if it was given
+            as a keyword argument.  If the partials are forwarded as an lvalue, then
+            this will either directly reference the internal value if the corresponding
+            argument expects an lvalue, or a copy if it expects an unqualified or rvalue
+            type.  If the partials are given as an rvalue instead, then the copy will be
+            optimized to a move. */
+            template <StaticStr Name> requires (has<Name>)
+            constexpr decltype(auto) get(this auto&& self) {
+                return std::get<idx<Name>>(std::forward<decltype(self)>(self).values).get();
+            }
+        };
+
+        template <typename out, typename...>
+        struct no_partials { using type = out; };
+        template <typename... out, typename A, typename... As>
+        struct no_partials<Sig<out...>, A, As...> {
+            template <typename>
+            struct filter { using type = Sig<out...>; };
+            template <typename T> requires (ArgTraits<T>::bound())
+            struct filter<T> {
+                using type = Sig<out..., typename ArgTraits<T>::unbind>;
+            };
+            using type = no_partials<filter<A>, As...>::type;
+        };
 
     public:
         static constexpr bool args_fit_within_bitset = n <= 64;
@@ -1038,7 +1052,12 @@ namespace impl {
             return param;
         }
 
+        Partial parts;
+
     public:
+        Sig(const Partial& other) : parts(other.parts) {}
+        Sig(Partial&& other) : parts(std::move(other.parts)) {}
+
         /* Produce an overload key that matches the enclosing parameter list. */
         static Params<std::array<Param, n>> key() {
             size_t hash = 0;
@@ -1084,6 +1103,17 @@ namespace impl {
                 }
             }
         }
+
+        /// TODO: partial arguments will have to be provided to the Overload trie
+        /// iterators, such that they can be automatically inserted when traversing
+        /// the trie, and only matching functions will be returned.  This might mess
+        /// with caching, since in practice, we would always need to include the
+        /// partial arguments in the key in order to make the hash stable and
+        /// unambiguous.
+        /// -> That actually may not require any changes, since basically I just have
+        /// to properly insert the partial arguments when building the key, which is
+        /// not always simple, but is at least centralized in the Partial<> class.
+        /// -> Actually yes it does, because the partial key isn't fully formed.
 
         /* A Trie-based data structure containing a pool of dynamic overloads for a
         `py::Function` object, which will be dispatched to when the function is called
@@ -2531,483 +2561,164 @@ namespace impl {
             }
         };
 
-    protected:
-        /// TODO: there's still lots of value in putting all of this within a helper
-        /// class called Partial, but it doesn't need to accept any template arguments,
-        /// and would work pretty much just like ::Defaults.  It should be as simple
-        /// as possible as a result, ideally only a couple hundred lines.  Invoke<> and
-        /// Vectorcall can be implemented outside it.  Partial might then become a
-        /// public type, possibly alongside Invoke<> and Vectorcall.
-        /// -> Then, the overall signature ::n, etc. will not include any of the
-        /// partial arguments, and ::Partial::n will hold the partial arguments, etc.
+        /// TODO: maybe the way the partial stuff works is by recurring on Invoke<A...>
+        /// itself?  And it would provide a ::signature member type that would encode
+        /// the called arguments into the enclosing signature.  That will be the return
+        /// type of ::bind().
+        /// -> In fact, This might completely replace ::Bind<...>, meaning Invoke<...>
+        /// can be simply renamed to Bind<...>, and a partial signature would be
+        /// constructed by accessing Bind<...>::signature or Bind<...>::partial.
+        /// Also, the template constraints should be lifted out of Invoke<> and used
+        /// to constrain the inputs instead, making this safe for public use, and
+        /// ensuring that the ::signature type is always valid.
 
+        /* Bind a source argument list to the enclosing signature and enable the
+        call operator as a 3-way merge between the partial arguments, default
+        values, and source arguments.  This implements all the complex template
+        metaprogramming needed to call an arbitrary C++ or Python function directly
+        from C++ with Python-style arguments. */
+        template <typename... Values>
+        struct Invoke {
+        private:
+            using Source = Sig<Return, Values...>;
 
+            template <size_t I, size_t K>
+            static constexpr bool _in_partial = false;
+            template <size_t I, size_t K> requires (K < Partial::n)
+            static constexpr bool _in_partial<I, K> =
+                I == std::tuple_element_t<K, typename Partial::Tuple>::index ||
+                _in_partial<I, K + 1>;
+            template <size_t I>
+            static constexpr bool in_partial = _in_partial<I, 0>;
+            template <StaticStr name>
+            static constexpr bool has_partial = false;
+            template <StaticStr name> requires (Sig::has<name>)
+            static constexpr bool has_partial<name> = in_partial<Sig::idx<name>>;
 
+            template <size_t, size_t>
+            static constexpr bool _no_extra_positional_args = true;
+            template <size_t I, size_t J>
+                requires (J < std::min({
+                    Source::args_idx,
+                    Source::kw_idx,
+                    Source::kwargs_idx
+                }))
+            static constexpr bool _no_extra_positional_args<I, J> =
+                I < std::min(Sig::kwonly_idx, Sig::kwargs_idx) &&
+                _no_extra_positional_args<
+                    I + 1,
+                    J + !in_partial<I>
+                >;
 
-
-        /// TODO: there will need to be a bunch of template constraints to make sure
-        /// that the partial arguments are valid for the target signature.  Probably
-        /// the best way to do that is to build up a sub-signature of just the partial
-        /// arguments, and then use that to validate similar to ::Defaults.  This would
-        /// only include posonly and kwonly arguments.
-
-
-
-        /* A tuple holding a sequence of partial arguments to supply to the enclosing
-        parameter list when the function is invoked.  One of these must be supplied
-        every time a function is called, which amounts to a 3-way merge between the
-        partial arguments, the given source arguments, and the default values, in that
-        order of precedence, such that the result exactly matches the target signature.
-        The partial arguments may be empty, in which case the constructor will be
-        optimized out. */
-        template <typename... Parts>
-            requires (
-                !(arg_pack<Parts> || ...) &&
-                !(kwarg_pack<Parts> || ...) &&
-                Sig<Return, Parts...>::proper_argument_order &&
-                Sig<Return, Parts...>::no_qualified_arg_annotations &&
-                Sig<Return, Parts...>::no_duplicate_arguments
-            )
-        struct Partial {
-        protected:
-            /// TODO: all the Tuple logic could be moved up to Signature pretty easily.
-            /// The only change is that rather than iterating over Parts..., it would
-            /// have to iterate over the target signature and extract out all the
-            /// bound arguments.
-
-            /* Represents a value stored in the partial tuple, which can be
-            cross-referenced with the target signature through compile-time
-            indices. */
-            template <size_t I, size_t K, StaticStr Name, typename T>
-            struct Entry {
-                static constexpr size_t target_idx = I;
-                static constexpr size_t partial_idx = K;
-                static constexpr StaticStr name = Name;
-                using type = T;
-                std::remove_cvref_t<type> value;
-
-                constexpr remove_rvalue<type> get(this auto&& self) {
-                    return std::forward<decltype(self)>(self).value;
-                }
-            };
-
-            /* Parses the partial arguments and identifies their indices in the
-            target signature, producing an unordered tuple of Entries. */
-            template <typename out, size_t, typename...>
-            struct collect { using type = out; };
-            template <typename... out, size_t K, typename P, typename... Ps>
-            struct collect<std::tuple<out...>, K, P, Ps...> {
-                template <typename P2>
-                struct find {
-                    using type = Entry<
-                        std::min(K, Sig::args_idx),
-                        K,
-                        "",
-                        typename ArgTraits<P2>::type
-                    >;
-                };
-                template <typename P2> requires (ArgTraits<P2>::kw())
-                struct find<P2> {
-                    template <StaticStr name>
-                    struct match {
-                        using type = Entry<
-                            Sig::kwargs_idx,
-                            K,
-                            name,
-                            typename ArgTraits<P2>::type
-                        >;
-                    };
-                    template <StaticStr name> requires (Sig::has<name>)
-                    struct match<name> {
-                        using type = Entry<
-                            Sig::idx<name>,
-                            K,
-                            name,
-                            typename ArgTraits<P2>::type
-                        >;
-                    };
-                    using type = match<ArgTraits<P2>::name>::type;
-                };
-                using type = collect<
-                    std::tuple<out..., typename find<P>::type>,
-                    K + 1,
-                    Ps...
-                >::type;
-            };
-
-            /* Reorder the argument tuple according to the target signature to
-            simplify validation logic.  Uses an insertion sort algorithm since it
-            is stable, optimized for small lists, and computable at compile time. */
-            template <typename>
-            struct sort;
-            template <typename... Entries>
-            struct sort<std::tuple<Entries...>> {
-                template <typename out, typename>
-                struct do_sort { using type = out; };
-                template <typename E, typename... Es>  // initial case
-                struct do_sort<std::tuple<>, std::tuple<E, Es...>> {
-                    using type = do_sort<std::tuple<E>, std::tuple<Es...>>::type;
-                };
-                template <typename T, typename... Ts, typename E, typename... Es>
-                struct do_sort<std::tuple<T, Ts...>, std::tuple<E, Es...>> {
-                    template <typename, typename>
-                    struct insert;
-                    template <typename... Prev, typename Curr, typename... Next>
-                        requires (E::target_idx < Curr::target_idx)
-                    struct insert<std::tuple<Prev...>, std::tuple<Curr, Next...>> {
-                        using type = std::tuple<Prev..., E, Curr, Next...>;
-                    };
-                    template <typename... Prev, typename Curr, typename... Next>
-                        requires (E::target_idx >= Curr::target_idx)
-                    struct insert<std::tuple<Prev...>, std::tuple<Curr, Next...>> {
-                        using type = insert<
-                            std::tuple<Prev..., Curr>,
-                            std::tuple<Next...>
-                        >::type;
-                    };
-                    template <typename... Prev>
-                    struct insert<std::tuple<Prev...>, std::tuple<>> {
-                        using type = std::tuple<Prev..., E>;
-                    };
-                    using type = do_sort<
-                        typename insert<std::tuple<>, std::tuple<T, Ts...>>::type,
-                        std::tuple<Es...>
-                    >::type;
-                };
-                using type = do_sort<std::tuple<>, std::tuple<Entries...>>::type;
-            };
-
-            using Tuple = sort<typename collect<std::tuple<>, 0, Parts...>::type>::type;
-            Tuple values;
-
-            template <size_t>
-            static constexpr size_t target_idx = Sig::n;
-            template <size_t K> requires (K < std::tuple_size_v<Tuple>)
-            static constexpr size_t target_idx<K> =
-                std::tuple_element_t<K, Tuple>::target_idx;
-
-            template <size_t J>
-            static constexpr auto build(Parts... parts) {
-                constexpr size_t idx = std::tuple_element_t<J, Tuple>::partial_idx;
-                return std::tuple_element_t<J, Tuple>{
-                    unpack_arg<idx>(std::forward<Parts>(parts)...)
-                };
-            }
-
-        public:
-            template <typename... Values>
-            struct Invoke;
-
-            using signature = Invoke<>::signature;
-            /// TODO: these should all be inverted using the annotated function signature,
-            /// such that chaining ::Bind<> calls will account for the partial
-            /// arguments that have already been filled in, so you can do some really
-            /// powerful metaprogramming, like currying until the function signature
-            /// has no remaining optional arguments, etc.
-            /// -> This can be naturally avoided by rolling the partial logic into the
-            /// corresponding Signature<> fields.
-
-            static constexpr size_t n               = Sig<Return, Parts...>::n;
-            static constexpr size_t n_pos           = Sig<Return, Parts...>::n_pos;
-            static constexpr size_t n_kw            = Sig<Return, Parts...>::n_kw;
-
-            template <StaticStr Name>
-            static constexpr bool has               = Sig<Return, Parts...>::template has<Name>;
-            static constexpr bool has_pos           = Sig<Return, Parts...>::has_pos;
-            static constexpr bool has_kw            = Sig<Return, Parts...>::has_kw;
-
-            template <StaticStr Name> requires (has<Name>)
-            static constexpr size_t idx             = Sig<Return, Parts...>::template idx<Name>;
-            static constexpr size_t kw_idx          = Sig<Return, Parts...>::kw_idx;
-
-            template <size_t I> requires (I < n)
-            using at = Sig<Return, Parts...>::template at<I>;
-
-            /// TODO: the ::partial<> chaining behavior needs to account for positional
-            /// vs keyword arguments.  So the following:
-            ///     Signature<...>::partial<int, Arg<"x", int>>::partial<int>
-            /// Will fill in a subsequent positional argument, rather than causing an
-            /// error.  That feature allows for proper currying, which is a cool thing
-            /// to support.
-            /// TODO: ::partial<> should be renamed to ::bind<> to better reflect the
-            /// semantics in the public function API.  The current ::Bind<> should be
-            /// renamed to either call<> or invoke<> to better reflect its purpose.
-            /// If call<> is used, then the private ::call<> type should be renamed
-            /// accordingly to avoid any confusion.
-
-            // template <typename... Values>
-            //     requires (
-            ///        TODO: proper argument order, etc?
-            //         Invoke<Parts..., Values...>::no_conflicting_values &&
-            //         Invoke<Parts..., Values...>::no_extra_positional_args &&
-            //         Invoke<Parts..., Values...>::no_extra_keyword_args &&
-            //         Invoke<Parts..., Values...>::can_convert
-            //     )
-            // using Bind = Partial<Parts..., Values...>;
-
-            template <std::convertible_to<Parts>... Ps>
-                requires (
-                    Partial<>::template Invoke<Ps...>::no_conflicting_values &&
-                    Partial<>::template Invoke<Ps...>::no_extra_positional_args &&
-                    Partial<>::template Invoke<Ps...>::no_extra_keyword_args &&
-                    Partial<>::template Invoke<Ps...>::can_convert
-                )
-            constexpr Partial(Ps&&... parts) : values(
-                []<size_t... Js>(std::index_sequence<Js...>, auto&&... parts) -> Tuple {
-                    return {{build<Js>(std::forward<decltype(parts)>(parts)...)}...};
-                }(std::index_sequence_for<Ps...>{}, std::forward<Ps>(parts)...)
-            ) {}
-
-            /// TODO: implement proper constraints for these
-
-            /* Unbinding a signature strips any partial arguments that have been encoded
-            into the target annotations, returning the same type of partial object as
-            Bind<>, for symmetry. */
-            using Unbind = Partial<>;
-
-            /* A compile-time equivalent to `.bind()`, which describes the merged
-            partial type that would be produced if that method were called with the
-            given arguments. */
-            template <typename... Values>
-            using Bind = decltype(std::declval<Partial>().bind(std::declval<Values>()...));
-
-            /* Produce another partial by merging the new args with those of this
-            partial.  This method allows partials to be incrementally chained, as you
-            would when implementing function currying, for example. */
-            template <typename... Values>
-            auto bind(this auto&& self, Values&&... args) {
-                return Invoke<Values...>::bind(
-                    std::forward<decltype(self)>(self),
-                    std::forward<Values>(args)...
-                );
-            }
-
-            /// TODO: get() would be boiled into the signature itself, and name<> can
-            /// be completely eliminated and replaced with std::tuple_element_t<...>.
-
-            /* Get the name of the partial argument at index K. */
-            template <size_t K> requires (K < std::tuple_size_v<Tuple>)
-            static constexpr StaticStr name = std::tuple_element_t<K, Tuple>::name;
-
-            /* Get the value of the partial argument at index K. */
-            template <size_t K> requires (K < std::tuple_size_v<Tuple>)
-            [[nodiscard]] constexpr decltype(auto) get(this auto&& self) {
-                return std::get<K>(std::forward<decltype(self)>(self).parts).get();
-            }
-
-            /* Get the value of the named partial argument. */
-            template <StaticStr name> requires (Sig<Return, Parts...>::template has<name>)
-            [[nodiscard]] constexpr decltype(auto) get(this auto&& self) {
-                return std::get<Sig<Return, Parts...>::template idx<name>>(
-                    std::forward<decltype(self)>(self).parts
-                ).get();
-            }
-
-            /* Invoke a C++ function using the partial arguments. */
-            template <typename P, inherits<Defaults> D, typename F, typename... Values>
-                requires (
-                    std::is_invocable_v<F, Args...> &&
-                    Invoke<Values...>::proper_argument_order &&
-                    Invoke<Values...>::no_qualified_arg_annotations &&
-                    Invoke<Values...>::no_duplicate_arguments &&
-                    Invoke<Values...>::no_conflicting_values &&
-                    Invoke<Values...>::no_extra_positional_args &&
-                    Invoke<Values...>::no_extra_keyword_args &&
-                    Invoke<Values...>::satisfies_required_args &&
-                    Invoke<Values...>::can_convert
-                )
-            constexpr std::invoke_result_t<F, Args...> operator()(
-                this P&& parts,
-                D&& defaults,
-                F&& func,
-                Values&&... args
-            ) {
-                return Invoke<Values...>{}(
-                    std::forward<P>(parts),
-                    std::forward<D>(defaults),
-                    std::forward<F>(func),
-                    std::forward<Values>(args)...
-                );
-            }
-
-            /* Invoke a Python function using the partial arguments. */
-            template <typename P, typename... Values>
-                requires (
-                    Invoke<Values...>::proper_argument_order &&
-                    Invoke<Values...>::no_qualified_arg_annotations &&
-                    Invoke<Values...>::no_duplicate_arguments &&
-                    Invoke<Values...>::no_conflicting_values &&
-                    Invoke<Values...>::no_extra_positional_args &&
-                    Invoke<Values...>::no_extra_keyword_args &&
-                    Invoke<Values...>::satisfies_required_args &&
-                    Invoke<Values...>::can_convert
-                )
-            Object operator()(
-                this P&& parts,
-                PyObject* func,
-                Values&&... args
-            ) {
-                return Invoke<Values...>{}(
-                    std::forward<P>(parts),
-                    func,
-                    std::forward<Values>(args)...
-                );
-            }
-
-            /* Bind a source argument list to the enclosing signature and enable the
-            call operator as a 3-way merge between the partial arguments, default
-            values, and source arguments.  This implements all the complex template
-            metaprogramming needed to call an arbitrary C++ or Python function directly
-            from C++ with Python-style arguments. */
-            template <typename... Values>
-            struct Invoke {
-            protected:
-                using Source = Sig<Return, Values...>;
-
-                template <size_t I, size_t K>
-                static constexpr bool _in_partial = false;
-                template <size_t I, size_t K> requires (K < std::tuple_size_v<Tuple>)
-                static constexpr bool _in_partial<I, K> =
-                    I == target_idx<K> || _in_partial<I, K + 1>;
-                template <size_t I>
-                static constexpr bool in_partial = _in_partial<I, 0>;
-
-                template <StaticStr name>
-                static constexpr bool has_partial = false;
-                template <StaticStr name> requires (Sig::has<name>)
-                static constexpr bool has_partial<name> =
-                    in_partial<Sig::idx<name>>;
-
-                template <size_t, size_t>
-                static constexpr bool _no_extra_positional_args = true;
-                template <size_t I, size_t J>
-                    requires (J < std::min({
-                        Source::args_idx,
-                        Source::kw_idx,
-                        Source::kwargs_idx
-                    }))
-                static constexpr bool _no_extra_positional_args<I, J> = [] {
-                    return
-                        I < std::min(Sig::kwonly_idx, Sig::kwargs_idx) &&
-                        _no_extra_positional_args<
-                            I + 1,
-                            J + !in_partial<I>
-                        >;
-                }();
-
-                template <size_t, size_t>
-                static constexpr bool _no_conflicting_values = true;
-                template <size_t I, size_t J>
-                    requires (I < std::min({
-                        Sig::args_idx,
-                        Sig::kwonly_idx,
-                        Sig::kwargs_idx
-                    }))
-                static constexpr bool _no_conflicting_values<I, J> = [] {
-                    return (
-                        in_partial<I> || ArgTraits<Sig::at<I>>::name == "" || !(
-                            Source::template has<ArgTraits<Sig::at<I>>::name> && (
-                                ArgTraits<Sig::at<I>>::posonly() ||
-                                J < std::min(Source::kw_idx, Source::kwargs_idx)
-                            )
-                        )
-                    ) && _no_conflicting_values<
-                        J == Source::args_idx ?
-                            std::min(Sig::kwonly_idx, Sig::kwargs_idx) :
-                            I + 1,
-                        J + !in_partial<I>
-                    >;
-                }();
-
-                template <size_t, size_t>
-                static constexpr bool _satisfies_required_args = true;
-                template <size_t I, size_t J> requires (I < Sig::n)
-                static constexpr bool _satisfies_required_args<I, J> = [] {
-                    return (
-                        in_partial<I> || ArgTraits<Sig::at<I>>::opt() ||
+            template <size_t, size_t>
+            static constexpr bool _no_conflicting_values = true;
+            template <size_t I, size_t J>
+                requires (I < std::min({
+                    Sig::args_idx,
+                    Sig::kwonly_idx,
+                    Sig::kwargs_idx
+                }))
+            static constexpr bool _no_conflicting_values<I, J> = [] {
+                return (
+                    in_partial<I> || ArgTraits<Sig::at<I>>::name.empty() || !(
                         (
-                            ArgTraits<Sig::at<I>>::pos() &&
-                                J < std::min(Source::kw_idx, Source::kwargs_idx)
-                        ) || (
-                            ArgTraits<Sig::at<I>>::kw() &&
-                                Source::template has<ArgTraits<Sig::at<I>>::name>
-                        )
-                    ) && _satisfies_required_args<
-                        J == Source::args_idx ?
-                            std::min(Sig::kwonly_idx, Sig::kwargs_idx) :
-                            I + 1,
-                        I == Sig::args_idx ?
-                            std::min(Source::kw_idx, Source::kwargs_idx) :
-                            J + !in_partial<I>
-                    >;
-                }();
+                            ArgTraits<Sig::at<I>>::posonly() ||
+                            J < std::min(Source::kw_idx, Source::kwargs_idx)
+                        ) &&
+                        Source::template has<ArgTraits<Sig::at<I>>::name>
+                    )
+                ) && _no_conflicting_values<
+                    J == Source::args_idx ?
+                        std::min(Sig::kwonly_idx, Sig::kwargs_idx) :
+                        I + 1,
+                    J + !in_partial<I>
+                >;
+            }();
 
-                template <size_t, size_t>
-                static constexpr bool _can_convert = true;
-                template <size_t I, size_t J> requires (I < Sig::n && J < Source::n)
-                static constexpr bool _can_convert<I, J> = [] {
-                    if constexpr (ArgTraits<Sig::at<I>>::args()) {
-                        constexpr size_t source_kw =
-                            std::min(Source::kw_idx, Source::kwargs_idx);
-                        return []<size_t... Js>(std::index_sequence<Js...>) {
-                            return (
-                                std::convertible_to<
+            template <size_t, size_t>
+            static constexpr bool _satisfies_required_args = true;
+            template <size_t I, size_t J> requires (I < Sig::n)
+            static constexpr bool _satisfies_required_args<I, J> = [] {
+                return (
+                    in_partial<I> ||
+                    ArgTraits<Sig::at<I>>::opt() ||
+                    ArgTraits<Sig::at<I>>::variadic() ||
+                    (
+                        ArgTraits<Sig::at<I>>::pos() &&
+                            J < std::min(Source::kw_idx, Source::kwargs_idx)
+                    ) || (
+                        ArgTraits<Sig::at<I>>::kw() &&
+                            Source::template has<ArgTraits<Sig::at<I>>::name>
+                    )
+                ) && _satisfies_required_args<
+                    J == Source::args_idx ?
+                        std::min(Sig::kwonly_idx, Sig::kwargs_idx) :
+                        I + 1,
+                    I == Sig::args_idx ?
+                        std::min(Source::kw_idx, Source::kwargs_idx) :
+                        J + !in_partial<I>
+                >;
+            }();
+
+            template <size_t, size_t>
+            static constexpr bool _can_convert = true;
+            template <size_t I, size_t J> requires (I < Sig::n && J < Source::n)
+            static constexpr bool _can_convert<I, J> = [] {
+                if constexpr (ArgTraits<Sig::at<I>>::args()) {
+                    constexpr size_t source_kw =
+                        std::min(Source::kw_idx, Source::kwargs_idx);
+                    return
+                        []<size_t... Js>(std::index_sequence<Js...>) {
+                            return (std::convertible_to<
+                                typename ArgTraits<typename Source::template at<J + Js>>::type,
+                                typename ArgTraits<Sig::at<I>>::type
+                            > && ...);
+                        }(std::make_index_sequence<J < source_kw ? source_kw - J : 0>{}) &&
+                        _can_convert<I + 1, source_kw>;
+
+                } else if constexpr (ArgTraits<Sig::at<I>>::kwargs()) {
+                    return
+                        []<size_t... Js>(std::index_sequence<Js...>) {
+                            return ((
+                                Sig::has<ArgTraits<
+                                    typename Source::template at<Source::kw_idx + Js>
+                                >::name> || std::convertible_to<
                                     typename ArgTraits<
-                                        typename Source::template at<J + Js>
+                                        typename Source::template at<Source::kw_idx + Js>
                                     >::type,
                                     typename ArgTraits<Sig::at<I>>::type
-                                > && ...
-                            );
-                        }(std::make_index_sequence<J < source_kw ? source_kw - J : 0>{}) &&
-                            _can_convert<I + 1, source_kw>;
-
-                    } else if constexpr (ArgTraits<Sig::at<I>>::kwargs()) {
-                        return []<size_t... Js>(std::index_sequence<Js...>) {
-                            return (
-                                (
-                                    Sig::has<ArgTraits<
-                                        typename Source::template at<Source::kw_idx + Js>
-                                    >::name> || std::convertible_to<
-                                        typename ArgTraits<
-                                            typename Source::template at<Source::kw_idx + Js>
-                                        >::type,
-                                        typename ArgTraits<Sig::at<I>>::type
-                                    >
-                                ) && ...
-                            );
+                                >
+                            ) && ...);
                         }(std::make_index_sequence<Source::n - Source::kw_idx>{}) &&
-                            _can_convert<I + 1, J>;
+                        _can_convert<I + 1, J>;
 
-                    } else if constexpr (in_partial<I>) {
-                        return _can_convert<I + 1, J>;
+                } else if constexpr (in_partial<I>) {
+                    return _can_convert<I + 1, J>;
 
-                    } else if constexpr (ArgTraits<
-                        typename Source::template at<J>
-                    >::posonly()) {
-                        return std::convertible_to<
+                } else if constexpr (ArgTraits<typename Source::template at<J>>::posonly()) {
+                    return std::convertible_to<
+                        typename ArgTraits<typename Source::template at<J>>::type,
+                        typename ArgTraits<Sig::at<I>>::type
+                    > && _can_convert<I + 1, J + 1>;
+
+                } else if constexpr (ArgTraits<typename Source::template at<J>>::kw()) {
+                    constexpr StaticStr name = ArgTraits<typename Source::template at<J>>::name;
+                    if constexpr (Sig::has<name>) {
+                        constexpr size_t idx = Sig::idx<name>;
+                        if constexpr (!std::convertible_to<
                             typename ArgTraits<typename Source::template at<J>>::type,
-                            typename ArgTraits<Sig::at<I>>::type
-                        > && _can_convert<I + 1, J + 1>;
+                            typename ArgTraits<Sig::at<idx>>::type
+                        >) {
+                            return false;
+                        };
+                    }
+                    return _can_convert<I + 1, J + 1>;
 
-                    } else if constexpr (ArgTraits<typename Source::template at<J>>::kw()) {
-                        constexpr StaticStr name = ArgTraits<
-                            typename Source::template at<J>
-                        >::name;
-                        if constexpr (Sig::has<name>) {
-                            constexpr size_t idx = Sig::idx<name>;
-                            if constexpr (!std::convertible_to<
-                                typename ArgTraits<typename Source::template at<J>>::type,
-                                typename ArgTraits<Sig::at<idx>>::type
-                            >) {
-                                return false;
-                            };
-                        }
-                        return _can_convert<I + 1, J + 1>;
-
-                    } else if constexpr (ArgTraits<typename Source::template at<J>>::args()) {
-                        constexpr size_t target_kw =
-                            std::min(Sig::kwonly_idx, Sig::kwargs_idx);
-                        return []<size_t... Is>(std::index_sequence<Is...>) {
+                } else if constexpr (ArgTraits<typename Source::template at<J>>::args()) {
+                    constexpr size_t target_kw =
+                        std::min(Sig::kwonly_idx, Sig::kwargs_idx);
+                    return
+                        []<size_t... Is>(std::index_sequence<Is...>) {
                             return (
                                 (
                                     in_partial<I + Is> || std::convertible_to<
@@ -3019,28 +2730,29 @@ namespace impl {
                                 ) && ...
                             );
                         }(std::make_index_sequence<I < target_kw ? target_kw - I : 0>{}) &&
-                            _can_convert<target_kw, J + 1>;
+                        _can_convert<target_kw, J + 1>;
 
-                    } else if constexpr (ArgTraits<typename Source::template at<J>>::kwargs()) {
-                        constexpr size_t cutoff = std::min({
-                            Source::args_idx,
-                            Source::kwonly_idx,
-                            Source::kwargs_idx
-                        });
-                        constexpr size_t target_kw = Source::has_args ?
-                            Sig::kwonly_idx :
-                            []<size_t... Ks>(std::index_sequence<Ks...>) {
-                                return std::max(
-                                    Sig::kw_idx,
-                                    Source::n_posonly + (0 + ... + (
-                                        std::tuple_element_t<
-                                            Ks,
-                                            Tuple
-                                        >::target_idx < cutoff
-                                    ))
-                                );
-                            }(std::make_index_sequence<std::tuple_size_v<Tuple>>{});
-                        return []<size_t... Is>(std::index_sequence<Is...>) {
+                } else if constexpr (ArgTraits<typename Source::template at<J>>::kwargs()) {
+                    constexpr size_t transition = std::min({
+                        Source::args_idx,
+                        Source::kwonly_idx,
+                        Source::kwargs_idx
+                    });
+                    constexpr size_t target_kw = Source::has_args ?
+                        Sig::kwonly_idx :
+                        []<size_t... Ks>(std::index_sequence<Ks...>) {
+                            return std::max(
+                                Sig::kw_idx,
+                                Source::n_posonly + (0 + ... + (
+                                    std::tuple_element_t<
+                                        Ks,
+                                        typename Partial::Tuple
+                                    >::target_idx < transition
+                                ))
+                            );
+                        }(std::make_index_sequence<Partial::n>{});
+                    return
+                        []<size_t... Is>(std::index_sequence<Is...>) {
                             return ((
                                 in_partial<target_kw + Is> || Source::template has<
                                     ArgTraits<Sig::at<target_kw + Is>>::name
@@ -3050,1242 +2762,200 @@ namespace impl {
                                 >
                             ) && ...);
                         }(std::make_index_sequence<Sig::n - target_kw>{}) &&
-                            _can_convert<I, J + 1>;
+                        _can_convert<I, J + 1>;
 
-                    } else {
-                        static_assert(false);
-                        return false;
-                    }
-                }();
+                } else {
+                    static_assert(false);
+                    return false;
+                }
+            }();
 
-                /* Source positional packs must be converted to this type, which
-                encloses a pair of iterators over the positional arguments.  The
-                iterators are consumed as arguments are extracted from the pack,
-                allowing for efficient validation by simply checking whether all
-                elements were consumed, and listing those that weren't. */
-                template <typename Pack>
-                struct PositionalPack {
-                    std::ranges::iterator_t<const Pack&> begin;
-                    std::ranges::sentinel_t<const Pack&> end;
-                    size_t size;
+            /* Source positional packs must be converted to this type, which
+            encloses a pair of iterators over the positional arguments.  The
+            iterators are consumed as arguments are extracted from the pack,
+            allowing for efficient validation by simply checking whether all
+            elements were consumed, and listing those that weren't. */
+            template <typename Pack>
+            struct PositionalPack {
+                std::ranges::iterator_t<const Pack&> begin;
+                std::ranges::sentinel_t<const Pack&> end;
+                size_t size;
 
-                    PositionalPack(const Pack& pack) :
-                        begin(std::ranges::begin(pack)),
-                        end(std::ranges::end(pack)),
-                        size(std::ranges::size(pack))
-                    {}
+                PositionalPack(const Pack& pack) :
+                    begin(std::ranges::begin(pack)),
+                    end(std::ranges::end(pack)),
+                    size(std::ranges::size(pack))
+                {}
 
-                    void validate() {
-                        if constexpr (!Sig::has_args) {
-                            if (begin != end) {
-                                std::string message =
-                                    "too many arguments in positional parameter pack: "
-                                    "['" + repr(*begin);
-                                while (++begin != end) {
-                                    message += "', '" + repr(*begin);
-                                }
-                                message += "']";
-                                throw TypeError(message);
+                void validate() {
+                    if constexpr (!Sig::has_args) {
+                        if (begin != end) {
+                            std::string message =
+                                "too many arguments in positional parameter pack: ['" +
+                                repr(*begin);
+                            while (++begin != end) {
+                                message += "', '" + repr(*begin);
                             }
+                            message += "']";
+                            throw TypeError(message);
                         }
                     }
+                }
 
-                    bool has_value() const { return begin != end; }
-                    decltype(auto) value() {
-                        decltype(auto) result = *begin;
-                        ++begin;
-                        return result;
-                    }
-                };
+                bool has_value() const { return begin != end; }
+                decltype(auto) value() {
+                    decltype(auto) result = *begin;
+                    ++begin;
+                    return result;
+                }
+            };
 
-                /* Source keyword packs must be converted to this type, which encloses
-                a temporary map of keyword names to their corresponding values.  The
-                `.extract()` method is used to destructively search the map and fill
-                in corresponding values, allowing for efficient validation by simply
-                checking whether the map is empty, and listing any remaining contents
-                if it is not. */
-                template <typename Pack>
-                struct KeywordPack {
-                    using Map = std::unordered_map<
-                        std::string,
-                        typename Pack::mapped_type
-                    >;
-                    Map map;
+            /* Source keyword packs must be converted to this type, which encloses
+            a temporary map of keyword names to their corresponding values.  The
+            `.extract()` method is used to destructively search the map and fill
+            in corresponding values, allowing for efficient validation by simply
+            checking whether the map is empty, and listing any remaining contents
+            if it is not. */
+            template <typename Pack>
+            struct KeywordPack {
+                using Map = std::unordered_map<
+                    std::string,
+                    typename Pack::mapped_type
+                >;
+                Map map;
 
-                    KeywordPack(const Pack& pack) :
-                        map([](const Pack& pack) {
-                            Map map;
-                            map.reserve(pack.size());
-                            for (auto&& [key, value] : pack) {
-                                auto [_, inserted] = map.emplace(key, value);
-                                if (!inserted) {
-                                    throw TypeError(
-                                        "duplicate keyword argument: '" +
-                                        repr(key) + "'"
-                                    );
-                                }
-                            }
-                            return map;
-                        }(pack))
-                    {}
-
-                    void validate() {
-                        if constexpr (!Sig::has_kwargs) {
-                            if (!map.empty()) {
-                                auto it = map.begin();
-                                auto end = map.end();
-                                std::string message =
-                                    "unexpected keyword arguments: ['" + it->first;
-                                while (++it != end) {
-                                    message += "', '" + it->first;
-                                }
-                                message += "']";
-                                throw TypeError(message);
+                KeywordPack(const Pack& pack) :
+                    map([](const Pack& pack) {
+                        Map map;
+                        map.reserve(pack.size());
+                        for (auto&& [key, value] : pack) {
+                            auto [it, inserted] = map.emplace(
+                                std::forward<decltype(key)>(key),
+                                std::forward<decltype(value)>(value)
+                            );
+                            if (!inserted) {
+                                throw TypeError(
+                                    "duplicate keyword argument: '" + it->first + "'"
+                                );
                             }
                         }
+                        return map;
+                    }(pack))
+                {}
+
+                void validate() {
+                    if constexpr (!Sig::has_kwargs) {
+                        if (!map.empty()) {
+                            auto it = map.begin();
+                            auto end = map.end();
+                            std::string message =
+                                "unexpected keyword arguments: ['" + it->first;
+                            while (++it != end) {
+                                message += "', '" + it->first;
+                            }
+                            message += "']";
+                            throw TypeError(message);
+                        }
                     }
+                }
 
-                    auto size() const { return map.size(); }
-                    template <typename T>
-                    auto extract(T&& key) { return map.extract(std::forward<T>(key)); }
-                    auto begin() { return map.begin(); }
-                    auto end() { return map.end(); }
-                };
+                auto size() const { return map.size(); }
+                template <typename T>
+                auto extract(T&& key) { return map.extract(std::forward<T>(key)); }
+                auto begin() { return map.begin(); }
+                auto end() { return map.end(); }
+            };
 
-                template <typename Pack>
-                PositionalPack(const Pack& pack) -> PositionalPack<Pack>;
-                template <typename Pack>
-                KeywordPack(const Pack& pack) -> KeywordPack<Pack>;
+            template <typename Pack>
+            PositionalPack(const Pack& pack) -> PositionalPack<Pack>;
+            template <typename Pack>
+            KeywordPack(const Pack& pack) -> KeywordPack<Pack>;
 
-                template <typename... A>
-                static constexpr bool pos_pack_idx = 0;
-                template <typename T, typename... As>
-                static constexpr bool pos_pack_idx<PositionalPack<T>, As...> = 0;
-                template <typename A, typename... As>
-                static constexpr bool pos_pack_idx<A, As...> = pos_pack_idx<As...> + 1;
+            template <typename... A>
+            static constexpr bool pos_pack_idx = 0;
+            template <typename T, typename... As>
+            static constexpr bool pos_pack_idx<PositionalPack<T>, As...> = 0;
+            template <typename A, typename... As>
+            static constexpr bool pos_pack_idx<A, As...> = pos_pack_idx<As...> + 1;
 
-                template <typename... A>
-                static constexpr bool kw_pack_idx = 0;
-                template <typename T, typename... As>
-                static constexpr bool kw_pack_idx<KeywordPack<T>, As...> = 0;
-                template <typename A, typename... As>
-                static constexpr bool kw_pack_idx<A, As...> = kw_pack_idx<As...> + 1;
+            template <typename... A>
+            static constexpr bool kw_pack_idx = 0;
+            template <typename T, typename... As>
+            static constexpr bool kw_pack_idx<KeywordPack<T>, As...> = 0;
+            template <typename A, typename... As>
+            static constexpr bool kw_pack_idx<A, As...> = kw_pack_idx<As...> + 1;
 
-                template <size_t I, size_t J, size_t K>
-                struct call {  // terminal case
-                    template <typename out>
-                    struct normalize { using type = out; };
+            template <size_t I, size_t J, size_t K>
+            struct call {  // terminal case
+                template <typename out>
+                struct normalize { using type = out; };
 
-                    template <typename P, typename... A>
-                    static auto bind(
+                /// TODO: implement an algorithm to compute the proper return type for
+                /// bind()?  This is essentially the same as ::normalize, but without
+                /// the benefit of Parts... to guide the process.  It's a bit tricky.
+
+                template <typename P, typename... A>
+                static auto bind(
+                    P&& parts,
+                    A&&... args
+                ) {
+                    return {std::forward<A>(args)...};
+                }
+
+                /* Invoking a C++ function involves a 3-way merge of the partial
+                arguments, source arguments, and default values, in that order of
+                precedence.  By the end, the parameters are guaranteed to exactly
+                match the enclosing signature, such that it can be passed to a
+                matching function with the intended semantics.  This is done by
+                inserting, removing, and reordering parameters from the argument
+                list at compile time using index sequences and fold expressions,
+                which can be inlined into the final call. */
+                struct cpp {
+                    template <typename P, typename D, typename F, typename... A>
+                    static constexpr std::invoke_result_t<F, Args...> operator()(
                         P&& parts,
+                        D&& defaults,
+                        F&& func,
                         A&&... args
                     ) {
-                        return Partial<A...>{std::forward<A>(args)...};
-                    }
-
-                    /* Invoking a C++ function involves a 3-way merge of the partial
-                    arguments, source arguments, and default values, in that order of
-                    precedence.  By the end, the parameters are guaranteed to exactly
-                    match the enclosing signature, such that it can be passed to a
-                    matching function with the intended semantics.  This is done by
-                    inserting, removing, and reordering parameters from the argument
-                    list at compile time using index sequences and fold expressions,
-                    which can be inlined into the final call. */
-                    struct cpp {
-                        template <typename P, typename D, typename F, typename... A>
-                        static constexpr std::invoke_result_t<F, Args...> operator()(
-                            P&& parts,
-                            D&& defaults,
-                            F&& func,
-                            A&&... args
-                        ) {
-                            // validate and remove positional parameter packs
-                            if constexpr (pos_pack_idx<A...> < sizeof...(A)) {
-                                constexpr size_t idx = pos_pack_idx<A...>;
-                                return []<size_t... Prev, size_t... Next>(
-                                    std::index_sequence<Prev...>,
-                                    std::index_sequence<Next...>,
-                                    auto&& parts,
-                                    auto&& defaults,
-                                    auto&& func,
-                                    auto&&... args
-                                ) {
-                                    auto& pack = unpack_arg<idx>(
-                                        std::forward<decltype(args)>(args)...
-                                    );
-                                    pack.validate();
-                                    return typename call<I, J, K>::cpp{}(
-                                        std::forward<decltype(parts)>(parts),
-                                        std::forward<decltype(defaults)>(defaults),
-                                        std::forward<decltype(func)>(func),
-                                        unpack_arg<Prev>(
-                                            std::forward<decltype(args)>(args)...
-                                        )...,
-                                        unpack_arg<idx + 1 + Next>(
-                                            std::forward<decltype(args)>(args)...
-                                        )...
-                                    );
-                                }(
-                                    std::make_index_sequence<J>{},
-                                    std::make_index_sequence<sizeof...(A) - (idx + 1)>{},
-                                    std::forward<P>(parts),
-                                    std::forward<D>(defaults),
-                                    std::forward<F>(func),
-                                    std::forward<A>(args)...
-                                );
-
-                            // validate and remove keyword parameter packs
-                            } else if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
-                                constexpr size_t idx = kw_pack_idx<A...>;
-                                return []<size_t... Prev, size_t... Next>(
-                                    std::index_sequence<Prev...>,
-                                    std::index_sequence<Next...>,
-                                    auto&& parts,
-                                    auto&& defaults,
-                                    auto&& func,
-                                    auto&&... args
-                                ) {
-                                    auto& pack = unpack_arg<idx>(
-                                        std::forward<decltype(args)>(args)...
-                                    );
-                                    pack.validate();
-                                    return typename call<I, J, K>::cpp{}(
-                                        std::forward<decltype(parts)>(parts),
-                                        std::forward<decltype(defaults)>(defaults),
-                                        std::forward<decltype(func)>(func),
-                                        unpack_arg<Prev>(
-                                            std::forward<decltype(args)>(args)...
-                                        )...,
-                                        unpack_arg<idx + 1 + Next>(
-                                            std::forward<decltype(args)>(args)...
-                                        )...
-                                    );
-                                }(
-                                    std::make_index_sequence<J>{},
-                                    std::make_index_sequence<sizeof...(A) - (idx + 1)>{},
-                                    std::forward<P>(parts),
-                                    std::forward<D>(defaults),
-                                    std::forward<F>(func),
-                                    std::forward<A>(args)...
-                                );
-
-                            // call the function with the final argument list
-                            } else {
-                                return std::forward<F>(func)(std::forward<A>(args)...);
-                            }
-                        }
-                    };
-
-                    /* Invoking a Python function involves populating an argument
-                    array according to a C++ parameter list.  Such an array can then be
-                    used to efficiently call a Python function using the vectorcall
-                    protocol, which is the fastest way to call a Python
-                    function from C++.  Here's the basic layout:
-
-                                             ( kwnames tuple )
-                         -------------------------------------
-                         | x | p | p | p |...| k | k | k |...|
-                         -------------------------------------
-                               ^             ^
-                               |             nargs ends here
-                               *args starts here
-
-                    Where 'x' is an optional first element that can be temporarily
-                    written to in order to efficiently forward the `self` argument
-                    for bound methods, etc.  The presence of this argument is
-                    determined by the PY_VECTORCALL_ARGUMENTS_OFFSET flag, which is
-                    encoded in nargs.  You can check for its presence by bitwise
-                    AND-ing against nargs, and the true number of arguments must be
-                    extracted using `PyVectorcall_NARGS(nargs)` to account for this.
-
-                    If PY_VECTORCALL_ARGUMENTS_OFFSET is set and 'x' is written to,
-                    then it must always be reset to its original value before the
-                    function returns.  This allows for nested forwarding/scoping
-                    using the same argument list, with no extra allocations.  We always
-                    enable it here, since it's a free optimization for downstream code
-                    that makes use of it. */
-                    struct python {
-                        static constexpr size_t n_partial_keywords = 0;
-
-                        template <typename P, typename... A>
-                        static Params<std::vector<Param>> key(
-                            std::vector<Param>& out,
-                            size_t hash,
-                            P&& parts,
-                            A&&... args
-                        ) {
-                            return {
-                                .value = std::move(out),
-                                .hash = hash
-                            };
-                        }
-
-                        template <typename P, typename... A>
-                        static Object operator()(
-                            P&& parts,
-                            PyObject** array,
-                            size_t idx,
-                            PyObject* kwnames,
-                            size_t kw_idx,
-                            PyObject* func,
-                            A&&... args
-                        ) {
-                            try {
-                                if constexpr (pos_pack_idx<A...> < sizeof...(A)) {
-                                    auto& pack = unpack_arg<pos_pack_idx<A...>>(
-                                        std::forward<A>(args)...
-                                    );
-                                    pack.validate();
-                                }
-                                if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
-                                    auto& pack = unpack_arg<kw_pack_idx<A...>>(
-                                        std::forward<A>(args)...
-                                    );
-                                    pack.validate();
-                                }
-                            } catch(...) {
-                                for (size_t i = 0; i < idx; ++i) {
-                                    Py_DECREF(array[i]);
-                                }
-                                throw;
-                            }
-                            PyObject* result = PyObject_Vectorcall(
-                                func,
-                                array - 1,  // account for vectorcall offset
-                                (idx - kw_idx) | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                                kwnames
-                            );
-                            for (size_t i = 0; i < idx; ++i) {
-                                Py_DECREF(array[i]);
-                            }
-                            if (result == nullptr) {
-                                Exception::from_python();
-                            }
-                            return reinterpret_steal<Object>(result);
-                        }
-                    };
-                };
-                template <size_t I, size_t J, size_t K>
-                    requires (
-                        I < Sig::n &&
-                        (K < std::tuple_size_v<Tuple> && target_idx<K> == I)
-                    )
-                struct call<I, J, K> {  // insert partial argument(s)
-                    template <size_t K2>
-                    static constexpr size_t consecutive = 0;
-                    template <size_t K2>
-                        requires (K2 < std::tuple_size_v<Tuple> && target_idx<K2> == I)
-                    static constexpr size_t consecutive<K2> = consecutive<K2 + 1> + 1;
-
-                    template <typename>
-                    struct normalize;
-                    template <typename R, typename... out>
-                    struct normalize<R(out...)> {
-                        template <typename P, size_t>
-                        struct bind {
-                            template <typename>
-                            struct finalize;
-                            template <typename... Ts>
-                            struct finalize<pack<Ts...>> {
-                                using type = Sig::at<I>::template bind<Ts...>;
-                            };
-                            using type = finalize<P>::type;
-                        };
-                        template <typename... final, size_t K2>
-                            requires (K2 < consecutive<K>)
-                        struct bind<pack<final...>, K2> {
-                            using entry = std::tuple_element_t<K2, Tuple>;
-                            using T = unpack_type<entry::partial_idx, Parts...>;
-                            using type = bind<pack<final..., T>, K2 + 1>::type;
-                        };
-                        using next = call<I + 1, J, K + consecutive<K>>;
-                        using func = R(out..., typename bind<pack<>, K>::type);
-                        using type = next::template normalize<func>::type;
-                    };
-
-                    template <typename P, typename... A>
-                    static auto bind(
-                        P&& parts,
-                        A&&... args
-                    ) {
-                        using T = Sig::at<I>;
-                        if constexpr (ArgTraits<T>::args()) {
-                            constexpr size_t transition = Sig<Return, A...>::kw_idx;
-                            return []<size_t... Prev, size_t... Ks, size_t... Next>(
-                                std::index_sequence<Prev...>,
-                                std::index_sequence<Ks...>,
-                                std::index_sequence<Next...>,
-                                auto&& parts,
-                                auto&&... args
-                            ) {
-                                return call<
-                                    I + 1,
-                                    transition + consecutive<K>,
-                                    K + consecutive<K>
-                                >::bind(
-                                    std::forward<decltype(parts)>(parts),
-                                    unpack_arg<Prev>(
-                                        std::forward<decltype(args)>(args)
-                                    )...,
-                                    std::forward<decltype(parts)>(
-                                        parts
-                                    ).template get<K + Ks>()...,
-                                    unpack_arg<transition + Next>(
-                                        std::forward<decltype(args)>(args)
-                                    )...
-                                );
-                            }(
-                                std::make_index_sequence<J>{},
-                                std::make_index_sequence<consecutive<K>>{},
-                                std::make_index_sequence<sizeof...(A) - transition>{},
-                                std::forward<P>(parts),
-                                std::forward<A>(args)...
-                            );
-
-                        } else if constexpr (ArgTraits<T>::kwargs()) {
-                            return []<size_t... Prev, size_t... Ks, size_t... Next>(
-                                std::index_sequence<Prev...>,
-                                std::index_sequence<Ks...>,
-                                auto&& parts,
-                                auto&&... args
-                            ) {
-                                return call<
-                                    I + 1,
-                                    sizeof...(A) + consecutive<K>,
-                                    K + consecutive<K>
-                                >::bind(
-                                    std::forward<decltype(parts)>(parts),
-                                    unpack_arg<Prev>(
-                                        std::forward<decltype(args)>(args)
-                                    )...,
-                                    arg<std::tuple_element_t<K + Ks, Tuple>::name> =
-                                        std::forward<decltype(parts)>(
-                                            parts
-                                        ).template get<K + Ks>()...,
-                                    unpack_arg<J + Next>(
-                                        std::forward<decltype(args)>(args)
-                                    )...
-                                );
-                            }(
-                                std::make_index_sequence<J>{},
-                                std::make_index_sequence<consecutive<K>>{},
-                                std::make_index_sequence<sizeof...(A) - J>{},
-                                std::forward<P>(parts),
-                                std::forward<A>(args)...
-                            );
-
-                        } else {
+                        // validate and remove positional parameter packs
+                        if constexpr (pos_pack_idx<A...> < sizeof...(A)) {
+                            constexpr size_t idx = pos_pack_idx<A...>;
                             return []<size_t... Prev, size_t... Next>(
                                 std::index_sequence<Prev...>,
                                 std::index_sequence<Next...>,
-                                auto&& parts,
-                                auto&&... args
-                            ) {
-                                using bound = std::tuple_element_t<K, Tuple>;
-                                using orig = unpack_type<
-                                    bound::partial_idx,
-                                    Parts...
-                                >;
-                                // demote keywords in the original partial into
-                                // positional arguments in the new partial if the next
-                                // source arg is positional and the target arg can be
-                                // both positional or keyword
-                                if constexpr (!ArgTraits<orig>::kw() && !(
-                                    (J < Sig<Return, A...>::kw_idx) &&
-                                    (ArgTraits<T>::pos() && ArgTraits<T>::kw())
-                                )) {
-                                    return call<I + 1, J + 1, K + 1>::bind(
-                                        std::forward<decltype(parts)>(parts),
-                                        unpack_arg<Prev>(
-                                            std::forward<decltype(args)>(args)
-                                        )...,
-                                        arg<ArgTraits<orig>::name> =
-                                            std::forward<decltype(parts)>(
-                                                parts
-                                            ).template get<K>(),
-                                        unpack_arg<J + Next>(
-                                            std::forward<decltype(args)>(args)
-                                        )...
-                                    );
-                                } else {
-                                    return call<I + 1, J + 1, K + 1>::bind(
-                                        std::forward<decltype(parts)>(parts),
-                                        unpack_arg<Prev>(
-                                            std::forward<decltype(args)>(args)
-                                        )...,
-                                        std::forward<decltype(parts)>(
-                                            parts
-                                        ).template get<K>(),
-                                        unpack_arg<J + Next>(
-                                            std::forward<decltype(args)>(args)
-                                        )...
-                                    );
-                                }
-                            }(
-                                std::make_index_sequence<J>{},
-                                std::make_index_sequence<sizeof...(A) - J>{},
-                                std::forward<P>(parts),
-                                std::forward<A>(args)...
-                            );
-                        }
-                    }
-
-                    struct cpp {
-                        template <typename P, typename D, typename F, typename... A>
-                        static constexpr std::invoke_result_t<F, Args...> operator()(
-                            P&& parts,
-                            D&& defaults,
-                            F&& func,
-                            A&&... args
-                        ) {
-                            using T = Sig::at<I>;
-
-                            if constexpr (ArgTraits<T>::args()) {
-                                constexpr size_t transition = std::min(
-                                    Sig<Return, A...>::kw_idx,
-                                    kw_pack_idx<A...>
-                                );
-                                return []<size_t... Prev, size_t... Next>(
-                                    std::index_sequence<Prev...>,
-                                    std::index_sequence<Next...>,
-                                    auto&& parts,
-                                    auto&& defaults,
-                                    auto&& func,
-                                    auto&&... args
-                                ) {
-                                    return typename call<
-                                        I + 1,
-                                        J + 1,
-                                        K + consecutive<K>
-                                    >::cpp{}(
-                                        std::forward<decltype(parts)>(parts),
-                                        std::forward<decltype(defaults)>(defaults),
-                                        std::forward<decltype(func)>(func),
-                                        unpack_arg<Prev>(
-                                            std::forward<decltype(args)>(args)...
-                                        )...,
-                                        to_arg<I>(variadic_positional(
-                                            std::forward<decltype(parts)>(parts),
-                                            std::forward<decltype(args)>(args)...
-                                        )),
-                                        unpack_arg<transition + Next>(
-                                            std::forward<decltype(args)>(args)...
-                                        )...
-                                    );
-                                }(
-                                    std::make_index_sequence<J>{},
-                                    std::make_index_sequence<sizeof...(A) - transition>{},
-                                    std::forward<P>(parts),
-                                    std::forward<D>(defaults),
-                                    std::forward<F>(func),
-                                    std::forward<A>(args)...
-                                );
-
-                            } else if constexpr (ArgTraits<T>::kwargs()) {
-                                return []<size_t... Prev>(
-                                    std::index_sequence<Prev...>,
-                                    auto&& parts,
-                                    auto&& defaults,
-                                    auto&& func,
-                                    auto&&... args
-                                ) {
-                                    return typename call<
-                                        I + 1,
-                                        J + 1,
-                                        K + consecutive<K>
-                                    >::cpp{}(
-                                        std::forward<decltype(parts)>(parts),
-                                        std::forward<decltype(defaults)>(defaults),
-                                        std::forward<decltype(func)>(func),
-                                        unpack_arg<Prev>(
-                                            std::forward<decltype(args)>(args)...
-                                        )...,
-                                        to_arg<I>(variadic_keywords(
-                                            std::forward<decltype(parts)>(parts),
-                                            std::forward<decltype(args)>(args)...
-                                        ))
-                                    );
-                                }(
-                                    std::make_index_sequence<J>{},
-                                    std::forward<P>(parts),
-                                    std::forward<D>(defaults),
-                                    std::forward<F>(func),
-                                    std::forward<A>(args)...
-                                );
-
-                            } else {
-                                return []<size_t... Prev, size_t... Next>(
-                                    std::index_sequence<Prev...>,
-                                    std::index_sequence<Next...>,
-                                    auto&& parts,
-                                    auto&& defaults,
-                                    auto&& func,
-                                    auto&&... args
-                                ) {
-                                    return typename call<I + 1, J + 1, K + 1>::cpp{}(
-                                        std::forward<decltype(parts)>(parts),
-                                        std::forward<decltype(defaults)>(defaults),
-                                        std::forward<decltype(func)>(func),
-                                        unpack_arg<Prev>(
-                                            std::forward<decltype(args)>(args)...
-                                        )...,
-                                        to_arg<I>(std::forward<decltype(parts)>(
-                                            parts
-                                        ).template get<K>()),
-                                        unpack_arg<J + Next>(
-                                            std::forward<decltype(args)>(args)...
-                                        )...
-                                    );
-                                }(
-                                    std::make_index_sequence<J>{},
-                                    std::make_index_sequence<sizeof...(A) - J>{},
-                                    std::forward<P>(parts),
-                                    std::forward<D>(defaults),
-                                    std::forward<F>(func),
-                                    std::forward<A>(args)...
-                                );
-                            }
-                        }
-
-                    private:
-
-                        template <size_t J2, typename T, typename... A>
-                        static void _variadic_positional(
-                            std::vector<T>& out,
-                            A&&... args
-                        ) {
-                            if constexpr (J2 == pos_pack_idx<A...>) {
-                                auto& pack = unpack_arg<J2>(std::forward<A>(args)...);
-                                out.insert(out.end(), pack.begin(), pack.end());
-                            } else {
-                                out.emplace_back(unpack_arg<J2>(
-                                    std::forward<A>(args)...
-                                ));
-                            }
-                        }
-
-                        template <typename P, typename... A>
-                        static auto variadic_positional(P&& parts, A&&... args) {
-                            using T = Sig::at<I>;
-                            constexpr size_t transition = std::min(
-                                Sig<Return, A...>::kw_idx,
-                                kw_pack_idx<A...>
-                            );
-                            constexpr size_t diff = J < transition ? transition - J : 0;
-
-                            // allocate variadic positional array
-                            using vec = std::vector<typename ArgTraits<T>::type>;
-                            vec out;
-                            if constexpr (diff && pos_pack_idx<A...> < sizeof...(A)) {
-                                out.reserve(
-                                    consecutive<K> +
-                                    (diff - 1) +
-                                    unpack_arg<pos_pack_idx<A...>>(
-                                        std::forward<A>(args)...
-                                    ).size()
-                                );
-                            } else {
-                                out.reserve(consecutive<K> + diff);
-                            }
-
-                            // consume partial args
-                            []<size_t... Ks>(
-                                std::index_sequence<Ks...>,
-                                vec& out,
-                                auto&& parts
-                            ) {
-                                (out.emplace_back(std::forward<decltype(parts)>(
-                                    parts
-                                ).template get<K + Ks>()), ...);
-                            }(
-                                std::make_index_sequence<consecutive<K>>{},
-                                out,
-                                std::forward<P>(parts)
-                            );
-
-                            // consume source args + parameter packs
-                            []<size_t... Js>(
-                                std::index_sequence<Js...>,
-                                vec& out,
-                                auto&&... args
-                            ) {
-                                (_variadic_positional<J + Js>(
-                                    out,
-                                    std::forward<decltype(args)>(args)...
-                                ), ...);
-                            }(
-                                std::make_index_sequence<diff>{},
-                                out,
-                                std::forward<A>(args)...
-                            );
-                            return out;
-                        }
-
-                        template <size_t J2, typename T, typename... A>
-                        static void _variadic_keywords(
-                            std::unordered_map<std::string, T>& out,
-                            A&&... args
-                        ) {
-                            if constexpr (J2 == kw_pack_idx<A...>) {
-                                auto& pack = unpack_arg<J2>(std::forward<A>(args)...);
-                                auto it = pack.begin();
-                                auto end = pack.end();
-                                while (it != end) {
-                                    // postfix ++ required to increment before invalidation
-                                    auto node = pack.extract(it++);
-                                    auto rc = out.insert(node);
-                                    if (!rc.inserted) {
-                                        throw TypeError(
-                                            "duplicate value for parameter '" +
-                                            node.key() + "'"
-                                        );
-                                    }
-                                }
-                            } else {
-                                out.emplace(
-                                    ArgTraits<unpack_type<J2, A...>>::name,
-                                    unpack_arg<J2>(std::forward<A>(args)...)
-                                );
-                            }
-                        }
-
-                        template <typename P, typename... A>
-                        static auto variadic_keywords(P&& parts, A&&... args) {
-                            using T = Sig::at<I>;
-                            constexpr size_t diff = Source::n - J;
-
-                            // allocate variadic keyword map
-                            using map = std::unordered_map<
-                                std::string,
-                                typename ArgTraits<T>::type
-                            >;
-                            map out;
-                            if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
-                                out.reserve(
-                                    consecutive<K> +
-                                    (diff - 1) +
-                                    unpack_arg<kw_pack_idx<A...>>(
-                                        std::forward<A>(args)...
-                                    ).size()
-                                );
-                            } else {
-                                out.reserve(consecutive<K> + diff);
-                            }
-
-                            // consume partial kwargs
-                            []<size_t... Ks>(
-                                std::index_sequence<Ks...>,
-                                map& out,
-                                auto&& parts
-                            ) {
-                                (out.emplace(
-                                    Partial::name<K + Ks>,
-                                    std::forward<decltype(parts)>(
-                                        parts
-                                    ).template get<K + Ks>()
-                                ), ...);
-                            }(
-                                std::make_index_sequence<consecutive<K>>{},
-                                out,
-                                std::forward<P>(parts)
-                            );
-
-                            // consume source kwargs + parameter packs
-                            []<size_t... Js>(
-                                std::index_sequence<Js...>,
-                                map& out,
-                                auto&&... args
-                            ) {
-                                (_variadic_keywords<J + Js>(
-                                    out,
-                                    std::forward<decltype(args)>(args)...
-                                ), ...);
-                            }(
-                                std::make_index_sequence<diff>{},
-                                out,
-                                std::forward<A>(args)...
-                            );
-                            return out;
-                        }
-                    };
-
-                    struct python {
-                        static constexpr size_t n_partial_keywords = [] {
-                            constexpr size_t next = call<
-                                I + 1,
-                                J,
-                                K + consecutive<K>
-                            >::python::n_partial_keywords;
-                            if constexpr (
-                                ArgTraits<Sig::at<I>>::kwonly() ||
-                                ArgTraits<Sig::at<I>>::kwargs()
-                            ) {
-                                return next + consecutive<K>;
-                            } else if constexpr (ArgTraits<Sig::at<I>>::kw()) {
-                                return next + (J >= Source::kw_idx);
-                            } else {
-                                return next;
-                            }
-                        }();
-
-                        template <typename P, typename... A>
-                        static Params<std::vector<Param>> key(
-                            std::vector<Param>& out,
-                            size_t hash,
-                            P&& parts,
-                            A&&... args
-                        ) {
-                            using T = Sig::at<I>;
-                            if constexpr (
-                                ArgTraits<T>::kwargs() ||
-                                ArgTraits<T>::kwonly() ||
-                                (
-                                    ArgTraits<T>::kw() &&
-                                    pos_pack_idx<A...> >= sizeof...(A) &&
-                                    J >= std::min(
-                                        Sig<Return, A...>::kw_idx,
-                                        kw_pack_idx<A...>
-                                    )
-                                )
-                            ) {
-                                out.emplace_back(
-                                    Partial::name<K>,
-                                    to_python(
-                                        std::forward<P>(parts).template get<K>()
-                                    ),
-                                    ArgKind::KW
-                                );
-                            } else {
-                                out.emplace_back(
-                                    "",
-                                    to_python(
-                                        std::forward<P>(parts).template get<K>()
-                                    ),
-                                    ArgKind::POS
-                                );
-                            }
-                            return call<
-                                I + !ArgTraits<T>::variadic(),
-                                J,
-                                K + 1
-                            >::python::key(
-                                out,
-                                hash_combine(hash, out.back().hash(seed, prime)),
-                                std::forward<P>(parts),
-                                std::forward<A>(args)...
-                            );
-                        }
-
-                        template <typename P, typename... A>
-                        static Object operator()(
-                            P&& parts,
-                            PyObject** array,
-                            size_t idx,
-                            PyObject* kwnames,
-                            size_t kw_idx,
-                            PyObject* func,
-                            A&&... args
-                        ) {
-                            using T = Sig::at<I>;
-                            try {
-                                array[idx] = release(to_python(
-                                    std::forward<P>(parts).template get<K>()
-                                ));
-                                ++idx;
-                                if constexpr (
-                                    ArgTraits<T>::kwargs() ||
-                                    ArgTraits<T>::kwonly() ||
-                                    (
-                                        ArgTraits<T>::kw() &&
-                                        pos_pack_idx<A...> >= sizeof...(A) &&
-                                        J >= std::min(
-                                            Sig<Return, A...>::kw_idx,
-                                            kw_pack_idx<A...>
-                                        )
-                                    )
-                                ) {
-                                    PyTuple_SET_ITEM(
-                                        kwnames,
-                                        kw_idx,
-                                        release(template_string<Partial::name<K>>())
-                                    );
-                                    ++kw_idx;
-                                }
-                            } catch (...) {
-                                for (size_t i = 0; i < idx; ++i) {
-                                    Py_DECREF(array[i]);
-                                }
-                                throw;
-                            }
-                            return typename call<
-                                I + !ArgTraits<T>::variadic(),
-                                J,
-                                K + 1
-                            >::python{}(
-                                std::forward<P>(parts),
-                                array,
-                                idx,
-                                kwnames,
-                                kw_idx,
-                                func,
-                                std::forward<A>(args)...
-                            );
-                        }
-                    };
-                };
-                template <size_t I, size_t J, size_t K>
-                    requires (
-                        I < Sig::n &&
-                        !(K < std::tuple_size_v<Tuple> && target_idx<K> == I)
-                    )
-                struct call<I, J, K> {  // forward source argument(s) or default value
-                    template <typename... A>
-                    static constexpr void assert_no_keyword_conflict(A&&... args) {
-                        constexpr StaticStr name = ArgTraits<Sig::at<I>>::name;
-                        if constexpr (!name.empty() && kw_pack_idx<A...> < sizeof...(A)) {
-                            auto& pack = unpack_arg<kw_pack_idx<A...>>(
-                                std::forward<A>(args)...
-                            );
-                            auto node = pack.extract(name);
-                            if (node) {
-                                throw TypeError(
-                                    "conflicting value for parameter '" + name +
-                                    "' at index " + std::to_string(I)
-                                );
-                            }
-                        }
-                    }
-
-                    template <typename>
-                    struct normalize;
-                    template <typename R, typename... out>
-                    struct normalize<R(out...)> {
-                        using type = call<
-                            I + 1,
-                            J,
-                            K
-                        >::template normalize<R(out..., Sig::at<I>)>::type;
-                    };
-
-                    template <typename P, typename... A>
-                    static auto bind(
-                        P&& parts,
-                        A&&... args
-                    ) {
-                        using T = Sig::at<I>;
-                        if constexpr (ArgTraits<T>::args()) {
-                            /// TODO: implement
-
-                        } else if constexpr (ArgTraits<T>::kwargs()) {
-                            /// TODO: implement
-
-                        } else {
-                            return call<I + 1, J + 1, K>::bind(
-                                std::forward<P>(parts),
-                                std::forward<A>(args)...
-                            );
-                        }
-                    }
-
-                    struct cpp {
-                        template <typename P, typename D, typename F, typename... A>
-                        static constexpr std::invoke_result_t<F, Args...> operator()(
-                            P&& parts,
-                            D&& defaults,
-                            F&& func,
-                            A&&... args
-                        ) {
-                            using T = Sig::at<I>;
-                            constexpr StaticStr name = ArgTraits<T>::name;
-                            constexpr size_t pos_range = std::min({
-                                pos_pack_idx<A...>,
-                                Sig<Return, A...>::kw_idx,
-                                kw_pack_idx<A...>
-                            });
-
-                            // positional-only
-                            if constexpr (ArgTraits<T>::posonly()) {
-                                assert_no_keyword_conflict(std::forward<A>(args)...);
-                                if constexpr (J < pos_range) {
-                                    return typename call<I + 1, J + 1, K>::cpp{}(
-                                        std::forward<P>(parts),
-                                        std::forward<D>(defaults),
-                                        std::forward<F>(func),
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                if constexpr (J == pos_pack_idx<A...>) {
-                                    auto& pack = unpack_arg<J>(std::forward<A>(args)...);
-                                    if (pack.has_value()) {
-                                        return insert_from_pos_pack(
-                                            std::forward<P>(parts),
-                                            std::forward<D>(defaults),
-                                            std::forward<F>(func),
-                                            std::forward<A>(args)...
-                                        );
-                                    } else {
-                                        return remove(
-                                            std::forward<P>(parts),
-                                            std::forward<D>(defaults),
-                                            std::forward<F>(func),
-                                            std::forward<A>(args)...
-                                        );
-                                    }
-                                }
-                                if constexpr (ArgTraits<T>::opt()) {
-                                    return insert_default(
-                                        std::forward<P>(parts),
-                                        std::forward<D>(defaults),
-                                        std::forward<F>(func),
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                if constexpr (name.empty()) {
-                                    throw TypeError(
-                                        "no match for positional-only parameter at "
-                                        "index " + std::to_string(I)
-                                    );
-                                } else {
-                                    throw TypeError(
-                                        "no match for positional-only parameter '" +
-                                        name + "' at index " + std::to_string(I)
-                                    );
-                                }
-
-                            // positional-or-keyword
-                            } else if constexpr (ArgTraits<T>::pos()) {
-                                if constexpr (J < pos_range) {
-                                    assert_no_keyword_conflict(std::forward<A>(args)...);
-                                    return typename call<I + 1, J + 1, K>::cpp{}(
-                                        std::forward<P>(parts),
-                                        std::forward<D>(defaults),
-                                        std::forward<F>(func),
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                if constexpr (J == pos_pack_idx<A...>) {
-                                    auto& pack = unpack_arg<J>(std::forward<A>(args)...);
-                                    if (pack.has_value()) {
-                                        assert_no_keyword_conflict(std::forward<A>(args)...);
-                                        return insert_from_pos_pack(
-                                            std::forward<P>(parts),
-                                            std::forward<D>(defaults),
-                                            std::forward<F>(func),
-                                            std::forward<A>(args)...
-                                        );
-                                    } else {
-                                        return remove(
-                                            std::forward<P>(parts),
-                                            std::forward<D>(defaults),
-                                            std::forward<F>(func),
-                                            std::forward<A>(args)...
-                                        );
-                                    }
-                                }
-                                if constexpr (Sig<Return, A...>::template has<name>) {
-                                    assert_no_keyword_conflict(std::forward<A>(args)...);
-                                    return reorder(
-                                        std::forward<P>(parts),
-                                        std::forward<D>(defaults),
-                                        std::forward<F>(func),
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
-                                    auto& pack = unpack_arg<kw_pack_idx<A...>>(
-                                        std::forward<A>(args)...
-                                    );
-                                    auto node = pack.extract(name);
-                                    if (node) {
-                                        return insert_from_kw_pack(
-                                            node,
-                                            std::forward<P>(parts),
-                                            std::forward<D>(defaults),
-                                            std::forward<F>(func),
-                                            std::forward<A>(args)...
-                                        );
-                                    }
-                                }
-                                if constexpr (ArgTraits<T>::opt()) {
-                                    return insert_default(
-                                        std::forward<P>(parts),
-                                        std::forward<D>(defaults),
-                                        std::forward<F>(func),
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                throw TypeError(
-                                    "no match for parameter '" + name + "' at index " +
-                                    std::to_string(I)
-                                );
-
-                            // keyword-only
-                            } else if constexpr (ArgTraits<T>::kw()) {
-                                if constexpr (Sig<Return, A...>::template has<name>) {
-                                    assert_no_keyword_conflict(std::forward<A>(args)...);
-                                    return reorder(
-                                        std::forward<P>(parts),
-                                        std::forward<D>(defaults),
-                                        std::forward<F>(func),
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
-                                    auto& pack = unpack_arg<kw_pack_idx<A...>>(
-                                        std::forward<A>(args)...
-                                    );
-                                    auto node = pack.extract(name);
-                                    if (node) {
-                                        return insert_from_kw_pack(
-                                            node,
-                                            std::forward<P>(parts),
-                                            std::forward<D>(defaults),
-                                            std::forward<F>(func),
-                                            std::forward<A>(args)...
-                                        );
-                                    }
-                                }
-                                if constexpr (ArgTraits<T>::opt()) {
-                                    return insert_default(
-                                        std::forward<P>(parts),
-                                        std::forward<D>(defaults),
-                                        std::forward<F>(func),
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                throw TypeError(
-                                    "no match for keyword-only parameter '" + name +
-                                    "' at index " + std::to_string(I)
-                                );
-
-                            // variadic positional args
-                            } else if constexpr (ArgTraits<T>::args()) {
-                                constexpr size_t transition = std::min(
-                                    Sig<Return, A...>::kw_idx,
-                                    kw_pack_idx<A...>
-                                );
-                                constexpr size_t idx = std::max(J, transition);
-                                return []<size_t... Prev, size_t... Next>(
-                                    std::index_sequence<Prev...>,
-                                    std::index_sequence<Next...>,
-                                    auto&& parts,
-                                    auto&& defaults,
-                                    auto&& func,
-                                    auto&&... args
-                                ) {
-                                    return typename call<I + 1, transition, K>::cpp{}(
-                                        std::forward<decltype(parts)>(parts),
-                                        std::forward<decltype(defaults)>(defaults),
-                                        std::forward<decltype(func)>(func),
-                                        unpack_arg<Prev>(
-                                            std::forward<decltype(args)>(args)...
-                                        )...,
-                                        to_arg<I>(variadic_positional(
-                                            std::forward<decltype(args)>(args)...
-                                        )),
-                                        unpack_arg<idx + Next>(
-                                            std::forward<decltype(args)>(args)...
-                                        )...
-                                    );
-                                }(
-                                    std::make_index_sequence<J>{},
-                                    std::make_index_sequence<sizeof...(A) - idx>{},
-                                    std::forward<P>(parts),
-                                    std::forward<D>(defaults),
-                                    std::forward<F>(func),
-                                    std::forward<A>(args)...
-                                );
-
-                            // variadic keyword args
-                            } else if constexpr (ArgTraits<T>::kwargs()) {
-                                return []<size_t... Prev>(
-                                    std::index_sequence<Prev...>,
-                                    auto&& parts,
-                                    auto&& defaults,
-                                    auto&& func,
-                                    auto&&... args
-                                ) {
-                                    return typename call<I + 1, J + 1, K>::cpp{}(
-                                        std::forward<decltype(parts)>(parts),
-                                        std::forward<decltype(defaults)>(defaults),
-                                        std::forward<decltype(func)>(func),
-                                        unpack_arg<Prev>(
-                                            std::forward<decltype(args)>(args)...
-                                        )...,
-                                        to_arg<I>(variadic_keyword(
-                                            std::forward<decltype(args)>(args)...
-                                        ))
-                                    );
-                                }(
-                                    std::make_index_sequence<J>{},
-                                    std::forward<P>(parts),
-                                    std::forward<D>(defaults),
-                                    std::forward<F>(func),
-                                    std::forward<A>(args)...
-                                );
-
-                            } else {
-                                static_assert(false, "invalid argument kind");
-                                std::unreachable();
-                            }
-                        }
-
-                    private:
-
-                        template <typename P, typename D, typename F, typename... A>
-                        static constexpr decltype(auto) reorder(
-                            P&& parts,
-                            D&& defaults,
-                            F&& func,
-                            A&&... args
-                        ) {
-                            constexpr StaticStr name = ArgTraits<Sig::at<I>>::name;
-                            constexpr size_t idx = Sig<Return, A...>::template idx<name>;
-                            return []<size_t... Prev, size_t... Next, size_t... Last>(
-                                std::index_sequence<Prev...>,
-                                std::index_sequence<Next...>,
-                                std::index_sequence<Last...>,
                                 auto&& parts,
                                 auto&& defaults,
                                 auto&& func,
                                 auto&&... args
                             ) {
-                                return typename call<I + 1, J + 1, K>::cpp{}(
+                                auto& pack = unpack_arg<idx>(
+                                    std::forward<decltype(args)>(args)...
+                                );
+                                pack.validate();
+                                return typename call<I, J, K>::cpp{}(
                                     std::forward<decltype(parts)>(parts),
                                     std::forward<decltype(defaults)>(defaults),
                                     std::forward<decltype(func)>(func),
                                     unpack_arg<Prev>(
                                         std::forward<decltype(args)>(args)...
                                     )...,
-                                    to_arg<I>(unpack_arg<idx>(
-                                        std::forward<decltype(args)>(args)...
-                                    )),
-                                    unpack_arg<J + Next>(
-                                        std::forward<decltype(args)>(args)...
-                                    )...,
-                                    unpack_arg<idx + 1 + Last>(
+                                    unpack_arg<idx + 1 + Next>(
                                         std::forward<decltype(args)>(args)...
                                     )...
                                 );
                             }(
                                 std::make_index_sequence<J>{},
-                                std::make_index_sequence<idx - J>{},
                                 std::make_index_sequence<sizeof...(A) - (idx + 1)>{},
                                 std::forward<P>(parts),
                                 std::forward<D>(defaults),
                                 std::forward<F>(func),
                                 std::forward<A>(args)...
                             );
-                        }
 
-                        template <typename P, typename D, typename F, typename... A>
-                        static constexpr decltype(auto) insert_default(
-                            P&& parts,
-                            D&& defaults,
-                            F&& func,
-                            A&&... args
-                        ) {
+                        // validate and remove keyword parameter packs
+                        } else if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
+                            constexpr size_t idx = kw_pack_idx<A...>;
                             return []<size_t... Prev, size_t... Next>(
                                 std::index_sequence<Prev...>,
                                 std::index_sequence<Next...>,
@@ -4294,2444 +2964,448 @@ namespace impl {
                                 auto&& func,
                                 auto&&... args
                             ) {
-                                return typename call<I + 1, J + 1, K>::cpp{}(
-                                    std::forward<decltype(parts)>(parts),
-                                    std::forward<decltype(defaults)>(defaults),
-                                    std::forward<decltype(func)>(func),
-                                    unpack_arg<Prev>(
-                                        std::forward<decltype(args)>(args)...
-                                    )...,
-                                    to_arg<I>(std::forward<decltype(defaults)>(
-                                        defaults
-                                    ).template get<Defaults::template find<I>>()),
-                                    unpack_arg<J + Next>(
-                                        std::forward<decltype(args)>(args)...
-                                    )...
+                                auto& pack = unpack_arg<idx>(
+                                    std::forward<decltype(args)>(args)...
                                 );
-                            }(
-                                std::make_index_sequence<J>{},
-                                std::make_index_sequence<sizeof...(A) - J>{},
-                                std::forward<P>(parts),
-                                std::forward<D>(defaults),
-                                std::forward<F>(func),
-                                std::forward<A>(args)...
-                            );
-                        }
-
-                        template <typename P, typename D, typename F, typename... A>
-                        static constexpr decltype(auto) insert_from_pos_pack(
-                            P&& parts,
-                            D&& defaults,
-                            F&& func,
-                            A&&... args
-                        ) {
-                            return []<size_t... Prev, size_t... Next>(
-                                std::index_sequence<Prev...>,
-                                std::index_sequence<Next...>,
-                                auto&& parts,
-                                auto&& defaults,
-                                auto&& func,
-                                auto&&... args
-                            ) {
-                                auto& pack = unpack_arg<pos_pack_idx<A...>>(
-                                    std::forward<A>(args)...
-                                );
-                                return typename call<I + 1, J + 1, K>::cpp{}(
-                                    std::forward<decltype(parts)>(parts),
-                                    std::forward<decltype(defaults)>(defaults),
-                                    std::forward<decltype(func)>(func),
-                                    unpack_arg<Prev>(
-                                        std::forward<decltype(args)>(args)...
-                                    )...,
-                                    to_arg<I>(pack.value()),
-                                    unpack_arg<J + Next>(
-                                        std::forward<decltype(args)>(args)...
-                                    )...
-                                );
-                            }(
-                                std::make_index_sequence<J>{},
-                                std::make_index_sequence<sizeof...(A) - J>{},
-                                std::forward<P>(parts),
-                                std::forward<D>(defaults),
-                                std::forward<F>(func),
-                                std::forward<A>(args)...
-                            );
-                        }
-
-                        template <typename P, typename D, typename F, typename... A>
-                        static constexpr decltype(auto) insert_from_kw_pack(
-                            auto&& node,
-                            P&& parts,
-                            D&& defaults,
-                            F&& func,
-                            A&&... args
-                        ) {
-                            return []<size_t... Prev, size_t... Next>(
-                                auto&& node,
-                                std::index_sequence<Prev...>,
-                                std::index_sequence<Next...>,
-                                auto&& parts,
-                                auto&& defaults,
-                                auto&& func,
-                                auto&&... args
-                            ) {
-                                if constexpr (std::is_lvalue_reference_v<
-                                    typename ArgTraits<Sig::at<I>>::type
-                                >) {
-                                    return typename call<I + 1, J + 1, K>::cpp{}(
-                                        std::forward<P>(parts),
-                                        std::forward<D>(defaults),
-                                        std::forward<F>(func),
-                                        unpack_arg<Prev>(std::forward<A>(args)...)...,
-                                        to_arg<I>(node.mapped()),
-                                        unpack_arg<J + Next>(std::forward<A>(args)...)...
-                                    );
-                                } else {
-                                    return typename call<I + 1, J + 1, K>::cpp{}(
-                                        std::forward<P>(parts),
-                                        std::forward<D>(defaults),
-                                        std::forward<F>(func),
-                                        unpack_arg<Prev>(std::forward<A>(args)...)...,
-                                        to_arg<I>(std::move(node.mapped())),
-                                        unpack_arg<J + Next>(std::forward<A>(args)...)...
-                                    );
-                                }
-                            }(
-                                std::forward<decltype(node)>(node),
-                                std::make_index_sequence<J>{},
-                                std::make_index_sequence<sizeof...(A) - J>{},
-                                std::forward<P>(parts),
-                                std::forward<D>(defaults),
-                                std::forward<F>(func),
-                                std::forward<A>(args)...
-                            );
-                        }
-
-                        template <typename P, typename D, typename F, typename... A>
-                        static constexpr decltype(auto) remove(
-                            P&& parts,
-                            D&& defaults,
-                            F&& func,
-                            A&&... args
-                        ) {
-                            return []<size_t... Prev, size_t... Next>(
-                                std::index_sequence<Prev...>,
-                                std::index_sequence<Next...>,
-                                auto&& parts,
-                                auto&& defaults,
-                                auto&& func,
-                                auto&&... args
-                            ) {
+                                pack.validate();
                                 return typename call<I, J, K>::cpp{}(
                                     std::forward<decltype(parts)>(parts),
                                     std::forward<decltype(defaults)>(defaults),
                                     std::forward<decltype(func)>(func),
-                                    unpack_arg<Prev>(std::forward<decltype(args)>(args)...)...,
-                                    unpack_arg<J + 1 + Next>(
+                                    unpack_arg<Prev>(
+                                        std::forward<decltype(args)>(args)...
+                                    )...,
+                                    unpack_arg<idx + 1 + Next>(
                                         std::forward<decltype(args)>(args)...
                                     )...
                                 );
                             }(
                                 std::make_index_sequence<J>{},
-                                std::make_index_sequence<sizeof...(A) - (J + 1)>{},
+                                std::make_index_sequence<sizeof...(A) - (idx + 1)>{},
                                 std::forward<P>(parts),
                                 std::forward<D>(defaults),
                                 std::forward<F>(func),
                                 std::forward<A>(args)...
                             );
-                        }
 
-                        template <size_t J2, typename T, typename... A>
-                        static void _variadic_positional(
-                            std::vector<T>& out,
-                            A&&... args
-                        ) {
-                            if constexpr (J2 == pos_pack_idx<A...>) {
-                                auto& pack = unpack_arg<J2>(std::forward<A>(args)...);
-                                out.insert(out.end(), pack.begin(), pack.end());
-                            } else {
-                                out.emplace_back(unpack_arg<J2>(
+                        // call the function with the final argument list
+                        } else {
+                            return std::forward<F>(func)(std::forward<A>(args)...);
+                        }
+                    }
+                };
+
+                /* Invoking a Python function involves populating an argument
+                array according to a C++ parameter list.  Such an array can then be
+                used to efficiently call a Python function using the vectorcall
+                protocol, which is the fastest way to call a Python
+                function from C++.  Here's the basic layout:
+
+                                            ( kwnames tuple )
+                        -------------------------------------
+                        | x | p | p | p |...| k | k | k |...|
+                        -------------------------------------
+                            ^             ^
+                            |             nargs ends here
+                            *args starts here
+
+                Where 'x' is an optional first element that can be temporarily
+                written to in order to efficiently forward the `self` argument
+                for bound methods, etc.  The presence of this argument is
+                determined by the PY_VECTORCALL_ARGUMENTS_OFFSET flag, which is
+                encoded in nargs.  You can check for its presence by bitwise
+                AND-ing against nargs, and the true number of arguments must be
+                extracted using `PyVectorcall_NARGS(nargs)` to account for this.
+
+                If PY_VECTORCALL_ARGUMENTS_OFFSET is set and 'x' is written to,
+                then it must always be reset to its original value before the
+                function returns.  This allows for nested forwarding/scoping
+                using the same argument list, with no extra allocations.  We always
+                enable it here, since it's a free optimization for downstream code
+                that makes use of it. */
+                struct python {
+                    static constexpr size_t n_partial_keywords = 0;
+
+                    template <typename P, typename... A>
+                    static Params<std::vector<Param>> key(
+                        std::vector<Param>& out,
+                        size_t hash,
+                        P&& parts,
+                        A&&... args
+                    ) {
+                        return {
+                            .value = std::move(out),
+                            .hash = hash
+                        };
+                    }
+
+                    template <typename P, typename... A>
+                    static Object operator()(
+                        P&& parts,
+                        PyObject** array,
+                        size_t idx,
+                        PyObject* kwnames,
+                        size_t kw_idx,
+                        PyObject* func,
+                        A&&... args
+                    ) {
+                        try {
+                            if constexpr (pos_pack_idx<A...> < sizeof...(A)) {
+                                auto& pack = unpack_arg<pos_pack_idx<A...>>(
                                     std::forward<A>(args)...
-                                ));
+                                );
+                                pack.validate();
                             }
+                            if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
+                                auto& pack = unpack_arg<kw_pack_idx<A...>>(
+                                    std::forward<A>(args)...
+                                );
+                                pack.validate();
+                            }
+                        } catch(...) {
+                            for (size_t i = 0; i < idx; ++i) {
+                                Py_DECREF(array[i]);
+                            }
+                            throw;
                         }
+                        PyObject* result = PyObject_Vectorcall(
+                            func,
+                            array - 1,  // account for vectorcall offset
+                            (idx - kw_idx) | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            kwnames
+                        );
+                        for (size_t i = 0; i < idx; ++i) {
+                            Py_DECREF(array[i]);
+                        }
+                        if (result == nullptr) {
+                            Exception::from_python();
+                        }
+                        return reinterpret_steal<Object>(result);
+                    }
+                };
+            };
+            template <size_t I, size_t J, size_t K>
+                requires (
+                    I < Sig::n &&
+                    (K < Partial::n && target_idx<K> == I)
+                )
+            struct call<I, J, K> {  // insert partial argument(s)
+                template <size_t K2>
+                static constexpr size_t consecutive = 0;
+                template <size_t K2>
+                    requires (K2 < Partial::n && target_idx<K2> == I)
+                static constexpr size_t consecutive<K2> = consecutive<K2 + 1> + 1;
 
-                        template <typename... A>
-                        static auto variadic_positional(A&&... args) {
-                            using T = Sig::at<I>;
+                template <typename>
+                struct normalize;
+                template <typename R, typename... out>
+                struct normalize<R(out...)> {
+                    template <typename P, size_t>
+                    struct bind {
+                        template <typename>
+                        struct finalize;
+                        template <typename... Ts>
+                        struct finalize<pack<Ts...>> {
+                            using type = Sig::at<I>::template bind<Ts...>;
+                        };
+                        using type = finalize<P>::type;
+                    };
+                    template <typename... final, size_t K2>
+                        requires (K2 < consecutive<K>)
+                    struct bind<pack<final...>, K2> {
+                        using entry = std::tuple_element_t<K2, Tuple>;
+                        using T = unpack_type<entry::partial_idx, Parts...>;
+                        using type = bind<pack<final..., T>, K2 + 1>::type;
+                    };
+                    using next = call<I + 1, J, K + consecutive<K>>;
+                    using func = R(out..., typename bind<pack<>, K>::type);
+                    using type = next::template normalize<func>::type;
+                };
+
+                template <typename P, typename... A>
+                static auto bind(
+                    P&& parts,
+                    A&&... args
+                ) {
+                    using T = Sig::at<I>;
+                    if constexpr (ArgTraits<T>::args()) {
+                        constexpr size_t transition = Sig<Return, A...>::kw_idx;
+                        return []<size_t... Prev, size_t... Ks, size_t... Next>(
+                            std::index_sequence<Prev...>,
+                            std::index_sequence<Ks...>,
+                            std::index_sequence<Next...>,
+                            auto&& parts,
+                            auto&&... args
+                        ) {
+                            return call<
+                                I + 1,
+                                transition + consecutive<K>,
+                                K + consecutive<K>
+                            >::bind(
+                                std::forward<decltype(parts)>(parts),
+                                unpack_arg<Prev>(
+                                    std::forward<decltype(args)>(args)
+                                )...,
+                                std::forward<decltype(parts)>(
+                                    parts
+                                ).template get<K + Ks>()...,
+                                unpack_arg<transition + Next>(
+                                    std::forward<decltype(args)>(args)
+                                )...
+                            );
+                        }(
+                            std::make_index_sequence<J>{},
+                            std::make_index_sequence<consecutive<K>>{},
+                            std::make_index_sequence<sizeof...(A) - transition>{},
+                            std::forward<P>(parts),
+                            std::forward<A>(args)...
+                        );
+
+                    } else if constexpr (ArgTraits<T>::kwargs()) {
+                        return []<size_t... Prev, size_t... Ks, size_t... Next>(
+                            std::index_sequence<Prev...>,
+                            std::index_sequence<Ks...>,
+                            auto&& parts,
+                            auto&&... args
+                        ) {
+                            return call<
+                                I + 1,
+                                sizeof...(A) + consecutive<K>,
+                                K + consecutive<K>
+                            >::bind(
+                                std::forward<decltype(parts)>(parts),
+                                unpack_arg<Prev>(
+                                    std::forward<decltype(args)>(args)
+                                )...,
+                                arg<std::tuple_element_t<K + Ks, Tuple>::name> =
+                                    std::forward<decltype(parts)>(
+                                        parts
+                                    ).template get<K + Ks>()...,
+                                unpack_arg<J + Next>(
+                                    std::forward<decltype(args)>(args)
+                                )...
+                            );
+                        }(
+                            std::make_index_sequence<J>{},
+                            std::make_index_sequence<consecutive<K>>{},
+                            std::make_index_sequence<sizeof...(A) - J>{},
+                            std::forward<P>(parts),
+                            std::forward<A>(args)...
+                        );
+
+                    } else {
+                        return []<size_t... Prev, size_t... Next>(
+                            std::index_sequence<Prev...>,
+                            std::index_sequence<Next...>,
+                            auto&& parts,
+                            auto&&... args
+                        ) {
+                            using bound = std::tuple_element_t<K, Tuple>;
+                            using orig = unpack_type<
+                                bound::partial_idx,
+                                Parts...
+                            >;
+                            // demote keywords in the original partial into
+                            // positional arguments in the new partial if the next
+                            // source arg is positional and the target arg can be
+                            // both positional or keyword
+                            if constexpr (!ArgTraits<orig>::kw() && !(
+                                (J < Sig<Return, A...>::kw_idx) &&
+                                (ArgTraits<T>::pos() && ArgTraits<T>::kw())
+                            )) {
+                                return call<I + 1, J + 1, K + 1>::bind(
+                                    std::forward<decltype(parts)>(parts),
+                                    unpack_arg<Prev>(
+                                        std::forward<decltype(args)>(args)
+                                    )...,
+                                    arg<ArgTraits<orig>::name> =
+                                        std::forward<decltype(parts)>(
+                                            parts
+                                        ).template get<K>(),
+                                    unpack_arg<J + Next>(
+                                        std::forward<decltype(args)>(args)
+                                    )...
+                                );
+                            } else {
+                                return call<I + 1, J + 1, K + 1>::bind(
+                                    std::forward<decltype(parts)>(parts),
+                                    unpack_arg<Prev>(
+                                        std::forward<decltype(args)>(args)
+                                    )...,
+                                    std::forward<decltype(parts)>(
+                                        parts
+                                    ).template get<K>(),
+                                    unpack_arg<J + Next>(
+                                        std::forward<decltype(args)>(args)
+                                    )...
+                                );
+                            }
+                        }(
+                            std::make_index_sequence<J>{},
+                            std::make_index_sequence<sizeof...(A) - J>{},
+                            std::forward<P>(parts),
+                            std::forward<A>(args)...
+                        );
+                    }
+                }
+
+                struct cpp {
+                    template <typename P, typename D, typename F, typename... A>
+                    static constexpr std::invoke_result_t<F, Args...> operator()(
+                        P&& parts,
+                        D&& defaults,
+                        F&& func,
+                        A&&... args
+                    ) {
+                        using T = Sig::at<I>;
+
+                        if constexpr (ArgTraits<T>::args()) {
                             constexpr size_t transition = std::min(
                                 Sig<Return, A...>::kw_idx,
                                 kw_pack_idx<A...>
                             );
-                            constexpr size_t diff = J < transition ? transition - J : 0;
-
-                            // allocate variadic positional array
-                            std::vector<typename ArgTraits<T>::type> out;
-                            if constexpr (diff) {
-                                if constexpr (pos_pack_idx<A...> < sizeof...(A)) {
-                                    out.reserve(
-                                        (diff - 1) +
-                                        unpack_arg<pos_pack_idx<A...>>(
-                                            std::forward<A>(args)...
-                                        ).size()
-                                    );
-                                } else {
-                                    out.reserve(diff);
-                                }
-                            }
-
-                            // consume source args + parameter packs
-                            []<size_t... Js>(
-                                std::index_sequence<Js...>,
-                                std::vector<typename ArgTraits<T>::type>& out,
+                            return []<size_t... Prev, size_t... Next>(
+                                std::index_sequence<Prev...>,
+                                std::index_sequence<Next...>,
+                                auto&& parts,
+                                auto&& defaults,
+                                auto&& func,
                                 auto&&... args
                             ) {
-                                (_variadic_positional<J + Js>(
-                                    out,
-                                    std::forward<decltype(args)>(args)...
-                                ), ...);
-                            }(
-                                std::make_index_sequence<diff>{},
-                                out,
-                                std::forward<A>(args)...
-                            );
-                            return out;
-                        }
-
-                        template <size_t J2, typename T, typename... A>
-                        static void _variadic_keywords(
-                            std::unordered_map<std::string, T>& out,
-                            A&&... args
-                        ) {
-                            if constexpr (J2 == kw_pack_idx<A...>) {
-                                auto& pack = unpack_arg<J2>(std::forward<A>(args)...);
-                                auto it = pack.begin();
-                                auto end = pack.end();
-                                while (it != end) {
-                                    // postfix ++ required to increment before invalidation
-                                    auto node = pack.extract(it++);
-                                    auto rc = out.insert(node);
-                                    if (!rc.inserted) {
-                                        throw TypeError(
-                                            "duplicate value for parameter '" +
-                                            node.key() + "'"
-                                        );
-                                    }
-                                }
-                            } else {
-                                out.emplace(
-                                    ArgTraits<unpack_type<J2, A...>>::name,
-                                    unpack_arg<J2>(std::forward<A>(args)...)
-                                );
-                            }
-                        }
-
-                        template <typename... A>
-                        static auto variadic_keywords(A&&... args) {
-                            using T = Sig::at<I>;
-                            constexpr size_t diff = Source::n - J;
-
-                            // allocate variadic keyword map
-                            using map = std::unordered_map<
-                                std::string,
-                                typename ArgTraits<T>::type
-                            >;
-                            map out;
-                            if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
-                                out.reserve(
-                                    (diff - 1) +
-                                    unpack_arg<kw_pack_idx<A...>>(
-                                        std::forward<A>(args)...
-                                    ).size()
-                                );
-                            } else {
-                                out.reserve(diff);
-                            }
-
-                            // consume source kwargs + parameter packs
-                            []<size_t... Js>(
-                                std::index_sequence<Js...>,
-                                map& out,
-                                auto&&... args
-                            ) {
-                                (_variadic_keywords<J + Js>(
-                                    out,
-                                    std::forward<decltype(args)>(args)...
-                                ), ...);
-                            }(
-                                std::make_index_sequence<diff>{},
-                                out,
-                                std::forward<A>(args)...
-                            );
-                            return out;
-                        }
-                    };
-
-                    struct python {
-                        static constexpr size_t n_partial_keywords = [] {
-                            /// NOTE: this always overestimates J with respect to
-                            /// optional arguments, but it doesn't matter because all
-                            /// we care about is the location of J relative to the last
-                            /// positional argument in the source signature, and no
-                            /// missing arguments can appear before that.  Thus, any
-                            /// subsequent positional-or-keyword arguments with partial
-                            /// values will be promoted to keywords in order to allow
-                            /// Python to insert the correct defaults, without needing
-                            /// to manually specify them here.
-                            if constexpr (J == Source::args_idx) {
-                                return call<
-                                    std::min(
-                                        Sig::kwonly_idx,
-                                        Sig::kwargs_idx
-                                    ),
-                                    J + 1,
-                                    K
-                                >::python::n_partial_keywords;
-                            } else {
-                                return call<
+                                return typename call<
                                     I + 1,
                                     J + 1,
-                                    K
-                                >::python::n_partial_keywords;
-                            }
-                        }();
-
-                        template <typename P, typename... A>
-                        static Params<std::vector<Param>> key(
-                            std::vector<Param>& out,
-                            size_t hash,
-                            P&& parts,
-                            A&&... args
-                        ) {
-                            using T = Sig::at<I>;
-                            constexpr StaticStr name = ArgTraits<T>::name;
-                            constexpr size_t pos_range = std::min({
-                                pos_pack_idx<A...>,
-                                Sig<Return, A...>::kw_idx,
-                                kw_pack_idx<A...>
-                            });
-
-                            // positional-only
-                            if constexpr (ArgTraits<T>::posonly()) {
-                                assert_no_keyword_conflict(std::forward<A>(args)...);
-                                if constexpr (J < pos_range) {
-                                    out.emplace_back(
-                                        "",
-                                        to_python(
-                                            unpack_arg<J>(std::forward<A>(args)...)
-                                        ),
-                                        ArgKind::POS
-                                    );
-                                    return call<I + 1, J + 1, K>::python::key(
-                                        out,
-                                        hash_combine(
-                                            hash,
-                                            out.back().hash(seed, prime)
-                                        ),
-                                        std::forward<P>(parts),
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                if constexpr (J == pos_pack_idx<A...>) {
-                                    auto& pack = unpack_arg<J>(std::forward<A>(args)...);
-                                    if (pack.has_value()) {
-                                        out.emplace_back(
-                                            "",
-                                            to_python(pack.value()),
-                                            ArgKind::POS
-                                        );
-                                        return call<I + 1, J, K>::python::key(
-                                            out,
-                                            hash_combine(
-                                                hash,
-                                                out.back().hash(seed, prime)
-                                            ),
-                                            std::forward<P>(parts),
-                                            std::forward<A>(args)...
-                                        );
-                                    } else {
-                                        return key_remove(
-                                            out,
-                                            hash,
-                                            std::forward<P>(parts),
-                                            std::forward<A>(args)...
-                                        );
-                                    }
-                                }
-                                if constexpr (ArgTraits<T>::opt()) {
-                                    return call<I + 1, J, K>::python::key(
-                                        out,
-                                        hash,
-                                        std::forward<P>(parts),
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                if constexpr (name.empty()) {
-                                    throw TypeError(
-                                        "no match for positional-only parameter at "
-                                        "index " + std::to_string(I)
-                                    );
-                                } else {
-                                    throw TypeError(
-                                        "no match for positional-only parameter '" +
-                                        name + "' at index " + std::to_string(I)
-                                    );
-                                }
-
-                            // positional-or-keyword
-                            } else if constexpr (ArgTraits<T>::pos()) {
-                                if constexpr (J < pos_range) {
-                                    assert_no_keyword_conflict(std::forward<A>(args)...);
-                                    out.emplace_back(
-                                        "",
-                                        to_python(
-                                            unpack_arg<J>(std::forward<A>(args)...)
-                                        ),
-                                        ArgKind::POS
-                                    );
-                                    return call<I + 1, J, K>::python::key(
-                                        out,
-                                        hash_combine(
-                                            hash,
-                                            out.back().hash(seed, prime)
-                                        ),
-                                        std::forward<P>(parts),
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                if constexpr (J == pos_pack_idx<A...>) {
-                                    auto& pack = unpack_arg<J>(std::forward<A>(args)...);
-                                    if (pack.has_value()) {
-                                        out.emplace_back(
-                                            "",
-                                            to_python(pack.value()),
-                                            ArgKind::POS
-                                        );
-                                        return call<I + 1, J, K>::python::key(
-                                            out,
-                                            hash_combine(
-                                                hash,
-                                                out.back().hash(seed, prime)
-                                            ),
-                                            std::forward<P>(parts),
-                                            std::forward<A>(args)...
-                                        );
-                                    } else {
-                                        return key_remove(
-                                            out,
-                                            hash,
-                                            std::forward<P>(parts),
-                                            std::forward<A>(args)...
-                                        );
-                                    }
-                                }
-                                if constexpr (Sig<Return, A...>::template hash<name>) {
-                                    assert_no_keyword_conflict(std::forward<A>(args)...);
-                                    return key_reorder(
-                                        out,
-                                        hash,
-                                        std::forward<P>(parts),
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
-                                    auto& pack = unpack_arg<kw_pack_idx<A...>>(
-                                        std::forward<A>(args)...
-                                    );
-                                    auto node = pack.extract(name);
-                                    if (node) {
-                                        out.emplace_back(
-                                            ArgTraits<T>::name,
-                                            to_python(std::move(node.mapped())),
-                                            ArgKind::KW
-                                        );
-                                        return call<I + 1, J, K>::python::key(
-                                            out,
-                                            hash_combine(
-                                                hash,
-                                                out.back().hash(seed, prime)
-                                            ),
-                                            std::forward<P>(parts),
-                                            std::forward<A>(args)...
-                                        );
-                                    }
-                                }
-                                if constexpr (ArgTraits<T>::opt()) {
-                                    return call<I + 1, J, K>::python::key(
-                                        out,
-                                        hash,
-                                        std::forward<P>(parts),
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                throw TypeError(
-                                    "no match for parameter '" + name + "' at index " +
-                                    std::to_string(I)
-                                );
-
-                            // keyword-only
-                            } else if constexpr (ArgTraits<T>::kw()) {
-                                if constexpr (Sig<Return, A...>::template has<name>) {
-                                    assert_no_keyword_conflict(std::forward<A>(args)...);
-                                    return key_reorder(
-                                        out,
-                                        hash,
-                                        std::forward<P>(parts),
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
-                                    auto& pack = unpack_arg<kw_pack_idx<A...>>(
-                                        std::forward<A>(args)...
-                                    );
-                                    auto node = pack.extract(name);
-                                    if (node) {
-                                        out.emplace_back(
-                                            ArgTraits<T>::name,
-                                            to_python(std::move(node.mapped())),
-                                            ArgKind::KW
-                                        );
-                                        return call<I + 1, J, K>::python::key(
-                                            out,
-                                            hash_combine(
-                                                hash,
-                                                out.back().hash(seed, prime)
-                                            ),
-                                            std::forward<P>(parts),
-                                            std::forward<A>(args)...
-                                        );
-                                    }
-                                }
-                                if constexpr (ArgTraits<T>::opt()) {
-                                    return call<I + 1, J, K>::python::key(
-                                        out,
-                                        hash,
-                                        std::forward<P>(parts),
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                throw TypeError(
-                                    "no match for keyword-only parameter '" + name +
-                                    "' at index " + std::to_string(I)
-                                );
-
-                            // variadic positional
-                            } else if constexpr (ArgTraits<T>::args()) {
-                                constexpr size_t transition = std::min(
-                                    Sig<Return, A...>::kw_idx,
-                                    kw_pack_idx<A...>
-                                );
-                                return []<size_t... Js>(
-                                    std::index_sequence<Js...>,
-                                    std::vector<Param>& out,
-                                    size_t hash,
-                                    auto&& parts,
-                                    auto&&... args
-                                ) {
-                                    (key_variadic_positional<J + Js>(
-                                        out,
-                                        hash,
-                                        std::forward<P>(parts),
-                                        std::forward<A>(args)...
-                                    ), ...);
-                                    return call<
-                                        I + 1,
-                                        std::max(J, transition),
-                                        K
-                                    >::python::key(
-                                        out,
-                                        hash,
-                                        std::forward<P>(parts),
-                                        std::forward<A>(args)...
-                                    );
-                                }(
-                                    std::make_index_sequence<
-                                        J < transition ? transition - J : 0
-                                    >{},
-                                    out,
-                                    hash,
-                                    std::forward<P>(parts),
-                                    std::forward<A>(args)...
-                                );
-
-                            // variadic keyword
-                            } else if constexpr (ArgTraits<T>::kwargs()) {
-                                return []<size_t... Js>(
-                                    std::index_sequence<Js...>,
-                                    std::vector<Param>& out,
-                                    size_t hash,
-                                    auto&& parts,
-                                    auto&&... args
-                                ) {
-                                    (key_variadic_keywords<J + Js>(
-                                        out,
-                                        hash,
-                                        std::forward<P>(parts),
-                                        std::forward<A>(args)...
-                                    ), ...);
-                                    return call<
-                                        I + 1,
-                                        J + 1,
-                                        K
-                                    >::python::key(
-                                        out,
-                                        hash,
-                                        std::forward<P>(parts),
-                                        std::forward<A>(args)...
-                                    );
-                                }(
-                                    std::make_index_sequence<sizeof...(A) - J>{},
-                                    out,
-                                    hash,
-                                    std::forward<P>(parts),
-                                    std::forward<A>(args)...
-                                );
-
-                            } else {
-                                static_assert(false, "invalid argument kind");
-                                std::unreachable();
-                            }
-                        }
-
-                        template <typename P, typename... A>
-                        static Object operator()(
-                            P&& parts,
-                            PyObject** array,
-                            size_t idx,
-                            PyObject* kwnames,
-                            size_t kw_idx,
-                            PyObject* func,
-                            A&&... args
-                        ) {
-                            using T = Sig::at<I>;
-                            constexpr StaticStr name = ArgTraits<T>::name;
-                            constexpr size_t pos_range = std::min({
-                                pos_pack_idx<A...>,
-                                Sig<Return, A...>::kw_idx,
-                                kw_pack_idx<A...>
-                            });
-
-                            // positional-only
-                            if constexpr (ArgTraits<T>::posonly()) {
-                                assert_no_keyword_conflict(std::forward<A>(args)...);
-                                if constexpr (J < pos_range) {
-                                    call_insert(
-                                        array,
-                                        idx,
-                                        kwnames,
-                                        kw_idx,
-                                        std::forward<P>(parts).template get<K>()
-                                    );
-                                    return typename call<I + 1, J + 1, K>::python{}(
-                                        std::forward<P>(parts),
-                                        array,
-                                        idx,
-                                        kwnames,
-                                        kw_idx,
-                                        func,
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                if constexpr (J == pos_pack_idx<A...>) {
-                                    auto& pack = unpack_arg<J>(std::forward<A>(args)...);
-                                    if (pack.has_value()) {
-                                        call_insert(
-                                            array,
-                                            idx,
-                                            kwnames,
-                                            kw_idx,
-                                            pack.value()
-                                        );
-                                        return typename call<I + 1, J, K>::python{}(
-                                            std::forward<P>(parts),
-                                            array,
-                                            idx,
-                                            kwnames,
-                                            kw_idx,
-                                            func,
-                                            std::forward<A>(args)...
-                                        );
-                                    } else {
-                                        return call_remove(
-                                            std::forward<P>(parts),
-                                            array,
-                                            idx,
-                                            kwnames,
-                                            kw_idx,
-                                            func,
-                                            std::forward<A>(args)...
-                                        );
-                                    }
-                                }
-                                if constexpr (ArgTraits<T>::opt()) {
-                                    return typename call<I + 1, J, K>::python{}(
-                                        std::forward<P>(parts),
-                                        array,
-                                        idx,
-                                        kwnames,
-                                        kw_idx,
-                                        func,
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                if constexpr (name.empty()) {
-                                    throw TypeError(
-                                        "no match for positional-only parameter at "
-                                        "index " + std::to_string(I)
-                                    );
-                                } else {
-                                    throw TypeError(
-                                        "no match for positional-only parameter '" +
-                                        name + "' at index " + std::to_string(I)
-                                    );
-                                }
-
-                            // positional-or-keyword
-                            } else if constexpr (ArgTraits<T>::pos()) {
-                                if constexpr (J < pos_range) {
-                                    assert_no_keyword_conflict(std::forward<A>(args)...);
-                                    call_insert(
-                                        array,
-                                        idx,
-                                        kwnames,
-                                        kw_idx,
-                                        std::forward<P>(parts).template get<K>()
-                                    );
-                                    return typename call<I + 1, J + 1, K>::python{}(
-                                        std::forward<P>(parts),
-                                        array,
-                                        idx,
-                                        kwnames,
-                                        kw_idx,
-                                        func,
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                if constexpr (J == pos_pack_idx<A...>) {
-                                    auto& pack = unpack_arg<J>(std::forward<A>(args)...);
-                                    if (pack.has_value()) {
-                                        assert_no_keyword_conflict(std::forward<A>(args)...);
-                                        call_insert(
-                                            array,
-                                            idx,
-                                            kwnames,
-                                            kw_idx,
-                                            pack.value()
-                                        );
-                                        return typename call<I + 1, J, K>::python{}(
-                                            std::forward<P>(parts),
-                                            array,
-                                            idx,
-                                            kwnames,
-                                            kw_idx,
-                                            func,
-                                            std::forward<A>(args)...
-                                        );
-                                    } else {
-                                        return call_remove(
-                                            std::forward<P>(parts),
-                                            array,
-                                            idx,
-                                            kwnames,
-                                            kw_idx,
-                                            func,
-                                            std::forward<A>(args)...
-                                        );
-                                    }
-                                }
-                                if constexpr (Sig<Return, A...>::template has<name>) {
-                                    assert_no_keyword_conflict(std::forward<A>(args)...);
-                                    return call_reorder(
-                                        std::forward<P>(parts),
-                                        array,
-                                        idx,
-                                        kwnames,
-                                        kw_idx,
-                                        func,
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
-                                    auto& pack = unpack_arg<kw_pack_idx<A...>>(
-                                        std::forward<A>(args)...
-                                    );
-                                    auto node = pack.extract(name);
-                                    if (node) {
-                                        call_insert(
-                                            array,
-                                            idx,
-                                            kwnames,
-                                            kw_idx,
-                                            std::move(node.mapped())
-                                        );
-                                        return typename call<I + 1, J, K>::python{}(
-                                            std::forward<P>(parts),
-                                            array,
-                                            idx,
-                                            kwnames,
-                                            kw_idx,
-                                            func,
-                                            std::forward<A>(args)...
-                                        );
-                                    }
-                                }
-                                if constexpr (ArgTraits<T>::opt()) {
-                                    return typename call<I + 1, J, K>::python{}(
-                                        std::forward<P>(parts),
-                                        array,
-                                        idx,
-                                        kwnames,
-                                        kw_idx,
-                                        func,
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                throw TypeError(
-                                    "no match for parameter '" + name + "' at index " +
-                                    std::to_string(I)
-                                );
-
-                            // keyword-only
-                            } else if constexpr (ArgTraits<T>::kw()) {
-                                if constexpr (Sig<Return, A...>::template has<name>) {
-                                    assert_no_keyword_conflict(std::forward<A>(args)...);
-                                    return call_reorder(
-                                        std::forward<P>(parts),
-                                        array,
-                                        idx,
-                                        kwnames,
-                                        kw_idx,
-                                        func,
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
-                                    auto& pack = unpack_arg<kw_pack_idx<A...>>(
-                                        std::forward<A>(args)...
-                                    );
-                                    auto node = pack.extract(name);
-                                    if (node) {
-                                        call_insert(
-                                            array,
-                                            idx,
-                                            kwnames,
-                                            kw_idx,
-                                            std::move(node.mapped())
-                                        );
-                                        return typename call<I + 1, J, K>::python{}(
-                                            std::forward<P>(parts),
-                                            array,
-                                            idx,
-                                            kwnames,
-                                            kw_idx,
-                                            func,
-                                            std::forward<A>(args)...
-                                        );
-                                    }
-                                }
-                                if constexpr (ArgTraits<T>::opt()) {
-                                    return typename call<I + 1, J, K>::python{}(
-                                        std::forward<P>(parts),
-                                        array,
-                                        idx,
-                                        kwnames,
-                                        kw_idx,
-                                        func,
-                                        std::forward<A>(args)...
-                                    );
-                                }
-                                throw TypeError(
-                                    "no match for keyword-only parameter '" + name +
-                                    "' at index " + std::to_string(I)
-                                );
-
-                            // variadic positional args
-                            } else if constexpr (ArgTraits<T>::args()) {
-                                constexpr size_t transition = std::min(
-                                    Sig<Return, A...>::kw_idx,
-                                    kw_pack_idx<A...>
-                                );
-                                return []<size_t...  Js>(
-                                    std::index_sequence<Js...>,
-                                    auto&& parts,
-                                    PyObject** array,
-                                    size_t idx,
-                                    PyObject* kwnames,
-                                    size_t kw_idx,
-                                    PyObject* func,
-                                    auto&&... args
-                                ) {
-                                    (call_variadic_positional<J + Js>(
-                                        array,
-                                        idx,
-                                        kwnames,
-                                        kw_idx,
-                                        std::forward<decltype(args)>(args)...
-                                    ), ...);
-                                    return typename call<
-                                        I + 1,
-                                        std::max(J, transition),
-                                        K
-                                    >::python{}(
-                                        std::forward<decltype(parts)>(parts),
-                                        array,
-                                        idx,
-                                        kwnames,
-                                        kw_idx,
-                                        func,
-                                        std::forward<A>(args)...
-                                    );
-                                }(
-                                    std::make_index_sequence<
-                                        J < transition ? transition - J : 0
-                                    >{},
-                                    std::forward<P>(parts),
-                                    array,
-                                    idx,
-                                    kwnames,
-                                    kw_idx,
-                                    func,
-                                    std::forward<A>(args)...
-                                );
-
-                            // variadic keyword args
-                            } else if constexpr (ArgTraits<T>::kwargs()) {
-                                return []<size_t... Js>(
-                                    std::index_sequence<Js...>,
-                                    auto&& parts,
-                                    PyObject** array,
-                                    size_t idx,
-                                    PyObject* kwnames,
-                                    size_t kw_idx,
-                                    PyObject* func,
-                                    auto&&... args
-                                ) {
-                                    (call_variadic_keywords<J + Js>(
-                                        array,
-                                        idx,
-                                        kwnames,
-                                        kw_idx,
-                                        std::forward<decltype(args)>(args)...
-                                    ), ...);
-                                    return typename call<
-                                        I + 1,
-                                        J + 1,
-                                        K
-                                    >::python{}(
-                                        std::forward<decltype(parts)>(parts),
-                                        array,
-                                        idx,
-                                        kwnames,
-                                        kw_idx,
-                                        func,
-                                        std::forward<A>(args)...
-                                    );
-                                }(
-                                    std::make_index_sequence<sizeof...(A) - J>{},
-                                    std::forward<P>(parts),
-                                    array,
-                                    idx,
-                                    kwnames,
-                                    kw_idx,
-                                    func,
-                                    std::forward<A>(args)...
-                                );
-
-                            } else {
-                                static_assert(false, "invalid argument kind");
-                                std::unreachable();
-                            }
-                        }
-
-                    private:
-
-                        template <typename... A>
-                        static void call_insert(
-                            PyObject** array,
-                            size_t& idx,
-                            PyObject* kwnames,
-                            size_t& kw_idx,
-                            auto&& value
-                        ) {
-                            using T = Sig::at<I>;
-                            try {
-                                array[idx] = release(to_python(
-                                    std::forward<decltype(value)>(value)
-                                ));
-                                ++idx;
-                                if constexpr (
-                                    ArgTraits<T>::kwonly() ||
-                                    ArgTraits<T>::kwargs() ||
-                                    (ArgTraits<T>::kw() && J >= std::min(
-                                        Sig<Return, A...>::kw_idx,
-                                        kw_pack_idx<A...>
-                                    ))
-                                ) {
-                                    PyTuple_SET_ITEM(
-                                        kwnames,
-                                        kw_idx,
-                                        release(template_string<ArgTraits<T>::name>())
-                                    );
-                                    ++kw_idx;
-                                }
-                            } catch (...) {
-                                for (size_t i = 0; i < idx; ++i) {
-                                    Py_DECREF(array[i]);
-                                }
-                                throw;
-                            }
-                        }
-
-                        template <typename... A>
-                        static void call_insert(
-                            PyObject** array,
-                            size_t& idx,
-                            PyObject* kwnames,
-                            size_t& kw_idx,
-                            Object name,
-                            auto&& value
-                        ) {
-                            using T = Sig::at<I>;
-                            try {
-                                array[idx] = release(to_python(
-                                    std::forward<decltype(value)>(value)
-                                ));
-                                ++idx;
-                                if constexpr (
-                                    ArgTraits<T>::kwonly() ||
-                                    ArgTraits<T>::kwargs() ||
-                                    (ArgTraits<T>::kw() && J >= std::min(
-                                        Sig<Return, A...>::kw_idx,
-                                        kw_pack_idx<A...>
-                                    ))
-                                ) {
-                                    PyTuple_SET_ITEM(
-                                        kwnames,
-                                        kw_idx,
-                                        release(name)
-                                    );
-                                    ++kw_idx;
-                                }
-                            } catch (...) {
-                                for (size_t i = 0; i < idx; ++i) {
-                                    Py_DECREF(array[i]);
-                                }
-                                throw;
-                            }
-                        }
-
-                        template <typename P, typename... A>
-                        static Object call_reorder(
-                            P&& parts,
-                            PyObject** array,
-                            size_t idx,
-                            PyObject* kwnames,
-                            size_t kw_idx,
-                            PyObject* func,
-                            A&&... args
-                        ) {
-                            constexpr StaticStr name = ArgTraits<Sig::at<I>>::name;
-                            constexpr size_t kw = Sig<Return, A...>::template idx<name>;
-                            return []<size_t... Prev, size_t... Next, size_t... Last>(
-                                std::index_sequence<Prev...>,
-                                std::index_sequence<Next...>,
-                                std::index_sequence<Last...>,
-                                auto&& parts,
-                                PyObject** array,
-                                size_t idx,
-                                PyObject* kwnames,
-                                size_t kw_idx,
-                                PyObject* func,
-                                auto&&... args
-                            ) {
-                                call_insert(
-                                    array,
-                                    idx,
-                                    kwnames,
-                                    kw_idx,
-                                    unpack_arg<kw>(
-                                        std::forward<decltype(args)>(args)...
-                                    )
-                                );
-                                return typename call<I + 1, J + 1, K>::python{}(
+                                    K + consecutive<K>
+                                >::cpp{}(
                                     std::forward<decltype(parts)>(parts),
-                                    array,
-                                    idx,
-                                    kwnames,
-                                    kw_idx,
-                                    func,
+                                    std::forward<decltype(defaults)>(defaults),
+                                    std::forward<decltype(func)>(func),
                                     unpack_arg<Prev>(
                                         std::forward<decltype(args)>(args)...
                                     )...,
-                                    to_arg<I>(unpack_arg<kw>(
+                                    to_arg<I>(variadic_positional(
+                                        std::forward<decltype(parts)>(parts),
                                         std::forward<decltype(args)>(args)...
                                     )),
-                                    unpack_arg<J + Next>(
-                                        std::forward<decltype(args)>(args)...
-                                    )...,
-                                    unpack_arg<kw + 1 + Last>(
+                                    unpack_arg<transition + Next>(
                                         std::forward<decltype(args)>(args)...
                                     )...
                                 );
                             }(
                                 std::make_index_sequence<J>{},
-                                std::make_index_sequence<kw - J>{},
-                                std::make_index_sequence<sizeof...(A) - (kw + 1)>{},
+                                std::make_index_sequence<sizeof...(A) - transition>{},
                                 std::forward<P>(parts),
-                                array,
-                                idx,
-                                kwnames,
-                                kw_idx,
-                                func,
+                                std::forward<D>(defaults),
+                                std::forward<F>(func),
                                 std::forward<A>(args)...
                             );
-                        }
 
-                        template <typename P, typename... A>
-                        static Params<std::vector<Param>> key_reorder(
-                            std::vector<Param>& out,
-                            size_t hash,
-                            P&& parts,
-                            A&&... args
-                        ) {
-                            constexpr StaticStr name = ArgTraits<Sig::at<I>>::name;
-                            constexpr size_t kw = Sig<Return, A...>::template idx<name>;
-                            return []<size_t... Prev, size_t... Next, size_t... Last>(
+                        } else if constexpr (ArgTraits<T>::kwargs()) {
+                            return []<size_t... Prev>(
                                 std::index_sequence<Prev...>,
-                                std::index_sequence<Next...>,
-                                std::index_sequence<Last...>,
-                                std::vector<Param>& out,
-                                size_t hash,
                                 auto&& parts,
+                                auto&& defaults,
+                                auto&& func,
                                 auto&&... args
                             ) {
-                                out.emplace_back(
-                                    ArgTraits<Sig::at<I>>::name,
-                                    to_python(unpack_arg<kw>(
-                                        std::forward<decltype(args)>(args)...
-                                    )),
-                                    ArgKind::KW
-                                );
-                                return call<I + 1, J + 1, K>::python::key(
-                                    out,
-                                    hash_combine(
-                                        hash,
-                                        out.back().hash(seed, prime)
-                                    ),
+                                return typename call<
+                                    I + 1,
+                                    J + 1,
+                                    K + consecutive<K>
+                                >::cpp{}(
                                     std::forward<decltype(parts)>(parts),
+                                    std::forward<decltype(defaults)>(defaults),
+                                    std::forward<decltype(func)>(func),
                                     unpack_arg<Prev>(
                                         std::forward<decltype(args)>(args)...
                                     )...,
-                                    to_arg<I>(unpack_arg<kw>(
+                                    to_arg<I>(variadic_keywords(
+                                        std::forward<decltype(parts)>(parts),
                                         std::forward<decltype(args)>(args)...
-                                    )),
-                                    unpack_arg<J + Next>(
-                                        std::forward<decltype(args)>(args)...
-                                    )...,
-                                    unpack_arg<kw + 1 + Last>(
-                                        std::forward<decltype(args)>(args)...
-                                    )...
+                                    ))
                                 );
                             }(
                                 std::make_index_sequence<J>{},
-                                std::make_index_sequence<kw - J>{},
-                                std::make_index_sequence<sizeof...(A) - (kw + 1)>{},
-                                out,
-                                hash,
                                 std::forward<P>(parts),
+                                std::forward<D>(defaults),
+                                std::forward<F>(func),
                                 std::forward<A>(args)...
                             );
-                        }
 
-                        template <typename P, typename... A>
-                        static Object call_remove(
-                            P&& parts,
-                            PyObject** array,
-                            size_t idx,
-                            PyObject* kwnames,
-                            size_t kw_idx,
-                            PyObject* func,
-                            A&&... args
-                        ) {
+                        } else {
                             return []<size_t... Prev, size_t... Next>(
                                 std::index_sequence<Prev...>,
                                 std::index_sequence<Next...>,
                                 auto&& parts,
-                                PyObject** array,
-                                size_t idx,
-                                PyObject* kwnames,
-                                size_t kw_idx,
-                                PyObject* func,
+                                auto&& defaults,
+                                auto&& func,
                                 auto&&... args
                             ) {
-                                return typename call<I, J, K>::python{}(
+                                return typename call<I + 1, J + 1, K + 1>::cpp{}(
                                     std::forward<decltype(parts)>(parts),
-                                    array,
-                                    idx,
-                                    kwnames,
-                                    kw_idx,
-                                    func,
+                                    std::forward<decltype(defaults)>(defaults),
+                                    std::forward<decltype(func)>(func),
                                     unpack_arg<Prev>(
                                         std::forward<decltype(args)>(args)...
                                     )...,
-                                    unpack_arg<J + 1 + Next>(
+                                    to_arg<I>(std::forward<decltype(parts)>(
+                                        parts
+                                    ).template get<K>()),
+                                    unpack_arg<J + Next>(
                                         std::forward<decltype(args)>(args)...
                                     )...
                                 );
                             }(
                                 std::make_index_sequence<J>{},
-                                std::make_index_sequence<sizeof...(A) - (J + 1)>{},
-                                std::forward<P>(parts),
-                                array,
-                                idx,
-                                kwnames,
-                                kw_idx,
-                                func,
-                                std::forward<A>(args)...
-                            );
-                        }
-
-                        template <typename P, typename... A>
-                        static Params<std::vector<Param>> key_remove(
-                            std::vector<Param>& out,
-                            size_t hash,
-                            P&& parts,
-                            A&&... args
-                        ) {
-                            return []<size_t... Prev, size_t... Next>(
-                                std::index_sequence<Prev...>,
-                                std::index_sequence<Next...>,
-                                std::vector<Param>& out,
-                                size_t hash,
-                                auto&& parts,
-                                auto&&... args
-                            ) {
-                                return call<I, J, K>::python::key(
-                                    out,
-                                    hash,
-                                    std::forward<decltype(parts)>(parts),
-                                    unpack_arg<Prev>(
-                                        std::forward<decltype(args)>(args)...
-                                    )...,
-                                    unpack_arg<J + 1 + Next>(
-                                        std::forward<decltype(args)>(args)...
-                                    )...
-                                );
-                            }(
-                                std::make_index_sequence<J>{},
-                                std::make_index_sequence<sizeof...(A) - (J + 1)>{},
-                                out,
-                                hash,
-                                std::forward<P>(parts),
-                                std::forward<A>(args)...
-                            );
-                        }
-
-                        template <size_t J2, typename... A>
-                        static void call_variadic_positional(
-                            PyObject** array,
-                            size_t& idx,
-                            PyObject* kwnames,
-                            size_t& kw_idx,
-                            A&&... args
-                        ) {
-                            if constexpr (J2 == pos_pack_idx<A...>) {
-                                auto& pack = unpack_arg<J2>(std::forward<A>(args)...);
-                                for (auto& value : pack) {
-                                    call_insert(
-                                        array,
-                                        idx,
-                                        kwnames,
-                                        kw_idx,
-                                        template_string<"">(),
-                                        value
-                                    );
-                                }
-                            } else {
-                                call_insert(
-                                    array,
-                                    idx,
-                                    kwnames,
-                                    kw_idx,
-                                    template_string<"">(),
-                                    unpack_arg<J2>(std::forward<A>(args)...)
-                                );
-                            }
-                        }
-
-                        template <size_t J2, typename... A>
-                        static void key_variadic_positional(
-                            std::vector<Param>& out,
-                            size_t& hash,
-                            A&&... args
-                        ) {
-                            if constexpr (J2 == pos_pack_idx<A...>) {
-                                auto& pack = unpack_arg<J2>(std::forward<A>(args)...);
-                                for (auto& value : pack) {
-                                    out.emplace_back(
-                                        "",
-                                        to_python(value),
-                                        ArgKind::POS
-                                    );
-                                    hash = hash_combine(
-                                        hash,
-                                        out.back().hash(seed, prime)
-                                    );
-                                }
-                            } else {
-                                out.emplace_back(
-                                    "",
-                                    to_python(
-                                        unpack_arg<J2>(std::forward<A>(args)...)
-                                    ),
-                                    ArgKind::POS
-                                );
-                                hash = hash_combine(
-                                    hash,
-                                    out.back().hash(seed, prime)
-                                );
-                            }
-                        }
-
-                        template <size_t J2, typename... A>
-                        static void call_variadic_keywords(
-                            PyObject** array,
-                            size_t& idx,
-                            PyObject* kwnames,
-                            size_t& kw_idx,
-                            A&&... args
-                        ) {
-                            if constexpr (J2 == kw_pack_idx<A...>) {
-                                auto& pack = unpack_arg<J2>(std::forward<A>(args)...);
-                                auto it = pack.begin();
-                                auto end = pack.end();
-                                while (it != end) {
-                                    // postfix ++ required to increment before invalidation
-                                    auto node = pack.extract(it++);
-                                    PyObject* name = PyUnicode_FromStringAndSize(
-                                        node.key().data(),
-                                        node.key().size()
-                                    );
-                                    if (name == nullptr) {
-                                        for (size_t i = 0; i < idx; ++i) {
-                                            Py_DECREF(array[i]);
-                                        }
-                                        Exception::from_python();
-                                    }
-                                    call_insert(
-                                        array,
-                                        idx,
-                                        kwnames,
-                                        kw_idx,
-                                        reinterpret_steal<Object>(name),
-                                        std::move(node.mapped())
-                                    );
-                                }
-                            } else {
-                                call_insert(
-                                    array,
-                                    idx,
-                                    kwnames,
-                                    kw_idx,
-                                    template_string<
-                                        ArgTraits<unpack_type<J2, Args...>>::name
-                                    >(),
-                                    unpack_arg<J2>(std::forward<A>(args)...)
-                                );
-                            }
-                        }
-
-                        template <size_t J2, typename... A>
-                        static void key_variadic_keywords(
-                            std::vector<Param>& out,
-                            size_t& hash,
-                            A&&... args
-                        ) {
-                            if constexpr (J2 == kw_pack_idx<A...>) {
-                                auto& pack = unpack_arg<J2>(std::forward<A>(args)...);
-                                auto it = pack.begin();
-                                auto end = pack.end();
-                                while (it != end) {
-                                    // postfix ++ required to increment before invalidation
-                                    auto node = pack.extract(it++);
-                                    out.emplace_back(
-                                        /// TODO: this forces the parameter list to hold
-                                        /// a string rather than a string_view?
-                                        std::move(node.key()),
-                                        to_python(std::move(node.mapped())),
-                                        ArgKind::KW
-                                    );
-                                    hash = hash_combine(
-                                        hash,
-                                        out.back().hash(seed, prime)
-                                    );
-                                }
-                            } else {
-                                out.emplace_back(
-                                    ArgTraits<Sig::at<I>>::name,
-                                    to_python(
-                                        unpack_arg<J2>(std::forward<A>(args)...)
-                                    ),
-                                    ArgKind::KW
-                                );
-                                hash = hash_combine(
-                                    hash,
-                                    out.back().hash(seed, prime)
-                                );
-                            }
-                        }
-                    };
-                };
-
-            public:
-                using signature = call<0, 0, 0>::template normalize<Return()>::type;
-
-                static constexpr size_t n               = sizeof...(Values);
-                static constexpr size_t n_pos           = Source::n_pos;
-                static constexpr size_t n_kw            = Source::n_kw;
-
-                template <StaticStr Name>
-                static constexpr bool has               = Source::template has<Name>;
-                static constexpr bool has_pos           = Source::has_pos;
-                static constexpr bool has_args          = Source::has_args;
-                static constexpr bool has_kw            = Source::has_kw;
-                static constexpr bool has_kwargs        = Source::has_kwargs;
-
-                template <StaticStr Name> requires (has<Name>)
-                static constexpr size_t idx             = Source::template idx<Name>;
-                static constexpr size_t args_idx        = Source::args_idx;
-                static constexpr size_t kw_idx          = Source::kw_idx;
-                static constexpr size_t kwargs_idx      = Source::kwargs_idx;
-
-                template <size_t I> requires (I < n)
-                using at = Source::template at<I>;
-
-                static constexpr bool proper_argument_order =
-                    Source::proper_argument_order;
-
-                static constexpr bool no_qualified_arg_annotations =
-                    Source::no_qualified_arg_annotations;
-
-                static constexpr bool no_duplicate_arguments =
-                    Source::no_duplicate_arguments;
-
-                static constexpr bool no_extra_positional_args =
-                    Sig::has_args || !Source::has_posonly ||
-                    _no_extra_positional_args<0, 0>;
-
-                static constexpr bool no_extra_keyword_args = Sig::has_kwargs ||
-                    []<size_t... Js>(std::index_sequence<Js...>) {
-                        return (
-                            Sig::has<ArgTraits<
-                                typename Source::template at<Source::kw_idx + Js>
-                            >::name> && ...
-                        );
-                    }(std::make_index_sequence<Source::has_kw ?
-                        std::min(Source::n, Source::kwargs_idx) - Source::kw_idx :
-                        0
-                    >{});
-
-                static constexpr bool no_conflicting_values = !((
-                    ArgTraits<Values>::kw() &&
-                    has_partial<ArgTraits<Values>::name>
-                ) || ...) && _no_conflicting_values<0, 0>;
-
-                static constexpr bool satisfies_required_args =
-                    _satisfies_required_args<0, 0>;
-
-                static constexpr bool can_convert = _can_convert<0, 0>;
-
-                /* Produce an overload key from the bound C++ arguments, which can be
-                used to search the overload trie and invoke a resulting function. */
-                template <inherits<Partial> P>
-                static Params<std::vector<Param>> key(
-                    P&& parts,
-                    Values... values
-                ) {
-                    std::vector<Param> out;
-                    if constexpr (Source::has_args && Source::has_kwargs) {
-                        out.reserve(
-                            Partial::n +
-                            (Source::n - 2) +
-                            unpack_arg<Source::args_idx>(
-                                std::forward<Values>(values)...
-                            ).size() +
-                            unpack_arg<Source::kwargs_idx>(
-                                std::forward<Values>(values)...
-                            ).size()
-                        );
-                    } else if constexpr (Source::has_args) {
-                        out.reserve(
-                            Partial::n +
-                            (Source::n - 1) +
-                            unpack_arg<Source::args_idx>(
-                                std::forward<Values>(values)...
-                            ).size()
-                        );
-                    } else if constexpr (Source::has_kwargs) {
-                        out.reserve(
-                            Partial::n +
-                            (Source::n - 1) +
-                            unpack_arg<Source::kwargs_idx>(
-                                std::forward<Values>(values)...
-                            ).size()
-                        );
-                    } else {
-                        out.reserve(
-                            Partial::n +
-                            Source::n
-                        );
-                    }
-                    return call<0, 0, 0>::python::key(
-                        out,
-                        0,
-                        std::forward<P>(parts),
-                        std::forward<Values>(values)...
-                    );
-                }
-
-                /* Invoke a C++ function from C++ using Python-style arguments. */
-                template <inherits<Partial> P, inherits<Defaults> D, typename F>
-                    requires (
-                        std::is_invocable_v<F, Args...> &&
-                        proper_argument_order &&
-                        no_qualified_arg_annotations &&
-                        no_duplicate_arguments &&
-                        no_conflicting_values &&
-                        no_extra_positional_args &&
-                        no_extra_keyword_args &&
-                        satisfies_required_args &&
-                        can_convert
-                    )
-                static constexpr std::invoke_result_t<F, Args...> operator()(
-                    P&& parts,
-                    D&& defaults,
-                    F&& func,
-                    Values... args
-                ) {
-                    /// NOTE: source positional and keyword packs must be converted
-                    /// into PositionalPack and KeywordPack helpers, which are
-                    /// destructively iterated over within the call algorithm and
-                    /// validated empty just before calling the target function,
-                    /// wherein they are omitted.
-                    if constexpr (Source::has_args && Source::has_kwargs) {
-                        return []<size_t... Prev, size_t... Next>(
-                            std::index_sequence<Prev...>,
-                            std::index_sequence<Next...>,
-                            auto&& parts,
-                            auto&& defaults,
-                            auto&& func,
-                            auto&&... args
-                        ) {
-                            return typename call<0, 0, 0>::cpp{}(
-                                std::forward<decltype(parts)>(parts),
-                                std::forward<decltype(defaults)>(defaults),
-                                std::forward<decltype(func)>(func),
-                                unpack_arg<Prev>(
-                                    std::forward<decltype(args)>(args)...
-                                )...,
-                                PositionalPack(unpack_arg<Source::args_idx>(
-                                    std::forward<decltype(args)>(args)...
-                                )),
-                                unpack_arg<Source::args_idx + 1 + Next>(
-                                    std::forward<decltype(args)>(args)...
-                                )...,
-                                KeywordPack(unpack_arg<Source::kwargs_idx>(
-                                    std::forward<decltype(args)>(args)...
-                                ))
-                            );
-                        }(
-                            std::make_index_sequence<Source::args_idx>{},
-                            std::make_index_sequence<
-                                Source::kwargs_idx - (Source::args_idx + 1)
-                            >{},
-                            std::forward<P>(parts),
-                            std::forward<D>(defaults),
-                            std::forward<F>(func),
-                            std::forward<Values>(args)...
-                        );
-
-                    } else if constexpr (Source::has_args) {
-                        return []<size_t... Prev, size_t... Next>(
-                            std::index_sequence<Prev...>,
-                            std::index_sequence<Next...>,
-                            auto&& parts,
-                            auto&& defaults,
-                            auto&& func,
-                            auto&&... args
-                        ) {
-                            return typename call<0, 0, 0>::cpp{}(
-                                std::forward<decltype(parts)>(parts),
-                                std::forward<decltype(defaults)>(defaults),
-                                std::forward<decltype(func)>(func),
-                                unpack_arg<Prev>(
-                                    std::forward<decltype(args)>(args)...
-                                )...,
-                                PositionalPack(unpack_arg<Source::args_idx>(
-                                    std::forward<decltype(args)>(args)...
-                                )),
-                                unpack_arg<Source::args_idx + 1 + Next>(
-                                    std::forward<decltype(args)>(args)...
-                                )...
-                            );
-                        }(
-                            std::make_index_sequence<Source::args_idx>{},
-                            std::make_index_sequence<Source::n - (Source::args_idx + 1)>{},
-                            std::forward<P>(parts),
-                            std::forward<D>(defaults),
-                            std::forward<F>(func),
-                            std::forward<Values>(args)...
-                        );
-
-                    } else if constexpr (Source::has_kwargs) {
-                        return []<size_t... Prev>(
-                            std::index_sequence<Prev...>,
-                            auto&& parts,
-                            auto&& defaults,
-                            auto&& func,
-                            auto&&... args
-                        ) {
-                            return typename call<0, 0, 0>::cpp{}(
-                                std::forward<decltype(parts)>(parts),
-                                std::forward<decltype(defaults)>(defaults),
-                                std::forward<decltype(func)>(func),
-                                unpack_arg<Prev>(
-                                    std::forward<decltype(args)>(args)...
-                                )...,
-                                KeywordPack(unpack_arg<Source::kwargs_idx>(
-                                    std::forward<decltype(args)>(args)...
-                                ))
-                            );
-                        }(
-                            std::make_index_sequence<Source::kwargs_idx>{},
-                            std::forward<P>(parts),
-                            std::forward<D>(defaults),
-                            std::forward<F>(func),
-                            std::forward<Values>(args)...
-                        );
-
-                    } else {
-                        return typename call<0, 0, 0>::cpp{}(
-                            std::forward<P>(parts),
-                            std::forward<D>(defaults),
-                            std::forward<F>(func),
-                            std::forward<Values>(args)...
-                        );
-                    }
-                }
-
-                /* Invoke a Python function from C++ using Python-style arguments.  This
-                will always return a new reference to a raw Python object, or throw a
-                runtime error if the arguments are malformed in some way. */
-                template <inherits<Partial> P>
-                    requires (
-                        proper_argument_order &&
-                        no_qualified_arg_annotations &&
-                        no_duplicate_arguments &&
-                        no_conflicting_values &&
-                        no_extra_positional_args &&
-                        no_extra_keyword_args &&
-                        satisfies_required_args &&
-                        can_convert
-                    )
-                static Object operator()(
-                    P&& parts,
-                    PyObject* func,
-                    Values... args
-                ) {
-                    constexpr auto heap_array = [](size_t size) {
-                        PyObject** array = new PyObject*[size + 1];
-                        if (array == nullptr) {
-                            throw MemoryError();
-                        }
-                        array[0] = nullptr;
-                        return array;
-                    };
-
-                    /// NOTE: source positional and keyword packs must be converted
-                    /// into PositionalPack and KeywordPack helpers, which are
-                    /// destructively iterated over within the call algorithm and
-                    /// validated empty just before calling the target function.  In
-                    /// the Python case, this may require an additional heap allocation
-                    /// for the vectorcall array, which can be optimized to a stack
-                    /// allocation if the exact number of arguments is known at
-                    /// compile time (i.e. there are no positional or keyword unpacking
-                    /// operators in the argument list).
-                    if constexpr (Source::has_args && Source::has_kwargs) {
-                        return []<size_t... Prev, size_t... Next>(
-                            std::index_sequence<Prev...>,
-                            std::index_sequence<Next...>,
-                            auto&& parts,
-                            PyObject* func,
-                            auto&&... args
-                        ) {
-                            size_t size =
-                                Partial::n +
-                                (Source::n - 2) +
-                                unpack_arg<Source::args_idx>(
-                                    std::forward<decltype(args)>(args)...
-                                ).size() +
-                                unpack_arg<Source::kwargs_idx>(
-                                    std::forward<decltype(args)>(args)...
-                                ).size();
-                            PyObject** array = ++heap_array(size);
-                            try {
-                                size_t kw_size =
-                                    call<0, 0, 0>::python::n_partial_keywords +
-                                    Source::n_kw +
-                                    unpack_arg<Source::kwargs_idx>(
-                                        std::forward<decltype(args)>(args)...
-                                    ).size();
-                                if (kw_size) {
-                                    PyObject* kwnames = PyTuple_New(kw_size);
-                                    try {
-                                        Object out = typename call<0, 0, 0>::python{}(
-                                            std::forward<decltype(parts)>(parts),
-                                            array,
-                                            0,
-                                            kwnames,
-                                            0,
-                                            func,
-                                            unpack_arg<Prev>(
-                                                std::forward<decltype(args)>(args)...
-                                            )...,
-                                            PositionalPack(unpack_arg<Source::args_idx>(
-                                                std::forward<decltype(args)>(args)...
-                                            )),
-                                            unpack_arg<Source::args_idx + 1 + Next>(
-                                                std::forward<decltype(args)>(args)...
-                                            )...,
-                                            KeywordPack(unpack_arg<Source::kwargs_idx>(
-                                                std::forward<decltype(args)>(args)...
-                                            ))
-                                        );
-                                        Py_DECREF(kwnames);
-                                        delete[] --array;
-                                        return out;
-                                    } catch (...) {
-                                        Py_DECREF(kwnames);
-                                        throw;
-                                    }
-                                } else {
-                                    Object out = typename call<0, 0, 0>::python{}(
-                                        std::forward<decltype(parts)>(parts),
-                                        array,
-                                        0,
-                                        nullptr,
-                                        0,
-                                        func,
-                                        unpack_arg<Prev>(
-                                            std::forward<decltype(args)>(args)...
-                                        )...,
-                                        PositionalPack(unpack_arg<Source::args_idx>(
-                                            std::forward<decltype(args)>(args)...
-                                        )),
-                                        unpack_arg<Source::args_idx + 1 + Next>(
-                                            std::forward<decltype(args)>(args)...
-                                        )...,
-                                        KeywordPack(unpack_arg<Source::kwargs_idx>(
-                                            std::forward<decltype(args)>(args)...
-                                        ))
-                                    );
-                                    delete[] --array;
-                                    return out;
-                                }
-                            } catch (...) {
-                                delete[] --array;
-                                throw;
-                            }
-                        }(
-                            std::make_index_sequence<Source::args_idx>{},
-                            std::make_index_sequence<
-                                Source::kwargs_idx - (Source::args_idx + 1)
-                            >{},
-                            std::forward<P>(parts),
-                            func,
-                            std::forward<Values>(args)...
-                        );
-
-                    } else if constexpr (Source::has_args) {
-                        return []<size_t... Prev, size_t... Next>(
-                            std::index_sequence<Prev...>,
-                            std::index_sequence<Next...>,
-                            auto&& parts,
-                            PyObject* func,
-                            auto&&... args
-                        ) {
-                            size_t size =
-                                Partial::n +
-                                (Source::n - 1) +
-                                unpack_arg<Source::args_idx>(
-                                    std::forward<decltype(args)>(args)...
-                                ).size();
-                            PyObject** array = ++heap_array(size);
-                            try {
-                                constexpr size_t kw_size =
-                                    call<0, 0, 0>::python::n_partial_keywords +
-                                    Source::n_kw;
-                                if constexpr (kw_size) {
-                                    PyObject* kwnames = PyTuple_New(kw_size);
-                                    try {
-                                        Object out = typename call<0, 0, 0>::python{}(
-                                            std::forward<decltype(parts)>(parts),
-                                            array,
-                                            0,
-                                            kwnames,
-                                            0,
-                                            func,
-                                            unpack_arg<Prev>(
-                                                std::forward<decltype(args)>(args)...
-                                            )...,
-                                            PositionalPack(unpack_arg<Source::args_idx>(
-                                                std::forward<decltype(args)>(args)...
-                                            )),
-                                            unpack_arg<Source::args_idx + 1 + Next>(
-                                                std::forward<decltype(args)>(args)...
-                                            )...
-                                        );
-                                        Py_DECREF(kwnames);
-                                        delete[] --array;
-                                        return out;
-                                    } catch (...) {
-                                        Py_DECREF(kwnames);
-                                        throw;
-                                    }
-                                } else {
-                                    Object out = typename call<0, 0, 0>::python{}(
-                                        std::forward<decltype(parts)>(parts),
-                                        array,
-                                        0,
-                                        nullptr,
-                                        0,
-                                        func,
-                                        unpack_arg<Prev>(
-                                            std::forward<decltype(args)>(args)...
-                                        )...,
-                                        PositionalPack(unpack_arg<Source::args_idx>(
-                                            std::forward<decltype(args)>(args)...
-                                        )),
-                                        unpack_arg<Source::args_idx + 1 + Next>(
-                                            std::forward<decltype(args)>(args)...
-                                        )...
-                                    );
-                                    delete[] --array;
-                                    return out;
-                                }
-                            } catch (...) {
-                                delete[] --array;
-                                throw;
-                            }
-                        }(
-                            std::make_index_sequence<Source::args_idx>{},
-                            std::make_index_sequence<Source::n - (Source::args_idx + 1)>{},
-                            std::forward<P>(parts),
-                            func,
-                            std::forward<Values>(args)...
-                        );
-
-                    } else if constexpr (Source::has_kwargs) {
-                        return []<size_t... Prev>(
-                            std::index_sequence<Prev...>,
-                            auto&& parts,
-                            PyObject* func,
-                            auto&&... args
-                        ) {
-                            size_t size =
-                                Partial::n +
-                                (Source::n - 1) +
-                                unpack_arg<Source::kwargs_idx>(
-                                    std::forward<decltype(args)>(args)...
-                                ).size();
-                            PyObject** array = ++heap_array(size);
-                            try {
-                                size_t kw_size =
-                                    call<0, 0, 0>::python::n_partial_keywords +
-                                    Source::n_kw +
-                                    unpack_arg<Source::kwargs_idx>(
-                                        std::forward<decltype(args)>(args)...
-                                    ).size();
-                                if (kw_size) {
-                                    PyObject* kwnames = PyTuple_New(kw_size);
-                                    try {
-                                        Object out = typename call<0, 0, 0>::python{}(
-                                            std::forward<decltype(parts)>(parts),
-                                            array,
-                                            0,
-                                            kwnames,
-                                            0,
-                                            func,
-                                            unpack_arg<Prev>(
-                                                std::forward<decltype(args)>(args)...
-                                            )...,
-                                            KeywordPack(unpack_arg<Source::kwargs_idx>(
-                                                std::forward<decltype(args)>(args)...
-                                            ))
-                                        );
-                                        Py_DECREF(kwnames);
-                                        delete[] --array;
-                                        return out;
-                                    } catch (...) {
-                                        Py_DECREF(kwnames);
-                                        throw;
-                                    }
-                                } else {
-                                    Object out = typename call<0, 0, 0>::python{}(
-                                        std::forward<decltype(parts)>(parts),
-                                        array,
-                                        0,
-                                        nullptr,
-                                        0,
-                                        func,
-                                        unpack_arg<Prev>(
-                                            std::forward<decltype(args)>(args)...
-                                        )...,
-                                        KeywordPack(unpack_arg<Source::kwargs_idx>(
-                                            std::forward<decltype(args)>(args)...
-                                        ))
-                                    );
-                                    delete[] --array;
-                                    return out;
-                                }
-                            } catch (...) {
-                                delete[] --array;
-                                throw;
-                            }
-                        }(
-                            std::make_index_sequence<Source::kwargs_idx>{},
-                            std::forward<P>(parts),
-                            func,
-                            std::forward<Values>(args)...
-                        );
-
-                    } else {
-                        constexpr size_t size = Partial::n + Source::n;
-                        PyObject* array[size + 1];
-                        array[0] = nullptr;
-                        ++array;
-                        constexpr size_t kw_size =
-                            call<0, 0, 0>::python::n_partial_keywords + Source::n_kw;
-                        if constexpr (kw_size) {
-                            PyObject* kwnames = PyTuple_New(kw_size);
-                            try {
-                                Object out = typename call<0, 0, 0>::python{}(
-                                    std::forward<decltype(parts)>(parts),
-                                    array,
-                                    0,
-                                    kwnames,
-                                    0,
-                                    func,
-                                    std::forward<decltype(args)>(args)...
-                                );
-                                Py_DECREF(kwnames);
-                                return out;
-                            } catch (...) {
-                                Py_DECREF(kwnames);
-                                throw;
-                            }
-                        } else {
-                            return typename call<0, 0, 0>::python{}(
-                                std::forward<decltype(parts)>(parts),
-                                array,
-                                0,
-                                nullptr,
-                                0,
-                                func,
-                                std::forward<decltype(args)>(args)...
-                            );
-                        }
-                    }
-                }
-            };
-
-            /* Bind a Python vectorcall array to the enclosing signature and implement
-            the translation logic necessary to invoke a matching C++ function.  This
-            is essentially the inverse of the Bind<>::call::python algorithm, and uses
-            many of the same techniques from Bind<>::call::cpp to build up the C++
-            argument list in a way that avoids any intermediate data structures.  The
-            arguments are simply interpreted as dynamic `Object` types and implicitly
-            converted to the expected argument type using the same infrastructure as
-            ordinary bertrand conversions.
-
-            This is by far the most efficient way to invoke a C++ function from Python,
-            as it generally involves only a single `isinstance()` check per argument,
-            and a possible conversion to an equivalent C++ type.  Both are done using
-            the same infrastructure as implicit conversions from the dynamic `Object`
-            type, which delegates to the `__isinstance__` control struct, meaning any
-            changes to the C++ conversion logic will be reflected here as well.
-            Generally speaking, built-in types use this mechanism to optimize the check
-            to specialized C API endpoints where possible, which improves performance
-            even further beyond a standard `isinstance()` call.
-
-            In some cases, an additional conversion may be required to handle Python
-            types that lack sufficient type information for the check, such as standard
-            Python containers that can contain any type.  In those cases, the type
-            check may be applied elementwise to the contents of the container, which
-            can be expensive if the container is large.  This can be avoided by using
-            Bertrand types as inputs to the function, in which case the check is always
-            O(1) in time, due to the 1:1 equivalence between Bertrand wrappers and
-            their C++ counterparts, and corresponding type safety guarantees. */
-            struct Vectorcall {
-            protected:
-                /* The kwnames tuple must be converted into a temporary map that can
-                be destructively searched over the course of the call algorithm.  If
-                any arguments remain by the time the underlying function is called,
-                then they are considered extras. */
-                struct Kwargs {
-                    using Map = std::unordered_map<std::string_view, PyObject*>;
-                    Map map;
-
-                    Kwargs(
-                        PyObject* const* array,
-                        size_t nargs,
-                        PyObject* kwnames,
-                        size_t kwcount
-                    ) :
-                        map([](
-                            PyObject* const* array,
-                            size_t nargs,
-                            PyObject* kwnames,
-                            size_t kwcount
-                        ) {
-                            Map map;
-                            map.reserve(kwcount);
-                            for (size_t i = 0; i < kwcount; ++i) {
-                                Py_ssize_t len;
-                                const char* name = PyUnicode_AsUTF8AndSize(
-                                    PyTuple_GET_ITEM(kwnames, i),
-                                    &len
-                                );
-                                if (name == nullptr) {
-                                    Exception::from_python();
-                                }
-                                map.emplace(
-                                    std::string_view{name, static_cast<size_t>(len)},
-                                    array[nargs + i]
-                                );
-                            }
-                            return map;
-                        }(array, nargs, kwnames, kwcount))
-                    {}
-
-                    void validate() {
-                        if constexpr (!Sig::has_kwargs) {
-                            if (!map.empty()) {
-                                auto it = map.begin();
-                                auto end = map.end();
-                                std::string message =
-                                    "unexpected keyword arguments: ['" +
-                                    std::string(it->first);
-                                while (++it != end) {
-                                    message += "', '" + std::string(it->first);
-                                }
-                                message += "']";
-                                throw TypeError(message);
-                            }
-                        }
-                    }
-
-                    auto size() const { return map.size(); }
-                    template <typename T>
-                    auto extract(T&& key) { return map.extract(std::forward<T>(key)); }
-                    auto begin() { return map.begin(); }
-                    auto end() { return map.end(); }
-                };
-
-                /* Invoking a C++ function from Python involves translating a
-                vectorcall array and kwnames tuple into a valid C++ parameter list that
-                exactly matches the enclosing signature.  This is yet another 3-way
-                merge between partial arguments, converted vectorcall arguments, and
-                default values, in that order of precedence, and is essentially the
-                inverse of the Bind<>::call<>::python algorithm.  It uses techniques
-                from Bind<>::call<>::cpp to build up the C++ argument list via index
-                sequences and fold expressions, which are inlined into the final call. */
-                template <size_t I, size_t K>
-                struct call {  // terminal case
-                    template <typename P>
-                    static Params<std::vector<Param>> key(
-                        std::vector<Param>& out,
-                        size_t hash,
-                        Kwargs& kwargs,
-                        PyObject* const* array,
-                        size_t idx,
-                        size_t nargs,
-                        P&& parts
-                    ) {
-                        validate_positional(array, idx, nargs);
-                        kwargs.validate();
-                        return {
-                            .value = std::move(out),
-                            .hash = hash
-                        };
-                    }
-
-                    template <typename P>
-                    static Params<std::vector<Param>> key(
-                        std::vector<Param>& out,
-                        size_t hash,
-                        PyObject* const* array,
-                        size_t idx,
-                        size_t nargs,
-                        P&& parts
-                    ) {
-                        validate_positional(array, idx, nargs);
-                        return {
-                            .value = std::move(out),
-                            .hash = hash
-                        };
-                    }
-
-                    template <typename P, typename D, typename F, typename... A>
-                    static std::invoke_result_t<F, Args...> operator()(
-                        P&& parts,
-                        D&& defaults,
-                        Kwargs& kwargs,
-                        PyObject* const* array,
-                        size_t idx,
-                        size_t nargs,
-                        F&& func,
-                        A&&... args
-                    ) {
-                        validate_positional(array, idx, nargs);
-                        kwargs.validate();
-                        return std::forward<F>(func)(std::forward<A>(args)...);
-                    }
-
-                    template <typename P, typename D, typename F, typename... A>
-                    static std::invoke_result_t<F, Args...> operator()(
-                        P&& parts,
-                        D&& defaults,
-                        PyObject* const* array,
-                        size_t idx,
-                        size_t nargs,
-                        F&& func,
-                        A&&... args
-                    ) {
-                        validate_positional(array, idx, nargs);
-                        return std::forward<F>(func)(std::forward<A>(args)...);
-                    }
-
-                private:
-
-                    static void validate_positional(
-                        PyObject* const* array,
-                        size_t idx,
-                        size_t nargs
-                    ) {
-                        if constexpr (!Sig::has_args) {
-                            if (idx < nargs) {
-                                std::string message =
-                                    "unexpected positional arguments: [";
-                                PyObject* str = PyObject_Repr(array[idx]);
-                                if (str == nullptr) {
-                                    Exception::from_python();
-                                }
-                                Py_ssize_t len;
-                                const char* name = PyUnicode_AsUTF8AndSize(
-                                    str,
-                                    &len
-                                );
-                                if (name == nullptr) {
-                                    Exception::from_python();
-                                }
-                                message += std::string(name, len);
-                                while (++idx < nargs) {
-                                    str = PyObject_Repr(array[idx]);
-                                    if (str == nullptr) {
-                                        Exception::from_python();
-                                    }
-                                    name = PyUnicode_AsUTF8AndSize(
-                                        str,
-                                        &len
-                                    );
-                                    if (name == nullptr) {
-                                        Exception::from_python();
-                                    }
-                                    message += ", " + std::string(name, len);
-                                }
-                                message += "]";
-                                throw TypeError(message);
-                            }
-                        }
-                    }
-                };
-                template <size_t I, size_t K>
-                    requires (
-                        I < Sig::n &&
-                        (K < std::tuple_size_v<Tuple> && target_idx<K> == I)
-                    )
-                struct call<I, K> {  // insert partial argument(s)
-                    template <size_t K2>
-                    static constexpr size_t consecutive = 0;
-                    template <size_t K2>
-                        requires (K2 < std::tuple_size_v<Tuple> && target_idx<K2> == I)
-                    static constexpr size_t consecutive<K2> = consecutive<K2 + 1> + 1;
-
-                    template <typename P>
-                    static Params<std::vector<Param>> key(
-                        std::vector<Param>& out,
-                        size_t hash,
-                        Kwargs& kwargs,
-                        PyObject* const* array,
-                        size_t idx,
-                        size_t nargs,
-                        P&& parts
-                    ) {
-                        using T = Sig::at<I>;
-                        if (
-                            ArgTraits<T>::kwargs() ||
-                            ArgTraits<T>::kwonly() ||
-                            (ArgTraits<T>::kw() && idx >= nargs)
-                        ) {
-                            out.emplace_back(
-                                Partial::name<K>,
-                                to_python(
-                                    std::forward<P>(parts).template get<K>()
-                                ),
-                                ArgKind::KW
-                            );
-                        } else {
-                            out.emplace_back(
-                                "",
-                                to_python(
-                                    std::forward<P>(parts).template get<K>()
-                                ),
-                                ArgKind::POS
-                            );
-                        }
-                        return call<
-                            I + !ArgTraits<T>::variadic(),
-                            K + 1
-                        >::python::key(
-                            out,
-                            hash_combine(hash, out.back().hash(seed, prime)),
-                            kwargs,
-                            array,
-                            idx,
-                            nargs,
-                            std::forward<P>(parts)
-                        );
-                    }
-
-                    template <typename P>
-                    static Params<std::vector<Param>> key(
-                        std::vector<Param>& out,
-                        size_t hash,
-                        PyObject* const* array,
-                        size_t idx,
-                        size_t nargs,
-                        P&& parts
-                    ) {
-                        using T = Sig::at<I>;
-                        if (
-                            ArgTraits<T>::kwargs() ||
-                            ArgTraits<T>::kwonly() ||
-                            (ArgTraits<T>::kw() && idx >= nargs)
-                        ) {
-                            out.emplace_back(
-                                Partial::name<K>,
-                                to_python(
-                                    std::forward<P>(parts).template get<K>()
-                                ),
-                                ArgKind::KW
-                            );
-                        } else {
-                            out.emplace_back(
-                                "",
-                                to_python(
-                                    std::forward<P>(parts).template get<K>()
-                                ),
-                                ArgKind::POS
-                            );
-                        }
-                        return call<
-                            I + !ArgTraits<T>::variadic(),
-                            K + 1
-                        >::python::key(
-                            out,
-                            hash_combine(hash, out.back().hash(seed, prime)),
-                            array,
-                            idx,
-                            nargs,
-                            std::forward<P>(parts)
-                        );
-                    }
-
-                    template <typename P, typename D, typename F, typename... A>
-                    static std::invoke_result_t<F, Args...> operator()(
-                        P&& parts,
-                        D&& defaults,
-                        Kwargs& kwargs,
-                        PyObject* const* array,
-                        size_t idx,
-                        size_t nargs,
-                        F&& func,
-                        A&&... args
-                    ) {
-                        using T = Sig::at<I>;
-                        if constexpr (ArgTraits<T>::args() || ArgTraits<T>::kwargs()) {
-                            return []<size_t... Ks>(
-                                std::index_sequence<Ks...>,
-                                auto&& parts,
-                                auto&& defaults,
-                                Kwargs& kwargs,
-                                PyObject* const* array,
-                                size_t idx,
-                                size_t nargs,
-                                auto&& func,
-                                auto&&... args
-                            ) {
-                                if constexpr (ArgTraits<T>::args()) {
-                                    return call<I + 1, K + consecutive<K>>{}(
-                                        std::forward<decltype(parts)>(parts),
-                                        std::forward<decltype(defaults)>(defaults),
-                                        kwargs,
-                                        array,
-                                        idx,
-                                        nargs,
-                                        std::forward<decltype(func)>(func),
-                                        std::forward<decltype(args)>(args)...,
-                                        to_arg<I>(variadic_positional(
-                                            std::forward<decltype(parts)>(parts),
-                                            array,
-                                            idx,
-                                            nargs
-                                        ))
-                                    );
-                                } else if constexpr (ArgTraits<T>::kwargs()) {
-                                    return call<I + 1, K + consecutive<K>>{}(
-                                        std::forward<decltype(parts)>(parts),
-                                        std::forward<decltype(defaults)>(defaults),
-                                        kwargs,
-                                        array,
-                                        idx,
-                                        nargs,
-                                        std::forward<decltype(func)>(func),
-                                        std::forward<decltype(args)>(args)...,
-                                        to_arg<I>(variadic_keywords(
-                                            std::forward<decltype(parts)>(parts),
-                                            kwargs
-                                        ))
-                                    );
-                                }
-                            }(
-                                std::make_index_sequence<consecutive<K>>{},
+                                std::make_index_sequence<sizeof...(A) - J>{},
                                 std::forward<P>(parts),
                                 std::forward<D>(defaults),
-                                kwargs,
-                                array,
-                                idx,
-                                nargs,
                                 std::forward<F>(func),
                                 std::forward<A>(args)...
-                            );
-                        } else {
-                            return call<I + 1, K + 1>{}(
-                                std::forward<P>(parts),
-                                std::forward<D>(defaults),
-                                kwargs,
-                                array,
-                                idx,
-                                nargs,
-                                std::forward<F>(func),
-                                std::forward<A>(args)...,
-                                to_arg<I>(
-                                    std::forward<P>(parts).template get<K>()
-                                )
-                            );
-                        }
-                    }
-
-                    template <typename P, typename D, typename F, typename... A>
-                    static std::invoke_result_t<F, Args...> operator()(
-                        P&& parts,
-                        D&& defaults,
-                        PyObject* const* array,
-                        size_t idx,
-                        size_t nargs,
-                        F&& func,
-                        A&&... args
-                    ) {
-                        using T = Sig::at<I>;
-                        if constexpr (ArgTraits<T>::args() || ArgTraits<T>::kwargs()) {
-                            return []<size_t... Ks>(
-                                std::index_sequence<Ks...>,
-                                auto&& parts,
-                                auto&& defaults,
-                                PyObject* const* array,
-                                size_t idx,
-                                size_t nargs,
-                                auto&& func,
-                                auto&&... args
-                            ) {
-                                if constexpr (ArgTraits<T>::args()) {
-                                    return call<I + 1, K + consecutive<K>>{}(
-                                        std::forward<decltype(parts)>(parts),
-                                        std::forward<decltype(defaults)>(defaults),
-                                        array,
-                                        idx,
-                                        nargs,
-                                        std::forward<decltype(func)>(func),
-                                        std::forward<decltype(args)>(args)...,
-                                        to_arg<I>(variadic_positional(
-                                            std::forward<decltype(parts)>(parts),
-                                            array,
-                                            idx,
-                                            nargs
-                                        ))
-                                    );
-                                } else if constexpr (ArgTraits<T>::kwargs()) {
-                                    return call<I + 1, K + consecutive<K>>{}(
-                                        std::forward<decltype(parts)>(parts),
-                                        std::forward<decltype(defaults)>(defaults),
-                                        array,
-                                        idx,
-                                        nargs,
-                                        std::forward<decltype(func)>(func),
-                                        std::forward<decltype(args)>(args)...
-                                    );
-                                }
-                            }(
-                                std::make_index_sequence<consecutive<K>>{},
-                                std::forward<P>(parts),
-                                std::forward<D>(defaults),
-                                array,
-                                idx,
-                                nargs,
-                                std::forward<F>(func),
-                                std::forward<A>(args)...
-                            );
-                        } else {
-                            return call<I + 1, K + 1>{}(
-                                std::forward<P>(parts),
-                                std::forward<D>(defaults),
-                                array,
-                                idx,
-                                nargs,
-                                std::forward<F>(func),
-                                std::forward<A>(args)...,
-                                to_arg<I>(
-                                    std::forward<P>(parts).template get<K>()
-                                )
                             );
                         }
                     }
 
                 private:
+
+                    template <size_t J2, typename T, typename... A>
+                    static void _variadic_positional(
+                        std::vector<T>& out,
+                        A&&... args
+                    ) {
+                        if constexpr (J2 == pos_pack_idx<A...>) {
+                            auto& pack = unpack_arg<J2>(std::forward<A>(args)...);
+                            out.insert(out.end(), pack.begin(), pack.end());
+                        } else {
+                            out.emplace_back(unpack_arg<J2>(
+                                std::forward<A>(args)...
+                            ));
+                        }
+                    }
 
                     template <typename P, typename... A>
-                    static auto variadic_positional(
-                        P&& parts,
-                        PyObject* const* array,
-                        size_t idx,
-                        size_t nargs
-                    ) {
+                    static auto variadic_positional(P&& parts, A&&... args) {
                         using T = Sig::at<I>;
+                        constexpr size_t transition = std::min(
+                            Sig<Return, A...>::kw_idx,
+                            kw_pack_idx<A...>
+                        );
+                        constexpr size_t diff = J < transition ? transition - J : 0;
 
                         // allocate variadic positional array
                         using vec = std::vector<typename ArgTraits<T>::type>;
                         vec out;
-                        size_t diff = nargs > idx ? nargs - idx : 0;
-                        out.reserve(consecutive<K> + diff);
+                        if constexpr (diff && pos_pack_idx<A...> < sizeof...(A)) {
+                            out.reserve(
+                                consecutive<K> +
+                                (diff - 1) +
+                                unpack_arg<pos_pack_idx<A...>>(
+                                    std::forward<A>(args)...
+                                ).size()
+                            );
+                        } else {
+                            out.reserve(consecutive<K> + diff);
+                        }
 
                         // consume partial args
                         []<size_t... Ks>(
@@ -6739,30 +3413,65 @@ namespace impl {
                             vec& out,
                             auto&& parts
                         ) {
-                            (out.emplace_back(std::forward<decltype(
+                            (out.emplace_back(std::forward<decltype(parts)>(
                                 parts
-                            )>(parts).template get<K + Ks>()), ...);
+                            ).template get<K + Ks>()), ...);
                         }(
                             std::make_index_sequence<consecutive<K>>{},
                             out,
                             std::forward<P>(parts)
                         );
 
-                        // consume vectorcall args
-                        for (size_t i = idx; idx < nargs; ++i) {
-                            out.emplace_back(
-                                reinterpret_borrow<Object>(array[i])
-                            );
-                        }
+                        // consume source args + parameter packs
+                        []<size_t... Js>(
+                            std::index_sequence<Js...>,
+                            vec& out,
+                            auto&&... args
+                        ) {
+                            (_variadic_positional<J + Js>(
+                                out,
+                                std::forward<decltype(args)>(args)...
+                            ), ...);
+                        }(
+                            std::make_index_sequence<diff>{},
+                            out,
+                            std::forward<A>(args)...
+                        );
                         return out;
                     }
 
-                    template <typename P>
-                    static auto variadic_keywords(
-                        P&& parts,
-                        Kwargs& kwargs
+                    template <size_t J2, typename T, typename... A>
+                    static void _variadic_keywords(
+                        std::unordered_map<std::string, T>& out,
+                        A&&... args
                     ) {
+                        if constexpr (J2 == kw_pack_idx<A...>) {
+                            auto& pack = unpack_arg<J2>(std::forward<A>(args)...);
+                            auto it = pack.begin();
+                            auto end = pack.end();
+                            while (it != end) {
+                                // postfix ++ required to increment before invalidation
+                                auto node = pack.extract(it++);
+                                auto rc = out.insert(node);
+                                if (!rc.inserted) {
+                                    throw TypeError(
+                                        "duplicate value for parameter '" +
+                                        node.key() + "'"
+                                    );
+                                }
+                            }
+                        } else {
+                            out.emplace(
+                                ArgTraits<unpack_type<J2, A...>>::name,
+                                unpack_arg<J2>(std::forward<A>(args)...)
+                            );
+                        }
+                    }
+
+                    template <typename P, typename... A>
+                    static auto variadic_keywords(P&& parts, A&&... args) {
                         using T = Sig::at<I>;
+                        constexpr size_t diff = Source::n - J;
 
                         // allocate variadic keyword map
                         using map = std::unordered_map<
@@ -6770,7 +3479,17 @@ namespace impl {
                             typename ArgTraits<T>::type
                         >;
                         map out;
-                        out.reserve(consecutive<K> + kwargs.size());
+                        if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
+                            out.reserve(
+                                consecutive<K> +
+                                (diff - 1) +
+                                unpack_arg<kw_pack_idx<A...>>(
+                                    std::forward<A>(args)...
+                                ).size()
+                            );
+                        } else {
+                            out.reserve(consecutive<K> + diff);
+                        }
 
                         // consume partial kwargs
                         []<size_t... Ks>(
@@ -6790,418 +3509,254 @@ namespace impl {
                             std::forward<P>(parts)
                         );
 
-                        // consume vectorcall kwargs
-                        for (auto& [key, value] : kwargs) {
-                            out.emplace(
-                                key,
-                                reinterpret_borrow<Object>(value)
-                            );
-                        }
+                        // consume source kwargs + parameter packs
+                        []<size_t... Js>(
+                            std::index_sequence<Js...>,
+                            map& out,
+                            auto&&... args
+                        ) {
+                            (_variadic_keywords<J + Js>(
+                                out,
+                                std::forward<decltype(args)>(args)...
+                            ), ...);
+                        }(
+                            std::make_index_sequence<diff>{},
+                            out,
+                            std::forward<A>(args)...
+                        );
                         return out;
                     }
                 };
-                template <size_t I, size_t K>
-                    requires (
-                        I < Sig::n &&
-                        !(K < std::tuple_size_v<Tuple> && target_idx<K> == I)
-                    )
-                struct call<I, K> {  // insert Python argument(s) or default value
-                    template <typename P>
+
+                struct python {
+                    static constexpr size_t n_partial_keywords = [] {
+                        constexpr size_t next = call<
+                            I + 1,
+                            J,
+                            K + consecutive<K>
+                        >::python::n_partial_keywords;
+                        if constexpr (
+                            ArgTraits<Sig::at<I>>::kwonly() ||
+                            ArgTraits<Sig::at<I>>::kwargs()
+                        ) {
+                            return next + consecutive<K>;
+                        } else if constexpr (ArgTraits<Sig::at<I>>::kw()) {
+                            return next + (J >= Source::kw_idx);
+                        } else {
+                            return next;
+                        }
+                    }();
+
+                    template <typename P, typename... A>
                     static Params<std::vector<Param>> key(
                         std::vector<Param>& out,
                         size_t hash,
-                        Kwargs& kwargs,
-                        PyObject* const* array,
-                        size_t idx,
-                        size_t nargs,
-                        P&& parts
+                        P&& parts,
+                        A&&... args
                     ) {
                         using T = Sig::at<I>;
-                        constexpr StaticStr name = ArgTraits<T>::name;
-
-                        // positional-only
-                        if constexpr (ArgTraits<T>::posonly()) {
-                            if (idx < nargs) {
-                                out.emplace_back(
-                                    "",
-                                    reinterpret_borrow<Object>(array[idx]),
-                                    ArgKind::POS
-                                );
-                                return call<I + 1, K>::python::key(
-                                    out,
-                                    hash_combine(
-                                        hash,
-                                        out.back().hash(seed, prime)
-                                    ),
-                                    kwargs,
-                                    array,
-                                    ++idx,
-                                    nargs,
-                                    std::forward<P>(parts)
-                                );
-                            }
-                            if constexpr (ArgTraits<T>::opt()) {
-                                return call<I + 1, K>::python::key(
-                                    out,
-                                    hash,
-                                    kwargs,
-                                    array,
-                                    idx,
-                                    nargs,
-                                    std::forward<P>(parts)
-                                );
-                            }
-                            if constexpr (name.empty()) {
-                                throw TypeError(
-                                    "no match for positional-only parameter at "
-                                    "index " + std::to_string(I)
-                                );
-                            } else {
-                                throw TypeError(
-                                    "no match for positional-only parameter '" +
-                                    name + "' at index " + std::to_string(I)
-                                );
-                            }
-
-                        // positional-or-keyword
-                        } else if constexpr (ArgTraits<T>::pos()) {
-                            if (idx < nargs) {
-                                out.emplace_back(
-                                    "",
-                                    reinterpret_borrow<Object>(array[idx]),
-                                    ArgKind::POS
-                                );
-                                return call<I + 1, K>::python::key(
-                                    out,
-                                    hash_combine(
-                                        hash,
-                                        out.back().hash(seed, prime)
-                                    ),
-                                    kwargs,
-                                    array,
-                                    ++idx,
-                                    nargs,
-                                    std::forward<P>(parts)
-                                );
-                            }
-                            auto node = kwargs.extract(name);
-                            if (node) {
-                                out.emplace_back(
-                                    node.key(),
-                                    reinterpret_borrow<Object>(node.mapped()),
-                                    ArgKind::KW
-                                );
-                                return call<I + 1, K>::python::key(
-                                    out,
-                                    hash_combine(
-                                        hash,
-                                        out.back().hash(seed, prime)
-                                    ),
-                                    kwargs,
-                                    array,
-                                    idx,
-                                    nargs,
-                                    std::forward<P>(parts)
-                                );
-                            }
-                            if constexpr (ArgTraits<T>::opt()) {
-                                return call<I + 1, K>::python::key(
-                                    out,
-                                    hash,
-                                    kwargs,
-                                    array,
-                                    idx,
-                                    nargs,
-                                    std::forward<P>(parts)
-                                );
-                            }
-                            throw TypeError(
-                                "no match for parameter '" + name + "' at index " +
-                                std::to_string(I)
+                        if constexpr (
+                            ArgTraits<T>::kwargs() ||
+                            ArgTraits<T>::kwonly() ||
+                            (
+                                ArgTraits<T>::kw() &&
+                                pos_pack_idx<A...> >= sizeof...(A) &&
+                                J >= std::min(
+                                    Sig<Return, A...>::kw_idx,
+                                    kw_pack_idx<A...>
+                                )
+                            )
+                        ) {
+                            out.emplace_back(
+                                Partial::name<K>,
+                                to_python(
+                                    std::forward<P>(parts).template get<K>()
+                                ),
+                                ArgKind::KW
                             );
-
-                        // keyword-only
-                        } else if constexpr (ArgTraits<T>::kw()) {
-                            auto node = kwargs.extract(name);
-                            if (node) {
-                                out.emplace_back(
-                                    std::move(node.key()),
-                                    reinterpret_borrow<Object>(node.mapped()),
-                                    ArgKind::KW
-                                );
-                                return call<I + 1, K>::python::key(
-                                    out,
-                                    hash_combine(
-                                        hash,
-                                        out.back().hash(seed, prime)
-                                    ),
-                                    kwargs,
-                                    array,
-                                    idx,
-                                    nargs,
-                                    std::forward<P>(parts)
-                                );
-                            }
-                            if constexpr (ArgTraits<T>::opt()) {
-                                return call<I + 1, K>::python::key(
-                                    out,
-                                    hash,
-                                    kwargs,
-                                    array,
-                                    idx,
-                                    nargs,
-                                    std::forward<P>(parts)
-                                );
-                            }
-                            throw TypeError(
-                                "no match for parameter '" + name + "' at index " +
-                                std::to_string(I)
-                            );
-
-                        // keyword-or-positional
-                        } else if constexpr (ArgTraits<T>::args()) {
-                            while (idx < nargs) {
-                                out.emplace_back(
-                                    "",
-                                    reinterpret_borrow<Object>(array[idx++]),
-                                    ArgKind::POS
-                                );
-                                hash = hash_combine(
-                                    hash,
-                                    out.back().hash(seed, prime)
-                                );
-                            }
-                            return call<I + 1, K>::python::key(
-                                out,
-                                hash,
-                                kwargs,
-                                array,
-                                idx,
-                                nargs,
-                                std::forward<P>(parts)
-                            );
-
-                        // variadic positional
-                        } else if constexpr (ArgTraits<T>::kwargs()) {
-                            auto it = kwargs.begin();
-                            auto end = kwargs.end();
-                            while (it != end) {
-                                // postfix ++ required to increment before invalidation
-                                auto node = kwargs.extract(it++);
-                                out.emplace_back(
-                                    std::move(node.key()),
-                                    reinterpret_borrow<Object>(node.mapped())
-                                );
-                                hash = hash_combine(
-                                    hash,
-                                    out.back().hash(seed, prime)
-                                );
-                            }
-                            return call<I + 1, K>::python::key(
-                                out,
-                                hash,
-                                kwargs,
-                                array,
-                                idx,
-                                nargs,
-                                std::forward<P>(parts)
-                            );
-
                         } else {
-                            static_assert(false, "invalid argument kind");
-                            std::unreachable();
+                            out.emplace_back(
+                                "",
+                                to_python(
+                                    std::forward<P>(parts).template get<K>()
+                                ),
+                                ArgKind::POS
+                            );
                         }
+                        return call<
+                            I + !ArgTraits<T>::variadic(),
+                            J,
+                            K + 1
+                        >::python::key(
+                            out,
+                            hash_combine(hash, out.back().hash(seed, prime)),
+                            std::forward<P>(parts),
+                            std::forward<A>(args)...
+                        );
                     }
 
-                    template <typename P>
-                    static Params<std::vector<Param>> key(
-                        std::vector<Param>& out,
-                        size_t hash,
-                        PyObject* const* array,
+                    template <typename P, typename... A>
+                    static Object operator()(
+                        P&& parts,
+                        PyObject** array,
                         size_t idx,
-                        size_t nargs,
-                        P&& parts
+                        PyObject* kwnames,
+                        size_t kw_idx,
+                        PyObject* func,
+                        A&&... args
                     ) {
                         using T = Sig::at<I>;
-                        constexpr StaticStr name = ArgTraits<T>::name;
-
-                        // positional-only
-                        if constexpr (ArgTraits<T>::posonly()) {
-                            if (idx < nargs) {
-                                out.emplace_back(
-                                    "",
-                                    reinterpret_borrow<Object>(array[idx]),
-                                    ArgKind::POS
+                        try {
+                            array[idx] = release(to_python(
+                                std::forward<P>(parts).template get<K>()
+                            ));
+                            ++idx;
+                            if constexpr (
+                                ArgTraits<T>::kwargs() ||
+                                ArgTraits<T>::kwonly() ||
+                                (
+                                    ArgTraits<T>::kw() &&
+                                    pos_pack_idx<A...> >= sizeof...(A) &&
+                                    J >= std::min(
+                                        Sig<Return, A...>::kw_idx,
+                                        kw_pack_idx<A...>
+                                    )
+                                )
+                            ) {
+                                PyTuple_SET_ITEM(
+                                    kwnames,
+                                    kw_idx,
+                                    release(template_string<Partial::name<K>>())
                                 );
-                                return call<I + 1, K>::python::key(
-                                    out,
-                                    hash_combine(
-                                        hash,
-                                        out.back().hash(seed, prime)
-                                    ),
-                                    array,
-                                    ++idx,
-                                    nargs,
-                                    std::forward<P>(parts)
-                                );
+                                ++kw_idx;
                             }
-                            if constexpr (ArgTraits<T>::opt()) {
-                                return call<I + 1, K>::python::key(
-                                    out,
-                                    hash,
-                                    array,
-                                    idx,
-                                    nargs,
-                                    std::forward<P>(parts)
-                                );
+                        } catch (...) {
+                            for (size_t i = 0; i < idx; ++i) {
+                                Py_DECREF(array[i]);
                             }
-                            if constexpr (name.empty()) {
-                                throw TypeError(
-                                    "no match for positional-only parameter at "
-                                    "index " + std::to_string(I)
-                                );
-                            } else {
-                                throw TypeError(
-                                    "no match for positional-only parameter '" +
-                                    name + "' at index " + std::to_string(I)
-                                );
-                            }
-
-                        // positional-or-keyword
-                        } else if constexpr (ArgTraits<T>::pos()) {
-                            if (idx < nargs) {
-                                out.emplace_back(
-                                    "",
-                                    reinterpret_borrow<Object>(array[idx]),
-                                    ArgKind::POS
-                                );
-                                return call<I + 1, K>::python::key(
-                                    out,
-                                    hash_combine(
-                                        hash,
-                                        out.back().hash(seed, prime)
-                                    ),
-                                    array,
-                                    ++idx,
-                                    nargs,
-                                    std::forward<P>(parts)
-                                );
-                            }
-                            if constexpr (ArgTraits<T>::opt()) {
-                                return call<I + 1, K>::python::key(
-                                    out,
-                                    hash,
-                                    array,
-                                    idx,
-                                    nargs,
-                                    std::forward<P>(parts)
-                                );
-                            }
+                            throw;
+                        }
+                        return typename call<
+                            I + !ArgTraits<T>::variadic(),
+                            J,
+                            K + 1
+                        >::python{}(
+                            std::forward<P>(parts),
+                            array,
+                            idx,
+                            kwnames,
+                            kw_idx,
+                            func,
+                            std::forward<A>(args)...
+                        );
+                    }
+                };
+            };
+            template <size_t I, size_t J, size_t K>
+                requires (
+                    I < Sig::n &&
+                    !(K < Partial::n && target_idx<K> == I)
+                )
+            struct call<I, J, K> {  // forward source argument(s) or default value
+                template <typename... A>
+                static constexpr void assert_no_keyword_conflict(A&&... args) {
+                    constexpr StaticStr name = ArgTraits<Sig::at<I>>::name;
+                    if constexpr (!name.empty() && kw_pack_idx<A...> < sizeof...(A)) {
+                        auto& pack = unpack_arg<kw_pack_idx<A...>>(
+                            std::forward<A>(args)...
+                        );
+                        auto node = pack.extract(name);
+                        if (node) {
                             throw TypeError(
-                                "no match for parameter '" + name + "' at index " +
-                                std::to_string(I)
+                                "conflicting value for parameter '" + name +
+                                "' at index " + std::to_string(I)
                             );
-
-                        // keyword-only
-                        } else if constexpr (ArgTraits<T>::kw()) {
-                            if constexpr (ArgTraits<T>::opt()) {
-                                return call<I + 1, K>::python::key(
-                                    out,
-                                    hash,
-                                    array,
-                                    idx,
-                                    nargs,
-                                    std::forward<P>(parts)
-                                );
-                            }
-                            throw TypeError(
-                                "no match for parameter '" + name + "' at index " +
-                                std::to_string(I)
-                            );
-
-                        // keyword-or-positional
-                        } else if constexpr (ArgTraits<T>::args()) {
-                            while (idx < nargs) {
-                                out.emplace_back(
-                                    "",
-                                    reinterpret_borrow<Object>(array[idx++]),
-                                    ArgKind::POS
-                                );
-                                hash = hash_combine(
-                                    hash,
-                                    out.back().hash(seed, prime)
-                                );
-                            }
-                            return call<I + 1, K>::python::key(
-                                out,
-                                hash,
-                                array,
-                                idx,
-                                nargs,
-                                std::forward<P>(parts)
-                            );
-
-                        // variadic positional
-                        } else if constexpr (ArgTraits<T>::kwargs()) {
-                            return call<I + 1, K>::python::key(
-                                out,
-                                hash,
-                                array,
-                                idx,
-                                nargs,
-                                std::forward<P>(parts)
-                            );
-
-                        } else {
-                            static_assert(false, "invalid argument kind");
-                            std::unreachable();
                         }
                     }
+                }
 
+                template <typename>
+                struct normalize;
+                template <typename R, typename... out>
+                struct normalize<R(out...)> {
+                    using type = call<
+                        I + 1,
+                        J,
+                        K
+                    >::template normalize<R(out..., Sig::at<I>)>::type;
+                };
+
+                template <typename P, typename... A>
+                static auto bind(
+                    P&& parts,
+                    A&&... args
+                ) {
+                    using T = Sig::at<I>;
+                    if constexpr (ArgTraits<T>::args()) {
+                        /// TODO: implement
+
+                    } else if constexpr (ArgTraits<T>::kwargs()) {
+                        /// TODO: implement
+
+                    } else {
+                        return call<I + 1, J + 1, K>::bind(
+                            std::forward<P>(parts),
+                            std::forward<A>(args)...
+                        );
+                    }
+                }
+
+                struct cpp {
                     template <typename P, typename D, typename F, typename... A>
-                    static std::invoke_result_t<F, Args...> operator()(
+                    static constexpr std::invoke_result_t<F, Args...> operator()(
                         P&& parts,
                         D&& defaults,
-                        Kwargs& kwargs,
-                        PyObject* const* array,
-                        size_t idx,
-                        size_t nargs,
                         F&& func,
                         A&&... args
                     ) {
                         using T = Sig::at<I>;
                         constexpr StaticStr name = ArgTraits<T>::name;
+                        constexpr size_t pos_range = std::min({
+                            pos_pack_idx<A...>,
+                            Sig<Return, A...>::kw_idx,
+                            kw_pack_idx<A...>
+                        });
 
                         // positional-only
                         if constexpr (ArgTraits<T>::posonly()) {
-                            if (idx < nargs) {
-                                return call<I + 1, K>{}(
+                            assert_no_keyword_conflict(std::forward<A>(args)...);
+                            if constexpr (J < pos_range) {
+                                return typename call<I + 1, J + 1, K>::cpp{}(
                                     std::forward<P>(parts),
                                     std::forward<D>(defaults),
-                                    kwargs,
-                                    array,
-                                    ++idx,
-                                    nargs,
                                     std::forward<F>(func),
-                                    std::forward<A>(args)...,
-                                    to_arg<I>(reinterpret_borrow<Object>(
-                                        array[idx - 1]
-                                    ))
+                                    std::forward<A>(args)...
                                 );
                             }
+                            if constexpr (J == pos_pack_idx<A...>) {
+                                auto& pack = unpack_arg<J>(std::forward<A>(args)...);
+                                if (pack.has_value()) {
+                                    return insert_from_pos_pack(
+                                        std::forward<P>(parts),
+                                        std::forward<D>(defaults),
+                                        std::forward<F>(func),
+                                        std::forward<A>(args)...
+                                    );
+                                } else {
+                                    return remove(
+                                        std::forward<P>(parts),
+                                        std::forward<D>(defaults),
+                                        std::forward<F>(func),
+                                        std::forward<A>(args)...
+                                    );
+                                }
+                            }
                             if constexpr (ArgTraits<T>::opt()) {
-                                return call<I + 1, K>{}(
+                                return insert_default(
                                     std::forward<P>(parts),
                                     std::forward<D>(defaults),
-                                    kwargs,
-                                    array,
-                                    idx,
-                                    nargs,
                                     std::forward<F>(func),
-                                    std::forward<A>(args)...,
-                                    to_arg<I>(
-                                        std::forward<D>(defaults).template get<I>()
-                                    )
+                                    std::forward<A>(args)...
                                 );
                             }
                             if constexpr (name.empty()) {
@@ -7218,50 +3773,64 @@ namespace impl {
 
                         // positional-or-keyword
                         } else if constexpr (ArgTraits<T>::pos()) {
-                            if (idx < nargs) {
-                                return call<I + 1, K>{}(
+                            if constexpr (J < pos_range) {
+                                assert_no_keyword_conflict(std::forward<A>(args)...);
+                                return typename call<I + 1, J + 1, K>::cpp{}(
                                     std::forward<P>(parts),
                                     std::forward<D>(defaults),
-                                    kwargs,
-                                    array,
-                                    ++idx,
-                                    nargs,
                                     std::forward<F>(func),
-                                    std::forward<A>(args)...,
-                                    to_arg<I>(reinterpret_borrow<Object>(
-                                        array[idx - 1]
-                                    ))
+                                    std::forward<A>(args)...
                                 );
                             }
-                            auto node = kwargs.extract(name);
-                            if (node) {
-                                return call<I + 1, K>{}(
+                            if constexpr (J == pos_pack_idx<A...>) {
+                                auto& pack = unpack_arg<J>(std::forward<A>(args)...);
+                                if (pack.has_value()) {
+                                    assert_no_keyword_conflict(std::forward<A>(args)...);
+                                    return insert_from_pos_pack(
+                                        std::forward<P>(parts),
+                                        std::forward<D>(defaults),
+                                        std::forward<F>(func),
+                                        std::forward<A>(args)...
+                                    );
+                                } else {
+                                    return remove(
+                                        std::forward<P>(parts),
+                                        std::forward<D>(defaults),
+                                        std::forward<F>(func),
+                                        std::forward<A>(args)...
+                                    );
+                                }
+                            }
+                            if constexpr (Sig<Return, A...>::template has<name>) {
+                                assert_no_keyword_conflict(std::forward<A>(args)...);
+                                return reorder(
                                     std::forward<P>(parts),
                                     std::forward<D>(defaults),
-                                    kwargs,
-                                    array,
-                                    idx,
-                                    nargs,
                                     std::forward<F>(func),
-                                    std::forward<A>(args)...,
-                                    to_arg<I>(reinterpret_borrow<Object>(
-                                        node.mapped()
-                                    ))
+                                    std::forward<A>(args)...
                                 );
+                            }
+                            if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
+                                auto& pack = unpack_arg<kw_pack_idx<A...>>(
+                                    std::forward<A>(args)...
+                                );
+                                auto node = pack.extract(name);
+                                if (node) {
+                                    return insert_from_kw_pack(
+                                        node,
+                                        std::forward<P>(parts),
+                                        std::forward<D>(defaults),
+                                        std::forward<F>(func),
+                                        std::forward<A>(args)...
+                                    );
+                                }
                             }
                             if constexpr (ArgTraits<T>::opt()) {
-                                return call<I + 1, K>{}(
+                                return insert_default(
                                     std::forward<P>(parts),
                                     std::forward<D>(defaults),
-                                    kwargs,
-                                    array,
-                                    idx,
-                                    nargs,
                                     std::forward<F>(func),
-                                    std::forward<A>(args)...,
-                                    to_arg<I>(
-                                        std::forward<D>(defaults).template get<I>()
-                                    )
+                                    std::forward<A>(args)...
                                 );
                             }
                             throw TypeError(
@@ -7271,227 +3840,107 @@ namespace impl {
 
                         // keyword-only
                         } else if constexpr (ArgTraits<T>::kw()) {
-                            auto node = kwargs.extract(name);
-                            if (node) {
-                                return call<I + 1, K>{}(
+                            if constexpr (Sig<Return, A...>::template has<name>) {
+                                assert_no_keyword_conflict(std::forward<A>(args)...);
+                                return reorder(
                                     std::forward<P>(parts),
                                     std::forward<D>(defaults),
-                                    kwargs,
-                                    array,
-                                    idx,
-                                    nargs,
                                     std::forward<F>(func),
-                                    std::forward<A>(args)...,
-                                    to_arg<I>(reinterpret_borrow<Object>(
-                                        node.mapped()
-                                    ))
+                                    std::forward<A>(args)...
                                 );
                             }
+                            if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
+                                auto& pack = unpack_arg<kw_pack_idx<A...>>(
+                                    std::forward<A>(args)...
+                                );
+                                auto node = pack.extract(name);
+                                if (node) {
+                                    return insert_from_kw_pack(
+                                        node,
+                                        std::forward<P>(parts),
+                                        std::forward<D>(defaults),
+                                        std::forward<F>(func),
+                                        std::forward<A>(args)...
+                                    );
+                                }
+                            }
                             if constexpr (ArgTraits<T>::opt()) {
-                                return call<I + 1, K>{}(
+                                return insert_default(
                                     std::forward<P>(parts),
                                     std::forward<D>(defaults),
-                                    kwargs,
-                                    array,
-                                    idx,
-                                    nargs,
                                     std::forward<F>(func),
-                                    std::forward<A>(args)...,
-                                    to_arg<I>(
-                                        std::forward<D>(defaults).template get<I>()
-                                    )
+                                    std::forward<A>(args)...
                                 );
                             }
                             throw TypeError(
-                                "no match for parameter '" + name + "' at index " +
-                                std::to_string(I)
+                                "no match for keyword-only parameter '" + name +
+                                "' at index " + std::to_string(I)
                             );
 
-                        // keyword-or-positional
+                        // variadic positional args
                         } else if constexpr (ArgTraits<T>::args()) {
-                            return call<I + 1, K>{}(
+                            constexpr size_t transition = std::min(
+                                Sig<Return, A...>::kw_idx,
+                                kw_pack_idx<A...>
+                            );
+                            constexpr size_t idx = std::max(J, transition);
+                            return []<size_t... Prev, size_t... Next>(
+                                std::index_sequence<Prev...>,
+                                std::index_sequence<Next...>,
+                                auto&& parts,
+                                auto&& defaults,
+                                auto&& func,
+                                auto&&... args
+                            ) {
+                                return typename call<I + 1, transition, K>::cpp{}(
+                                    std::forward<decltype(parts)>(parts),
+                                    std::forward<decltype(defaults)>(defaults),
+                                    std::forward<decltype(func)>(func),
+                                    unpack_arg<Prev>(
+                                        std::forward<decltype(args)>(args)...
+                                    )...,
+                                    to_arg<I>(variadic_positional(
+                                        std::forward<decltype(args)>(args)...
+                                    )),
+                                    unpack_arg<idx + Next>(
+                                        std::forward<decltype(args)>(args)...
+                                    )...
+                                );
+                            }(
+                                std::make_index_sequence<J>{},
+                                std::make_index_sequence<sizeof...(A) - idx>{},
                                 std::forward<P>(parts),
                                 std::forward<D>(defaults),
-                                kwargs,
-                                array,
-                                idx,
-                                nargs,
                                 std::forward<F>(func),
-                                std::forward<A>(args)...,
-                                to_arg<I>(variadic_positional(
-                                    std::forward<P>(parts),
-                                    array,
-                                    idx,
-                                    nargs
-                                ))
+                                std::forward<A>(args)...
                             );
 
-                        // variadic positional
+                        // variadic keyword args
                         } else if constexpr (ArgTraits<T>::kwargs()) {
-                            return call<I + 1, K>{}(
-                                std::forward<P>(parts),
-                                std::forward<D>(defaults),
-                                kwargs,
-                                array,
-                                idx,
-                                nargs,
-                                std::forward<F>(func),
-                                std::forward<A>(args)...,
-                                to_arg<I>(variadic_keywords(
-                                    std::forward<P>(parts),
-                                    kwargs
-                                ))
-                            );
-
-                        } else {
-                            static_assert(false, "invalid argument kind");
-                            std::unreachable();
-                        }
-                    }
-
-                    template <typename P, typename D, typename F, typename... A>
-                    static std::invoke_result_t<F, Args...> operator()(
-                        P&& parts,
-                        D&& defaults,
-                        PyObject* const* array,
-                        size_t idx,
-                        size_t nargs,
-                        F&& func,
-                        A&&... args
-                    ) {
-                        using T = Sig::at<I>;
-                        constexpr StaticStr name = ArgTraits<T>::name;
-
-                        // positional-only
-                        if constexpr (ArgTraits<T>::posonly()) {
-                            if (idx < nargs) {
-                                return call<I + 1, K>{}(
-                                    std::forward<P>(parts),
-                                    std::forward<D>(defaults),
-                                    array,
-                                    ++idx,
-                                    nargs,
-                                    std::forward<F>(func),
-                                    std::forward<A>(args)...,
-                                    to_arg<I>(reinterpret_borrow<Object>(
-                                        array[idx - 1]
+                            return []<size_t... Prev>(
+                                std::index_sequence<Prev...>,
+                                auto&& parts,
+                                auto&& defaults,
+                                auto&& func,
+                                auto&&... args
+                            ) {
+                                return typename call<I + 1, J + 1, K>::cpp{}(
+                                    std::forward<decltype(parts)>(parts),
+                                    std::forward<decltype(defaults)>(defaults),
+                                    std::forward<decltype(func)>(func),
+                                    unpack_arg<Prev>(
+                                        std::forward<decltype(args)>(args)...
+                                    )...,
+                                    to_arg<I>(variadic_keyword(
+                                        std::forward<decltype(args)>(args)...
                                     ))
                                 );
-                            }
-                            if constexpr (ArgTraits<T>::opt()) {
-                                return call<I + 1, K>{}(
-                                    std::forward<P>(parts),
-                                    std::forward<D>(defaults),
-                                    array,
-                                    idx,
-                                    nargs,
-                                    std::forward<F>(func),
-                                    std::forward<A>(args)...,
-                                    to_arg<I>(
-                                        std::forward<D>(defaults).template get<I>()
-                                    )
-                                );
-                            }
-                            if constexpr (name.empty()) {
-                                throw TypeError(
-                                    "no match for positional-only parameter at "
-                                    "index " + std::to_string(I)
-                                );
-                            } else {
-                                throw TypeError(
-                                    "no match for positional-only parameter '" +
-                                    name + "' at index " + std::to_string(I)
-                                );
-                            }
-
-                        // positional-or-keyword
-                        } else if constexpr (ArgTraits<T>::pos()) {
-                            if (idx < nargs) {
-                                return call<I + 1, K>{}(
-                                    std::forward<P>(parts),
-                                    std::forward<D>(defaults),
-                                    array,
-                                    ++idx,
-                                    nargs,
-                                    std::forward<F>(func),
-                                    std::forward<A>(args)...,
-                                    to_arg<I>(reinterpret_borrow<Object>(
-                                        array[idx - 1]
-                                    ))
-                                );
-                            }
-                            if constexpr (ArgTraits<T>::opt()) {
-                                return call<I + 1, K>{}(
-                                    std::forward<P>(parts),
-                                    std::forward<D>(defaults),
-                                    array,
-                                    idx,
-                                    nargs,
-                                    std::forward<F>(func),
-                                    std::forward<A>(args)...,
-                                    to_arg<I>(
-                                        std::forward<D>(defaults).template get<I>()
-                                    )
-                                );
-                            }
-                            throw TypeError(
-                                "no match for parameter '" + name + "' at index " +
-                                std::to_string(I)
-                            );
-
-                        // keyword-only
-                        } else if constexpr (ArgTraits<T>::kw()) {
-                            if constexpr (ArgTraits<T>::opt()) {
-                                return call<I + 1, K>{}(
-                                    std::forward<P>(parts),
-                                    std::forward<D>(defaults),
-                                    array,
-                                    idx,
-                                    nargs,
-                                    std::forward<F>(func),
-                                    std::forward<A>(args)...,
-                                    to_arg<I>(
-                                        std::forward<D>(defaults).template get<I>()
-                                    )
-                                );
-                            }
-                            throw TypeError(
-                                "no match for parameter '" + name + "' at index " +
-                                std::to_string(I)
-                            );
-
-                        // keyword-or-positional
-                        } else if constexpr (ArgTraits<T>::args()) {
-                            return call<I + 1, K>{}(
+                            }(
+                                std::make_index_sequence<J>{},
                                 std::forward<P>(parts),
                                 std::forward<D>(defaults),
-                                array,
-                                idx,
-                                nargs,
                                 std::forward<F>(func),
-                                std::forward<A>(args)...,
-                                to_arg<I>(variadic_positional(
-                                    std::forward<P>(parts),
-                                    array,
-                                    idx,
-                                    nargs
-                                ))
-                            );
-
-                        // variadic positional
-                        } else if constexpr (ArgTraits<T>::kwargs()) {
-                            return call<I + 1, K>{}(
-                                std::forward<P>(parts),
-                                std::forward<D>(defaults),
-                                array,
-                                idx,
-                                nargs,
-                                std::forward<F>(func),
-                                std::forward<A>(args)...,
-                                to_arg<I>(std::unordered_map<
-                                    std::string,
-                                    typename ArgTraits<T>::type
-                                >{})
+                                std::forward<A>(args)...
                             );
 
                         } else {
@@ -7502,35 +3951,303 @@ namespace impl {
 
                 private:
 
-                    template <typename P, typename... A>
-                    static auto variadic_positional(
+                    template <typename P, typename D, typename F, typename... A>
+                    static constexpr decltype(auto) reorder(
                         P&& parts,
-                        PyObject* const* array,
-                        size_t idx,
-                        size_t nargs
+                        D&& defaults,
+                        F&& func,
+                        A&&... args
                     ) {
+                        constexpr StaticStr name = ArgTraits<Sig::at<I>>::name;
+                        constexpr size_t idx = Sig<Return, A...>::template idx<name>;
+                        return []<size_t... Prev, size_t... Next, size_t... Last>(
+                            std::index_sequence<Prev...>,
+                            std::index_sequence<Next...>,
+                            std::index_sequence<Last...>,
+                            auto&& parts,
+                            auto&& defaults,
+                            auto&& func,
+                            auto&&... args
+                        ) {
+                            return typename call<I + 1, J + 1, K>::cpp{}(
+                                std::forward<decltype(parts)>(parts),
+                                std::forward<decltype(defaults)>(defaults),
+                                std::forward<decltype(func)>(func),
+                                unpack_arg<Prev>(
+                                    std::forward<decltype(args)>(args)...
+                                )...,
+                                to_arg<I>(unpack_arg<idx>(
+                                    std::forward<decltype(args)>(args)...
+                                )),
+                                unpack_arg<J + Next>(
+                                    std::forward<decltype(args)>(args)...
+                                )...,
+                                unpack_arg<idx + 1 + Last>(
+                                    std::forward<decltype(args)>(args)...
+                                )...
+                            );
+                        }(
+                            std::make_index_sequence<J>{},
+                            std::make_index_sequence<idx - J>{},
+                            std::make_index_sequence<sizeof...(A) - (idx + 1)>{},
+                            std::forward<P>(parts),
+                            std::forward<D>(defaults),
+                            std::forward<F>(func),
+                            std::forward<A>(args)...
+                        );
+                    }
+
+                    template <typename P, typename D, typename F, typename... A>
+                    static constexpr decltype(auto) insert_default(
+                        P&& parts,
+                        D&& defaults,
+                        F&& func,
+                        A&&... args
+                    ) {
+                        return []<size_t... Prev, size_t... Next>(
+                            std::index_sequence<Prev...>,
+                            std::index_sequence<Next...>,
+                            auto&& parts,
+                            auto&& defaults,
+                            auto&& func,
+                            auto&&... args
+                        ) {
+                            return typename call<I + 1, J + 1, K>::cpp{}(
+                                std::forward<decltype(parts)>(parts),
+                                std::forward<decltype(defaults)>(defaults),
+                                std::forward<decltype(func)>(func),
+                                unpack_arg<Prev>(
+                                    std::forward<decltype(args)>(args)...
+                                )...,
+                                to_arg<I>(std::forward<decltype(defaults)>(
+                                    defaults
+                                ).template get<Defaults::template find<I>>()),
+                                unpack_arg<J + Next>(
+                                    std::forward<decltype(args)>(args)...
+                                )...
+                            );
+                        }(
+                            std::make_index_sequence<J>{},
+                            std::make_index_sequence<sizeof...(A) - J>{},
+                            std::forward<P>(parts),
+                            std::forward<D>(defaults),
+                            std::forward<F>(func),
+                            std::forward<A>(args)...
+                        );
+                    }
+
+                    template <typename P, typename D, typename F, typename... A>
+                    static constexpr decltype(auto) insert_from_pos_pack(
+                        P&& parts,
+                        D&& defaults,
+                        F&& func,
+                        A&&... args
+                    ) {
+                        return []<size_t... Prev, size_t... Next>(
+                            std::index_sequence<Prev...>,
+                            std::index_sequence<Next...>,
+                            auto&& parts,
+                            auto&& defaults,
+                            auto&& func,
+                            auto&&... args
+                        ) {
+                            auto& pack = unpack_arg<pos_pack_idx<A...>>(
+                                std::forward<A>(args)...
+                            );
+                            return typename call<I + 1, J + 1, K>::cpp{}(
+                                std::forward<decltype(parts)>(parts),
+                                std::forward<decltype(defaults)>(defaults),
+                                std::forward<decltype(func)>(func),
+                                unpack_arg<Prev>(
+                                    std::forward<decltype(args)>(args)...
+                                )...,
+                                to_arg<I>(pack.value()),
+                                unpack_arg<J + Next>(
+                                    std::forward<decltype(args)>(args)...
+                                )...
+                            );
+                        }(
+                            std::make_index_sequence<J>{},
+                            std::make_index_sequence<sizeof...(A) - J>{},
+                            std::forward<P>(parts),
+                            std::forward<D>(defaults),
+                            std::forward<F>(func),
+                            std::forward<A>(args)...
+                        );
+                    }
+
+                    template <typename P, typename D, typename F, typename... A>
+                    static constexpr decltype(auto) insert_from_kw_pack(
+                        auto&& node,
+                        P&& parts,
+                        D&& defaults,
+                        F&& func,
+                        A&&... args
+                    ) {
+                        return []<size_t... Prev, size_t... Next>(
+                            auto&& node,
+                            std::index_sequence<Prev...>,
+                            std::index_sequence<Next...>,
+                            auto&& parts,
+                            auto&& defaults,
+                            auto&& func,
+                            auto&&... args
+                        ) {
+                            if constexpr (std::is_lvalue_reference_v<
+                                typename ArgTraits<Sig::at<I>>::type
+                            >) {
+                                return typename call<I + 1, J + 1, K>::cpp{}(
+                                    std::forward<P>(parts),
+                                    std::forward<D>(defaults),
+                                    std::forward<F>(func),
+                                    unpack_arg<Prev>(std::forward<A>(args)...)...,
+                                    to_arg<I>(node.mapped()),
+                                    unpack_arg<J + Next>(std::forward<A>(args)...)...
+                                );
+                            } else {
+                                return typename call<I + 1, J + 1, K>::cpp{}(
+                                    std::forward<P>(parts),
+                                    std::forward<D>(defaults),
+                                    std::forward<F>(func),
+                                    unpack_arg<Prev>(std::forward<A>(args)...)...,
+                                    to_arg<I>(std::move(node.mapped())),
+                                    unpack_arg<J + Next>(std::forward<A>(args)...)...
+                                );
+                            }
+                        }(
+                            std::forward<decltype(node)>(node),
+                            std::make_index_sequence<J>{},
+                            std::make_index_sequence<sizeof...(A) - J>{},
+                            std::forward<P>(parts),
+                            std::forward<D>(defaults),
+                            std::forward<F>(func),
+                            std::forward<A>(args)...
+                        );
+                    }
+
+                    template <typename P, typename D, typename F, typename... A>
+                    static constexpr decltype(auto) remove(
+                        P&& parts,
+                        D&& defaults,
+                        F&& func,
+                        A&&... args
+                    ) {
+                        return []<size_t... Prev, size_t... Next>(
+                            std::index_sequence<Prev...>,
+                            std::index_sequence<Next...>,
+                            auto&& parts,
+                            auto&& defaults,
+                            auto&& func,
+                            auto&&... args
+                        ) {
+                            return typename call<I, J, K>::cpp{}(
+                                std::forward<decltype(parts)>(parts),
+                                std::forward<decltype(defaults)>(defaults),
+                                std::forward<decltype(func)>(func),
+                                unpack_arg<Prev>(std::forward<decltype(args)>(args)...)...,
+                                unpack_arg<J + 1 + Next>(
+                                    std::forward<decltype(args)>(args)...
+                                )...
+                            );
+                        }(
+                            std::make_index_sequence<J>{},
+                            std::make_index_sequence<sizeof...(A) - (J + 1)>{},
+                            std::forward<P>(parts),
+                            std::forward<D>(defaults),
+                            std::forward<F>(func),
+                            std::forward<A>(args)...
+                        );
+                    }
+
+                    template <size_t J2, typename T, typename... A>
+                    static void _variadic_positional(
+                        std::vector<T>& out,
+                        A&&... args
+                    ) {
+                        if constexpr (J2 == pos_pack_idx<A...>) {
+                            auto& pack = unpack_arg<J2>(std::forward<A>(args)...);
+                            out.insert(out.end(), pack.begin(), pack.end());
+                        } else {
+                            out.emplace_back(unpack_arg<J2>(
+                                std::forward<A>(args)...
+                            ));
+                        }
+                    }
+
+                    template <typename... A>
+                    static auto variadic_positional(A&&... args) {
                         using T = Sig::at<I>;
+                        constexpr size_t transition = std::min(
+                            Sig<Return, A...>::kw_idx,
+                            kw_pack_idx<A...>
+                        );
+                        constexpr size_t diff = J < transition ? transition - J : 0;
 
                         // allocate variadic positional array
-                        using vec = std::vector<typename ArgTraits<T>::type>;
-                        vec out;
-                        out.reserve(nargs > idx ? nargs - idx : 0);
-
-                        // consume vectorcall args
-                        for (size_t i = idx; idx < nargs; ++i) {
-                            out.emplace_back(
-                                reinterpret_borrow<Object>(array[i])
-                            );
+                        std::vector<typename ArgTraits<T>::type> out;
+                        if constexpr (diff) {
+                            if constexpr (pos_pack_idx<A...> < sizeof...(A)) {
+                                out.reserve(
+                                    (diff - 1) +
+                                    unpack_arg<pos_pack_idx<A...>>(
+                                        std::forward<A>(args)...
+                                    ).size()
+                                );
+                            } else {
+                                out.reserve(diff);
+                            }
                         }
+
+                        // consume source args + parameter packs
+                        []<size_t... Js>(
+                            std::index_sequence<Js...>,
+                            std::vector<typename ArgTraits<T>::type>& out,
+                            auto&&... args
+                        ) {
+                            (_variadic_positional<J + Js>(
+                                out,
+                                std::forward<decltype(args)>(args)...
+                            ), ...);
+                        }(
+                            std::make_index_sequence<diff>{},
+                            out,
+                            std::forward<A>(args)...
+                        );
                         return out;
                     }
 
-                    template <typename P>
-                    static auto variadic_keywords(
-                        P&& parts,
-                        Kwargs& kwargs
+                    template <size_t J2, typename T, typename... A>
+                    static void _variadic_keywords(
+                        std::unordered_map<std::string, T>& out,
+                        A&&... args
                     ) {
+                        if constexpr (J2 == kw_pack_idx<A...>) {
+                            auto& pack = unpack_arg<J2>(std::forward<A>(args)...);
+                            auto it = pack.begin();
+                            auto end = pack.end();
+                            while (it != end) {
+                                // postfix ++ required to increment before invalidation
+                                auto node = pack.extract(it++);
+                                auto rc = out.insert(node);
+                                if (!rc.inserted) {
+                                    throw TypeError(
+                                        "duplicate value for parameter '" +
+                                        node.key() + "'"
+                                    );
+                                }
+                            }
+                        } else {
+                            out.emplace(
+                                ArgTraits<unpack_type<J2, A...>>::name,
+                                unpack_arg<J2>(std::forward<A>(args)...)
+                            );
+                        }
+                    }
+
+                    template <typename... A>
+                    static auto variadic_keywords(A&&... args) {
                         using T = Sig::at<I>;
+                        constexpr size_t diff = Source::n - J;
 
                         // allocate variadic keyword map
                         using map = std::unordered_map<
@@ -7538,9 +4255,2521 @@ namespace impl {
                             typename ArgTraits<T>::type
                         >;
                         map out;
-                        out.reserve(kwargs.size());
+                        if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
+                            out.reserve(
+                                (diff - 1) +
+                                unpack_arg<kw_pack_idx<A...>>(
+                                    std::forward<A>(args)...
+                                ).size()
+                            );
+                        } else {
+                            out.reserve(diff);
+                        }
 
-                        // consume vectorcall kwargs
+                        // consume source kwargs + parameter packs
+                        []<size_t... Js>(
+                            std::index_sequence<Js...>,
+                            map& out,
+                            auto&&... args
+                        ) {
+                            (_variadic_keywords<J + Js>(
+                                out,
+                                std::forward<decltype(args)>(args)...
+                            ), ...);
+                        }(
+                            std::make_index_sequence<diff>{},
+                            out,
+                            std::forward<A>(args)...
+                        );
+                        return out;
+                    }
+                };
+
+                struct python {
+                    static constexpr size_t n_partial_keywords = [] {
+                        /// NOTE: this always overestimates J with respect to
+                        /// optional arguments, but it doesn't matter because all
+                        /// we care about is the location of J relative to the last
+                        /// positional argument in the source signature, and no
+                        /// missing arguments can appear before that.  Thus, any
+                        /// subsequent positional-or-keyword arguments with partial
+                        /// values will be promoted to keywords in order to allow
+                        /// Python to insert the correct defaults, without needing
+                        /// to manually specify them here.
+                        if constexpr (J == Source::args_idx) {
+                            return call<
+                                std::min(
+                                    Sig::kwonly_idx,
+                                    Sig::kwargs_idx
+                                ),
+                                J + 1,
+                                K
+                            >::python::n_partial_keywords;
+                        } else {
+                            return call<
+                                I + 1,
+                                J + 1,
+                                K
+                            >::python::n_partial_keywords;
+                        }
+                    }();
+
+                    template <typename P, typename... A>
+                    static Params<std::vector<Param>> key(
+                        std::vector<Param>& out,
+                        size_t hash,
+                        P&& parts,
+                        A&&... args
+                    ) {
+                        using T = Sig::at<I>;
+                        constexpr StaticStr name = ArgTraits<T>::name;
+                        constexpr size_t pos_range = std::min({
+                            pos_pack_idx<A...>,
+                            Sig<Return, A...>::kw_idx,
+                            kw_pack_idx<A...>
+                        });
+
+                        // positional-only
+                        if constexpr (ArgTraits<T>::posonly()) {
+                            assert_no_keyword_conflict(std::forward<A>(args)...);
+                            if constexpr (J < pos_range) {
+                                out.emplace_back(
+                                    "",
+                                    to_python(
+                                        unpack_arg<J>(std::forward<A>(args)...)
+                                    ),
+                                    ArgKind::POS
+                                );
+                                return call<I + 1, J + 1, K>::python::key(
+                                    out,
+                                    hash_combine(
+                                        hash,
+                                        out.back().hash(seed, prime)
+                                    ),
+                                    std::forward<P>(parts),
+                                    std::forward<A>(args)...
+                                );
+                            }
+                            if constexpr (J == pos_pack_idx<A...>) {
+                                auto& pack = unpack_arg<J>(std::forward<A>(args)...);
+                                if (pack.has_value()) {
+                                    out.emplace_back(
+                                        "",
+                                        to_python(pack.value()),
+                                        ArgKind::POS
+                                    );
+                                    return call<I + 1, J, K>::python::key(
+                                        out,
+                                        hash_combine(
+                                            hash,
+                                            out.back().hash(seed, prime)
+                                        ),
+                                        std::forward<P>(parts),
+                                        std::forward<A>(args)...
+                                    );
+                                } else {
+                                    return key_remove(
+                                        out,
+                                        hash,
+                                        std::forward<P>(parts),
+                                        std::forward<A>(args)...
+                                    );
+                                }
+                            }
+                            if constexpr (ArgTraits<T>::opt()) {
+                                return call<I + 1, J, K>::python::key(
+                                    out,
+                                    hash,
+                                    std::forward<P>(parts),
+                                    std::forward<A>(args)...
+                                );
+                            }
+                            if constexpr (name.empty()) {
+                                throw TypeError(
+                                    "no match for positional-only parameter at "
+                                    "index " + std::to_string(I)
+                                );
+                            } else {
+                                throw TypeError(
+                                    "no match for positional-only parameter '" +
+                                    name + "' at index " + std::to_string(I)
+                                );
+                            }
+
+                        // positional-or-keyword
+                        } else if constexpr (ArgTraits<T>::pos()) {
+                            if constexpr (J < pos_range) {
+                                assert_no_keyword_conflict(std::forward<A>(args)...);
+                                out.emplace_back(
+                                    "",
+                                    to_python(
+                                        unpack_arg<J>(std::forward<A>(args)...)
+                                    ),
+                                    ArgKind::POS
+                                );
+                                return call<I + 1, J, K>::python::key(
+                                    out,
+                                    hash_combine(
+                                        hash,
+                                        out.back().hash(seed, prime)
+                                    ),
+                                    std::forward<P>(parts),
+                                    std::forward<A>(args)...
+                                );
+                            }
+                            if constexpr (J == pos_pack_idx<A...>) {
+                                auto& pack = unpack_arg<J>(std::forward<A>(args)...);
+                                if (pack.has_value()) {
+                                    out.emplace_back(
+                                        "",
+                                        to_python(pack.value()),
+                                        ArgKind::POS
+                                    );
+                                    return call<I + 1, J, K>::python::key(
+                                        out,
+                                        hash_combine(
+                                            hash,
+                                            out.back().hash(seed, prime)
+                                        ),
+                                        std::forward<P>(parts),
+                                        std::forward<A>(args)...
+                                    );
+                                } else {
+                                    return key_remove(
+                                        out,
+                                        hash,
+                                        std::forward<P>(parts),
+                                        std::forward<A>(args)...
+                                    );
+                                }
+                            }
+                            if constexpr (Sig<Return, A...>::template hash<name>) {
+                                assert_no_keyword_conflict(std::forward<A>(args)...);
+                                return key_reorder(
+                                    out,
+                                    hash,
+                                    std::forward<P>(parts),
+                                    std::forward<A>(args)...
+                                );
+                            }
+                            if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
+                                auto& pack = unpack_arg<kw_pack_idx<A...>>(
+                                    std::forward<A>(args)...
+                                );
+                                auto node = pack.extract(name);
+                                if (node) {
+                                    out.emplace_back(
+                                        ArgTraits<T>::name,
+                                        to_python(std::move(node.mapped())),
+                                        ArgKind::KW
+                                    );
+                                    return call<I + 1, J, K>::python::key(
+                                        out,
+                                        hash_combine(
+                                            hash,
+                                            out.back().hash(seed, prime)
+                                        ),
+                                        std::forward<P>(parts),
+                                        std::forward<A>(args)...
+                                    );
+                                }
+                            }
+                            if constexpr (ArgTraits<T>::opt()) {
+                                return call<I + 1, J, K>::python::key(
+                                    out,
+                                    hash,
+                                    std::forward<P>(parts),
+                                    std::forward<A>(args)...
+                                );
+                            }
+                            throw TypeError(
+                                "no match for parameter '" + name + "' at index " +
+                                std::to_string(I)
+                            );
+
+                        // keyword-only
+                        } else if constexpr (ArgTraits<T>::kw()) {
+                            if constexpr (Sig<Return, A...>::template has<name>) {
+                                assert_no_keyword_conflict(std::forward<A>(args)...);
+                                return key_reorder(
+                                    out,
+                                    hash,
+                                    std::forward<P>(parts),
+                                    std::forward<A>(args)...
+                                );
+                            }
+                            if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
+                                auto& pack = unpack_arg<kw_pack_idx<A...>>(
+                                    std::forward<A>(args)...
+                                );
+                                auto node = pack.extract(name);
+                                if (node) {
+                                    out.emplace_back(
+                                        ArgTraits<T>::name,
+                                        to_python(std::move(node.mapped())),
+                                        ArgKind::KW
+                                    );
+                                    return call<I + 1, J, K>::python::key(
+                                        out,
+                                        hash_combine(
+                                            hash,
+                                            out.back().hash(seed, prime)
+                                        ),
+                                        std::forward<P>(parts),
+                                        std::forward<A>(args)...
+                                    );
+                                }
+                            }
+                            if constexpr (ArgTraits<T>::opt()) {
+                                return call<I + 1, J, K>::python::key(
+                                    out,
+                                    hash,
+                                    std::forward<P>(parts),
+                                    std::forward<A>(args)...
+                                );
+                            }
+                            throw TypeError(
+                                "no match for keyword-only parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+
+                        // variadic positional
+                        } else if constexpr (ArgTraits<T>::args()) {
+                            constexpr size_t transition = std::min(
+                                Sig<Return, A...>::kw_idx,
+                                kw_pack_idx<A...>
+                            );
+                            return []<size_t... Js>(
+                                std::index_sequence<Js...>,
+                                std::vector<Param>& out,
+                                size_t hash,
+                                auto&& parts,
+                                auto&&... args
+                            ) {
+                                (key_variadic_positional<J + Js>(
+                                    out,
+                                    hash,
+                                    std::forward<P>(parts),
+                                    std::forward<A>(args)...
+                                ), ...);
+                                return call<
+                                    I + 1,
+                                    std::max(J, transition),
+                                    K
+                                >::python::key(
+                                    out,
+                                    hash,
+                                    std::forward<P>(parts),
+                                    std::forward<A>(args)...
+                                );
+                            }(
+                                std::make_index_sequence<
+                                    J < transition ? transition - J : 0
+                                >{},
+                                out,
+                                hash,
+                                std::forward<P>(parts),
+                                std::forward<A>(args)...
+                            );
+
+                        // variadic keyword
+                        } else if constexpr (ArgTraits<T>::kwargs()) {
+                            return []<size_t... Js>(
+                                std::index_sequence<Js...>,
+                                std::vector<Param>& out,
+                                size_t hash,
+                                auto&& parts,
+                                auto&&... args
+                            ) {
+                                (key_variadic_keywords<J + Js>(
+                                    out,
+                                    hash,
+                                    std::forward<P>(parts),
+                                    std::forward<A>(args)...
+                                ), ...);
+                                return call<
+                                    I + 1,
+                                    J + 1,
+                                    K
+                                >::python::key(
+                                    out,
+                                    hash,
+                                    std::forward<P>(parts),
+                                    std::forward<A>(args)...
+                                );
+                            }(
+                                std::make_index_sequence<sizeof...(A) - J>{},
+                                out,
+                                hash,
+                                std::forward<P>(parts),
+                                std::forward<A>(args)...
+                            );
+
+                        } else {
+                            static_assert(false, "invalid argument kind");
+                            std::unreachable();
+                        }
+                    }
+
+                    template <typename P, typename... A>
+                    static Object operator()(
+                        P&& parts,
+                        PyObject** array,
+                        size_t idx,
+                        PyObject* kwnames,
+                        size_t kw_idx,
+                        PyObject* func,
+                        A&&... args
+                    ) {
+                        using T = Sig::at<I>;
+                        constexpr StaticStr name = ArgTraits<T>::name;
+                        constexpr size_t pos_range = std::min({
+                            pos_pack_idx<A...>,
+                            Sig<Return, A...>::kw_idx,
+                            kw_pack_idx<A...>
+                        });
+
+                        // positional-only
+                        if constexpr (ArgTraits<T>::posonly()) {
+                            assert_no_keyword_conflict(std::forward<A>(args)...);
+                            if constexpr (J < pos_range) {
+                                call_insert(
+                                    array,
+                                    idx,
+                                    kwnames,
+                                    kw_idx,
+                                    std::forward<P>(parts).template get<K>()
+                                );
+                                return typename call<I + 1, J + 1, K>::python{}(
+                                    std::forward<P>(parts),
+                                    array,
+                                    idx,
+                                    kwnames,
+                                    kw_idx,
+                                    func,
+                                    std::forward<A>(args)...
+                                );
+                            }
+                            if constexpr (J == pos_pack_idx<A...>) {
+                                auto& pack = unpack_arg<J>(std::forward<A>(args)...);
+                                if (pack.has_value()) {
+                                    call_insert(
+                                        array,
+                                        idx,
+                                        kwnames,
+                                        kw_idx,
+                                        pack.value()
+                                    );
+                                    return typename call<I + 1, J, K>::python{}(
+                                        std::forward<P>(parts),
+                                        array,
+                                        idx,
+                                        kwnames,
+                                        kw_idx,
+                                        func,
+                                        std::forward<A>(args)...
+                                    );
+                                } else {
+                                    return call_remove(
+                                        std::forward<P>(parts),
+                                        array,
+                                        idx,
+                                        kwnames,
+                                        kw_idx,
+                                        func,
+                                        std::forward<A>(args)...
+                                    );
+                                }
+                            }
+                            if constexpr (ArgTraits<T>::opt()) {
+                                return typename call<I + 1, J, K>::python{}(
+                                    std::forward<P>(parts),
+                                    array,
+                                    idx,
+                                    kwnames,
+                                    kw_idx,
+                                    func,
+                                    std::forward<A>(args)...
+                                );
+                            }
+                            if constexpr (name.empty()) {
+                                throw TypeError(
+                                    "no match for positional-only parameter at "
+                                    "index " + std::to_string(I)
+                                );
+                            } else {
+                                throw TypeError(
+                                    "no match for positional-only parameter '" +
+                                    name + "' at index " + std::to_string(I)
+                                );
+                            }
+
+                        // positional-or-keyword
+                        } else if constexpr (ArgTraits<T>::pos()) {
+                            if constexpr (J < pos_range) {
+                                assert_no_keyword_conflict(std::forward<A>(args)...);
+                                call_insert(
+                                    array,
+                                    idx,
+                                    kwnames,
+                                    kw_idx,
+                                    std::forward<P>(parts).template get<K>()
+                                );
+                                return typename call<I + 1, J + 1, K>::python{}(
+                                    std::forward<P>(parts),
+                                    array,
+                                    idx,
+                                    kwnames,
+                                    kw_idx,
+                                    func,
+                                    std::forward<A>(args)...
+                                );
+                            }
+                            if constexpr (J == pos_pack_idx<A...>) {
+                                auto& pack = unpack_arg<J>(std::forward<A>(args)...);
+                                if (pack.has_value()) {
+                                    assert_no_keyword_conflict(std::forward<A>(args)...);
+                                    call_insert(
+                                        array,
+                                        idx,
+                                        kwnames,
+                                        kw_idx,
+                                        pack.value()
+                                    );
+                                    return typename call<I + 1, J, K>::python{}(
+                                        std::forward<P>(parts),
+                                        array,
+                                        idx,
+                                        kwnames,
+                                        kw_idx,
+                                        func,
+                                        std::forward<A>(args)...
+                                    );
+                                } else {
+                                    return call_remove(
+                                        std::forward<P>(parts),
+                                        array,
+                                        idx,
+                                        kwnames,
+                                        kw_idx,
+                                        func,
+                                        std::forward<A>(args)...
+                                    );
+                                }
+                            }
+                            if constexpr (Sig<Return, A...>::template has<name>) {
+                                assert_no_keyword_conflict(std::forward<A>(args)...);
+                                return call_reorder(
+                                    std::forward<P>(parts),
+                                    array,
+                                    idx,
+                                    kwnames,
+                                    kw_idx,
+                                    func,
+                                    std::forward<A>(args)...
+                                );
+                            }
+                            if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
+                                auto& pack = unpack_arg<kw_pack_idx<A...>>(
+                                    std::forward<A>(args)...
+                                );
+                                auto node = pack.extract(name);
+                                if (node) {
+                                    call_insert(
+                                        array,
+                                        idx,
+                                        kwnames,
+                                        kw_idx,
+                                        std::move(node.mapped())
+                                    );
+                                    return typename call<I + 1, J, K>::python{}(
+                                        std::forward<P>(parts),
+                                        array,
+                                        idx,
+                                        kwnames,
+                                        kw_idx,
+                                        func,
+                                        std::forward<A>(args)...
+                                    );
+                                }
+                            }
+                            if constexpr (ArgTraits<T>::opt()) {
+                                return typename call<I + 1, J, K>::python{}(
+                                    std::forward<P>(parts),
+                                    array,
+                                    idx,
+                                    kwnames,
+                                    kw_idx,
+                                    func,
+                                    std::forward<A>(args)...
+                                );
+                            }
+                            throw TypeError(
+                                "no match for parameter '" + name + "' at index " +
+                                std::to_string(I)
+                            );
+
+                        // keyword-only
+                        } else if constexpr (ArgTraits<T>::kw()) {
+                            if constexpr (Sig<Return, A...>::template has<name>) {
+                                assert_no_keyword_conflict(std::forward<A>(args)...);
+                                return call_reorder(
+                                    std::forward<P>(parts),
+                                    array,
+                                    idx,
+                                    kwnames,
+                                    kw_idx,
+                                    func,
+                                    std::forward<A>(args)...
+                                );
+                            }
+                            if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
+                                auto& pack = unpack_arg<kw_pack_idx<A...>>(
+                                    std::forward<A>(args)...
+                                );
+                                auto node = pack.extract(name);
+                                if (node) {
+                                    call_insert(
+                                        array,
+                                        idx,
+                                        kwnames,
+                                        kw_idx,
+                                        std::move(node.mapped())
+                                    );
+                                    return typename call<I + 1, J, K>::python{}(
+                                        std::forward<P>(parts),
+                                        array,
+                                        idx,
+                                        kwnames,
+                                        kw_idx,
+                                        func,
+                                        std::forward<A>(args)...
+                                    );
+                                }
+                            }
+                            if constexpr (ArgTraits<T>::opt()) {
+                                return typename call<I + 1, J, K>::python{}(
+                                    std::forward<P>(parts),
+                                    array,
+                                    idx,
+                                    kwnames,
+                                    kw_idx,
+                                    func,
+                                    std::forward<A>(args)...
+                                );
+                            }
+                            throw TypeError(
+                                "no match for keyword-only parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+
+                        // variadic positional args
+                        } else if constexpr (ArgTraits<T>::args()) {
+                            constexpr size_t transition = std::min(
+                                Sig<Return, A...>::kw_idx,
+                                kw_pack_idx<A...>
+                            );
+                            return []<size_t...  Js>(
+                                std::index_sequence<Js...>,
+                                auto&& parts,
+                                PyObject** array,
+                                size_t idx,
+                                PyObject* kwnames,
+                                size_t kw_idx,
+                                PyObject* func,
+                                auto&&... args
+                            ) {
+                                (call_variadic_positional<J + Js>(
+                                    array,
+                                    idx,
+                                    kwnames,
+                                    kw_idx,
+                                    std::forward<decltype(args)>(args)...
+                                ), ...);
+                                return typename call<
+                                    I + 1,
+                                    std::max(J, transition),
+                                    K
+                                >::python{}(
+                                    std::forward<decltype(parts)>(parts),
+                                    array,
+                                    idx,
+                                    kwnames,
+                                    kw_idx,
+                                    func,
+                                    std::forward<A>(args)...
+                                );
+                            }(
+                                std::make_index_sequence<
+                                    J < transition ? transition - J : 0
+                                >{},
+                                std::forward<P>(parts),
+                                array,
+                                idx,
+                                kwnames,
+                                kw_idx,
+                                func,
+                                std::forward<A>(args)...
+                            );
+
+                        // variadic keyword args
+                        } else if constexpr (ArgTraits<T>::kwargs()) {
+                            return []<size_t... Js>(
+                                std::index_sequence<Js...>,
+                                auto&& parts,
+                                PyObject** array,
+                                size_t idx,
+                                PyObject* kwnames,
+                                size_t kw_idx,
+                                PyObject* func,
+                                auto&&... args
+                            ) {
+                                (call_variadic_keywords<J + Js>(
+                                    array,
+                                    idx,
+                                    kwnames,
+                                    kw_idx,
+                                    std::forward<decltype(args)>(args)...
+                                ), ...);
+                                return typename call<
+                                    I + 1,
+                                    J + 1,
+                                    K
+                                >::python{}(
+                                    std::forward<decltype(parts)>(parts),
+                                    array,
+                                    idx,
+                                    kwnames,
+                                    kw_idx,
+                                    func,
+                                    std::forward<A>(args)...
+                                );
+                            }(
+                                std::make_index_sequence<sizeof...(A) - J>{},
+                                std::forward<P>(parts),
+                                array,
+                                idx,
+                                kwnames,
+                                kw_idx,
+                                func,
+                                std::forward<A>(args)...
+                            );
+
+                        } else {
+                            static_assert(false, "invalid argument kind");
+                            std::unreachable();
+                        }
+                    }
+
+                private:
+
+                    template <typename... A>
+                    static void call_insert(
+                        PyObject** array,
+                        size_t& idx,
+                        PyObject* kwnames,
+                        size_t& kw_idx,
+                        auto&& value
+                    ) {
+                        using T = Sig::at<I>;
+                        try {
+                            array[idx] = release(to_python(
+                                std::forward<decltype(value)>(value)
+                            ));
+                            ++idx;
+                            if constexpr (
+                                ArgTraits<T>::kwonly() ||
+                                ArgTraits<T>::kwargs() ||
+                                (ArgTraits<T>::kw() && J >= std::min(
+                                    Sig<Return, A...>::kw_idx,
+                                    kw_pack_idx<A...>
+                                ))
+                            ) {
+                                PyTuple_SET_ITEM(
+                                    kwnames,
+                                    kw_idx,
+                                    release(template_string<ArgTraits<T>::name>())
+                                );
+                                ++kw_idx;
+                            }
+                        } catch (...) {
+                            for (size_t i = 0; i < idx; ++i) {
+                                Py_DECREF(array[i]);
+                            }
+                            throw;
+                        }
+                    }
+
+                    template <typename... A>
+                    static void call_insert(
+                        PyObject** array,
+                        size_t& idx,
+                        PyObject* kwnames,
+                        size_t& kw_idx,
+                        Object name,
+                        auto&& value
+                    ) {
+                        using T = Sig::at<I>;
+                        try {
+                            array[idx] = release(to_python(
+                                std::forward<decltype(value)>(value)
+                            ));
+                            ++idx;
+                            if constexpr (
+                                ArgTraits<T>::kwonly() ||
+                                ArgTraits<T>::kwargs() ||
+                                (ArgTraits<T>::kw() && J >= std::min(
+                                    Sig<Return, A...>::kw_idx,
+                                    kw_pack_idx<A...>
+                                ))
+                            ) {
+                                PyTuple_SET_ITEM(
+                                    kwnames,
+                                    kw_idx,
+                                    release(name)
+                                );
+                                ++kw_idx;
+                            }
+                        } catch (...) {
+                            for (size_t i = 0; i < idx; ++i) {
+                                Py_DECREF(array[i]);
+                            }
+                            throw;
+                        }
+                    }
+
+                    template <typename P, typename... A>
+                    static Object call_reorder(
+                        P&& parts,
+                        PyObject** array,
+                        size_t idx,
+                        PyObject* kwnames,
+                        size_t kw_idx,
+                        PyObject* func,
+                        A&&... args
+                    ) {
+                        constexpr StaticStr name = ArgTraits<Sig::at<I>>::name;
+                        constexpr size_t kw = Sig<Return, A...>::template idx<name>;
+                        return []<size_t... Prev, size_t... Next, size_t... Last>(
+                            std::index_sequence<Prev...>,
+                            std::index_sequence<Next...>,
+                            std::index_sequence<Last...>,
+                            auto&& parts,
+                            PyObject** array,
+                            size_t idx,
+                            PyObject* kwnames,
+                            size_t kw_idx,
+                            PyObject* func,
+                            auto&&... args
+                        ) {
+                            call_insert(
+                                array,
+                                idx,
+                                kwnames,
+                                kw_idx,
+                                unpack_arg<kw>(
+                                    std::forward<decltype(args)>(args)...
+                                )
+                            );
+                            return typename call<I + 1, J + 1, K>::python{}(
+                                std::forward<decltype(parts)>(parts),
+                                array,
+                                idx,
+                                kwnames,
+                                kw_idx,
+                                func,
+                                unpack_arg<Prev>(
+                                    std::forward<decltype(args)>(args)...
+                                )...,
+                                to_arg<I>(unpack_arg<kw>(
+                                    std::forward<decltype(args)>(args)...
+                                )),
+                                unpack_arg<J + Next>(
+                                    std::forward<decltype(args)>(args)...
+                                )...,
+                                unpack_arg<kw + 1 + Last>(
+                                    std::forward<decltype(args)>(args)...
+                                )...
+                            );
+                        }(
+                            std::make_index_sequence<J>{},
+                            std::make_index_sequence<kw - J>{},
+                            std::make_index_sequence<sizeof...(A) - (kw + 1)>{},
+                            std::forward<P>(parts),
+                            array,
+                            idx,
+                            kwnames,
+                            kw_idx,
+                            func,
+                            std::forward<A>(args)...
+                        );
+                    }
+
+                    template <typename P, typename... A>
+                    static Params<std::vector<Param>> key_reorder(
+                        std::vector<Param>& out,
+                        size_t hash,
+                        P&& parts,
+                        A&&... args
+                    ) {
+                        constexpr StaticStr name = ArgTraits<Sig::at<I>>::name;
+                        constexpr size_t kw = Sig<Return, A...>::template idx<name>;
+                        return []<size_t... Prev, size_t... Next, size_t... Last>(
+                            std::index_sequence<Prev...>,
+                            std::index_sequence<Next...>,
+                            std::index_sequence<Last...>,
+                            std::vector<Param>& out,
+                            size_t hash,
+                            auto&& parts,
+                            auto&&... args
+                        ) {
+                            out.emplace_back(
+                                ArgTraits<Sig::at<I>>::name,
+                                to_python(unpack_arg<kw>(
+                                    std::forward<decltype(args)>(args)...
+                                )),
+                                ArgKind::KW
+                            );
+                            return call<I + 1, J + 1, K>::python::key(
+                                out,
+                                hash_combine(
+                                    hash,
+                                    out.back().hash(seed, prime)
+                                ),
+                                std::forward<decltype(parts)>(parts),
+                                unpack_arg<Prev>(
+                                    std::forward<decltype(args)>(args)...
+                                )...,
+                                to_arg<I>(unpack_arg<kw>(
+                                    std::forward<decltype(args)>(args)...
+                                )),
+                                unpack_arg<J + Next>(
+                                    std::forward<decltype(args)>(args)...
+                                )...,
+                                unpack_arg<kw + 1 + Last>(
+                                    std::forward<decltype(args)>(args)...
+                                )...
+                            );
+                        }(
+                            std::make_index_sequence<J>{},
+                            std::make_index_sequence<kw - J>{},
+                            std::make_index_sequence<sizeof...(A) - (kw + 1)>{},
+                            out,
+                            hash,
+                            std::forward<P>(parts),
+                            std::forward<A>(args)...
+                        );
+                    }
+
+                    template <typename P, typename... A>
+                    static Object call_remove(
+                        P&& parts,
+                        PyObject** array,
+                        size_t idx,
+                        PyObject* kwnames,
+                        size_t kw_idx,
+                        PyObject* func,
+                        A&&... args
+                    ) {
+                        return []<size_t... Prev, size_t... Next>(
+                            std::index_sequence<Prev...>,
+                            std::index_sequence<Next...>,
+                            auto&& parts,
+                            PyObject** array,
+                            size_t idx,
+                            PyObject* kwnames,
+                            size_t kw_idx,
+                            PyObject* func,
+                            auto&&... args
+                        ) {
+                            return typename call<I, J, K>::python{}(
+                                std::forward<decltype(parts)>(parts),
+                                array,
+                                idx,
+                                kwnames,
+                                kw_idx,
+                                func,
+                                unpack_arg<Prev>(
+                                    std::forward<decltype(args)>(args)...
+                                )...,
+                                unpack_arg<J + 1 + Next>(
+                                    std::forward<decltype(args)>(args)...
+                                )...
+                            );
+                        }(
+                            std::make_index_sequence<J>{},
+                            std::make_index_sequence<sizeof...(A) - (J + 1)>{},
+                            std::forward<P>(parts),
+                            array,
+                            idx,
+                            kwnames,
+                            kw_idx,
+                            func,
+                            std::forward<A>(args)...
+                        );
+                    }
+
+                    template <typename P, typename... A>
+                    static Params<std::vector<Param>> key_remove(
+                        std::vector<Param>& out,
+                        size_t hash,
+                        P&& parts,
+                        A&&... args
+                    ) {
+                        return []<size_t... Prev, size_t... Next>(
+                            std::index_sequence<Prev...>,
+                            std::index_sequence<Next...>,
+                            std::vector<Param>& out,
+                            size_t hash,
+                            auto&& parts,
+                            auto&&... args
+                        ) {
+                            return call<I, J, K>::python::key(
+                                out,
+                                hash,
+                                std::forward<decltype(parts)>(parts),
+                                unpack_arg<Prev>(
+                                    std::forward<decltype(args)>(args)...
+                                )...,
+                                unpack_arg<J + 1 + Next>(
+                                    std::forward<decltype(args)>(args)...
+                                )...
+                            );
+                        }(
+                            std::make_index_sequence<J>{},
+                            std::make_index_sequence<sizeof...(A) - (J + 1)>{},
+                            out,
+                            hash,
+                            std::forward<P>(parts),
+                            std::forward<A>(args)...
+                        );
+                    }
+
+                    template <size_t J2, typename... A>
+                    static void call_variadic_positional(
+                        PyObject** array,
+                        size_t& idx,
+                        PyObject* kwnames,
+                        size_t& kw_idx,
+                        A&&... args
+                    ) {
+                        if constexpr (J2 == pos_pack_idx<A...>) {
+                            auto& pack = unpack_arg<J2>(std::forward<A>(args)...);
+                            for (auto& value : pack) {
+                                call_insert(
+                                    array,
+                                    idx,
+                                    kwnames,
+                                    kw_idx,
+                                    template_string<"">(),
+                                    value
+                                );
+                            }
+                        } else {
+                            call_insert(
+                                array,
+                                idx,
+                                kwnames,
+                                kw_idx,
+                                template_string<"">(),
+                                unpack_arg<J2>(std::forward<A>(args)...)
+                            );
+                        }
+                    }
+
+                    template <size_t J2, typename... A>
+                    static void key_variadic_positional(
+                        std::vector<Param>& out,
+                        size_t& hash,
+                        A&&... args
+                    ) {
+                        if constexpr (J2 == pos_pack_idx<A...>) {
+                            auto& pack = unpack_arg<J2>(std::forward<A>(args)...);
+                            for (auto& value : pack) {
+                                out.emplace_back(
+                                    "",
+                                    to_python(value),
+                                    ArgKind::POS
+                                );
+                                hash = hash_combine(
+                                    hash,
+                                    out.back().hash(seed, prime)
+                                );
+                            }
+                        } else {
+                            out.emplace_back(
+                                "",
+                                to_python(
+                                    unpack_arg<J2>(std::forward<A>(args)...)
+                                ),
+                                ArgKind::POS
+                            );
+                            hash = hash_combine(
+                                hash,
+                                out.back().hash(seed, prime)
+                            );
+                        }
+                    }
+
+                    template <size_t J2, typename... A>
+                    static void call_variadic_keywords(
+                        PyObject** array,
+                        size_t& idx,
+                        PyObject* kwnames,
+                        size_t& kw_idx,
+                        A&&... args
+                    ) {
+                        if constexpr (J2 == kw_pack_idx<A...>) {
+                            auto& pack = unpack_arg<J2>(std::forward<A>(args)...);
+                            auto it = pack.begin();
+                            auto end = pack.end();
+                            while (it != end) {
+                                // postfix ++ required to increment before invalidation
+                                auto node = pack.extract(it++);
+                                PyObject* name = PyUnicode_FromStringAndSize(
+                                    node.key().data(),
+                                    node.key().size()
+                                );
+                                if (name == nullptr) {
+                                    for (size_t i = 0; i < idx; ++i) {
+                                        Py_DECREF(array[i]);
+                                    }
+                                    Exception::from_python();
+                                }
+                                call_insert(
+                                    array,
+                                    idx,
+                                    kwnames,
+                                    kw_idx,
+                                    reinterpret_steal<Object>(name),
+                                    std::move(node.mapped())
+                                );
+                            }
+                        } else {
+                            call_insert(
+                                array,
+                                idx,
+                                kwnames,
+                                kw_idx,
+                                template_string<
+                                    ArgTraits<unpack_type<J2, Args...>>::name
+                                >(),
+                                unpack_arg<J2>(std::forward<A>(args)...)
+                            );
+                        }
+                    }
+
+                    template <size_t J2, typename... A>
+                    static void key_variadic_keywords(
+                        std::vector<Param>& out,
+                        size_t& hash,
+                        A&&... args
+                    ) {
+                        if constexpr (J2 == kw_pack_idx<A...>) {
+                            auto& pack = unpack_arg<J2>(std::forward<A>(args)...);
+                            auto it = pack.begin();
+                            auto end = pack.end();
+                            while (it != end) {
+                                // postfix ++ required to increment before invalidation
+                                auto node = pack.extract(it++);
+                                out.emplace_back(
+                                    /// TODO: this forces the parameter list to hold
+                                    /// a string rather than a string_view?
+                                    std::move(node.key()),
+                                    to_python(std::move(node.mapped())),
+                                    ArgKind::KW
+                                );
+                                hash = hash_combine(
+                                    hash,
+                                    out.back().hash(seed, prime)
+                                );
+                            }
+                        } else {
+                            out.emplace_back(
+                                ArgTraits<Sig::at<I>>::name,
+                                to_python(
+                                    unpack_arg<J2>(std::forward<A>(args)...)
+                                ),
+                                ArgKind::KW
+                            );
+                            hash = hash_combine(
+                                hash,
+                                out.back().hash(seed, prime)
+                            );
+                        }
+                    }
+                };
+            };
+
+        public:
+            using signature = call<0, 0, 0>::template normalize<Return()>::type;
+
+            static constexpr size_t n               = sizeof...(Values);
+            static constexpr size_t n_pos           = Source::n_pos;
+            static constexpr size_t n_kw            = Source::n_kw;
+
+            template <StaticStr Name>
+            static constexpr bool has               = Source::template has<Name>;
+            static constexpr bool has_pos           = Source::has_pos;
+            static constexpr bool has_args          = Source::has_args;
+            static constexpr bool has_kw            = Source::has_kw;
+            static constexpr bool has_kwargs        = Source::has_kwargs;
+
+            template <StaticStr Name> requires (has<Name>)
+            static constexpr size_t idx             = Source::template idx<Name>;
+            static constexpr size_t args_idx        = Source::args_idx;
+            static constexpr size_t kw_idx          = Source::kw_idx;
+            static constexpr size_t kwargs_idx      = Source::kwargs_idx;
+
+            template <size_t I> requires (I < n)
+            using at = Source::template at<I>;
+
+            static constexpr bool proper_argument_order =
+                Source::proper_argument_order;
+
+            static constexpr bool no_qualified_arg_annotations =
+                Source::no_qualified_arg_annotations;
+
+            static constexpr bool no_duplicate_arguments =
+                Source::no_duplicate_arguments;
+
+            static constexpr bool no_extra_positional_args =
+                Sig::has_args || !Source::has_posonly ||
+                _no_extra_positional_args<0, 0>;
+
+            static constexpr bool no_extra_keyword_args = Sig::has_kwargs ||
+                []<size_t... Js>(std::index_sequence<Js...>) {
+                    return (
+                        Sig::has<ArgTraits<
+                            typename Source::template at<Source::kw_idx + Js>
+                        >::name> && ...
+                    );
+                }(std::make_index_sequence<Source::has_kw ?
+                    std::min(Source::n, Source::kwargs_idx) - Source::kw_idx :
+                    0
+                >{});
+
+            static constexpr bool no_conflicting_values = !((
+                ArgTraits<Values>::kw() &&
+                has_partial<ArgTraits<Values>::name>
+            ) || ...) && _no_conflicting_values<0, 0>;
+
+            static constexpr bool satisfies_required_args =
+                _satisfies_required_args<0, 0>;
+
+            static constexpr bool can_convert = _can_convert<0, 0>;
+
+            /* Produce an overload key from the bound C++ arguments, which can be
+            used to search the overload trie and invoke a resulting function. */
+            template <inherits<Partial> P>
+            static Params<std::vector<Param>> key(
+                P&& parts,
+                Values... values
+            ) {
+                std::vector<Param> out;
+                if constexpr (Source::has_args && Source::has_kwargs) {
+                    out.reserve(
+                        Partial::n +
+                        (Source::n - 2) +
+                        unpack_arg<Source::args_idx>(
+                            std::forward<Values>(values)...
+                        ).size() +
+                        unpack_arg<Source::kwargs_idx>(
+                            std::forward<Values>(values)...
+                        ).size()
+                    );
+                } else if constexpr (Source::has_args) {
+                    out.reserve(
+                        Partial::n +
+                        (Source::n - 1) +
+                        unpack_arg<Source::args_idx>(
+                            std::forward<Values>(values)...
+                        ).size()
+                    );
+                } else if constexpr (Source::has_kwargs) {
+                    out.reserve(
+                        Partial::n +
+                        (Source::n - 1) +
+                        unpack_arg<Source::kwargs_idx>(
+                            std::forward<Values>(values)...
+                        ).size()
+                    );
+                } else {
+                    out.reserve(
+                        Partial::n +
+                        Source::n
+                    );
+                }
+                return call<0, 0, 0>::python::key(
+                    out,
+                    0,
+                    std::forward<P>(parts),
+                    std::forward<Values>(values)...
+                );
+            }
+
+            /* Invoke a C++ function from C++ using Python-style arguments. */
+            template <inherits<Partial> P, inherits<Defaults> D, typename F>
+                requires (
+                    std::is_invocable_v<F, Args...> &&
+                    proper_argument_order &&
+                    no_qualified_arg_annotations &&
+                    no_duplicate_arguments &&
+                    no_conflicting_values &&
+                    no_extra_positional_args &&
+                    no_extra_keyword_args &&
+                    satisfies_required_args &&
+                    can_convert
+                )
+            static constexpr std::invoke_result_t<F, Args...> operator()(
+                P&& parts,
+                D&& defaults,
+                F&& func,
+                Values... args
+            ) {
+                /// NOTE: source positional and keyword packs must be converted
+                /// into PositionalPack and KeywordPack helpers, which are
+                /// destructively iterated over within the call algorithm and
+                /// validated empty just before calling the target function,
+                /// wherein they are omitted.
+                if constexpr (Source::has_args && Source::has_kwargs) {
+                    return []<size_t... Prev, size_t... Next>(
+                        std::index_sequence<Prev...>,
+                        std::index_sequence<Next...>,
+                        auto&& parts,
+                        auto&& defaults,
+                        auto&& func,
+                        auto&&... args
+                    ) {
+                        return typename call<0, 0, 0>::cpp{}(
+                            std::forward<decltype(parts)>(parts),
+                            std::forward<decltype(defaults)>(defaults),
+                            std::forward<decltype(func)>(func),
+                            unpack_arg<Prev>(
+                                std::forward<decltype(args)>(args)...
+                            )...,
+                            PositionalPack(unpack_arg<Source::args_idx>(
+                                std::forward<decltype(args)>(args)...
+                            )),
+                            unpack_arg<Source::args_idx + 1 + Next>(
+                                std::forward<decltype(args)>(args)...
+                            )...,
+                            KeywordPack(unpack_arg<Source::kwargs_idx>(
+                                std::forward<decltype(args)>(args)...
+                            ))
+                        );
+                    }(
+                        std::make_index_sequence<Source::args_idx>{},
+                        std::make_index_sequence<
+                            Source::kwargs_idx - (Source::args_idx + 1)
+                        >{},
+                        std::forward<P>(parts),
+                        std::forward<D>(defaults),
+                        std::forward<F>(func),
+                        std::forward<Values>(args)...
+                    );
+
+                } else if constexpr (Source::has_args) {
+                    return []<size_t... Prev, size_t... Next>(
+                        std::index_sequence<Prev...>,
+                        std::index_sequence<Next...>,
+                        auto&& parts,
+                        auto&& defaults,
+                        auto&& func,
+                        auto&&... args
+                    ) {
+                        return typename call<0, 0, 0>::cpp{}(
+                            std::forward<decltype(parts)>(parts),
+                            std::forward<decltype(defaults)>(defaults),
+                            std::forward<decltype(func)>(func),
+                            unpack_arg<Prev>(
+                                std::forward<decltype(args)>(args)...
+                            )...,
+                            PositionalPack(unpack_arg<Source::args_idx>(
+                                std::forward<decltype(args)>(args)...
+                            )),
+                            unpack_arg<Source::args_idx + 1 + Next>(
+                                std::forward<decltype(args)>(args)...
+                            )...
+                        );
+                    }(
+                        std::make_index_sequence<Source::args_idx>{},
+                        std::make_index_sequence<Source::n - (Source::args_idx + 1)>{},
+                        std::forward<P>(parts),
+                        std::forward<D>(defaults),
+                        std::forward<F>(func),
+                        std::forward<Values>(args)...
+                    );
+
+                } else if constexpr (Source::has_kwargs) {
+                    return []<size_t... Prev>(
+                        std::index_sequence<Prev...>,
+                        auto&& parts,
+                        auto&& defaults,
+                        auto&& func,
+                        auto&&... args
+                    ) {
+                        return typename call<0, 0, 0>::cpp{}(
+                            std::forward<decltype(parts)>(parts),
+                            std::forward<decltype(defaults)>(defaults),
+                            std::forward<decltype(func)>(func),
+                            unpack_arg<Prev>(
+                                std::forward<decltype(args)>(args)...
+                            )...,
+                            KeywordPack(unpack_arg<Source::kwargs_idx>(
+                                std::forward<decltype(args)>(args)...
+                            ))
+                        );
+                    }(
+                        std::make_index_sequence<Source::kwargs_idx>{},
+                        std::forward<P>(parts),
+                        std::forward<D>(defaults),
+                        std::forward<F>(func),
+                        std::forward<Values>(args)...
+                    );
+
+                } else {
+                    return typename call<0, 0, 0>::cpp{}(
+                        std::forward<P>(parts),
+                        std::forward<D>(defaults),
+                        std::forward<F>(func),
+                        std::forward<Values>(args)...
+                    );
+                }
+            }
+
+            /* Invoke a Python function from C++ using Python-style arguments.  This
+            will always return a new reference to a raw Python object, or throw a
+            runtime error if the arguments are malformed in some way. */
+            template <inherits<Partial> P>
+                requires (
+                    proper_argument_order &&
+                    no_qualified_arg_annotations &&
+                    no_duplicate_arguments &&
+                    no_conflicting_values &&
+                    no_extra_positional_args &&
+                    no_extra_keyword_args &&
+                    satisfies_required_args &&
+                    can_convert
+                )
+            static Object operator()(
+                P&& parts,
+                PyObject* func,
+                Values... args
+            ) {
+                constexpr auto heap_array = [](size_t size) {
+                    PyObject** array = new PyObject*[size + 1];
+                    if (array == nullptr) {
+                        throw MemoryError();
+                    }
+                    array[0] = nullptr;
+                    return array;
+                };
+
+                /// NOTE: source positional and keyword packs must be converted
+                /// into PositionalPack and KeywordPack helpers, which are
+                /// destructively iterated over within the call algorithm and
+                /// validated empty just before calling the target function.  In
+                /// the Python case, this may require an additional heap allocation
+                /// for the vectorcall array, which can be optimized to a stack
+                /// allocation if the exact number of arguments is known at
+                /// compile time (i.e. there are no positional or keyword unpacking
+                /// operators in the argument list).
+                if constexpr (Source::has_args && Source::has_kwargs) {
+                    return []<size_t... Prev, size_t... Next>(
+                        std::index_sequence<Prev...>,
+                        std::index_sequence<Next...>,
+                        auto&& parts,
+                        PyObject* func,
+                        auto&&... args
+                    ) {
+                        size_t size =
+                            Partial::n +
+                            (Source::n - 2) +
+                            unpack_arg<Source::args_idx>(
+                                std::forward<decltype(args)>(args)...
+                            ).size() +
+                            unpack_arg<Source::kwargs_idx>(
+                                std::forward<decltype(args)>(args)...
+                            ).size();
+                        PyObject** array = ++heap_array(size);
+                        try {
+                            size_t kw_size =
+                                call<0, 0, 0>::python::n_partial_keywords +
+                                Source::n_kw +
+                                unpack_arg<Source::kwargs_idx>(
+                                    std::forward<decltype(args)>(args)...
+                                ).size();
+                            if (kw_size) {
+                                PyObject* kwnames = PyTuple_New(kw_size);
+                                try {
+                                    Object out = typename call<0, 0, 0>::python{}(
+                                        std::forward<decltype(parts)>(parts),
+                                        array,
+                                        0,
+                                        kwnames,
+                                        0,
+                                        func,
+                                        unpack_arg<Prev>(
+                                            std::forward<decltype(args)>(args)...
+                                        )...,
+                                        PositionalPack(unpack_arg<Source::args_idx>(
+                                            std::forward<decltype(args)>(args)...
+                                        )),
+                                        unpack_arg<Source::args_idx + 1 + Next>(
+                                            std::forward<decltype(args)>(args)...
+                                        )...,
+                                        KeywordPack(unpack_arg<Source::kwargs_idx>(
+                                            std::forward<decltype(args)>(args)...
+                                        ))
+                                    );
+                                    Py_DECREF(kwnames);
+                                    delete[] --array;
+                                    return out;
+                                } catch (...) {
+                                    Py_DECREF(kwnames);
+                                    throw;
+                                }
+                            } else {
+                                Object out = typename call<0, 0, 0>::python{}(
+                                    std::forward<decltype(parts)>(parts),
+                                    array,
+                                    0,
+                                    nullptr,
+                                    0,
+                                    func,
+                                    unpack_arg<Prev>(
+                                        std::forward<decltype(args)>(args)...
+                                    )...,
+                                    PositionalPack(unpack_arg<Source::args_idx>(
+                                        std::forward<decltype(args)>(args)...
+                                    )),
+                                    unpack_arg<Source::args_idx + 1 + Next>(
+                                        std::forward<decltype(args)>(args)...
+                                    )...,
+                                    KeywordPack(unpack_arg<Source::kwargs_idx>(
+                                        std::forward<decltype(args)>(args)...
+                                    ))
+                                );
+                                delete[] --array;
+                                return out;
+                            }
+                        } catch (...) {
+                            delete[] --array;
+                            throw;
+                        }
+                    }(
+                        std::make_index_sequence<Source::args_idx>{},
+                        std::make_index_sequence<
+                            Source::kwargs_idx - (Source::args_idx + 1)
+                        >{},
+                        std::forward<P>(parts),
+                        func,
+                        std::forward<Values>(args)...
+                    );
+
+                } else if constexpr (Source::has_args) {
+                    return []<size_t... Prev, size_t... Next>(
+                        std::index_sequence<Prev...>,
+                        std::index_sequence<Next...>,
+                        auto&& parts,
+                        PyObject* func,
+                        auto&&... args
+                    ) {
+                        size_t size =
+                            Partial::n +
+                            (Source::n - 1) +
+                            unpack_arg<Source::args_idx>(
+                                std::forward<decltype(args)>(args)...
+                            ).size();
+                        PyObject** array = ++heap_array(size);
+                        try {
+                            constexpr size_t kw_size =
+                                call<0, 0, 0>::python::n_partial_keywords +
+                                Source::n_kw;
+                            if constexpr (kw_size) {
+                                PyObject* kwnames = PyTuple_New(kw_size);
+                                try {
+                                    Object out = typename call<0, 0, 0>::python{}(
+                                        std::forward<decltype(parts)>(parts),
+                                        array,
+                                        0,
+                                        kwnames,
+                                        0,
+                                        func,
+                                        unpack_arg<Prev>(
+                                            std::forward<decltype(args)>(args)...
+                                        )...,
+                                        PositionalPack(unpack_arg<Source::args_idx>(
+                                            std::forward<decltype(args)>(args)...
+                                        )),
+                                        unpack_arg<Source::args_idx + 1 + Next>(
+                                            std::forward<decltype(args)>(args)...
+                                        )...
+                                    );
+                                    Py_DECREF(kwnames);
+                                    delete[] --array;
+                                    return out;
+                                } catch (...) {
+                                    Py_DECREF(kwnames);
+                                    throw;
+                                }
+                            } else {
+                                Object out = typename call<0, 0, 0>::python{}(
+                                    std::forward<decltype(parts)>(parts),
+                                    array,
+                                    0,
+                                    nullptr,
+                                    0,
+                                    func,
+                                    unpack_arg<Prev>(
+                                        std::forward<decltype(args)>(args)...
+                                    )...,
+                                    PositionalPack(unpack_arg<Source::args_idx>(
+                                        std::forward<decltype(args)>(args)...
+                                    )),
+                                    unpack_arg<Source::args_idx + 1 + Next>(
+                                        std::forward<decltype(args)>(args)...
+                                    )...
+                                );
+                                delete[] --array;
+                                return out;
+                            }
+                        } catch (...) {
+                            delete[] --array;
+                            throw;
+                        }
+                    }(
+                        std::make_index_sequence<Source::args_idx>{},
+                        std::make_index_sequence<Source::n - (Source::args_idx + 1)>{},
+                        std::forward<P>(parts),
+                        func,
+                        std::forward<Values>(args)...
+                    );
+
+                } else if constexpr (Source::has_kwargs) {
+                    return []<size_t... Prev>(
+                        std::index_sequence<Prev...>,
+                        auto&& parts,
+                        PyObject* func,
+                        auto&&... args
+                    ) {
+                        size_t size =
+                            Partial::n +
+                            (Source::n - 1) +
+                            unpack_arg<Source::kwargs_idx>(
+                                std::forward<decltype(args)>(args)...
+                            ).size();
+                        PyObject** array = ++heap_array(size);
+                        try {
+                            size_t kw_size =
+                                call<0, 0, 0>::python::n_partial_keywords +
+                                Source::n_kw +
+                                unpack_arg<Source::kwargs_idx>(
+                                    std::forward<decltype(args)>(args)...
+                                ).size();
+                            if (kw_size) {
+                                PyObject* kwnames = PyTuple_New(kw_size);
+                                try {
+                                    Object out = typename call<0, 0, 0>::python{}(
+                                        std::forward<decltype(parts)>(parts),
+                                        array,
+                                        0,
+                                        kwnames,
+                                        0,
+                                        func,
+                                        unpack_arg<Prev>(
+                                            std::forward<decltype(args)>(args)...
+                                        )...,
+                                        KeywordPack(unpack_arg<Source::kwargs_idx>(
+                                            std::forward<decltype(args)>(args)...
+                                        ))
+                                    );
+                                    Py_DECREF(kwnames);
+                                    delete[] --array;
+                                    return out;
+                                } catch (...) {
+                                    Py_DECREF(kwnames);
+                                    throw;
+                                }
+                            } else {
+                                Object out = typename call<0, 0, 0>::python{}(
+                                    std::forward<decltype(parts)>(parts),
+                                    array,
+                                    0,
+                                    nullptr,
+                                    0,
+                                    func,
+                                    unpack_arg<Prev>(
+                                        std::forward<decltype(args)>(args)...
+                                    )...,
+                                    KeywordPack(unpack_arg<Source::kwargs_idx>(
+                                        std::forward<decltype(args)>(args)...
+                                    ))
+                                );
+                                delete[] --array;
+                                return out;
+                            }
+                        } catch (...) {
+                            delete[] --array;
+                            throw;
+                        }
+                    }(
+                        std::make_index_sequence<Source::kwargs_idx>{},
+                        std::forward<P>(parts),
+                        func,
+                        std::forward<Values>(args)...
+                    );
+
+                } else {
+                    constexpr size_t size = Partial::n + Source::n;
+                    PyObject* array[size + 1];
+                    array[0] = nullptr;
+                    ++array;
+                    constexpr size_t kw_size =
+                        call<0, 0, 0>::python::n_partial_keywords + Source::n_kw;
+                    if constexpr (kw_size) {
+                        PyObject* kwnames = PyTuple_New(kw_size);
+                        try {
+                            Object out = typename call<0, 0, 0>::python{}(
+                                std::forward<decltype(parts)>(parts),
+                                array,
+                                0,
+                                kwnames,
+                                0,
+                                func,
+                                std::forward<decltype(args)>(args)...
+                            );
+                            Py_DECREF(kwnames);
+                            return out;
+                        } catch (...) {
+                            Py_DECREF(kwnames);
+                            throw;
+                        }
+                    } else {
+                        return typename call<0, 0, 0>::python{}(
+                            std::forward<decltype(parts)>(parts),
+                            array,
+                            0,
+                            nullptr,
+                            0,
+                            func,
+                            std::forward<decltype(args)>(args)...
+                        );
+                    }
+                }
+            }
+        };
+
+        /* A compile-time equivalent to `.bind()`, which describes the merged
+        partial type that would be produced if that method were called with the
+        given arguments. */
+        template <typename... As>
+        using Bind = decltype(std::declval<Sig>().bind(std::declval<As>()...));
+
+        /* Unbinding a signature strips any partial arguments that have been encoded
+        into it and returns a new signature without any partials. */
+        using Unbind = no_partials<Sig<Return>, Args...>::type;
+
+        /// TODO: Bind<> needs to return the Signature type to conform to Unbind,
+        /// rather than returning a partial.  It also needs to employ template
+        /// constraints to ensure that the arguments are properly ordered, conform
+        /// to the enclosing signature, and do not conflict with each other or the
+        /// existing default values.
+
+        /* Produce another partial by merging the new args with those of this
+        partial.  This method allows partials to be incrementally chained, as you
+        would when implementing function currying, for example. */
+        template <typename... As>
+        auto bind(this auto&& self, As&&... args) {
+            return Invoke<As...>::bind(
+                std::forward<decltype(self)>(self),
+                std::forward<As>(args)...
+            );
+        }
+
+        /* Invoke a C++ function that matches the enclosing signature. */
+        template <inherits<Defaults> D, typename F, typename... A>
+            requires (
+                std::is_invocable_v<F, Args...> &&
+                Bind<A...>::proper_argument_order &&
+                Bind<A...>::no_qualified_arg_annotations &&
+                Bind<A...>::no_duplicate_arguments &&
+                Bind<A...>::no_conflicting_values &&
+                Bind<A...>::no_extra_positional_args &&
+                Bind<A...>::no_extra_keyword_args &&
+                Bind<A...>::satisfies_required_args &&
+                Bind<A...>::can_convert
+            )
+        auto operator()(this auto&& self, D&& defaults, F&& func, A&&... args)
+            -> std::invoke_result_t<F, Args...>
+        {
+            return std::forward<decltype(self)>(self).parts(
+                std::forward<D>(defaults),
+                std::forward<F>(func),
+                std::forward<A>(args)...
+            );
+        }
+
+        /* Invoke a Python function that matches the enclosing signature. */
+        template <typename... A>
+            requires (
+                Bind<A...>::proper_argument_order &&
+                Bind<A...>::no_qualified_arg_annotations &&
+                Bind<A...>::no_duplicate_arguments &&
+                Bind<A...>::no_conflicting_values &&
+                Bind<A...>::no_extra_positional_args &&
+                Bind<A...>::no_extra_keyword_args &&
+                Bind<A...>::satisfies_required_args &&
+                Bind<A...>::can_convert
+            )
+        Object operator()(this auto&& self, PyObject* func, A&&... args) {
+            return std::forward<decltype(self)>(self).parts(
+                func,
+                std::forward<A>(args)...
+            );
+        }
+
+        /* Bind a Python vectorcall array to the enclosing signature and implement
+        the translation logic necessary to invoke a matching C++ function.  This
+        is essentially the inverse of the Bind<>::call::python algorithm, and uses
+        many of the same techniques from Bind<>::call::cpp to build up the C++
+        argument list in a way that avoids any intermediate data structures.  The
+        arguments are simply interpreted as dynamic `Object` types and implicitly
+        converted to the expected argument type using the same infrastructure as
+        ordinary bertrand conversions.
+
+        This is by far the most efficient way to invoke a C++ function from Python,
+        as it generally involves only a single `isinstance()` check per argument,
+        and a possible conversion to an equivalent C++ type.  Both are done using
+        the same infrastructure as implicit conversions from the dynamic `Object`
+        type, which delegates to the `__isinstance__` control struct, meaning any
+        changes to the C++ conversion logic will be reflected here as well.
+        Generally speaking, built-in types use this mechanism to optimize the check
+        to specialized C API endpoints where possible, which improves performance
+        even further beyond a standard `isinstance()` call.
+
+        In some cases, an additional conversion may be required to handle Python
+        types that lack sufficient type information for the check, such as standard
+        Python containers that can contain any type.  In those cases, the type
+        check may be applied elementwise to the contents of the container, which
+        can be expensive if the container is large.  This can be avoided by using
+        Bertrand types as inputs to the function, in which case the check is always
+        O(1) in time, due to the 1:1 equivalence between Bertrand wrappers and
+        their C++ counterparts, and corresponding type safety guarantees. */
+        struct Vectorcall {
+        protected:
+            /* The kwnames tuple must be converted into a temporary map that can
+            be destructively searched over the course of the call algorithm.  If
+            any arguments remain by the time the underlying function is called,
+            then they are considered extras. */
+            struct Kwargs {
+                using Map = std::unordered_map<std::string_view, PyObject*>;
+                Map map;
+
+                Kwargs(
+                    PyObject* const* array,
+                    size_t nargs,
+                    PyObject* kwnames,
+                    size_t kwcount
+                ) :
+                    map([](
+                        PyObject* const* array,
+                        size_t nargs,
+                        PyObject* kwnames,
+                        size_t kwcount
+                    ) {
+                        Map map;
+                        map.reserve(kwcount);
+                        for (size_t i = 0; i < kwcount; ++i) {
+                            Py_ssize_t len;
+                            const char* name = PyUnicode_AsUTF8AndSize(
+                                PyTuple_GET_ITEM(kwnames, i),
+                                &len
+                            );
+                            if (name == nullptr) {
+                                Exception::from_python();
+                            }
+                            map.emplace(
+                                std::string_view{name, static_cast<size_t>(len)},
+                                array[nargs + i]
+                            );
+                        }
+                        return map;
+                    }(array, nargs, kwnames, kwcount))
+                {}
+
+                void validate() {
+                    if constexpr (!Sig::has_kwargs) {
+                        if (!map.empty()) {
+                            auto it = map.begin();
+                            auto end = map.end();
+                            std::string message =
+                                "unexpected keyword arguments: ['" +
+                                std::string(it->first);
+                            while (++it != end) {
+                                message += "', '" + std::string(it->first);
+                            }
+                            message += "']";
+                            throw TypeError(message);
+                        }
+                    }
+                }
+
+                auto size() const { return map.size(); }
+                template <typename T>
+                auto extract(T&& key) { return map.extract(std::forward<T>(key)); }
+                auto begin() { return map.begin(); }
+                auto end() { return map.end(); }
+            };
+
+            /* Invoking a C++ function from Python involves translating a
+            vectorcall array and kwnames tuple into a valid C++ parameter list that
+            exactly matches the enclosing signature.  This is yet another 3-way
+            merge between partial arguments, converted vectorcall arguments, and
+            default values, in that order of precedence, and is essentially the
+            inverse of the Bind<>::call<>::python algorithm.  It uses techniques
+            from Bind<>::call<>::cpp to build up the C++ argument list via index
+            sequences and fold expressions, which are inlined into the final call. */
+            template <size_t I, size_t K>
+            struct call {  // terminal case
+                template <typename P>
+                static Params<std::vector<Param>> key(
+                    std::vector<Param>& out,
+                    size_t hash,
+                    Kwargs& kwargs,
+                    PyObject* const* array,
+                    size_t idx,
+                    size_t nargs,
+                    P&& parts
+                ) {
+                    validate_positional(array, idx, nargs);
+                    kwargs.validate();
+                    return {
+                        .value = std::move(out),
+                        .hash = hash
+                    };
+                }
+
+                template <typename P>
+                static Params<std::vector<Param>> key(
+                    std::vector<Param>& out,
+                    size_t hash,
+                    PyObject* const* array,
+                    size_t idx,
+                    size_t nargs,
+                    P&& parts
+                ) {
+                    validate_positional(array, idx, nargs);
+                    return {
+                        .value = std::move(out),
+                        .hash = hash
+                    };
+                }
+
+                template <typename P, typename D, typename F, typename... A>
+                static std::invoke_result_t<F, Args...> operator()(
+                    P&& parts,
+                    D&& defaults,
+                    Kwargs& kwargs,
+                    PyObject* const* array,
+                    size_t idx,
+                    size_t nargs,
+                    F&& func,
+                    A&&... args
+                ) {
+                    validate_positional(array, idx, nargs);
+                    kwargs.validate();
+                    return std::forward<F>(func)(std::forward<A>(args)...);
+                }
+
+                template <typename P, typename D, typename F, typename... A>
+                static std::invoke_result_t<F, Args...> operator()(
+                    P&& parts,
+                    D&& defaults,
+                    PyObject* const* array,
+                    size_t idx,
+                    size_t nargs,
+                    F&& func,
+                    A&&... args
+                ) {
+                    validate_positional(array, idx, nargs);
+                    return std::forward<F>(func)(std::forward<A>(args)...);
+                }
+
+            private:
+
+                static void validate_positional(
+                    PyObject* const* array,
+                    size_t idx,
+                    size_t nargs
+                ) {
+                    if constexpr (!Sig::has_args) {
+                        if (idx < nargs) {
+                            std::string message =
+                                "unexpected positional arguments: [";
+                            PyObject* str = PyObject_Repr(array[idx]);
+                            if (str == nullptr) {
+                                Exception::from_python();
+                            }
+                            Py_ssize_t len;
+                            const char* name = PyUnicode_AsUTF8AndSize(
+                                str,
+                                &len
+                            );
+                            if (name == nullptr) {
+                                Exception::from_python();
+                            }
+                            message += std::string(name, len);
+                            while (++idx < nargs) {
+                                str = PyObject_Repr(array[idx]);
+                                if (str == nullptr) {
+                                    Exception::from_python();
+                                }
+                                name = PyUnicode_AsUTF8AndSize(
+                                    str,
+                                    &len
+                                );
+                                if (name == nullptr) {
+                                    Exception::from_python();
+                                }
+                                message += ", " + std::string(name, len);
+                            }
+                            message += "]";
+                            throw TypeError(message);
+                        }
+                    }
+                }
+            };
+            template <size_t I, size_t K>
+                requires (
+                    I < Sig::n &&
+                    (K < std::tuple_size_v<Tuple> && target_idx<K> == I)
+                )
+            struct call<I, K> {  // insert partial argument(s)
+                template <size_t K2>
+                static constexpr size_t consecutive = 0;
+                template <size_t K2>
+                    requires (K2 < std::tuple_size_v<Tuple> && target_idx<K2> == I)
+                static constexpr size_t consecutive<K2> = consecutive<K2 + 1> + 1;
+
+                template <typename P>
+                static Params<std::vector<Param>> key(
+                    std::vector<Param>& out,
+                    size_t hash,
+                    Kwargs& kwargs,
+                    PyObject* const* array,
+                    size_t idx,
+                    size_t nargs,
+                    P&& parts
+                ) {
+                    using T = Sig::at<I>;
+                    if (
+                        ArgTraits<T>::kwargs() ||
+                        ArgTraits<T>::kwonly() ||
+                        (ArgTraits<T>::kw() && idx >= nargs)
+                    ) {
+                        out.emplace_back(
+                            Partial::name<K>,
+                            to_python(
+                                std::forward<P>(parts).template get<K>()
+                            ),
+                            ArgKind::KW
+                        );
+                    } else {
+                        out.emplace_back(
+                            "",
+                            to_python(
+                                std::forward<P>(parts).template get<K>()
+                            ),
+                            ArgKind::POS
+                        );
+                    }
+                    return call<
+                        I + !ArgTraits<T>::variadic(),
+                        K + 1
+                    >::python::key(
+                        out,
+                        hash_combine(hash, out.back().hash(seed, prime)),
+                        kwargs,
+                        array,
+                        idx,
+                        nargs,
+                        std::forward<P>(parts)
+                    );
+                }
+
+                template <typename P>
+                static Params<std::vector<Param>> key(
+                    std::vector<Param>& out,
+                    size_t hash,
+                    PyObject* const* array,
+                    size_t idx,
+                    size_t nargs,
+                    P&& parts
+                ) {
+                    using T = Sig::at<I>;
+                    if (
+                        ArgTraits<T>::kwargs() ||
+                        ArgTraits<T>::kwonly() ||
+                        (ArgTraits<T>::kw() && idx >= nargs)
+                    ) {
+                        out.emplace_back(
+                            Partial::name<K>,
+                            to_python(
+                                std::forward<P>(parts).template get<K>()
+                            ),
+                            ArgKind::KW
+                        );
+                    } else {
+                        out.emplace_back(
+                            "",
+                            to_python(
+                                std::forward<P>(parts).template get<K>()
+                            ),
+                            ArgKind::POS
+                        );
+                    }
+                    return call<
+                        I + !ArgTraits<T>::variadic(),
+                        K + 1
+                    >::python::key(
+                        out,
+                        hash_combine(hash, out.back().hash(seed, prime)),
+                        array,
+                        idx,
+                        nargs,
+                        std::forward<P>(parts)
+                    );
+                }
+
+                template <typename P, typename D, typename F, typename... A>
+                static std::invoke_result_t<F, Args...> operator()(
+                    P&& parts,
+                    D&& defaults,
+                    Kwargs& kwargs,
+                    PyObject* const* array,
+                    size_t idx,
+                    size_t nargs,
+                    F&& func,
+                    A&&... args
+                ) {
+                    using T = Sig::at<I>;
+                    if constexpr (ArgTraits<T>::args() || ArgTraits<T>::kwargs()) {
+                        return []<size_t... Ks>(
+                            std::index_sequence<Ks...>,
+                            auto&& parts,
+                            auto&& defaults,
+                            Kwargs& kwargs,
+                            PyObject* const* array,
+                            size_t idx,
+                            size_t nargs,
+                            auto&& func,
+                            auto&&... args
+                        ) {
+                            if constexpr (ArgTraits<T>::args()) {
+                                return call<I + 1, K + consecutive<K>>{}(
+                                    std::forward<decltype(parts)>(parts),
+                                    std::forward<decltype(defaults)>(defaults),
+                                    kwargs,
+                                    array,
+                                    idx,
+                                    nargs,
+                                    std::forward<decltype(func)>(func),
+                                    std::forward<decltype(args)>(args)...,
+                                    to_arg<I>(variadic_positional(
+                                        std::forward<decltype(parts)>(parts),
+                                        array,
+                                        idx,
+                                        nargs
+                                    ))
+                                );
+                            } else if constexpr (ArgTraits<T>::kwargs()) {
+                                return call<I + 1, K + consecutive<K>>{}(
+                                    std::forward<decltype(parts)>(parts),
+                                    std::forward<decltype(defaults)>(defaults),
+                                    kwargs,
+                                    array,
+                                    idx,
+                                    nargs,
+                                    std::forward<decltype(func)>(func),
+                                    std::forward<decltype(args)>(args)...,
+                                    to_arg<I>(variadic_keywords(
+                                        std::forward<decltype(parts)>(parts),
+                                        kwargs
+                                    ))
+                                );
+                            }
+                        }(
+                            std::make_index_sequence<consecutive<K>>{},
+                            std::forward<P>(parts),
+                            std::forward<D>(defaults),
+                            kwargs,
+                            array,
+                            idx,
+                            nargs,
+                            std::forward<F>(func),
+                            std::forward<A>(args)...
+                        );
+                    } else {
+                        return call<I + 1, K + 1>{}(
+                            std::forward<P>(parts),
+                            std::forward<D>(defaults),
+                            kwargs,
+                            array,
+                            idx,
+                            nargs,
+                            std::forward<F>(func),
+                            std::forward<A>(args)...,
+                            to_arg<I>(
+                                std::forward<P>(parts).template get<K>()
+                            )
+                        );
+                    }
+                }
+
+                template <typename P, typename D, typename F, typename... A>
+                static std::invoke_result_t<F, Args...> operator()(
+                    P&& parts,
+                    D&& defaults,
+                    PyObject* const* array,
+                    size_t idx,
+                    size_t nargs,
+                    F&& func,
+                    A&&... args
+                ) {
+                    using T = Sig::at<I>;
+                    if constexpr (ArgTraits<T>::args() || ArgTraits<T>::kwargs()) {
+                        return []<size_t... Ks>(
+                            std::index_sequence<Ks...>,
+                            auto&& parts,
+                            auto&& defaults,
+                            PyObject* const* array,
+                            size_t idx,
+                            size_t nargs,
+                            auto&& func,
+                            auto&&... args
+                        ) {
+                            if constexpr (ArgTraits<T>::args()) {
+                                return call<I + 1, K + consecutive<K>>{}(
+                                    std::forward<decltype(parts)>(parts),
+                                    std::forward<decltype(defaults)>(defaults),
+                                    array,
+                                    idx,
+                                    nargs,
+                                    std::forward<decltype(func)>(func),
+                                    std::forward<decltype(args)>(args)...,
+                                    to_arg<I>(variadic_positional(
+                                        std::forward<decltype(parts)>(parts),
+                                        array,
+                                        idx,
+                                        nargs
+                                    ))
+                                );
+                            } else if constexpr (ArgTraits<T>::kwargs()) {
+                                return call<I + 1, K + consecutive<K>>{}(
+                                    std::forward<decltype(parts)>(parts),
+                                    std::forward<decltype(defaults)>(defaults),
+                                    array,
+                                    idx,
+                                    nargs,
+                                    std::forward<decltype(func)>(func),
+                                    std::forward<decltype(args)>(args)...
+                                );
+                            }
+                        }(
+                            std::make_index_sequence<consecutive<K>>{},
+                            std::forward<P>(parts),
+                            std::forward<D>(defaults),
+                            array,
+                            idx,
+                            nargs,
+                            std::forward<F>(func),
+                            std::forward<A>(args)...
+                        );
+                    } else {
+                        return call<I + 1, K + 1>{}(
+                            std::forward<P>(parts),
+                            std::forward<D>(defaults),
+                            array,
+                            idx,
+                            nargs,
+                            std::forward<F>(func),
+                            std::forward<A>(args)...,
+                            to_arg<I>(
+                                std::forward<P>(parts).template get<K>()
+                            )
+                        );
+                    }
+                }
+
+            private:
+
+                template <typename P, typename... A>
+                static auto variadic_positional(
+                    P&& parts,
+                    PyObject* const* array,
+                    size_t idx,
+                    size_t nargs
+                ) {
+                    using T = Sig::at<I>;
+
+                    // allocate variadic positional array
+                    using vec = std::vector<typename ArgTraits<T>::type>;
+                    vec out;
+                    size_t diff = nargs > idx ? nargs - idx : 0;
+                    out.reserve(consecutive<K> + diff);
+
+                    // consume partial args
+                    []<size_t... Ks>(
+                        std::index_sequence<Ks...>,
+                        vec& out,
+                        auto&& parts
+                    ) {
+                        (out.emplace_back(std::forward<decltype(
+                            parts
+                        )>(parts).template get<K + Ks>()), ...);
+                    }(
+                        std::make_index_sequence<consecutive<K>>{},
+                        out,
+                        std::forward<P>(parts)
+                    );
+
+                    // consume vectorcall args
+                    for (size_t i = idx; idx < nargs; ++i) {
+                        out.emplace_back(
+                            reinterpret_borrow<Object>(array[i])
+                        );
+                    }
+                    return out;
+                }
+
+                template <typename P>
+                static auto variadic_keywords(
+                    P&& parts,
+                    Kwargs& kwargs
+                ) {
+                    using T = Sig::at<I>;
+
+                    // allocate variadic keyword map
+                    using map = std::unordered_map<
+                        std::string,
+                        typename ArgTraits<T>::type
+                    >;
+                    map out;
+                    out.reserve(consecutive<K> + kwargs.size());
+
+                    // consume partial kwargs
+                    []<size_t... Ks>(
+                        std::index_sequence<Ks...>,
+                        map& out,
+                        auto&& parts
+                    ) {
+                        (out.emplace(
+                            Partial::name<K + Ks>,
+                            std::forward<decltype(parts)>(
+                                parts
+                            ).template get<K + Ks>()
+                        ), ...);
+                    }(
+                        std::make_index_sequence<consecutive<K>>{},
+                        out,
+                        std::forward<P>(parts)
+                    );
+
+                    // consume vectorcall kwargs
+                    for (auto& [key, value] : kwargs) {
+                        out.emplace(
+                            key,
+                            reinterpret_borrow<Object>(value)
+                        );
+                    }
+                    return out;
+                }
+            };
+            template <size_t I, size_t K>
+                requires (
+                    I < Sig::n &&
+                    !(K < std::tuple_size_v<Tuple> && target_idx<K> == I)
+                )
+            struct call<I, K> {  // insert Python argument(s) or default value
+                template <typename P>
+                static Params<std::vector<Param>> key(
+                    std::vector<Param>& out,
+                    size_t hash,
+                    Kwargs& kwargs,
+                    PyObject* const* array,
+                    size_t idx,
+                    size_t nargs,
+                    P&& parts
+                ) {
+                    using T = Sig::at<I>;
+                    constexpr StaticStr name = ArgTraits<T>::name;
+
+                    // positional-only
+                    if constexpr (ArgTraits<T>::posonly()) {
+                        if (idx < nargs) {
+                            out.emplace_back(
+                                "",
+                                reinterpret_borrow<Object>(array[idx]),
+                                ArgKind::POS
+                            );
+                            return call<I + 1, K>::python::key(
+                                out,
+                                hash_combine(
+                                    hash,
+                                    out.back().hash(seed, prime)
+                                ),
+                                kwargs,
+                                array,
+                                ++idx,
+                                nargs,
+                                std::forward<P>(parts)
+                            );
+                        }
+                        if constexpr (ArgTraits<T>::opt()) {
+                            return call<I + 1, K>::python::key(
+                                out,
+                                hash,
+                                kwargs,
+                                array,
+                                idx,
+                                nargs,
+                                std::forward<P>(parts)
+                            );
+                        }
+                        if constexpr (name.empty()) {
+                            throw TypeError(
+                                "no match for positional-only parameter at "
+                                "index " + std::to_string(I)
+                            );
+                        } else {
+                            throw TypeError(
+                                "no match for positional-only parameter '" +
+                                name + "' at index " + std::to_string(I)
+                            );
+                        }
+
+                    // positional-or-keyword
+                    } else if constexpr (ArgTraits<T>::pos()) {
+                        if (idx < nargs) {
+                            out.emplace_back(
+                                "",
+                                reinterpret_borrow<Object>(array[idx]),
+                                ArgKind::POS
+                            );
+                            return call<I + 1, K>::python::key(
+                                out,
+                                hash_combine(
+                                    hash,
+                                    out.back().hash(seed, prime)
+                                ),
+                                kwargs,
+                                array,
+                                ++idx,
+                                nargs,
+                                std::forward<P>(parts)
+                            );
+                        }
+                        auto node = kwargs.extract(name);
+                        if (node) {
+                            out.emplace_back(
+                                node.key(),
+                                reinterpret_borrow<Object>(node.mapped()),
+                                ArgKind::KW
+                            );
+                            return call<I + 1, K>::python::key(
+                                out,
+                                hash_combine(
+                                    hash,
+                                    out.back().hash(seed, prime)
+                                ),
+                                kwargs,
+                                array,
+                                idx,
+                                nargs,
+                                std::forward<P>(parts)
+                            );
+                        }
+                        if constexpr (ArgTraits<T>::opt()) {
+                            return call<I + 1, K>::python::key(
+                                out,
+                                hash,
+                                kwargs,
+                                array,
+                                idx,
+                                nargs,
+                                std::forward<P>(parts)
+                            );
+                        }
+                        throw TypeError(
+                            "no match for parameter '" + name + "' at index " +
+                            std::to_string(I)
+                        );
+
+                    // keyword-only
+                    } else if constexpr (ArgTraits<T>::kw()) {
+                        auto node = kwargs.extract(name);
+                        if (node) {
+                            out.emplace_back(
+                                std::move(node.key()),
+                                reinterpret_borrow<Object>(node.mapped()),
+                                ArgKind::KW
+                            );
+                            return call<I + 1, K>::python::key(
+                                out,
+                                hash_combine(
+                                    hash,
+                                    out.back().hash(seed, prime)
+                                ),
+                                kwargs,
+                                array,
+                                idx,
+                                nargs,
+                                std::forward<P>(parts)
+                            );
+                        }
+                        if constexpr (ArgTraits<T>::opt()) {
+                            return call<I + 1, K>::python::key(
+                                out,
+                                hash,
+                                kwargs,
+                                array,
+                                idx,
+                                nargs,
+                                std::forward<P>(parts)
+                            );
+                        }
+                        throw TypeError(
+                            "no match for parameter '" + name + "' at index " +
+                            std::to_string(I)
+                        );
+
+                    // keyword-or-positional
+                    } else if constexpr (ArgTraits<T>::args()) {
+                        while (idx < nargs) {
+                            out.emplace_back(
+                                "",
+                                reinterpret_borrow<Object>(array[idx++]),
+                                ArgKind::POS
+                            );
+                            hash = hash_combine(
+                                hash,
+                                out.back().hash(seed, prime)
+                            );
+                        }
+                        return call<I + 1, K>::python::key(
+                            out,
+                            hash,
+                            kwargs,
+                            array,
+                            idx,
+                            nargs,
+                            std::forward<P>(parts)
+                        );
+
+                    // variadic positional
+                    } else if constexpr (ArgTraits<T>::kwargs()) {
                         auto it = kwargs.begin();
                         auto end = kwargs.end();
                         while (it != end) {
@@ -7550,236 +6779,743 @@ namespace impl {
                                 std::move(node.key()),
                                 reinterpret_borrow<Object>(node.mapped())
                             );
+                            hash = hash_combine(
+                                hash,
+                                out.back().hash(seed, prime)
+                            );
                         }
-                        return out;
+                        return call<I + 1, K>::python::key(
+                            out,
+                            hash,
+                            kwargs,
+                            array,
+                            idx,
+                            nargs,
+                            std::forward<P>(parts)
+                        );
+
+                    } else {
+                        static_assert(false, "invalid argument kind");
+                        std::unreachable();
                     }
-                };
+                }
 
-            public:
-                PyObject* const* args;
-                size_t nargs;
-                size_t flags;
-                PyObject* kwnames;
-                size_t kwcount;
-                std::vector<PyObject*> converted;
+                template <typename P>
+                static Params<std::vector<Param>> key(
+                    std::vector<Param>& out,
+                    size_t hash,
+                    PyObject* const* array,
+                    size_t idx,
+                    size_t nargs,
+                    P&& parts
+                ) {
+                    using T = Sig::at<I>;
+                    constexpr StaticStr name = ArgTraits<T>::name;
 
-                Vectorcall(PyObject* const* args, size_t nargsf, PyObject* kwnames) :
-                    args(args),
-                    kwnames(kwnames),
-                    kwcount(kwnames ? PyTuple_GET_SIZE(kwnames) : 0),
-                    nargs(PyVectorcall_NARGS(nargsf)),
-                    flags(nargsf & PY_VECTORCALL_ARGUMENTS_OFFSET)
-                {}
+                    // positional-only
+                    if constexpr (ArgTraits<T>::posonly()) {
+                        if (idx < nargs) {
+                            out.emplace_back(
+                                "",
+                                reinterpret_borrow<Object>(array[idx]),
+                                ArgKind::POS
+                            );
+                            return call<I + 1, K>::python::key(
+                                out,
+                                hash_combine(
+                                    hash,
+                                    out.back().hash(seed, prime)
+                                ),
+                                array,
+                                ++idx,
+                                nargs,
+                                std::forward<P>(parts)
+                            );
+                        }
+                        if constexpr (ArgTraits<T>::opt()) {
+                            return call<I + 1, K>::python::key(
+                                out,
+                                hash,
+                                array,
+                                idx,
+                                nargs,
+                                std::forward<P>(parts)
+                            );
+                        }
+                        if constexpr (name.empty()) {
+                            throw TypeError(
+                                "no match for positional-only parameter at "
+                                "index " + std::to_string(I)
+                            );
+                        } else {
+                            throw TypeError(
+                                "no match for positional-only parameter '" +
+                                name + "' at index " + std::to_string(I)
+                            );
+                        }
 
-                Vectorcall(const Vectorcall& other) :
-                    args(other.args),
-                    nargs(other.nargs),
-                    flags(other.flags),
-                    kwnames(other.kwnames),
-                    kwcount(other.kwcount),
-                    converted(other.converted)
-                {
+                    // positional-or-keyword
+                    } else if constexpr (ArgTraits<T>::pos()) {
+                        if (idx < nargs) {
+                            out.emplace_back(
+                                "",
+                                reinterpret_borrow<Object>(array[idx]),
+                                ArgKind::POS
+                            );
+                            return call<I + 1, K>::python::key(
+                                out,
+                                hash_combine(
+                                    hash,
+                                    out.back().hash(seed, prime)
+                                ),
+                                array,
+                                ++idx,
+                                nargs,
+                                std::forward<P>(parts)
+                            );
+                        }
+                        if constexpr (ArgTraits<T>::opt()) {
+                            return call<I + 1, K>::python::key(
+                                out,
+                                hash,
+                                array,
+                                idx,
+                                nargs,
+                                std::forward<P>(parts)
+                            );
+                        }
+                        throw TypeError(
+                            "no match for parameter '" + name + "' at index " +
+                            std::to_string(I)
+                        );
+
+                    // keyword-only
+                    } else if constexpr (ArgTraits<T>::kw()) {
+                        if constexpr (ArgTraits<T>::opt()) {
+                            return call<I + 1, K>::python::key(
+                                out,
+                                hash,
+                                array,
+                                idx,
+                                nargs,
+                                std::forward<P>(parts)
+                            );
+                        }
+                        throw TypeError(
+                            "no match for parameter '" + name + "' at index " +
+                            std::to_string(I)
+                        );
+
+                    // keyword-or-positional
+                    } else if constexpr (ArgTraits<T>::args()) {
+                        while (idx < nargs) {
+                            out.emplace_back(
+                                "",
+                                reinterpret_borrow<Object>(array[idx++]),
+                                ArgKind::POS
+                            );
+                            hash = hash_combine(
+                                hash,
+                                out.back().hash(seed, prime)
+                            );
+                        }
+                        return call<I + 1, K>::python::key(
+                            out,
+                            hash,
+                            array,
+                            idx,
+                            nargs,
+                            std::forward<P>(parts)
+                        );
+
+                    // variadic positional
+                    } else if constexpr (ArgTraits<T>::kwargs()) {
+                        return call<I + 1, K>::python::key(
+                            out,
+                            hash,
+                            array,
+                            idx,
+                            nargs,
+                            std::forward<P>(parts)
+                        );
+
+                    } else {
+                        static_assert(false, "invalid argument kind");
+                        std::unreachable();
+                    }
+                }
+
+                template <typename P, typename D, typename F, typename... A>
+                static std::invoke_result_t<F, Args...> operator()(
+                    P&& parts,
+                    D&& defaults,
+                    Kwargs& kwargs,
+                    PyObject* const* array,
+                    size_t idx,
+                    size_t nargs,
+                    F&& func,
+                    A&&... args
+                ) {
+                    using T = Sig::at<I>;
+                    constexpr StaticStr name = ArgTraits<T>::name;
+
+                    // positional-only
+                    if constexpr (ArgTraits<T>::posonly()) {
+                        if (idx < nargs) {
+                            return call<I + 1, K>{}(
+                                std::forward<P>(parts),
+                                std::forward<D>(defaults),
+                                kwargs,
+                                array,
+                                ++idx,
+                                nargs,
+                                std::forward<F>(func),
+                                std::forward<A>(args)...,
+                                to_arg<I>(reinterpret_borrow<Object>(
+                                    array[idx - 1]
+                                ))
+                            );
+                        }
+                        if constexpr (ArgTraits<T>::opt()) {
+                            return call<I + 1, K>{}(
+                                std::forward<P>(parts),
+                                std::forward<D>(defaults),
+                                kwargs,
+                                array,
+                                idx,
+                                nargs,
+                                std::forward<F>(func),
+                                std::forward<A>(args)...,
+                                to_arg<I>(
+                                    std::forward<D>(defaults).template get<I>()
+                                )
+                            );
+                        }
+                        if constexpr (name.empty()) {
+                            throw TypeError(
+                                "no match for positional-only parameter at "
+                                "index " + std::to_string(I)
+                            );
+                        } else {
+                            throw TypeError(
+                                "no match for positional-only parameter '" +
+                                name + "' at index " + std::to_string(I)
+                            );
+                        }
+
+                    // positional-or-keyword
+                    } else if constexpr (ArgTraits<T>::pos()) {
+                        if (idx < nargs) {
+                            return call<I + 1, K>{}(
+                                std::forward<P>(parts),
+                                std::forward<D>(defaults),
+                                kwargs,
+                                array,
+                                ++idx,
+                                nargs,
+                                std::forward<F>(func),
+                                std::forward<A>(args)...,
+                                to_arg<I>(reinterpret_borrow<Object>(
+                                    array[idx - 1]
+                                ))
+                            );
+                        }
+                        auto node = kwargs.extract(name);
+                        if (node) {
+                            return call<I + 1, K>{}(
+                                std::forward<P>(parts),
+                                std::forward<D>(defaults),
+                                kwargs,
+                                array,
+                                idx,
+                                nargs,
+                                std::forward<F>(func),
+                                std::forward<A>(args)...,
+                                to_arg<I>(reinterpret_borrow<Object>(
+                                    node.mapped()
+                                ))
+                            );
+                        }
+                        if constexpr (ArgTraits<T>::opt()) {
+                            return call<I + 1, K>{}(
+                                std::forward<P>(parts),
+                                std::forward<D>(defaults),
+                                kwargs,
+                                array,
+                                idx,
+                                nargs,
+                                std::forward<F>(func),
+                                std::forward<A>(args)...,
+                                to_arg<I>(
+                                    std::forward<D>(defaults).template get<I>()
+                                )
+                            );
+                        }
+                        throw TypeError(
+                            "no match for parameter '" + name + "' at index " +
+                            std::to_string(I)
+                        );
+
+                    // keyword-only
+                    } else if constexpr (ArgTraits<T>::kw()) {
+                        auto node = kwargs.extract(name);
+                        if (node) {
+                            return call<I + 1, K>{}(
+                                std::forward<P>(parts),
+                                std::forward<D>(defaults),
+                                kwargs,
+                                array,
+                                idx,
+                                nargs,
+                                std::forward<F>(func),
+                                std::forward<A>(args)...,
+                                to_arg<I>(reinterpret_borrow<Object>(
+                                    node.mapped()
+                                ))
+                            );
+                        }
+                        if constexpr (ArgTraits<T>::opt()) {
+                            return call<I + 1, K>{}(
+                                std::forward<P>(parts),
+                                std::forward<D>(defaults),
+                                kwargs,
+                                array,
+                                idx,
+                                nargs,
+                                std::forward<F>(func),
+                                std::forward<A>(args)...,
+                                to_arg<I>(
+                                    std::forward<D>(defaults).template get<I>()
+                                )
+                            );
+                        }
+                        throw TypeError(
+                            "no match for parameter '" + name + "' at index " +
+                            std::to_string(I)
+                        );
+
+                    // keyword-or-positional
+                    } else if constexpr (ArgTraits<T>::args()) {
+                        return call<I + 1, K>{}(
+                            std::forward<P>(parts),
+                            std::forward<D>(defaults),
+                            kwargs,
+                            array,
+                            idx,
+                            nargs,
+                            std::forward<F>(func),
+                            std::forward<A>(args)...,
+                            to_arg<I>(variadic_positional(
+                                std::forward<P>(parts),
+                                array,
+                                idx,
+                                nargs
+                            ))
+                        );
+
+                    // variadic positional
+                    } else if constexpr (ArgTraits<T>::kwargs()) {
+                        return call<I + 1, K>{}(
+                            std::forward<P>(parts),
+                            std::forward<D>(defaults),
+                            kwargs,
+                            array,
+                            idx,
+                            nargs,
+                            std::forward<F>(func),
+                            std::forward<A>(args)...,
+                            to_arg<I>(variadic_keywords(
+                                std::forward<P>(parts),
+                                kwargs
+                            ))
+                        );
+
+                    } else {
+                        static_assert(false, "invalid argument kind");
+                        std::unreachable();
+                    }
+                }
+
+                template <typename P, typename D, typename F, typename... A>
+                static std::invoke_result_t<F, Args...> operator()(
+                    P&& parts,
+                    D&& defaults,
+                    PyObject* const* array,
+                    size_t idx,
+                    size_t nargs,
+                    F&& func,
+                    A&&... args
+                ) {
+                    using T = Sig::at<I>;
+                    constexpr StaticStr name = ArgTraits<T>::name;
+
+                    // positional-only
+                    if constexpr (ArgTraits<T>::posonly()) {
+                        if (idx < nargs) {
+                            return call<I + 1, K>{}(
+                                std::forward<P>(parts),
+                                std::forward<D>(defaults),
+                                array,
+                                ++idx,
+                                nargs,
+                                std::forward<F>(func),
+                                std::forward<A>(args)...,
+                                to_arg<I>(reinterpret_borrow<Object>(
+                                    array[idx - 1]
+                                ))
+                            );
+                        }
+                        if constexpr (ArgTraits<T>::opt()) {
+                            return call<I + 1, K>{}(
+                                std::forward<P>(parts),
+                                std::forward<D>(defaults),
+                                array,
+                                idx,
+                                nargs,
+                                std::forward<F>(func),
+                                std::forward<A>(args)...,
+                                to_arg<I>(
+                                    std::forward<D>(defaults).template get<I>()
+                                )
+                            );
+                        }
+                        if constexpr (name.empty()) {
+                            throw TypeError(
+                                "no match for positional-only parameter at "
+                                "index " + std::to_string(I)
+                            );
+                        } else {
+                            throw TypeError(
+                                "no match for positional-only parameter '" +
+                                name + "' at index " + std::to_string(I)
+                            );
+                        }
+
+                    // positional-or-keyword
+                    } else if constexpr (ArgTraits<T>::pos()) {
+                        if (idx < nargs) {
+                            return call<I + 1, K>{}(
+                                std::forward<P>(parts),
+                                std::forward<D>(defaults),
+                                array,
+                                ++idx,
+                                nargs,
+                                std::forward<F>(func),
+                                std::forward<A>(args)...,
+                                to_arg<I>(reinterpret_borrow<Object>(
+                                    array[idx - 1]
+                                ))
+                            );
+                        }
+                        if constexpr (ArgTraits<T>::opt()) {
+                            return call<I + 1, K>{}(
+                                std::forward<P>(parts),
+                                std::forward<D>(defaults),
+                                array,
+                                idx,
+                                nargs,
+                                std::forward<F>(func),
+                                std::forward<A>(args)...,
+                                to_arg<I>(
+                                    std::forward<D>(defaults).template get<I>()
+                                )
+                            );
+                        }
+                        throw TypeError(
+                            "no match for parameter '" + name + "' at index " +
+                            std::to_string(I)
+                        );
+
+                    // keyword-only
+                    } else if constexpr (ArgTraits<T>::kw()) {
+                        if constexpr (ArgTraits<T>::opt()) {
+                            return call<I + 1, K>{}(
+                                std::forward<P>(parts),
+                                std::forward<D>(defaults),
+                                array,
+                                idx,
+                                nargs,
+                                std::forward<F>(func),
+                                std::forward<A>(args)...,
+                                to_arg<I>(
+                                    std::forward<D>(defaults).template get<I>()
+                                )
+                            );
+                        }
+                        throw TypeError(
+                            "no match for parameter '" + name + "' at index " +
+                            std::to_string(I)
+                        );
+
+                    // keyword-or-positional
+                    } else if constexpr (ArgTraits<T>::args()) {
+                        return call<I + 1, K>{}(
+                            std::forward<P>(parts),
+                            std::forward<D>(defaults),
+                            array,
+                            idx,
+                            nargs,
+                            std::forward<F>(func),
+                            std::forward<A>(args)...,
+                            to_arg<I>(variadic_positional(
+                                std::forward<P>(parts),
+                                array,
+                                idx,
+                                nargs
+                            ))
+                        );
+
+                    // variadic positional
+                    } else if constexpr (ArgTraits<T>::kwargs()) {
+                        return call<I + 1, K>{}(
+                            std::forward<P>(parts),
+                            std::forward<D>(defaults),
+                            array,
+                            idx,
+                            nargs,
+                            std::forward<F>(func),
+                            std::forward<A>(args)...,
+                            to_arg<I>(std::unordered_map<
+                                std::string,
+                                typename ArgTraits<T>::type
+                            >{})
+                        );
+
+                    } else {
+                        static_assert(false, "invalid argument kind");
+                        std::unreachable();
+                    }
+                }
+
+            private:
+
+                template <typename P, typename... A>
+                static auto variadic_positional(
+                    P&& parts,
+                    PyObject* const* array,
+                    size_t idx,
+                    size_t nargs
+                ) {
+                    using T = Sig::at<I>;
+
+                    // allocate variadic positional array
+                    using vec = std::vector<typename ArgTraits<T>::type>;
+                    vec out;
+                    out.reserve(nargs > idx ? nargs - idx : 0);
+
+                    // consume vectorcall args
+                    for (size_t i = idx; idx < nargs; ++i) {
+                        out.emplace_back(
+                            reinterpret_borrow<Object>(array[i])
+                        );
+                    }
+                    return out;
+                }
+
+                template <typename P>
+                static auto variadic_keywords(
+                    P&& parts,
+                    Kwargs& kwargs
+                ) {
+                    using T = Sig::at<I>;
+
+                    // allocate variadic keyword map
+                    using map = std::unordered_map<
+                        std::string,
+                        typename ArgTraits<T>::type
+                    >;
+                    map out;
+                    out.reserve(kwargs.size());
+
+                    // consume vectorcall kwargs
+                    auto it = kwargs.begin();
+                    auto end = kwargs.end();
+                    while (it != end) {
+                        // postfix ++ required to increment before invalidation
+                        auto node = kwargs.extract(it++);
+                        out.emplace_back(
+                            std::move(node.key()),
+                            reinterpret_borrow<Object>(node.mapped())
+                        );
+                    }
+                    return out;
+                }
+            };
+
+        public:
+            PyObject* const* args;
+            size_t nargs;
+            size_t flags;
+            PyObject* kwnames;
+            size_t kwcount;
+            std::vector<PyObject*> converted;
+
+            Vectorcall(PyObject* const* args, size_t nargsf, PyObject* kwnames) :
+                args(args),
+                kwnames(kwnames),
+                kwcount(kwnames ? PyTuple_GET_SIZE(kwnames) : 0),
+                nargs(PyVectorcall_NARGS(nargsf)),
+                flags(nargsf & PY_VECTORCALL_ARGUMENTS_OFFSET)
+            {}
+
+            Vectorcall(const Vectorcall& other) :
+                args(other.args),
+                nargs(other.nargs),
+                flags(other.flags),
+                kwnames(other.kwnames),
+                kwcount(other.kwcount),
+                converted(other.converted)
+            {
+                for (PyObject* obj : converted) {
+                    Py_INCREF(obj);
+                }
+            }
+
+            Vectorcall(Vectorcall&& other) :
+                args(other.args),
+                nargs(other.nargs),
+                flags(other.flags),
+                kwnames(other.kwnames),
+                kwcount(other.kwcount),
+                converted(std::move(other.converted))
+            {
+                other.args = nullptr;
+                other.kwnames = nullptr;
+                other.kwcount = 0;
+                other.nargs = 0;
+                other.flags = 0;
+            }
+
+            Vectorcall& operator=(const Vectorcall& other) {
+                if (this != &other) {
+                    for (PyObject* obj : converted) {
+                        Py_DECREF(obj);
+                    }
+                    args = other.args;
+                    nargs = other.nargs;
+                    flags = other.flags;
+                    kwnames = other.kwnames;
+                    kwcount = other.kwcount;
+                    converted = other.converted;
                     for (PyObject* obj : converted) {
                         Py_INCREF(obj);
                     }
                 }
+                return *this;
+            }
 
-                Vectorcall(Vectorcall&& other) :
-                    args(other.args),
-                    nargs(other.nargs),
-                    flags(other.flags),
-                    kwnames(other.kwnames),
-                    kwcount(other.kwcount),
-                    converted(std::move(other.converted))
-                {
+            Vectorcall& operator=(Vectorcall&& other) {
+                if (this != &other) {
+                    for (PyObject* obj : converted) {
+                        Py_DECREF(obj);
+                    }
+                    args = other.args;
+                    nargs = other.nargs;
+                    flags = other.flags;
+                    kwnames = other.kwnames;
+                    kwcount = other.kwcount;
+                    converted = std::move(other.converted);
                     other.args = nullptr;
                     other.kwnames = nullptr;
                     other.kwcount = 0;
                     other.nargs = 0;
                     other.flags = 0;
                 }
+                return *this;
+            }
 
-                Vectorcall& operator=(const Vectorcall& other) {
-                    if (this != &other) {
-                        for (PyObject* obj : converted) {
-                            Py_DECREF(obj);
-                        }
-                        args = other.args;
-                        nargs = other.nargs;
-                        flags = other.flags;
-                        kwnames = other.kwnames;
-                        kwcount = other.kwcount;
-                        converted = other.converted;
-                        for (PyObject* obj : converted) {
-                            Py_INCREF(obj);
-                        }
-                    }
-                    return *this;
+            ~Vectorcall() noexcept {
+                for (PyObject* obj : converted) {
+                    Py_DECREF(obj);
                 }
+            }
 
-                Vectorcall& operator=(Vectorcall&& other) {
-                    if (this != &other) {
-                        for (PyObject* obj : converted) {
-                            Py_DECREF(obj);
+            /* Produce an overload key from the Python arguments, which can be used to
+            search the overload trie and invoke a resulting function. */
+            template <inherits<Partial> P>
+            Params<std::vector<Param>> key(P&& parts) {
+                /// NOTE: in order to provide consistent hashes with full type
+                /// information, each argument must be converted into a Bertrand
+                /// type before the key is generated.  This is the only way to
+                /// properly differentiate between ambiguous Python types (like
+                /// generic containers) and avoid hash ambiguities.
+                Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+                    ptr(template_string<"bertrand">())
+                ));
+                if (bertrand.is(nullptr)) {
+                    Exception::from_python();
+                }
+                size_t size = nargs + kwcount;
+                converted.reserve(Partial::n + size);
+                for (size_t i = 0; i < size; ++i) {
+                    PyObject* obj = PyObject_CallOneArg(
+                        ptr(bertrand),
+                        args[i]
+                    );
+                    if (obj == nullptr) {
+                        for (size_t j = 0; j < i; ++j) {
+                            Py_DECREF(converted[j]);
                         }
-                        args = other.args;
-                        nargs = other.nargs;
-                        flags = other.flags;
-                        kwnames = other.kwnames;
-                        kwcount = other.kwcount;
-                        converted = std::move(other.converted);
-                        other.args = nullptr;
-                        other.kwnames = nullptr;
-                        other.kwcount = 0;
-                        other.nargs = 0;
-                        other.flags = 0;
-                    }
-                    return *this;
-                }
-
-                ~Vectorcall() noexcept {
-                    for (PyObject* obj : converted) {
-                        Py_DECREF(obj);
-                    }
-                }
-
-                /* Produce an overload key from the Python arguments, which can be used to
-                search the overload trie and invoke a resulting function. */
-                template <inherits<Partial> P>
-                Params<std::vector<Param>> key(P&& parts) {
-                    /// NOTE: in order to provide consistent hashes with full type
-                    /// information, each argument must be converted into a Bertrand
-                    /// type before the key is generated.  This is the only way to
-                    /// properly differentiate between ambiguous Python types (like
-                    /// generic containers) and avoid hash ambiguities.
-                    Object bertrand = reinterpret_steal<Object>(PyImport_Import(
-                        ptr(template_string<"bertrand">())
-                    ));
-                    if (bertrand.is(nullptr)) {
+                        converted.clear();
                         Exception::from_python();
                     }
-                    size_t size = nargs + kwcount;
-                    converted.reserve(Partial::n + size);
-                    for (size_t i = 0; i < size; ++i) {
-                        PyObject* obj = PyObject_CallOneArg(
-                            ptr(bertrand),
-                            args[i]
-                        );
-                        if (obj == nullptr) {
-                            for (size_t j = 0; j < i; ++j) {
-                                Py_DECREF(converted[j]);
-                            }
-                            converted.clear();
-                            Exception::from_python();
-                        }
-                        converted.emplace_back(obj);
-                    }
-
-                    std::vector<Param> out;
-                    out.reserve(Partial::n + size);
-                    if (kwnames) {
-                        Kwargs kwargs {converted.data(), nargs, kwnames, kwcount};
-                        return call<0, 0>::key(
-                            out,
-                            0,
-                            kwargs,
-                            converted.data(),
-                            0,
-                            nargs,
-                            std::forward<P>(parts)
-                        );
-                    } else {
-                        return call<0, 0>::key(
-                            out,
-                            0,
-                            converted.data(),
-                            0,
-                            nargs,
-                            std::forward<P>(parts)
-                        );
-                    }
+                    converted.emplace_back(obj);
                 }
 
-                /* Invoke a C++ function from Python using Python-style arguments. */
-                template <inherits<Partial> P, inherits<Defaults> D, typename F>
-                    requires (std::is_invocable_v<F, Args...>)
-                auto operator()(P&& parts, D&& defaults, F&& func) const
-                    -> std::invoke_result_t<F, Args...>
-                {
-                    if (kwnames) {
-                        Kwargs kwargs {args, nargs, kwnames, kwcount};
-                        return call<0, 0>{}(
-                            std::forward<P>(parts),
-                            std::forward<D>(defaults),
-                            kwargs,
-                            converted.empty() ? args : converted.data(),
-                            0,
-                            nargs,
-                            std::forward<F>(func)
-                        );
-                    } else {
-                        return call<0, 0>{}(
-                            std::forward<P>(parts),
-                            std::forward<D>(defaults),
-                            converted.empty() ? args : converted.data(),
-                            0,
-                            nargs,
-                            std::forward<F>(func)
-                        );
-                    }
+                std::vector<Param> out;
+                out.reserve(Partial::n + size);
+                if (kwnames) {
+                    Kwargs kwargs {converted.data(), nargs, kwnames, kwcount};
+                    return call<0, 0>::key(
+                        out,
+                        0,
+                        kwargs,
+                        converted.data(),
+                        0,
+                        nargs,
+                        std::forward<P>(parts)
+                    );
+                } else {
+                    return call<0, 0>::key(
+                        out,
+                        0,
+                        converted.data(),
+                        0,
+                        nargs,
+                        std::forward<P>(parts)
+                    );
                 }
-            };
+            }
+
+            /* Invoke a C++ function from Python using Python-style arguments. */
+            template <inherits<Partial> P, inherits<Defaults> D, typename F>
+                requires (std::is_invocable_v<F, Args...>)
+            auto operator()(P&& parts, D&& defaults, F&& func) const
+                -> std::invoke_result_t<F, Args...>
+            {
+                if (kwnames) {
+                    Kwargs kwargs {args, nargs, kwnames, kwcount};
+                    return call<0, 0>{}(
+                        std::forward<P>(parts),
+                        std::forward<D>(defaults),
+                        kwargs,
+                        converted.empty() ? args : converted.data(),
+                        0,
+                        nargs,
+                        std::forward<F>(func)
+                    );
+                } else {
+                    return call<0, 0>{}(
+                        std::forward<P>(parts),
+                        std::forward<D>(defaults),
+                        converted.empty() ? args : converted.data(),
+                        0,
+                        nargs,
+                        std::forward<F>(func)
+                    );
+                }
+            }
         };
-
-        /* Extract any partial arguments that are encoded in the target signature using
-        `::bind<>` extensions, and form a corresponding partial type.  This is the
-        canonical partial that must be constructed whenever a signature is
-        instantiated. */
-        template <typename out, typename...>
-        struct extract_partial { using type = out; };
-        template <typename... out, typename A, typename... As>
-        struct extract_partial<Partial<out...>, A, As...> {
-            template <typename>
-            struct filter { using type = Partial<out...>; };
-            template <typename T> requires (ArgTraits<T>::bound())
-            struct filter<T> {
-                template <typename>
-                struct merge;
-                template <typename... bound_to>
-                struct merge<pack<bound_to...>> {
-                    using type = Partial<out..., bound_to...>;
-                };
-                using type = merge<typename ArgTraits<T>::bound_to>::type;
-            };
-            using type = extract_partial<filter<A>, As...>::type;
-        };
-
-        using partial = extract_partial<Partial<>, Args...>::type;
-        partial parts;
-
-    public:
-        Sig(const partial& parts) : parts(parts) {}
-        Sig(partial&& parts) : parts(std::move(parts)) {}
-
-        /* Unbinding a signature strips any partial arguments that have been encoded
-        into the target annotations, returning the same type of partial object as
-        Bind<>, for symmetry. */
-        using Unbind = Partial<>;
-
-        /* Binding a signature returns a partial type that appends the new partial
-        arguments to the current ones, to allow for easy chaining/currying. */
-        template <typename... A>
-        using Bind = partial::template Bind<A...>;
-
-        /* Construct a partial object by binding the given arguments to the enclosing
-        signature using the same chaining logic as `Bind<>`, which describes this
-        method's return type.   */
-        template <typename... A>
-        auto bind(this auto&& self, A&&... args) {
-            return std::forward<decltype(self)>(self).parts.bind(
-                std::forward<A>(args)...
-            );
-        }
 
         /* Interpret a Python vectorcall array in order to invoke a C++ function that
         matches the enclosing signature. */
@@ -7800,126 +7536,10 @@ namespace impl {
             );
         }
 
-        /* Invoke a C++ function that matches the enclosing signature. */
-        template <inherits<Defaults> D, typename F, typename... A>
-            requires (
-                std::is_invocable_v<F, Args...> &&
-                Bind<A...>::proper_argument_order &&
-                Bind<A...>::no_qualified_arg_annotations &&
-                Bind<A...>::no_duplicate_arguments &&
-                Bind<A...>::no_conflicting_values &&
-                Bind<A...>::no_extra_positional_args &&
-                Bind<A...>::no_extra_keyword_args &&
-                Bind<A...>::satisfies_required_args &&
-                Bind<A...>::can_convert
-            )
-        auto operator()(
-            this auto&& self,
-            D&& defaults,
-            F&& func,
-            A&&... args
-        ) -> std::invoke_result_t<F, Args...> {
-            return std::forward<decltype(self)>(self).parts(
-                std::forward<D>(defaults),
-                std::forward<F>(func),
-                std::forward<A>(args)...
-            );
-        }
-
-        /* Invoke a Python function that matches the enclosing signature. */
-        template <typename... A>
-            requires (
-                Bind<A...>::proper_argument_order &&
-                Bind<A...>::no_qualified_arg_annotations &&
-                Bind<A...>::no_duplicate_arguments &&
-                Bind<A...>::no_conflicting_values &&
-                Bind<A...>::no_extra_positional_args &&
-                Bind<A...>::no_extra_keyword_args &&
-                Bind<A...>::satisfies_required_args &&
-                Bind<A...>::can_convert
-            )
-        Object operator()(
-            this auto&& self,
-            PyObject* func,
-            A&&... args
-        ) {
-            return std::forward<decltype(self)>(self).parts(
-                func,
-                std::forward<A>(args)...
-            );
-        }
-
-
-
-
-
-        /// TODO: CTAD for Partial, such that constructing a Partial object can be
-        /// expressed as:
-        ///         Signature<Func>::bind{args...}
-        /// In fact, the `py::def` class will delegate straight to this in its
-        /// constructor, along with initializing
-        ///         Signature<Func>::defaults{defaults...}
-        /// at the same time.  Its call operator then just boils down to calling the
-        /// partial with the correct function (copied or moved from the initializer)
-        /// and default values, without any extra logic.  All the crazy stuff is
-        /// handled here.
-        /// -> The partial type can then provide an alias to a canonicallized version
-        /// of the signature type, and that is what would be used in the CTAD
-        /// constructor for `py::Function`.  `py::def` is more direct, and just stores
-        /// the function and partial arguments in the template signature.  In the
-        /// common case that there are no partial arguments, that means it will usually
-        /// deduce to `py::def<(lambda at 0x9287391732)>`
-
-        /// TODO: partial arguments will have to be provided to the Overload trie
-        /// iterators, such that they can be automatically inserted when traversing
-        /// the trie, and only matching functions will be returned.  This might mess
-        /// with caching, since in practice, we would always need to include the
-        /// partial arguments in the key in order to make the hash stable and
-        /// unambiguous.
-        /// -> That actually may not require any changes, since basically I just have
-        /// to properly insert the partial arguments when building the key, which is
-        /// not always simple, but is at least centralized in the Partial<> class.
-
-
-
-        /// TODO: the extract_partial, constructor, and call operator(s) should be
-        /// moved up to Signature<>, so that this class remains as simple as possible.
-
-        /// TODO: these should be raised up to Signature<> so that they gain access
-        /// to the normalized signature exposed in the subclass, which might be where
-        /// all the chaining logic needs to go as well.
-
         /// TODO: also, implementing something like the __signature__ property can also
         /// be standardized at the Signature<F> level, via a to_python() method that
         /// returns an `inspect.Signature` instance adapted from the normalized C++
         /// signature.
-
-        // /* Individual arguments in the target signature may indicate the presence of a
-        // partial argument using the `::Bind<>` extension to the `Arg` annotation type.
-        // These are analyzed and extracted into a corresponding `Partial<...>`
-        // specialization for convenience, with Arg<> annotations indicating keywords
-        // within the partial signature.  The annotated partial can then be created by
-        // constructing the alias, whereupon it can be called with the observed arguments
-        // to complete the signature:
-
-        //     Signature<R(Arg<"x", int>::Bind<int>, Arg<"y", int>)>::partial{1}(2)
-
-        // This 'canonical' partial is what is stored internally within a `py::Function`
-        // object, such that bound functions can be transferred to and from Python in an
-        // unambiguous fashion, with the correct partial logic embedded in both type
-        // systems at the same time. */
-        // using partial = extract_partial<Args...>;
-
-        // /* Binding directly to the signature delegates to the canonical partial and
-        // always reflects the expected call signature. */
-        // template <typename... Values>
-        // using Bind = partial::template Bind<Values...>;
-
-        // partial parts;
-
-        // template <typename... Parts>
-        // Sig(Parts&&... parts) : parts(std::forward<Parts>(parts)...) {}
-
     };
 
 }
