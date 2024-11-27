@@ -13,17 +13,6 @@
 namespace py {
 
 
-/* Introspect an annotated C++ function signature to extract compile-time type
-information about its parameters and allow a matching function to be called safely
-from both languages with the same, Python-style syntax.  Also defines supporting
-data structures to allow for dynamic function overloading and first-class partial
-binding. */
-template <typename T>
-struct Signature {
-    static constexpr bool enable = false;
-};
-
-
 namespace impl {
 
     /* Validate a C++ string that represents an argument name, throwing an error if it
@@ -149,6 +138,15 @@ namespace impl {
 }
 
 
+/* Introspect an annotated C++ function signature to extract compile-time type
+information about its parameters and allow a matching function to be called safely
+from both languages with the same, Python-style syntax.  Also defines supporting
+data structures to allow for dynamic function overloading and first-class partial
+binding. */
+template <typename T>
+struct Signature;
+
+
 /* The canonical form of `py::Signature`, which encapsulates all of the internal
 call machinery, most of which is evaluated at compile time.  All other
 specializations should redirect to this form in order to avoid reimplementing the
@@ -158,6 +156,7 @@ struct Signature<Return(Args...)> : impl::SignatureBase<Return> {
     static constexpr bool enable = true;
     using type = Return(Args...);
 
+    struct Defaults;
     struct Partial;
 
 private:
@@ -297,7 +296,93 @@ private:
         return param;
     }
 
-    /// TODO: build_parameter<I>
+    template <size_t I, typename D>
+    static Object _to_python(D&& defaults, const Object& Parameter) {
+        using T = Signature::at<I>;
+
+        if constexpr (ArgTraits<T>::posonly()) {
+            if constexpr (ArgTraits<T>::name.empty()) {
+                constexpr StaticStr name = "_" + StaticStr<>::from_int<I>;
+                if constexpr (ArgTraits<T>::opt()) {
+                    return Parameter(
+                        arg<"name"> = impl::template_string<name>(),
+                        arg<"kind"> = getattr<"POSITIONAL_ONLY">(Parameter),
+                        arg<"annotation"> = Type<typename ArgTraits<T>::type>(),
+                        arg<"default"> = std::forward<D>(defaults).template get<I>()
+                    );
+                } else {
+                    return Parameter(
+                        arg<"name"> = impl::template_string<name>(),
+                        arg<"kind"> = getattr<"POSITIONAL_ONLY">(Parameter),
+                        arg<"annotation"> = Type<typename ArgTraits<T>::type>()
+                    );
+                }
+            } else {
+                if constexpr (ArgTraits<T>::opt()) {
+                    return Parameter(
+                        arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
+                        arg<"kind"> = getattr<"POSITIONAL_ONLY">(Parameter),
+                        arg<"annotation"> = Type<typename ArgTraits<T>::type>(),
+                        arg<"default"> = std::forward<D>(defaults).template get<I>()
+                    );
+                } else {
+                    return Parameter(
+                        arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
+                        arg<"kind"> = getattr<"POSITIONAL_ONLY">(Parameter),
+                        arg<"annotation"> = Type<typename ArgTraits<T>::type>()
+                    );
+                }
+            }
+        } else if constexpr (ArgTraits<T>::pos()) {
+            if constexpr (ArgTraits<T>::opt()) {
+                return Parameter(
+                    arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
+                    arg<"kind"> = getattr<"POSITIONAL_OR_KEYWORD">(Parameter),
+                    arg<"annotation"> = Type<typename ArgTraits<T>::type>(),
+                    arg<"default"> = std::forward<D>(defaults).template get<I>()
+                );
+            } else {
+                return Parameter(
+                    arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
+                    arg<"kind"> = getattr<"POSITIONAL_OR_KEYWORD">(Parameter),
+                    arg<"annotation"> = Type<typename ArgTraits<T>::type>()
+                );
+            }
+        } else if constexpr (ArgTraits<T>::kwonly()) {
+            if constexpr (ArgTraits<T>::opt()) {
+                return Parameter(
+                    arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
+                    arg<"kind"> = getattr<"KEYWORD_ONLY">(Parameter),
+                    arg<"annotation"> = Type<typename ArgTraits<T>::type>(),
+                    arg<"default"> = std::forward<D>(defaults).template get<I>()
+                );
+            } else {
+                return Parameter(
+                    arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
+                    arg<"kind"> = getattr<"KEYWORD_ONLY">(Parameter),
+                    arg<"annotation"> = Type<typename ArgTraits<T>::type>()
+                );
+            }
+        } else if constexpr (ArgTraits<T>::args()) {
+            return Parameter(
+                arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
+                arg<"kind"> = getattr<"VAR_POSITIONAL">(Parameter),
+                arg<"annotation"> = Type<typename ArgTraits<T>::type>()
+            );
+        } else if constexpr (ArgTraits<T>::kwargs()) {
+            return Parameter(
+                arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
+                arg<"kind"> = getattr<"VAR_KEYWORD">(Parameter),
+                arg<"annotation"> = Type<typename ArgTraits<T>::type>()
+            );
+        } else {
+            static_assert(false, "invalid argument kind");
+            std::unreachable();
+        }
+    }
+
+
+    /// TODO: build_parameter<I> (aka _to_python<I>?)
 
 public:
     static constexpr size_t n                   = sizeof...(Args);
@@ -894,6 +979,8 @@ public:
         }
 
     public:
+        using type = Signature;
+
         static constexpr size_t n               = Inner::n;
         static constexpr size_t n_posonly       = _n_posonly<Args...>;
         static constexpr size_t n_pos           = _n_pos<Args...>;
@@ -1068,6 +1155,8 @@ public:
         }
 
     public:
+        using type = Signature;
+
         static constexpr size_t n               = Inner::n;
         static constexpr size_t n_posonly       = Inner::n_posonly;
         static constexpr size_t n_pos           = Inner::n_pos;
@@ -2137,7 +2226,7 @@ public:
                     if (node) {
                         throw TypeError(
                             "conflicting value for parameter '" + name +
-                            "' at index " + std::to_string(I)
+                            "' at index " + StaticStr<>::from_int<I>
                         );
                     }
                 }
@@ -2219,12 +2308,12 @@ public:
                         if constexpr (name.empty()) {
                             throw TypeError(
                                 "no match for positional-only parameter at "
-                                "index " + std::to_string(I)
+                                "index " + StaticStr<>::from_int<I>
                             );
                         } else {
                             throw TypeError(
                                 "no match for positional-only parameter '" +
-                                name + "' at index " + std::to_string(I)
+                                name + "' at index " + StaticStr<>::from_int<I>
                             );
                         }
 
@@ -2292,7 +2381,7 @@ public:
                         }
                         throw TypeError(
                             "no match for parameter '" + name + "' at index " +
-                            std::to_string(I)
+                            StaticStr<>::from_int<I>
                         );
 
                     // keyword-only
@@ -2331,7 +2420,7 @@ public:
                         }
                         throw TypeError(
                             "no match for keyword-only parameter '" + name +
-                            "' at index " + std::to_string(I)
+                            "' at index " + StaticStr<>::from_int<I>
                         );
 
                     // variadic positional args
@@ -2851,12 +2940,12 @@ public:
                         if constexpr (name.empty()) {
                             throw TypeError(
                                 "no match for positional-only parameter at "
-                                "index " + std::to_string(I)
+                                "index " + StaticStr<>::from_int<I>
                             );
                         } else {
                             throw TypeError(
                                 "no match for positional-only parameter '" +
-                                name + "' at index " + std::to_string(I)
+                                name + "' at index " + StaticStr<>::from_int<I>
                             );
                         }
 
@@ -2957,7 +3046,7 @@ public:
                         }
                         throw TypeError(
                             "no match for parameter '" + name + "' at index " +
-                            std::to_string(I)
+                            StaticStr<>::from_int<I>
                         );
 
                     // keyword-only
@@ -3006,7 +3095,7 @@ public:
                         }
                         throw TypeError(
                             "no match for keyword-only parameter '" + name +
-                            "' at index " + std::to_string(I)
+                            "' at index " + StaticStr<>::from_int<I>
                         );
 
                     // variadic positional
@@ -3171,12 +3260,12 @@ public:
                         if constexpr (name.empty()) {
                             throw TypeError(
                                 "no match for positional-only parameter at "
-                                "index " + std::to_string(I)
+                                "index " + StaticStr<>::from_int<I>
                             );
                         } else {
                             throw TypeError(
                                 "no match for positional-only parameter '" +
-                                name + "' at index " + std::to_string(I)
+                                name + "' at index " + StaticStr<>::from_int<I>
                             );
                         }
 
@@ -3282,7 +3371,7 @@ public:
                         }
                         throw TypeError(
                             "no match for parameter '" + name + "' at index " +
-                            std::to_string(I)
+                            StaticStr<>::from_int<I>
                         );
 
                     // keyword-only
@@ -3336,7 +3425,7 @@ public:
                         }
                         throw TypeError(
                             "no match for keyword-only parameter '" + name +
-                            "' at index " + std::to_string(I)
+                            "' at index " + StaticStr<>::from_int<I>
                         );
 
                     // variadic positional args
@@ -3935,6 +4024,12 @@ public:
         template <size_t I> requires (I < n)
         using at = Source::template at<I>;
 
+        /// TODO: restore the template constraints down here, for better error
+        /// messages.  They'll still call into the Check<> infrastructure.  The problem
+        /// here is that it means I can't enforce constraints on Bind<> itself, but
+        /// it actually shouldn't really matter tbh, since all of the rest of the
+        /// operations in this class will be constrained according to them.
+
         static constexpr bool satisfies_required_args =
             Check<Source>::satisfies_required_args;
 
@@ -3986,6 +4081,8 @@ public:
                 std::forward<Values>(values)...
             );
         }
+
+        /// TODO: rename ::bind() to ::partial()
 
         /* Produce a new partial object with the given arguments in addition to any
         existing partial arguments.  This method is chainable, and the arguments will
@@ -5062,12 +5159,12 @@ public:
                     if constexpr (name.empty()) {
                         throw TypeError(
                             "no match for positional-only parameter at "
-                            "index " + std::to_string(I)
+                            "index " + StaticStr<>::from_int<I>
                         );
                     } else {
                         throw TypeError(
                             "no match for positional-only parameter '" +
-                            name + "' at index " + std::to_string(I)
+                            name + "' at index " + StaticStr<>::from_int<I>
                         );
                     }
 
@@ -5131,7 +5228,7 @@ public:
                     }
                     throw TypeError(
                         "no match for parameter '" + name + "' at index " +
-                        std::to_string(I)
+                        StaticStr<>::from_int<I>
                     );
 
                 // keyword-only
@@ -5172,7 +5269,7 @@ public:
                     }
                     throw TypeError(
                         "no match for parameter '" + name + "' at index " +
-                        std::to_string(I)
+                        StaticStr<>::from_int<I>
                     );
 
                 // keyword-or-positional
@@ -5284,12 +5381,12 @@ public:
                     if constexpr (name.empty()) {
                         throw TypeError(
                             "no match for positional-only parameter at "
-                            "index " + std::to_string(I)
+                            "index " + StaticStr<>::from_int<I>
                         );
                     } else {
                         throw TypeError(
                             "no match for positional-only parameter '" +
-                            name + "' at index " + std::to_string(I)
+                            name + "' at index " + StaticStr<>::from_int<I>
                         );
                     }
 
@@ -5328,7 +5425,7 @@ public:
                     }
                     throw TypeError(
                         "no match for parameter '" + name + "' at index " +
-                        std::to_string(I)
+                        StaticStr<>::from_int<I>
                     );
 
                 // keyword-only
@@ -5345,7 +5442,7 @@ public:
                     }
                     throw TypeError(
                         "no match for parameter '" + name + "' at index " +
-                        std::to_string(I)
+                        StaticStr<>::from_int<I>
                     );
 
                 // keyword-or-positional
@@ -5439,12 +5536,12 @@ public:
                     if constexpr (name.empty()) {
                         throw TypeError(
                             "no match for positional-only parameter at "
-                            "index " + std::to_string(I)
+                            "index " + StaticStr<>::from_int<I>
                         );
                     } else {
                         throw TypeError(
                             "no match for positional-only parameter '" +
-                            name + "' at index " + std::to_string(I)
+                            name + "' at index " + StaticStr<>::from_int<I>
                         );
                     }
 
@@ -5498,7 +5595,7 @@ public:
                     }
                     throw TypeError(
                         "no match for parameter '" + name + "' at index " +
-                        std::to_string(I)
+                        StaticStr<>::from_int<I>
                     );
 
                 // keyword-only
@@ -5536,7 +5633,7 @@ public:
                     }
                     throw TypeError(
                         "no match for parameter '" + name + "' at index " +
-                        std::to_string(I)
+                        StaticStr<>::from_int<I>
                     );
 
                 // keyword-or-positional
@@ -5627,12 +5724,12 @@ public:
                     if constexpr (name.empty()) {
                         throw TypeError(
                             "no match for positional-only parameter at "
-                            "index " + std::to_string(I)
+                            "index " + StaticStr<>::from_int<I>
                         );
                     } else {
                         throw TypeError(
                             "no match for positional-only parameter '" +
-                            name + "' at index " + std::to_string(I)
+                            name + "' at index " + StaticStr<>::from_int<I>
                         );
                     }
 
@@ -5668,7 +5765,7 @@ public:
                     }
                     throw TypeError(
                         "no match for parameter '" + name + "' at index " +
-                        std::to_string(I)
+                        StaticStr<>::from_int<I>
                     );
 
                 // keyword-only
@@ -5689,7 +5786,7 @@ public:
                     }
                     throw TypeError(
                         "no match for parameter '" + name + "' at index " +
-                        std::to_string(I)
+                        StaticStr<>::from_int<I>
                     );
 
                 // keyword-or-positional
@@ -5977,9 +6074,6 @@ public:
     efficient caching. */
     struct Overloads {
     private:
-        template <size_t I>
-        friend Param Signature::_key(size_t& hash);
-
         static constexpr size_t keyword_table_size = impl::next_power_of_two(2 * n_kw);
         static constexpr size_t keyword_modulus(size_t hash) {
             return hash & (keyword_table_size - 1);
@@ -6071,6 +6165,8 @@ public:
         }();
 
     public:
+        using type = Signature;
+
         /* A seed for an FNV-1a hash algorithm that was found to perfectly hash the
         keyword argument names from the enclosing parameter list. */
         static constexpr size_t seed = std::get<0>(hash_components);
@@ -7720,7 +7816,7 @@ public:
     }
 
     /* Produce a Python `inspect.Signature` object that matches this signature,
-    allowing a matching function to be seamlessly introspected from Python. */
+    allowing a corresponding function to be seamlessly introspected from Python. */
     template <impl::inherits<Defaults> D>
     static Object to_python(D&& defaults) {
         Object inspect = reinterpret_steal<Object>(PyImport_Import(
@@ -7746,12 +7842,10 @@ public:
             (PyTuple_SET_ITEM(
                 tuple,
                 Is,
-                release(
-                    /// TODO: build a parameter and assign it here.  Will require a
-                    /// separate helper function that takes a single index in the
-                    /// sequence and returns an Object.  Use
-                    /// Overloads::positional_table[I] to get the type?
-                )
+                release(_to_python<Is>(
+                    std::forward<decltype(defaults)>(defaults),
+                    Parameter
+                ))
             ), ...);
         }(
             std::make_index_sequence<Signature::n>{},
@@ -7790,6 +7884,18 @@ public:
         return Func{obj};
     }
 
+};
+
+
+template <typename T>
+struct Signature {
+    /// TODO: if this turns into a __signature__ control structure, then the base
+    /// implementation would first check for an introspectable call operator, or
+    /// fall back to getattr<"__call__"> if it is a Python object.  By forward
+    /// declaring it in the way we have, we can make use of the same inheritance
+    /// pattern as the other specialziations provided below, but extend them to the
+    /// base case as well.
+    static constexpr bool enable = false;
 };
 
 
@@ -7863,6 +7969,26 @@ concept callable =
     Signature<F>::template Bind<Args...>::can_convert;
 
 
+/* A template constraint that controls whether the `py::partial()` operator is enabled
+for a given C++ function and argument list. */
+template <typename F, typename... Args>
+concept partially_callable =
+    Signature<F>::enable &&
+    !(impl::arg_pack<Args> || ...) &&
+    !(impl::kwarg_pack<Args> || ...) &&
+    Signature<F>::args_fit_within_bitset &&
+    Signature<F>::proper_argument_order &&
+    Signature<F>::no_qualified_arg_annotations &&
+    Signature<F>::no_duplicate_args &&
+    Signature<F>::template Bind<Args...>::proper_argument_order &&
+    Signature<F>::template Bind<Args...>::no_qualified_arg_annotations &&
+    Signature<F>::template Bind<Args...>::no_duplicate_args &&
+    Signature<F>::template Bind<Args...>::no_conflicting_values &&
+    Signature<F>::template Bind<Args...>::no_extra_positional_args &&
+    Signature<F>::template Bind<Args...>::no_extra_keyword_args &&
+    Signature<F>::template Bind<Args...>::can_convert;
+
+
 /* Invoke a C++ function with Python-style calling conventions, including keyword
 arguments and/or parameter packs, which are resolved at compile time.  Note that the
 function signature cannot contain any template parameters (including auto arguments),
@@ -7875,7 +8001,7 @@ template <typename F, typename... Args>
         Signature<F>::Defaults::n == 0
     )
 constexpr decltype(auto) call(F&& func, Args&&... args) {
-    return Signature<F>{}(
+    return typename Signature<F>::template Bind<Args...>{}(
         typename Signature<F>::Defaults{},
         std::forward<F>(func),
         std::forward<Args>(args)...
@@ -7898,7 +8024,7 @@ constexpr decltype(auto) call(
     F&& func,
     Args&&... args
 ) {
-    return Signature<F>{}(
+    return typename Signature<F>::template Bind<Args...>{}(
         defaults,
         std::forward<F>(func),
         std::forward<Args>(args)...
@@ -7921,48 +8047,12 @@ constexpr decltype(auto) call(
     F&& func,
     Args&&... args
 ) {
-    return Signature<F>{}(
+    return typename Signature<F>::template Bind<Args...>{}(
         std::move(defaults),
         std::forward<F>(func),
         std::forward<Args>(args)...
     );
 }
-
-
-/* A template constraint that controls whether the `py::partial()` operator is enabled
-for a given C++ function and argument list. */
-template <typename F, typename... Args>
-concept partially_callable =
-    Signature<F>::enable &&
-    !(impl::arg_pack<Args> || ...) &&
-    !(impl::kwarg_pack<Args> || ...) &&
-    Signature<F>::args_fit_within_bitset &&
-    Signature<F>::proper_argument_order &&
-    Signature<F>::no_qualified_arg_annotations &&
-    Signature<F>::no_duplicate_args &&
-    Signature<F>::template Bind<Args...>::proper_argument_order &&
-    Signature<F>::template Bind<Args...>::no_qualified_arg_annotations &&
-    Signature<F>::template Bind<Args...>::no_duplicate_args &&
-    Signature<F>::template Bind<Args...>::no_conflicting_values &&
-    Signature<F>::template Bind<Args...>::no_extra_positional_args &&
-    Signature<F>::template Bind<Args...>::no_extra_keyword_args &&
-    Signature<F>::template Bind<Args...>::can_convert;
-
-
-/// TODO: I can force the partial function to accept only Arg<> annotations, and then
-/// encode the partial arguments directly into the signature.  CTAD can then deduce
-/// the partial arguments from the signature and generate a new signature using
-/// Arg<"name", type>::bind<type> for each partial argument.  The same strategy could
-/// be applied to Function<> in order to represent bound methods and partials
-/// uniformly.
-/// -> If I do that, the partial would have to store the function as a `std::function`
-/// wrapper, so as to erase its type.  In fact, I might be able to have the Function<>
-/// type directly store a partial<> object, which would unify some of the interface.
-/// The C++ call operator could then be implemented as a call directly to the partial
-/// object, after checking for overloads, etc.
-/// -> Maybe I keep partial the way it is for maximum efficiency, and then just template
-/// it on the `std::function` type when I need to store it in a Function<> object.
-/// That should offer the best of both worlds.
 
 
 /* Construct a partial function object that captures a C++ function and a subset of its
@@ -8055,6 +8145,8 @@ struct def : impl::defTag {
         return &func;
     }
 
+    /// TODO: .bind()
+
     template <size_t I> requires (I < n)
     [[nodiscard]] constexpr decltype(auto) get() const {
         return parts.template get<I>();
@@ -8074,6 +8166,8 @@ struct def : impl::defTag {
     [[nodiscard]] decltype(auto) get() && {
         return std::move(parts).template get<name>();
     }
+
+    /// TODO: operator>>() for chaining, both left and right
 
     template <typename... Values>
         requires (
@@ -14547,7 +14641,7 @@ struct TODO2 {
             if (I >= key.size()) {
                 throw TypeError(
                     "missing keyword-only argument: '" + ArgTraits<at<I>>::name +
-                    "' at index: " + std::to_string(I) 
+                    "' at index: " + StaticStr<>::from_int<I>
                 );
             }
             const Param& param = key[I];
@@ -14560,7 +14654,7 @@ struct TODO2 {
             if (param.name != ArgTraits<at<I>>::name) {
                 throw TypeError(
                     "expected keyword-only argument '" + ArgTraits<at<I>>::name +
-                    "' at index " + std::to_string(I) + ", not: '" +
+                    "' at index " + StaticStr<>::from_int<I> + ", not: '" +
                     std::string(param.name) + "'"
                 );
             }
@@ -14598,7 +14692,7 @@ struct TODO2 {
             if (I >= key.size()) {
                 throw TypeError(
                     "missing positional-or-keyword argument: '" +
-                    ArgTraits<at<I>>::name + "' at index: " + std::to_string(I)
+                    ArgTraits<at<I>>::name + "' at index: " + StaticStr<>::from_int<I>
                 );
             }
             const Param& param = key[I];
@@ -14611,7 +14705,7 @@ struct TODO2 {
             if (param.name != ArgTraits<at<I>>::name) {
                 throw TypeError(
                     "expected positional-or-keyword argument '" +
-                    ArgTraits<at<I>>::name + "' at index " + std::to_string(I) +
+                    ArgTraits<at<I>>::name + "' at index " + StaticStr<>::from_int<I> +
                     ", not: '" + std::string(param.name) + "'"
                 );
             }
@@ -14650,7 +14744,7 @@ struct TODO2 {
             if (I >= key.size()) {
                 throw TypeError(
                     "missing positional-only argument: '" +
-                    ArgTraits<at<I>>::name + "' at index: " + std::to_string(I)
+                    ArgTraits<at<I>>::name + "' at index: " + StaticStr<>::from_int<I>
                 );
             }
             const Param& param = key[I];
@@ -14663,7 +14757,7 @@ struct TODO2 {
             if (param.name != ArgTraits<at<I>>::name) {
                 throw TypeError(
                     "expected positional-only argument '" +
-                    ArgTraits<at<I>>::name + "' at index " + std::to_string(I) +
+                    ArgTraits<at<I>>::name + "' at index " + StaticStr<>::from_int<I> +
                     ", not: '" + std::string(param.name) + "'"
                 );
             }
@@ -14702,7 +14796,7 @@ struct TODO2 {
             if (I >= key.size()) {
                 throw TypeError(
                     "missing variadic positional argument: '" +
-                    ArgTraits<at<I>>::name + "' at index: " + std::to_string(I)
+                    ArgTraits<at<I>>::name + "' at index: " + StaticStr<>::from_int<I>
                 );
             }
             const Param& param = key[I];
@@ -14715,7 +14809,7 @@ struct TODO2 {
             if (param.name != ArgTraits<at<I>>::name) {
                 throw TypeError(
                     "expected variadic positional argument '" +
-                    ArgTraits<at<I>>::name + "' at index " + std::to_string(I) +
+                    ArgTraits<at<I>>::name + "' at index " + StaticStr<>::from_int<I> +
                     ", not: '" + std::string(param.name) + "'"
                 );
             }
@@ -14739,7 +14833,7 @@ struct TODO2 {
             if (I >= key.size()) {
                 throw TypeError(
                     "missing variadic keyword argument: '" +
-                    ArgTraits<at<I>>::name + "' at index: " + std::to_string(I)
+                    ArgTraits<at<I>>::name + "' at index: " + StaticStr<>::from_int<I>
                 );
             }
             const Param& param = key[I];
@@ -14752,7 +14846,7 @@ struct TODO2 {
             if (param.name != ArgTraits<at<I>>::name) {
                 throw TypeError(
                     "expected variadic keyword argument '" +
-                    ArgTraits<at<I>>::name + "' at index " + std::to_string(I) +
+                    ArgTraits<at<I>>::name + "' at index " + StaticStr<>::from_int<I> +
                     ", not: '" + std::string(param.name) + "'"
                 );
             }

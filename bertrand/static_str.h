@@ -38,10 +38,10 @@ template <size_t N>
 struct StaticStr;
 
 
-/* CTAD deduction guide that allows StaticStr to be built from string literals using
-compile-time aggregate initializatiion. */
+/* CTAD guide allows StaticStr to be used as a template parameter accepting string
+literals with arbitrary length. */
 template <size_t N>
-StaticStr(const char(&arr)[N]) -> StaticStr<N - 1>;
+StaticStr(const char(&)[N]) -> StaticStr<N - 1>;
 
 
 template <size_t N = 0>
@@ -342,7 +342,6 @@ private:
         return missing;
     }
 
-    /* Helper for getting the last non-stripped index from the end of a string. */
     template <bertrand::StaticStr self, bertrand::StaticStr chars>
     static consteval size_t last_non_stripped() {
         for (size_t i = 0; i < self.size(); ++i) {
@@ -360,7 +359,58 @@ private:
         return missing;
     }
 
-    consteval StaticStr() = default;
+    template <long long num, size_t base>
+    static constexpr size_t _int_length = [] {
+        if constexpr (num == 0) {
+            return 0;
+        } else {
+            return _int_length<num / base, base> + 1;
+        }
+    }();
+
+    template <long long num, size_t base>
+    static constexpr size_t int_length = [] {
+        // length is always at least 1 to correct for num == 0
+        if constexpr (num < 0) {
+            return std::max(_int_length<-num, base>, 1UL) + 1;  // include negative sign
+        } else {
+            return std::max(_int_length<num, base>, 1UL);
+        }
+    }();
+
+    template <typename T>
+    struct bit_view;
+    template <typename T> requires (sizeof(T) == 1)
+    struct bit_view<T> { using type = uint8_t; };
+    template <typename T> requires (sizeof(T) == 2)
+    struct bit_view<T> { using type = uint16_t; };
+    template <typename T> requires (sizeof(T) == 4)
+    struct bit_view<T> { using type = uint32_t; };
+    template <typename T> requires (sizeof(T) == 8)
+    struct bit_view<T> { using type = uint64_t; };
+
+    static constexpr bool sign_bit(double num) {
+        using Int = bit_view<double>::type;
+        return std::bit_cast<Int>(num) >> (8 * sizeof(double) - 1);
+    };
+
+    template <double num, size_t precision>
+    static constexpr size_t float_length = [] {
+        if constexpr (std::isnan(num)) {
+            return 3;  // "nan"
+        } else if constexpr (std::isinf(num)) {
+            return 3 + sign_bit(num);  // "inf" or "-inf"
+        } else {
+            // negative zero integral part needs a leading minus sign
+            return
+                int_length<static_cast<long long>(num), 10> +
+                (static_cast<long long>(num) == 0 && sign_bit(num)) +
+                (precision > 0) +
+                precision;
+        }
+    }();
+
+    constexpr StaticStr() = default;
 
 public:
     /* A placeholder index returned when a substring is not present. */
@@ -373,6 +423,106 @@ public:
             return std::array<char, N + 1>{arr[Is]..., '\0'};
         }(std::make_index_sequence<N>{}, arr))
     {}
+
+    /* Convert an integer into a string at compile time using the specified base. */
+    template <long long num, size_t base = 10> requires (base >= 2 && base <= 36)
+    static constexpr auto from_int = [] {
+        constexpr const char chars[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+        constexpr size_t len = int_length<num, base>;
+        StaticStr<len> result;
+
+        long long temp = num;
+        size_t idx = len - 1;
+        if constexpr (num < 0) {
+            result.buffer[0] = '-';
+            temp = -temp;
+        } else if constexpr (num == 0) {
+            result.buffer[idx--] = '0';
+        }
+
+        while (temp > 0) {
+            result.buffer[idx--] = chars[temp % base];
+            temp /= base;
+        }
+
+        result.buffer[len] = '\0';
+        return result;
+    }();
+
+    /* Convert a floating point number into a string at compile time with the
+    specified precision. */
+    template <double num, size_t precision = 6>
+    static constexpr auto from_float = [] {
+        constexpr size_t len = float_length<num, precision>;
+        StaticStr<len> result;
+
+        if constexpr (std::isnan(num)) {
+            result.buffer[0] = 'n';
+            result.buffer[1] = 'a';
+            result.buffer[2] = 'n';
+
+        } else if constexpr (std::isinf(num)) {
+            if constexpr (num < 0) {
+                result.buffer[0] = '-';
+                result.buffer[1] = 'i';
+                result.buffer[2] = 'n';
+                result.buffer[3] = 'f';
+            } else {
+                result.buffer[0] = 'i';
+                result.buffer[1] = 'n';
+                result.buffer[2] = 'f';
+            }
+
+        } else {
+            // decompose into integral and (rounded) fractional parts
+            constexpr long long integral = static_cast<long long>(num);
+            constexpr long long fractional = [] {
+                double exp = 1;
+                for (size_t i = 0; i < precision; ++i) {
+                    exp *= 10;
+                }
+                if constexpr (num > integral) {
+                    return static_cast<long long>((num - integral) * exp + 0.5);
+                } else {
+                    return static_cast<long long>((integral - num) * exp + 0.5);
+                }
+            }();
+
+            // convert to string (base 10)
+            constexpr auto integral_str = from_int<integral, 10>;
+            constexpr auto fractional_str = from_int<fractional, 10>;
+
+            char* pos = result.buffer.data();
+            if constexpr (integral == 0 && sign_bit(num)) {
+                result.buffer[0] = '-';
+                ++pos;
+            }
+
+            // concatenate integral and fractional parts (zero padded to precision)
+            std::copy_n(
+                integral_str.buffer.data(),
+                integral_str.size(),
+                pos
+            );
+            if constexpr (precision > 0) {
+                std::copy_n(".", 1, pos + integral_str.size());
+                pos += integral_str.size() + 1;
+                std::copy_n(
+                    fractional_str.buffer.data(),
+                    fractional_str.size(),
+                    pos
+                );
+                std::fill_n(
+                    pos + fractional_str.size(),
+                    precision - fractional_str.size(),
+                    '0'
+                );
+            }
+        }
+
+        result.buffer[len] = '\0';
+        return result;
+    }();
 
     constexpr operator const char*() const { return buffer.data(); }
     constexpr operator const std::array<char, N + 1>&() const { return buffer; }
