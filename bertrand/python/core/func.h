@@ -265,6 +265,9 @@ private:
             using type = Signature<R(out..., typename ArgTraits<T>::unbind)>;
         };
         using type = _unbind<filter<A>, As...>::type;
+
+
+
     };
 
     template <size_t I, size_t K>
@@ -7811,30 +7814,16 @@ public:
         /// TODO: return an inspect.Signature object matching this signature.
     }
 
-    /// TODO: is capture even necessary?
-    /// -> It's used when converting a Python function into a py::Function<> object,
-    /// so probably?
-    /// -> Does it need to unbind any partial arguments?
-
     /* Capture a Python function object and generate a `std::function` that matches the
     enclosing signature.  All arguments will be forwarded to the Python object when the
     function is called, according to the logic set out in Bind<...>. */
     static std::function<typename Unbind::type> capture(const Object& obj) {
-        /// TODO: this function type needs to be generated behind the scenes, possibly
-        /// as a part of _unbind<...>.  The Args... that are referenced here are not
-        /// unbound.
-        /// -> I also might need some safeguards in the call logic to ensure that
-        /// whatever function is passed into the call operator cannot include any
-        /// bound partial arguments?
-
         struct Func {
             Object obj;
-
-            /// TODO: figure out how to do this with the partial stuff?
-            Return operator()(Args... args) const {
-                PyObject* result = Bind<Args...>{}(
+            Return operator()(typename ArgTraits<Args>::unbind... args) const {
+                PyObject* result = Bind<typename ArgTraits<Args>::unbind...>{}(
                     ptr(obj),
-                    std::forward<Args>(args)...
+                    std::forward<typename ArgTraits<Args>::unbind>(args)...
                 );
                 if constexpr (std::is_void_v<Return>) {
                     Py_DECREF(result);
