@@ -159,10 +159,6 @@ struct Signature<Return(Args...)> : impl::SignatureBase<Return> {
     using type = Return(Args...);
 
     struct Partial;
-    Partial parts;
-
-    constexpr Signature(const Partial& other) : parts(other.parts) {}
-    constexpr Signature(Partial&& other) : parts(std::move(other.parts)) {}
 
 private:
     template <typename T>
@@ -291,7 +287,7 @@ private:
     static Param _key(size_t& hash) {
         Param param = {
             .name = ArgTraits<at<I>>::name,
-            .value = Overloads::positional_table[I].type(),
+            .value = Type<typename ArgTraits<at<I>>::type>(),
             .kind = ArgTraits<at<I>>::kind
         };
         hash = impl::hash_combine(hash, param.hash(
@@ -300,6 +296,8 @@ private:
         ));
         return param;
     }
+
+    /// TODO: build_parameter<I>
 
 public:
     static constexpr size_t n                   = sizeof...(Args);
@@ -3989,6 +3987,9 @@ public:
             );
         }
 
+        /* Produce a new partial object with the given arguments in addition to any
+        existing partial arguments.  This method is chainable, and the arguments will
+        be interpreted as if they were passed to the signature's call operator. */
         template <impl::inherits<Partial> P>
         static constexpr auto bind(P&& parts, Values... args) {
             return call<0, 0, 0>::bind(
@@ -4437,80 +4438,9 @@ public:
         }
     };
 
-    /* Produce a partial signature from the given arguments.  This method is
-    chainable; the arguments will be interpreted as if they were passed to the
-    signature's call operator, and any existing partials will be preserved. */
-    template <typename... As>
-        requires (
-            (!impl::arg_pack<As> && ...) &&
-            (!impl::kwarg_pack<As> && ...) &&
-            Check<Signature<Return(As...)>>::proper_argument_order &&
-            Check<Signature<Return(As...)>>::no_qualified_arg_annotations &&
-            Check<Signature<Return(As...)>>::no_duplicate_args &&
-            Check<Signature<Return(As...)>>::no_extra_positional_args &&
-            Check<Signature<Return(As...)>>::no_extra_keyword_args &&
-            Check<Signature<Return(As...)>>::no_conflicting_values &&
-            Check<Signature<Return(As...)>>::can_convert
-        )
-    auto bind(this auto&& self, As&&... args) -> Bind<As...>::signature {
-        return Bind<As...>::bind(
-            std::forward<decltype(self)>(self).parts,
-            std::forward<As>(args)...
-        );
-    }
-
     /* Unbinding a signature strips any partial arguments that have been encoded
     thus far and returns a new signature without them. */
     using Unbind = _unbind<Signature<Return()>, Args...>::type;
-
-    /* Clear any partial arguments that have been accumulated thus far, returning
-    a new signature without any bound arguments. */
-    Unbind unbind() const {
-        return {};
-    }
-
-    /* Invoke a C++ function that matches the enclosing signature. */
-    template <impl::inherits<Defaults> D, typename F, typename... As>
-        requires (
-            std::is_invocable_r_v<Return, F, Args...> &&
-            Check<Signature<Return(As...)>>::proper_argument_order &&
-            Check<Signature<Return(As...)>>::no_qualified_arg_annotations &&
-            Check<Signature<Return(As...)>>::no_duplicate_args &&
-            Check<Signature<Return(As...)>>::no_conflicting_values &&
-            Check<Signature<Return(As...)>>::no_extra_positional_args &&
-            Check<Signature<Return(As...)>>::no_extra_keyword_args &&
-            Check<Signature<Return(As...)>>::satisfies_required_args &&
-            Check<Signature<Return(As...)>>::can_convert
-        )
-    Return operator()(this auto&& self, D&& defaults, F&& func, As&&... args) {
-        return Bind<As...>{}(
-            std::forward<decltype(self)>(self).parts,
-            std::forward<D>(defaults),
-            std::forward<F>(func),
-            std::forward<As>(args)...
-        );
-    }
-
-    /* Invoke a Python function that matches the enclosing signature. */
-    template <typename... As>
-        requires (
-            std::convertible_to<Object, Return> &&
-            Check<Signature<Return(As...)>>::proper_argument_order &&
-            Check<Signature<Return(As...)>>::no_qualified_arg_annotations &&
-            Check<Signature<Return(As...)>>::no_duplicate_args &&
-            Check<Signature<Return(As...)>>::no_conflicting_values &&
-            Check<Signature<Return(As...)>>::no_extra_positional_args &&
-            Check<Signature<Return(As...)>>::no_extra_keyword_args &&
-            Check<Signature<Return(As...)>>::satisfies_required_args &&
-            Check<Signature<Return(As...)>>::can_convert
-        )
-    Return operator()(this auto&& self, PyObject* func, As&&... args) {
-        return Bind<As...>{}(
-            std::forward<decltype(self)>(self).parts,
-            func,
-            std::forward<As>(args)...
-        );
-    }
 
     /* Bind a Python vectorcall array to the enclosing signature and implement
     the translation logic necessary to invoke a matching C++ function.  This
@@ -6029,25 +5959,6 @@ public:
             }
         }
     };
-
-    /* Interpret a Python vectorcall array in order to invoke a C++ function that
-    matches the enclosing signature. */
-    template <impl::inherits<Defaults> D, typename F>
-        requires (std::is_invocable_r_v<Return, F, Args...>)
-    Return vectorcall(
-        this auto&& self,
-        D&& defaults,
-        F&& func,
-        PyObject* const* args,
-        size_t nargsf,
-        PyObject* kwnames
-    ) {
-        return Vectorcall{args, nargsf, kwnames}(
-            std::forward<decltype(self)>(self).parts,
-            std::forward<D>(defaults),
-            std::forward<F>(func)
-        );
-    }
 
     /// TODO: partial arguments will have to be provided to the Overload trie
     /// iterators, such that they can be automatically inserted when traversing
@@ -7810,13 +7721,57 @@ public:
 
     /* Produce a Python `inspect.Signature` object that matches this signature,
     allowing a matching function to be seamlessly introspected from Python. */
-    static Object to_python() {
-        /// TODO: return an inspect.Signature object matching this signature.
+    template <impl::inherits<Defaults> D>
+    static Object to_python(D&& defaults) {
+        Object inspect = reinterpret_steal<Object>(PyImport_Import(
+            ptr(impl::template_string<"inspect">())
+        ));
+        if (inspect.is(nullptr)) {
+            Exception::from_python();
+        }
+        Object Signature = getattr<"Signature">(inspect);
+        Object Parameter = getattr<"Parameter">(inspect);
+
+        // build the parameter annotations
+        Object tuple = reinterpret_steal<Object>(PyTuple_New(Signature::n));
+        if (tuple.is(nullptr)) {
+            Exception::from_python();
+        }
+        []<size_t... Is>(
+            std::index_sequence<Is...>,
+            PyObject* tuple,
+            auto&& defaults,
+            const Object& Parameter
+        ) {
+            (PyTuple_SET_ITEM(
+                tuple,
+                Is,
+                release(
+                    /// TODO: build a parameter and assign it here.  Will require a
+                    /// separate helper function that takes a single index in the
+                    /// sequence and returns an Object.  Use
+                    /// Overloads::positional_table[I] to get the type?
+                )
+            ), ...);
+        }(
+            std::make_index_sequence<Signature::n>{},
+            ptr(tuple),
+            std::forward<D>(defaults),
+            Parameter
+        );
+
+        // get the return annotation
+        Type<Return> return_type;
+
+        // construct the signature object
+        return Signature(tuple, arg<"return_annotation"> = return_type);
     }
 
     /* Capture a Python function object and generate a `std::function` that matches the
-    enclosing signature.  All arguments will be forwarded to the Python object when the
-    function is called, according to the logic set out in Bind<...>. */
+    enclosing signature, without any partial arguments.  A function of this form is
+    generated whenever a dynamic Python object is narrowed to a `py::Function` type,
+    effectively extending the compile-time C++ interface to the captured Python
+    function. */
     static std::function<typename Unbind::type> capture(const Object& obj) {
         struct Func {
             Object obj;
@@ -7834,6 +7789,7 @@ public:
         };
         return Func{obj};
     }
+
 };
 
 
