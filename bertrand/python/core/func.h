@@ -302,7 +302,7 @@ private:
 
         if constexpr (ArgTraits<T>::posonly()) {
             if constexpr (ArgTraits<T>::name.empty()) {
-                constexpr StaticStr name = "_" + StaticStr<>::from_int<I>;
+                constexpr StaticStr name = "_" + StaticStr<>::from_int<I + 1>;
                 if constexpr (ArgTraits<T>::opt()) {
                     return Parameter(
                         arg<"name"> = impl::template_string<name>(),
@@ -380,9 +380,6 @@ private:
             std::unreachable();
         }
     }
-
-
-    /// TODO: build_parameter<I> (aka _to_python<I>?)
 
 public:
     static constexpr size_t n                   = sizeof...(Args);
@@ -1380,15 +1377,18 @@ public:
 
         template <size_t I, size_t J, size_t K>
         struct call {  // terminal case
+            /* Convert a terminal argument list into an equivalent partial signature,
+            wherein the arguments are bound to their equivalents in the enclosing
+            signature. */
             template <typename... As>
-            struct signature {
+            struct sig {
                 using Source = Signature<Return(As...)>;
 
                 template <typename out, size_t, size_t>
-                struct bind { using type = out; };
+                struct build { using type = out; };
                 template <typename... out, size_t I2, size_t J2>
                     requires (I2 < Signature::n)
-                struct bind<Return(out...), I2, J2> {
+                struct build<Return(out...), I2, J2> {
                     template <typename>
                     struct append;
 
@@ -1396,13 +1396,13 @@ public:
                     struct append<T> {
                         template <size_t J3>
                         struct do_append {
-                            using type = bind<Return(out..., T), I2 + 1, J3>::type;
+                            using type = build<Return(out..., T), I2 + 1, J3>::type;
                         };
                         template <size_t J3> requires (J3 < Source::kw_idx)
                         struct do_append<J3> {
                             using S = Source::template at<J>;
                             using bound = ArgTraits<T>::template bind<S>::type;
-                            using type = bind<Return(out..., bound), I2 + 1, J3 + 1>::type;
+                            using type = build<Return(out..., bound), I2 + 1, J3 + 1>::type;
                         };
                         using type = do_append<J2>::type;
                     };
@@ -1411,13 +1411,13 @@ public:
                     struct append<T> {
                         template <size_t J3>
                         struct do_append {
-                            using type = bind<Return(out..., T), I2 + 1, J3>::type;
+                            using type = build<Return(out..., T), I2 + 1, J3>::type;
                         };
                         template <size_t J3> requires (J3 < Source::kw_idx)
                         struct do_append<J3> {
                             using S = Source::template at<J>;
                             using bound = ArgTraits<T>::template bind<S>::type;
-                            using type = bind<Return(out..., bound), I2 + 1, J3 + 1>::type;
+                            using type = build<Return(out..., bound), I2 + 1, J3 + 1>::type;
                         };
                         template <size_t J3> requires (
                             !(J3 < Source::kw_idx) &&
@@ -1428,7 +1428,7 @@ public:
                             static constexpr size_t idx = Source::template idx<name>;
                             using S = Source::template at<idx>;
                             using bound = ArgTraits<T>::template bind<S>::type;
-                            using type = bind<Return(out..., bound), I2 + 1, J3>::type;
+                            using type = build<Return(out..., bound), I2 + 1, J3>::type;
                         };
                         using type = do_append<J2>::type;
                     };
@@ -1437,7 +1437,7 @@ public:
                     struct append<T> {
                         template <size_t J3>
                         struct do_append {
-                            using type = bind<Return(out..., T), I2 + 1, J3>::type;
+                            using type = build<Return(out..., T), I2 + 1, J3>::type;
                         };
                         template <size_t J3>
                             requires (Source::template has<ArgTraits<T>::name>)
@@ -1446,18 +1446,49 @@ public:
                             static constexpr size_t idx = Source::template idx<name>;
                             using S = Source::template at<idx>;
                             using bound = ArgTraits<T>::template bind<S>::type;
-                            using type = bind<Return(out..., bound), I2 + 1, J3>::type;
+                            using type = build<Return(out..., bound), I2 + 1, J3>::type;
                         };
                         using type = do_append<J2>::type;
                     };
 
                     template <typename T> requires (ArgTraits<T>::args())
                     struct append<T> {
-                        /// TODO: consume all remaining positional arguments
+                        template <typename result, size_t J3>
+                        struct do_append {
+                            template <typename>
+                            struct do_bind;
+                            template <typename... result2>
+                            struct do_bind<pack<result2...>> {
+                                using type = build<Return(out..., T), I2 + 1, J3>::type;
+                            };
+                            template <typename... result2> requires (sizeof...(result2) > 0)
+                            struct do_bind<pack<result2...>> {
+                                using bound = ArgTraits<T>::template bind<result2...>::type;
+                                using type = build<Return(out..., bound), I2 + 1, J3>::type;
+                            };
+                            using type = do_bind<result>::type;
+                        };
+                        template <typename... result, size_t J3> requires (J3 < Source::kw_idx)
+                        struct do_append<pack<result...>, J3> {
+                            using type = do_append<
+                                pack<result..., typename Source::template at<J3>>,
+                                J3 + 1
+                            >::type;
+                        };
+                        using type = do_append<pack<>, J2>::type;
                     };
 
                     template <typename T> requires (ArgTraits<T>::kwargs())
                     struct append<T> {
+                        template <typename result, size_t J3>
+                        struct do_append {
+
+                        };
+                        template <typename... result, size_t J3> requires (J3 < Source::n)
+                        struct do_append<pack<result...>, J3> {
+
+                        };
+
                         /// TODO: bind any keywords that are not present in the
                         /// target signature
                     };
@@ -1467,14 +1498,16 @@ public:
                     >::type;
                 };
 
-                using type = bind<Return(), I, J>::type;
+                using type = Signature<typename build<Return(), I, J>::type>;
             };
 
+            /* Produce a partial argument tuple for the enclosing signature using the
+            built-up arguments from prior recursive calls.  Backs the `.bind()` method
+            for partial functions, which is fully chainable, with existing partial
+            arguments being folded in on prior recursive calls, and the return type
+            being described above. */
             template <typename P, typename... As>
-            static auto bind(
-                P&& parts,
-                As&&... args
-            ) -> signature<As...>::type {
+            static auto partial(P&& parts, As&&... args) -> sig<As...>::type::Partial {
                 return {std::forward<As>(args)...};
             }
 
@@ -1673,10 +1706,7 @@ public:
             static constexpr size_t consecutive<K2> = consecutive<K2 + 1> + 1;
 
             template <typename P, typename... A>
-            static auto bind(
-                P&& parts,
-                A&&... args
-            ) {
+            static auto partial(P&& parts, A&&... args) {
                 using T = Signature::at<I>;
                 if constexpr (ArgTraits<T>::args()) {
                     constexpr size_t transition = Signature<Return(A...)>::kw_idx;
@@ -1691,7 +1721,7 @@ public:
                             I + 1,
                             transition + consecutive<K>,
                             K + consecutive<K>
-                        >::bind(
+                        >::partial(
                             std::forward<decltype(parts)>(parts),
                             impl::unpack_arg<Prev>(
                                 std::forward<decltype(args)>(args)
@@ -1722,7 +1752,7 @@ public:
                             I + 1,
                             sizeof...(A) + consecutive<K>,
                             K + consecutive<K>
-                        >::bind(
+                        >::partial(
                             std::forward<decltype(parts)>(parts),
                             impl::unpack_arg<Prev>(
                                 std::forward<decltype(args)>(args)
@@ -1750,34 +1780,29 @@ public:
                         auto&& parts,
                         auto&&... args
                     ) {
-                        using bound = std::tuple_element_t<K, Tuple>;
-                        using orig = unpack_type<
-                            bound::partial_idx,
-                            Parts...
-                        >;
+                        constexpr StaticStr name = Partial::template name<K>;
                         // demote keywords in the original partial into
                         // positional arguments in the new partial if the next
                         // source arg is positional and the target arg can be
                         // both positional or keyword
-                        if constexpr (!ArgTraits<orig>::kw() && !(
+                        if constexpr (!name.empty() && !(
                             (J < Signature<Return(A...)>::kw_idx) &&
                             (ArgTraits<T>::pos() && ArgTraits<T>::kw())
                         )) {
-                            return call<I + 1, J + 1, K + 1>::bind(
+                            return call<I + 1, J + 1, K + 1>::partial(
                                 std::forward<decltype(parts)>(parts),
                                 impl::unpack_arg<Prev>(
                                     std::forward<decltype(args)>(args)
                                 )...,
-                                arg<ArgTraits<orig>::name> =
-                                    std::forward<decltype(parts)>(
-                                        parts
-                                    ).template get<K>(),
+                                arg<name> = std::forward<decltype(parts)>(
+                                    parts
+                                ).template get<K>(),
                                 impl::unpack_arg<J + Next>(
                                     std::forward<decltype(args)>(args)
                                 )...
                             );
                         } else {
-                            return call<I + 1, J + 1, K + 1>::bind(
+                            return call<I + 1, J + 1, K + 1>::partial(
                                 std::forward<decltype(parts)>(parts),
                                 impl::unpack_arg<Prev>(
                                     std::forward<decltype(args)>(args)
@@ -2233,19 +2258,22 @@ public:
             }
 
             template <typename P, typename... A>
-            static auto bind(
-                P&& parts,
-                A&&... args
-            ) {
+            static auto partial(P&& parts, A&&... args) {
                 using T = Signature::at<I>;
                 if constexpr (ArgTraits<T>::args()) {
-                    /// TODO: implement
+                    return call<I + 1, Signature<Return(A...)>::kw_idx, K>::partial(
+                        std::forward<P>(parts),
+                        std::forward<A>(args)...
+                    );
 
                 } else if constexpr (ArgTraits<T>::kwargs()) {
-                    /// TODO: implement
+                    return call<I + 1, sizeof...(A), K>::partial(
+                        std::forward<P>(parts),
+                        std::forward<A>(args)...
+                    );
 
                 } else {
-                    return call<I + 1, J + 1, K>::bind(
+                    return call<I + 1, J + 1, K>::partial(
                         std::forward<P>(parts),
                         std::forward<A>(args)...
                     );
@@ -3983,10 +4011,10 @@ public:
 
         template <bool, bool>
         struct get_signature {
-            using type = decltype(call<0, 0, 0>::bind(
+            using type = decltype(call<0, 0, 0>::partial(
                 std::declval<Partial>(),
                 std::declval<Values...>()
-            ));
+            ))::type;
         };
         template <bool has_args, bool has_kwargs> requires (has_args || has_kwargs)
         struct get_signature<has_args, has_kwargs> {
@@ -4082,14 +4110,12 @@ public:
             );
         }
 
-        /// TODO: rename ::bind() to ::partial()
-
         /* Produce a new partial object with the given arguments in addition to any
         existing partial arguments.  This method is chainable, and the arguments will
         be interpreted as if they were passed to the signature's call operator. */
         template <impl::inherits<Partial> P>
-        static constexpr auto bind(P&& parts, Values... args) {
-            return call<0, 0, 0>::bind(
+        static constexpr auto partial(P&& parts, Values... args) {
+            return call<0, 0, 0>::partial(
                 std::forward<P>(parts),
                 std::forward<Values>(args)...
             );
