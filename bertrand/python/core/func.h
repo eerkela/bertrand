@@ -1378,127 +1378,169 @@ public:
         template <size_t I, size_t J, size_t K>
         struct call {  // terminal case
             /* Convert a terminal argument list into an equivalent partial signature,
-            wherein the arguments are bound to their equivalents in the enclosing
+            wherein the arguments are bound to their equivalent values in the enclosing
             signature. */
             template <typename... As>
             struct sig {
                 using Source = Signature<Return(As...)>;
 
+                // elementwise traversal metafunction
                 template <typename out, size_t, size_t>
-                struct build { using type = out; };
+                struct advance { using type = out; };
                 template <typename... out, size_t I2, size_t J2>
                     requires (I2 < Signature::n)
-                struct build<Return(out...), I2, J2> {
+                struct advance<Return(out...), I2, J2> {
                     template <typename>
-                    struct append;
+                    struct maybe_bind;
 
                     template <typename T> requires (ArgTraits<T>::posonly())
-                    struct append<T> {
+                    struct maybe_bind<T> {
+                        // If no matching partial exists, forward the unbound arg
                         template <size_t J3>
-                        struct do_append {
-                            using type = build<Return(out..., T), I2 + 1, J3>::type;
+                        struct append {
+                            using type = advance<Return(out..., T), I2 + 1, J3>::type;
                         };
+                        // Otherwise, bind the partial and advance
                         template <size_t J3> requires (J3 < Source::kw_idx)
-                        struct do_append<J3> {
+                        struct append<J3> {
                             using S = Source::template at<J>;
-                            using bound = ArgTraits<T>::template bind<S>::type;
-                            using type = build<Return(out..., bound), I2 + 1, J3 + 1>::type;
+                            using B = ArgTraits<T>::template bind<S>::type;
+                            using type = advance<Return(out..., B), I2 + 1, J3 + 1>::type;
                         };
-                        using type = do_append<J2>::type;
+                        using type = append<J2>::type;
                     };
 
                     template <typename T> requires (ArgTraits<T>::pos() && ArgTraits<T>::kw())
-                    struct append<T> {
+                    struct maybe_bind<T> {
+                        // If no matching partial exists, forward the unbound arg
                         template <size_t J3>
-                        struct do_append {
-                            using type = build<Return(out..., T), I2 + 1, J3>::type;
+                        struct append {
+                            using type = advance<Return(out..., T), I2 + 1, J3>::type;
                         };
+                        // If a partial positional arg exists, bind it and advance
                         template <size_t J3> requires (J3 < Source::kw_idx)
-                        struct do_append<J3> {
+                        struct append<J3> {
                             using S = Source::template at<J>;
-                            using bound = ArgTraits<T>::template bind<S>::type;
-                            using type = build<Return(out..., bound), I2 + 1, J3 + 1>::type;
+                            using B = ArgTraits<T>::template bind<S>::type;
+                            using type = advance<Return(out..., B), I2 + 1, J3 + 1>::type;
                         };
+                        // If a partial keyword arg exists, bind it and advance
                         template <size_t J3> requires (
-                            !(J3 < Source::kw_idx) &&
+                            J3 >= Source::kw_idx &&
                             Source::template has<ArgTraits<T>::name>
                         )
-                        struct do_append<J3> {
+                        struct append<J3> {
                             static constexpr StaticStr name = ArgTraits<T>::name;
                             static constexpr size_t idx = Source::template idx<name>;
                             using S = Source::template at<idx>;
-                            using bound = ArgTraits<T>::template bind<S>::type;
-                            using type = build<Return(out..., bound), I2 + 1, J3>::type;
+                            using B = ArgTraits<T>::template bind<S>::type;
+                            using type = advance<Return(out..., B), I2 + 1, J3>::type;
                         };
-                        using type = do_append<J2>::type;
+                        using type = append<J2>::type;
                     };
 
                     template <typename T> requires (ArgTraits<T>::kwonly())
-                    struct append<T> {
+                    struct maybe_bind<T> {
+                        // If no matching partial exists, forward the unbound arg
                         template <size_t J3>
-                        struct do_append {
-                            using type = build<Return(out..., T), I2 + 1, J3>::type;
+                        struct append {
+                            using type = advance<Return(out..., T), I2 + 1, J3>::type;
                         };
+                        // If a partial keyword arg exists, bind it and advance
                         template <size_t J3>
                             requires (Source::template has<ArgTraits<T>::name>)
-                        struct do_append<J3> {
+                        struct append<J3> {
                             static constexpr StaticStr name = ArgTraits<T>::name;
                             static constexpr size_t idx = Source::template idx<name>;
                             using S = Source::template at<idx>;
-                            using bound = ArgTraits<T>::template bind<S>::type;
-                            using type = build<Return(out..., bound), I2 + 1, J3>::type;
+                            using B = ArgTraits<T>::template bind<S>::type;
+                            using type = advance<Return(out..., B), I2 + 1, J3>::type;
                         };
-                        using type = do_append<J2>::type;
+                        using type = append<J2>::type;
                     };
 
                     template <typename T> requires (ArgTraits<T>::args())
-                    struct append<T> {
+                    struct maybe_bind<T> {
+                        // Recur until there are no more partial positional args to bind
                         template <typename result, size_t J3>
-                        struct do_append {
+                        struct append {
                             template <typename>
-                            struct do_bind;
-                            template <typename... result2>
-                            struct do_bind<pack<result2...>> {
-                                using type = build<Return(out..., T), I2 + 1, J3>::type;
+                            struct collect;
+                            // If no matching partials exist, forward the unbound arg
+                            template <>
+                            struct collect<pack<>> {
+                                using type = advance<Return(out..., T), I2 + 1, J3>::type;
                             };
-                            template <typename... result2> requires (sizeof...(result2) > 0)
-                            struct do_bind<pack<result2...>> {
-                                using bound = ArgTraits<T>::template bind<result2...>::type;
-                                using type = build<Return(out..., bound), I2 + 1, J3>::type;
+                            // Otherwise, bind the collected partials and advance
+                            template <typename r2, typename... r2s>
+                            struct collect<pack<r2, r2s...>> {
+                                using B = ArgTraits<T>::template bind<r2, r2s...>::type;
+                                using type = advance<Return(out..., B), I2 + 1, J3>::type;
                             };
-                            using type = do_bind<result>::type;
+                            using type = collect<result>::type;
                         };
                         template <typename... result, size_t J3> requires (J3 < Source::kw_idx)
-                        struct do_append<pack<result...>, J3> {
-                            using type = do_append<
+                        struct append<pack<result...>, J3> {
+                            // Append remaining partial positional args to the output pack
+                            using type = append<
                                 pack<result..., typename Source::template at<J3>>,
                                 J3 + 1
                             >::type;
                         };
-                        using type = do_append<pack<>, J2>::type;
+                        using type = append<pack<>, J2>::type;
                     };
 
                     template <typename T> requires (ArgTraits<T>::kwargs())
-                    struct append<T> {
+                    struct maybe_bind<T> {
+                        // Recur until there are no more partial keyword args to bind
                         template <typename result, size_t J3>
-                        struct do_append {
-
+                        struct append {
+                            template <typename>
+                            struct collect;
+                            // If no matching partials exist, forward the unbound arg
+                            template <>
+                            struct collect<pack<>> {
+                                using type = advance<Return(out..., T), I2 + 1, J3>::type;
+                            };
+                            // Otherwise, bind the collected partials without advancing
+                            template <typename r2, typename... r2s>
+                            struct collect<pack<r2, r2s...>> {
+                                using B = ArgTraits<T>::template bind<r2, r2s...>::type;
+                                using type = advance<Return(out..., B), I2 + 1, J3>::type;
+                            };
+                            using type = collect<result>::type;
                         };
                         template <typename... result, size_t J3> requires (J3 < Source::n)
-                        struct do_append<pack<result...>, J3> {
-
+                        struct append<pack<result...>, J3> {
+                            // If the keyword arg is in the target signature, ignore
+                            template <typename S>
+                            struct collect {
+                                using type = pack<result...>;
+                            };
+                            // Otherwise, append it to the output pack and continue
+                            template <typename S>
+                                requires (!Signature::template has<ArgTraits<S>::name>)
+                            struct collect<S> {
+                                using type = pack<result..., S>;
+                            };
+                            using type = append<
+                                typename collect<typename Source::template at<J3>>::type,
+                                J3 + 1
+                            >::type;
                         };
-
-                        /// TODO: bind any keywords that are not present in the
-                        /// target signature
+                        // Start at the beginning of the partial keywords
+                        using type = append<pack<>, Source::kw_idx>::type;
                     };
 
-                    using type = append<
+                    // Feed in the unbound argument and return a possibly bound equivalent
+                    using type = maybe_bind<
                         typename ArgTraits<Signature::at<I2>>::unbind
                     >::type;
                 };
 
-                using type = Signature<typename build<Return(), I, J>::type>;
+                // Start with an empty signature, which will be built up into an
+                // equivalent of the enclosing signature through elementwise binding
+                using type = Signature<typename advance<Return(), I, J>::type>;
             };
 
             /* Produce a partial argument tuple for the enclosing signature using the
