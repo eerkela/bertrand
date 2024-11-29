@@ -6142,7 +6142,41 @@ public:
     efficient caching. */
     struct Overloads {
     private:
-        static constexpr size_t keyword_table_size = impl::next_power_of_two(2 * n_kw);
+        /// NOTE: in order to handle out-of-order keywords during argument validation,
+        /// there needs to be some kind of hash table we can consult to do the proper
+        /// checks, without imposing any ordering restrictions on the input key(s).
+        /// Ordinarily, such a map would present a hard performance bottleneck on every
+        /// function call, but because we know the exact name and type of each keyword
+        /// argument at compile time, we can aggressively optimize the lookup process.
+        /// This is done by using a high-performance hash algorithm that is stable
+        /// across both compile and run time (FNV-1a), and then searching for a
+        /// combined seed and prime that perfectly hashes the keyword names.  We can
+        /// then allocate a fixed-size lookup table entirely at compile time, without
+        /// any extra collision resolution logic or heap interactions.  The table is
+        /// then filled with function pointers that do the necessary validation,
+        /// effectively creating a hash-based vtable that we can search in O(1) time
+        /// with arbitrary strings as keys.  Validation therefore goes as follows:
+        ///
+        ///     1.  Hash the input keyword name according to the FNV-1a seed and prime.
+        ///     2.  Take the modulus with respect to the table size (power of 2).
+        ///     3.  Compare the keys to ensure a match, without any collisions.
+        ///     4.  Invoke the corresponding function pointer to do an optimized
+        ///         `isinstance()` or `issubclass()` check.
+        ///
+        /// This process is about as fast as it can possibly get, with no memory
+        /// overhead, since the whole table is baked directly into the resulting
+        /// binary.  The type checks can also take advantage of similar compile-time
+        /// optimizations to either completely eliminate the check or reduce it to a
+        /// specialized C API call where possible, speeding things up even further.
+
+        /* The hash table has a minimum safety factor of 1.5x the number of keywords,
+        in order to give the perfect hash algorithm some wiggle room to work with. */
+        static constexpr size_t keyword_table_size = impl::next_power_of_two(
+            n_kw + (n_kw / 2)
+        );
+
+        /* By rounding the table size to the next power of 2, we can take advantage of
+        fast, bitwise arithmetic to compute the modulus */
         static constexpr size_t keyword_modulus(size_t hash) {
             return hash & (keyword_table_size - 1);
         }
@@ -6199,8 +6233,8 @@ public:
             }
         };
 
-        /* Find an FNV-1a seed and prime that produces perfect hashes with respect to
-        the keyword table size. */
+        /* Search for an FNV-1a seed and prime that produces perfect hashes with
+        respect to the keyword table size. */
         static constexpr auto hash_components = [] -> std::tuple<size_t, size_t, bool> {
             constexpr size_t recursion_limit = impl::fnv1a_seed + 100'000;
             size_t seed = impl::fnv1a_seed;
@@ -6243,9 +6277,8 @@ public:
         keyword argument names from the enclosing parameter list. */
         static constexpr size_t prime = std::get<1>(hash_components);
 
-        /* Hash a byte string according to the FNV-1a algorithm using the seed and
-        prime that were found at compile time to perfectly hash the keyword
-        arguments. */
+        /* Hash an arbitrary string according to the precomputed FNV-1a algorithm
+        that was found to perfectly hash the enclosing keyword arguments. */
         static constexpr size_t hash(const char* str) noexcept {
             return impl::fnv1a(str, seed, prime);
         }
@@ -6257,9 +6290,9 @@ public:
         }
 
         /* A single entry in a callback table, storing the argument name (which may be
-        empty), a one-hot encoded bitmask specifying this argument's position, a
-        function that can be used to validate the argument, and a lazy function that
-        can be used to retrieve its corresponding Python type. */
+        empty), a one-hot encoded bitmask specifying its position within the enclosing
+        parameter list, a function that can be used to validate the argument at
+        runtime, and a getter that can be used to retrieve its expected Python type. */
         struct Callback {
             std::string_view name;
             uint64_t mask = 0;
@@ -6274,16 +6307,17 @@ public:
         /* A bitmask with a 1 in the position of all of the required arguments in the
         parameter list.
 
-        Each callback stores a one-hot encoded mask that is joined into a single
-        bitmask as each argument is processed.  The resulting mask can then be compared
-        to this constant to determine if all required arguments have been provided.  If
-        that comparison evaluates to false, then further bitwise inspection can be done
-        to determine exactly which arguments were missing, as well as their names.
+        Each callback stores a one-hot encoded mask that is progressively joined into a
+        single observed bitmask as each argument is processed.  The result can then be
+        compared to this constant to determine if all required arguments have been
+        accounted for.  If that comparison evaluates to false, then further bitwise
+        inspection can be done to determine exactly which arguments are missing, as
+        well as their names for a comprehensive error message.
 
         Note that this mask effectively limits the number of arguments that a function
-        can accept to 64, which is a reasonable limit for most functions.  The
-        performance benefits justify the limitation, and if you need more than 64
-        arguments, you should probably be using a different design pattern anyways. */
+        can accept to 64, which is reasonable for most functions.  The performance
+        benefits justify the limitation, and if you need more than 64 arguments, you
+        should probably be using a different design pattern anyways. */
         static constexpr uint64_t required =
             []<size_t... Is>(std::index_sequence<Is...>) {
                 return (0 | ... | _required<Is>);
@@ -6291,6 +6325,10 @@ public:
 
     private:
         static constexpr Callback null_check;
+
+        /// NOTE: a similar table can be constructed to validate positional arguments,
+        /// but is much more straightforward since it can be directly indexed without
+        /// any hashing.
 
         template <size_t I>
         static consteval Callback populate_positional_table() {
@@ -6387,6 +6425,27 @@ public:
                 (populate_keyword_table<Is>(table, seed, prime), ...);
                 return table;
             }(std::make_index_sequence<n>{}, seed, prime);
+
+        /// TODO: eliminate BoundView in favor of a generalized iterator that is
+        /// returned by the instance_search() and class_search() methods, with
+        /// wildcard arguments indicated by an ellipsis.  That syntax is then exposed
+        /// to Python, such that you can write
+        ///
+        ///     for overload in func.search(1, ..., x = 3, y = ...):
+        ///         # simulate the function call and yield every matching overload
+        ///
+        ///     for overload in func[int, ..., "x": int, "y": ...]:
+        ///         # same as .search(), except the arguments are given as types, and
+        ///         # issubclass() is used to search the trie rather than isinstance()
+        ///     
+        ///     if func[int, ..., "x": int, "y": ...]:
+        ///         # the iterator evaluates to false if it is empty, meaning a simple
+        ///         # if statement can be used to check if the function is callable
+        ///         # with the given arguments.
+        ///
+        /// NOTE: the iterator should always yield overloads in topological order,
+        /// with the base implementation coming last.  An empty iterator can only be
+        /// returned if the function is not callable with the given arguments.
 
         struct BoundView;
 

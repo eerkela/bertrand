@@ -107,21 +107,22 @@ template <impl::python Return>
 struct Iterator<Return, void, void> : Object, Interface<Iterator<Return, void, void>> {
     struct __python__ : def<__python__, Iterator>, PyObject {
         static Type<Iterator> __import__() {
-            constexpr StaticStr str = "collections.abc";
-            PyObject* name = PyUnicode_FromStringAndSize(str, str.size());
-            if (name == nullptr) {
+            Object collections = reinterpret_steal<Object>(PyImport_Import(
+                ptr(impl::template_string<"collections.abc">())
+            ));
+            if (collections.is(nullptr)) {
                 Exception::from_python();
             }
-            Object collections_abc = reinterpret_steal<Object>(
-                PyImport_Import(name)
+            Type<Iterator> result = reinterpret_steal<Type<Iterator>>(
+                PyObject_GetItem(
+                    ptr(getattr<"Iterator">(collections)),
+                    ptr(Type<Return>())
+                )
             );
-            Py_DECREF(name);
-            if (collections_abc.is(nullptr)) {
+            if (result.is(nullptr)) {
                 Exception::from_python();
             }
-            return reinterpret_steal<Type<Iterator>>(
-                release(getattr<"iterator">( collections_abc))
-            );
+            return result;
         }
     };
 
@@ -181,6 +182,15 @@ struct Iterator<Begin, End, void> : Object, Interface<Iterator<Begin, End, void>
             return reinterpret_borrow<Type<Iterator>>(&__type__);
         }
 
+        static int __bool__(__python__* self) {
+            try {
+                return self->begin != self->end;
+            } catch (...) {
+                Exception::to_python();
+                return -1;
+            }
+        }
+
         static PyObject* __next__(__python__* self) {
             try {
                 if (self->begin == self->end) {
@@ -201,12 +211,17 @@ struct Iterator<Begin, End, void> : Object, Interface<Iterator<Begin, End, void>
 
     private:
 
+        inline static PyNumberMethods number = {
+            .nb_bool = reinterpret_cast<inquiry>(__bool__)
+        };
+
         static void ready() {
             if (!initialized) {
                 __type__ = {
                     .tp_name = typeid(Iterator).name(),
                     .tp_basicsize = sizeof(__python__),
                     .tp_itemsize = 0,
+                    .tp_as_number = &number,
                     .tp_flags = 
                         Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
                     .tp_iter = PyObject_SelfIter,
@@ -251,7 +266,11 @@ the iterator object has a nonzero reference count.
 This will instantiate a unique Python type with an appropriate `__next__()` method for
 every combination of C++ iterators, forwarding to their respective `operator*()`,
 `operator++()`, and `operator==()` methods. */
-template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End, impl::iterable Container>
+template <
+    std::input_or_output_iterator Begin,
+    std::sentinel_for<Begin> End,
+    impl::iterable Container
+>
     requires (std::convertible_to<decltype(*std::declval<Begin>()), Object>)
 struct Iterator<Begin, End, Container> : Object, Interface<Iterator<Begin, End, Container>> {
     struct __python__ : def<__python__, Iterator>, PyObject {
@@ -275,6 +294,15 @@ struct Iterator<Begin, End, Container> : Object, Interface<Iterator<Begin, End, 
             return reinterpret_borrow<Type<Iterator>>(&__type__);
         }
 
+        static int __bool__(__python__* self) {
+            try {
+                return self->begin != self->end;
+            } catch (...) {
+                Exception::to_python();
+                return -1;
+            }
+        }
+
         static PyObject* __next__(__python__* self) {
             try {
                 if (self->begin == self->end) {
@@ -295,12 +323,17 @@ struct Iterator<Begin, End, Container> : Object, Interface<Iterator<Begin, End, 
 
     private:
 
+        inline static PyNumberMethods number = {
+            .nb_bool = reinterpret_cast<inquiry>(__bool__)
+        };
+
         static void ready() {
             if (!initialized) {
                 __type__ = {
                     .tp_name = typeid(Iterator).name(),
                     .tp_basicsize = sizeof(__python__),
                     .tp_itemsize = 0,
+                    .tp_as_number = &number,
                     .tp_flags = 
                         Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
                     .tp_iter = PyObject_SelfIter,
