@@ -857,7 +857,7 @@ public:
     optional arguments in the enclosing signature, in which case the constructor
     will be optimized out. */
     struct Defaults {
-    protected:
+    private:
         template <typename...>
         static constexpr size_t _n_posonly = 0;
         template <typename T, typename... Ts>
@@ -4635,11 +4635,10 @@ public:
     O(1) in time, due to the 1:1 equivalence between Bertrand wrappers and
     their C++ counterparts, and corresponding type safety guarantees. */
     struct Vectorcall {
-    protected:
-        /* The kwnames tuple must be converted into a temporary map that can
-        be destructively searched over the course of the call algorithm.  If
-        any arguments remain by the time the underlying function is called,
-        then they are considered extras. */
+    private:
+        /* The kwnames tuple must be converted into a temporary map that can be
+        destructively searched during the call algorithm.  If any arguments remain by
+        the time the underlying function is called, then they are considered extras. */
         struct Kwargs {
             using Map = std::unordered_map<std::string_view, PyObject*>;
             Map map;
@@ -4784,33 +4783,12 @@ public:
                 if constexpr (!Signature::has_args) {
                     if (idx < nargs) {
                         std::string message =
-                            "unexpected positional arguments: [";
-                        PyObject* str = PyObject_Repr(array[idx]);
-                        if (str == nullptr) {
-                            Exception::from_python();
-                        }
-                        Py_ssize_t len;
-                        const char* name = PyUnicode_AsUTF8AndSize(
-                            str,
-                            &len
-                        );
-                        if (name == nullptr) {
-                            Exception::from_python();
-                        }
-                        message += std::string(name, len);
+                            "unexpected positional arguments: [" +
+                            repr(reinterpret_borrow<Object>(array[idx]));
                         while (++idx < nargs) {
-                            str = PyObject_Repr(array[idx]);
-                            if (str == nullptr) {
-                                Exception::from_python();
-                            }
-                            name = PyUnicode_AsUTF8AndSize(
-                                str,
-                                &len
+                            message += ", " + repr(
+                                reinterpret_borrow<Object>(array[idx])
                             );
-                            if (name == nullptr) {
-                                Exception::from_python();
-                            }
-                            message += ", " + std::string(name, len);
                         }
                         message += "]";
                         throw TypeError(message);
@@ -6136,12 +6114,453 @@ public:
     /// not always simple, but is at least centralized in the Partial<> class.
     /// -> Actually yes it does, because the partial key isn't fully formed.
 
-    /* A Trie-based data structure containing a pool of dynamic overloads for a
-    `py::Function` object, which will be dispatched to when the function is called
-    from either Python or C++.  This uses a standardized key() format to allow for
-    efficient caching. */
+    /// TODO: So basically, what the iterator needs to do is store a std::vector
+    /// which is pre-allocated to the maximum depth of the trie (or size of input key?),
+    /// and which stores pairs of iterators at every index in stack-like fashion.  The
+    /// vector would grow until the key is exhausted, then yield the results at the
+    /// final level, and then pop the last pair of iterators off the stack as they are
+    /// exhausted.  By the end, the stack is guaranteed to be empty.
+
+    /* A trie-based data structure containing a set of dynamic overloads for a
+    `py::Function` object, which can be dispatched to when the function is called from
+    either Python or C++.  Uses a standardized key() format to allow for efficient
+    caching. */
     struct Overloads {
+        struct instance {
+            static bool operator()(const Object& obj, const Object& cls) {
+                int rc = PyObject_IsInstance(
+                    ptr(obj),
+                    ptr(cls)
+                );
+                if (rc < 0) {
+                    Exception::from_python();
+                }
+                return rc;
+            }
+        };
+
+        struct subclass {
+            static bool operator()(const Object& obj, const Object& cls) {
+                int rc = PyObject_IsSubclass(
+                    ptr(obj),
+                    ptr(cls)
+                );
+                if (rc < 0) {
+                    Exception::from_python();
+                }
+                return rc;
+            }
+        };
+
+        template <typename T>
+        static constexpr bool valid_check =
+            std::same_as<T, instance> || std::same_as<T, subclass>;
+
+        struct Edge;
+        struct Edges;
+        struct Node;
+        struct Metadata;
+
+        /* A single link between two nodes in the trie, which describes how to traverse
+        from one to the other.  Multiple edges may share the same target node if they
+        have identical origins and require the same type.  A unique edge will always be
+        created for each parameter in a key when it is first inserted. */
+        struct Edge {
+            size_t hash;
+            std::shared_ptr<Node> target;
+            impl::ArgKind kind;
+            uint64_t mask;
+
+            friend bool operator<(const Edge& lhs, const Edge& rhs) {
+                return
+                    lhs.kind < rhs.kind ||
+                    lhs.hash < rhs.hash ||
+                    lhs.target < rhs.target;
+            }
+
+            friend bool operator<(const Edge& lhs, size_t rhs) {
+                return lhs.hash < rhs;
+            }
+
+            friend bool operator<(size_t lhs, const Edge& rhs) {
+                return lhs < rhs.hash;
+            }
+
+            friend bool operator<(const Edge& lhs, std::shared_ptr<Node> rhs) {
+                return lhs.target < rhs;
+            }
+
+            friend bool operator<(std::shared_ptr<Node> lhs, const Edge& rhs) {
+                return lhs < rhs.target;
+            }
+        };
+
+        /* A sorted collection of outgoing edges linking a node to its descendants.
+        Edges are topologically sorted by expected type (with subclasses coming before
+        parent classes) as well as kind (with required edges coming before optional,
+        which come before variadic). */
+        struct Edges {
+        private:
+            struct TopoSort {
+                static bool operator()(const Object& lhs, const Object& rhs) {
+                    int rc = PyObject_IsSubclass(
+                        ptr(lhs),
+                        ptr(rhs)
+                    );
+                    if (rc < 0) {
+                        Exception::from_python();
+                    }
+                    // ties are broken by address to ensure stable sort
+                    return rc || ptr(lhs) < ptr(rhs);
+                }
+            };
+
+            /* Maps type -> set<Edge>, where the types are topologically sorted
+            according to `issubclass()`, and outgoing edges are sorted by kind. */
+            using Set = std::set<Edge, std::less<>>;
+            using Map = std::map<Object, Set, TopoSort>;
+            Map map;
+
+        public:
+            auto size() const { return map.size(); }
+            auto empty() const { return map.empty(); }
+            auto begin() const { return map.begin(); }
+            auto cbegin() const { return map.cbegin(); }
+            auto end() const { return map.end(); }
+            auto cend() const { return map.cend(); }
+
+            /* A sorted iterator over the individual edges that match a particular
+            value within an overload key.  The generalized trie iterator consists of a
+            nested stack of these, which grows and shrinks as the trie is explored,
+            mimicking the call frame in a recursive function. */
+            template <typename check> requires (valid_check<check>)
+            struct Iterator {
+                using iterator_category = std::input_iterator_tag;
+                using difference_type = std::ptrdiff_t;
+                using value_type = Edge;
+                using pointer = value_type*;
+                using reference = value_type&;
+
+                Object value;
+
+                struct SetView {
+                    inline static const Set empty = Set{};
+                    std::ranges::iterator_t<const Set> begin;
+                    std::ranges::sentinel_t<const Set> end;
+                } set;
+
+                struct MapView {
+                    inline static const Map empty = Map{};
+                    std::ranges::iterator_t<const Map> begin;
+                    std::ranges::sentinel_t<const Map> end;
+                } map;
+
+                Iterator(
+                    const Object& value,
+                    std::ranges::iterator_t<const Map>&& it,
+                    std::ranges::sentinel_t<const Map>&& end
+                ) : value(value),
+                    set([](const Object& value, auto& it, auto& end) {
+                        while (it != end) {
+                            if (check{}(value, it->first)) {
+                                return SetView{it->second.begin(), it->second.end()};
+                            }
+                            ++(it);
+                        }
+                        return SetView{SetView::empty.begin(), SetView::empty.end()};
+                    }(value, it, end)),
+                    map(std::move(it), std::move(end))
+                {}
+
+                Iterator(const Object& value, impl::Sentinel) :
+                    value(value),
+                    set(SetView::empty.begin(), SetView::empty.end()),
+                    map(MapView::empty.begin(), MapView::empty.end())
+                {}
+
+                Edge& operator*() { return *(set.begin); }
+                Edge* operator->() { return &(**this); }
+                const Edge& operator*() const { return *(set.begin); }
+                const Edge* operator->() const { return &(**this); }
+
+                Iterator& operator++() {
+                    if (set.begin != set.end) {
+                        ++(set.begin);
+                    }
+                    if (set.begin == set.end) {
+                        ++(map.begin);
+                        while (map.begin != map.end) {
+                            if (check{}(value, map.begin->first)) {
+                                set.begin = map.begin->second.begin();
+                                set.end = map.begin->second.end();
+                                break;
+                            }
+                            ++(map.begin);
+                        }
+                    }
+                    return *this;
+                }
+
+                friend bool operator==(const Iterator& self, impl::Sentinel) {
+                    return self.map.begin == self.map.end;
+                }
+
+                friend bool operator==(impl::Sentinel, const Iterator& self) {
+                    return self.map.begin == self.map.end;
+                }
+
+                friend bool operator!=(const Iterator& self, impl::Sentinel) {
+                    return self.map.begin != self.map.end;
+                }
+
+                friend bool operator!=(impl::Sentinel, const Iterator& self) {
+                    return self.map.begin != self.map.end;
+                }
+            };
+
+            /* Return a shallow iterator over the subset of edges that match a given
+            value, as determined by the template check.  Results are yielded in
+            topological order, with ties broken by kind, where required arguments come
+            before optional, which come before variadic. */
+            template <typename check> requires (valid_check<check>)
+            Iterator<check> search(const Object& value) const {
+                return {value, map.begin(), map.end()};
+            }
+
+        };
+
+        /* A single node in the overload trie, which holds the topologically-sorted
+        edge maps necessary for traversal, insertion, and deletion of candidate
+        functions, as well as a (possibly null) terminal function to call if this
+        node is the last in a given argument list. */
+        struct Node {
+            PyObject* func;
+            Edges positional;
+            std::unordered_map<std::string, Edges> keyword;
+
+            /* Return a sorted iterator over the outgoing edges that could potentially
+            match a given parameter in an overload key.  Can return an empty iterator
+            if there are no matches, which triggers backtracking in the generalized
+            traversal algorithm. */
+            template <typename check> requires (valid_check<check>)
+            Edges::Iterator<check> search(const impl::Param& param) const {
+                if (param.posonly()) {
+                    return positional.template search<check>(param.value);
+                }
+                auto it = keyword.find(param.name);
+                if (it != keyword.end()) {
+                    return it->second.template search<check>(param.value);
+                }
+                return {param.value, impl::Sentinel{}};
+            }
+        };
+
+        /* An encoded representation of a function that has been inserted into the
+        overload trie, which includes the function itself, a hash of the key that
+        it was inserted under, a bitmask of the required arguments that must be
+        satisfied to invoke the function, and a map of keyword names to component
+        bitmasks to correct for arbitrary keyword order. */
+        struct Metadata {
+            Object func;
+            size_t hash;
+            uint64_t required;
+            std::unordered_map<std::string, uint64_t> keywords;
+        };
+
+        template <typename check, typename Container> requires (valid_check<check>)
+        struct Iterator {
+        private:
+            void initialize(const impl::Params<Container>& key, Node* node) {
+                size_t i = 0;
+                size_t n = key.size();
+                stack.reserve(n);
+                while (i < n) {
+                    /// TODO: this has to use similar logic to the increment operator
+                    /// except that its only goal is to find the first match.
+                    stack.emplace_back(
+                        node->template search<check>(key[i++])
+                    );
+                    while (stack.back() == node->end()) {
+                        stack.pop_back();
+                        if (stack.empty()) {
+                            return;
+                        }
+                        node = stack.back();
+                    }
+                }
+            }
+
+        public:
+            using iterator_category = std::input_iterator_tag;
+            using difference_type = std::ptrdiff_t;
+            using value_type = Object;
+            using pointer = value_type*;
+            using reference = value_type&;
+
+            impl::Params<Container> key;
+            std::vector<typename Edges::template Iterator<check>> stack;
+            Edge* deepest;
+
+            Iterator(const impl::Params<Container>& key, Node* node) :
+                key(key),
+                stack(initialize(this->key)),
+                deepest(&null_edge)
+            {}
+
+            Iterator(impl::Params<Container>&& key, Node* node) :
+                key(std::move(key)),
+                stack(initialize(this->key)),
+                deepest(&null_edge)
+            {}
+
+            /// TODO: rather than nullptr, use None to indicate a fallback case, which
+            /// is different from an empty iterator, which indicates that the function
+            /// is not callable with the given args.  Alternatively, I can always
+            /// encode the fallback function as just another overload within the trie,
+            /// which would standardize things a lot more, and potentially lead to
+            /// higher performance.  It might also simplify error handling somewhat.
+            /// In that case, there would never be a special case for null or None.
+            /// It's all handled through the iterators.
+            /// -> I should still be able to optimize memory by using a null root to
+            /// indicate whether there are dynamic overloads, but if you insert into a
+            /// null overload trie, then I also need to insert the base implementation
+            /// just before.  Then, when you remove an overload, if the trie has only
+            /// one element, I can delete the root node as an optimization.
+
+            /* The overall trie iterator dereferences only to those functions that are
+            callable with the given key. */
+            Object& operator*() { return deepest->target->func; }
+            Object* operator->() { return &(**this); }
+            const Object& operator*() const { return deepest->target->func; }
+            const Object* operator->() const { return &(**this); }
+
+            /* Incrementing the iterator traverses the trie until the next full match
+            is found.  As long as the args are valid, the iterator will always contain
+            the function's base implementation as the final overload. */
+            Iterator& operator++() {
+                if (stack.empty()) {
+                    return *this;
+                }
+
+                // advance the last iterator and pop it from the stack if exhausted
+                Edge* curr = &(*stack.back());
+                bool reset = false;
+                while (++stack.back() == impl::Sentinel{}) {
+                    stack.pop_back();
+                    if (stack.empty()) {
+                        return *this;
+                    }
+                    if (deepest == curr) {
+                        reset = true;
+                    }
+                    curr = &(*stack.back());
+                }
+
+                // update the deepest edge if necessary
+                if (reset) {
+                    deepest = &null_edge;
+                    for (auto& it : stack) {
+                        if (it->mask > deepest->mask) {
+                            deepest = &(*it);
+                        }
+                    }
+                }
+
+                // rebuild the stack with the incremented iterator
+                while (stack.size() < key.size()) {
+                    /// TODO: stack will need to grow and shrink as we traverse the
+                    /// trie, depending on whether the iterators we add contain any
+                    /// valid matches.
+                    // stack.emplace_back();
+                }
+
+                return *this;
+            }
+
+            /* Contextually convert the iterator to a bool in order to replicate Python
+            `if func[...]:` syntax. */
+            explicit operator bool() const {
+                return stack.empty();
+            }
+
+            template <typename C>
+            friend bool operator==(const Iterator& self, const Iterator<check, C>& other) {
+                return self.deepest == other.deepest;
+            }
+
+            template <typename C> requires (!std::same_as<Container, C>)
+            friend bool operator!=(const Iterator<check, C>& other, const Iterator& self) {
+                return self.deepest == other.deepest;
+            }
+
+            friend bool operator==(const Iterator& self, impl::Sentinel) {
+                return self.stack.empty();
+            }
+
+            friend bool operator==(impl::Sentinel, const Iterator& self) {
+                return self.stack.empty();
+            }
+
+            template <typename C>
+            friend bool operator!=(const Iterator& self, const Iterator<check, C>& other) {
+                return self.deepest != other.deepest;
+            }
+
+            template <typename C> requires (!std::same_as<Container, C>)
+            friend bool operator!=(const Iterator<check, C>& other, const Iterator& self) {
+                return self.deepest != other.deepest;
+            }
+
+            friend bool operator!=(const Iterator& self, impl::Sentinel) {
+                return !self.stack.empty();
+            }
+
+            friend bool operator!=(impl::Sentinel, const Iterator& self) {
+                return !self.stack.empty();
+            }
+        };
+
+        std::unordered_map<size_t, Metadata> data;
+        std::shared_ptr<Node> root;
+
+        bool empty() const { return root == nullptr; }
+        size_t size() const { return data.size() - !empty(); }
+
+        /// TODO: there should also be a begin()/cbegin() method that returns an
+        /// arbitrary iterator over the trie, which visits each function in purely
+        /// topological order, implementing the `for overload in func:` syntax.
+        impl::Sentinel end() const { return {}; }
+        impl::Sentinel cend() const { return {}; }
+
+        template <typename check, typename Container> requires (valid_check<check>)
+        auto search(const impl::Params<Container>& key) const
+            -> Iterator<check, Container>
+        {
+            /// TODO: validate the key in some way?
+            return {key};
+        }
+
+        template <typename check, typename Container> requires (valid_check<check>)
+        auto search(impl::Params<Container>&& key) const
+            -> Iterator<check, Container>
+        {
+            /// TODO: validate the key in some way?
+            return {std::move(key)};
+        }
+
     private:
+
+        /* A placeholder edge with a zero mask that serves as the initial value for an
+        iterator's `deepest` pointer, and will be immediately overwritten. */
+        static constexpr Edge null_edge = {
+            .hash = 0,
+            .target = nullptr,
+            .kind = 0,
+            .mask = 0,
+        };
+
+
+
         /// NOTE: in order to handle out-of-order keywords during argument validation,
         /// there needs to be some kind of hash table we can consult to do the proper
         /// checks, without imposing any ordering restrictions on the input key(s).
@@ -6169,8 +6588,26 @@ public:
         /// optimizations to either completely eliminate the check or reduce it to a
         /// specialized C API call where possible, speeding things up even further.
 
+        /// TODO: do I even need the positional/keyword vtables here?  They would only
+        /// cover the base case, and are not needed in ::Vectorcall{} - only here.  It
+        /// might therefore be possible to roll the validation they would perform
+        /// directly into the search algorithm, instead of requiring a separate loop,
+        /// which would be more efficient overall, but possibly also substantially
+        /// harder to implement?
+
+    };
+
+
+    /* A Trie-based data structure containing a pool of dynamic overloads for a
+    `py::Function` object, which will be dispatched to when the function is called
+    from either Python or C++.  This uses a standardized key() format to allow for
+    efficient caching. */
+    struct Overloads {
+    private:
+
         /* The hash table has a minimum safety factor of 1.5x the number of keywords,
-        in order to give the perfect hash algorithm some wiggle room to work with. */
+        in order to improve the chances of finding a perfect hash while minimizing
+        final binary size. */
         static constexpr size_t keyword_table_size = impl::next_power_of_two(
             n_kw + (n_kw / 2)
         );
@@ -6233,8 +6670,8 @@ public:
             }
         };
 
-        /* Search for an FNV-1a seed and prime that produces perfect hashes with
-        respect to the keyword table size. */
+        /* Search for an FNV-1a seed and prime that perfectly hashes the argument names
+        with respect to the keyword table size. */
         static constexpr auto hash_components = [] -> std::tuple<size_t, size_t, bool> {
             constexpr size_t recursion_limit = impl::fnv1a_seed + 100'000;
             size_t seed = impl::fnv1a_seed;
@@ -6268,6 +6705,11 @@ public:
 
     public:
         using type = Signature;
+
+        struct Metadata;
+        struct Edge;
+        struct Edges;
+        struct Node;
 
         /* A seed for an FNV-1a hash algorithm that was found to perfectly hash the
         keyword argument names from the enclosing parameter list. */
@@ -6324,11 +6766,7 @@ public:
             }(std::make_index_sequence<n>{});
 
     private:
-        static constexpr Callback null_check;
-
-        /// NOTE: a similar table can be constructed to validate positional arguments,
-        /// but is much more straightforward since it can be directly indexed without
-        /// any hashing.
+        static constexpr Callback null_callback;
 
         template <size_t I>
         static consteval Callback populate_positional_table() {
@@ -6473,24 +6911,91 @@ public:
         static constexpr bool valid_check =
             std::same_as<T, instance> || std::same_as<T, subclass>;
 
+        /// TODO: the only way an iterator over a recursive data structure like this
+        /// works is if I store a parent pointer on each node, which is complicated
+        /// because the same node can have multiple parents?  Is that actually true?
+        /// -> Actually, I probably need a stack of iterators that grows and shrinks
+        /// internally to traverse at every level.  I can reserve space equal to the
+        /// depth of the trie in order to avoid extra allocations.
+
+        /// TODO: also each frame is going to have to store the bitmask + hash of the
+        /// arguments covered thus far?
+
+        template <typename Container>
+        struct Iterator {
+            struct Frame {
+                std::shared_ptr<Node> node;
+                Edges::Iterator iter;
+
+                /// TODO: holds a pair of iterators for this level of the trie
+                /// -> If I reuse the same sentinel class, then this will only need
+                /// to hold a single iterator?  Maybe it doesn't matter, since Sentinel
+                /// is empty anyways?
+            };
+
+            // PyObject* curr;
+            impl::Params<Container> key;
+            std::vector<Frame> stack;
+
+            Iterator(const impl::Params<Container>& key) : key(key) {
+                stack.reserve(key.size());
+            }
+
+            Iterator(impl::Params<Container>&& key) : key(std::move(key)) {
+                stack.reserve(key.size());
+            }
+
+            /// TODO: if stack.size() == key.size(), then we can yield from the top
+            /// of the stack.  Otherwise, we need to push/pop pairs of iterators as
+            /// they come.
+
+            /// TODO: This will probably have to store internal iterators to traverse
+            /// each edge appropriately without any duplicates.
+
+            /// TODO: constructing the iterator will advance to the first matching
+            /// function.
+
+            /// TODO: also, the base implementation would need to be stored here so
+            /// that it can be returned as the last available option?
+
+            Object operator*() const {
+                return reinterpret_borrow<Object>(*stack.back().begin);
+            }
+
+            /// TODO: advancing the iterator will traverse the trie using a matching
+            /// key, which is stored internally within the iterator.
+
+            friend bool operator==(const Iterator& self, impl::Sentinel) {
+                return self.stack.empty();
+            }
+
+            friend bool operator==(impl::Sentinel, const Iterator& self) {
+                return self.stack.empty();
+            }
+
+            friend bool operator!=(const Iterator& self, impl::Sentinel) {
+                return !self.stack.empty();
+            }
+
+            friend bool operator!=(impl::Sentinel, const Iterator& self) {
+                return !self.stack.empty();
+            }
+        };
+
     public:
-        struct Metadata;
-        struct Edge;
-        struct Edges;
-        struct Node;
 
         /* Look up a positional argument, returning a callback object that can be used
         to efficiently validate it.  If the index does not correspond to a recognized
         positional argument, a null callback will be returned that evaluates to false
         under boolean logic.  If the parameter list accepts variadic positional
         arguments, then the variadic argument's callback will be returned instead. */
-        static constexpr const Callback& check(size_t i) noexcept {
+        static constexpr const Callback& callback(size_t i) noexcept {
             if constexpr (has_args) {
                 return i < args_idx ? positional_table[i] : positional_table[args_idx];
             } else if constexpr (has_kwonly) {
-                return i < kwonly_idx ? positional_table[i] : null_check;
+                return i < kwonly_idx ? positional_table[i] : null_callback;
             } else {
-                return i < kwargs_idx ? positional_table[i] : null_check;
+                return i < kwargs_idx ? positional_table[i] : null_callback;
             }
         }
 
@@ -6499,7 +7004,7 @@ public:
         callback will be returned that evaluates to false under boolean logic.  If the
         parameter list accepts variadic keyword arguments, then the variadic argument's
         callback will be returned instead. */
-        static constexpr const Callback& check(std::string_view name) noexcept {
+        static constexpr const Callback& callback(std::string_view name) noexcept {
             const Callback& callback = keyword_table[
                 keyword_modulus(hash(name.data()))
             ];
@@ -6509,7 +7014,7 @@ public:
                 if constexpr (has_kwargs) {
                     return keyword_table[kwargs_idx];
                 } else {
-                    return null_check;
+                    return null_callback;
                 }
             }
         }
@@ -6521,8 +7026,8 @@ public:
         from the root node that leads to the terminal function.
 
         These are stored in an associative set rather than a hash set in order to
-        ensure address stability over the lifetime of the trie, so that it doesn't
-        need to manage any memory itself. */
+        ensure address stability over the lifetime of the trie, to simplify memory
+        management and reduce the overall usage. */
         struct Metadata {
             size_t hash;
             uint64_t required;
@@ -6539,11 +7044,10 @@ public:
             }
         };
 
-        /* A single link between two nodes in the trie, which describes how to
-        traverse from one to the other.  Multiple edges may share the same target
-        node, and a unique edge will be created for each parameter in a key when it
-        is inserted, such that the original key can be unambiguously identified
-        from a simple search of the trie structure. */
+        /* A single link between two nodes in the trie, which describes how to traverse
+        from one to the other, as encoded into the Metadata path.  Multiple edges may
+        share the same target node, and a unique edge will be created for each
+        parameter in a key when it is inserted. */
         struct Edge {
             size_t hash;
             uint64_t mask;
@@ -7030,11 +7534,12 @@ public:
             }
         };
 
+        size_t max_depth;
         std::shared_ptr<Node> root;
         std::set<const Metadata, std::less<>> data;
         mutable std::unordered_map<size_t, PyObject*> cache;
 
-        /* Clear the overload trie, removing all tracked functions. */
+        /* Clear the overload trie, removing all functions contained within it. */
         void clear() {
             cache.clear();
             root.reset();
@@ -7366,6 +7871,10 @@ public:
                 }
             }
             throw KeyError(repr(func));
+        }
+
+        impl::Sentinel end() const {
+            return {};
         }
 
     private:
