@@ -424,9 +424,11 @@ public:
 
     /* Holds a series of template constraints that can be used to validate function
     signatures according to Python calling conventions. */
-    template <std::derived_from<impl::SignatureTag> Source>
+    template <impl::inherits<impl::SignatureTag> _Source>
     struct Check {
     private:
+        using Source = std::remove_cvref_t<_Source>;
+
         template <size_t>
         static constexpr bool _args_are_python = true;
         template <size_t I> requires (I < Source::n)
@@ -849,6 +851,181 @@ public:
     static constexpr bool no_duplicate_args =
         Check<Signature>::no_duplicate_args;
 
+    /* A tuple holding a partial value for every bound argument in the enclosing
+    parameter list.  One of these must be provided whenever a C++ function is
+    invoked, and constructing one requires that the initializers match a
+    sub-signature consisting only of the bound args as positional-only and
+    keyword-only parameters for clarity.  The result may be empty if there are no
+    bound arguments in the enclosing signature, in which case the constructor will
+    be optimized out. */
+    struct Partial {
+    private:
+        /// TODO: count/index helpers just like Defaults?
+
+        /* Build a sub-signature holding only the bound arguments from the
+        enclosing signature.  This will be a specialization of the enclosing class,
+        which is used to bind arguments to this class's constructor using the same
+        semantics as the function's call operator. */
+        template <typename out, typename...>
+        struct extract { using type = out; };
+        template <typename... out, typename A, typename... As>
+        struct extract<Signature<Partial(out...)>, A, As...> {
+            template <typename>
+            struct sub_signature { using type = Signature<Partial(out...)>; };
+            template <typename T> requires (ArgTraits<T>::bound())
+            struct sub_signature<T> {
+                template <typename>
+                struct extend;
+                template <typename... Ps>
+                struct extend<pack<Ps...>> {
+                    template <typename P>
+                    struct to_partial { using type = P; };
+                    template <typename P> requires (ArgTraits<P>::kw())
+                    struct to_partial<P> {
+                        using type = Arg<
+                            ArgTraits<P>::name,
+                            typename ArgTraits<P>::type
+                        >::kw;
+                    };
+                    using type = Signature<Partial(out..., typename to_partial<Ps>::type...)>;
+                };
+                using type = extend<typename ArgTraits<T>::bound_to>::type;
+            };
+            using type = extract<
+                typename sub_signature<A>::type,
+                As...
+            >::type;
+        };
+        using Inner = extract<Signature<Partial()>, Args...>::type;
+
+        /* Build a std::tuple of Elements that hold the bound values in a way that
+        can be cross-referenced with the target signature. */
+        template <typename out, size_t, typename...>
+        struct collect { using type = out; };
+        template <typename... out, size_t I, typename A, typename... As>
+        struct collect<std::tuple<out...>, I, A, As...> {
+            template <typename>
+            struct tuple { using type = std::tuple<out...>; };
+            template <typename T> requires (ArgTraits<T>::bound())
+            struct tuple<T> {
+                template <typename>
+                struct extend;
+                template <typename... Ps>
+                struct extend<pack<Ps...>> {
+                    using type = std::tuple<
+                        out...,
+                        Element<
+                            I,
+                            ArgTraits<Ps>::name,
+                            typename ArgTraits<Ps>::type
+                        >...
+                    >;
+                };
+                using type = extend<typename ArgTraits<T>::bound_to>::type;
+            };
+            using type = collect<typename tuple<A>::type, I + 1, As...>::type;
+        };
+
+        using Tuple = collect<std::tuple<>, 0, Args...>::type;
+        Tuple values;
+
+        template <size_t K, typename... As>
+        static constexpr decltype(auto) build(As&&... args) {
+            using T = std::tuple_element_t<K, Tuple>;
+            if constexpr (T::name.empty()) {
+                return impl::unpack_arg<K>(std::forward<As>(args)...);
+            } else {
+                constexpr size_t idx = Signature<void(As...)>::template idx<T::name>;
+                return impl::unpack_arg<idx>(std::forward<As>(args)...);
+            }
+        }
+
+    public:
+        using type = Signature;
+
+        static constexpr size_t n               = Inner::n;
+        static constexpr size_t n_posonly       = Inner::n_posonly;
+        static constexpr size_t n_pos           = Inner::n_pos;
+        static constexpr size_t n_kw            = Inner::n_kw;
+        static constexpr size_t n_kwonly        = Inner::n_kwonly;
+
+        template <StaticStr Name>
+        static constexpr bool has               = Inner::template has<Name>;
+        static constexpr bool has_posonly       = Inner::has_posonly;
+        static constexpr bool has_pos           = Inner::has_pos;
+        static constexpr bool has_kw            = Inner::has_kw;
+        static constexpr bool has_kwonly        = Inner::has_kwonly;
+
+        template <StaticStr Name> requires (has<Name>)
+        static constexpr size_t idx             = Inner::template idx<Name>;
+        static constexpr size_t posonly_idx     = Inner::posonly_idx;
+        static constexpr size_t pos_idx         = Inner::pos_idx;
+        static constexpr size_t kw_idx          = Inner::kw_idx;
+        static constexpr size_t kwonly_idx      = Inner::kwonly_idx;
+
+        template <size_t K> requires (K < n)
+        using at = Inner::template at<K>;
+
+        /* Get the recorded name of the bound argument at index K of the partial
+        tuple. */
+        template <size_t K> requires (K < n)
+        static constexpr StaticStr name = std::tuple_element_t<K, Tuple>::name;
+
+        /* Given an index into the partial tuple, find the corresponding index in
+        the enclosing parameter list. */
+        template <size_t K> requires (K < n)
+        static constexpr size_t rfind = std::tuple_element_t<K, Tuple>::index;
+
+        /* Provides access to the template constraints for the constructor
+        sub-signature. */
+        template <typename Source>
+        using Check = Inner::template Check<Source>;
+
+        /* Bind an argument list to the partial values to enable the constructor. */
+        template <typename... As>
+        using Bind = Inner::template Bind<As...>;
+
+        template <typename... As>
+            requires (
+                !(impl::arg_pack<As> || ...) &&
+                !(impl::kwarg_pack<As> || ...) &&
+                Bind<As...>::proper_argument_order &&
+                Bind<As...>::no_qualified_arg_annotations &&
+                Bind<As...>::no_duplicate_args &&
+                Bind<As...>::no_conflicting_values &&
+                Bind<As...>::no_extra_positional_args &&
+                Bind<As...>::no_extra_keyword_args &&
+                Bind<As...>::satisfies_required_args &&
+                Bind<As...>::can_convert
+            )
+        constexpr Partial(As&&... args) : values(
+            []<size_t... Ks>(std::index_sequence<Ks...>, auto&&... args) -> Tuple {
+                return {{build<Ks>(std::forward<decltype(args)>(args)...)}...};
+            }(std::index_sequence_for<As...>{}, std::forward<As>(args)...)
+        ) {}
+
+        /* Get the bound value at index K of the tuple.  If the partials are
+        forwarded as an lvalue, then this will either directly reference the
+        internal value if the corresponding argument expects an lvalue, or a copy
+        if it expects an unqualified or rvalue type.  If the partials are given as
+        an rvalue instead, then the copy will instead be optimized to a move. */
+        template <size_t K> requires (K < n)
+        constexpr decltype(auto) get(this auto&& self) {
+            return std::get<K>(std::forward<decltype(self)>(self).values).get();
+        }
+
+        /* Get the bound value associated with the named argument, if it was given
+        as a keyword argument.  If the partials are forwarded as an lvalue, then
+        this will either directly reference the internal value if the corresponding
+        argument expects an lvalue, or a copy if it expects an unqualified or rvalue
+        type.  If the partials are given as an rvalue instead, then the copy will be
+        optimized to a move. */
+        template <StaticStr Name> requires (has<Name>)
+        constexpr decltype(auto) get(this auto&& self) {
+            return std::get<idx<Name>>(std::forward<decltype(self)>(self).values).get();
+        }
+    };
+
     /* A tuple holding a default value for every argument in the enclosing
     parameter list that is marked as optional.  One of these must be provided
     whenever a C++ function is invoked, and constructing one requires that the
@@ -1011,27 +1188,27 @@ public:
         template <size_t J> requires (J < n)
         static constexpr size_t rfind = std::tuple_element<J, Tuple>::type::index;
 
-        /* Bind an argument list to the default values to enable the constructor. */
-        template <typename... As>
-        using Bind = Inner::template Bind<As...>;
-
         /* Provides access to the template constraints for the constructor
         sub-signature. */
         template <typename Source>
         using Check = Inner::template Check<Source>;
 
+        /* Bind an argument list to the default values to enable the constructor. */
+        template <typename... As>
+        using Bind = Inner::template Bind<As...>;
+
         template <typename... As>
             requires (
                 !(impl::arg_pack<As> || ...) &&
                 !(impl::kwarg_pack<As> || ...) &&
-                Check<Signature<Defaults(As...)>>::proper_argument_order &&
-                Check<Signature<Defaults(As...)>>::no_qualified_arg_annotations &&
-                Check<Signature<Defaults(As...)>>::no_duplicate_args &&
-                Check<Signature<Defaults(As...)>>::no_conflicting_values &&
-                Check<Signature<Defaults(As...)>>::no_extra_positional_args &&
-                Check<Signature<Defaults(As...)>>::no_extra_keyword_args &&
-                Check<Signature<Defaults(As...)>>::satisfies_required_args &&
-                Check<Signature<Defaults(As...)>>::can_convert
+                Bind<As...>::proper_argument_order &&
+                Bind<As...>::no_qualified_arg_annotations &&
+                Bind<As...>::no_duplicate_args &&
+                Bind<As...>::no_conflicting_values &&
+                Bind<As...>::no_extra_positional_args &&
+                Bind<As...>::no_extra_keyword_args &&
+                Bind<As...>::satisfies_required_args &&
+                Bind<As...>::can_convert
             )
         constexpr Defaults(As&&... args) : values(
             []<size_t... Js>(std::index_sequence<Js...>, auto&&... args) -> Tuple {
@@ -1062,181 +1239,6 @@ public:
         }
     };
 
-    /* A tuple holding a partial value for every bound argument in the enclosing
-    parameter list.  One of these must be provided whenever a C++ function is
-    invoked, and constructing one requires that the initializers match a
-    sub-signature consisting only of the bound args as positional-only and
-    keyword-only parameters for clarity.  The result may be empty if there are no
-    bound arguments in the enclosing signature, in which case the constructor will
-    be optimized out. */
-    struct Partial {
-    private:
-        /// TODO: count/index helpers just like Defaults?
-
-        /* Build a sub-signature holding only the bound arguments from the
-        enclosing signature.  This will be a specialization of the enclosing class,
-        which is used to bind arguments to this class's constructor using the same
-        semantics as the function's call operator. */
-        template <typename out, typename...>
-        struct extract { using type = out; };
-        template <typename... out, typename A, typename... As>
-        struct extract<Signature<Partial(out...)>, A, As...> {
-            template <typename>
-            struct sub_signature { using type = Signature<Partial(out...)>; };
-            template <typename T> requires (ArgTraits<T>::bound())
-            struct sub_signature<T> {
-                template <typename>
-                struct extend;
-                template <typename... Ps>
-                struct extend<pack<Ps...>> {
-                    template <typename P>
-                    struct to_partial { using type = P; };
-                    template <typename P> requires (ArgTraits<P>::kw())
-                    struct to_partial<P> {
-                        using type = Arg<
-                            ArgTraits<P>::name,
-                            typename ArgTraits<P>::type
-                        >::kw;
-                    };
-                    using type = Signature<Partial(out..., typename to_partial<Ps>::type...)>;
-                };
-                using type = extend<typename ArgTraits<T>::bound_to>::type;
-            };
-            using type = extract<
-                typename sub_signature<A>::type,
-                As...
-            >::type;
-        };
-        using Inner = extract<Signature<Partial()>, Args...>::type;
-
-        /* Build a std::tuple of Elements that hold the bound values in a way that
-        can be cross-referenced with the target signature. */
-        template <typename out, size_t, typename...>
-        struct collect { using type = out; };
-        template <typename... out, size_t I, typename A, typename... As>
-        struct collect<std::tuple<out...>, I, A, As...> {
-            template <typename>
-            struct tuple { using type = std::tuple<out...>; };
-            template <typename T> requires (ArgTraits<T>::bound())
-            struct tuple<T> {
-                template <typename>
-                struct extend;
-                template <typename... Ps>
-                struct extend<pack<Ps...>> {
-                    using type = std::tuple<
-                        out...,
-                        Element<
-                            I,
-                            ArgTraits<Ps>::name,
-                            typename ArgTraits<Ps>::type
-                        >...
-                    >;
-                };
-                using type = extend<typename ArgTraits<T>::bound_to>::type;
-            };
-            using type = collect<typename tuple<A>::type, I + 1, As...>::type;
-        };
-
-        using Tuple = collect<std::tuple<>, 0, Args...>::type;
-        Tuple values;
-
-        template <size_t K, typename... As>
-        static constexpr decltype(auto) build(As&&... args) {
-            using T = std::tuple_element_t<K, Tuple>;
-            if constexpr (T::name.empty()) {
-                return impl::unpack_arg<K>(std::forward<As>(args)...);
-            } else {
-                constexpr size_t idx = Signature<void(As...)>::template idx<T::name>;
-                return impl::unpack_arg<idx>(std::forward<As>(args)...);
-            }
-        }
-
-    public:
-        using type = Signature;
-
-        static constexpr size_t n               = Inner::n;
-        static constexpr size_t n_posonly       = Inner::n_posonly;
-        static constexpr size_t n_pos           = Inner::n_pos;
-        static constexpr size_t n_kw            = Inner::n_kw;
-        static constexpr size_t n_kwonly        = Inner::n_kwonly;
-
-        template <StaticStr Name>
-        static constexpr bool has               = Inner::template has<Name>;
-        static constexpr bool has_posonly       = Inner::has_posonly;
-        static constexpr bool has_pos           = Inner::has_pos;
-        static constexpr bool has_kw            = Inner::has_kw;
-        static constexpr bool has_kwonly        = Inner::has_kwonly;
-
-        template <StaticStr Name> requires (has<Name>)
-        static constexpr size_t idx             = Inner::template idx<Name>;
-        static constexpr size_t posonly_idx     = Inner::posonly_idx;
-        static constexpr size_t pos_idx         = Inner::pos_idx;
-        static constexpr size_t kw_idx          = Inner::kw_idx;
-        static constexpr size_t kwonly_idx      = Inner::kwonly_idx;
-
-        template <size_t K> requires (K < n)
-        using at = Inner::template at<K>;
-
-        /* Get the recorded name of the bound argument at index K of the partial
-        tuple. */
-        template <size_t K> requires (K < n)
-        static constexpr StaticStr name = std::tuple_element_t<K, Tuple>::name;
-
-        /* Given an index into the partial tuple, find the corresponding index in
-        the enclosing parameter list. */
-        template <size_t K> requires (K < n)
-        static constexpr size_t rfind = std::tuple_element_t<K, Tuple>::index;
-
-        /* Bind an argument list to the partial values to enable the constructor. */
-        template <typename... As>
-        using Bind = Inner::template Bind<As...>;
-
-        /* Provides access to the template constraints for the constructor
-        sub-signature. */
-        template <typename Source>
-        using Check = Inner::template Check<Source>;
-
-        template <typename... As>
-            requires (
-                !(impl::arg_pack<As> || ...) &&
-                !(impl::kwarg_pack<As> || ...) &&
-                Check<Signature<Partial(As...)>>::proper_argument_order &&
-                Check<Signature<Partial(As...)>>::no_qualified_arg_annotations &&
-                Check<Signature<Partial(As...)>>::no_duplicate_args &&
-                Check<Signature<Partial(As...)>>::no_conflicting_values &&
-                Check<Signature<Partial(As...)>>::no_extra_positional_args &&
-                Check<Signature<Partial(As...)>>::no_extra_keyword_args &&
-                Check<Signature<Partial(As...)>>::satisfies_required_args &&
-                Check<Signature<Partial(As...)>>::can_convert
-            )
-        constexpr Partial(As&&... args) : values(
-            []<size_t... Ks>(std::index_sequence<Ks...>, auto&&... args) -> Tuple {
-                return {{build<Ks>(std::forward<decltype(args)>(args)...)}...};
-            }(std::index_sequence_for<As...>{}, std::forward<As>(args)...)
-        ) {}
-
-        /* Get the bound value at index K of the tuple.  If the partials are
-        forwarded as an lvalue, then this will either directly reference the
-        internal value if the corresponding argument expects an lvalue, or a copy
-        if it expects an unqualified or rvalue type.  If the partials are given as
-        an rvalue instead, then the copy will instead be optimized to a move. */
-        template <size_t K> requires (K < n)
-        constexpr decltype(auto) get(this auto&& self) {
-            return std::get<K>(std::forward<decltype(self)>(self).values).get();
-        }
-
-        /* Get the bound value associated with the named argument, if it was given
-        as a keyword argument.  If the partials are forwarded as an lvalue, then
-        this will either directly reference the internal value if the corresponding
-        argument expects an lvalue, or a copy if it expects an unqualified or rvalue
-        type.  If the partials are given as an rvalue instead, then the copy will be
-        optimized to a move. */
-        template <StaticStr Name> requires (has<Name>)
-        constexpr decltype(auto) get(this auto&& self) {
-            return std::get<idx<Name>>(std::forward<decltype(self)>(self).values).get();
-        }
-    };
-
     /* Bind a C++ argument list to the enclosing signature, inserting default
     values and partial arguments where necessary to satisfy the signature.  This
     helper enables and implements the signature's call operator as a 3-way merge
@@ -1247,15 +1249,6 @@ public:
     folded into the resulting signature, facilitating higher-order function
     composition (currying, etc.) that can be computed entirely at compile time. */
     template <typename... Values>
-        requires (
-            Check<Signature<Return(Values...)>>::proper_argument_order &&
-            Check<Signature<Return(Values...)>>::no_qualified_arg_annotations &&
-            Check<Signature<Return(Values...)>>::no_duplicate_args &&
-            Check<Signature<Return(Values...)>>::no_extra_positional_args &&
-            Check<Signature<Return(Values...)>>::no_extra_keyword_args &&
-            Check<Signature<Return(Values...)>>::no_conflicting_values &&
-            Check<Signature<Return(Values...)>>::can_convert
-        )
     struct Bind {
     private:
         using Source = Signature<Return(Values...)>;
@@ -4051,30 +4044,36 @@ public:
             };
         };
 
-        template <bool, bool>
+        template <typename>
         struct get_signature {
+            static constexpr bool enable = false;
+            using type = void;
+        };
+        template <typename Source>
+            requires (
+                !Source::has_args &&
+                !Source::has_kwargs &&
+                Check<Source>::proper_argument_order &&
+                Check<Source>::no_qualified_arg_annotations &&
+                Check<Source>::no_duplicate_args &&
+                Check<Source>::no_extra_positional_args &&
+                Check<Source>::no_extra_keyword_args &&
+                Check<Source>::no_conflicting_values &&
+                Check<Source>::can_convert
+            )
+        struct get_signature<Source> {
+            static constexpr bool enable = true;
             using type = decltype(call<0, 0, 0>::partial(
                 std::declval<Partial>(),
                 std::declval<Values...>()
             ))::type;
         };
-        template <bool has_args, bool has_kwargs> requires (has_args || has_kwargs)
-        struct get_signature<has_args, has_kwargs> {
-            static_assert(
-                !has_args,
-                "positional packs cannot be bound as partial arguments"
-            );
-            static_assert(
-                !has_kwargs,
-                "keyword packs cannot be bound as partial arguments"
-            );
-            using type = void;
-        };
 
     public:
-        using signature = get_signature<Source::has_args, Source::has_kwargs>::type;
+        static constexpr bool enable = get_signature<Source>::enable;
+        using signature = get_signature<Source>::type;
 
-        static constexpr size_t n               = sizeof...(Values);
+        static constexpr size_t n               = Source::n;
         static constexpr size_t n_pos           = Source::n_pos;
         static constexpr size_t n_kw            = Source::n_kw;
 
@@ -4094,11 +4093,26 @@ public:
         template <size_t I> requires (I < n)
         using at = Source::template at<I>;
 
-        /// TODO: restore the template constraints down here, for better error
-        /// messages.  They'll still call into the Check<> infrastructure.  The problem
-        /// here is that it means I can't enforce constraints on Bind<> itself, but
-        /// it actually shouldn't really matter tbh, since all of the rest of the
-        /// operations in this class will be constrained according to them.
+        static constexpr bool proper_argument_order =
+            Check<Source>::proper_argument_order;
+
+        static constexpr bool no_qualified_arg_annotations =
+            Check<Source>::no_qualified_arg_annotations;
+
+        static constexpr bool no_duplicate_args =
+            Check<Source>::no_duplicate_args;
+
+        static constexpr bool no_extra_positional_args =
+            Check<Source>::no_extra_positional_args;
+
+        static constexpr bool no_extra_keyword_args =
+            Check<Source>::no_extra_keyword_args;
+
+        static constexpr bool no_conflicting_values =
+            Check<Source>::no_conflicting_values;
+
+        static constexpr bool can_convert =
+            Check<Source>::can_convert;
 
         static constexpr bool satisfies_required_args =
             Check<Source>::satisfies_required_args;
@@ -4156,6 +4170,15 @@ public:
         existing partial arguments.  This method is chainable, and the arguments will
         be interpreted as if they were passed to the signature's call operator. */
         template <impl::inherits<Partial> P>
+            requires (
+                proper_argument_order &&
+                no_qualified_arg_annotations &&
+                no_duplicate_args &&
+                no_extra_positional_args &&
+                no_extra_keyword_args &&
+                no_conflicting_values &&
+                can_convert
+            )
         static constexpr auto partial(P&& parts, Values... args) {
             return call<0, 0, 0>::partial(
                 std::forward<P>(parts),
@@ -4167,6 +4190,13 @@ public:
         template <impl::inherits<Partial> P, impl::inherits<Defaults> D, typename F>
             requires (
                 std::is_invocable_r_v<Return, F, Args...> &&
+                proper_argument_order &&
+                no_qualified_arg_annotations &&
+                no_duplicate_args &&
+                no_extra_positional_args &&
+                no_extra_keyword_args &&
+                no_conflicting_values &&
+                can_convert &&
                 satisfies_required_args
             )
         static constexpr Return operator()(
@@ -4292,6 +4322,13 @@ public:
         template <impl::inherits<Partial> P>
             requires (
                 std::convertible_to<Object, Return> &&
+                proper_argument_order &&
+                no_qualified_arg_annotations &&
+                no_duplicate_args &&
+                no_extra_positional_args &&
+                no_extra_keyword_args &&
+                no_conflicting_values &&
+                can_convert &&
                 satisfies_required_args
             )
         static Return operator()(
@@ -5930,63 +5967,108 @@ public:
             }
         };
 
-    public:
-        PyObject* const* args;
-        size_t nargs;
-        size_t flags;
-        PyObject* kwnames;
-        size_t kwcount;
         std::vector<PyObject*> converted;
+        bool has_offset;
 
+    public:
+        size_t nargs;
+        size_t kwcount;
+        size_t flags;
+        PyObject* const* array;
+        Object kwnames;
+        size_t hash;
+
+        /* Adopt a vectorcall array directly from Python, without any extra
+        normalization. */
         Vectorcall(PyObject* const* args, size_t nargsf, PyObject* kwnames) :
-            args(args),
-            kwnames(kwnames),
-            kwcount(kwnames ? PyTuple_GET_SIZE(kwnames) : 0),
+            converted(),
+            has_offset(nargsf & PY_VECTORCALL_ARGUMENTS_OFFSET),
             nargs(PyVectorcall_NARGS(nargsf)),
-            flags(nargsf & PY_VECTORCALL_ARGUMENTS_OFFSET)
+            kwcount(kwnames ? PyTuple_GET_SIZE(kwnames) : 0),
+            flags(nargsf - nargs),
+            array(has_offset ? args - 1 : args),
+            kwnames(reinterpret_borrow<Object>(kwnames)),
+            hash(0)
         {}
 
+        /* Manually build a vectorcall array from C++. */
+        template <impl::inherits<Partial> P, typename... Values>
+            /// TODO: a bunch of template constraints utilizing the concepts in
+            /// Bind<Values...>
+        Vectorcall(P&& parts, Values&&... values) :
+            converted(),
+            has_offset(true),
+            nargs(0),  /// TODO: calculate this from Partial::n_posonly and unpacking the values
+            kwcount(0),  /// TODO: calculate this from Partial::n_kwonly and unpacking the values
+            flags(PY_VECTORCALL_ARGUMENTS_OFFSET),
+            array(nullptr),
+            kwnames(reinterpret_steal<Object>(
+                kwcount ? PyTuple_New(kwcount) : nullptr
+            )),
+            hash(0)
+         {
+            /// TODO: use the infrastructure from Bind<>::call<I, J, K>::python{}(...)
+            /// to construct the vectorcall array
+            size_t size = nargs + kwcount;
+            converted.reserve(size);
+            //  hash = call<0, 0, 0>::construct(
+            //      std::forward<P>(parts),
+            //      converted,
+            //      kwnames,
+            //      std::forward<Values>(values)...
+            //  );
+            array = converted.data();
+        }
+
         Vectorcall(const Vectorcall& other) :
-            args(other.args),
+            converted(other.converted),
+            has_offset(other.has_offset),
             nargs(other.nargs),
-            flags(other.flags),
-            kwnames(other.kwnames),
             kwcount(other.kwcount),
-            converted(other.converted)
+            flags(other.flags),
+            array(other.array),
+            kwnames(other.kwnames),
+            hash(other.hash)
         {
-            for (PyObject* obj : converted) {
-                Py_INCREF(obj);
+            for (size_t i = 1, n = converted.size(); i < n; ++i) {
+                Py_INCREF(converted[i]);
             }
         }
 
         Vectorcall(Vectorcall&& other) :
-            args(other.args),
+            converted(std::move(other.converted)),
+            has_offset(other.has_offset),
             nargs(other.nargs),
-            flags(other.flags),
-            kwnames(other.kwnames),
             kwcount(other.kwcount),
-            converted(std::move(other.converted))
+            flags(other.flags),
+            array(other.array),
+            kwnames(other.kwnames),
+            hash(other.hash)
         {
-            other.args = nullptr;
+            other.has_offset = false;
+            other.array = nullptr;
             other.kwnames = nullptr;
             other.kwcount = 0;
             other.nargs = 0;
             other.flags = 0;
+            other.hash = 0;
         }
 
         Vectorcall& operator=(const Vectorcall& other) {
             if (this != &other) {
-                for (PyObject* obj : converted) {
-                    Py_DECREF(obj);
+                for (size_t i = 1, n = converted.size(); i < n; ++i) {
+                    Py_DECREF(converted[i]);
                 }
-                args = other.args;
-                nargs = other.nargs;
-                flags = other.flags;
-                kwnames = other.kwnames;
-                kwcount = other.kwcount;
                 converted = other.converted;
-                for (PyObject* obj : converted) {
-                    Py_INCREF(obj);
+                has_offset = other.has_offset;
+                nargs = other.nargs;
+                kwcount = other.kwcount;
+                flags = other.flags;
+                array = other.array;
+                kwnames = other.kwnames;
+                hash = other.hash;
+                for (size_t i = 1, n = converted.size(); i < n; ++i) {
+                    Py_INCREF(converted[i]);
                 }
             }
             return *this;
@@ -5994,39 +6076,105 @@ public:
 
         Vectorcall& operator=(Vectorcall&& other) {
             if (this != &other) {
-                for (PyObject* obj : converted) {
-                    Py_DECREF(obj);
+                for (size_t i = 1, n = converted.size(); i < n; ++i) {
+                    Py_DECREF(converted[i]);
                 }
-                args = other.args;
-                nargs = other.nargs;
-                flags = other.flags;
-                kwnames = other.kwnames;
-                kwcount = other.kwcount;
                 converted = std::move(other.converted);
-                other.args = nullptr;
-                other.kwnames = nullptr;
-                other.kwcount = 0;
+                has_offset = other.has_offset;
+                nargs = other.nargs;
+                kwcount = other.kwcount;
+                flags = other.flags;
+                array = other.array;
+                kwnames = other.kwnames;
+                hash = other.hash;
+                other.has_offset = false;
                 other.nargs = 0;
+                other.kwcount = 0;
                 other.flags = 0;
+                other.array = nullptr;
+                other.kwnames = reinterpret_steal<Object>(nullptr);
+                other.hash = 0;
             }
             return *this;
         }
 
         ~Vectorcall() noexcept {
-            for (PyObject* obj : converted) {
-                Py_DECREF(obj);
+            for (size_t i = 1, n = converted.size(); i < n; ++i) {
+                Py_DECREF(converted[i]);
             }
         }
 
-        /* Produce an overload key from the Python arguments, which can be used to
-        search the overload trie and invoke a resulting function. */
+        /* A lightweight, trivially-destructible representation of a single parameter
+        in the vectorcall array, as returned by the index operator. */
+        struct Param {
+            std::string_view name;
+            PyObject* const value;
+            impl::ArgKind kind;
+
+            constexpr bool posonly() const noexcept { return kind.posonly(); }
+            constexpr bool pos() const noexcept { return kind.pos(); }
+            constexpr bool args() const noexcept { return kind.args(); }
+            constexpr bool kwonly() const noexcept { return kind.kwonly(); }
+            constexpr bool kw() const noexcept { return kind.kw(); }
+            constexpr bool kwargs() const noexcept { return kind.kwargs(); }
+            constexpr bool opt() const noexcept { return kind.opt(); }
+            constexpr bool variadic() const noexcept { return kind.variadic(); }
+
+            /* Compute a hash of this parameter's name, type, and kind, using the given
+            FNV-1a hash seed and prime. */
+            size_t hash() const noexcept {
+                return impl::hash_combine(
+                    std::hash<std::string_view>{}(name),
+                    PyType_Check(value) ?
+                        reinterpret_cast<size_t>(value) :
+                        reinterpret_cast<size_t>(Py_TYPE(value)),
+                    static_cast<size_t>(kind)
+                );
+            }
+        };
+
+        /* Index into the vectorcall array, returning an individual argument as a
+        lightweight Param struct. */
+        Param operator[](size_t i) const {
+            if (i < nargs) {
+                constexpr std::string_view empty = "";
+                return {
+                    .name = empty,
+                    .value = array[i + has_offset],
+                    .kind = impl::ArgKind::POS
+                };
+            }
+            Py_ssize_t len;
+            const char* name = PyUnicode_AsUTF8AndSize(
+                PyTuple_GET_ITEM(ptr(kwnames), i - nargs),
+                &len
+            );
+            if (name == nullptr) {
+                Exception::from_python();
+            }
+            return {
+                .name = std::string_view{name, static_cast<size_t>(len)},
+                .value = array[i + has_offset],
+                .kind = impl::ArgKind::KW
+            };
+        }
+
+        /* Convert the Python arguments into equivalent Bertrand types and insert any
+        partial arguments in order to form a stable overload key with a consistent
+        hash, suitable for trie traversal with caching.  This method is only used when
+        a `py::Function` with dynamic overloads is called from Python, in which case we
+        adopt the vectorcall array using the `from_python()` constructor and then
+        normalize it into a key suitable for trie traversal + caching.
+
+        This method operates by side effect, such that the `array`, `nargs`, `flags`,
+        and `kwnames` members can then be used to directly invoke a Python function
+        via the vectorcall protocol. */
         template <impl::inherits<Partial> P>
-        Params<std::vector<Param>> key(P&& parts) {
-            /// NOTE: in order to provide consistent hashes with full type
-            /// information, each argument must be converted into a Bertrand
-            /// type before the key is generated.  This is the only way to
-            /// properly differentiate between ambiguous Python types (like
-            /// generic containers) and avoid hash ambiguities.
+        void normalize(P&& parts) {
+            if (array == converted.data()) {
+                return;
+            }
+
             Object bertrand = reinterpret_steal<Object>(PyImport_Import(
                 ptr(impl::template_string<"bertrand">())
             ));
@@ -6035,47 +6183,124 @@ public:
             }
             size_t size = nargs + kwcount;
             converted.reserve(Partial::n + size);
+
+            /// TODO: this is where the 3-way merge stuff needs to happen, rather than
+            /// a simple loop.  It also needs to account for a possible vectorcall
+            /// offset and compute a hash for the key.  The algorithm to build this
+            /// is implemented in call<I, K> and returns size_t, otherwise modifying
+            /// the converted vector by side effect.
             for (size_t i = 0; i < size; ++i) {
-                PyObject* obj = PyObject_CallOneArg(
+                converted.emplace_back(PyObject_CallOneArg(
                     ptr(bertrand),
-                    args[i]
-                );
-                if (obj == nullptr) {
+                    array[i]
+                ));
+                if (converted.back() == nullptr) {
                     for (size_t j = 0; j < i; ++j) {
                         Py_DECREF(converted[j]);
                     }
                     converted.clear();
                     Exception::from_python();
                 }
-                converted.emplace_back(obj);
             }
 
-            std::vector<Param> out;
-            out.reserve(Partial::n + size);
-            if (kwnames) {
-                Kwargs kwargs {converted.data(), nargs, kwnames, kwcount};
-                return call<0, 0>::key(
-                    out,
-                    0,
-                    kwargs,
-                    converted.data(),
-                    0,
-                    nargs,
-                    std::forward<P>(parts)
-                );
-            } else {
-                return call<0, 0>::key(
-                    out,
-                    0,
-                    converted.data(),
-                    0,
-                    nargs,
-                    std::forward<P>(parts)
-                );
+            // hash = call<0, 0>::normalize(std::forward<P>(parts), converted, 0, size);
+            /// TODO: possibly the same pattern as below, but assigning the result
+            /// to hash instead of returning it directly?
+            array = converted.data();
+            nargs = nargs + Partial::n_posonly;
+            flags |= PY_VECTORCALL_ARGUMENTS_OFFSET;
+            if constexpr (Partial::n_kw) {
+                /// TODO: generate a new kwnames tuple
+                kwnames = reinterpret_steal<Object>(nullptr);
+                kwcount = kwcount + Partial::n_kw;
             }
+
+
+            // std::vector<Param> out;
+            // out.reserve(Partial::n + size);
+            // if (kwnames) {
+            //     Kwargs kwargs {converted.data(), nargs, kwnames, kwcount};
+            //     return call<0, 0>::key(
+            //         out,
+            //         0,
+            //         kwargs,
+            //         converted.data(),
+            //         0,
+            //         nargs,
+            //         std::forward<P>(parts)
+            //     );
+            // } else {
+            //     return call<0, 0>::key(
+            //         out,
+            //         0,
+            //         converted.data(),
+            //         0,
+            //         nargs,
+            //         std::forward<P>(parts)
+            //     );
+            // }
         }
 
-        /* Invoke a C++ function from Python using Python-style arguments. */
+        // /* Produce an overload key from the Python arguments, which can be used to
+        // search the overload trie and invoke a resulting function. */
+        // template <impl::inherits<Partial> P>
+        // Params<std::vector<Param>> key(P&& parts) {
+        //     /// NOTE: in order to provide consistent hashes with full type
+        //     /// information, each argument must be converted into a Bertrand
+        //     /// type before the key is generated.  This is the only way to
+        //     /// properly differentiate between ambiguous Python types (like
+        //     /// generic containers) and avoid hash ambiguities.
+        //     Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+        //         ptr(impl::template_string<"bertrand">())
+        //     ));
+        //     if (bertrand.is(nullptr)) {
+        //         Exception::from_python();
+        //     }
+        //     size_t size = nargs + kwcount;
+        //     converted.reserve(Partial::n + size);
+        //     for (size_t i = 0; i < size; ++i) {
+        //         PyObject* obj = PyObject_CallOneArg(
+        //             ptr(bertrand),
+        //             args[i]
+        //         );
+        //         if (obj == nullptr) {
+        //             for (size_t j = 0; j < i; ++j) {
+        //                 Py_DECREF(converted[j]);
+        //             }
+        //             converted.clear();
+        //             Exception::from_python();
+        //         }
+        //         converted.emplace_back(obj);
+        //     }
+
+        //     std::vector<Param> out;
+        //     out.reserve(Partial::n + size);
+        //     if (kwnames) {
+        //         Kwargs kwargs {converted.data(), nargs, kwnames, kwcount};
+        //         return call<0, 0>::key(
+        //             out,
+        //             0,
+        //             kwargs,
+        //             converted.data(),
+        //             0,
+        //             nargs,
+        //             std::forward<P>(parts)
+        //         );
+        //     } else {
+        //         return call<0, 0>::key(
+        //             out,
+        //             0,
+        //             converted.data(),
+        //             0,
+        //             nargs,
+        //             std::forward<P>(parts)
+        //         );
+        //     }
+        // }
+
+        /* Invoke a C++ function using denormalized vectorcall arguments, by providing
+        separate partial arguments that will be directly merged into the C++ argument
+        list, without any extra allocations. */
         template <impl::inherits<Partial> P, impl::inherits<Defaults> D, typename F>
             requires (std::is_invocable_r_v<Return, F, Args...>)
         Return operator()(P&& parts, D&& defaults, F&& func) const {
@@ -6101,7 +6326,33 @@ public:
                 );
             }
         }
+
+        /* Invoke a C++ function using normalized vectorcall arguments, which already
+        include any partials. */
+        template <impl::inherits<Defaults> D, typename F>
+            requires (std::is_invocable_r_v<Return, F, Args...>)
+        Return operator()(D&& defaults, F&& func) const {
+            /// TODO: complications
+        }
+
+        /* Invoke a Python function using the stored arguments, converting the result
+        to the expected return type. */
+        Return operator()(PyObject* func) const {
+            Object result = reinterpret_steal<Object>(PyObject_Vectorcall(
+                func,
+                array,
+                nargs | flags,
+                ptr(kwnames)
+            ));
+            if (result.is(nullptr)) {
+                Exception::from_python();
+            }
+            return result;
+        }
     };
+
+
+
 
     /// TODO: partial arguments will have to be provided to the Overload trie
     /// iterators, such that they can be automatically inserted when traversing
@@ -6127,11 +6378,8 @@ public:
     caching. */
     struct Overloads {
         struct instance {
-            static bool operator()(const Object& obj, const Object& cls) {
-                int rc = PyObject_IsInstance(
-                    ptr(obj),
-                    ptr(cls)
-                );
+            static bool operator()(PyObject* obj, PyObject* cls) {
+                int rc = PyObject_IsInstance(obj, cls);
                 if (rc < 0) {
                     Exception::from_python();
                 }
@@ -6140,11 +6388,8 @@ public:
         };
 
         struct subclass {
-            static bool operator()(const Object& obj, const Object& cls) {
-                int rc = PyObject_IsSubclass(
-                    ptr(obj),
-                    ptr(cls)
-                );
+            static bool operator()(PyObject* obj, PyObject* cls) {
+                int rc = PyObject_IsSubclass(obj, cls);
                 if (rc < 0) {
                     Exception::from_python();
                 }
@@ -6152,198 +6397,314 @@ public:
             }
         };
 
+    private:
         template <typename T>
         static constexpr bool valid_check =
             std::same_as<T, instance> || std::same_as<T, subclass>;
 
-        struct Edge;
-        struct Edges;
-        struct Node;
-        struct Metadata;
-
-        /* A single link between two nodes in the trie, which describes how to traverse
-        from one to the other.  Multiple edges may share the same target node if they
-        have identical origins and require the same type.  A unique edge will always be
-        created for each parameter in a key when it is first inserted. */
-        struct Edge {
+        /* An encoded representation of a function that has been inserted into the
+        overload trie, which includes the function itself, a hash of the key that
+        it was inserted under, a bitmask of the required arguments that must be
+        satisfied to invoke the function, and an immutable map of keyword names (which
+        back the string views in Node::keywords) to component bitmasks describing their
+        canonical positions, to correct for arbitrary keyword order. */
+        struct Metadata {
+            Object func;
             size_t hash;
-            std::shared_ptr<Node> target;
-            impl::ArgKind kind;
-            uint64_t mask;
+            uint64_t required;
+            /// TODO: store the Vectorcall key that the function was inserted under.
+            /// The full key is needed to fully purge the function from the trie when
+            /// it is removed, 
+            const std::unordered_map<std::string, uint64_t> keywords;
+        };
 
-            friend bool operator<(const Edge& lhs, const Edge& rhs) {
-                return
-                    lhs.kind < rhs.kind ||
-                    lhs.hash < rhs.hash ||
-                    lhs.target < rhs.target;
+        /* A map of hashes to encoded Metadata structs describing the flattened
+        contents of the trie. */
+        using Data = std::unordered_map<size_t, Metadata>;
+        Data data;
+
+        /* A thin wrapper around an iterator over the `data` map, which yields function
+        objects just like the topological `search()` iterator, and can be compared to
+        the standardized sentinel type, allowing the use of a single, shared
+        `overloads.end()` method. */
+        struct DataIter {
+            std::ranges::iterator_t<Data> it;
+            std::ranges::sentinel_t<Data> end;
+
+            Object& operator*() { return it->second.func; }
+            Object* operator->() { return &(**this); }
+            const Object& operator*() const { return it->second.func; }
+            const Object* operator->() const { return &(**this); }
+
+            auto& operator++() { ++it; return *this; }
+            auto operator++(int) { return DataIter{it++, end}; }
+
+            friend bool operator==(const DataIter& self, const DataIter& other) {
+                return self.it == other.it;
             }
 
-            friend bool operator<(const Edge& lhs, size_t rhs) {
-                return lhs.hash < rhs;
+            friend bool operator!=(const DataIter& self, const DataIter& other) {
+                return self.it != other.it;
             }
 
-            friend bool operator<(size_t lhs, const Edge& rhs) {
-                return lhs < rhs.hash;
+            friend bool operator==(const DataIter& self, impl::Sentinel) {
+                return self.it == self.end;
             }
 
-            friend bool operator<(const Edge& lhs, std::shared_ptr<Node> rhs) {
-                return lhs.target < rhs;
+            friend bool operator!=(const DataIter& self, impl::Sentinel) {
+                return self.it != self.end;
             }
 
-            friend bool operator<(std::shared_ptr<Node> lhs, const Edge& rhs) {
-                return lhs < rhs.target;
+            friend bool operator==(impl::Sentinel, const DataIter& self) {
+                return self == impl::Sentinel{};
+            }
+
+            friend bool operator!=(impl::Sentinel, const DataIter& self) {
+                return self != impl::Sentinel{};
             }
         };
 
-        /* A sorted collection of outgoing edges linking a node to its descendants.
-        Edges are topologically sorted by expected type (with subclasses coming before
-        parent classes) as well as kind (with required edges coming before optional,
-        which come before variadic). */
-        struct Edges {
+    public:
+        /* A single node in the overload trie, which holds the topologically-sorted
+        edge maps necessary for traversal, insertion, and deletion of candidate
+        functions, as well as a (possibly null) terminal function to call if this
+        is the last node in a given argument list. */
+        struct Node {
         private:
-            struct TopoSort {
-                static bool operator()(const Object& lhs, const Object& rhs) {
-                    int rc = PyObject_IsSubclass(
-                        ptr(lhs),
-                        ptr(rhs)
-                    );
-                    if (rc < 0) {
-                        Exception::from_python();
-                    }
-                    // ties are broken by address to ensure stable sort
-                    return rc || ptr(lhs) < ptr(rhs);
+            friend Overloads;
+
+            /* A single link between two nodes in the trie, which describes how to traverse
+            from one to the other.  Multiple edges may share the same target node if they
+            have identical origins and require the same type.  A unique edge will always be
+            created for each parameter in a key when it is first inserted. */
+            struct Edge {
+                size_t hash;
+                std::shared_ptr<Node> target;
+                impl::ArgKind kind;
+                uint64_t mask;
+
+                friend bool operator<(const Edge& lhs, const Edge& rhs) {
+                    return
+                        lhs.kind < rhs.kind ||
+                        lhs.hash < rhs.hash ||
+                        lhs.target < rhs.target;
+                }
+
+                friend bool operator<(const Edge& lhs, size_t rhs) {
+                    return lhs.hash < rhs;
+                }
+
+                friend bool operator<(size_t lhs, const Edge& rhs) {
+                    return lhs < rhs.hash;
+                }
+
+                friend bool operator<(const Edge& lhs, std::shared_ptr<Node> rhs) {
+                    return lhs.target < rhs;
+                }
+
+                friend bool operator<(std::shared_ptr<Node> lhs, const Edge& rhs) {
+                    return lhs < rhs.target;
                 }
             };
 
-            /* Maps type -> set<Edge>, where the types are topologically sorted
-            according to `issubclass()`, and outgoing edges are sorted by kind. */
-            using Set = std::set<Edge, std::less<>>;
-            using Map = std::map<Object, Set, TopoSort>;
-            Map map;
-
-        public:
-            auto size() const { return map.size(); }
-            auto empty() const { return map.empty(); }
-            auto begin() const { return map.begin(); }
-            auto cbegin() const { return map.cbegin(); }
-            auto end() const { return map.end(); }
-            auto cend() const { return map.cend(); }
-
-            /* A sorted iterator over the individual edges that match a particular
-            value within an overload key.  The generalized trie iterator consists of a
-            nested stack of these, which grows and shrinks as the trie is explored,
-            mimicking the call frame in a recursive function. */
-            template <typename check> requires (valid_check<check>)
-            struct Iterator {
-                using iterator_category = std::input_iterator_tag;
-                using difference_type = std::ptrdiff_t;
-                using value_type = Edge;
-                using pointer = value_type*;
-                using reference = value_type&;
-
-                Object value;
-
-                struct SetView {
-                    inline static const Set empty = Set{};
-                    std::ranges::iterator_t<const Set> begin;
-                    std::ranges::sentinel_t<const Set> end;
-                } set;
-
-                struct MapView {
-                    inline static const Map empty = Map{};
-                    std::ranges::iterator_t<const Map> begin;
-                    std::ranges::sentinel_t<const Map> end;
-                } map;
-
-                Iterator(
-                    const Object& value,
-                    std::ranges::iterator_t<const Map>&& it,
-                    std::ranges::sentinel_t<const Map>&& end
-                ) : value(value),
-                    set([](const Object& value, auto& it, auto& end) {
-                        while (it != end) {
-                            if (check{}(value, it->first)) {
-                                return SetView{it->second.begin(), it->second.end()};
-                            }
-                            ++(it);
+            /* A sorted collection of outgoing edges linking a node to its descendants.
+            Edges are topologically sorted by expected type (with subclasses coming before
+            parent classes) as well as kind (with required edges coming before optional,
+            which come before variadic). */
+            struct Edges {
+            private:
+                struct TopoSort {
+                    static bool operator()(PyObject* lhs, PyObject* rhs) {
+                        int rc = PyObject_IsSubclass(
+                            lhs,
+                            rhs
+                        );
+                        if (rc < 0) {
+                            Exception::from_python();
                         }
-                        return SetView{SetView::empty.begin(), SetView::empty.end()};
-                    }(value, it, end)),
-                    map(std::move(it), std::move(end))
-                {}
-
-                Iterator(const Object& value, impl::Sentinel) :
-                    value(value),
-                    set(SetView::empty.begin(), SetView::empty.end()),
-                    map(MapView::empty.begin(), MapView::empty.end())
-                {}
-
-                Edge& operator*() { return *(set.begin); }
-                Edge* operator->() { return &(**this); }
-                const Edge& operator*() const { return *(set.begin); }
-                const Edge* operator->() const { return &(**this); }
-
-                Iterator& operator++() {
-                    if (set.begin != set.end) {
-                        ++(set.begin);
+                        return rc || lhs < rhs;  // ties broken by address for stability
                     }
-                    if (set.begin == set.end) {
-                        ++(map.begin);
-                        while (map.begin != map.end) {
-                            if (check{}(value, map.begin->first)) {
-                                set.begin = map.begin->second.begin();
-                                set.end = map.begin->second.end();
-                                break;
-                            }
-                            ++(map.begin);
+                };
+
+            public:
+                using Set = std::set<Edge, std::less<>>;
+                using Map = std::map<PyObject*, Set, TopoSort>;
+
+                Map map;
+
+                Edges(const Edges& other) : map(other.map) {
+                    auto it = map.begin();
+                    auto end = map.end();
+                    while (it != end) {
+                        Py_INCREF(it->first);
+                        ++it;
+                    }
+                }
+
+                Edges(Edges&& other) : map(std::move(other.map)) {
+                    other.map.clear();
+                }
+
+                Edges& operator=(const Edges& other) {
+                    if (this != &other) {
+                        auto it = map.begin();
+                        auto end = map.end();
+                        while (it != end) {
+                            Py_DECREF(it->first);
+                            ++it;
+                        }
+                        map = other.map;
+                        it = map.begin();
+                        end = map.end();
+                        while (it != end) {
+                            Py_INCREF(it->first);
+                            ++it;
                         }
                     }
                     return *this;
                 }
 
-                friend bool operator==(const Iterator& self, impl::Sentinel) {
-                    return self.map.begin == self.map.end;
+                Edges& operator=(Edges&& other) {
+                    if (this != &other) {
+                        auto it = map.begin();
+                        auto end = map.end();
+                        while (it != end) {
+                            Py_DECREF(it->first);
+                            ++it;
+                        }
+                        map = std::move(other.map);
+                        other.map.clear();
+                    }
+                    return *this;
                 }
 
-                friend bool operator==(impl::Sentinel, const Iterator& self) {
-                    return self.map.begin == self.map.end;
+                ~Edges() noexcept {
+                    auto it = map.begin();
+                    auto end = map.end();
+                    while (it != end) {
+                        Py_DECREF(it->first);
+                        ++it;
+                    }
                 }
 
-                friend bool operator!=(const Iterator& self, impl::Sentinel) {
-                    return self.map.begin != self.map.end;
+                auto size() const { return map.size(); }
+                auto empty() const { return map.empty(); }
+                auto begin() const { return map.begin(); }
+                auto cbegin() const { return map.cbegin(); }
+                auto end() const { return map.end(); }
+                auto cend() const { return map.cend(); }
+
+                /* A sorted iterator over the individual edges that match a particular
+                value within an overload key.  The generalized trie iterator consists of a
+                nested stack of these, which grows and shrinks as the trie is explored,
+                mimicking the call frame in a recursive function. */
+                template <typename check> requires (valid_check<check>)
+                struct Iterator {
+                    using iterator_category = std::input_iterator_tag;
+                    using difference_type = std::ptrdiff_t;
+                    using value_type = Edge;
+                    using pointer = value_type*;
+                    using reference = value_type&;
+
+                    PyObject* value;
+
+                    struct SetView {
+                        inline static const Set empty;
+                        std::ranges::iterator_t<const Set> begin;
+                        std::ranges::sentinel_t<const Set> end;
+                    } set;
+
+                    struct MapView {
+                        inline static const Map empty;
+                        std::ranges::iterator_t<const Map> begin;
+                        std::ranges::sentinel_t<const Map> end;
+                    } map;
+
+                    Iterator(
+                        PyObject* value,
+                        std::ranges::iterator_t<const Map>&& it,
+                        std::ranges::sentinel_t<const Map>&& end
+                    ) : value(value),
+                        set([](PyObject* value, auto& it, auto& end) {
+                            while (it != end) {
+                                if (value == Py_Ellipsis || check{}(value, it->first)) {
+                                    return SetView{it->second.begin(), it->second.end()};
+                                }
+                                ++(it);
+                            }
+                            return SetView{SetView::empty.begin(), SetView::empty.end()};
+                        }(value, it, end)),
+                        map(std::move(it), std::move(end))
+                    {}
+
+                    Iterator(PyObject* value, impl::Sentinel) :
+                        value(value),
+                        set(SetView::empty.begin(), SetView::empty.end()),
+                        map(MapView::empty.begin(), MapView::empty.end())
+                    {}
+
+                    Edge& operator*() { return *(set.begin); }
+                    Edge* operator->() { return &(**this); }
+                    const Edge& operator*() const { return *(set.begin); }
+                    const Edge* operator->() const { return &(**this); }
+
+                    Iterator& operator++() {
+                        if (set.begin != set.end) {
+                            ++(set.begin);
+                        }
+                        if (set.begin == set.end) {
+                            ++(map.begin);
+                            while (map.begin != map.end) {
+                                if (value == Py_Ellipsis || check{}(value, map.begin->first)) {
+                                    set.begin = map.begin->second.begin();
+                                    set.end = map.begin->second.end();
+                                    break;
+                                }
+                                ++(map.begin);
+                            }
+                        }
+                        return *this;
+                    }
+
+                    friend bool operator==(const Iterator& self, impl::Sentinel) {
+                        return self.map.begin == self.map.end;
+                    }
+
+                    friend bool operator==(impl::Sentinel, const Iterator& self) {
+                        return self.map.begin == self.map.end;
+                    }
+
+                    friend bool operator!=(const Iterator& self, impl::Sentinel) {
+                        return self.map.begin != self.map.end;
+                    }
+
+                    friend bool operator!=(impl::Sentinel, const Iterator& self) {
+                        return self.map.begin != self.map.end;
+                    }
+                };
+
+                /* Return a shallow iterator over the subset of edges that match a given
+                value, as determined by the template check.  Results are yielded in
+                topological order, with ties broken by kind, where required arguments come
+                before optional, which come before variadic. */
+                template <typename check> requires (valid_check<check>)
+                Iterator<check> search(PyObject* value) const {
+                    return {value, map.begin(), map.end()};
                 }
 
-                friend bool operator!=(impl::Sentinel, const Iterator& self) {
-                    return self.map.begin != self.map.end;
-                }
             };
 
-            /* Return a shallow iterator over the subset of edges that match a given
-            value, as determined by the template check.  Results are yielded in
-            topological order, with ties broken by kind, where required arguments come
-            before optional, which come before variadic. */
-            template <typename check> requires (valid_check<check>)
-            Iterator<check> search(const Object& value) const {
-                return {value, map.begin(), map.end()};
-            }
-
-        };
-
-        /* A single node in the overload trie, which holds the topologically-sorted
-        edge maps necessary for traversal, insertion, and deletion of candidate
-        functions, as well as a (possibly null) terminal function to call if this
-        node is the last in a given argument list. */
-        struct Node {
-            PyObject* func;
+        public:
+            Object func;
             Edges positional;
-            std::unordered_map<std::string, Edges> keyword;
+            std::unordered_map<std::string_view, Edges> keyword;
 
             /* Return a sorted iterator over the outgoing edges that could potentially
             match a given parameter in an overload key.  Can return an empty iterator
             if there are no matches, which triggers backtracking in the generalized
             traversal algorithm. */
             template <typename check> requires (valid_check<check>)
-            Edges::Iterator<check> search(const impl::Param& param) const {
+            Edges::Iterator<check> search(const Vectorcall::Param& param) const {
                 if (param.posonly()) {
                     return positional.template search<check>(param.value);
                 }
@@ -6351,44 +6712,105 @@ public:
                 if (it != keyword.end()) {
                     return it->second.template search<check>(param.value);
                 }
+                constexpr std::string_view kwargs = "";
+                it = keyword.find(kwargs);
+                if (it != keyword.end()) {
+                    return it->second.template search<check>(param.value);
+                }
                 return {param.value, impl::Sentinel{}};
             }
         };
 
-        /* An encoded representation of a function that has been inserted into the
-        overload trie, which includes the function itself, a hash of the key that
-        it was inserted under, a bitmask of the required arguments that must be
-        satisfied to invoke the function, and a map of keyword names to component
-        bitmasks to correct for arbitrary keyword order. */
-        struct Metadata {
-            Object func;
-            size_t hash;
-            uint64_t required;
-            std::unordered_map<std::string, uint64_t> keywords;
-        };
-
-        template <typename check, typename Container> requires (valid_check<check>)
+        /* An iterator that traverses the trie in topological order, returning the
+        subset of overloads that match a given argument list.  As long as the arguments
+        are valid, the final overload will always be the base implementation.
+        Otherwise, the iterator may be empty, indicating that the function cannot be
+        called with the given arguments. */
+        template <typename check> requires (valid_check<check>)
         struct Iterator {
         private:
-            void initialize(const impl::Params<Container>& key, Node* node) {
-                size_t i = 0;
-                size_t n = key.size();
-                stack.reserve(n);
-                while (i < n) {
-                    /// TODO: this has to use similar logic to the increment operator
-                    /// except that its only goal is to find the first match.
-                    stack.emplace_back(
-                        node->template search<check>(key[i++])
-                    );
-                    while (stack.back() == node->end()) {
-                        stack.pop_back();
-                        if (stack.empty()) {
-                            return;
+            using Edge = Node::Edge;
+            using Edges = Node::Edges;
+            using Param = Vectorcall::Param;
+            using Stack = std::vector<typename Edges::template Iterator<check>>;
+
+            void advance() {
+                bool reset = false;
+                Edge* curr = &(*stack.back());
+                while (++stack.back() == impl::Sentinel{}) {
+                    stack.pop_back();
+                    if (stack.empty()) {
+                        return;
+                    }
+                    if (deepest == curr) {
+                        reset = true;
+                    }
+                    curr = &(*stack.back());
+                }
+                if (reset) {
+                    deepest = &(*stack[0]);
+                    for (auto& it : stack) {
+                        if (it->mask > deepest->mask) {
+                            deepest = &(*it);
                         }
-                        node = stack.back();
                     }
                 }
             }
+
+            void explore() {
+                size_t n = key.size() + 1;
+                while (stack.size() < n) {
+                    stack.emplace_back(
+                        stack.back()->target->template search<check>(
+                            key[stack.size() - 1]
+                        )
+                    );
+                    if (stack.back() == impl::Sentinel{}) {
+                        stack.pop_back();
+                        advance();
+                        if (stack.empty()) {
+                            return;
+                        }
+                    } else {
+                        const Edge& edge = *stack.back();
+                        if (edge.mask > deepest->mask) {
+                            deepest = &edge;
+                        }
+                    }
+                }
+
+                if (deepest->target->func.is(nullptr)) {
+                    advance();
+                    if (!stack.empty()) {
+                        explore();
+                    }
+                    return;
+                } 
+
+                if (!key.empty()) {
+                    uint64_t mask = 0;
+                    const Metadata& metadata = data->at(deepest->hash);
+                    for (size_t i = 0, n = key.size(); i < n; ++i) {
+                        const Param& param = key[i];
+                        if (param.posonly()) {
+                            mask |= 1ULL << i;
+                        } else {
+                            mask |= metadata.keywords.at(param.name);
+                        }
+                    }
+                    if ((mask & metadata.required) != metadata.required) {
+                        advance();
+                        if (!stack.empty()) {
+                            explore();
+                        }
+                    }
+                }
+            }
+
+            Vectorcall key;
+            Stack stack;
+            Edge* deepest;
+            const Data* data;
 
         public:
             using iterator_category = std::input_iterator_tag;
@@ -6397,35 +6819,27 @@ public:
             using pointer = value_type*;
             using reference = value_type&;
 
-            impl::Params<Container> key;
-            std::vector<typename Edges::template Iterator<check>> stack;
-            Edge* deepest;
+            Iterator(const Vectorcall& key, const Edges& init, const Data& data) :
+                key(key), data(&data)
+            {
+                stack.reserve(key.size() + 1);
+                stack.emplace_back(
+                    init->template search<check>(Ellipsis)
+                );
+                deepest = &(*stack.back());
+                explore();
+            }
 
-            Iterator(const impl::Params<Container>& key, Node* node) :
-                key(key),
-                stack(initialize(this->key)),
-                deepest(&null_edge)
-            {}
-
-            Iterator(impl::Params<Container>&& key, Node* node) :
-                key(std::move(key)),
-                stack(initialize(this->key)),
-                deepest(&null_edge)
-            {}
-
-            /// TODO: rather than nullptr, use None to indicate a fallback case, which
-            /// is different from an empty iterator, which indicates that the function
-            /// is not callable with the given args.  Alternatively, I can always
-            /// encode the fallback function as just another overload within the trie,
-            /// which would standardize things a lot more, and potentially lead to
-            /// higher performance.  It might also simplify error handling somewhat.
-            /// In that case, there would never be a special case for null or None.
-            /// It's all handled through the iterators.
-            /// -> I should still be able to optimize memory by using a null root to
-            /// indicate whether there are dynamic overloads, but if you insert into a
-            /// null overload trie, then I also need to insert the base implementation
-            /// just before.  Then, when you remove an overload, if the trie has only
-            /// one element, I can delete the root node as an optimization.
+            Iterator(Vectorcall&& key, const Edges& init, const Data& data) :
+                key(std::move(key)), data(&data)
+            {
+                stack.reserve(key.size() + 1);
+                stack.emplace_back(
+                    init->template search<check>(Ellipsis)
+                );
+                deepest = &(*stack.back());
+                explore();
+            }
 
             /* The overall trie iterator dereferences only to those functions that are
             callable with the given key. */
@@ -6438,42 +6852,12 @@ public:
             is found.  As long as the args are valid, the iterator will always contain
             the function's base implementation as the final overload. */
             Iterator& operator++() {
-                if (stack.empty()) {
-                    return *this;
-                }
-
-                // advance the last iterator and pop it from the stack if exhausted
-                Edge* curr = &(*stack.back());
-                bool reset = false;
-                while (++stack.back() == impl::Sentinel{}) {
-                    stack.pop_back();
-                    if (stack.empty()) {
-                        return *this;
-                    }
-                    if (deepest == curr) {
-                        reset = true;
-                    }
-                    curr = &(*stack.back());
-                }
-
-                // update the deepest edge if necessary
-                if (reset) {
-                    deepest = &null_edge;
-                    for (auto& it : stack) {
-                        if (it->mask > deepest->mask) {
-                            deepest = &(*it);
-                        }
+                if (!stack.empty()) {
+                    advance();
+                    if (!stack.empty()) {
+                        explore();
                     }
                 }
-
-                // rebuild the stack with the incremented iterator
-                while (stack.size() < key.size()) {
-                    /// TODO: stack will need to grow and shrink as we traverse the
-                    /// trie, depending on whether the iterators we add contain any
-                    /// valid matches.
-                    // stack.emplace_back();
-                }
-
                 return *this;
             }
 
@@ -6483,14 +6867,12 @@ public:
                 return stack.empty();
             }
 
-            template <typename C>
-            friend bool operator==(const Iterator& self, const Iterator<check, C>& other) {
+            friend bool operator==(const Iterator& self, const Iterator& other) {
                 return self.deepest == other.deepest;
             }
 
-            template <typename C> requires (!std::same_as<Container, C>)
-            friend bool operator!=(const Iterator<check, C>& other, const Iterator& self) {
-                return self.deepest == other.deepest;
+            friend bool operator!=(const Iterator& self, const Iterator& other) {
+                return self.deepest != other.deepest;
             }
 
             friend bool operator==(const Iterator& self, impl::Sentinel) {
@@ -6499,16 +6881,6 @@ public:
 
             friend bool operator==(impl::Sentinel, const Iterator& self) {
                 return self.stack.empty();
-            }
-
-            template <typename C>
-            friend bool operator!=(const Iterator& self, const Iterator<check, C>& other) {
-                return self.deepest != other.deepest;
-            }
-
-            template <typename C> requires (!std::same_as<Container, C>)
-            friend bool operator!=(const Iterator<check, C>& other, const Iterator& self) {
-                return self.deepest != other.deepest;
             }
 
             friend bool operator!=(const Iterator& self, impl::Sentinel) {
@@ -6520,45 +6892,39 @@ public:
             }
         };
 
-        std::unordered_map<size_t, Metadata> data;
-        std::shared_ptr<Node> root;
-
-        bool empty() const { return root == nullptr; }
-        size_t size() const { return data.size() - !empty(); }
-
-        /// TODO: there should also be a begin()/cbegin() method that returns an
-        /// arbitrary iterator over the trie, which visits each function in purely
-        /// topological order, implementing the `for overload in func:` syntax.
+        std::shared_ptr<Node> root() const { return root_edges.begin()->target; }
+        bool empty() const { return data.empty(); }
+        size_t size() const { return data.size() - !data.empty(); }
+        auto begin() const { return DataIter{data.begin(), data.end()}; }
+        auto cbegin() const { return DataIter{data.begin(), data.end()}; }
         impl::Sentinel end() const { return {}; }
         impl::Sentinel cend() const { return {}; }
 
-        template <typename check, typename Container> requires (valid_check<check>)
-        auto search(const impl::Params<Container>& key) const
-            -> Iterator<check, Container>
-        {
-            /// TODO: validate the key in some way?
-            return {key};
-        }
-
-        template <typename check, typename Container> requires (valid_check<check>)
-        auto search(impl::Params<Container>&& key) const
-            -> Iterator<check, Container>
-        {
-            /// TODO: validate the key in some way?
-            return {std::move(key)};
+        /* Topologically search the trie with a given argument list, returning a sorted
+        iterator over the matching overloads.  The first item is always the most
+        specific matching overload, and the last item is always the function's base
+        implementation.  An empty iterator can be returned if the arguments do not
+        conform to the enclosing signature. */
+        template <typename check, impl::is<Vectorcall> Key> requires (valid_check<check>)
+        Iterator<check> search(Key&& key) const {
+            return {std::forward<Key>(key), root_edges, data};
         }
 
     private:
-
-        /* A placeholder edge with a zero mask that serves as the initial value for an
-        iterator's `deepest` pointer, and will be immediately overwritten. */
-        static constexpr Edge null_edge = {
-            .hash = 0,
-            .target = nullptr,
-            .kind = 0,
-            .mask = 0,
+        /* A placeholder edge container with only a single element, which describes a
+        null edge to the root of the trie, which is used as the initial value for an
+        iterator traversal. */
+        Node::Edges root_edges = {
+            .map = {
+                Py_NewRef(&PyBaseObject_Type),
+                {
+                    .hash = 0,
+                    .target = nullptr,
+                    .kind = 0,
+                    .mask = 0,
+                }
+            }
         };
-
 
 
         /// NOTE: in order to handle out-of-order keywords during argument validation,
