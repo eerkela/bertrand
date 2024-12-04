@@ -144,23 +144,12 @@ constexpr T exp_mod(T base, T exp, T mod) noexcept {
 }
 
 
-/* Compute the next power of two greater than or equal to a given value. */
-template <std::unsigned_integral T>
-constexpr T next_power_of_two(T n) noexcept {
-    --n;
-    for (size_t i = 1, bits = sizeof(T) * 8; i < bits; i <<= 1) {
-        n |= (n >> i);
-    }
-    return ++n;
-}
-
-
-/* Miller-Rabin primality test.  Uses traditional probabilistic methods with random
-numbers at runtime, but can also be computed deterministically at compile time using a
-fixed set of bases.  In the compile-time case, the iterations argument is not used. */
+/* Deterministic Miller-Rabin primality test with a fixed set of bases valid for
+n < 2^64.  Can be computed at compile time, and guaranteed not to produce false
+positives. */
 template <std::integral T>
-constexpr bool is_prime(T n, int iterations = 10) noexcept {
-    if (!(n & 1)) {
+constexpr bool is_prime(T n) noexcept {
+    if ((n & 1) == 0) {
         return n == 2;
     } else if (n < 2) {
         return false;
@@ -176,38 +165,24 @@ constexpr bool is_prime(T n, int iterations = 10) noexcept {
     constexpr auto test = [](T n, T d, int r, T a) noexcept {
         T x = exp_mod(a, d, n);
         if (x == 1 || x == n - 1) {
-            return true;
+            return true;  // probably prime
         }
         for (int i = 0; i < r - 1; ++i) {
             x = mul_mod(x, x, n);
             if (x == n - 1) {
-                return true;
+                return true;  // probably prime
             }
         }
-        return false;
+        return false;  // composite
     };
 
-    if consteval {
-        // deterministic set of bases for n < 2^64
-        constexpr T bases[] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37};
-        for (T a : bases) {
-            if (a >= n) {
-                break;  // only test bases less than n
-            }
-            if (!test(n, d, r, a)) {
-                return false;
-            }
+    constexpr T bases[] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37};
+    for (T a : bases) {
+        if (a >= n) {
+            break;  // only test bases < n
         }
-
-    } else {
-        // using Mersenne Twister for high-quality, thread-safe random numbers
-        std::mt19937_64 rng(std::random_device{}());
-        std::uniform_int_distribution<T> dist(2, n - 2);
-        for (int i = 0; i < iterations; ++i) {
-            T a = dist(rng);
-            if (!test(n, d, r, a)) {
-                return false;
-            }
+        if (!test(n, d, r, a)) {
+            return false;
         }
     }
 
@@ -225,6 +200,17 @@ constexpr T next_prime(T n) noexcept {
         }
     }
     return 2;  // only returned for n < 2
+}
+
+
+/* Compute the next power of two greater than or equal to a given value. */
+template <std::unsigned_integral T>
+constexpr T next_power_of_two(T n) noexcept {
+    --n;
+    for (size_t i = 1, bits = sizeof(T) * 8; i < bits; i <<= 1) {
+        n |= (n >> i);
+    }
+    return ++n;
 }
 
 

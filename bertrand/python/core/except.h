@@ -564,20 +564,69 @@ struct Interface<Type<Exception>> {
 template <std::derived_from<Exception> Exc, std::convertible_to<std::string> Msg>
 struct __init__<Exc, Msg>                                   : Returns<Exc> {
     [[clang::noinline]] static auto operator()(const std::string& msg) {
+        PyObject* str = PyUnicode_FromStringAndSize(
+            msg.c_str(),
+            msg.size()
+        );
+        if (str == nullptr) {
+            Exception::from_python();
+        }
         PyObject* result;
-        if constexpr (std::is_invocable_v<impl::builtin_exception_map<Exc>>) {
-            result = PyObject_CallFunction(
+        if constexpr (std::is_invocable_v<impl::builtin_exception_map<Exc>>) {   
+            result = PyObject_CallOneArg(
                 impl::builtin_exception_map<Exc>{}(),
-                "s",
-                msg.c_str()
+                str
             );
         } else {
-            result = PyObject_CallFunction(
-                ptr(Type<Exc>()),
-                "s",
-                msg.c_str()
-            );
+            result = PyObject_CallOneArg(ptr(Type<Exc>()), str);
         }
+        Py_DECREF(str);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+
+        // by default, the exception will have an empty traceback, so we need to
+        // populate it with C++ frames if directed.
+        if constexpr (DEBUG) {
+            try {
+                PyTracebackObject* trace = impl::build_traceback(
+                    cpptrace::generate_trace(1)
+                );
+                if (trace != nullptr) {
+                    PyException_SetTraceback(result, reinterpret_cast<PyObject*>(trace));
+                    Py_DECREF(trace);
+                }
+            } catch (...) {
+                Py_DECREF(result);
+                throw;
+            }
+        }
+
+        return reinterpret_steal<Exc>(result);
+    }
+};
+
+
+template <std::derived_from<Exception> Exc, impl::static_str Msg>
+struct __init__<Exc, Msg>                                   : Returns<Exc> {
+    [[clang::noinline]] static auto operator()(const Msg& msg) {
+        PyObject* str = PyUnicode_FromStringAndSize(
+            msg.data(),
+            msg.size()
+        );
+        if (str == nullptr) {
+            Exception::from_python();
+        }
+        PyObject* result;
+        if constexpr (std::is_invocable_v<impl::builtin_exception_map<Exc>>) {   
+            result = PyObject_CallOneArg(
+                impl::builtin_exception_map<Exc>{}(),
+                str
+            );
+        } else {
+            result = PyObject_CallOneArg(ptr(Type<Exc>()), str);
+        }
+        Py_DECREF(str);
         if (result == nullptr) {
             Exception::from_python();
         }
@@ -858,6 +907,8 @@ template <>
 struct __init__<UnicodeDecodeError>                         : Disable {};
 template <std::convertible_to<std::string> Msg>
 struct __init__<UnicodeDecodeError, Msg>                    : Disable {};
+template <impl::static_str Msg>
+struct __init__<UnicodeDecodeError, Msg>                    : Disable {};
 
 
 template <
@@ -1112,6 +1163,8 @@ template <>
 struct __init__<UnicodeEncodeError>                         : Disable {};
 template <std::convertible_to<std::string> Msg>
 struct __init__<UnicodeEncodeError, Msg>                    : Disable {};
+template <impl::static_str Msg>
+struct __init__<UnicodeEncodeError, Msg>                    : Disable {};
 
 
 template <
@@ -1359,6 +1412,8 @@ struct Interface<Type<UnicodeTranslateError>> : Interface<Type<UnicodeError>> {
 template <>
 struct __init__<UnicodeTranslateError>                      : Disable {};
 template <std::convertible_to<std::string> Msg>
+struct __init__<UnicodeTranslateError, Msg>                 : Disable {};
+template <impl::static_str Msg>
 struct __init__<UnicodeTranslateError, Msg>                 : Disable {};
 
 

@@ -741,22 +741,15 @@ template <impl::python Self>
         Object builtins = reinterpret_steal<Object>(
             PyFrame_GetBuiltins(PyEval_GetFrame())
         );
-        constexpr StaticStr str = "reversed";
-        Object name = reinterpret_steal<Object>(
-            PyUnicode_FromStringAndSize(str, str.size())
-        );
-        if (name.is(nullptr)) {
-            Exception::from_python();
-        }
         Object func = reinterpret_steal<Object>(PyDict_GetItemWithError(
             ptr(builtins),
-            ptr(name)
+            ptr(impl::template_string<"reversed">())
         ));
         if (func.is(nullptr)) {
             if (PyErr_Occurred()) {
                 Exception::from_python();
             }
-            throw KeyError(str);
+            throw KeyError("'reversed'");
         }
         PyObject* iter = PyObject_CallOneArg(ptr(func), ptr(self));
         if (iter == nullptr) {
