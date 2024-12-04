@@ -14,6 +14,8 @@
 #include <tuple>
 #include <utility>
 
+#include "bertrand/common.h"
+
 
 // required for demangling
 #if defined(__GNUC__) || defined(__clang__)
@@ -526,12 +528,10 @@ public:
 
     constexpr operator const char*() const { return buffer.data(); }
     constexpr operator const std::array<char, N + 1>&() const { return buffer; }
-    operator std::string() const { return {buffer.data(), N}; }
-    constexpr operator std::string_view() const { return {buffer.data(), N}; }
 
-    consteval const char* data() const { return buffer.data(); }
-    consteval size_t size() const { return N; }
-    consteval bool empty() const { return !N; }
+    constexpr const char* data() const { return buffer.data(); }
+    constexpr size_t size() const { return N; }
+    constexpr bool empty() const { return !N; }
     Iterator begin() const { return {buffer.data(), 0}; }
     Iterator cbegin() const { return begin(); }
     Iterator end() const { return {nullptr, N}; }
@@ -573,7 +573,7 @@ public:
     }
 
     /* Access a character within the underlying buffer. */
-    consteval const char operator[](ssize_t i) const {
+    constexpr const char operator[](ssize_t i) const {
         ssize_t norm = normalize_index(i);
         return (norm >= 0 && norm < N) ? buffer[norm] : '\0';
     }
@@ -1842,102 +1842,109 @@ namespace impl {
         return StaticStr<N>{name.data()};
     }
 
-    /* Default seed for FNV-1a hash function. */
-    constexpr size_t fnv1a_seed = [] {
-        if constexpr (sizeof(size_t) > 4) {
-            return 14695981039346656037ULL;
-        } else {
-            return 2166136261u;
-        }
-    }();
-
-    /* Default prime for FNV-1a hash function. */
-    constexpr size_t fnv1a_prime = [] {
-        if constexpr (sizeof(size_t) > 4) {
-            return 1099511628211ULL;
-        } else {
-            return 16777619u;
-        }
-    }();
-
-    /* In the vast majority of cases, adjusting the seed is all that's needed to get a
-    good FNV-1a hash, but just in case, we also provide the next 9 primes in case the
-    default value cannot be used. */
-    constexpr std::array<size_t, 10> fnv1a_fallback_primes = [] -> std::array<size_t, 10> {
-        if constexpr (sizeof(size_t) > 4) {
-            return {
-                fnv1a_prime,
-                1099511628221ULL,
-                1099511628227ULL,
-                1099511628323ULL,
-                1099511628329ULL,
-                1099511628331ULL,
-                1099511628359ULL,
-                1099511628401ULL,
-                1099511628403ULL,
-                1099511628427ULL,
-            };
-        } else {
-            return {
-                fnv1a_prime,
-                16777633u,
-                16777639u,
-                16777643u,
-                16777669u,
-                16777679u,
-                16777681u,
-                16777699u,
-                16777711u,
-                16777721,
-            };
-        }
-    }();
-
-    /* A deterministic FNV-1a string hashing function that gives the same results at
-    both compile time and run time. */
-    constexpr size_t fnv1a(const char* str, size_t seed, size_t prime) noexcept {
-        while (*str) {
-            seed ^= static_cast<size_t>(*str);
-            seed *= prime;
-            ++str;
-        }
-        return seed;
-    }
-
-    /* Merge several hashes into a single value.  Based on `boost::hash_combine()`:
-    https://www.boost.org/doc/libs/1_86_0/libs/container_hash/doc/html/hash.html#notes_hash_combine */
-    template <std::convertible_to<size_t>... Hashes>
-    size_t hash_combine(size_t first, Hashes... rest) noexcept {
-        if constexpr (sizeof(size_t) == 4) {
-            constexpr auto mix = [](size_t& seed, size_t value) {
-                seed += 0x9e3779b9 + value;
-                seed ^= seed >> 16;
-                seed *= 0x21f0aaad;
-                seed ^= seed >> 15;
-                seed *= 0x735a2d97;
-                seed ^= seed >> 15;
-            };
-            (mix(first, rest), ...);
-        } else {
-            constexpr auto mix = [](size_t& seed, size_t value) {
-                seed += 0x9e3779b9 + value;
-                seed ^= seed >> 32;
-                seed *= 0xe9846af9b1a615d;
-                seed ^= seed >> 32;
-                seed *= 0xe9846af9b1a615d;
-                seed ^= seed >> 28;
-            };
-            (mix(first, rest), ...);
-        }
-        return first;
-    }
-
     template <typename>
     constexpr bool _static_str = false;
     template <size_t N>
     constexpr bool _static_str<bertrand::StaticStr<N>> = true;
     template <typename T>
     concept static_str = _static_str<std::remove_cvref_t<T>>;
+
+    template <StaticStr...>
+    constexpr bool _strings_are_unique = true;
+    template <StaticStr First, StaticStr... Rest>
+    constexpr bool _strings_are_unique<First, Rest...> =
+        ((First != Rest) && ...) && _strings_are_unique<Rest...>;
+    template <StaticStr... Strings>
+    concept strings_are_unique = _strings_are_unique<Strings...>;
+
+    /* A helper struct that computes a perfect hash function over the given strings at
+    compile time. */
+    template <StaticStr... Keys>
+    struct perfect_hash {
+        /* The hash table has a minimum safety factor of 1.5x the number of strings,
+        in order to improve the chances of finding a perfect hash. */
+        static constexpr size_t table_size = next_prime(
+            sizeof...(Keys) + (sizeof...(Keys) >> 1)
+        );
+
+    private:
+        /* Check to see if the candidate seed and prime produce any collisions for the
+        target keyword arguments. */
+        template <StaticStr...>
+        struct collisions {
+            static constexpr bool operator()(size_t, size_t) {
+                return false;
+            }
+        };
+        template <StaticStr First, StaticStr... Rest>
+        struct collisions<First, Rest...> {
+            template <StaticStr...>
+            struct scan {
+                static constexpr bool operator()(size_t, size_t, size_t) {
+                    return false;
+                }
+            };
+            template <StaticStr F, StaticStr... Rs>
+            struct scan<F, Rs...> {
+                static constexpr bool operator()(size_t idx, size_t seed, size_t prime) {
+                    size_t hash = fnv1a(F, seed, prime);
+                    return ((hash % table_size) == idx) || scan<Rs...>{}(idx, seed, prime);
+                }
+            };
+
+            static constexpr bool operator()(size_t seed, size_t prime) {
+                size_t hash = fnv1a(First, seed, prime);
+                return scan<Rest...>{}(
+                    hash % table_size,
+                    seed,
+                    prime
+                ) || collisions<Rest...>{}(seed, prime);
+            }
+        };
+
+        /* Search for an FNV-1a seed and prime that perfectly hashes the argument names
+        with respect to the keyword table size. */
+        static constexpr auto hash_components = [] -> std::tuple<size_t, size_t, bool> {
+            constexpr size_t recursion_limit = 100;
+            size_t i = 0;
+            size_t j = 0;
+            size_t seed = fnv1a_seed;
+            size_t prime = fnv1a_prime;
+            while (collisions<Keys...>{}(seed, prime)) {
+                seed = prime * seed + 31;
+                if (++i >= recursion_limit) {
+                    if (++j >= recursion_limit) {
+                        return {0, 0, false};
+                    }
+                    seed = fnv1a_seed;
+                    prime = next_prime(prime);
+                }
+            }
+            return {seed, prime, true};
+        }();
+
+    public:
+        /* A template constraint that indicates whether the recursive algorithm could
+        find a perfect hash algorithm for the given keys. */
+        static constexpr bool exists = std::get<2>(hash_components);
+
+        /* A seed for an FNV-1a hash algorithm that was found to perfectly hash the
+        keyword argument names from the enclosing parameter list. */
+        static constexpr size_t seed = std::get<0>(hash_components);
+
+        /* A prime for an FNV-1a hash algorithm that was found to perfectly hash the
+        keyword argument names from the enclosing parameter list. */
+        static constexpr size_t prime = std::get<1>(hash_components);
+
+        /* Hash an arbitrary string according to the precomputed FNV-1a algorithm
+        that was found to perfectly hash the enclosing keyword arguments. */
+        static constexpr size_t hash(const char* str) noexcept {
+            return fnv1a(str, seed, prime);
+        }
+        static constexpr size_t hash(std::string_view str) noexcept {
+            return fnv1a(str.data(), seed, prime);
+        }
+    };
 
 }
 
@@ -1948,6 +1955,233 @@ template <typename T>
 constexpr auto type_name = impl::type_name_impl<T>();
 
 
+/* A compile-time perfect hash table with a finite set of static strings as keys.  The
+data structure will compute a perfect hash function for the given strings at compile
+time, and will store the values in a fixed-size array.
+
+Searching the map is extremely fast even in the worst case, consisting only of an
+FNV-1a hash, a single array lookup modulo table size, and a string comparison to
+validate.  No collision resolution is necessary, due to the perfect hash function.  If
+the search string is also known at compile time, then each of these can be optimized
+out, skipping straight to the final value. */
+template <typename Value, StaticStr... Keys>
+    requires (
+        impl::strings_are_unique<Keys...> &&
+        impl::perfect_hash<Keys...>::exists
+    )
+struct StaticMap : impl::perfect_hash<Keys...> {
+private:
+    using Hash = impl::perfect_hash<Keys...>;
+
+    struct Bucket {
+    private:
+        friend StaticMap;
+
+        std::string_view m_key;
+        union { Value m_value; };
+        bool m_init;
+
+    public:
+        constexpr Bucket() : m_key(), m_init(false) {}
+
+        constexpr Bucket(std::string_view key, const Value& value) :
+            m_key(key), m_value(value), m_init(true)
+        {}
+
+        constexpr Bucket(std::string_view key, Value&& value) :
+            m_key(key), m_value(std::move(value)), m_init(true)
+        {}
+
+        constexpr explicit operator bool() const { return m_init; }
+
+        constexpr const Value& operator*() const { return m_value; }
+        Value& operator*() { return m_value; }
+
+        constexpr const Value* operator->() const { return &m_value; }
+        Value* operator->() { return &m_value; }
+    };
+
+    using Table = std::array<Bucket, Hash::table_size>;
+
+    template <size_t I, size_t...>
+    static constexpr size_t pack_idx = 0;
+    template <size_t I, size_t J, size_t... Js>
+    static constexpr size_t pack_idx<I, J, Js...> =
+        (I == J) ? 0 : pack_idx<I, Js...> + 1;
+
+    template <size_t I, StaticStr... Strings>
+    struct unpack_key;
+    template <StaticStr First, StaticStr... Rest>
+    struct unpack_key<0, First, Rest...> {
+        static constexpr StaticStr value = First;
+    };
+    template <size_t I, StaticStr First, StaticStr... Rest>
+    struct unpack_key<I, First, Rest...> {
+        static constexpr StaticStr value = unpack_key<I - 1, Rest...>::value;
+    };
+
+    template <size_t I, size_t... occupied, typename... Values>
+    static constexpr Bucket populate(Values&&... values) {
+        constexpr size_t idx = pack_idx<I, occupied...>;
+        if constexpr (idx < sizeof...(Values)) {
+            constexpr const char* key = unpack_key<idx, Keys...>::value;
+            return {
+                std::string_view{key, unpack_key<idx, Keys...>::value.size()},
+                unpack_arg<idx>(std::forward<Values>(values)...)
+            };
+        } else {
+            return {};
+        }
+    }
+
+    template <typename... Values>
+    static constexpr Table build(Values&&... values) noexcept {
+        return []<size_t... Is>(std::index_sequence<Is...>, auto&&... values) {
+            return Table{populate<Is, (Hash::hash(Keys) % Hash::table_size)...>(
+                std::forward<decltype(values)>(values)...
+            )...};
+        }(
+            std::make_index_sequence<Hash::table_size>{},
+            std::forward<decltype(values)>(values)...
+        );
+    }
+
+public:
+    Bucket empty_bucket;
+    std::array<Bucket, Hash::table_size> table;
+
+    template <typename... Values>
+        requires (
+            sizeof...(Values) == sizeof...(Keys) &&
+            (std::convertible_to<Values, Value> && ...)
+        )
+    constexpr StaticMap(Values&&... values) :
+        empty_bucket(),
+        table(build(std::forward<Values>(values)...))
+    {}
+
+    /* Check whether the map contains an arbitrary key at compile time. */
+    template <StaticStr Key>
+    static constexpr bool contains() {
+        return ((Key == Keys) || ...);
+    }
+
+    /* Check whether the map contains an arbitrary key. */
+    constexpr bool contains(const char* key) const {
+        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        if (result) {
+            size_t i = 0;
+            while (i < result.m_key.size()) {
+                if (key[i] != result.m_key[i]) {
+                    return false;
+                }
+                ++i;
+            }
+            return key[i] == '\0';
+        }
+        return false;
+    }
+
+    /* Check whether the map contains an arbitrary key. */
+    constexpr bool contains(std::string_view key) const {
+        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        if (result && result.m_key == key) {
+            return true;
+        }
+        return false;
+    }
+
+    /* Get the value associated with a key at compile time, asserting that it is
+    present in the map. */
+    template <StaticStr Key> requires (contains<Key>())
+    constexpr const Value& get() const {
+        constexpr size_t idx = Hash::hash(Key) % Hash::table_size;
+        return *table[idx];
+    }
+
+    /* Get the value associated with a key at compile time, asserting that it is
+    present in the map. */
+    template <StaticStr Key> requires (contains<Key>())
+    Value& get() {
+        constexpr size_t idx = Hash::hash(Key) % Hash::table_size;
+        return *table[idx];
+    }
+
+    /* Look up a key, returning the bucket that contains the corresponding value or an
+    empty bucket if it is not present.  The empty bucket evaluates false under boolean
+    logic, and non-empty buckets can be dereferenced like a pointer to access the
+    value.  The user must always check whether the bucket is empty before dereferencing
+    it. */
+    constexpr const Bucket& operator[](const char* key) const {
+        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        if (result) {
+            size_t i = 0;
+            while (i < result.m_key.size()) {
+                if (key[i] != result.m_key[i]) {
+                    return empty_bucket;
+                }
+                ++i;
+            }
+            if (key[i] == '\0') {
+                return result;
+            }
+        }
+        return empty_bucket;
+    }
+
+    /* Look up a key, returning the bucket that contains the corresponding value or an
+    empty bucket if it is not present.  The empty bucket evaluates false under boolean
+    logic, and non-empty buckets can be dereferenced like a pointer to access the
+    value.  The user must always check whether the bucket is empty before dereferencing
+    it. */
+    constexpr const Bucket& operator[](std::string_view key) const {
+        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        if (result && result.m_key == key) {
+            return result;
+        }
+        return empty_bucket;
+    }
+
+    /* Look up a key, returning the bucket that contains the corresponding value or an
+    empty bucket if it is not present.  The empty bucket evaluates false under boolean
+    logic, and non-empty buckets can be dereferenced like a pointer to access the
+    value.  The user must always check whether the bucket is empty before dereferencing
+    it. */
+    Bucket& operator[](const char* key) {
+        Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        if (result) {
+            size_t i = 0;
+            while (i < result.m_key.size()) {
+                if (key[i] != result.m_key[i]) {
+                    return empty_bucket;
+                }
+                ++i;
+            }
+            if (key[i] == '\0') {
+                return result;
+            }
+        }
+        return empty_bucket;
+    }
+
+    /* Look up a key, returning the bucket that contains the corresponding value or an
+    empty bucket if it is not present.  The empty bucket evaluates false under boolean
+    logic, and non-empty buckets can be dereferenced like a pointer to access the
+    value.  The user must always check whether the bucket is empty before dereferencing
+    it. */
+    Bucket& operator[](std::string_view key) {
+        Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        if (result && result.m_key == key) {
+            return result;
+        }
+        return empty_bucket;
+    }
+
+    /// TODO: begin()/end()
+
+};
+
+
 }  // namespace bertrand
 
 
@@ -1956,13 +2190,27 @@ namespace std {
     template <bertrand::impl::static_str T>
     struct hash<T> {
         consteval static size_t operator()(const T& str) {
-            return bertrand::impl::fnv1a(
+            return bertrand::fnv1a(
                 str,
-                bertrand::impl::fnv1a_seed,
-                bertrand::impl::fnv1a_prime
+                bertrand::fnv1a_seed,
+                bertrand::fnv1a_prime
             );
         }
     };
+
+    /* `std::get<"name">(dict)` is a type-safe accessor for `bertrand::StaticMap`. */
+    template <bertrand::StaticStr Key, typename Value, bertrand::StaticStr... Keys>
+        requires (bertrand::StaticMap<Value, Keys...>::template contains<Key>())
+    constexpr const Value& get(const bertrand::StaticMap<Value, Keys...>& dict) {
+        return dict.template get<Key>();
+    }
+
+    /* `std::get<"name">(dict)` is a type-safe accessor for `bertrand::StaticMap`. */
+    template <bertrand::StaticStr Key, typename Value, bertrand::StaticStr... Keys>
+        requires (bertrand::StaticMap<Value, Keys...>::template contains<Key>())
+    Value& get(bertrand::StaticMap<Value, Keys...>& dict) {
+        return dict.template get<Key>();
+    }
 
 }
 

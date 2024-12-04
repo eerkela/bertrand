@@ -43,11 +43,13 @@
 
 #include <cpptrace/cpptrace.hpp>
 
+#include <bertrand/common.h>
 #include <bertrand/static_str.h>
 
 
 namespace py {
 using bertrand::StaticStr;
+using bertrand::StaticMap;
 using bertrand::type_name;
 using bertrand::demangle;
 
@@ -64,11 +66,21 @@ struct pack;
 
 
 namespace impl {
-    using bertrand::impl::fnv1a;
-    using bertrand::impl::fnv1a_seed;
-    using bertrand::impl::fnv1a_prime;
-    using bertrand::impl::fnv1a_fallback_primes;
     using bertrand::impl::static_str;
+    using bertrand::index_of;
+    using bertrand::unpack_type;
+    using bertrand::unpack_arg;
+    using bertrand::fnv1a_seed;
+    using bertrand::fnv1a_prime;
+    using bertrand::fnv1a;
+    using bertrand::hash_combine;
+    using bertrand::qualify;
+    using bertrand::qualify_lvalue;
+    using bertrand::qualify_rvalue;
+    using bertrand::qualify_pointer;
+    using bertrand::remove_lvalue;
+    using bertrand::remove_rvalue;
+    using bertrand::implicit_cast;
 
     struct BertrandTag {};
     struct UnionTag : BertrandTag {};
@@ -85,141 +97,6 @@ namespace impl {
     struct ItemTag : BertrandTag {};
     struct DictTag : BertrandTag {};
     struct MappingProxyTag : BertrandTag {};
-
-    template <size_t I, typename... Ts> requires (I < sizeof...(Ts))
-    static constexpr void unpack_arg(Ts&&...) noexcept {}
-
-    template <size_t I, typename T, typename... Ts> requires (I < (sizeof...(Ts) + 1))
-    static constexpr decltype(auto) unpack_arg(T&& curr, Ts&&... next) noexcept {
-        if constexpr (I == 0) {
-            return std::forward<T>(curr);
-        } else {
-            return unpack_arg<I - 1>(std::forward<Ts>(next)...);
-        }
-    }
-
-    template <typename Search, size_t I, typename... Ts>
-    static constexpr size_t _index_of = 0;
-    template <typename Search, size_t I, typename T, typename... Ts>
-    static constexpr size_t _index_of<Search, I, T, Ts...> =
-        std::same_as<Search, T> ? 0 : _index_of<Search, I + 1, Ts...> + 1;
-    template <typename Search, typename... Ts>
-    static constexpr size_t index_of = _index_of<Search, 0, Ts...>;
-
-    template <size_t I, typename... Ts>
-    struct _unpack_type;
-    template <size_t I, typename T, typename... Ts>
-    struct _unpack_type<I, T, Ts...> {
-        template <size_t J>
-        struct helper { using type = _unpack_type<J - 1, Ts...>::type;
-        };
-        template <size_t J> requires (J == 0)
-        struct helper<J> { using type = T; };
-        using type = helper<I>::type;
-    };
-    template <size_t I, typename... Ts> requires (I < sizeof...(Ts))
-    using unpack_type = _unpack_type<I, Ts...>::type;
-
-    template <typename T, typename Self>
-    struct _qualify { using type = T; };
-    template <typename T, typename Self>
-    struct _qualify<T, const Self> { using type = const T; };
-    template <typename T, typename Self>
-    struct _qualify<T, volatile Self> { using type = volatile T; };
-    template <typename T, typename Self>
-    struct _qualify<T, const volatile Self> { using type = const volatile T; };
-    template <typename T, typename Self>
-    struct _qualify<T, Self&> { using type = T&; };
-    template <typename T, typename Self>
-    struct _qualify<T, const Self&> { using type = const T&; };
-    template <typename T, typename Self>
-    struct _qualify<T, volatile Self&> { using type = volatile T&; };
-    template <typename T, typename Self>
-    struct _qualify<T, const volatile Self&> { using type = const volatile T&; };
-    template <typename T, typename Self>
-    struct _qualify<T, Self&&> { using type = T&&; };
-    template <typename T, typename Self>
-    struct _qualify<T, const Self&&> { using type = const T&&; };
-    template <typename T, typename Self>
-    struct _qualify<T, volatile Self&&> { using type = volatile T&&; };
-    template <typename T, typename Self>
-    struct _qualify<T, const volatile Self&&> { using type = const volatile T&&; };
-    template <typename Self>
-    struct _qualify<void, Self> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, const Self> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, volatile Self> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, const volatile Self> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, Self&> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, const Self&> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, volatile Self&> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, const volatile Self&> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, Self&&> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, const Self&&> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, volatile Self&&> { using type = void; };
-    template <typename Self>
-    struct _qualify<void, const volatile Self&&> { using type = void; };
-    template <typename T, typename Self>
-    using qualify = _qualify<T, Self>::type;
-    template <typename T, typename Self>
-    using qualify_lvalue = std::add_lvalue_reference_t<qualify<T, Self>>;
-    template <typename T, typename Self>
-    using qualify_pointer = std::add_pointer_t<std::remove_reference_t<qualify<T, Self>>>;
-
-    template <typename T>
-    struct _remove_rvalue { using type = T; };
-    template <typename T>
-    struct _remove_rvalue<T&&> { using type = T; };
-    template <typename T>
-    using remove_rvalue = _remove_rvalue<T>::type;
-
-    /* Round a number up to the next power of two unless it is one already. */
-    template <std::unsigned_integral T>
-    constexpr T next_power_of_two(T n) noexcept {
-        constexpr size_t bits = sizeof(T) * 8;
-        --n;
-        for (size_t i = 1; i < bits; i <<= 1) {
-            n |= (n >> i);
-        }
-        return ++n;
-    }
-
-    /* Merge several hashes into a single value.  Based on `boost::hash_combine()`:
-    https://www.boost.org/doc/libs/1_86_0/libs/container_hash/doc/html/hash.html#notes_hash_combine */
-    template <std::convertible_to<size_t>... Hashes>
-    size_t hash_combine(size_t first, Hashes... rest) noexcept {
-        if constexpr (sizeof(size_t) == 4) {
-            constexpr auto mix = [](size_t& seed, size_t value) {
-                seed += 0x9e3779b9 + value;
-                seed ^= seed >> 16;
-                seed *= 0x21f0aaad;
-                seed ^= seed >> 15;
-                seed *= 0x735a2d97;
-                seed ^= seed >> 15;
-            };
-            (mix(first, rest), ...);
-        } else {
-            constexpr auto mix = [](size_t& seed, size_t value) {
-                seed += 0x9e3779b9 + value;
-                seed ^= seed >> 32;
-                seed *= 0xe9846af9b1a615d;
-                seed ^= seed >> 32;
-                seed *= 0xe9846af9b1a615d;
-                seed ^= seed >> 28;
-            };
-            (mix(first, rest), ...);
-        }
-        return first;
-    }
 
     /* A static RAII guard that initializes the Python interpreter the first time a Python
     object is created and finalizes it when the program exits. */
@@ -701,14 +578,6 @@ struct Interface;
 
 
 namespace impl {
-
-    /* Trigger implicit conversion operators and/or implicit constructors, but not
-    explicit ones.  In contrast, static_cast<>() will trigger explicit constructors on
-    the target type, which can give unexpected results and violate type safety. */
-    template <typename U>
-    decltype(auto) implicit_cast(U&& value) {
-        return std::forward<U>(value);
-    }
 
     template <typename L, typename R>
     concept is = std::same_as<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;

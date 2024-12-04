@@ -138,6 +138,234 @@ namespace impl {
 }
 
 
+template <typename Value, StaticStr... Keys>
+    requires (
+        true  /// TODO: names are unique
+    )
+struct StaticMap;
+
+
+}  // namespace py
+
+
+namespace std {
+
+
+template <py::StaticStr Key, typename Value, py::StaticStr... Keys>
+    requires ((Key == Keys) || ...)
+constexpr const Value& get(const py::StaticMap<Value, Keys...>& dict) {
+    return dict.template get<Key>();
+}
+
+
+}  // namespace std
+
+
+namespace py {
+
+
+template <typename Value, StaticStr... Keys>
+    requires (
+        true  /// TODO: names are unique
+    )
+struct StaticMap {
+private:
+    /* The hash table has a minimum safety factor of 1.5x the number of keywords, in
+    order to improve the chances of finding a perfect hash while minimizing final
+    binary size. */
+    static constexpr size_t table_size = impl::next_power_of_two(
+        sizeof...(Keys) + (sizeof...(Keys) >> 1)
+    );
+
+    /* By rounding the table size to the next power of 2, we can take advantage of
+    fast, bitwise arithmetic to compute the modulus */
+    static constexpr size_t modulus(size_t hash) {
+        return hash & (table_size - 1);
+    }
+
+    /* Check to see if the candidate seed and prime produce any collisions for the
+    target keyword arguments. */
+    template <StaticStr...>
+    struct collisions {
+        static constexpr bool operator()(size_t, size_t) {
+            return false;
+        }
+    };
+    template <StaticStr First, StaticStr... Rest>
+    struct collisions<First, Rest...> {
+        template <StaticStr...>
+        struct scan {
+            static constexpr bool operator()(size_t, size_t, size_t) {
+                return false;
+            }
+        };
+        template <StaticStr F, StaticStr... Rs>
+        struct scan<F, Rs...> {
+            static constexpr bool operator()(size_t idx, size_t seed, size_t prime) {
+                size_t hash = impl::fnv1a(
+                    F,
+                    seed,
+                    prime
+                );
+                return (modulus(hash) == idx) || scan<Rs...>{}(idx, seed, prime);
+            }
+        };
+
+        static constexpr bool operator()(size_t seed, size_t prime) {
+            size_t hash = impl::fnv1a(
+                First,
+                seed,
+                prime
+            );
+            return scan<Rest...>{}(
+                modulus(hash),
+                seed,
+                prime
+            ) || collisions<Rest...>{}(seed, prime);
+        }
+    };
+
+    /* Search for an FNV-1a seed and prime that perfectly hashes the argument names
+    with respect to the keyword table size. */
+    static constexpr auto hash_components = [] -> std::tuple<size_t, size_t, bool> {
+        constexpr size_t recursion_limit = impl::fnv1a_seed + 100'000;
+        size_t seed = impl::fnv1a_seed;
+        size_t prime = impl::fnv1a_prime;
+        size_t i = 0;
+        while (collisions<Keys...>{}(seed, prime)) {
+            if (++seed > recursion_limit) {
+                if (++i == 10) {
+                    return {0, 0, false};
+                }
+                seed = impl::fnv1a_seed;
+                prime = impl::fnv1a_fallback_primes[i];
+            }
+        }
+        return {seed, prime, true};
+    }();
+    static_assert(
+        std::get<2>(hash_components),
+        "error: unable to find a perfect hash seed after 10^6 iterations.  "
+        "Consider increasing the recursion limit or reviewing the keyword "
+        "argument names for potential issues.\n"
+    );
+
+public:
+    /* A seed for an FNV-1a hash algorithm that was found to perfectly hash the
+    keyword argument names from the enclosing parameter list. */
+    static constexpr size_t seed = std::get<0>(hash_components);
+
+    /* A prime for an FNV-1a hash algorithm that was found to perfectly hash the
+    keyword argument names from the enclosing parameter list. */
+    static constexpr size_t prime = std::get<1>(hash_components);
+
+    /* Hash an arbitrary string according to the precomputed FNV-1a algorithm
+    that was found to perfectly hash the enclosing keyword arguments. */
+    static constexpr size_t hash(const char* str) noexcept {
+        return impl::fnv1a(str, seed, prime);
+    }
+    static constexpr size_t hash(std::string_view str) noexcept {
+        return impl::fnv1a(str.data(), seed, prime);
+    }
+
+private:
+
+    /* The table must be able to hold nullable values, which we can enforce via
+    uninitialized buffers. */
+    struct Bucket {
+        union { Value value; };
+        bool has_value;
+        consteval Bucket() : has_value(false) {}
+        consteval Bucket(const Value& value) : value(value), has_value(true) {}
+        consteval Bucket(Value&& value) : value(std::move(value)), has_value(true) {}
+    };
+
+    // template <StaticStr S>
+    // static constexpr void populate(
+    //     std::array<Bucket, table_size>& table,
+    //     size_t seed,
+    //     size_t prime
+    // ) {
+    //     table[modulus(hash(S))] = {
+    //         .name = ArgTraits<T>::name,
+    //         .mask = ArgTraits<T>::variadic() ? 0ULL : 1ULL << I,
+    //         .isinstance = [](const Object& value) -> bool {
+    //             using U = ArgTraits<T>::type;
+    //             if constexpr (impl::has_python<U>) {
+    //                 return isinstance<std::remove_cvref_t<impl::python_type<U>>>(value);
+    //             } else {
+    //                 throw TypeError(
+    //                     "C++ type has no Python equivalent: " + type_name<U>
+    //                 );
+    //             }
+    //         },
+    //         .issubclass = [](const Object& type) -> bool {
+    //             using U = ArgTraits<T>::type;
+    //             if constexpr (impl::has_python<U>) {
+    //                 return issubclass<std::remove_cvref_t<impl::python_type<U>>>(type);
+    //             } else {
+    //                 throw TypeError(
+    //                     "C++ type has no Python equivalent: " + type_name<U>
+    //                 );
+    //             }
+    //         },
+    //         .type = []() -> Object {
+    //             using U = ArgTraits<T>::type;
+    //             if constexpr (impl::has_python<U>) {
+    //                 return Type<std::remove_cvref_t<impl::python_type<U>>>();
+    //             } else {
+    //                 throw TypeError(
+    //                     "C++ type has no Python equivalent: " + type_name<U>
+    //                 );
+    //             }
+    //         }
+    //     };
+    // }
+
+    // static constexpr auto table =
+    //     []<size_t... Is>(std::index_sequence<Is...>, size_t seed, size_t prime) {
+    //         std::array<Bucket, table_size> table;
+    //         (populate_keyword_table<Is>(table, seed, prime), ...);
+    //         return table;
+    //     }(std::make_index_sequence<>{}, seed, prime);
+
+public:
+
+    template <typename... Values>
+        requires (
+            sizeof...(Values) == sizeof...(Keys) &&
+            (std::convertible_to<Values, Value> && ...)
+        )
+    consteval StaticMap(Values&&... values) {
+        /// TODO: perhaps the only way to initialize the table is to produce it all at
+        /// once as part of the constructor.  I could generate an index sequence over the
+        /// size of the table, and if a keyword hashes to that index, I would take a
+        /// value from the initializer and place it in the table.
+    }
+
+    template <StaticStr Key> requires ((Key == Keys) || ...)
+    constexpr const Value& get() const {
+        /// TODO: convert this into a std::get<"name">(dict) specialization.
+        constexpr size_t idx = modulus(hash(Key.data()));
+        return table[idx].value;
+    }
+
+    constexpr const Bucket& operator[](const char* key) const {
+        return table[modulus(hash(key))];
+    }
+
+    constexpr const Bucket& operator[](std::string_view key) const {
+        return table[modulus(hash(key))];
+    }
+
+};
+
+
+
+
+
+
+
 /* Introspect an annotated C++ function signature to extract compile-time type
 information about its parameters and allow a matching function to be called safely
 from both languages with the same, Python-style syntax.  Also defines supporting
@@ -272,6 +500,121 @@ private:
         I == Partial::template rfind<K> || _in_partial<I, K + 1>;
     template <size_t I>
     static constexpr bool in_partial = _in_partial<I, 0>;
+
+    /* Source positional packs must be converted to this type, which
+    encloses a pair of iterators over the positional arguments.  The
+    iterators are consumed as arguments are extracted from the pack,
+    allowing for efficient validation by simply checking whether all
+    elements were consumed, and listing those that weren't. */
+    template <typename Pack>
+    struct PositionalPack {
+        std::ranges::iterator_t<const Pack&> begin;
+        std::ranges::sentinel_t<const Pack&> end;
+        size_t size;
+
+        PositionalPack(const Pack& pack) :
+            begin(std::ranges::begin(pack)),
+            end(std::ranges::end(pack)),
+            size(std::ranges::size(pack))
+        {}
+
+        void validate() {
+            if constexpr (!Signature::has_args) {
+                if (begin != end) {
+                    std::string message =
+                        "too many arguments in positional parameter pack: ['" +
+                        repr(*begin);
+                    while (++begin != end) {
+                        message += "', '" + repr(*begin);
+                    }
+                    message += "']";
+                    throw TypeError(message);
+                }
+            }
+        }
+
+        bool has_value() const { return begin != end; }
+        decltype(auto) value() {
+            decltype(auto) result = *begin;
+            ++begin;
+            return result;
+        }
+    };
+
+    /* Source keyword packs must be converted to this type, which encloses
+    a temporary map of keyword names to their corresponding values.  The
+    `.extract()` method is used to destructively search the map and fill
+    in corresponding values, allowing for efficient validation by simply
+    checking whether the map is empty, and listing any remaining contents
+    if not. */
+    template <typename Pack>
+    struct KeywordPack {
+        using Map = std::unordered_map<
+            std::string,
+            typename Pack::mapped_type
+        >;
+        Map map;
+
+        KeywordPack(const Pack& pack) :
+            map([](const Pack& pack) {
+                Map map;
+                map.reserve(pack.size());
+                for (auto&& [key, value] : pack) {
+                    auto [it, inserted] = map.emplace(
+                        std::forward<decltype(key)>(key),
+                        std::forward<decltype(value)>(value)
+                    );
+                    if (!inserted) {
+                        throw TypeError(
+                            "duplicate keyword argument: '" + it->first + "'"
+                        );
+                    }
+                }
+                return map;
+            }(pack))
+        {}
+
+        void validate() {
+            if constexpr (!Signature::has_kwargs) {
+                if (!map.empty()) {
+                    auto it = map.begin();
+                    auto end = map.end();
+                    std::string message =
+                        "unexpected keyword arguments: ['" + it->first;
+                    while (++it != end) {
+                        message += "', '" + it->first;
+                    }
+                    message += "']";
+                    throw TypeError(message);
+                }
+            }
+        }
+
+        auto size() const { return map.size(); }
+        template <typename T>
+        auto extract(T&& key) { return map.extract(std::forward<T>(key)); }
+        auto begin() { return map.begin(); }
+        auto end() { return map.end(); }
+    };
+
+    template <typename Pack>
+    PositionalPack(const Pack&) -> PositionalPack<Pack>;
+    template <typename Pack>
+    KeywordPack(const Pack&) -> KeywordPack<Pack>;
+
+    template <typename... A>
+    static constexpr bool pos_pack_idx = 0;
+    template <typename T, typename... As>
+    static constexpr bool pos_pack_idx<PositionalPack<T>, As...> = 0;
+    template <typename A, typename... As>
+    static constexpr bool pos_pack_idx<A, As...> = pos_pack_idx<As...> + 1;
+
+    template <typename... A>
+    static constexpr bool kw_pack_idx = 0;
+    template <typename T, typename... As>
+    static constexpr bool kw_pack_idx<KeywordPack<T>, As...> = 0;
+    template <typename A, typename... As>
+    static constexpr bool kw_pack_idx<A, As...> = kw_pack_idx<As...> + 1;
 
     template <size_t I, typename T> requires (I < Signature::n)
     static constexpr auto to_arg(T&& value) -> impl::unpack_type<I, Args...> {
@@ -1252,121 +1595,6 @@ public:
     struct Bind {
     private:
         using Source = Signature<Return(Values...)>;
-
-        /* Source positional packs must be converted to this type, which
-        encloses a pair of iterators over the positional arguments.  The
-        iterators are consumed as arguments are extracted from the pack,
-        allowing for efficient validation by simply checking whether all
-        elements were consumed, and listing those that weren't. */
-        template <typename Pack>
-        struct PositionalPack {
-            std::ranges::iterator_t<const Pack&> begin;
-            std::ranges::sentinel_t<const Pack&> end;
-            size_t size;
-
-            PositionalPack(const Pack& pack) :
-                begin(std::ranges::begin(pack)),
-                end(std::ranges::end(pack)),
-                size(std::ranges::size(pack))
-            {}
-
-            void validate() {
-                if constexpr (!Signature::has_args) {
-                    if (begin != end) {
-                        std::string message =
-                            "too many arguments in positional parameter pack: ['" +
-                            repr(*begin);
-                        while (++begin != end) {
-                            message += "', '" + repr(*begin);
-                        }
-                        message += "']";
-                        throw TypeError(message);
-                    }
-                }
-            }
-
-            bool has_value() const { return begin != end; }
-            decltype(auto) value() {
-                decltype(auto) result = *begin;
-                ++begin;
-                return result;
-            }
-        };
-
-        /* Source keyword packs must be converted to this type, which encloses
-        a temporary map of keyword names to their corresponding values.  The
-        `.extract()` method is used to destructively search the map and fill
-        in corresponding values, allowing for efficient validation by simply
-        checking whether the map is empty, and listing any remaining contents
-        if not. */
-        template <typename Pack>
-        struct KeywordPack {
-            using Map = std::unordered_map<
-                std::string,
-                typename Pack::mapped_type
-            >;
-            Map map;
-
-            KeywordPack(const Pack& pack) :
-                map([](const Pack& pack) {
-                    Map map;
-                    map.reserve(pack.size());
-                    for (auto&& [key, value] : pack) {
-                        auto [it, inserted] = map.emplace(
-                            std::forward<decltype(key)>(key),
-                            std::forward<decltype(value)>(value)
-                        );
-                        if (!inserted) {
-                            throw TypeError(
-                                "duplicate keyword argument: '" + it->first + "'"
-                            );
-                        }
-                    }
-                    return map;
-                }(pack))
-            {}
-
-            void validate() {
-                if constexpr (!Signature::has_kwargs) {
-                    if (!map.empty()) {
-                        auto it = map.begin();
-                        auto end = map.end();
-                        std::string message =
-                            "unexpected keyword arguments: ['" + it->first;
-                        while (++it != end) {
-                            message += "', '" + it->first;
-                        }
-                        message += "']";
-                        throw TypeError(message);
-                    }
-                }
-            }
-
-            auto size() const { return map.size(); }
-            template <typename T>
-            auto extract(T&& key) { return map.extract(std::forward<T>(key)); }
-            auto begin() { return map.begin(); }
-            auto end() { return map.end(); }
-        };
-
-        template <typename Pack>
-        PositionalPack(const Pack&) -> PositionalPack<Pack>;
-        template <typename Pack>
-        KeywordPack(const Pack&) -> KeywordPack<Pack>;
-
-        template <typename... A>
-        static constexpr bool pos_pack_idx = 0;
-        template <typename T, typename... As>
-        static constexpr bool pos_pack_idx<PositionalPack<T>, As...> = 0;
-        template <typename A, typename... As>
-        static constexpr bool pos_pack_idx<A, As...> = pos_pack_idx<As...> + 1;
-
-        template <typename... A>
-        static constexpr bool kw_pack_idx = 0;
-        template <typename T, typename... As>
-        static constexpr bool kw_pack_idx<KeywordPack<T>, As...> = 0;
-        template <typename A, typename... As>
-        static constexpr bool kw_pack_idx<A, As...> = kw_pack_idx<As...> + 1;
 
         template <size_t I, size_t J, size_t K>
         struct call {  // terminal case
@@ -4045,10 +4273,7 @@ public:
         };
 
         template <typename>
-        struct get_signature {
-            static constexpr bool enable = false;
-            using type = void;
-        };
+        struct get_signature { using type = void; };
         template <typename Source>
             requires (
                 !Source::has_args &&
@@ -4062,7 +4287,6 @@ public:
                 Check<Source>::can_convert
             )
         struct get_signature<Source> {
-            static constexpr bool enable = true;
             using type = decltype(call<0, 0, 0>::partial(
                 std::declval<Partial>(),
                 std::declval<Values...>()
@@ -4070,8 +4294,8 @@ public:
         };
 
     public:
-        static constexpr bool enable = get_signature<Source>::enable;
         using signature = get_signature<Source>::type;
+        static constexpr bool valid_partial = !std::is_void_v<signature>;
 
         static constexpr size_t n               = Source::n;
         static constexpr size_t n_pos           = Source::n_pos;
@@ -4744,41 +4968,34 @@ public:
         inverse of the Bind<>::call<>::python algorithm.  It uses techniques
         from Bind<>::call<>::cpp to build up the C++ argument list via index
         sequences and fold expressions, which are inlined into the final call. */
-        template <size_t I, size_t K>
+        template <size_t I, size_t J, size_t K>
         struct call {  // terminal case
-            template <typename P>
-            static Params<std::vector<Param>> key(
-                std::vector<Param>& out,
-                size_t hash,
-                Kwargs& kwargs,
-                PyObject* const* array,
-                size_t idx,
-                size_t nargs,
-                P&& parts
-            ) {
-                validate_positional(array, idx, nargs);
-                kwargs.validate();
-                return {
-                    .value = std::move(out),
-                    .hash = hash
-                };
-            }
+            /// TODO: does ::normalize() even need to build a kwargs map or validate
+            /// arguments?  Maybe all it does is insert the partial arguments into the
+            /// vectorcall array and return the combined hash?
+
+            /// TODO: this would have to check for duplicate keyword names between
+            /// the partial and keyword arguments.
 
             template <typename P>
-            static Params<std::vector<Param>> key(
-                std::vector<Param>& out,
+            static size_t normalize(
+                std::vector<PyObject*>& out,
                 size_t hash,
+                P&& parts,
                 PyObject* const* array,
                 size_t idx,
                 size_t nargs,
-                P&& parts
+                size_t size
             ) {
-                validate_positional(array, idx, nargs);
-                return {
-                    .value = std::move(out),
-                    .hash = hash
-                };
+                return hash;
             }
+
+            /// TODO: there would have to be a separate algorithm for populating a
+            /// newly-allocated kwnames tuple 
+
+
+
+
 
             template <typename P, typename D, typename F, typename... A>
             static std::invoke_result_t<F, Args...> operator()(
@@ -4833,12 +5050,12 @@ public:
                 }
             }
         };
-        template <size_t I, size_t K>
+        template <size_t I, size_t J, size_t K>
             requires (
                 I < Signature::n &&
                 (K < Partial::n && Partial::template rfind<K> == I)
             )
-        struct call<I, K> {  // insert partial argument(s)
+        struct call<I, J, K> {  // insert partial argument(s)
             template <size_t K2>
             static constexpr size_t consecutive = 0;
             template <size_t K2>
@@ -5185,12 +5402,12 @@ public:
                 return out;
             }
         };
-        template <size_t I, size_t K>
+        template <size_t I, size_t J, size_t K>
             requires (
                 I < Signature::n &&
                 !(K < Partial::n && Partial::template rfind<K> == I)
             )
-        struct call<I, K> {  // insert Python argument(s) or default value
+        struct call<I, J, K> {  // insert Python argument(s) or default value
             template <typename P>
             static Params<std::vector<Param>> key(
                 std::vector<Param>& out,
@@ -5993,8 +6210,16 @@ public:
 
         /* Manually build a vectorcall array from C++. */
         template <impl::inherits<Partial> P, typename... Values>
-            /// TODO: a bunch of template constraints utilizing the concepts in
-            /// Bind<Values...>
+            requires (
+                Bind<Values...>::proper_argument_order &&
+                Bind<Values...>::no_qualified_arg_annotations &&
+                Bind<Values...>::no_duplicate_args &&
+                Bind<Values...>::no_extra_positional_args &&
+                Bind<Values...>::no_extra_keyword_args &&
+                Bind<Values...>::no_conflicting_values &&
+                Bind<Values...>::can_convert &&
+                Bind<Values...>::satisfies_required_args
+            )
         Vectorcall(P&& parts, Values&&... values) :
             converted(),
             has_offset(true),
@@ -6184,28 +6409,36 @@ public:
             size_t size = nargs + kwcount;
             converted.reserve(Partial::n + size);
 
-            /// TODO: this is where the 3-way merge stuff needs to happen, rather than
-            /// a simple loop.  It also needs to account for a possible vectorcall
-            /// offset and compute a hash for the key.  The algorithm to build this
-            /// is implemented in call<I, K> and returns size_t, otherwise modifying
-            /// the converted vector by side effect.
-            for (size_t i = 0; i < size; ++i) {
-                converted.emplace_back(PyObject_CallOneArg(
-                    ptr(bertrand),
-                    array[i]
-                ));
-                if (converted.back() == nullptr) {
-                    for (size_t j = 0; j < i; ++j) {
-                        Py_DECREF(converted[j]);
-                    }
-                    converted.clear();
-                    Exception::from_python();
-                }
-            }
+            // /// TODO: this is where the 3-way merge stuff needs to happen, rather than
+            // /// a simple loop.  It also needs to account for a possible vectorcall
+            // /// offset and compute a hash for the key.  The algorithm to build this
+            // /// is implemented in call<I, K> and returns size_t, otherwise modifying
+            // /// the converted vector by side effect.
+            // for (size_t i = 0; i < size; ++i) {
+            //     converted.emplace_back(PyObject_CallOneArg(
+            //         ptr(bertrand),
+            //         array[i]
+            //     ));
+            //     if (converted.back() == nullptr) {
+            //         for (size_t j = 0; j < i; ++j) {
+            //             Py_DECREF(converted[j]);
+            //         }
+            //         converted.clear();
+            //         Exception::from_python();
+            //     }
+            // }
 
-            // hash = call<0, 0>::normalize(std::forward<P>(parts), converted, 0, size);
             /// TODO: possibly the same pattern as below, but assigning the result
             /// to hash instead of returning it directly?
+            hash = call<0, 0, 0>::normalize(
+                converted,
+                0,
+                std::forward<P>(parts),
+                array,
+                0,
+                nargs,
+                size
+            );
             array = converted.data();
             nargs = nargs + Partial::n_posonly;
             flags |= PY_VECTORCALL_ARGUMENTS_OFFSET;
@@ -6214,31 +6447,6 @@ public:
                 kwnames = reinterpret_steal<Object>(nullptr);
                 kwcount = kwcount + Partial::n_kw;
             }
-
-
-            // std::vector<Param> out;
-            // out.reserve(Partial::n + size);
-            // if (kwnames) {
-            //     Kwargs kwargs {converted.data(), nargs, kwnames, kwcount};
-            //     return call<0, 0>::key(
-            //         out,
-            //         0,
-            //         kwargs,
-            //         converted.data(),
-            //         0,
-            //         nargs,
-            //         std::forward<P>(parts)
-            //     );
-            // } else {
-            //     return call<0, 0>::key(
-            //         out,
-            //         0,
-            //         converted.data(),
-            //         0,
-            //         nargs,
-            //         std::forward<P>(parts)
-            //     );
-            // }
         }
 
         // /* Produce an overload key from the Python arguments, which can be used to
@@ -6908,6 +7116,51 @@ public:
         template <typename check, impl::is<Vectorcall> Key> requires (valid_check<check>)
         Iterator<check> search(Key&& key) const {
             return {std::forward<Key>(key), root_edges, data};
+        }
+
+        /* Insert a function into the trie.  Throws a TypeError if the function is not
+        a viable overload of the enclosing signature (as determined by an
+        `inspect.signature()` call), or a ValueError if it conflicts with an existing
+        overload. */
+        void insert(const Object& func) {
+            /// TODO: Inspect{} the function here to get the signature, validate it,
+            /// and then insert into the metadata map + encode into the overload trie,
+            /// building new nodes as needed.
+        }
+
+        /* Remove a function from the overload trie.  Throws a KeyError if the function
+        is not contained within the trie (as determined by an equality check). */
+        void remove(const Object& func) {
+            auto it = data.begin();
+            auto end = data.end();
+            while (it != end) {
+                if (it->second.func == func) {
+                    /// TODO: purge all edges with the same hash from the trie, which
+                    /// will also drop any orphaned nodes thanks to the shared pointer.
+                    return;
+                }
+                ++it;
+            }
+            throw KeyError(repr(func));
+        }
+
+        /* Returns true if the function is present in the trie. */
+        bool contains(const Object& func) const {
+            auto it = data.begin();
+            auto end = data.end();
+            while (it != end) {
+                if (it->second.func == func) {
+                    return true;
+                }
+                ++it;
+            }
+            return false;
+        }
+
+        /* Remove all overloads from the trie, resetting it to its default state. */
+        void clear() noexcept {
+            data.clear();
+            root_edges.begin()->target.reset();
         }
 
     private:
