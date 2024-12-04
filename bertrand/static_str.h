@@ -1973,30 +1973,27 @@ struct StaticMap : impl::perfect_hash<Keys...> {
 private:
     using Hash = impl::perfect_hash<Keys...>;
 
+    struct Iterator;
+
     struct Bucket {
     private:
         friend StaticMap;
-
+        friend Iterator;
         std::string_view m_key;
         union { Value m_value; };
         bool m_init;
 
     public:
         constexpr Bucket() : m_key(), m_init(false) {}
-
         constexpr Bucket(std::string_view key, const Value& value) :
             m_key(key), m_value(value), m_init(true)
         {}
-
         constexpr Bucket(std::string_view key, Value&& value) :
             m_key(key), m_value(std::move(value)), m_init(true)
         {}
-
         constexpr explicit operator bool() const { return m_init; }
-
         constexpr const Value& operator*() const { return m_value; }
         Value& operator*() { return m_value; }
-
         constexpr const Value* operator->() const { return &m_value; }
         Value* operator->() { return &m_value; }
     };
@@ -2023,7 +2020,7 @@ private:
     template <size_t I, size_t... occupied, typename... Values>
     static constexpr Bucket populate(Values&&... values) {
         constexpr size_t idx = pack_idx<I, occupied...>;
-        if constexpr (idx < sizeof...(Values)) {
+        if constexpr (idx < sizeof...(Keys)) {
             constexpr const char* key = unpack_key<idx, Keys...>::value;
             return {
                 std::string_view{key, unpack_key<idx, Keys...>::value.size()},
@@ -2034,21 +2031,72 @@ private:
         }
     }
 
-    template <typename... Values>
-    static constexpr Table build(Values&&... values) noexcept {
-        return []<size_t... Is>(std::index_sequence<Is...>, auto&&... values) {
-            return Table{populate<Is, (Hash::hash(Keys) % Hash::table_size)...>(
-                std::forward<decltype(values)>(values)...
-            )...};
-        }(
-            std::make_index_sequence<Hash::table_size>{},
-            std::forward<decltype(values)>(values)...
-        );
-    }
+    struct Iterator {
+    private:
+        const Table* m_table;
+        size_t m_idx;
+
+    public:
+        using iterator_category = std::forward_iterator_tag;
+        using difference_type = size_t;
+        using value_type = std::pair<const std::string_view&, const Value&>;
+        using pointer = std::pair<const std::string_view&, const Value&>*;
+        using reference = std::pair<const std::string_view&, const Value&>&;
+
+        Iterator(const Table& table) : m_table(&table), m_idx(0) {
+            while (m_idx < Hash::table_size && !((*m_table)[m_idx])) {
+                ++m_idx;
+            }
+        }
+
+        Iterator(const Table& table, Sentinel) :
+            m_table(&table), m_idx(Hash::table_size)
+        {}
+
+        value_type operator*() const {
+            const Bucket& bucket = (*m_table)[m_idx];
+            return {bucket.m_key, *bucket};
+        }
+
+        Iterator& operator++() {
+            while (++m_idx < Hash::table_size && !((*m_table)[m_idx])) {}
+            return *this;
+        }
+    
+        Iterator operator++(int) {
+            Iterator copy = *this;
+            while (++m_idx < Hash::table_size && !((*m_table)[m_idx])) {}
+            return copy;
+        }
+
+        friend bool operator==(const Iterator& self, const Iterator& other) {
+            return self.m_table == other.m_table && self.m_idx == other.m_idx;
+        }
+
+        friend bool operator!=(const Iterator& self, const Iterator& other) {
+            return self.m_table != other.m_table || self.m_idx != other.m_idx;
+        }
+
+        friend bool operator==(const Iterator& self, Sentinel) {
+            return self.m_idx == Hash::table_size;
+        }
+
+        friend bool operator==(Sentinel, const Iterator& self) {
+            return self.m_idx == Hash::table_size;
+        }
+
+        friend bool operator!=(const Iterator& self, Sentinel) {
+            return self.m_idx != Hash::table_size;
+        }
+
+        friend bool operator!=(Sentinel, const Iterator& self) {
+            return self.m_idx != Hash::table_size;
+        }
+    };
 
 public:
     Bucket empty_bucket;
-    std::array<Bucket, Hash::table_size> table;
+    Table table;
 
     template <typename... Values>
         requires (
@@ -2057,7 +2105,14 @@ public:
         )
     constexpr StaticMap(Values&&... values) :
         empty_bucket(),
-        table(build(std::forward<Values>(values)...))
+        table([]<size_t... Is>(std::index_sequence<Is...>, auto&&... values) {
+            return Table{populate<Is, (Hash::hash(Keys) % Hash::table_size)...>(
+                std::forward<decltype(values)>(values)...
+            )...};
+        }(
+            std::make_index_sequence<Hash::table_size>{},
+            std::forward<Values>(values)...
+        ))
     {}
 
     /* Check whether the map contains an arbitrary key at compile time. */
@@ -2177,9 +2232,232 @@ public:
         return empty_bucket;
     }
 
-    /// TODO: begin()/end()
-
+    constexpr size_t capacity() const { return Hash::table_size; }
+    constexpr size_t size() const { return sizeof...(Keys); }
+    constexpr bool empty() const { return size() == 0; }
+    Iterator begin() const { return {table}; }
+    Iterator cbegin() const { return {table}; }
+    Sentinel end() const { return {}; }
+    Sentinel cend() const { return {}; }
 };
+
+
+/* A specialization of StaticMap that does not hold any values.  Such a data structure
+is equivalent to a perfectly-hashed set of compile-time strings, which can be
+efficiently searched at runtime.  Rather than dereferencing to a value, the buckets
+and iterators will dereference to `string_view`s of the templated key buffers. */
+template <StaticStr... Keys>
+    requires (
+        impl::strings_are_unique<Keys...> &&
+        impl::perfect_hash<Keys...>::exists
+    )
+struct StaticMap<void, Keys...> : impl::perfect_hash<Keys...> {
+private:
+    using Hash = impl::perfect_hash<Keys...>;
+
+    struct Bucket {
+    private:
+        friend StaticMap;
+        std::string_view m_key;
+        bool m_init;
+
+    public:
+        constexpr Bucket() : m_key(), m_init(false) {}
+        constexpr Bucket(std::string_view key) : m_key(key), m_init(true) {}
+        constexpr explicit operator bool() const { return m_init; }
+        constexpr const std::string_view& operator*() const { return m_key; }
+        constexpr const std::string_view* operator->() const { return &m_key; }
+    };
+
+    using Table = std::array<Bucket, Hash::table_size>;
+
+    template <size_t I, size_t...>
+    static constexpr size_t pack_idx = 0;
+    template <size_t I, size_t J, size_t... Js>
+    static constexpr size_t pack_idx<I, J, Js...> =
+        (I == J) ? 0 : pack_idx<I, Js...> + 1;
+
+    template <size_t I, StaticStr... Strings>
+    struct unpack_key;
+    template <StaticStr First, StaticStr... Rest>
+    struct unpack_key<0, First, Rest...> {
+        static constexpr StaticStr value = First;
+    };
+    template <size_t I, StaticStr First, StaticStr... Rest>
+    struct unpack_key<I, First, Rest...> {
+        static constexpr StaticStr value = unpack_key<I - 1, Rest...>::value;
+    };
+
+    template <size_t I, size_t... occupied>
+    static constexpr Bucket populate() {
+        constexpr size_t idx = pack_idx<I, occupied...>;
+        if constexpr (idx < sizeof...(Keys)) {
+            constexpr const char* key = unpack_key<idx, Keys...>::value;
+            return {std::string_view{key, unpack_key<idx, Keys...>::value.size()}};
+        } else {
+            return {};
+        }
+    }
+
+    struct Iterator {
+    private:
+        const Table* m_table;
+        size_t m_idx;
+
+    public:
+        using iterator_category = std::forward_iterator_tag;
+        using difference_type = size_t;
+        using value_type = const std::string_view;
+        using pointer = const std::string_view*;
+        using reference = const std::string_view&;
+
+        Iterator(const Table& table) : m_table(&table), m_idx(0) {
+            while (m_idx < Hash::table_size && !((*m_table)[m_idx])) {
+                ++m_idx;
+            }
+        }
+
+        Iterator(const Table& table, Sentinel) :
+            m_table(&table), m_idx(Hash::table_size)
+        {}
+
+        const std::string_view& operator*() const {
+            return *((*m_table)[m_idx]);
+        }
+
+        Iterator& operator++() {
+            while (++m_idx < Hash::table_size && !((*m_table)[m_idx])) {}
+            return *this;
+        }
+    
+        Iterator operator++(int) {
+            Iterator copy = *this;
+            while (++m_idx < Hash::table_size && !((*m_table)[m_idx])) {}
+            return copy;
+        }
+
+        friend bool operator==(const Iterator& self, const Iterator& other) {
+            return self.m_table == other.m_table && self.m_idx == other.m_idx;
+        }
+
+        friend bool operator!=(const Iterator& self, const Iterator& other) {
+            return self.m_table != other.m_table || self.m_idx != other.m_idx;
+        }
+
+        friend bool operator==(const Iterator& self, Sentinel) {
+            return self.m_idx == Hash::table_size;
+        }
+
+        friend bool operator==(Sentinel, const Iterator& self) {
+            return self.m_idx == Hash::table_size;
+        }
+
+        friend bool operator!=(const Iterator& self, Sentinel) {
+            return self.m_idx != Hash::table_size;
+        }
+
+        friend bool operator!=(Sentinel, const Iterator& self) {
+            return self.m_idx != Hash::table_size;
+        }
+    };
+
+public:
+    Bucket empty_bucket;
+    Table table;
+
+    constexpr StaticMap() :
+        empty_bucket(),
+        table([]<size_t... Is>(std::index_sequence<Is...>) {
+            return Table{populate<Is, (Hash::hash(Keys) % Hash::table_size)...>()...};
+        }(std::make_index_sequence<Hash::table_size>{}))
+    {}
+
+    /* Check whether the map contains an arbitrary key at compile time. */
+    template <StaticStr Key>
+    static constexpr bool contains() {
+        return ((Key == Keys) || ...);
+    }
+
+    /* Check whether the map contains an arbitrary key. */
+    constexpr bool contains(const char* key) const {
+        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        if (result) {
+            size_t i = 0;
+            while (i < result.m_key.size()) {
+                if (key[i] != result.m_key[i]) {
+                    return false;
+                }
+                ++i;
+            }
+            return key[i] == '\0';
+        }
+        return false;
+    }
+
+    /* Check whether the map contains an arbitrary key. */
+    constexpr bool contains(std::string_view key) const {
+        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        if (result && result.m_key == key) {
+            return true;
+        }
+        return false;
+    }
+
+    /* Get the value associated with a key at compile time, asserting that it is
+    present in the map. */
+    template <StaticStr Key> requires (contains<Key>())
+    constexpr const std::string_view& get() const {
+        constexpr size_t idx = Hash::hash(Key) % Hash::table_size;
+        return *table[idx];
+    }
+
+    /* Look up a key, returning the bucket that contains the corresponding value or an
+    empty bucket if it is not present.  The empty bucket evaluates false under boolean
+    logic, and non-empty buckets can be dereferenced like a pointer to access the
+    value.  The user must always check whether the bucket is empty before dereferencing
+    it. */
+    constexpr const Bucket& operator[](const char* key) const {
+        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        if (result) {
+            size_t i = 0;
+            while (i < result.m_key.size()) {
+                if (key[i] != result.m_key[i]) {
+                    return empty_bucket;
+                }
+                ++i;
+            }
+            if (key[i] == '\0') {
+                return result;
+            }
+        }
+        return empty_bucket;
+    }
+
+    /* Look up a key, returning the bucket that contains the corresponding value or an
+    empty bucket if it is not present.  The empty bucket evaluates false under boolean
+    logic, and non-empty buckets can be dereferenced like a pointer to access the
+    value.  The user must always check whether the bucket is empty before dereferencing
+    it. */
+    constexpr const Bucket& operator[](std::string_view key) const {
+        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        if (result && result.m_key == key) {
+            return result;
+        }
+        return empty_bucket;
+    }
+
+    constexpr size_t capacity() const { return Hash::table_size; }
+    constexpr size_t size() const { return sizeof...(Keys); }
+    constexpr bool empty() const { return size() == 0; }
+    Iterator begin() const { return {table}; }
+    Iterator cbegin() const { return {table}; }
+    Sentinel end() const { return {}; }
+    Sentinel cend() const { return {}; }
+};
+
+
+template <StaticStr... Keys>
+using StaticSet = StaticMap<void, Keys...>;
 
 
 }  // namespace bertrand
@@ -2200,16 +2478,29 @@ namespace std {
 
     /* `std::get<"name">(dict)` is a type-safe accessor for `bertrand::StaticMap`. */
     template <bertrand::StaticStr Key, typename Value, bertrand::StaticStr... Keys>
-        requires (bertrand::StaticMap<Value, Keys...>::template contains<Key>())
+        requires (
+            bertrand::StaticMap<Value, Keys...>::template contains<Key>() &&
+            !std::is_void_v<Value>
+        )
     constexpr const Value& get(const bertrand::StaticMap<Value, Keys...>& dict) {
         return dict.template get<Key>();
     }
 
     /* `std::get<"name">(dict)` is a type-safe accessor for `bertrand::StaticMap`. */
     template <bertrand::StaticStr Key, typename Value, bertrand::StaticStr... Keys>
-        requires (bertrand::StaticMap<Value, Keys...>::template contains<Key>())
+        requires (
+            bertrand::StaticMap<Value, Keys...>::template contains<Key>() &&
+            !std::is_void_v<Value>
+        )
     Value& get(bertrand::StaticMap<Value, Keys...>& dict) {
         return dict.template get<Key>();
+    }
+
+    /* `std::get<"name">(set)` is a type-safe accessor for `bertrand::StaticSet`. */
+    template <bertrand::StaticStr Key, bertrand::StaticStr... Keys>
+        requires (bertrand::StaticSet<Keys...>::template contains<Key>())
+    constexpr const std::string_view get(const bertrand::StaticSet<Keys...>& set) {
+        return set.template get<Key>();
     }
 
 }

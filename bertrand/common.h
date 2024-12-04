@@ -83,6 +83,10 @@ namespace impl {
 }
 
 
+/* A generic sentinel type to simplify iterator implementations. */
+struct Sentinel {};
+
+
 /* Get the index of a particular type within a parameter pack.  Returns the pack's size
 if the type is not present. */
 template <typename Search, typename... Ts>

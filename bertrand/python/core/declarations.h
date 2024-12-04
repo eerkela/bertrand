@@ -81,6 +81,7 @@ namespace impl {
     using bertrand::remove_lvalue;
     using bertrand::remove_rvalue;
     using bertrand::implicit_cast;
+    using bertrand::Sentinel;
 
     struct BertrandTag {};
     struct UnionTag : BertrandTag {};
@@ -129,8 +130,6 @@ namespace impl {
             }
         }
     };
-
-    struct Sentinel {};
 
     template <typename T>
     constexpr bool _is_pack = false;
