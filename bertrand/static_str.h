@@ -1830,7 +1830,7 @@ namespace impl {
             constexpr std::string_view suffix {">(void)"};
             constexpr std::string_view function {__FUNCSIG__};
         #else
-            # error Unsupported compiler
+            #error Unsupported compiler
         #endif
 
         constexpr size_t start = function.find(prefix) + prefix.size();
@@ -1957,13 +1957,14 @@ constexpr auto type_name = impl::type_name_impl<T>();
 
 /* A compile-time perfect hash table with a finite set of static strings as keys.  The
 data structure will compute a perfect hash function for the given strings at compile
-time, and will store the values in a fixed-size array.
+time, and will store the values in a fixed-size array that can be baked into the final
+binary.
 
-Searching the map is extremely fast even in the worst case, consisting only of an
-FNV-1a hash, a single array lookup modulo table size, and a string comparison to
-validate.  No collision resolution is necessary, due to the perfect hash function.  If
-the search string is also known at compile time, then each of these can be optimized
-out, skipping straight to the final value. */
+Searching the map is extremely fast even in the worst case, consisting only of a
+perfect FNV-1a hash, a single array lookup, and a string comparison to validate.  No
+collision resolution is necessary, due to the perfect hash function.  If the search
+string is also known at compile time, then even these can be optimized out, skipping
+straight to the final value with no intermediate computation. */
 template <typename Value, StaticStr... Keys>
     requires (
         impl::strings_are_unique<Keys...> &&

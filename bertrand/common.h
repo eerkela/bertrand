@@ -2,6 +2,7 @@
 #define BERTRAND_COMMON_H
 
 #include <cstddef>
+#include <random>
 #include <concepts>
 
 
@@ -154,50 +155,62 @@ constexpr T next_power_of_two(T n) noexcept {
 }
 
 
-/* Deterministic Miller-Rabin primality test.  Avoids random numbers so the test can be
-computed at compile time if necessary. */
+/* Miller-Rabin primality test.  Uses traditional probabilistic methods with random
+numbers at runtime, but can also be computed deterministically at compile time using a
+fixed set of bases.  In the compile-time case, the iterations argument is not used. */
 template <std::integral T>
-constexpr bool is_prime(T n) noexcept {
+constexpr bool is_prime(T n, int iterations = 10) noexcept {
     if (!(n & 1)) {
         return n == 2;
     } else if (n < 2) {
         return false;
     }
 
-    /// TODO: can use if consteval to optimize this for both compile and runtime
-
-    T a = n - 1;
-    T b = 0;
-    while (!(a & 1)) {
-        a >>= 1;
-        ++b;
+    T d = n - 1;
+    int r = 0;
+    while ((d & 1) == 0) {
+        d >>= 1;
+        ++r;
     }
 
-    // deterministic set of bases for n < 2^64
-    constexpr T bases[] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37};
-    for (int i = 0, end = sizeof(bases) / sizeof(T); i < end; ++i) {
-        T base = bases[i];
-        if (base >= n) {
-            break;  // only test bases smaller than n
-        }
-
-        T x = exp_mod(base, a, n);
+    constexpr auto test = [](T n, T d, int r, T a) noexcept {
+        T x = exp_mod(a, d, n);
         if (x == 1 || x == n - 1) {
-            continue;
+            return true;
         }
-
-        bool composite = true;
-        for (T c = 1; c < b; ++c) {
+        for (int i = 0; i < r - 1; ++i) {
             x = mul_mod(x, x, n);
             if (x == n - 1) {
-                composite = false;
-                break;
+                return true;
             }
         }
-        if (composite) {
-            return false;
+        return false;
+    };
+
+    if consteval {
+        // deterministic set of bases for n < 2^64
+        constexpr T bases[] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37};
+        for (T a : bases) {
+            if (a >= n) {
+                break;  // only test bases less than n
+            }
+            if (!test(n, d, r, a)) {
+                return false;
+            }
+        }
+
+    } else {
+        // using Mersenne Twister for high-quality, thread-safe random numbers
+        std::mt19937_64 rng(std::random_device{}());
+        std::uniform_int_distribution<T> dist(2, n - 2);
+        for (int i = 0; i < iterations; ++i) {
+            T a = dist(rng);
+            if (!test(n, d, r, a)) {
+                return false;
+            }
         }
     }
+
     return true;
 }
 
