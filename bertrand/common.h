@@ -311,6 +311,12 @@ decltype(auto) implicit_cast(U&& value) {
 }
 
 
+template <typename T>
+concept string_literal = requires(T t) {
+    { []<size_t N>(const char(&)[N]){}(t) };
+};
+
+
 }
 
 

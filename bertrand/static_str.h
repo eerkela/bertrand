@@ -2158,7 +2158,10 @@ namespace impl {
             }(std::make_index_sequence<significant_chars>{});
 
         /* Hash a character buffer according to the computed perfect hash algorithm. */
-        static constexpr size_t hash(const char* str) noexcept {
+        template <std::convertible_to<const char*> T>
+            requires (!impl::static_str<T> && !string_literal<T>)
+        static constexpr size_t hash(const T& str) noexcept {
+            const char* start = str;
             /// TODO: it might be possible to use an extended bitmask with length
             /// equal to max_length, with 1s at the positions of the significant
             /// characters, and 0s elsewhere.  I would then load up to 8 characters
@@ -2167,12 +2170,12 @@ namespace impl {
             if constexpr (positions.empty()) {
                 return 0;
             }
-            const char* ptr = str;
+            const char* ptr = start;
             size_t out = 0;
             size_t i = 0;
             size_t next_pos = positions[i];
             while (*ptr != '\0') {
-                if ((ptr - str) == next_pos) {
+                if ((ptr - start) == next_pos) {
                     out += weights[*ptr];
                     if (++i >= positions.size()) {
                         // early break if no characters left to probe
@@ -2191,18 +2194,21 @@ namespace impl {
 
         /* Hash a character buffer according to the computed perfect hash algorithm and
         record its length as an out parameter. */
-        static constexpr size_t hash(const char* str, size_t& len) noexcept {
-            const char* ptr = str;
+        template <std::convertible_to<const char*> T>
+            requires (!impl::static_str<T> && !string_literal<T>)
+        static constexpr size_t hash(const T& str, size_t& len) noexcept {
+            const char* start = str;
+            const char* ptr = start;
             if constexpr (positions.empty()) {
                 while (*ptr != '\0') { ++ptr; }
-                len = ptr - str;
+                len = ptr - start;
                 return 0;
             }
             size_t out = 0;
             size_t i = 0;
             size_t next_pos = positions[i];
             while (*ptr != '\0') {
-                if ((ptr - str) == next_pos) {
+                if ((ptr - start) == next_pos) {
                     out += weights[*ptr];
                     if (++i >= positions.size()) {
                         // continue probing until end of string to get length
@@ -2217,12 +2223,38 @@ namespace impl {
                 out += weights[0];
                 ++i;
             }
-            len = ptr - str;
+            len = ptr - start;
             return out;
         }
 
-        /* Hash a string view according to the computed perfect hash algorithm. */
-        static constexpr size_t hash(std::string_view str) noexcept {
+        /* Hash a string literal according to the computed perfect hash algorithm. */
+        template <size_t N>
+        static constexpr size_t hash(const char(&str)[N]) noexcept {
+            constexpr size_t M = N - 1;
+            size_t out = 0;
+            for (size_t pos : positions) {
+                unsigned char c = pos < M ? str[pos] : 0;
+                out += weights[c];
+            }
+            return out;
+        }
+
+        /* Hash a string literal according to the computed perfect hash algorithm. */
+        template <size_t N>
+        static constexpr size_t hash(const char(&str)[N], size_t& len) noexcept {
+            constexpr size_t M = N - 1;
+            size_t out = 0;
+            for (size_t pos : positions) {
+                unsigned char c = pos < M ? str[pos] : 0;
+                out += weights[c];
+            }
+            len = M;
+            return out;
+        }
+
+        /* Hash a compile-time string according to the computed perfect hash algorithm. */
+        template <impl::static_str Key>
+        static constexpr size_t hash(const Key& str) noexcept {
             size_t out = 0;
             for (size_t pos : positions) {
                 unsigned char c = pos < str.size() ? str[pos] : 0;
@@ -2231,9 +2263,8 @@ namespace impl {
             return out;
         }
 
-        /* Hash a compile-time string according to the computed perfect hash algorithm. */
-        template <impl::static_str Key>
-        static constexpr size_t hash(const Key& str) noexcept {
+        /* Hash a string view according to the computed perfect hash algorithm. */
+        static constexpr size_t hash(std::string_view str) noexcept {
             size_t out = 0;
             for (size_t pos : positions) {
                 unsigned char c = pos < str.size() ? str[pos] : 0;
@@ -2383,37 +2414,62 @@ public:
     }
 
     /* Check whether the map contains an arbitrary key. */
-    constexpr bool contains(const char* key) const {
+    template <std::convertible_to<const char*> T>
+        requires (!impl::static_str<T> && !string_literal<T>)
+    constexpr bool contains(const T& key) const {
+        const char* str = key;
         size_t len;
-        const Bucket& result = table[Hash::hash(key, len) % Hash::table_size];
-        if (len == result.key.size()) {
-            for (size_t i = 0; i < len; ++i) {
-                if (key[i] != result.key[i]) {
-                    return false;
-                }
-            }
-            return true;
+        const Bucket& result = table[Hash::hash(str, len) % Hash::table_size];
+        if (len != result.key.size()) {
+            return false;
         }
-        return false;
+        for (size_t i = 0; i < len; ++i) {
+            if (str[i] != result.key[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /* Check whether the map contains an arbitrary key. */
-    constexpr bool contains(std::string_view key) const {
-        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (key == result.key) {
-            return true;
+    template <size_t N>
+    constexpr bool contains(const char(&key)[N]) const {
+        constexpr size_t M = N - 1;
+        if constexpr ((M < Hash::min_length) | (M > Hash::max_length)) {
+            return false;
         }
-        return false;
+        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        for (size_t i = 0; i < M; ++i) {
+            if (key[i] != result.key[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /* Check whether the map contains an arbitrary key. */
     template <impl::static_str Key>
     constexpr bool contains(const Key& key) const {
-        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (key == result.key) {
-            return true;
+        if constexpr ((key.size() < Hash::min_length) | (key.size() > Hash::max_length)) {
+            return false;
         }
-        return false;
+        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        if (key != result.key) {
+            return false;
+        }
+        return true;
+    }
+
+    /* Check whether the map contains an arbitrary key. */
+    constexpr bool contains(std::string_view key) const {
+        if ((key.size() < Hash::min_length) | (key.size() > Hash::max_length)) {
+            return false;
+        }
+        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        if (key != result.key) {
+            return false;
+        }
+        return true;
     }
 
     /* Get the value associated with a key at compile time, asserting that it is
@@ -2434,77 +2490,132 @@ public:
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
-    constexpr const Value* operator[](const char* key) const {
+    template <std::convertible_to<const char*> T>
+        requires (!impl::static_str<T> && !string_literal<T>)
+    constexpr const Value* operator[](const T& key) const {
+        const char* str = key;
         size_t len;
-        const Bucket& result = table[Hash::hash(key, len) % Hash::table_size];
-        if (len == result.key.size()) {
-            for (size_t i = 0; i < len; ++i) {
-                if (key[i] != result.key[i]) {
-                    return nullptr;
-                }
-            }
-            return &result.value;
+        const Bucket& result = table[Hash::hash(str, len) % Hash::table_size];
+        if (len != result.key.size()) {
+            return nullptr;
         }
-        return nullptr;
+        for (size_t i = 0; i < len; ++i) {
+            if (str[i] != result.key[i]) {
+                return nullptr;
+            }
+        }
+        return &result.value;
     }
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
-    constexpr const Value* operator[](std::string_view key) const {
-        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (key == result.key) {
-            return &result.value;
+    template <size_t N>
+    constexpr const Value* operator[](const char(&key)[N]) const {
+        constexpr size_t M = N - 1;
+        if constexpr ((M < Hash::min_length) | (M > Hash::max_length)) {
+            return nullptr;
         }
-        return nullptr;
+        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        for (size_t i = 0; i < M; ++i) {
+            if (key[i] != result.key[i]) {
+                return nullptr;
+            }
+        }
+        return &result.value;
     }
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
     template <impl::static_str Key>
     constexpr const Value* operator[](const Key& key) const {
+        if constexpr (
+            (key.size() < Hash::min_length) | (key.size() > Hash::max_length)
+        ) {
+            return nullptr;
+        }
         const Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (key == result.key) {
-            return &result.value;
+        if (key != result.key) {
+            return nullptr;
         }
-        return nullptr;
+        return &result.value;
     }
-
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
-    Value* operator[](const char* key) {
+    constexpr const Value* operator[](std::string_view key) const {
+        if ((key.size() < Hash::min_length) | (key.size() > Hash::max_length)) {
+            return nullptr;
+        }
+        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        if (key != result.key) {
+            return nullptr;
+        }
+        return &result.value;
+    }
+
+    /* Look up a key, returning a pointer to the corresponding value or nullptr if it
+    is not present. */
+    template <std::convertible_to<const char*> T>
+        requires (!impl::static_str<T> && !string_literal<T>)
+    Value* operator[](const T& key) {
+        const char* str = key;
         size_t len;
-        Bucket& result = table[Hash::hash(key, len) % Hash::table_size];
-        if (len == result.key.size()) {
-            for (size_t i = 0; i < result.key.size(); ++i) {
-                if (key[i] != result.key[i]) {
-                    return nullptr;
-                }
-            }
-            return &result.value;
+        Bucket& result = table[Hash::hash(str, len) % Hash::table_size];
+        if (len != result.key.size()) {
+            return nullptr;
         }
-        return nullptr;
+        for (size_t i = 0; i < len; ++i) {
+            if (str[i] != result.key[i]) {
+                return nullptr;
+            }
+        }
+        return &result.value;
     }
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
-    Value* operator[](std::string_view key) {
-        Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (key == result.key) {
-            return &result.value;
+    template <size_t N>
+    Value* operator[](const char(&key)[N]) {
+        constexpr size_t M = N - 1;
+        if constexpr ((M < Hash::min_length) | (M > Hash::max_length)) {
+            return nullptr;
         }
-        return nullptr;
+        Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        for (size_t i = 0; i < M; ++i) {
+            if (key[i] != result.key[i]) {
+                return nullptr;
+            }
+        }
+        return &result.value;
     }
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
     template <impl::static_str Key>
     Value* operator[](const Key& key) {
-        Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (key == result.key) {
-            return &result.value;
+        if constexpr (
+            (key.size() < Hash::min_length) | (key.size() > Hash::max_length)
+        ) {
+            return nullptr;
         }
-        return nullptr;
+        Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        if (key != result.key) {
+            return nullptr;
+        }
+        return &result.value;
+    }
+
+    /* Look up a key, returning a pointer to the corresponding value or nullptr if it
+    is not present. */
+    Value* operator[](std::string_view key) {
+        if ((key.size() < Hash::min_length) | (key.size() > Hash::max_length)) {
+            return nullptr;
+        }
+        Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        if (key != result.key) {
+            return nullptr;
+        }
+        return &result.value;
     }
 
     constexpr size_t size() const { return sizeof...(Keys); }
@@ -2619,37 +2730,64 @@ public:
     }
 
     /* Check whether the map contains an arbitrary key. */
-    constexpr bool contains(const char* key) const {
+    template <std::convertible_to<const char*> T>
+        requires (!impl::static_str<T> && !string_literal<T>)
+    constexpr bool contains(const T& key) const {
+        const char* str = key;
         size_t len;
-        const std::string_view& result = table[Hash::hash(key, len) % Hash::table_size];
-        if (len == result.size()) {
-            for (size_t i = 0; i < len; ++i) {
-                if (key[i] != result[i]) {
-                    return false;
-                }
-            }
-            return true;
+        const std::string_view& result = table[Hash::hash(str, len) % Hash::table_size];
+        if (len != result.size()) {
+            return false;
         }
-        return false;
+        for (size_t i = 0; i < len; ++i) {
+            if (str[i] != result[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /* Check whether the map contains an arbitrary key. */
-    constexpr bool contains(std::string_view key) const {
-        const std::string_view& result = table[Hash::hash(key) % Hash::table_size];
-        if (key == result) {
-            return true;
+    template <size_t N>
+    constexpr bool contains(const char(&key)[N]) const {
+        constexpr size_t M = N - 1;
+        if constexpr ((M < Hash::min_length) | (M > Hash::max_length)) {
+            return false;
         }
-        return false;
+        const std::string_view& result = table[Hash::hash(key) % Hash::table_size];
+        for (size_t i = 0; i < M; ++i) {
+            if (key[i] != result[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /* Check whether the map contains an arbitrary key. */
     template <impl::static_str Key>
     constexpr bool contains(const Key& key) const {
-        const std::string_view& result = table[Hash::hash(key) % Hash::table_size];
-        if (key == result) {
-            return true;
+        if constexpr (
+            (key.size() < Hash::min_length) | (key.size() > Hash::max_length)
+        ) {
+            return false;
         }
-        return false;
+        const std::string_view& result = table[Hash::hash(key) % Hash::table_size];
+        if (key != result) {
+            return false;
+        }
+        return true;
+    }
+
+    /* Check whether the map contains an arbitrary key. */
+    constexpr bool contains(std::string_view key) const {
+        if ((key.size() < Hash::min_length) | (key.size() > Hash::max_length)) {
+            return false;
+        }
+        const std::string_view& result = table[Hash::hash(key) % Hash::table_size];
+        if (key != result) {
+            return false;
+        }
+        return true;
     }
 
     /* Get the value associated with a key at compile time, asserting that it is
@@ -2662,39 +2800,67 @@ public:
 
     /* Look up a key, returning a pointer to the corresponding key or nullptr if it is
     not present. */
-    constexpr const std::string_view* operator[](const char* key) const {
+    template <std::convertible_to<const char*> T>
+        requires (!impl::static_str<T> && !string_literal<T>)
+    constexpr const std::string_view* operator[](const T& key) const {
+        const char* str = key;
         size_t len;
-        const std::string_view& result = table[Hash::hash(key, len) % Hash::table_size];
-        if (len == result.size()) {
-            for (size_t i = 0; i < len; ++i) {
-                if (key[i] != result[i]) {
-                    return nullptr;
-                }
-            }
-            return &result;
+        const std::string_view& result = table[Hash::hash(str, len) % Hash::table_size];
+        if (len != result.size()) {
+            return nullptr;
         }
-        return nullptr;
+        for (size_t i = 0; i < len; ++i) {
+            if (str[i] != result[i]) {
+                return nullptr;
+            }
+        }
+        return &result;
     }
 
     /* Look up a key, returning a pointer to the corresponding key or nullptr if it is
     not present. */
-    constexpr const std::string_view* operator[](std::string_view key) const {
-        const std::string_view& result = table[Hash::hash(key) % Hash::table_size];
-        if (key == result) {
-            return &result;
+    template <size_t N>
+    constexpr const std::string_view* operator[](const char(&key)[N]) const {
+        constexpr size_t M = N - 1;
+        if constexpr ((M < Hash::min_length) | (M > Hash::max_length)) {
+            return nullptr;
         }
-        return nullptr;
+        const std::string_view& result = table[Hash::hash(key) % Hash::table_size];
+        for (size_t i = 0; i < M; ++i) {
+            if (key[i] != result[i]) {
+                return nullptr;
+            }
+        }
+        return &result;
     }
 
     /* Look up a key, returning a pointer to the corresponding key or nullptr if it is
     not present. */
     template <impl::static_str Key>
     constexpr const std::string_view* operator[](const Key& key) const {
-        const std::string_view& result = table[Hash::hash(key) % Hash::table_size];
-        if (key == result) {
-            return &result;
+        if constexpr (
+            (key.size() < Hash::min_length) | (key.size() > Hash::max_length)
+        ) {
+            return nullptr;
         }
-        return nullptr;
+        const std::string_view& result = table[Hash::hash(key) % Hash::table_size];
+        if (key != result) {
+            return nullptr;
+        }
+        return &result;
+    }
+
+    /* Look up a key, returning a pointer to the corresponding key or nullptr if it is
+    not present. */
+    constexpr const std::string_view* operator[](std::string_view key) const {
+        if ((key.size() < Hash::min_length) | (key.size() > Hash::max_length)) {
+            return nullptr;
+        }
+        const std::string_view& result = table[Hash::hash(key) % Hash::table_size];
+        if (key != result) {
+            return nullptr;
+        }
+        return &result;
     }
 
     constexpr size_t size() const { return sizeof...(Keys); }

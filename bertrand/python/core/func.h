@@ -138,6 +138,42 @@ namespace impl {
 }
 
 
+/// TODO: ok, now we're cooking.  Now that I have a robust implementation for
+/// compile-time minimal perfect hash tables, I can generate one for every signature
+/// to simplify keyword argument handling, etc.  That comes with the benefit that
+/// the map can be queried at runtime with minimal cost, so the same data structure
+/// can also be used to validate Python arguments at runtime.  In fact, if every
+/// Signature holds such a table as a constexpr member, then I would also get it
+/// for free on defaults and partials, since they rely on nested inner signatures,
+/// and can just directly forward everything.  That means I can then use those maps
+/// in the Vectorcall::normalize() algorithm as well, in order to ensure that there
+/// are never any conflicts when inserting partial arguments, etc.
+
+/// TODO: also, Signature can potentially also expose a helper type that converts
+/// the signature to a canonicalized Python form, which would be used whenever a
+/// `py::def` is converted into a `py::Function`.  That would mean the Python
+/// function would have a std::function that included only Python arguments, and
+/// that std::function would encapsulate a `py::def` that expects the C++ arguments.
+/// The Python function would then trigger an implicit conversion from the Python
+/// types to the C++ types, and then call the C++ function with the converted
+/// arguments, and then convert the return value back to a Python type.  This would
+/// all happen automatically, such that you could write the following in C++:
+
+/// export constexpr py::def add([](py::Arg<"a", int> a, py::Arg<"b", int> b) {
+///     return *a + *b;
+/// });
+
+/// constexpr int result = add(py::arg<"b"> = 1, py::arg<"a"> = 2);
+
+/// and in Python, you could equivalently write:
+
+/// >>> add(b = 1, a = 2)
+/// 3
+
+
+
+
+
 /* Introspect an annotated C++ function signature to extract compile-time type
 information about its parameters and allow a matching function to be called safely
 from both languages with the same, Python-style syntax.  Also defines supporting
@@ -6331,9 +6367,6 @@ public:
         }
     };
 
-
-
-
     /// TODO: partial arguments will have to be provided to the Overload trie
     /// iterators, such that they can be automatically inserted when traversing
     /// the trie, and only matching functions will be returned.  This might mess
@@ -6357,6 +6390,32 @@ public:
     either Python or C++.  Uses a standardized key() format to allow for efficient
     caching. */
     struct Overloads {
+        struct Key : Vectorcall {
+            std::vector<uint64_t> kinds;
+
+            /// TODO: implement a specialized constructor here that also takes a
+            /// number of kinds equivalent to the number of arguments, and enforces
+            /// that.  Maybe there's a default constructor that builds a key for the
+            /// current signature?  That would handle the overload mechanism for C++
+            /// functions.  I would just inspect the function's signature and build
+            /// a key, which would be directly inserted at the C++ level into the
+            /// trie.
+
+            /// TODO: then, there would be an alternate constructor that takes an
+            /// `inspect.Signature` object and produces a key from that, which would
+            /// go through the `Inspect()` utility that I've already written.  Then,
+            /// overloading a function is as simple as calling `inspect.signature()`
+            /// on the function and then passing the result here to build a
+            /// corresponding key.  Such a constructor could potentially throw an
+            /// error, which would be propagated up to the user if the overloaded
+            /// signature is somehow incompatible.  The C++ equivalent would implement
+            /// this as a template constraint, which would be applied before the
+            /// overload() method can be called.
+
+            /// With those in place, the insert() method will simply accept an instance
+            /// of this class and a Python function to insert.
+        };
+
         struct instance {
             static bool operator()(PyObject* obj, PyObject* cls) {
                 int rc = PyObject_IsInstance(obj, cls);
@@ -6987,7 +7046,6 @@ public:
         /// harder to implement?
 
     };
-
 
     /* A Trie-based data structure containing a pool of dynamic overloads for a
     `py::Function` object, which will be dispatched to when the function is called
@@ -8831,6 +8889,10 @@ public:
         }
     };
 
+    /* Dummy constructor for CTAD purposes. */
+    template <typename T> requires (Signature<T>::enable)
+    constexpr Signature(const T&) noexcept {}
+
     /* Produce an overload key that matches the enclosing parameter list. */
     static Params<std::array<Param, n>> key() {
         size_t hash = 0;
@@ -8924,6 +8986,13 @@ struct Signature {
     /// base case as well.
     static constexpr bool enable = false;
 };
+
+
+/* CTAD guide to simplify signature introspection.  Uses a dummy constructor, meaning
+no work is done at runtime.  Introspecting a function signature is a purely
+compile-time operation in C++. */
+template <typename T> requires (Signature<T>::enable)
+Signature(const T&) -> Signature<Signature<T>::type>;
 
 
 /// NOTE: py::Signature<> contains all of the logic necessary to introspect and

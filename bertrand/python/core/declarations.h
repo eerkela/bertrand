@@ -577,6 +577,7 @@ struct Interface;
 
 
 namespace impl {
+    using bertrand::string_literal;
 
     template <typename L, typename R>
     concept is = std::same_as<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;
@@ -669,11 +670,6 @@ namespace impl {
     concept is_unique_ptr = unique_ptr_helper<std::remove_cvref_t<T>>::enable;
     template <is_unique_ptr T>
     using unique_ptr_type = unique_ptr_helper<std::remove_cvref_t<T>>::type;
-
-    template <typename T>
-    concept string_literal = requires(T t) {
-        { []<size_t N>(const char(&)[N]){}(t) };
-    };
 
     template <typename T>
     concept iterable = requires(T& t) {
