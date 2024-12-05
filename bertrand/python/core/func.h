@@ -1028,7 +1028,7 @@ public:
                 template <typename>
                 struct extend;
                 template <typename... Ps>
-                struct extend<pack<Ps...>> {
+                struct extend<args<Ps...>> {
                     template <typename P>
                     struct to_partial { using type = P; };
                     template <typename P> requires (ArgTraits<P>::kw())
@@ -1062,7 +1062,7 @@ public:
                 template <typename>
                 struct extend;
                 template <typename... Ps>
-                struct extend<pack<Ps...>> {
+                struct extend<args<Ps...>> {
                     using type = std::tuple<
                         out...,
                         Element<
@@ -1497,26 +1497,26 @@ public:
                             struct collect;
                             // If no matching partials exist, forward the unbound arg
                             template <>
-                            struct collect<pack<>> {
+                            struct collect<args<>> {
                                 using type = advance<Return(out..., T), I2 + 1, J3>::type;
                             };
                             // Otherwise, bind the collected partials and advance
                             template <typename r2, typename... r2s>
-                            struct collect<pack<r2, r2s...>> {
+                            struct collect<args<r2, r2s...>> {
                                 using B = ArgTraits<T>::template bind<r2, r2s...>::type;
                                 using type = advance<Return(out..., B), I2 + 1, J3>::type;
                             };
                             using type = collect<result>::type;
                         };
                         template <typename... result, size_t J3> requires (J3 < Source::kw_idx)
-                        struct append<pack<result...>, J3> {
+                        struct append<args<result...>, J3> {
                             // Append remaining partial positional args to the output pack
                             using type = append<
-                                pack<result..., typename Source::template at<J3>>,
+                                args<result..., typename Source::template at<J3>>,
                                 J3 + 1
                             >::type;
                         };
-                        using type = append<pack<>, J2>::type;
+                        using type = append<args<>, J2>::type;
                     };
 
                     template <typename T> requires (ArgTraits<T>::kwargs())
@@ -1528,29 +1528,29 @@ public:
                             struct collect;
                             // If no matching partials exist, forward the unbound arg
                             template <>
-                            struct collect<pack<>> {
+                            struct collect<args<>> {
                                 using type = advance<Return(out..., T), I2 + 1, J3>::type;
                             };
                             // Otherwise, bind the collected partials without advancing
                             template <typename r2, typename... r2s>
-                            struct collect<pack<r2, r2s...>> {
+                            struct collect<args<r2, r2s...>> {
                                 using B = ArgTraits<T>::template bind<r2, r2s...>::type;
                                 using type = advance<Return(out..., B), I2 + 1, J3>::type;
                             };
                             using type = collect<result>::type;
                         };
                         template <typename... result, size_t J3> requires (J3 < Source::n)
-                        struct append<pack<result...>, J3> {
+                        struct append<args<result...>, J3> {
                             // If the keyword arg is in the target signature, ignore
                             template <typename S>
                             struct collect {
-                                using type = pack<result...>;
+                                using type = args<result...>;
                             };
                             // Otherwise, append it to the output pack and continue
                             template <typename S>
                                 requires (!Signature::template has<ArgTraits<S>::name>)
                             struct collect<S> {
-                                using type = pack<result..., S>;
+                                using type = args<result..., S>;
                             };
                             using type = append<
                                 typename collect<typename Source::template at<J3>>::type,
@@ -1558,7 +1558,7 @@ public:
                             >::type;
                         };
                         // Start at the beginning of the partial keywords
-                        using type = append<pack<>, Source::kw_idx>::type;
+                        using type = append<args<>, Source::kw_idx>::type;
                     };
 
                     // Feed in the unbound argument and return a possibly bound equivalent

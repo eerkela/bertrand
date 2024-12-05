@@ -528,7 +528,7 @@ namespace impl {
         template <typename... Vs> requires (can_bind_arg<T, Vs...>)
         using bind                                  = BoundArg<T, Vs...>;
         using unbind                                = T;
-        using bound_to                              = pack<>;
+        using bound_to                              = py::args<>;
     };
 
     /* Inspect a C++ argument at compile time.  Forwards to the annotated type's
@@ -541,14 +541,14 @@ namespace impl {
             template <typename... Vs>
             using bind = BoundArg<U, Vs...>;
             using unbind = U;
-            using types = pack<>;
+            using types = args<>;
         };
         template <typename U, typename... Us>
         struct _bound<BoundArg<U, Us...>> {
             template <typename... Vs>
             using bind = BoundArg<U, Us..., Vs...>;
             using unbind = U;
-            using types = pack<Us...>;
+            using types = args<Us...>;
         };
 
     public:

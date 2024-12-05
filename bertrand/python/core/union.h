@@ -47,7 +47,7 @@ namespace impl {
     template <typename>
     struct to_union;
     template <typename... Matches>
-    struct to_union<pack<Matches...>> {
+    struct to_union<args<Matches...>> {
         template <typename>
         struct convert {
             template <typename T>
@@ -57,23 +57,23 @@ namespace impl {
             template <typename>
             struct helper;
             template <typename... Unique>
-            struct helper<pack<Unique...>> {
+            struct helper<args<Unique...>> {
                 using type = Union<std::remove_cvref_t<Unique>...>;
             };
             using type = helper<
-                typename pack<typename ToPython<Matches>::type...>::deduplicate
+                typename args<typename ToPython<Matches>::type...>::deduplicate
             >::type;
         };
         template <typename Match>
-        struct convert<pack<Match>> { using type = Match; };
-        using type = convert<typename pack<Matches...>::deduplicate>::type;
+        struct convert<args<Match>> { using type = Match; };
+        using type = convert<typename args<Matches...>::deduplicate>::type;
     };
 
     /* Raw types are converted to a pack of length 1. */
     template <typename T>
     struct UnionTraits {
         using type = T;
-        using pack = py::pack<T>;
+        using pack = args<T>;
     };
 
     /* Unions are converted into a pack of the same length. */
@@ -85,7 +85,7 @@ namespace impl {
         struct _pack;
         template <typename... Types>
         struct _pack<Union<Types...>> {
-            using type = py::pack<qualify<Types, T>...>;
+            using type = args<qualify<Types, T>...>;
         };
 
     public:
@@ -102,7 +102,7 @@ namespace impl {
         struct _pack;
         template <typename... Types>
         struct _pack<std::variant<Types...>> {
-            using type = py::pack<qualify<Types, T>...>;
+            using type = args<qualify<Types, T>...>;
         };
 
     public:
@@ -117,11 +117,11 @@ namespace impl {
         template <typename>
         struct permute;
         template <typename... Permutations>
-        struct permute<pack<Permutations...>> {
+        struct permute<args<Permutations...>> {
             template <typename>
             struct _enable { static constexpr bool enable = false; };
             template <typename... Actual> requires (std::is_invocable_v<Func, Actual...>)
-            struct _enable<pack<Actual...>> {
+            struct _enable<args<Actual...>> {
                 static constexpr bool enable = true;
                 using type = std::invoke_result_t<Func, Actual...>;
             };
@@ -145,7 +145,7 @@ namespace impl {
         };
 
         template <typename...>
-        struct _permutations { using type = pack<>; };
+        struct _permutations { using type = args<>; };
         template <typename First, typename... Rest>
         struct _permutations<First, Rest...> {
             using type = UnionTraits<First>::pack::template product<
@@ -167,14 +167,14 @@ namespace impl {
     template <typename, typename...>
     struct visit_helper;
     template <typename... Prev>
-    struct visit_helper<pack<Prev...>> {
+    struct visit_helper<args<Prev...>> {
         template <typename Visitor> requires (std::is_invocable_v<Visitor, Prev...>)
         static decltype(auto) operator()(Visitor&& visitor, Prev... prev) {
             return std::forward<Visitor>(visitor)(std::forward<Prev>(prev)...);
         }
     };
     template <typename... Prev, typename Curr, typename... Next>
-    struct visit_helper<pack<Prev...>, Curr, Next...> {
+    struct visit_helper<args<Prev...>, Curr, Next...> {
         template <size_t I, typename Visitor>
             requires (exhaustive<Visitor, Prev..., Curr, Next...>)
         struct VTable {
@@ -189,14 +189,14 @@ namespace impl {
                     using T = std::remove_cvref_t<Curr>::template at<I>;
                     using Q = qualify<T, Curr>;
                     if constexpr (std::is_lvalue_reference_v<Curr>) {
-                        return visit_helper<pack<Prev..., Q>, Next...>{}(
+                        return visit_helper<args<Prev..., Q>, Next...>{}(
                             std::forward<Visitor>(visitor),
                             std::forward<Prev>(prev)...,
                             reinterpret_cast<Q>(curr),
                             std::forward<Next>(next)...
                         );
                     } else {
-                        return visit_helper<pack<Prev..., Q>, Next...>{}(
+                        return visit_helper<args<Prev..., Q>, Next...>{}(
                             std::forward<Visitor>(visitor),
                             std::forward<Prev>(prev)...,
                             reinterpret_cast<std::add_rvalue_reference_t<Q>>(curr),
@@ -219,14 +219,14 @@ namespace impl {
                         std::is_lvalue_reference_v<Curr> ||
                         std::is_const_v<std::remove_reference_t<Curr>>
                     ) {
-                        return visit_helper<pack<Prev..., Q>, Next...>{}(
+                        return visit_helper<args<Prev..., Q>, Next...>{}(
                             std::forward<Visitor>(visitor),
                             std::forward<Prev>(prev)...,
                             std::get<I>(curr),
                             std::forward<Next>(next)...
                         );
                     } else {
-                        return visit_helper<pack<Prev..., Q>, Next...>{}(
+                        return visit_helper<args<Prev..., Q>, Next...>{}(
                             std::forward<Visitor>(visitor),
                             std::forward<Prev>(prev)...,
                             std::move(std::get<I>(curr)),
@@ -270,7 +270,7 @@ namespace impl {
                 );
 
             } else {
-                return visit_helper<pack<Prev..., Curr>, Next...>{}(
+                return visit_helper<args<Prev..., Curr>, Next...>{}(
                     std::forward<Visitor>(visitor),
                     std::forward<Prev>(prev)...,
                     std::forward<Curr>(curr),
@@ -308,7 +308,7 @@ union unwrapped to its actual type.  The order of the unions is irrelevant, and
 non-union arguments can be interspersed freely between them. */
 template <typename Func, typename... Args> requires (impl::exhaustive<Func, Args...>)
 decltype(auto) visit(Func&& visitor, Args&&... args) {
-    return impl::visit_helper<pack<>, Args...>{}(
+    return impl::visit_helper<py::args<>, Args...>{}(
         std::forward<Func>(visitor),
         std::forward<Args>(args)...
     );
@@ -355,15 +355,15 @@ namespace impl {
         template <has_python... Types>
         struct convertible<std::variant<Types...>> {
             static constexpr bool enable = true;
-            using type = to_union<pack<python_type<Types>...>>::type;
+            using type = to_union<args<python_type<Types>...>>::type;
             template <typename, typename... Ts>
             static constexpr bool _convert = true;
             template <typename... To, typename T, typename... Ts>
-            static constexpr bool _convert<pack<To...>, T, Ts...> =
+            static constexpr bool _convert<args<To...>, T, Ts...> =
                 (std::convertible_to<qualify<T, V>, To> || ...) &&
-                _convert<pack<To...>, Ts...>;
+                _convert<args<To...>, Ts...>;
             template <typename... Ts>
-            static constexpr bool convert = _convert<pack<Types...>, Ts...>;
+            static constexpr bool convert = _convert<args<Types...>, Ts...>;
         };
         static constexpr bool enable = convertible<std::remove_cvref_t<V>>::enable;
         using type = convertible<std::remove_cvref_t<V>>::type;
@@ -393,30 +393,30 @@ namespace impl {
             template <typename>
             struct _product;
             template <typename First, typename... Rest>
-            struct _product<pack<First, Rest...>> {
+            struct _product<args<First, Rest...>> {
                 using type = First::template product<Rest...>;
             };
-            using product = _product<pack<typename UnionTraits<Args>::pack...>>::type;
+            using product = _product<args<typename UnionTraits<Args>::pack...>>::type;
 
             /* 2. Produce an output pack containing all of the valid return types for
             each permutation that satisfies the control structure. */
             template <typename>
             struct traits;
             template <typename... Permutations>
-            struct traits<pack<Permutations...>> {
+            struct traits<args<Permutations...>> {
                 template <typename out, typename...>
                 struct _returns { using type = out; };
                 template <typename... out, typename P, typename... Ps>
-                struct _returns<pack<out...>, P, Ps...> {
+                struct _returns<args<out...>, P, Ps...> {
                     template <typename>
-                    struct filter { using type = pack<out...>; };
+                    struct filter { using type = args<out...>; };
                     template <typename P2> requires (P2::template enable<control>)
                     struct filter<P2> {
-                        using type = pack<out..., typename P2::template type<control>>;
+                        using type = args<out..., typename P2::template type<control>>;
                     };
                     using type = _returns<typename filter<P>::type, Ps...>::type;
                 };
-                using returns = _returns<pack<>, Permutations...>::type;
+                using returns = _returns<args<>, Permutations...>::type;
             };
 
             /* 3. Deduplicate the return types, merging those that only differ in
@@ -551,13 +551,13 @@ namespace impl {
             template <typename result, typename... Ts>
             struct unary { using type = result; };
             template <typename... Matches, typename T, typename... Ts>
-            struct unary<pack<Matches...>, T, Ts...> {
+            struct unary<args<Matches...>, T, Ts...> {
                 template <typename>
-                struct conditional { using type = pack<Matches...>; };
+                struct conditional { using type = args<Matches...>; };
                 template <typename T2>
                     requires (__getattr__<qualify_lvalue<T2, Self>, Name>::enable)
                 struct conditional<T2> {
-                    using type = pack<
+                    using type = args<
                         Matches...,
                         typename __getattr__<qualify_lvalue<T2, Self>, Name>::type
                     >;
@@ -565,7 +565,7 @@ namespace impl {
                 using type = unary<typename conditional<T>::type, Ts...>::type;
             };
             static constexpr bool enable = true;
-            using type = to_union<typename unary<pack<>, Types...>::type>::type;
+            using type = to_union<typename unary<args<>, Types...>::type>::type;
         };
         static constexpr bool enable = traits<std::remove_cvref_t<Self>>::enable;
         using type = traits<std::remove_cvref_t<Self>>::type;

@@ -1784,6 +1784,53 @@ public:
 };
 
 
+namespace impl {
+
+    template <typename>
+    constexpr bool _static_str = false;
+    template <size_t N>
+    constexpr bool _static_str<bertrand::StaticStr<N>> = true;
+
+    template <typename T>
+    constexpr auto type_name_impl() {
+        #if defined(__clang__)
+            constexpr std::string_view prefix {"[T = "};
+            constexpr std::string_view suffix {"]"};
+            constexpr std::string_view function {__PRETTY_FUNCTION__};
+        #elif defined(__GNUC__)
+            constexpr std::string_view prefix {"with T = "};
+            constexpr std::string_view suffix {"]"};
+            constexpr std::string_view function {__PRETTY_FUNCTION__};
+        #elif defined(_MSC_VER)
+            constexpr std::string_view prefix {"type_name_impl<"};
+            constexpr std::string_view suffix {">(void)"};
+            constexpr std::string_view function {__FUNCSIG__};
+        #else
+            #error Unsupported compiler
+        #endif
+
+        constexpr size_t start = function.find(prefix) + prefix.size();
+        constexpr size_t end = function.rfind(suffix);
+        static_assert(start < end);
+
+        constexpr std::string_view name = function.substr(start, (end - start));
+        constexpr size_t N = name.size();
+        return StaticStr<N>{name.data()};
+    }
+
+}
+
+
+template <typename T>
+concept static_str = impl::_static_str<std::remove_cvref_t<T>>;
+
+
+/* Gets a C++ type name as a fully-qualified, demangled string computed entirely
+at compile time.  The underlying buffer is baked directly into the final binary. */
+template <typename T>
+constexpr auto type_name = impl::type_name_impl<T>();
+
+
 /* Demangle a runtime string using the compiler's intrinsics. */
 constexpr std::string demangle(const char* name) {
     #if defined(__GNUC__) || defined(__clang__)
@@ -1817,38 +1864,6 @@ constexpr std::string demangle(const char* name) {
 
 
 namespace impl {
-
-    template <typename T>
-    constexpr auto type_name_impl() {
-        #if defined(__clang__)
-            constexpr std::string_view prefix {"[T = "};
-            constexpr std::string_view suffix {"]"};
-            constexpr std::string_view function {__PRETTY_FUNCTION__};
-        #elif defined(__GNUC__)
-            constexpr std::string_view prefix {"with T = "};
-            constexpr std::string_view suffix {"]"};
-            constexpr std::string_view function {__PRETTY_FUNCTION__};
-        #elif defined(_MSC_VER)
-            constexpr std::string_view prefix {"type_name_impl<"};
-            constexpr std::string_view suffix {">(void)"};
-            constexpr std::string_view function {__FUNCSIG__};
-        #else
-            #error Unsupported compiler
-        #endif
-
-        constexpr size_t start = function.find(prefix) + prefix.size();
-        constexpr size_t end = function.rfind(suffix);
-        static_assert(start < end);
-
-        constexpr std::string_view name = function.substr(start, (end - start));
-        constexpr size_t N = name.size();
-        return StaticStr<N>{name.data()};
-    }
-
-    template <typename>
-    constexpr bool _static_str = false;
-    template <size_t N>
-    constexpr bool _static_str<bertrand::StaticStr<N>> = true;
 
     template <StaticStr...>
     constexpr bool _strings_are_unique = true;
@@ -2157,7 +2172,7 @@ namespace impl {
 
         /* Hash a character buffer according to the computed perfect hash algorithm. */
         template <std::convertible_to<const char*> T>
-            requires (!impl::static_str<T> && !string_literal<T>)
+            requires (!static_str<T> && !string_literal<T>)
         static constexpr size_t hash(const T& str) noexcept {
             const char* start = str;
             /// TODO: it might be possible to use an extended bitmask with length
@@ -2193,7 +2208,7 @@ namespace impl {
         /* Hash a character buffer according to the computed perfect hash algorithm and
         record its length as an out parameter. */
         template <std::convertible_to<const char*> T>
-            requires (!impl::static_str<T> && !string_literal<T>)
+            requires (!static_str<T> && !string_literal<T>)
         static constexpr size_t hash(const T& str, size_t& len) noexcept {
             const char* start = str;
             const char* ptr = start;
@@ -2251,7 +2266,7 @@ namespace impl {
         }
 
         /* Hash a compile-time string according to the computed perfect hash algorithm. */
-        template <impl::static_str Key>
+        template <static_str Key>
         static constexpr size_t hash(const Key& str) noexcept {
             size_t out = 0;
             for (size_t pos : positions) {
@@ -2273,16 +2288,6 @@ namespace impl {
     };
 
 }
-
-
-template <typename T>
-concept static_str = impl::_static_str<std::remove_cvref_t<T>>;
-
-
-/* Gets a C++ type name as a fully-qualified, demangled string computed entirely
-at compile time.  The underlying buffer is baked directly into the final binary. */
-template <typename T>
-constexpr auto type_name = impl::type_name_impl<T>();
 
 
 /* A compile-time perfect hash table with a finite set of static strings as keys.  The
