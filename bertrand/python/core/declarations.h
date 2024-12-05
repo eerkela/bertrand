@@ -66,7 +66,7 @@ struct pack;
 
 
 namespace impl {
-    using bertrand::impl::static_str;
+    using bertrand::Sentinel;
     using bertrand::index_of;
     using bertrand::unpack_type;
     using bertrand::unpack_arg;
@@ -81,7 +81,159 @@ namespace impl {
     using bertrand::remove_lvalue;
     using bertrand::remove_rvalue;
     using bertrand::implicit_cast;
-    using bertrand::Sentinel;
+    using bertrand::is;
+    using bertrand::inherits;
+    using bertrand::is_const;
+    using bertrand::is_volatile;
+    using bertrand::is_lvalue;
+    using bertrand::is_rvalue;
+    using bertrand::is_ptr;
+    using bertrand::types_are_unique;
+    using bertrand::explicitly_convertible_to;
+    using bertrand::static_str;
+    using bertrand::string_literal;
+    using bertrand::is_optional;
+    using bertrand::optional_type;
+    using bertrand::is_variant;
+    using bertrand::variant_types;
+    using bertrand::is_shared_ptr;
+    using bertrand::shared_ptr_type;
+    using bertrand::is_unique_ptr;
+    using bertrand::unique_ptr_type;
+    using bertrand::iterable;
+    using bertrand::iter_type;
+    using bertrand::yields;
+    using bertrand::reverse_iterable;
+    using bertrand::reverse_iter_type;
+    using bertrand::yields_reverse;
+    using bertrand::has_size;
+    using bertrand::has_empty;
+    using bertrand::sequence_like;
+    using bertrand::mapping_like;
+    using bertrand::supports_lookup;
+    using bertrand::lookup_type;
+    using bertrand::lookup_yields;
+    using bertrand::supports_item_assignment;
+    using bertrand::pair_like;
+    using bertrand::pair_like_with;
+    using bertrand::yields_pairs;
+    using bertrand::yields_pairs_with;
+    using bertrand::has_to_string;
+    using bertrand::has_stream_insertion;
+    using bertrand::has_call_operator;
+    using bertrand::complex_like;
+    using bertrand::has_reserve;
+    using bertrand::has_contains;
+    using bertrand::has_keys;
+    using bertrand::has_values;
+    using bertrand::has_items;
+    using bertrand::has_operator_bool;
+    using bertrand::hashable;
+    using bertrand::has_abs;
+    using bertrand::abs_type;
+    using bertrand::abs_returns;
+    using bertrand::has_invert;
+    using bertrand::invert_type;
+    using bertrand::invert_returns;
+    using bertrand::has_pos;
+    using bertrand::pos_type;
+    using bertrand::pos_returns;
+    using bertrand::has_neg;
+    using bertrand::neg_type;
+    using bertrand::neg_returns;
+    using bertrand::has_preincrement;
+    using bertrand::preincrement_type;
+    using bertrand::preincrement_returns;
+    using bertrand::has_postincrement;
+    using bertrand::postincrement_type;
+    using bertrand::postincrement_returns;
+    using bertrand::has_predecrement;
+    using bertrand::predecrement_type;
+    using bertrand::predecrement_returns;
+    using bertrand::has_postdecrement;
+    using bertrand::postdecrement_type;
+    using bertrand::postdecrement_returns;
+    using bertrand::has_lt;
+    using bertrand::lt_type;
+    using bertrand::lt_returns;
+    using bertrand::has_le;
+    using bertrand::le_type;
+    using bertrand::le_returns;
+    using bertrand::has_eq;
+    using bertrand::eq_type;
+    using bertrand::eq_returns;
+    using bertrand::has_ne;
+    using bertrand::ne_type;
+    using bertrand::ne_returns;
+    using bertrand::has_ge;
+    using bertrand::ge_type;
+    using bertrand::ge_returns;
+    using bertrand::has_gt;
+    using bertrand::gt_type;
+    using bertrand::gt_returns;
+    using bertrand::has_add;
+    using bertrand::add_type;
+    using bertrand::add_returns;
+    using bertrand::has_iadd;
+    using bertrand::iadd_type;
+    using bertrand::iadd_returns;
+    using bertrand::has_sub;
+    using bertrand::sub_type;
+    using bertrand::sub_returns;
+    using bertrand::has_isub;
+    using bertrand::isub_type;
+    using bertrand::isub_returns;
+    using bertrand::has_mul;
+    using bertrand::mul_type;
+    using bertrand::mul_returns;
+    using bertrand::has_imul;
+    using bertrand::imul_type;
+    using bertrand::imul_returns;
+    using bertrand::has_truediv;
+    using bertrand::truediv_type;
+    using bertrand::truediv_returns;
+    using bertrand::has_itruediv;
+    using bertrand::itruediv_type;
+    using bertrand::itruediv_returns;
+    using bertrand::has_mod;
+    using bertrand::mod_type;
+    using bertrand::mod_returns;
+    using bertrand::has_imod;
+    using bertrand::imod_type;
+    using bertrand::imod_returns;
+    using bertrand::has_pow;
+    using bertrand::pow_type;
+    using bertrand::pow_returns;
+    using bertrand::has_lshift;
+    using bertrand::lshift_type;
+    using bertrand::lshift_returns;
+    using bertrand::has_ilshift;
+    using bertrand::ilshift_type;
+    using bertrand::ilshift_returns;
+    using bertrand::has_rshift;
+    using bertrand::rshift_type;
+    using bertrand::rshift_returns;
+    using bertrand::has_irshift;
+    using bertrand::irshift_type;
+    using bertrand::irshift_returns;
+    using bertrand::has_and;
+    using bertrand::and_type;
+    using bertrand::and_returns;
+    using bertrand::has_iand;
+    using bertrand::iand_type;
+    using bertrand::iand_returns;
+    using bertrand::has_or;
+    using bertrand::or_type;
+    using bertrand::or_returns;
+    using bertrand::has_ior;
+    using bertrand::ior_type;
+    using bertrand::ior_returns;
+    using bertrand::has_xor;
+    using bertrand::xor_type;
+    using bertrand::xor_returns;
+    using bertrand::has_ixor;
+    using bertrand::ixor_type;
+    using bertrand::ixor_returns;
 
     struct BertrandTag {};
     struct UnionTag : BertrandTag {};
@@ -577,19 +729,6 @@ struct Interface;
 
 
 namespace impl {
-    using bertrand::string_literal;
-
-    template <typename L, typename R>
-    concept is = std::same_as<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;
-
-    template <typename L, typename R>
-    concept inherits = std::derived_from<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;
-
-    template <typename T>
-    concept is_const = std::is_const_v<std::remove_reference_t<T>>;
-
-    template <typename T>
-    concept is_volatile = std::is_volatile_v<std::remove_reference_t<T>>;
 
     template <typename T>
     concept bertrand = std::derived_from<std::remove_cvref_t<T>, BertrandTag>;
@@ -599,549 +738,6 @@ namespace impl {
 
     template <typename T>
     concept cpp = !python<T>;
-
-    template <typename From, typename To>
-    concept explicitly_convertible_to = requires(From from) {
-        { static_cast<To>(from) } -> std::same_as<To>;
-    };
-
-    template <typename... Ts>
-    constexpr bool types_are_unique = true;
-    template <typename T, typename... Ts>
-    constexpr bool types_are_unique<T, Ts...> =
-        !(std::same_as<T, Ts> || ...) && types_are_unique<Ts...>;
-
-    template <typename T>
-    struct optional_helper { static constexpr bool value = false; };
-    template <typename T>
-    struct optional_helper<std::optional<T>> {
-        static constexpr bool value = true;
-        using type = T;
-    };
-    template <typename T>
-    concept is_optional = optional_helper<std::remove_cvref_t<T>>::value;
-    template <is_optional T>
-    using optional_type = optional_helper<std::remove_cvref_t<T>>::type;
-
-    template <typename T>
-    struct variant_helper { static constexpr bool value = false; };
-    template <typename... Ts>
-    struct variant_helper<std::variant<Ts...>> {
-        static constexpr bool value = true;
-        using types = std::tuple<Ts...>;
-    };
-    template <typename T>
-    concept is_variant = variant_helper<std::remove_cvref_t<T>>::value;
-    template <is_variant T>
-    using variant_types = typename variant_helper<std::remove_cvref_t<T>>::types;
-
-    template <typename T>
-    struct ptr_helper { static constexpr bool value = false; };
-    template <typename T>
-    struct ptr_helper<T*> {
-        static constexpr bool value = true;
-        using type = T;
-    };
-    template <typename T>
-    concept is_ptr = ptr_helper<std::remove_cvref_t<T>>::value;
-    template <is_ptr T>
-    using ptr_type = ptr_helper<std::remove_cvref_t<T>>::type;
-
-    template <typename T>
-    struct shared_ptr_helper { static constexpr bool enable = false; };
-    template <typename T>
-    struct shared_ptr_helper<std::shared_ptr<T>> {
-        static constexpr bool enable = true;
-        using type = T;
-    };
-    template <typename T>
-    concept is_shared_ptr = shared_ptr_helper<std::remove_cvref_t<T>>::enable;
-    template <is_shared_ptr T>
-    using shared_ptr_type = shared_ptr_helper<std::remove_cvref_t<T>>::type;
-
-    template <typename T>
-    struct unique_ptr_helper { static constexpr bool enable = false; };
-    template <typename T>
-    struct unique_ptr_helper<std::unique_ptr<T>> {
-        static constexpr bool enable = true;
-        using type = T;
-    };
-    template <typename T>
-    concept is_unique_ptr = unique_ptr_helper<std::remove_cvref_t<T>>::enable;
-    template <is_unique_ptr T>
-    using unique_ptr_type = unique_ptr_helper<std::remove_cvref_t<T>>::type;
-
-    template <typename T>
-    concept iterable = requires(T& t) {
-        { std::ranges::begin(t) } -> std::input_or_output_iterator;
-        { std::ranges::end(t) } -> std::sentinel_for<decltype(std::ranges::begin(t))>;
-    };
-
-    template <iterable T>
-    using iter_type = decltype(*std::ranges::begin(
-        std::declval<std::add_lvalue_reference_t<T>>()
-    ));
-
-    template <typename T, typename Value>
-    concept yields = iterable<T> && std::convertible_to<iter_type<T>, Value>;
-
-    template <typename T>
-    concept reverse_iterable = requires(T& t) {
-        { std::ranges::rbegin(t) } -> std::input_or_output_iterator;
-        { std::ranges::rend(t) } -> std::sentinel_for<decltype(std::ranges::rbegin(t))>;
-    };
-
-    template <reverse_iterable T>
-    using reverse_iter_type = decltype(*std::ranges::rbegin(
-        std::declval<std::add_lvalue_reference_t<T>>()
-    ));
-
-    template <typename T, typename Value>
-    concept yields_reverse =
-        reverse_iterable<T> && std::convertible_to<reverse_iter_type<T>, Value>;
-
-    template <typename T>
-    concept has_size = requires(T t) {
-        { std::ranges::size(t) } -> std::convertible_to<size_t>;
-    };
-
-    template <typename T>
-    concept has_empty = requires(T t) {
-        { std::ranges::empty(t) } -> std::convertible_to<bool>;
-    };
-
-    template <typename T>
-    concept sequence_like = iterable<T> && has_size<T> && requires(T t) {
-        { t[0] } -> std::convertible_to<iter_type<T>>;
-    };
-
-    template <typename T>
-    concept mapping_like = requires(T t) {
-        typename std::remove_cvref_t<T>::key_type;
-        typename std::remove_cvref_t<T>::mapped_type;
-        { t[std::declval<typename std::remove_cvref_t<T>::key_type>()] } ->
-            std::convertible_to<typename std::remove_cvref_t<T>::mapped_type>;
-    };
-
-    template <typename T, typename... Key>
-    concept supports_lookup =
-        !std::is_pointer_v<T> &&
-        !std::integral<std::remove_cvref_t<T>> &&
-        requires(T t, Key... key) {
-            { t[key...] };
-        };
-
-    template <typename T, typename... Key> requires (supports_lookup<T, Key...>)
-    using lookup_type = decltype(std::declval<T>()[std::declval<Key>()...]);
-
-    template <typename T, typename Value, typename... Key>
-    concept lookup_yields = supports_lookup<T, Key...> && requires(T t, Key... key) {
-        { t[key...] } -> std::convertible_to<Value>;
-    };
-
-    template <typename T, typename Value, typename... Key>
-    concept supports_item_assignment =
-        !std::is_pointer_v<T> &&
-        !std::integral<std::remove_cvref_t<T>> &&
-        requires(T t, Key... key, Value value) {
-            { t[key...] = value };
-        };
-
-    template <typename T>
-    concept pair_like = std::tuple_size<T>::value == 2 && requires(T t) {
-        { std::get<0>(t) };
-        { std::get<1>(t) };
-    };
-
-    template <typename T, typename First, typename Second>
-    concept pair_like_with = pair_like<T> && requires(T t) {
-        { std::get<0>(t) } -> std::convertible_to<First>;
-        { std::get<1>(t) } -> std::convertible_to<Second>;
-    };
-
-    template <typename T>
-    concept yields_pairs = iterable<T> && pair_like<iter_type<T>>;
-
-    template <typename T, typename First, typename Second>
-    concept yields_pairs_with =
-        iterable<T> && pair_like_with<iter_type<T>, First, Second>;
-
-    template <typename T>
-    concept has_to_string = requires(T t) {
-        { std::to_string(t) } -> std::convertible_to<std::string>;
-    };
-
-    template <typename T>
-    concept has_stream_insertion = requires(std::ostream& os, T t) {
-        { os << t } -> std::convertible_to<std::ostream&>;
-    };
-
-    template <typename T>
-    concept has_call_operator = requires() {
-        { &std::remove_cvref_t<T>::operator() };
-    };
-
-    template <typename T>
-    concept complex_like = requires(T t) {
-        { t.real() } -> std::convertible_to<double>;
-        { t.imag() } -> std::convertible_to<double>;
-    };
-
-    template <typename T>
-    concept has_reserve = requires(T t, size_t n) {
-        { t.reserve(n) } -> std::same_as<void>;
-    };
-
-    template <typename T, typename Key>
-    concept has_contains = requires(T t, Key key) {
-        { t.contains(key) } -> std::convertible_to<bool>;
-    };
-
-    template <typename T>
-    concept has_keys = requires(T t) {
-        { t.keys() } -> iterable;
-        { t.keys() } -> yields<typename std::remove_cvref_t<T>::key_type>;
-    };
-
-    template <typename T>
-    concept has_values = requires(T t) {
-        { t.values() } -> iterable;
-        { t.values() } -> yields<typename std::remove_cvref_t<T>::mapped_type>;
-    };
-
-    template <typename T>
-    concept has_items = requires(T t) {
-        { t.items() } -> iterable;
-        { t.items() } -> yields_pairs_with<
-            typename std::remove_cvref_t<T>::key_type,
-            typename std::remove_cvref_t<T>::mapped_type
-        >;
-    };
-
-    template <typename T>
-    concept has_operator_bool = requires(T t) {
-        { !t } -> std::convertible_to<bool>;
-    };
-
-    template <typename T>
-    concept hashable = requires(T t) {
-        { std::hash<std::decay_t<T>>{}(t) } -> std::convertible_to<size_t>;
-    };
-
-    template <typename T>
-    concept has_abs = requires(T t) {{ std::abs(t) };};
-    template <has_abs T>
-    using abs_type = decltype(std::abs(std::declval<T>()));
-    template <typename T, typename Return>
-    concept abs_returns = requires(T t) {
-        { std::abs(t) } -> std::convertible_to<Return>;
-    };
-
-    template <typename T>
-    concept has_invert = requires(T t) {{ ~t };};
-    template <has_invert T>
-    using invert_type = decltype(~std::declval<T>());
-    template <typename T, typename Return>
-    concept invert_returns = requires(T t) {
-        { ~t } -> std::convertible_to<Return>;
-    };
-
-    template <typename T>
-    concept has_pos = requires(T t) {{ +t };};
-    template <has_pos T>
-    using pos_type = decltype(+std::declval<T>());
-    template <typename T, typename Return>
-    concept pos_returns = requires(T t) {
-        { +t } -> std::convertible_to<Return>;
-    };
-
-    template <typename T>
-    concept has_neg = requires(T t) {{ -t };};
-    template <has_neg T>
-    using neg_type = decltype(-std::declval<T>());
-    template <typename T, typename Return>
-    concept neg_returns = requires(T t) {
-        { -t } -> std::convertible_to<Return>;
-    };
-
-    template <typename T>
-    concept has_preincrement = requires(T t) {{ ++t };};
-    template <has_preincrement T>
-    using preincrement_type = decltype(++std::declval<T>());
-    template <typename T, typename Return>
-    concept preincrement_returns = requires(T t) {
-        { ++t } -> std::convertible_to<Return>;
-    };
-
-    template <typename T>
-    concept has_postincrement = requires(T t) {{ t++ };};
-    template <has_postincrement T>
-    using postincrement_type = decltype(std::declval<T>()++);
-    template <typename T, typename Return>
-    concept postincrement_returns = requires(T t) {
-        { t++ } -> std::convertible_to<Return>;
-    };
-
-    template <typename T>
-    concept has_predecrement = requires(T t) {{ --t };};
-    template <has_predecrement T>
-    using predecrement_type = decltype(--std::declval<T>());
-    template <typename T, typename Return>
-    concept predecrement_returns = requires(T t) {
-        { --t } -> std::convertible_to<Return>;
-    };
-
-    template <typename T>
-    concept has_postdecrement = requires(T t) {{ t-- };};
-    template <has_postdecrement T>
-    using postdecrement_type = decltype(std::declval<T>()--);
-    template <typename T, typename Return>
-    concept postdecrement_returns = requires(T t) {
-        { t-- } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_lt = requires(L l, R r) {{ l < r };};
-    template <typename L, typename R> requires (has_lt<L, R>)
-    using lt_type = decltype(std::declval<L>() < std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept lt_returns = requires(L l, R r) {
-        { l < r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_le = requires(L l, R r) {{ l <= r };};
-    template <typename L, typename R> requires (has_le<L, R>)
-    using le_type = decltype(std::declval<L>() <= std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept le_returns = requires(L l, R r) {
-        { l <= r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_eq = requires(L l, R r) {{ l == r };};
-    template <typename L, typename R> requires (has_eq<L, R>)
-    using eq_type = decltype(std::declval<L>() == std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept eq_returns = requires(L l, R r) {
-        { l == r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_ne = requires(L l, R r) {{ l != r };};
-    template <typename L, typename R> requires (has_ne<L, R>)
-    using ne_type = decltype(std::declval<L>() != std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept ne_returns = requires(L l, R r) {
-        { l != r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_ge = requires(L l, R r) {{ l >= r };};
-    template <typename L, typename R> requires (has_ge<L, R>)
-    using ge_type = decltype(std::declval<L>() >= std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept ge_returns = requires(L l, R r) {
-        { l >= r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_gt = requires(L l, R r) {{ l > r };};
-    template <typename L, typename R> requires (has_gt<L, R>)
-    using gt_type = decltype(std::declval<L>() > std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept gt_returns = requires(L l, R r) {
-        { l > r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_add = requires(L l, R r) {{ l + r };};
-    template <typename L, typename R> requires (has_add<L, R>)
-    using add_type = decltype(std::declval<L>() + std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept add_returns = requires(L l, R r) {
-        { l + r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_iadd = requires(L& l, R r) {{ l += r };};
-    template <typename L, typename R> requires (has_iadd<L, R>)
-    using iadd_type = decltype(std::declval<L&>() += std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept iadd_returns = requires(L& l, R r) {
-        { l += r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_sub = requires(L l, R r) {{ l - r };};
-    template <typename L, typename R> requires (has_sub<L, R>)
-    using sub_type = decltype(std::declval<L>() - std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept sub_returns = requires(L l, R r) {
-        { l - r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_isub = requires(L& l, R r) {{ l -= r };};
-    template <typename L, typename R> requires (has_isub<L, R>)
-    using isub_type = decltype(std::declval<L&>() -= std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept isub_returns = requires(L& l, R r) {
-        { l -= r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_mul = requires(L l, R r) {{ l * r };};
-    template <typename L, typename R> requires (has_mul<L, R>)
-    using mul_type = decltype(std::declval<L>() * std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept mul_returns = requires(L l, R r) {
-        { l * r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_imul = requires(L& l, R r) {{ l *= r };};
-    template <typename L, typename R> requires (has_imul<L, R>)
-    using imul_type = decltype(std::declval<L&>() *= std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept imul_returns = requires(L& l, R r) {
-        { l *= r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_truediv = requires(L l, R r) {{ l / r };};
-    template <typename L, typename R> requires (has_truediv<L, R>)
-    using truediv_type = decltype(std::declval<L>() / std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept truediv_returns = requires(L l, R r) {
-        { l / r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_itruediv = requires(L& l, R r) {{ l /= r };};
-    template <typename L, typename R> requires (has_itruediv<L, R>)
-    using itruediv_type = decltype(std::declval<L&>() /= std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept itruediv_returns = requires(L& l, R r) {
-        { l /= r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_mod = requires(L l, R r) {{ l % r };};
-    template <typename L, typename R> requires (has_mod<L, R>)
-    using mod_type = decltype(std::declval<L>() % std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept mod_returns = requires(L l, R r) {
-        { l % r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_imod = requires(L& l, R r) {{ l %= r };};
-    template <typename L, typename R> requires (has_imod<L, R>)
-    using imod_type = decltype(std::declval<L&>() %= std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept imod_returns = requires(L& l, R r) {
-        { l %= r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_pow = requires(L l, R r) {{ std::pow(l, r) };};
-    template <typename L, typename R> requires (has_pow<L, R>)
-    using pow_type = decltype(std::pow(std::declval<L>(), std::declval<R>()));
-    template <typename L, typename R, typename Return>
-    concept pow_returns = requires(L l, R r) {
-        { std::pow(l, r) } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_lshift = requires(L l, R r) {{ l << r };};
-    template <typename L, typename R> requires (has_lshift<L, R>)
-    using lshift_type = decltype(std::declval<L>() << std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept lshift_returns = requires(L l, R r) {
-        { l << r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_ilshift = requires(L& l, R r) {{ l <<= r };};
-    template <typename L, typename R> requires (has_ilshift<L, R>)
-    using ilshift_type = decltype(std::declval<L&>() <<= std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept ilshift_returns = requires(L& l, R r) {
-        { l <<= r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_rshift = requires(L l, R r) {{ l >> r };};
-    template <typename L, typename R> requires (has_rshift<L, R>)
-    using rshift_type = decltype(std::declval<L>() >> std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept rshift_returns = requires(L l, R r) {
-        { l >> r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_irshift = requires(L& l, R r) {{ l >>= r };};
-    template <typename L, typename R> requires (has_irshift<L, R>)
-    using irshift_type = decltype(std::declval<L&>() >>= std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept irshift_returns = requires(L& l, R r) {
-        { l >>= r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_and = requires(L l, R r) {{ l & r };};
-    template <typename L, typename R> requires (has_and<L, R>)
-    using and_type = decltype(std::declval<L>() & std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept and_returns = requires(L l, R r) {
-        { l & r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_iand = requires(L& l, R r) {{ l &= r };};
-    template <typename L, typename R> requires (has_iand<L, R>)
-    using iand_type = decltype(std::declval<L&>() &= std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept iand_returns = requires(L& l, R r) {
-        { l &= r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_or = requires(L l, R r) {{ l | r };};
-    template <typename L, typename R> requires (has_or<L, R>)
-    using or_type = decltype(std::declval<L>() | std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept or_returns = requires(L l, R r) {
-        { l | r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_ior = requires(L& l, R r) {{ l |= r };};
-    template <typename L, typename R> requires (has_ior<L, R>)
-    using ior_type = decltype(std::declval<L&>() |= std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept ior_returns = requires(L& l, R r) {
-        { l |= r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_xor = requires(L l, R r) {{ l ^ r };};
-    template <typename L, typename R> requires (has_xor<L, R>)
-    using xor_type = decltype(std::declval<L>() ^ std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept xor_returns = requires(L l, R r) {
-        { l ^ r } -> std::convertible_to<Return>;
-    };
-
-    template <typename L, typename R>
-    concept has_ixor = requires(L& l, R r) {{ l ^= r };};
-    template <typename L, typename R> requires (has_ixor<L, R>)
-    using ixor_type = decltype(std::declval<L&>() ^= std::declval<R>());
-    template <typename L, typename R, typename Return>
-    concept ixor_returns = requires(L& l, R r) {
-        { l ^= r } -> std::convertible_to<Return>;
-    };
 
 }
 

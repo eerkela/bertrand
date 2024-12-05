@@ -1849,8 +1849,6 @@ namespace impl {
     constexpr bool _static_str = false;
     template <size_t N>
     constexpr bool _static_str<bertrand::StaticStr<N>> = true;
-    template <typename T>
-    concept static_str = _static_str<std::remove_cvref_t<T>>;
 
     template <StaticStr...>
     constexpr bool _strings_are_unique = true;
@@ -2277,6 +2275,10 @@ namespace impl {
 }
 
 
+template <typename T>
+concept static_str = impl::_static_str<std::remove_cvref_t<T>>;
+
+
 /* Gets a C++ type name as a fully-qualified, demangled string computed entirely
 at compile time.  The underlying buffer is baked directly into the final binary. */
 template <typename T>
@@ -2415,7 +2417,7 @@ public:
 
     /* Check whether the map contains an arbitrary key. */
     template <std::convertible_to<const char*> T>
-        requires (!impl::static_str<T> && !string_literal<T>)
+        requires (!static_str<T> && !string_literal<T>)
     constexpr bool contains(const T& key) const {
         const char* str = key;
         size_t len;
@@ -2448,7 +2450,7 @@ public:
     }
 
     /* Check whether the map contains an arbitrary key. */
-    template <impl::static_str Key>
+    template <static_str Key>
     constexpr bool contains(const Key& key) const {
         if constexpr ((key.size() < Hash::min_length) | (key.size() > Hash::max_length)) {
             return false;
@@ -2491,7 +2493,7 @@ public:
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
     template <std::convertible_to<const char*> T>
-        requires (!impl::static_str<T> && !string_literal<T>)
+        requires (!static_str<T> && !string_literal<T>)
     constexpr const Value* operator[](const T& key) const {
         const char* str = key;
         size_t len;
@@ -2526,7 +2528,7 @@ public:
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
-    template <impl::static_str Key>
+    template <static_str Key>
     constexpr const Value* operator[](const Key& key) const {
         if constexpr (
             (key.size() < Hash::min_length) | (key.size() > Hash::max_length)
@@ -2556,7 +2558,7 @@ public:
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
     template <std::convertible_to<const char*> T>
-        requires (!impl::static_str<T> && !string_literal<T>)
+        requires (!static_str<T> && !string_literal<T>)
     Value* operator[](const T& key) {
         const char* str = key;
         size_t len;
@@ -2591,7 +2593,7 @@ public:
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
-    template <impl::static_str Key>
+    template <static_str Key>
     Value* operator[](const Key& key) {
         if constexpr (
             (key.size() < Hash::min_length) | (key.size() > Hash::max_length)
@@ -2731,7 +2733,7 @@ public:
 
     /* Check whether the map contains an arbitrary key. */
     template <std::convertible_to<const char*> T>
-        requires (!impl::static_str<T> && !string_literal<T>)
+        requires (!static_str<T> && !string_literal<T>)
     constexpr bool contains(const T& key) const {
         const char* str = key;
         size_t len;
@@ -2764,7 +2766,7 @@ public:
     }
 
     /* Check whether the map contains an arbitrary key. */
-    template <impl::static_str Key>
+    template <static_str Key>
     constexpr bool contains(const Key& key) const {
         if constexpr (
             (key.size() < Hash::min_length) | (key.size() > Hash::max_length)
@@ -2801,7 +2803,7 @@ public:
     /* Look up a key, returning a pointer to the corresponding key or nullptr if it is
     not present. */
     template <std::convertible_to<const char*> T>
-        requires (!impl::static_str<T> && !string_literal<T>)
+        requires (!static_str<T> && !string_literal<T>)
     constexpr const std::string_view* operator[](const T& key) const {
         const char* str = key;
         size_t len;
@@ -2836,7 +2838,7 @@ public:
 
     /* Look up a key, returning a pointer to the corresponding key or nullptr if it is
     not present. */
-    template <impl::static_str Key>
+    template <static_str Key>
     constexpr const std::string_view* operator[](const Key& key) const {
         if constexpr (
             (key.size() < Hash::min_length) | (key.size() > Hash::max_length)
@@ -2881,7 +2883,7 @@ using StaticSet = StaticMap<void, Keys...>;
 
 namespace std {
 
-    template <bertrand::impl::static_str T>
+    template <bertrand::static_str T>
     struct hash<T> {
         consteval static size_t operator()(const T& str) {
             return bertrand::fnv1a(

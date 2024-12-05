@@ -1264,21 +1264,21 @@ struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts..
 template <impl::is_ptr From, typename... Ts>
     requires (
         (std::same_as<NoneType, Ts> || ...) &&
-        (std::convertible_to<impl::ptr_type<From>, Ts> || ...)
+        (std::convertible_to<std::remove_pointer_t<From>, Ts> || ...)
     )
 struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts...>> {
     template <size_t I, typename... Us>
     static constexpr size_t match_idx = 0;
     template <size_t I, typename U, typename... Us>
     static constexpr size_t match_idx<I, U, Us...> =
-        std::same_as<std::remove_cvref_t<impl::python_type<impl::ptr_type<From>>>, U> ?
+        std::same_as<std::remove_cvref_t<impl::python_type<std::remove_pointer_t<From>>>, U> ?
             0 : match_idx<I + 1, Us...> + 1;
 
     template <size_t I, typename... Us>
     static constexpr size_t convert_idx = 0;
     template <size_t I, typename U, typename... Us>
     static constexpr size_t convert_idx<I, U, Us...> =
-        std::convertible_to<impl::ptr_type<From>, U> ?
+        std::convertible_to<std::remove_pointer_t<From>, U> ?
             0 : convert_idx<I + 1, Us...> + 1;
 
     static Union<Ts...> operator()(From from) {
