@@ -1871,8 +1871,8 @@ namespace impl {
         static constexpr StaticStr value = unpack_string<I - 1, Rest...>::value;
     };
 
-    /* A helper struct that computes a perfect hash function over the given strings at
-    compile time. */
+    /* A helper struct that computes a perfect FNV-1a hash function over the given
+    strings at compile time. */
     template <StaticStr... Keys>
     struct perfect_hash {
     private:
@@ -1965,8 +1965,10 @@ namespace impl {
         }
     };
 
-    /* A helper struct that computes a minimal perfect hash function over the given
-    strings at compile time, based on gperf's hash-finding algorithm. */
+    /* A helper struct that computes a gperf-style minimal perfect hash function over
+    the given strings at compile time.  Only the N most significant characters are
+    considered, where N is minimized using an associative array containing relative
+    weights for each character. */
     template <StaticStr... Keys>
     struct minimal_perfect_hash {
     private:
@@ -1978,7 +1980,7 @@ namespace impl {
         static constexpr size_t min_length = minmax.first;
         static constexpr size_t max_length = minmax.second;
 
-    // private:
+    private:
         using Weights = std::array<unsigned char, 256>;
 
         template <StaticStr...>
@@ -2103,10 +2105,10 @@ namespace impl {
         /* Finds an associative value array that produces perfect hashes over the input
         keywords. */
         static constexpr auto find_hash = [] -> std::tuple<size_t, Weights, bool> {
-            constexpr size_t max_iterations = 100;
+            constexpr size_t max_iterations = 1000;
             Weights weights;
 
-            for (size_t i = 0; i < max_length; ++i) {
+            for (size_t i = 0; i <= max_length; ++i) {
                 weights.fill(1);
                 for (size_t j = 0; j < max_iterations; ++j) {
                     collision result = collisions<Keys...>{}(weights, i);
@@ -2139,11 +2141,10 @@ namespace impl {
             return {0, weights, false};
         }();
 
-    // public:
+    public:
         static constexpr size_t significant_chars = std::get<0>(find_hash);
         static constexpr Weights weights = std::get<1>(find_hash);
-
-    // private:
+        static constexpr bool exists = std::get<2>(find_hash);
 
         /* An array holding the positions of the significant characters for the
         associative value array, in traversal order. */
@@ -2155,9 +2156,6 @@ namespace impl {
                 std::sort(positions.begin(), positions.end());
                 return positions;
             }(std::make_index_sequence<significant_chars>{});
-
-    // public:
-        static constexpr bool exists = std::get<2>(find_hash);
 
         /* Hash a character buffer according to the computed perfect hash algorithm. */
         static constexpr size_t hash(const char* str) noexcept {
@@ -2178,11 +2176,15 @@ namespace impl {
                     out += weights[*ptr];
                     if (++i >= positions.size()) {
                         // early break if no characters left to probe
-                        break;
+                        return out;
                     }
                     next_pos = positions[i];
                 }
                 ++ptr;
+            }
+            while (i < positions.size()) {
+                out += weights[0];
+                ++i;
             }
             return out;
         }
@@ -2211,12 +2213,27 @@ namespace impl {
                 }
                 ++ptr;
             }
+            while (i < positions.size()) {
+                out += weights[0];
+                ++i;
+            }
             len = ptr - str;
             return out;
         }
 
         /* Hash a string view according to the computed perfect hash algorithm. */
         static constexpr size_t hash(std::string_view str) noexcept {
+            size_t out = 0;
+            for (size_t pos : positions) {
+                unsigned char c = pos < str.size() ? str[pos] : 0;
+                out += weights[c];
+            }
+            return out;
+        }
+
+        /* Hash a compile-time string according to the computed perfect hash algorithm. */
+        template <impl::static_str Key>
+        static constexpr size_t hash(const Key& str) noexcept {
             size_t out = 0;
             for (size_t pos : positions) {
                 unsigned char c = pos < str.size() ? str[pos] : 0;
@@ -2254,29 +2271,9 @@ struct StaticMap : impl::minimal_perfect_hash<Keys...> {
 private:
     using Hash = impl::minimal_perfect_hash<Keys...>;
 
-    struct Iterator;
-
     struct Bucket {
-    private:
-        friend StaticMap;
-        friend Iterator;
-        std::string_view m_key;
-        union { Value m_value; };
-        bool m_init;
-
-    public:
-        constexpr Bucket() : m_key(), m_init(false) {}
-        constexpr Bucket(std::string_view key, const Value& value) :
-            m_key(key), m_value(value), m_init(true)
-        {}
-        constexpr Bucket(std::string_view key, Value&& value) :
-            m_key(key), m_value(std::move(value)), m_init(true)
-        {}
-        constexpr explicit operator bool() const { return m_init; }
-        constexpr const Value& operator*() const { return m_value; }
-        Value& operator*() { return m_value; }
-        constexpr const Value* operator->() const { return &m_value; }
-        Value* operator->() { return &m_value; }
+        std::string_view key;
+        Value value;
     };
 
     using Table = std::array<Bucket, Hash::table_size>;
@@ -2290,15 +2287,10 @@ private:
     template <size_t I, size_t... occupied, typename... Values>
     static constexpr Bucket populate(Values&&... values) {
         constexpr size_t idx = pack_idx<I, occupied...>;
-        if constexpr (idx < sizeof...(Keys)) {
-            constexpr const char* key = impl::unpack_string<idx, Keys...>::value;
-            return {
-                std::string_view{key, impl::unpack_string<idx, Keys...>::value.size()},
-                unpack_arg<idx>(std::forward<Values>(values)...)
-            };
-        } else {
-            return {};
-        }
+        return {
+            std::string_view(impl::unpack_string<idx, Keys...>::value),
+            unpack_arg<idx>(std::forward<Values>(values)...)
+        };
     }
 
     struct Iterator {
@@ -2313,29 +2305,28 @@ private:
         using pointer = std::pair<const std::string_view&, const Value&>*;
         using reference = std::pair<const std::string_view&, const Value&>&;
 
-        Iterator(const Table& table) : m_table(&table), m_idx(0) {
-            while (m_idx < Hash::table_size && !((*m_table)[m_idx])) {
-                ++m_idx;
-            }
-        }
-
+        Iterator(const Table& table) : m_table(&table), m_idx(0) {}
         Iterator(const Table& table, Sentinel) :
             m_table(&table), m_idx(Hash::table_size)
         {}
 
         value_type operator*() const {
             const Bucket& bucket = (*m_table)[m_idx];
-            return {bucket.m_key, *bucket};
+            return {bucket.key, bucket.value};
+        }
+
+        pointer operator->() const {
+            return &operator*();
         }
 
         Iterator& operator++() {
-            while (++m_idx < Hash::table_size && !((*m_table)[m_idx])) {}
+            ++m_idx;
             return *this;
         }
     
         Iterator operator++(int) {
             Iterator copy = *this;
-            while (++m_idx < Hash::table_size && !((*m_table)[m_idx])) {}
+            ++m_idx;
             return copy;
         }
 
@@ -2365,7 +2356,8 @@ private:
     };
 
 public:
-    Bucket empty_bucket;
+    using mapped_type = Value;
+
     Table table;
 
     template <typename... Values>
@@ -2374,7 +2366,6 @@ public:
             (std::convertible_to<Values, Value> && ...)
         )
     constexpr StaticMap(Values&&... values) :
-        empty_bucket(),
         table([]<size_t... Is>(std::index_sequence<Is...>, auto&&... values) {
             return Table{populate<Is, (Hash::hash(Keys) % Hash::table_size)...>(
                 std::forward<decltype(values)>(values)...
@@ -2393,16 +2384,15 @@ public:
 
     /* Check whether the map contains an arbitrary key. */
     constexpr bool contains(const char* key) const {
-        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (result) {
-            size_t i = 0;
-            while (i < result.m_key.size()) {
-                if (key[i] != result.m_key[i]) {
+        size_t len;
+        const Bucket& result = table[Hash::hash(key, len) % Hash::table_size];
+        if (len == result.key.size()) {
+            for (size_t i = 0; i < len; ++i) {
+                if (key[i] != result.key[i]) {
                     return false;
                 }
-                ++i;
             }
-            return key[i] == '\0';
+            return true;
         }
         return false;
     }
@@ -2410,7 +2400,17 @@ public:
     /* Check whether the map contains an arbitrary key. */
     constexpr bool contains(std::string_view key) const {
         const Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (result && result.m_key == key) {
+        if (key == result.key) {
+            return true;
+        }
+        return false;
+    }
+
+    /* Check whether the map contains an arbitrary key. */
+    template <impl::static_str Key>
+    constexpr bool contains(const Key& key) const {
+        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        if (key == result.key) {
             return true;
         }
         return false;
@@ -2432,77 +2432,81 @@ public:
         return *table[idx];
     }
 
-    /* Look up a key, returning the bucket that contains the corresponding value or an
-    empty bucket if it is not present.  The empty bucket evaluates false under boolean
-    logic, and non-empty buckets can be dereferenced like a pointer to access the
-    value.  The user must always check whether the bucket is empty before dereferencing
-    it. */
-    constexpr const Bucket& operator[](const char* key) const {
-        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (result) {
-            size_t i = 0;
-            while (i < result.m_key.size()) {
-                if (key[i] != result.m_key[i]) {
-                    return empty_bucket;
+    /* Look up a key, returning a pointer to the corresponding value or nullptr if it
+    is not present. */
+    constexpr const Value* operator[](const char* key) const {
+        size_t len;
+        const Bucket& result = table[Hash::hash(key, len) % Hash::table_size];
+        if (len == result.key.size()) {
+            for (size_t i = 0; i < len; ++i) {
+                if (key[i] != result.key[i]) {
+                    return nullptr;
                 }
-                ++i;
             }
-            if (key[i] == '\0') {
-                return result;
-            }
+            return &result.value;
         }
-        return empty_bucket;
+        return nullptr;
     }
 
-    /* Look up a key, returning the bucket that contains the corresponding value or an
-    empty bucket if it is not present.  The empty bucket evaluates false under boolean
-    logic, and non-empty buckets can be dereferenced like a pointer to access the
-    value.  The user must always check whether the bucket is empty before dereferencing
-    it. */
-    constexpr const Bucket& operator[](std::string_view key) const {
+    /* Look up a key, returning a pointer to the corresponding value or nullptr if it
+    is not present. */
+    constexpr const Value* operator[](std::string_view key) const {
         const Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (result && result.m_key == key) {
-            return result;
+        if (key == result.key) {
+            return &result.value;
         }
-        return empty_bucket;
+        return nullptr;
     }
 
-    /* Look up a key, returning the bucket that contains the corresponding value or an
-    empty bucket if it is not present.  The empty bucket evaluates false under boolean
-    logic, and non-empty buckets can be dereferenced like a pointer to access the
-    value.  The user must always check whether the bucket is empty before dereferencing
-    it. */
-    Bucket& operator[](const char* key) {
-        Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (result) {
-            size_t i = 0;
-            while (i < result.m_key.size()) {
-                if (key[i] != result.m_key[i]) {
-                    return empty_bucket;
+    /* Look up a key, returning a pointer to the corresponding value or nullptr if it
+    is not present. */
+    template <impl::static_str Key>
+    constexpr const Value* operator[](const Key& key) const {
+        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        if (key == result.key) {
+            return &result.value;
+        }
+        return nullptr;
+    }
+
+
+    /* Look up a key, returning a pointer to the corresponding value or nullptr if it
+    is not present. */
+    Value* operator[](const char* key) {
+        size_t len;
+        Bucket& result = table[Hash::hash(key, len) % Hash::table_size];
+        if (len == result.key.size()) {
+            for (size_t i = 0; i < result.key.size(); ++i) {
+                if (key[i] != result.key[i]) {
+                    return nullptr;
                 }
-                ++i;
             }
-            if (key[i] == '\0') {
-                return result;
-            }
+            return &result.value;
         }
-        return empty_bucket;
+        return nullptr;
     }
 
-    /* Look up a key, returning the bucket that contains the corresponding value or an
-    empty bucket if it is not present.  The empty bucket evaluates false under boolean
-    logic, and non-empty buckets can be dereferenced like a pointer to access the
-    value.  The user must always check whether the bucket is empty before dereferencing
-    it. */
-    Bucket& operator[](std::string_view key) {
+    /* Look up a key, returning a pointer to the corresponding value or nullptr if it
+    is not present. */
+    Value* operator[](std::string_view key) {
         Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (result && result.m_key == key) {
-            return result;
+        if (key == result.key) {
+            return &result.value;
         }
-        return empty_bucket;
+        return nullptr;
     }
 
-    constexpr size_t capacity() const { return Hash::table_size; }
+    /* Look up a key, returning a pointer to the corresponding value or nullptr if it
+    is not present. */
+    template <impl::static_str Key>
+    Value* operator[](const Key& key) {
+        Bucket& result = table[Hash::hash(key) % Hash::table_size];
+        if (key == result.key) {
+            return &result.value;
+        }
+        return nullptr;
+    }
+
     constexpr size_t size() const { return sizeof...(Keys); }
     constexpr bool empty() const { return size() == 0; }
     Iterator begin() const { return {table}; }
@@ -2519,27 +2523,12 @@ and iterators will dereference to `string_view`s of the templated key buffers. *
 template <StaticStr... Keys>
     requires (
         impl::strings_are_unique<Keys...> &&
-        impl::perfect_hash<Keys...>::exists
+        impl::minimal_perfect_hash<Keys...>::exists
     )
-struct StaticMap<void, Keys...> : impl::perfect_hash<Keys...> {
+struct StaticMap<void, Keys...> : impl::minimal_perfect_hash<Keys...> {
 private:
-    using Hash = impl::perfect_hash<Keys...>;
-
-    struct Bucket {
-    private:
-        friend StaticMap;
-        std::string_view m_key;
-        bool m_init;
-
-    public:
-        constexpr Bucket() : m_key(), m_init(false) {}
-        constexpr Bucket(std::string_view key) : m_key(key), m_init(true) {}
-        constexpr explicit operator bool() const { return m_init; }
-        constexpr const std::string_view& operator*() const { return m_key; }
-        constexpr const std::string_view* operator->() const { return &m_key; }
-    };
-
-    using Table = std::array<Bucket, Hash::table_size>;
+    using Hash = impl::minimal_perfect_hash<Keys...>;
+    using Table = std::array<std::string_view, Hash::table_size>;
 
     template <size_t I, size_t...>
     static constexpr size_t pack_idx = 0;
@@ -2548,17 +2537,9 @@ private:
         (I == J) ? 0 : pack_idx<I, Js...> + 1;
 
     template <size_t I, size_t... occupied>
-    static constexpr Bucket populate() {
+    static constexpr std::string_view populate() {
         constexpr size_t idx = pack_idx<I, occupied...>;
-        if constexpr (idx < sizeof...(Keys)) {
-            constexpr const char* key = impl::unpack_string<idx, Keys...>::value;
-            return {std::string_view{
-                key,
-                impl::unpack_string<idx, Keys...>::value.size()
-            }};
-        } else {
-            return {};
-        }
+        return std::string_view(impl::unpack_string<idx, Keys...>::value);
     }
 
     struct Iterator {
@@ -2573,28 +2554,27 @@ private:
         using pointer = const std::string_view*;
         using reference = const std::string_view&;
 
-        Iterator(const Table& table) : m_table(&table), m_idx(0) {
-            while (m_idx < Hash::table_size && !((*m_table)[m_idx])) {
-                ++m_idx;
-            }
-        }
-
+        Iterator(const Table& table) : m_table(&table), m_idx(0) {}
         Iterator(const Table& table, Sentinel) :
             m_table(&table), m_idx(Hash::table_size)
         {}
 
-        const std::string_view& operator*() const {
-            return *((*m_table)[m_idx]);
+        reference operator*() const {
+            return (*m_table)[m_idx];
+        }
+
+        pointer operator->() const {
+            return &operator*();
         }
 
         Iterator& operator++() {
-            while (++m_idx < Hash::table_size && !((*m_table)[m_idx])) {}
+            ++m_idx;
             return *this;
         }
     
         Iterator operator++(int) {
             Iterator copy = *this;
-            while (++m_idx < Hash::table_size && !((*m_table)[m_idx])) {}
+            ++m_idx;
             return copy;
         }
 
@@ -2624,11 +2604,9 @@ private:
     };
 
 public:
-    Bucket empty_bucket;
     Table table;
 
     constexpr StaticMap() :
-        empty_bucket(),
         table([]<size_t... Is>(std::index_sequence<Is...>) {
             return Table{populate<Is, (Hash::hash(Keys) % Hash::table_size)...>()...};
         }(std::make_index_sequence<Hash::table_size>{}))
@@ -2642,24 +2620,33 @@ public:
 
     /* Check whether the map contains an arbitrary key. */
     constexpr bool contains(const char* key) const {
-        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (result) {
-            size_t i = 0;
-            while (i < result.m_key.size()) {
-                if (key[i] != result.m_key[i]) {
+        size_t len;
+        const std::string_view& result = table[Hash::hash(key, len) % Hash::table_size];
+        if (len == result.size()) {
+            for (size_t i = 0; i < len; ++i) {
+                if (key[i] != result[i]) {
                     return false;
                 }
-                ++i;
             }
-            return key[i] == '\0';
+            return true;
         }
         return false;
     }
 
     /* Check whether the map contains an arbitrary key. */
     constexpr bool contains(std::string_view key) const {
-        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (result && result.m_key == key) {
+        const std::string_view& result = table[Hash::hash(key) % Hash::table_size];
+        if (key == result) {
+            return true;
+        }
+        return false;
+    }
+
+    /* Check whether the map contains an arbitrary key. */
+    template <impl::static_str Key>
+    constexpr bool contains(const Key& key) const {
+        const std::string_view& result = table[Hash::hash(key) % Hash::table_size];
+        if (key == result) {
             return true;
         }
         return false;
@@ -2673,42 +2660,43 @@ public:
         return *table[idx];
     }
 
-    /* Look up a key, returning the bucket that contains the corresponding value or an
-    empty bucket if it is not present.  The empty bucket evaluates false under boolean
-    logic, and non-empty buckets can be dereferenced like a pointer to access the
-    value.  The user must always check whether the bucket is empty before dereferencing
-    it. */
-    constexpr const Bucket& operator[](const char* key) const {
-        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (result) {
-            size_t i = 0;
-            while (i < result.m_key.size()) {
-                if (key[i] != result.m_key[i]) {
-                    return empty_bucket;
+    /* Look up a key, returning a pointer to the corresponding key or nullptr if it is
+    not present. */
+    constexpr const std::string_view* operator[](const char* key) const {
+        size_t len;
+        const std::string_view& result = table[Hash::hash(key, len) % Hash::table_size];
+        if (len == result.size()) {
+            for (size_t i = 0; i < len; ++i) {
+                if (key[i] != result[i]) {
+                    return nullptr;
                 }
-                ++i;
             }
-            if (key[i] == '\0') {
-                return result;
-            }
+            return &result;
         }
-        return empty_bucket;
+        return nullptr;
     }
 
-    /* Look up a key, returning the bucket that contains the corresponding value or an
-    empty bucket if it is not present.  The empty bucket evaluates false under boolean
-    logic, and non-empty buckets can be dereferenced like a pointer to access the
-    value.  The user must always check whether the bucket is empty before dereferencing
-    it. */
-    constexpr const Bucket& operator[](std::string_view key) const {
-        const Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (result && result.m_key == key) {
-            return result;
+    /* Look up a key, returning a pointer to the corresponding key or nullptr if it is
+    not present. */
+    constexpr const std::string_view* operator[](std::string_view key) const {
+        const std::string_view& result = table[Hash::hash(key) % Hash::table_size];
+        if (key == result) {
+            return &result;
         }
-        return empty_bucket;
+        return nullptr;
     }
 
-    constexpr size_t capacity() const { return Hash::table_size; }
+    /* Look up a key, returning a pointer to the corresponding key or nullptr if it is
+    not present. */
+    template <impl::static_str Key>
+    constexpr const std::string_view* operator[](const Key& key) const {
+        const std::string_view& result = table[Hash::hash(key) % Hash::table_size];
+        if (key == result) {
+            return &result;
+        }
+        return nullptr;
+    }
+
     constexpr size_t size() const { return sizeof...(Keys); }
     constexpr bool empty() const { return size() == 0; }
     Iterator begin() const { return {table}; }
@@ -2761,27 +2749,8 @@ namespace std {
     /* `std::get<"name">(set)` is a type-safe accessor for `bertrand::StaticSet`. */
     template <bertrand::StaticStr Key, bertrand::StaticStr... Keys>
         requires (bertrand::StaticSet<Keys...>::template contains<Key>())
-    constexpr const std::string_view get(const bertrand::StaticSet<Keys...>& set) {
+    constexpr const std::string_view& get(const bertrand::StaticSet<Keys...>& set) {
         return set.template get<Key>();
-    }
-
-}
-
-
-
-namespace bertrand {
-
-    inline void test() {
-        // constexpr StaticStr s1 = "foo";
-        // constexpr StaticStr s2 = s1;
-        // static_assert(s1 == "foo");
-        constexpr StaticMap<int, "foo", "bar", "baz", "qux"> map{1, 2, 3, 4};
-        static_assert(map["qux"]);
-
-        using Hash = impl::minimal_perfect_hash<"foo", "bar", "baz">;
-        static_assert(Hash::hash("qux") == 0);
-        static_assert(Hash::hash("bar") == 0);
-        static_assert(Hash::significant_chars == 0);
     }
 
 }
