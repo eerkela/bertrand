@@ -418,13 +418,14 @@ public:
     /* A placeholder index returned when a substring is not present. */
     static constexpr size_t missing = std::numeric_limits<size_t>::max();
 
-    std::array<char, N + 1> buffer;  // +1 for null terminator
+    char buffer[N + 1];  // +1 for null terminator
 
-    consteval StaticStr(const char* arr) :
-        buffer([]<size_t... Is>(std::index_sequence<Is...>, const char* arr){
-            return std::array<char, N + 1>{arr[Is]..., '\0'};
-        }(std::make_index_sequence<N>{}, arr))
-    {}
+    // consteval StaticStr(const char* arr) : buffer(build(std::make_index_sequence<N>{}, arr)) {}
+    consteval StaticStr(const char* arr) {
+        []<size_t... Is>(std::index_sequence<Is...>, char* buffer, const char* arr){
+            ((buffer[Is] = arr[Is]), ..., (buffer[N] = '\0'));
+        }(std::make_index_sequence<N>{}, buffer, arr);
+    }
 
     /* Convert an integer into a string at compile time using the specified base. */
     template <long long num, size_t base = 10> requires (base >= 2 && base <= 36)
@@ -494,7 +495,7 @@ public:
             constexpr auto integral_str = from_int<integral, 10>;
             constexpr auto fractional_str = from_int<fractional, 10>;
 
-            char* pos = result.buffer.data();
+            char* pos = result.buffer;
             if constexpr (integral == 0 && sign_bit(num)) {
                 result.buffer[0] = '-';
                 ++pos;
@@ -502,7 +503,7 @@ public:
 
             // concatenate integral and fractional parts (zero padded to precision)
             std::copy_n(
-                integral_str.buffer.data(),
+                integral_str.buffer,
                 integral_str.size(),
                 pos
             );
@@ -510,7 +511,7 @@ public:
                 std::copy_n(".", 1, pos + integral_str.size());
                 pos += integral_str.size() + 1;
                 std::copy_n(
-                    fractional_str.buffer.data(),
+                    fractional_str.buffer,
                     fractional_str.size(),
                     pos
                 );
@@ -526,17 +527,19 @@ public:
         return result;
     }();
 
-    constexpr operator const char*() const { return buffer.data(); }
-    constexpr operator const std::array<char, N + 1>&() const { return buffer; }
+    constexpr operator const char*() const { return buffer; }
+    constexpr explicit operator bool() const { return !empty(); }
+    constexpr explicit operator std::string() const { return {buffer}; }
+    constexpr explicit operator std::string_view() const { return {buffer, N}; }
 
-    constexpr const char* data() const { return buffer.data(); }
+    constexpr const char* data() const { return buffer; }
     constexpr size_t size() const { return N; }
     constexpr bool empty() const { return !N; }
-    Iterator begin() const { return {buffer.data(), 0}; }
+    Iterator begin() const { return {buffer, 0}; }
     Iterator cbegin() const { return begin(); }
     Iterator end() const { return {nullptr, N}; }
     Iterator cend() const { return end(); }
-    ReverseIterator rbegin() const { return {buffer.data() + N - 1, N - 1}; }
+    ReverseIterator rbegin() const { return {buffer + N - 1, N - 1}; }
     ReverseIterator crbegin() const { return rbegin(); }
     ReverseIterator rend() const { return {nullptr, -1}; }
     ReverseIterator crend() const { return rend(); }
@@ -547,28 +550,28 @@ public:
             int status = 0;
             std::unique_ptr<char, void(*)(void*)> res {
                 abi::__cxa_demangle(
-                    buffer.data(),
+                    buffer,
                     nullptr,
                     nullptr,
                     &status
                 ),
                 std::free
             };
-            return (status == 0) ? res.get() : std::string{buffer.data(), N};
+            return (status == 0) ? res.get() : std::string(buffer);
         #elif defined(_MSC_VER)
             char undecorated_name[1024];
             if (UnDecorateSymbolName(
-                buffer.data(),
+                buffer,
                 undecorated_name,
                 sizeof(undecorated_name),
                 UNDNAME_COMPLETE
             )) {
                 return std::string(undecorated_name);
             } else {
-                return std::string{buffer.data(), N};
+                return std::string{buffer, N};
             }
         #else
-            return std::string{buffer.data(), N}; // fallback: no demangling
+            return std::string{buffer, N}; // fallback: no demangling
         #endif
     }
 
@@ -656,10 +659,10 @@ public:
             StaticStr<width> result;
             size_t left = (width - self.size()) / 2;
             size_t right = width - self.size() - left;
-            std::fill_n(result.buffer.data(), left, fillchar);
-            std::copy_n(self.data(), self.size(), result.buffer.data() + left);
+            std::fill_n(result.buffer, left, fillchar);
+            std::copy_n(self.buffer, self.size(), result.buffer + left);
             std::fill_n(
-                result.buffer.data() + left + self.size(),
+                result.buffer + left + self.size(),
                 right,
                 fillchar
             );
@@ -686,7 +689,7 @@ public:
         );
         size_t count = 0;
         for (size_t i = nstart; i < nstop; ++i) {
-            if (std::equal(sub.data(), sub.data() + sub.size(), self.data() + i)) {
+            if (std::equal(sub.buffer, sub.buffer + sub.size(), self.buffer + i)) {
                 ++count;
             }
         }
@@ -697,9 +700,9 @@ public:
     template <bertrand::StaticStr self, bertrand::StaticStr suffix>
     static consteval bool endswith() {
         return suffix.size() <= self.size() && std::equal(
-            suffix.data(),
-            suffix.data() + suffix.size(),
-            self.data() + self.size() - suffix.size()
+            suffix.buffer,
+            suffix.buffer + suffix.size(),
+            self.buffer + self.size() - suffix.size()
         );
     }
 
@@ -712,7 +715,7 @@ public:
         for (size_t i = 0; i < self.size(); ++i) {
             char c = self[i];
             if (c == '\t') {
-                std::fill_n(result.buffer.data() + offset, tabsize, ' ');
+                std::fill_n(result.buffer + offset, tabsize, ' ');
                 offset += tabsize;
             } else {
                 result.buffer[offset++] = c;
@@ -736,7 +739,7 @@ public:
         constexpr ssize_t nstop =
             std::min(normalize_index(stop), static_cast<ssize_t>(self.size()));
         for (ssize_t i = nstart; i < nstop; ++i) {
-            if (std::equal(sub.data(), sub.data() + sub.size(), self.data() + i)) {
+            if (std::equal(sub.buffer, sub.buffer + sub.size(), self.buffer + i)) {
                 return i;
             }
         }
@@ -854,20 +857,20 @@ public:
     >
     static consteval auto join() {
         StaticStr<first.size() + (0 + ... + (self.size() + rest.size()))> result;
-        std::copy_n(first.data(), first.size(), result.buffer.data());
+        std::copy_n(first.buffer, first.size(), result.buffer);
         size_t offset = first.size();
         (
             (
                 std::copy_n(
-                    self.data(),
+                    self.buffer,
                     self.size(),
-                    result.buffer.data() + offset
+                    result.buffer + offset
                 ),
                 offset += self.size(),
                 std::copy_n(
-                    rest.data(),
+                    rest.buffer,
                     rest.size(),
-                    result.buffer.data() + offset
+                    result.buffer + offset
                 ),
                 offset += rest.size()
             ),
@@ -884,7 +887,7 @@ public:
             return self;
         } else {
             StaticStr<width> result;
-            std::copy_n(self.data(), self.size(), result.buffer.data());
+            std::copy_n(self.buffer, self.size(), result.buffer);
             std::fill_n(
                 result.buffer + self.size(),
                 width - self.size(),
@@ -915,7 +918,7 @@ public:
         } else {
             constexpr size_t delta = self.size() - start;
             StaticStr<delta> result;
-            std::copy_n(self.data() + start, delta, result.buffer.data());
+            std::copy_n(self.buffer + start, delta, result.buffer);
             result.buffer[delta] = '\0';
             return result;
         }
@@ -935,11 +938,11 @@ public:
             constexpr size_t remaining = self.size() - index - sep.size();
             StaticStr<index> first;
             StaticStr<remaining> third;
-            std::copy_n(self.data(), index, first.buffer.data());
+            std::copy_n(self.buffer, index, first.buffer);
             std::copy_n(
-                self.data() + index + sep.size(),
+                self.buffer + index + sep.size(),
                 remaining,
-                third.buffer.data()
+                third.buffer
             );
             first.buffer[index] = '\0';
             third.buffer[remaining] = '\0';
@@ -963,9 +966,9 @@ public:
         for (size_t i = 0; i < self.size();) {
             if (
                 count < max_count &&
-                std::equal(sub.data(), sub.data() + sub.size(), self.data() + i)
+                std::equal(sub.buffer, sub.buffer + sub.size(), self.buffer + i)
             ) {
-                std::copy_n(repl.data(), repl.size(), result.buffer.data() + offset);
+                std::copy_n(repl.buffer, repl.size(), result.buffer + offset);
                 offset += repl.size();
                 i += sub.size();
                 ++count;
@@ -991,7 +994,7 @@ public:
         constexpr ssize_t nstop =
             std::max(normalize_index(start), static_cast<ssize_t>(0)) - 1;
         for (ssize_t i = nstart; i > nstop; --i) {
-            if (std::equal(sub.data(), sub.data() + sub.size(), self.data() + i)) {
+            if (std::equal(sub.buffer, sub.buffer + sub.size(), self.buffer + i)) {
                 return i;
             }
         }
@@ -1018,14 +1021,14 @@ public:
         } else {
             StaticStr<width> result;
             std::fill_n(
-                result.buffer.data(),
+                result.buffer,
                 width - self.size(),
                 fillchar
             );
             std::copy_n(
-                self.data(),
+                self.buffer,
                 self.size(),
-                result.buffer.data() + width - self.size()
+                result.buffer + width - self.size()
             );
             result.buffer[width] = '\0';
             return result;
@@ -1046,11 +1049,11 @@ public:
             constexpr size_t remaining = self.size() - index - sep.size();
             StaticStr<index> first;
             StaticStr<remaining> third;
-            std::copy_n(self.data(), index, first.buffer.data());
+            std::copy_n(self.buffer, index, first.buffer);
             std::copy_n(
-                self.data() + index + sep.size(),
+                self.buffer + index + sep.size(),
                 remaining,
-                third.buffer.data()
+                third.buffer
             );
             first.buffer[index] = '\0';
             third.buffer[remaining] = '\0';
@@ -1076,9 +1079,9 @@ public:
                     size_t prev = self.size();
                     for (size_t i = prev - 1, j = 0; j < n - 1; --i) {
                         if (std::equal(
-                            sep.data(),
-                            sep.data() + sep.size(),
-                            self.data() + i
+                            sep.buffer,
+                            sep.buffer + sep.size(),
+                            self.buffer + i
                         )) {
                             result[j++] = prev - (i + sep.size());
                             prev = i;
@@ -1093,9 +1096,9 @@ public:
                     (
                         offset -= strides[Is],
                         std::copy_n(
-                            self.data() + offset,
+                            self.buffer + offset,
                             strides[Is],
-                            std::get<Is>(result).buffer.data()
+                            std::get<Is>(result).buffer
                         ),
                         std::get<Is>(result).buffer[strides[Is]] = '\0',
                         offset -= sep.size()
@@ -1116,7 +1119,7 @@ public:
         } else {
             constexpr size_t delta = stop + 1;
             StaticStr<delta> result;
-            std::copy_n(self.data(), delta, result.buffer.data());
+            std::copy_n(self.buffer, delta, result.buffer);
             result.buffer[delta] = '\0';
             return result;
         }
@@ -1140,8 +1143,8 @@ public:
                     size_t prev = 0;
                     for (size_t i = prev, j = 0; j < n - 1;) {
                         if (std::equal(
-                            sep.data(), sep.data() + sep.size(),
-                            self.data() + i
+                            sep.buffer, sep.buffer + sep.size(),
+                            self.buffer + i
                         )) {
                             result[j++] = i - prev;
                             i += sep.size();
@@ -1158,9 +1161,9 @@ public:
                 (
                     (
                         std::copy_n(
-                            self.data() + offset,
+                            self.buffer + offset,
                             strides[Is],
-                            std::get<Is>(result).buffer.data()
+                            std::get<Is>(result).buffer
                         ),
                         std::get<Is>(result).buffer[strides[Is]] = '\0',
                         offset += strides[Is] + sep.size()
@@ -1233,9 +1236,9 @@ public:
                 (
                     (
                         std::copy_n(
-                            self.data() + offset,
+                            self.buffer + offset,
                             strides[Is],
-                            std::get<Is>(result).buffer.data()
+                            std::get<Is>(result).buffer
                         ),
                         std::get<Is>(result).buffer[strides[Is]] = '\0',
                         offset += strides[Is],
@@ -1264,7 +1267,7 @@ public:
     static consteval bool startswith() {
         return (
             prefix.size() <= self.size() &&
-            std::equal(prefix.data(), prefix.data() + prefix.size(), self.data())
+            std::equal(prefix.buffer, prefix.buffer + prefix.size(), self.buffer)
         );
     }
 
@@ -1279,7 +1282,7 @@ public:
             constexpr size_t stop = last_non_stripped<self, chars>();
             constexpr size_t delta = stop - start + 1;  // +1 for half-open interval
             StaticStr<delta> result;
-            std::copy_n(self.data() + start, delta, result.buffer.data());
+            std::copy_n(self.buffer + start, delta, result.buffer);
             result.buffer[delta] = '\0';
             return result;
         }
@@ -1354,14 +1357,14 @@ public:
                 start = 1;
             }
             std::fill_n(
-                result.buffer.data() + start,
+                result.buffer + start,
                 width - self.size(),
                 '0'
             );
             std::copy_n(
-                self.data() + start,
-                self.size() - start,
-                result.buffer.data() + width - self.size() + start
+                self.buffer + start,
+                self.buffer - start,
+                result.buffer + width - self.size() + start
             );
             result.buffer[width] = '\0';
             return result;
@@ -1375,9 +1378,9 @@ public:
         if constexpr (startswith<self, prefix>()) {
             StaticStr<self.size() - prefix.size()> result;
             std::copy_n(
-                self.data() + prefix.size(),
+                self.buffer + prefix.size(),
                 self.size() - prefix.size(),
-                result.buffer.data()
+                result.buffer
             );
             result.buffer[self.size() - prefix.size()] = '\0';
             return result;
@@ -1393,9 +1396,9 @@ public:
         if constexpr (endswith<self, suffix>()) {
             StaticStr<self.size() - suffix.size()> result;
             std::copy_n(
-                self.data(),
+                self.buffer,
                 self.size() - suffix.size(),
-                result.buffer.data()
+                result.buffer
             );
             result.buffer[self.size() - suffix.size()] = '\0';
             return result;
@@ -1721,8 +1724,8 @@ public:
         const StaticStr<M>& other
     ) {
         StaticStr<N + M> result;
-        std::copy_n(self.data(), self.size(), result.buffer.data());
-        std::copy_n(other.data(), other.size(), result.buffer.data() + self.size());
+        std::copy_n(self.buffer, self.size(), result.buffer);
+        std::copy_n(other.buffer, other.size(), result.buffer + self.size());
         result.buffer[N + M] = '\0';
         return result;
     }
@@ -1732,8 +1735,8 @@ public:
         const char(&other)[M]
     ) {
         StaticStr<N + M - 1> result;
-        std::copy_n(self.data(), self.size(), result.buffer.data());
-        std::copy_n(other, M - 1, result.buffer.data() + self.size());
+        std::copy_n(self.buffer, self.size(), result.buffer);
+        std::copy_n(other, M - 1, result.buffer + self.size());
         result.buffer[N + M - 1] = '\0';
         return result;
     }
@@ -1743,8 +1746,8 @@ public:
         const StaticStr<N>& self
     ) {
         StaticStr<N + M - 1> result;
-        std::copy_n(other, M - 1, result.buffer.data());
-        std::copy_n(self.data(), self.size(), result.buffer.data() + M - 1);
+        std::copy_n(other, M - 1, result.buffer);
+        std::copy_n(self.buffer, self.size(), result.buffer + M - 1);
         result.buffer[N + M - 1] = '\0';
         return result;
     }
@@ -1761,7 +1764,7 @@ public:
         } else {
             std::string result(self.size() * reps, '\0');
             for (size_t i = 0; i < reps; ++i) {
-                std::copy_n(self.data(), self.size(), result.data() + (self.size() * i));
+                std::copy_n(self.buffer, self.size(), result.data() + (self.size() * i));
             }
             return result;
         }
@@ -1772,7 +1775,7 @@ public:
         } else {
             std::string result(self.size() * reps, '\0');
             for (size_t i = 0; i < reps; ++i) {
-                std::copy_n(self.data(), self.size(), result.data() + (self.size() * i));
+                std::copy_n(self.buffer, self.size(), result.data() + (self.size() * i));
             }
             return result;
         }
@@ -1857,15 +1860,31 @@ namespace impl {
     template <StaticStr... Strings>
     concept strings_are_unique = _strings_are_unique<Strings...>;
 
+    template <size_t I, StaticStr... Strings>
+    struct unpack_string;
+    template <StaticStr First, StaticStr... Rest>
+    struct unpack_string<0, First, Rest...> {
+        static constexpr StaticStr value = First;
+    };
+    template <size_t I, StaticStr First, StaticStr... Rest>
+    struct unpack_string<I, First, Rest...> {
+        static constexpr StaticStr value = unpack_string<I - 1, Rest...>::value;
+    };
+
     /* A helper struct that computes a perfect hash function over the given strings at
     compile time. */
     template <StaticStr... Keys>
     struct perfect_hash {
-        /* The hash table has a minimum safety factor of 1.5x the number of strings,
-        in order to improve the chances of finding a perfect hash. */
+    private:
+        static constexpr std::pair<size_t, size_t> minmax =
+            std::minmax({Keys.size()...});
+
+    public:
         static constexpr size_t table_size = next_prime(
             sizeof...(Keys) + (sizeof...(Keys) >> 1)
         );
+        static constexpr size_t min_length = minmax.first;
+        static constexpr size_t max_length = minmax.second;
 
     private:
         /* Check to see if the candidate seed and prime produce any collisions for the
@@ -1946,6 +1965,267 @@ namespace impl {
         }
     };
 
+    /* A helper struct that computes a minimal perfect hash function over the given
+    strings at compile time, based on gperf's hash-finding algorithm. */
+    template <StaticStr... Keys>
+    struct minimal_perfect_hash {
+    private:
+        static constexpr std::pair<size_t, size_t> minmax =
+            std::minmax({Keys.size()...});
+
+    public:
+        static constexpr size_t table_size = sizeof...(Keys);
+        static constexpr size_t min_length = minmax.first;
+        static constexpr size_t max_length = minmax.second;
+
+    // private:
+        using Weights = std::array<unsigned char, 256>;
+
+        template <StaticStr...>
+        struct _counts {
+            static constexpr size_t operator()(unsigned char, size_t) {
+                return 0;
+            }
+        };
+        template <StaticStr First, StaticStr... Rest>
+        struct _counts<First, Rest...> {
+            static constexpr size_t operator()(unsigned char c, size_t pos) {
+                return
+                    _counts<Rest...>{}(c, pos) +
+                    (pos < First.size() && First[pos] == c);
+            }
+        };
+        static constexpr size_t counts(unsigned char c, size_t pos) {
+            return _counts<Keys...>{}(c, pos);
+        }
+
+        template <size_t I, unsigned char C, StaticStr... Strings>
+        static constexpr size_t first_occurrence = 0;
+        template <size_t I, unsigned char C, StaticStr First, StaticStr... Rest>
+        static constexpr size_t first_occurrence<I, C, First, Rest...> =
+            (I < First.size() && First[I] == C) ?
+                0 : first_occurrence<I, C, Rest...> + 1;
+
+        template <size_t I, size_t J, StaticStr... Strings>
+        static constexpr size_t _variation = 0;
+        template <size_t I, size_t J, StaticStr First, StaticStr... Rest>
+        static constexpr size_t _variation<I, J, First, Rest...> =
+            (I < First.size() && J == first_occurrence<I, First[I], Keys...>) +
+            _variation<I, J + 1, Rest...>;
+        template <size_t I, StaticStr... Strings>
+        static constexpr size_t variation = _variation<I, 0, Strings...>;
+
+        /* An array holding the number of unique characters across each index of the
+        input keys, up to `max_length`. */
+        static constexpr std::array<size_t, max_length> frequencies =
+            []<size_t... Is>(std::index_sequence<Is...>) {
+                return std::array<size_t, max_length>{variation<Is, Keys...>...};
+            }(std::make_index_sequence<max_length>{});
+
+        /* A sorted array holding indices into the frequencies table, with the highest
+        variation indices coming first. */
+        static constexpr std::array<size_t, max_length> sorted_freq_indices =
+            []<size_t... Is>(std::index_sequence<Is...>) {
+                std::array<size_t, max_length> result {Is...};
+                std::sort(result.begin(), result.end(), [](size_t a, size_t b) {
+                    return frequencies[a] > frequencies[b];
+                });
+                return result;
+            }(std::make_index_sequence<max_length>{});
+
+        using collision = std::pair<std::string_view, std::string_view>;
+
+        /* Check to see if the candidate weights produce any collisions for a given
+        number of significant characters. */
+        template <StaticStr...>
+        struct collisions {
+            static constexpr collision operator()(const Weights&, size_t) {
+                return {"", ""};
+            }
+        };
+        template <StaticStr First, StaticStr... Rest>
+        struct collisions<First, Rest...> {
+            template <StaticStr...>
+            struct scan {
+                static constexpr collision operator()(
+                    std::string_view,
+                    size_t,
+                    const Weights&,
+                    size_t
+                ) {
+                    return {"", ""};
+                }
+            };
+            template <StaticStr F, StaticStr... Rs>
+            struct scan<F, Rs...> {
+                static constexpr collision operator()(
+                    std::string_view orig,
+                    size_t idx,
+                    const Weights& weights,
+                    size_t significant_chars
+                ) {
+                    size_t hash = 0;
+                    for (size_t i = 0; i < significant_chars; ++i) {
+                        size_t pos = sorted_freq_indices[i];
+                        unsigned char c = pos < F.size() ? F[pos] : 0;
+                        hash += weights[c];
+                    }
+                    if ((hash % table_size) == idx) {
+                        return {orig, {F.buffer, F.size()}};
+                    }
+                    return scan<Rs...>{}(orig, idx, weights, significant_chars);
+                }
+            };
+
+            static constexpr collision operator()(
+                const Weights& weights,
+                size_t significant_chars
+            ) {
+                size_t hash = 0;
+                for (size_t i = 0; i < significant_chars; ++i) {
+                    size_t pos = sorted_freq_indices[i];
+                    unsigned char c = pos < First.size() ? First[pos] : 0;
+                    hash += weights[c];
+                }
+                collision result = scan<Rest...>{}(
+                    std::string_view{First.buffer, First.size()},
+                    hash % table_size,
+                    weights,
+                    significant_chars
+                );
+                if (result.first != result.second) {
+                    return result;
+                }
+                return collisions<Rest...>{}(weights, significant_chars);
+            }
+        };
+
+        /* Finds an associative value array that produces perfect hashes over the input
+        keywords. */
+        static constexpr auto find_hash = [] -> std::tuple<size_t, Weights, bool> {
+            constexpr size_t max_iterations = 100;
+            Weights weights;
+
+            for (size_t i = 0; i < max_length; ++i) {
+                weights.fill(1);
+                for (size_t j = 0; j < max_iterations; ++j) {
+                    collision result = collisions<Keys...>{}(weights, i);
+                    if (result.first == result.second) {
+                        return {i, weights, true};
+                    }
+                    bool identical = true;
+                    for (size_t k = 0; k < i; ++k) {
+                        size_t pos = sorted_freq_indices[k];
+                        unsigned char c1 = pos < result.first.size() ?
+                            result.first[pos] : 0;
+                        unsigned char c2 = pos < result.second.size() ?
+                            result.second[pos] : 0;
+                        if (c1 != c2) {
+                            if (counts(c1, pos) < counts(c2, pos)) {
+                                ++weights[c1];
+                            } else {
+                                ++weights[c2];
+                            }
+                            identical = false;
+                            break;
+                        }
+                    }
+                    // if all significant characters are the same, widen the search
+                    if (identical) {
+                        break;
+                    }
+                }
+            } 
+            return {0, weights, false};
+        }();
+
+    // public:
+        static constexpr size_t significant_chars = std::get<0>(find_hash);
+        static constexpr Weights weights = std::get<1>(find_hash);
+
+    // private:
+
+        /* An array holding the positions of the significant characters for the
+        associative value array, in traversal order. */
+        static constexpr std::array<size_t, significant_chars> positions =
+            []<size_t... Is>(std::index_sequence<Is...>) {
+                std::array<size_t, significant_chars> positions {
+                    sorted_freq_indices[Is]...
+                };
+                std::sort(positions.begin(), positions.end());
+                return positions;
+            }(std::make_index_sequence<significant_chars>{});
+
+    // public:
+        static constexpr bool exists = std::get<2>(find_hash);
+
+        /* Hash a character buffer according to the computed perfect hash algorithm. */
+        static constexpr size_t hash(const char* str) noexcept {
+            /// TODO: it might be possible to use an extended bitmask with length
+            /// equal to max_length, with 1s at the positions of the significant
+            /// characters, and 0s elsewhere.  I would then load up to 8 characters
+            /// at a time, and use the bitmask to extract the significant characters
+            /// and look up their associative values, rather than doing a linear scan.
+            if constexpr (positions.empty()) {
+                return 0;
+            }
+            const char* ptr = str;
+            size_t out = 0;
+            size_t i = 0;
+            size_t next_pos = positions[i];
+            while (*ptr != '\0') {
+                if ((ptr - str) == next_pos) {
+                    out += weights[*ptr];
+                    if (++i >= positions.size()) {
+                        // early break if no characters left to probe
+                        break;
+                    }
+                    next_pos = positions[i];
+                }
+                ++ptr;
+            }
+            return out;
+        }
+
+        /* Hash a character buffer according to the computed perfect hash algorithm and
+        record its length as an out parameter. */
+        static constexpr size_t hash(const char* str, size_t& len) noexcept {
+            const char* ptr = str;
+            if constexpr (positions.empty()) {
+                while (*ptr != '\0') { ++ptr; }
+                len = ptr - str;
+                return 0;
+            }
+            size_t out = 0;
+            size_t i = 0;
+            size_t next_pos = positions[i];
+            while (*ptr != '\0') {
+                if ((ptr - str) == next_pos) {
+                    out += weights[*ptr];
+                    if (++i >= positions.size()) {
+                        // continue probing until end of string to get length
+                        next_pos = std::numeric_limits<size_t>::max();
+                    } else {
+                        next_pos = positions[i];
+                    }
+                }
+                ++ptr;
+            }
+            len = ptr - str;
+            return out;
+        }
+
+        /* Hash a string view according to the computed perfect hash algorithm. */
+        static constexpr size_t hash(std::string_view str) noexcept {
+            size_t out = 0;
+            for (size_t pos : positions) {
+                unsigned char c = pos < str.size() ? str[pos] : 0;
+                out += weights[c];
+            }
+            return out;
+        }
+    };
+
 }
 
 
@@ -1968,11 +2248,11 @@ straight to the final value with no intermediate computation. */
 template <typename Value, StaticStr... Keys>
     requires (
         impl::strings_are_unique<Keys...> &&
-        impl::perfect_hash<Keys...>::exists
+        impl::minimal_perfect_hash<Keys...>::exists
     )
-struct StaticMap : impl::perfect_hash<Keys...> {
+struct StaticMap : impl::minimal_perfect_hash<Keys...> {
 private:
-    using Hash = impl::perfect_hash<Keys...>;
+    using Hash = impl::minimal_perfect_hash<Keys...>;
 
     struct Iterator;
 
@@ -2007,24 +2287,13 @@ private:
     static constexpr size_t pack_idx<I, J, Js...> =
         (I == J) ? 0 : pack_idx<I, Js...> + 1;
 
-    template <size_t I, StaticStr... Strings>
-    struct unpack_key;
-    template <StaticStr First, StaticStr... Rest>
-    struct unpack_key<0, First, Rest...> {
-        static constexpr StaticStr value = First;
-    };
-    template <size_t I, StaticStr First, StaticStr... Rest>
-    struct unpack_key<I, First, Rest...> {
-        static constexpr StaticStr value = unpack_key<I - 1, Rest...>::value;
-    };
-
     template <size_t I, size_t... occupied, typename... Values>
     static constexpr Bucket populate(Values&&... values) {
         constexpr size_t idx = pack_idx<I, occupied...>;
         if constexpr (idx < sizeof...(Keys)) {
-            constexpr const char* key = unpack_key<idx, Keys...>::value;
+            constexpr const char* key = impl::unpack_string<idx, Keys...>::value;
             return {
-                std::string_view{key, unpack_key<idx, Keys...>::value.size()},
+                std::string_view{key, impl::unpack_string<idx, Keys...>::value.size()},
                 unpack_arg<idx>(std::forward<Values>(values)...)
             };
         } else {
@@ -2278,23 +2547,15 @@ private:
     static constexpr size_t pack_idx<I, J, Js...> =
         (I == J) ? 0 : pack_idx<I, Js...> + 1;
 
-    template <size_t I, StaticStr... Strings>
-    struct unpack_key;
-    template <StaticStr First, StaticStr... Rest>
-    struct unpack_key<0, First, Rest...> {
-        static constexpr StaticStr value = First;
-    };
-    template <size_t I, StaticStr First, StaticStr... Rest>
-    struct unpack_key<I, First, Rest...> {
-        static constexpr StaticStr value = unpack_key<I - 1, Rest...>::value;
-    };
-
     template <size_t I, size_t... occupied>
     static constexpr Bucket populate() {
         constexpr size_t idx = pack_idx<I, occupied...>;
         if constexpr (idx < sizeof...(Keys)) {
-            constexpr const char* key = unpack_key<idx, Keys...>::value;
-            return {std::string_view{key, unpack_key<idx, Keys...>::value.size()}};
+            constexpr const char* key = impl::unpack_string<idx, Keys...>::value;
+            return {std::string_view{
+                key,
+                impl::unpack_string<idx, Keys...>::value.size()
+            }};
         } else {
             return {};
         }
@@ -2502,6 +2763,25 @@ namespace std {
         requires (bertrand::StaticSet<Keys...>::template contains<Key>())
     constexpr const std::string_view get(const bertrand::StaticSet<Keys...>& set) {
         return set.template get<Key>();
+    }
+
+}
+
+
+
+namespace bertrand {
+
+    inline void test() {
+        // constexpr StaticStr s1 = "foo";
+        // constexpr StaticStr s2 = s1;
+        // static_assert(s1 == "foo");
+        constexpr StaticMap<int, "foo", "bar", "baz", "qux"> map{1, 2, 3, 4};
+        static_assert(map["qux"]);
+
+        using Hash = impl::minimal_perfect_hash<"foo", "bar", "baz">;
+        static_assert(Hash::hash("qux") == 0);
+        static_assert(Hash::hash("bar") == 0);
+        static_assert(Hash::significant_chars == 0);
     }
 
 }
