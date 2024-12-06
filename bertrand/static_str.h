@@ -1971,6 +1971,11 @@ namespace impl {
         keyword argument names from the enclosing parameter list. */
         static constexpr size_t prime = std::get<1>(hash_components);
 
+        template <typename T>
+        static constexpr bool hashable =
+            std::is_convertible_v<T, const char*> ||
+            std::is_convertible_v<T, std::string_view>;
+
         /* Hash an arbitrary string according to the precomputed FNV-1a algorithm
         that was found to perfectly hash the enclosing keyword arguments. */
         static constexpr size_t hash(const char* str) noexcept {
@@ -2165,6 +2170,11 @@ namespace impl {
         static constexpr Weights weights = std::get<1>(find_hash);
         static constexpr bool exists = std::get<2>(find_hash);
 
+        template <typename T>
+        static constexpr bool hashable =
+            std::is_convertible_v<T, const char*> ||
+            std::is_convertible_v<T, std::string_view>;
+
         /* An array holding the positions of the significant characters for the
         associative value array, in traversal order. */
         static constexpr std::array<size_t, significant_chars> positions =
@@ -2314,12 +2324,7 @@ template <typename Value, StaticStr... Keys>
 struct StaticMap : impl::minimal_perfect_hash<Keys...> {
 private:
     using Hash = impl::minimal_perfect_hash<Keys...>;
-
-    struct Bucket {
-        std::string_view key;
-        Value value;
-    };
-
+    using Bucket = std::pair<const std::string_view, Value>;
     using Table = std::array<Bucket, Hash::table_size>;
     static constexpr std::array<size_t, Hash::table_size> indices {
         (Hash::hash(Keys) % Hash::table_size)...
@@ -2348,18 +2353,17 @@ private:
     public:
         using iterator_category = std::forward_iterator_tag;
         using difference_type = size_t;
-        using value_type = std::pair<const std::string_view&, const Value&>;
-        using pointer = std::pair<const std::string_view&, const Value&>*;
-        using reference = std::pair<const std::string_view&, const Value&>&;
+        using value_type = const Bucket;
+        using pointer = const Bucket*;
+        using reference = const Bucket&;
 
         Iterator(const Table& table) : m_table(&table), m_idx(0) {}
         Iterator(const Table& table, Sentinel) :
             m_table(&table), m_idx(Hash::table_size)
         {}
 
-        value_type operator*() const {
-            const Bucket& bucket = (*m_table)[indices[m_idx]];
-            return {bucket.key, bucket.value};
+        reference operator*() const {
+            return (*m_table)[indices[m_idx]];
         }
 
         pointer operator->() const {
@@ -2450,11 +2454,11 @@ public:
         const char* str = key;
         size_t len;
         const Bucket& result = table[Hash::hash(str, len) % Hash::table_size];
-        if (len != result.key.size()) {
+        if (len != result.first.size()) {
             return false;
         }
         for (size_t i = 0; i < len; ++i) {
-            if (str[i] != result.key[i]) {
+            if (str[i] != result.first[i]) {
                 return false;
             }
         }
@@ -2470,7 +2474,7 @@ public:
         }
         const Bucket& result = table[Hash::hash(key) % Hash::table_size];
         for (size_t i = 0; i < M; ++i) {
-            if (key[i] != result.key[i]) {
+            if (key[i] != result.first[i]) {
                 return false;
             }
         }
@@ -2484,7 +2488,7 @@ public:
             return false;
         }
         const Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (key != result.key) {
+        if (key != result.first) {
             return false;
         }
         return true;
@@ -2496,7 +2500,7 @@ public:
             return false;
         }
         const Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (key != result.key) {
+        if (key != result.first) {
             return false;
         }
         return true;
@@ -2505,23 +2509,23 @@ public:
     /* Get the value associate with the key at index I at compile time, asserting that
     the index is within range. */
     template <size_t I> requires (I < sizeof...(Keys))
-    constexpr const Value& get() const {
-        return table[indices[I]].value;
-    }
-
-    /* Get the value associated with a key at compile time, asserting that it is
-    present in the map. */
-    template <StaticStr Key> requires (contains<Key>())
-    constexpr const Value& get() const {
-        constexpr size_t idx = Hash::hash(Key) % Hash::table_size;
-        return table[idx].value;
+    constexpr const Bucket& get() const {
+        return table[indices[I]];
     }
 
     /* Get the value associate with the key at index I at compile time, asserting that
     the index is within range. */
     template <size_t I> requires (I < sizeof...(Keys))
-    Value& get() {
-        return table[indices[I]].value;
+    Bucket& get() {
+        return table[indices[I]];
+    }
+
+    /* Get the value associated with a key at compile time, asserting that it is
+    present in the map. */
+    template <StaticStr Key> requires (contains<Key>())
+    constexpr const Value& get() const {
+        constexpr size_t idx = Hash::hash(Key) % Hash::table_size;
+        return table[idx].second;
     }
 
     /* Get the value associated with a key at compile time, asserting that it is
@@ -2529,38 +2533,38 @@ public:
     template <StaticStr Key> requires (contains<Key>())
     Value& get() {
         constexpr size_t idx = Hash::hash(Key) % Hash::table_size;
-        return table[idx].value;
+        return table[idx].second;
     }
 
     /* Look up an index in the table, returning the value that corresponds to the
     key at that index or nullptr if the index is out of bounds. */
     template <std::convertible_to<size_t> T>
         requires (!std::convertible_to<T, const char*>)
-    constexpr const Value* operator[](const T& key) const {
+    constexpr const Bucket* operator[](const T& key) const {
         size_t idx = key;
         if (idx > Hash::table_size) {
             return nullptr;
         }
-        return &table[indices[idx]].value;
+        return &table[indices[idx]];
     }
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
     template <std::convertible_to<const char*> T>
         requires (!static_str<T> && !string_literal<T>)
-    constexpr const Value* operator[](const T& key) const {
+    constexpr const Bucket* operator[](const T& key) const {
         const char* str = key;
         size_t len;
         const Bucket& result = table[Hash::hash(str, len) % Hash::table_size];
-        if (len != result.key.size()) {
+        if (len != result.first.size()) {
             return nullptr;
         }
         for (size_t i = 0; i < len; ++i) {
-            if (str[i] != result.key[i]) {
+            if (str[i] != result.first[i]) {
                 return nullptr;
             }
         }
-        return &result.value;
+        return &result;
     }
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
@@ -2573,11 +2577,11 @@ public:
         }
         const Bucket& result = table[Hash::hash(key) % Hash::table_size];
         for (size_t i = 0; i < M; ++i) {
-            if (key[i] != result.key[i]) {
+            if (key[i] != result.first[i]) {
                 return nullptr;
             }
         }
-        return &result.value;
+        return &result.second;
     }
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
@@ -2590,10 +2594,10 @@ public:
             return nullptr;
         }
         const Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (key != result.key) {
+        if (key != result.first) {
             return nullptr;
         }
-        return &result.value;
+        return &result.second;
     }
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
@@ -2603,41 +2607,41 @@ public:
             return nullptr;
         }
         const Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (key != result.key) {
+        if (key != result.first) {
             return nullptr;
         }
-        return &result.value;
+        return &result.second;
     }
 
     /* Look up an index in the table, returning the value that corresponds to the
     key at that index or nullptr if the index is out of bounds. */
     template <std::convertible_to<size_t> T>
         requires (!std::convertible_to<T, const char*>)
-    Value* operator[](const T& key) {
+    Bucket* operator[](const T& key) {
         size_t idx = key;
         if (idx > Hash::table_size) {
             return nullptr;
         }
-        return &table[indices[idx]].value;
+        return &table[indices[idx]];
     }
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
     template <std::convertible_to<const char*> T>
         requires (!static_str<T> && !string_literal<T>)
-    Value* operator[](const T& key) {
+    Bucket* operator[](const T& key) {
         const char* str = key;
         size_t len;
         Bucket& result = table[Hash::hash(str, len) % Hash::table_size];
-        if (len != result.key.size()) {
+        if (len != result.first.size()) {
             return nullptr;
         }
         for (size_t i = 0; i < len; ++i) {
-            if (str[i] != result.key[i]) {
+            if (str[i] != result.first[i]) {
                 return nullptr;
             }
         }
-        return &result.value;
+        return &result;
     }
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
@@ -2650,11 +2654,11 @@ public:
         }
         Bucket& result = table[Hash::hash(key) % Hash::table_size];
         for (size_t i = 0; i < M; ++i) {
-            if (key[i] != result.key[i]) {
+            if (key[i] != result.first[i]) {
                 return nullptr;
             }
         }
-        return &result.value;
+        return &result.second;
     }
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
@@ -2667,10 +2671,10 @@ public:
             return nullptr;
         }
         Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (key != result.key) {
+        if (key != result.first) {
             return nullptr;
         }
-        return &result.value;
+        return &result.second;
     }
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
@@ -2680,10 +2684,10 @@ public:
             return nullptr;
         }
         Bucket& result = table[Hash::hash(key) % Hash::table_size];
-        if (key != result.key) {
+        if (key != result.first) {
             return nullptr;
         }
-        return &result.value;
+        return &result.second;
     }
 
     constexpr size_t size() const { return sizeof...(Keys); }
@@ -3008,7 +3012,7 @@ namespace std {
         using type = std::conditional_t<
             std::is_void_v<Value>,
             std::string_view,
-            Value
+            std::pair<const std::string_view, Value>
         >;
     };
 
