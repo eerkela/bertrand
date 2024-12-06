@@ -61,12 +61,12 @@ namespace impl {
                 using type = Union<std::remove_cvref_t<Unique>...>;
             };
             using type = helper<
-                typename args<typename ToPython<Matches>::type...>::deduplicate
+                typename args<typename ToPython<Matches>::type...>::to_value
             >::type;
         };
         template <typename Match>
         struct convert<args<Match>> { using type = Match; };
-        using type = convert<typename args<Matches...>::deduplicate>::type;
+        using type = convert<typename args<Matches...>::to_value>::type;
     };
 
     /* Raw types are converted to a pack of length 1. */
@@ -421,7 +421,7 @@ namespace impl {
 
             /* 3. Deduplicate the return types, merging those that only differ in
             cvref qualifications, which forces a copy/move when called. */
-            using returns = traits<product>::returns::deduplicate;
+            using returns = traits<product>::returns::to_value;
 
         public:
 

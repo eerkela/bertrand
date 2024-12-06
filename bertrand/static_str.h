@@ -420,11 +420,11 @@ public:
 
     char buffer[N + 1];  // +1 for null terminator
 
-    // consteval StaticStr(const char* arr) : buffer(build(std::make_index_sequence<N>{}, arr)) {}
-    consteval StaticStr(const char* arr) {
-        []<size_t... Is>(std::index_sequence<Is...>, char* buffer, const char* arr){
-            ((buffer[Is] = arr[Is]), ..., (buffer[N] = '\0'));
-        }(std::make_index_sequence<N>{}, buffer, arr);
+    consteval StaticStr(const char* arr) : buffer{} {
+        for (size_t i = 0; i < N; ++i) {
+            buffer[i] = arr[i];
+        }
+        buffer[N] = '\0';
     }
 
     /* Convert an integer into a string at compile time using the specified base. */
@@ -1899,6 +1899,9 @@ namespace impl {
         static constexpr size_t min_length = minmax.first;
         static constexpr size_t max_length = minmax.second;
 
+        template <size_t I> requires (I < sizeof...(Keys))
+        static constexpr StaticStr at = unpack_string<I, Keys...>::value;
+
     private:
         /* Check to see if the candidate seed and prime produce any collisions for the
         target keyword arguments. */
@@ -1992,6 +1995,9 @@ namespace impl {
         static constexpr size_t table_size = sizeof...(Keys);
         static constexpr size_t min_length = minmax.first;
         static constexpr size_t max_length = minmax.second;
+
+        template <size_t I> requires (I < sizeof...(Keys))
+        static constexpr StaticStr at = unpack_string<I, Keys...>::value;
 
     private:
         using Weights = std::array<unsigned char, 256>;
@@ -2315,6 +2321,9 @@ private:
     };
 
     using Table = std::array<Bucket, Hash::table_size>;
+    static constexpr std::array<size_t, Hash::table_size> indices {
+        (Hash::hash(Keys) % Hash::table_size)...
+    };
 
     template <size_t I, size_t...>
     static constexpr size_t pack_idx = 0;
@@ -2349,7 +2358,7 @@ private:
         {}
 
         value_type operator*() const {
-            const Bucket& bucket = (*m_table)[m_idx];
+            const Bucket& bucket = (*m_table)[indices[m_idx]];
             return {bucket.key, bucket.value};
         }
 
@@ -2414,10 +2423,24 @@ public:
         ))
     {}
 
+    /* Check whether the given index is in bounds for the table. */
+    template <size_t I>
+    static constexpr bool contains() {
+        return I < Hash::table_size;
+    }
+
     /* Check whether the map contains an arbitrary key at compile time. */
     template <StaticStr Key>
     static constexpr bool contains() {
         return ((Key == Keys) || ...);
+    }
+
+    /* Check whether the given index is in bounds for the table. */
+    template <std::convertible_to<size_t> T>
+        requires (!std::convertible_to<T, const char*>)
+    constexpr bool contains(const T& key) const {
+        size_t idx = key;
+        return idx < Hash::table_size;
     }
 
     /* Check whether the map contains an arbitrary key. */
@@ -2479,12 +2502,26 @@ public:
         return true;
     }
 
+    /* Get the value associate with the key at index I at compile time, asserting that
+    the index is within range. */
+    template <size_t I> requires (I < sizeof...(Keys))
+    constexpr const Value& get() const {
+        return table[indices[I]].value;
+    }
+
     /* Get the value associated with a key at compile time, asserting that it is
     present in the map. */
     template <StaticStr Key> requires (contains<Key>())
     constexpr const Value& get() const {
         constexpr size_t idx = Hash::hash(Key) % Hash::table_size;
-        return *table[idx];
+        return table[idx].value;
+    }
+
+    /* Get the value associate with the key at index I at compile time, asserting that
+    the index is within range. */
+    template <size_t I> requires (I < sizeof...(Keys))
+    Value& get() {
+        return table[indices[I]].value;
     }
 
     /* Get the value associated with a key at compile time, asserting that it is
@@ -2492,7 +2529,19 @@ public:
     template <StaticStr Key> requires (contains<Key>())
     Value& get() {
         constexpr size_t idx = Hash::hash(Key) % Hash::table_size;
-        return *table[idx];
+        return table[idx].value;
+    }
+
+    /* Look up an index in the table, returning the value that corresponds to the
+    key at that index or nullptr if the index is out of bounds. */
+    template <std::convertible_to<size_t> T>
+        requires (!std::convertible_to<T, const char*>)
+    constexpr const Value* operator[](const T& key) const {
+        size_t idx = key;
+        if (idx > Hash::table_size) {
+            return nullptr;
+        }
+        return &table[indices[idx]].value;
     }
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
@@ -2558,6 +2607,18 @@ public:
             return nullptr;
         }
         return &result.value;
+    }
+
+    /* Look up an index in the table, returning the value that corresponds to the
+    key at that index or nullptr if the index is out of bounds. */
+    template <std::convertible_to<size_t> T>
+        requires (!std::convertible_to<T, const char*>)
+    Value* operator[](const T& key) {
+        size_t idx = key;
+        if (idx > Hash::table_size) {
+            return nullptr;
+        }
+        return &table[indices[idx]].value;
     }
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
@@ -2647,6 +2708,9 @@ struct StaticMap<void, Keys...> : impl::minimal_perfect_hash<Keys...> {
 private:
     using Hash = impl::minimal_perfect_hash<Keys...>;
     using Table = std::array<std::string_view, Hash::table_size>;
+    static constexpr std::array<size_t, Hash::table_size> indices {
+        (Hash::hash(Keys) % Hash::table_size)...
+    };
 
     template <size_t I, size_t...>
     static constexpr size_t pack_idx = 0;
@@ -2678,7 +2742,7 @@ private:
         {}
 
         reference operator*() const {
-            return (*m_table)[m_idx];
+            return (*m_table)[indices[m_idx]];
         }
 
         pointer operator->() const {
@@ -2730,10 +2794,24 @@ public:
         }(std::make_index_sequence<Hash::table_size>{}))
     {}
 
+    /* Check whether the given index is in bounds for the table. */
+    template <size_t I>
+    static constexpr bool contains() {
+        return I < Hash::table_size;
+    }
+
     /* Check whether the map contains an arbitrary key at compile time. */
     template <StaticStr Key>
     static constexpr bool contains() {
         return ((Key == Keys) || ...);
+    }
+
+    /* Check whether the given index is in bounds for the table. */
+    template <std::convertible_to<size_t> T>
+        requires (!std::convertible_to<T, const char*>)
+    constexpr bool contains(const T& key) const {
+        size_t idx = key;
+        return idx < Hash::table_size;
     }
 
     /* Check whether the map contains an arbitrary key. */
@@ -2796,13 +2874,31 @@ public:
         }
         return true;
     }
+    /* Get the value associated with a key at compile time, asserting that it is
+    present in the map. */
+    template <size_t I> requires (I < sizeof...(Keys))
+    constexpr const std::string_view& get() const {
+        return table[indices[I]];
+    }
 
     /* Get the value associated with a key at compile time, asserting that it is
     present in the map. */
     template <StaticStr Key> requires (contains<Key>())
     constexpr const std::string_view& get() const {
         constexpr size_t idx = Hash::hash(Key) % Hash::table_size;
-        return *table[idx];
+        return table[idx];
+    }
+
+    /* Look up an index in the table, returning the value that corresponds to the
+    key at that index or nullptr if the index is out of bounds. */
+    template <std::convertible_to<size_t> T>
+        requires (!std::convertible_to<T, const char*>)
+    constexpr const std::string_view* operator[](const T& key) const {
+        size_t idx = key;
+        if (idx > Hash::table_size) {
+            return nullptr;
+        }
+        return &table[indices[idx]];
     }
 
     /* Look up a key, returning a pointer to the corresponding key or nullptr if it is
@@ -2899,14 +2995,44 @@ namespace std {
         }
     };
 
+    /* Specialize std::tuple_size to allow for structured bindings. */
+    template <typename Value, bertrand::StaticStr... Keys>
+    struct tuple_size<bertrand::StaticMap<Value, Keys...>> :
+        std::integral_constant<size_t, sizeof...(Keys)>
+    {};
+
+    /* Specialize std::tuple_element to allow for structured bindings. */
+    template <size_t I, typename Value, bertrand::StaticStr... Keys>
+        requires (I < sizeof...(Keys))
+    struct tuple_element<I, bertrand::StaticMap<Value, Keys...>> {
+        using type = std::conditional_t<
+            std::is_void_v<Value>,
+            std::string_view,
+            Value
+        >;
+    };
+
+    /* `std::get<"name">(dict)` is a type-safe accessor for `bertrand::StaticMap`. */
+    template <size_t I, typename Value, bertrand::StaticStr... Keys>
+        requires (I < sizeof...(Keys))
+    constexpr const auto& get(const bertrand::StaticMap<Value, Keys...>& map) {
+        return map.template get<I>();
+    }
+
+    /* `std::get<"name">(dict)` is a type-safe accessor for `bertrand::StaticMap`. */
+    template <size_t I, typename Value, bertrand::StaticStr... Keys>
+        requires (I < sizeof...(Keys) && !std::is_void_v<Value>)
+    auto& get(bertrand::StaticMap<Value, Keys...>& map) {
+        return map.template get<I>();
+    }
+
     /* `std::get<"name">(dict)` is a type-safe accessor for `bertrand::StaticMap`. */
     template <bertrand::StaticStr Key, typename Value, bertrand::StaticStr... Keys>
         requires (
-            bertrand::StaticMap<Value, Keys...>::template contains<Key>() &&
-            !std::is_void_v<Value>
+            bertrand::StaticMap<Value, Keys...>::template contains<Key>()
         )
-    constexpr const Value& get(const bertrand::StaticMap<Value, Keys...>& dict) {
-        return dict.template get<Key>();
+    constexpr const auto& get(const bertrand::StaticMap<Value, Keys...>& map) {
+        return map.template get<Key>();
     }
 
     /* `std::get<"name">(dict)` is a type-safe accessor for `bertrand::StaticMap`. */
@@ -2915,15 +3041,8 @@ namespace std {
             bertrand::StaticMap<Value, Keys...>::template contains<Key>() &&
             !std::is_void_v<Value>
         )
-    Value& get(bertrand::StaticMap<Value, Keys...>& dict) {
-        return dict.template get<Key>();
-    }
-
-    /* `std::get<"name">(set)` is a type-safe accessor for `bertrand::StaticSet`. */
-    template <bertrand::StaticStr Key, bertrand::StaticStr... Keys>
-        requires (bertrand::StaticSet<Keys...>::template contains<Key>())
-    constexpr const std::string_view& get(const bertrand::StaticSet<Keys...>& set) {
-        return set.template get<Key>();
+    auto& get(bertrand::StaticMap<Value, Keys...>& map) {
+        return map.template get<Key>();
     }
 
 }

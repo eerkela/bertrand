@@ -998,15 +998,11 @@ template <typename T>
 concept is_args = impl::_is_args<T>;
 
 
-/// TODO: rename pack<...> to args<...> and move concept out of impl::.  Also, make
-/// the CTAD construct implicit.
-
-
-/* Save a set of input arguments for later use.  Returns a pack<> container, which
+/* Save a set of input arguments for later use.  Returns an args<> container, which
 stores the arguments similar to a `std::tuple`, except that it is capable of storing
-references and cannot be copied or moved.  Calling the pack as an rvalue will perfectly
-forward its values to an input function, without any extra copies, and at most 2 moves
-per element (one when the pack is created and another when it is consumed).
+references and cannot be copied or moved.  Calling the args pack as an rvalue will
+perfectly forward its values to an input function, without any extra copies, and at
+most 2 moves per element (one when the pack is created and another when it is consumed).
 
 Also provides utilities for compile-time argument manipulation wherever arbitrary lists
 of types may be necessary. 
@@ -1085,9 +1081,9 @@ private:
     };
 
     template <typename>
-    struct _deduplicate;
+    struct _to_value;
     template <typename... Us>
-    struct _deduplicate<args<Us...>> {
+    struct _to_value<args<Us...>> {
         template <typename out, typename...>
         struct filter { using type = out; };
         template <typename... Ws, typename V, typename... Vs>
@@ -1174,10 +1170,10 @@ public:
     /* Get a new pack with duplicates filtered out, replacing any types that differ
     only in cvref qualifications with an unqualified equivalent, thereby forcing a
     copy/move. */
-    using deduplicate = _deduplicate<unique>::type;
+    using to_value = _to_value<unique>::type;
 
     template <std::convertible_to<Ts>... Us>
-    constexpr args(Us&&... args) : impl::ArgsBase<Ts...>(
+    args(Us&&... args) : impl::ArgsBase<Ts...>(
         std::forward<Us>(args)...
     ) {}
 
@@ -1199,7 +1195,7 @@ public:
 
 
 template <typename... Ts>
-explicit args(Ts&&...) -> args<Ts...>;
+args(Ts&&...) -> args<Ts...>;
 
 
 }
