@@ -184,93 +184,12 @@ struct Signature<Return(Args...)> : impl::SignatureBase<Return> {
     static constexpr bool enable = true;
     using type = Return(Args...);
 
-    struct Defaults;
     struct Partial;
+    struct Defaults;
     template <typename... Values>
     struct Bind;
     struct Vectorcall;
     struct Overloads;
-
-    /* A single entry in a callback table, storing the argument name (which may be
-    empty), a bitmask specifying its kind (positional-only, optional, variadic, etc.),
-    a one-hot encoded bitmask specifying its position within the enclosing parameter
-    list, and a set of function pointers that can be used to validate the argument at
-    runtime.  Such callbacks are typically returned by the index operator and
-    associated accessors. */
-    struct Callback {
-        std::string_view name;
-        impl::ArgKind kind;
-        uint64_t mask;
-        Object(*type)();
-        bool(*isinstance)(const Object&);
-        bool(*issubclass)(const Object&);
-
-        template <size_t I>
-        [[nodiscard]] static constexpr Callback create() {
-            using T = impl::unpack_type<I, Args...>;
-            return {
-                .name = std::string_view(ArgTraits<T>::name),
-                .kind = ArgTraits<T>::kind,
-                .mask = ArgTraits<T>::variadic() ? 0ULL : 1ULL << I,
-                .type = []() -> Object {
-                    using U = ArgTraits<T>::type;
-                    if constexpr (impl::has_python<U>) {
-                        return Type<std::remove_cvref_t<impl::python_type<U>>>();
-                    } else {
-                        throw TypeError(
-                            "C++ type has no Python equivalent: " + type_name<U>
-                        );
-                    }
-                },
-                .isinstance = [](const Object& value) -> bool {
-                    using U = ArgTraits<T>::type;
-                    if constexpr (impl::has_python<U>) {
-                        using V = std::remove_cvref_t<impl::python_type<U>>;
-                        return py::isinstance<V>(value);
-                    } else {
-                        throw TypeError(
-                            "C++ type has no Python equivalent: " + type_name<U>
-                        );
-                    }
-                },
-                .issubclass = [](const Object& type) -> bool {
-                    using U = ArgTraits<T>::type;
-                    if constexpr (impl::has_python<U>) {
-                        using V = std::remove_cvref_t<impl::python_type<U>>;
-                        return py::issubclass<V>(type);
-                    } else {
-                        throw TypeError(
-                            "C++ type has no Python equivalent: " + type_name<U>
-                        );
-                    }
-                },
-            };
-        }
-
-        [[nodiscard]] constexpr bool posonly() const noexcept { return kind.posonly(); }
-        [[nodiscard]] constexpr bool pos() const noexcept { return kind.pos(); }
-        [[nodiscard]] constexpr bool args() const noexcept { return kind.args(); }
-        [[nodiscard]] constexpr bool kw() const noexcept { return kind.kw(); }
-        [[nodiscard]] constexpr bool kwonly() const noexcept { return kind.kwonly(); }
-        [[nodiscard]] constexpr bool kwargs() const noexcept { return kind.kwargs(); }
-        [[nodiscard]] constexpr bool opt() const noexcept { return kind.opt(); }
-        [[nodiscard]] constexpr bool variadic() const noexcept { return kind.variadic(); }
-
-        [[nodiscard]] size_t hash() const noexcept {
-            Object type = this->type();
-            return impl::hash_combine(
-                impl::fnv1a(
-                    name.data(),
-                    impl::fnv1a_seed,
-                    impl::fnv1a_prime
-                ),
-                PyType_Check(ptr(type)) ?
-                    reinterpret_cast<size_t>(ptr(type)) :
-                    reinterpret_cast<size_t>(Py_TYPE(ptr(type))),
-                static_cast<size_t>(kind)
-            );
-        }
-    };
 
 private:
     template <typename T>
@@ -349,6 +268,16 @@ private:
     template <typename T, typename... Ts>
     static constexpr size_t _kwargs_idx<T, Ts...> =
         ArgTraits<T>::kwargs() ? 0 : _kwargs_idx<Ts...> + 1;
+
+    template <size_t I>
+    static constexpr uint64_t _required = 0;
+    template <size_t I> requires (I < sizeof...(Args))
+    static constexpr uint64_t _required<I> =
+        _required<I + 1> | (
+            ArgTraits<impl::unpack_type<I, Args...>>::opt() ||
+            ArgTraits<impl::unpack_type<I, Args...>>::variadic() ?
+                0ULL : 1ULL << I
+        );
 
 public:
     static constexpr size_t n                   = sizeof...(Args);
@@ -850,6 +779,112 @@ public:
     static constexpr bool no_duplicate_args =
         Check<Signature>::no_duplicate_args;
 
+    /* A single entry in a callback table, storing the argument name (which may be
+    empty), a bitmask specifying its kind (positional-only, optional, variadic, etc.),
+    a one-hot encoded bitmask specifying its position within the enclosing parameter
+    list, and a set of function pointers that can be used to validate the argument at
+    runtime.  Such callbacks are typically returned by the index operator and
+    associated accessors. */
+    struct Callback {
+        std::string_view name;
+        impl::ArgKind kind;
+        uint64_t mask;
+        Object(*type)();
+        bool(*isinstance)(const Object&);
+        bool(*issubclass)(const Object&);
+
+        template <size_t I>
+        [[nodiscard]] static constexpr Callback create() {
+            using T = impl::unpack_type<I, Args...>;
+            return {
+                .name = std::string_view(ArgTraits<T>::name),
+                .kind = ArgTraits<T>::kind,
+                .mask = 1ULL << I,
+                .type = []() -> Object {
+                    using U = ArgTraits<T>::type;
+                    if constexpr (impl::has_python<U>) {
+                        return Type<std::remove_cvref_t<impl::python_type<U>>>();
+                    } else {
+                        throw TypeError(
+                            "C++ type has no Python equivalent: " + type_name<U>
+                        );
+                    }
+                },
+                .isinstance = [](const Object& value) -> bool {
+                    using U = ArgTraits<T>::type;
+                    if constexpr (impl::has_python<U>) {
+                        using V = std::remove_cvref_t<impl::python_type<U>>;
+                        return py::isinstance<V>(value);
+                    } else {
+                        throw TypeError(
+                            "C++ type has no Python equivalent: " + type_name<U>
+                        );
+                    }
+                },
+                .issubclass = [](const Object& type) -> bool {
+                    using U = ArgTraits<T>::type;
+                    if constexpr (impl::has_python<U>) {
+                        using V = std::remove_cvref_t<impl::python_type<U>>;
+                        return py::issubclass<V>(type);
+                    } else {
+                        throw TypeError(
+                            "C++ type has no Python equivalent: " + type_name<U>
+                        );
+                    }
+                },
+            };
+        }
+
+        [[nodiscard]] constexpr bool posonly() const noexcept { return kind.posonly(); }
+        [[nodiscard]] constexpr bool pos() const noexcept { return kind.pos(); }
+        [[nodiscard]] constexpr bool args() const noexcept { return kind.args(); }
+        [[nodiscard]] constexpr bool kw() const noexcept { return kind.kw(); }
+        [[nodiscard]] constexpr bool kwonly() const noexcept { return kind.kwonly(); }
+        [[nodiscard]] constexpr bool kwargs() const noexcept { return kind.kwargs(); }
+        [[nodiscard]] constexpr bool opt() const noexcept { return kind.opt(); }
+        [[nodiscard]] constexpr bool variadic() const noexcept { return kind.variadic(); }
+
+        [[nodiscard]] constexpr size_t index() noexcept {
+            size_t result = 0;
+            uint64_t mask = this->mask;
+            while (mask >>= 1) {
+                ++result;
+            }
+            return result;
+        }
+
+        [[nodiscard]] size_t hash() const noexcept {
+            Object type = this->type();
+            return impl::hash_combine(
+                impl::fnv1a(
+                    name.data(),
+                    impl::fnv1a_seed,
+                    impl::fnv1a_prime
+                ),
+                PyType_Check(ptr(type)) ?
+                    reinterpret_cast<size_t>(ptr(type)) :
+                    reinterpret_cast<size_t>(Py_TYPE(ptr(type))),
+                static_cast<size_t>(kind)
+            );
+        }
+    };
+
+    /* A bitmask with a 1 in the position of all of the required arguments in the
+    parameter list.
+
+    Each callback stores a one-hot encoded mask that is progressively joined into a
+    single observed bitmask as each argument is processed.  The result can then be
+    compared to this constant to determine if all required arguments have been
+    accounted for.  If that comparison evaluates to false, then further bitwise
+    inspection can be done to determine exactly which arguments are missing, as
+    well as their names for a comprehensive error message.
+
+    Note that this mask effectively limits the number of arguments that a function
+    can accept to 64, which is reasonable for most functions.  The performance
+    benefits justify the limitation, and if you need more than 64 arguments, you
+    should probably be using a different design pattern anyways. */
+    static constexpr uint64_t required = _required<0>;
+
 private:
     static constexpr Callback return_callback {
         .name = "",
@@ -887,17 +922,6 @@ private:
                 );
             }
         },
-    };
-
-    /* Formulate a new signature without any partial arguments. */
-    template <typename out, typename...>
-    struct _unbind { using type = out; };
-    template <typename R, typename... out, typename A, typename... As>
-    struct _unbind<Signature<R(out...)>, A, As...> {
-        using type = _unbind<
-            Signature<R(out..., typename ArgTraits<A>::unbind)>,
-            As...
-        >::type;
     };
 
     template <typename, size_t, typename...>
@@ -952,6 +976,17 @@ private:
     the positional table that can be used to validate keyword arguments. */
     using KeywordTable = extract_keywords<args<>, 0, Args...>::type;
     static constexpr auto keyword_table = extract_keywords<args<>, 0, Args...>{}();
+
+    /* Formulate a new signature without any partial arguments. */
+    template <typename out, typename...>
+    struct _unbind { using type = out; };
+    template <typename R, typename... out, typename A, typename... As>
+    struct _unbind<Signature<R(out...)>, A, As...> {
+        using type = _unbind<
+            Signature<R(out..., typename ArgTraits<A>::unbind)>,
+            As...
+        >::type;
+    };
 
     /* A single entry in the ::Defaults or ::Partial tuple, which can be easily
     cross-referenced with the enclosing signature. */
@@ -1367,6 +1402,23 @@ public:
         }
     };
 
+    template <typename... A>
+        requires (
+            !(impl::arg_pack<A> || ...) &&
+            !(impl::kwarg_pack<A> || ...) &&
+            Partial::template Bind<A...>::proper_argument_order &&
+            Partial::template Bind<A...>::no_qualified_arg_annotations &&
+            Partial::template Bind<A...>::no_duplicate_args &&
+            Partial::template Bind<A...>::no_conflicting_values &&
+            Partial::template Bind<A...>::no_extra_positional_args &&
+            Partial::template Bind<A...>::no_extra_keyword_args &&
+            Partial::template Bind<A...>::satisfies_required_args &&
+            Partial::template Bind<A...>::can_convert
+        )
+    [[nodiscard]] static constexpr Partial partial(A&&... args) {
+        return Partial(std::forward<A>(args)...);
+    }
+
     /* A tuple holding a default value for every argument in the enclosing
     parameter list that is marked as optional.  One of these must be provided
     whenever a C++ function is invoked, and constructing one requires that the
@@ -1580,9 +1632,33 @@ public:
         }
     };
 
+    template <typename... A>
+        requires (
+            !(impl::arg_pack<A> || ...) &&
+            !(impl::kwarg_pack<A> || ...) &&
+            Defaults::template Bind<A...>::proper_argument_order &&
+            Defaults::template Bind<A...>::no_qualified_arg_annotations &&
+            Defaults::template Bind<A...>::no_duplicate_args &&
+            Defaults::template Bind<A...>::no_conflicting_values &&
+            Defaults::template Bind<A...>::no_extra_positional_args &&
+            Defaults::template Bind<A...>::no_extra_keyword_args &&
+            Defaults::template Bind<A...>::satisfies_required_args &&
+            Defaults::template Bind<A...>::can_convert
+        )
+    [[nodiscard]] static constexpr Defaults defaults(A&&... args) {
+        return Defaults(std::forward<A>(args)...);
+    }
+
     /* Unbinding a signature strips any partial arguments that have been encoded
     thus far and returns a new signature without them. */
     using Unbind = _unbind<Signature<Return()>, Args...>::type;
+
+    /// TODO: the purpose of the Bind<...>{}(partial, pyfunc, args...) method is to
+    /// avoid any extra heap allocations if I can help it.  If the arguments do not
+    /// contain positional or keyword parameter packs (most common case), then the
+    /// vectorcall array can be allocated on the stack, which will be a lot faster.
+    /// in the common case that a Python function is being called from C++ without any
+    /// fancy syntax.
 
     /* Bind a C++ argument list to the enclosing signature, inserting default
     values and partial arguments where necessary to satisfy the signature.  This
@@ -4866,6 +4942,32 @@ public:
         }
     };
 
+    /* Bind the given arguments to produce a partial signature.  This operation can
+    be chained - any existing partial arguments will be carried over whenever this
+    method is called. */
+    template <typename... A>
+        requires (
+            !(impl::arg_pack<A> || ...) &&
+            !(impl::kwarg_pack<A> || ...) &&
+            Bind<A...>::proper_argument_order &&
+            Bind<A...>::no_qualified_arg_annotations &&
+            Bind<A...>::no_duplicate_args &&
+            Bind<A...>::no_extra_positional_args &&
+            Bind<A...>::no_extra_keyword_args &&
+            Bind<A...>::no_conflicting_values &&
+            Bind<A...>::can_convert
+        )
+    [[nodiscard]] static constexpr auto bind(A&&... values) noexcept
+        -> Bind<A...>::signature
+    {
+        return {};
+    }
+
+    /* Unbind any partial arguments that have been accumulated thus far. */
+    [[nodiscard]] static constexpr Unbind unbind() noexcept {
+        return {};
+    }
+
     /* Bind a Python vectorcall array to the enclosing signature and implement
     the translation logic necessary to invoke a matching C++ function.  This
     is essentially the inverse of the Bind<>::call::python algorithm, and uses
@@ -4895,6 +4997,15 @@ public:
     their C++ counterparts, and corresponding type safety guarantees. */
     struct Vectorcall {
     private:
+        static constexpr std::string_view arg_name(PyObject* name) {
+            Py_ssize_t len;
+            const char* str = PyUnicode_AsUTF8AndSize(name, &len);
+            if (str == nullptr) {
+                Exception::from_python();
+            }
+            return {str, static_cast<size_t>(len)};
+        }
+
         /* The kwnames tuple must be converted into a temporary map that can be
         destructively searched during the call algorithm.  If any arguments remain by
         the time the underlying function is called, then they are considered extras. */
@@ -6360,23 +6471,14 @@ public:
         lightweight Param struct. */
         [[nodiscard]] Param operator[](size_t i) const {
             if (i < nargs) {
-                constexpr std::string_view empty = "";
                 return {
-                    .name = empty,
+                    .name = {"", 0},
                     .value = array[i + has_offset],
                     .kind = impl::ArgKind::POS
                 };
             }
-            Py_ssize_t len;
-            const char* name = PyUnicode_AsUTF8AndSize(
-                PyTuple_GET_ITEM(ptr(kwnames), i - nargs),
-                &len
-            );
-            if (name == nullptr) {
-                Exception::from_python();
-            }
             return {
-                .name = std::string_view{name, static_cast<size_t>(len)},
+                .name = arg_name(PyTuple_GET_ITEM(ptr(kwnames), i - nargs)),
                 .value = array[i + has_offset],
                 .kind = impl::ArgKind::KW
             };
@@ -6454,66 +6556,91 @@ public:
             return *this;
         }
 
-        // /* Produce an overload key from the Python arguments, which can be used to
-        // search the overload trie and invoke a resulting function. */
-        // template <impl::inherits<Partial> P>
-        // Params<std::vector<Param>> key(P&& parts) {
-        //     /// NOTE: in order to provide consistent hashes with full type
-        //     /// information, each argument must be converted into a Bertrand
-        //     /// type before the key is generated.  This is the only way to
-        //     /// properly differentiate between ambiguous Python types (like
-        //     /// generic containers) and avoid hash ambiguities.
-        //     Object bertrand = reinterpret_steal<Object>(PyImport_Import(
-        //         ptr(impl::template_string<"bertrand">())
-        //     ));
-        //     if (bertrand.is(nullptr)) {
-        //         Exception::from_python();
-        //     }
-        //     size_t size = nargs + kwcount;
-        //     converted.reserve(Partial::n + size);
-        //     for (size_t i = 0; i < size; ++i) {
-        //         PyObject* obj = PyObject_CallOneArg(
-        //             ptr(bertrand),
-        //             args[i]
-        //         );
-        //         if (obj == nullptr) {
-        //             for (size_t j = 0; j < i; ++j) {
-        //                 Py_DECREF(converted[j]);
-        //             }
-        //             converted.clear();
-        //             Exception::from_python();
-        //         }
-        //         converted.emplace_back(obj);
-        //     }
-
-        //     std::vector<Param> out;
-        //     out.reserve(Partial::n + size);
-        //     if (kwnames) {
-        //         Kwargs kwargs {converted.data(), nargs, kwnames, kwcount};
-        //         return call<0, 0>::key(
-        //             out,
-        //             0,
-        //             kwargs,
-        //             converted.data(),
-        //             0,
-        //             nargs,
-        //             std::forward<P>(parts)
-        //         );
-        //     } else {
-        //         return call<0, 0>::key(
-        //             out,
-        //             0,
-        //             converted.data(),
-        //             0,
-        //             nargs,
-        //             std::forward<P>(parts)
-        //         );
-        //     }
-        // }
-
-        /// TODO: no need to expose a call operator that takes partials.  The partials
-        /// will always be merged in by this point, either via the constructor or the
-        /// .normalize() method.  
+        /* Assert that the arguments satisfy the enclosing signature, raising an
+        appropriate TypeError if any required arguments are missing, extras or
+        duplicate values are given, or any arguments fail to pass a type check. */
+        void validate() const {
+            constexpr Signature sig;
+            uint64_t mask = 0;
+            for (size_t i = 0; i < nargs; ++i) {
+                Object value = reinterpret_borrow<Object>(array[i]);
+                const Callback* callback = sig[i];
+                if (!callback) {
+                    throw TypeError(
+                        "received unexpected positional argument at index " +
+                        std::to_string(i)
+                    );
+                }
+                if (!callback->isinstance(value)) {
+                    throw TypeError(
+                        "expected positional argument at index " +
+                        std::to_string(i) + " to be a subclass of '" +
+                        repr(callback->type()) + "', not: '" + repr(value) + "'"
+                    );
+                }
+                mask |= callback->mask;
+            }
+            for (size_t i = 0; i < kwcount; ++i) {
+                Object name = reinterpret_borrow<Object>(
+                    PyTuple_GET_ITEM(ptr(kwnames), i)
+                );
+                Object value = reinterpret_borrow<Object>(
+                    array[i + nargs]
+                );
+                const Callback* callback = sig[arg_name(ptr(name))];
+                if (!callback) {
+                    throw TypeError(
+                        "received unexpected keyword argument '" +
+                        repr(name) + "'"
+                    );
+                }
+                if (mask & callback->mask && !callback->variadic()) {
+                    throw TypeError(
+                        "received multiple values for argument '" + repr(name) + "'"
+                    );
+                }
+                if (!callback->isinstance(array[i + nargs])) {
+                    throw TypeError(
+                        "expected keyword argument '" + repr(name) +
+                        "' to be a subclass of '" + repr(callback->type()) +
+                        "', not: '" + repr(value) + "'"
+                    );
+                }
+                mask |= callback->mask;
+            }
+            mask &= Signature::required;
+            if (mask != Signature::required) {
+                uint64_t missing = Signature::required & ~mask;
+                std::string msg = "missing required arguments: [";
+                size_t i = 0;
+                while (i < n) {
+                    if (missing & (1ULL << i)) {
+                        const Callback& callback = positional_table[i];
+                        if (callback.name.empty()) {
+                            msg += "<parameter " + std::to_string(i) + ">";
+                        } else {
+                            msg += "'" + std::string(callback.name) + "'";
+                        }
+                        ++i;
+                        break;
+                    }
+                    ++i;
+                }
+                while (i < n) {
+                    if (missing & (1ULL << i)) {
+                        const Callback& callback = positional_table[i];
+                        if (check.name.empty()) {
+                            msg += ", <parameter " + std::to_string(i) + ">";
+                        } else {
+                            msg += ", '" + std::string(check.name) + "'";
+                        }
+                    }
+                    ++i;
+                }
+                msg += "]";
+                throw TypeError(msg);
+            }
+        }
 
         /* Invoke a C++ function using denormalized vectorcall arguments, by providing
         separate partial arguments that will be directly merged into the C++ argument
@@ -6544,8 +6671,8 @@ public:
             }
         }
 
-        /* Invoke a C++ function using normalized vectorcall arguments, which already
-        include any partials. */
+        /* Invoke a C++ function using pre-normalized vectorcall arguments, which have
+        already been converted and include any partials. */
         template <impl::inherits<Defaults> D, typename F>
             requires (Signature::invocable<F>)
         Return operator()(D&& defaults, F&& func) const {
@@ -6568,6 +6695,29 @@ public:
         }
     };
 
+    [[nodiscard]] static Vectorcall vectorcall(
+        PyObject* const* args,
+        size_t nargs,
+        PyObject* kwnames
+    ) {
+        return {args, nargs, kwnames};
+    }
+
+    template <impl::inherits<Partial> P, typename... A>
+        requires (
+            Bind<A...>::proper_argument_order &&
+            Bind<A...>::no_qualified_arg_annotations &&
+            Bind<A...>::no_duplicate_args &&
+            Bind<A...>::no_extra_positional_args &&
+            Bind<A...>::no_extra_keyword_args &&
+            Bind<A...>::no_conflicting_values &&
+            Bind<A...>::satisfies_required_args &&
+            Bind<A...>::can_convert
+        )
+    [[nodiscard]] static Vectorcall vectorcall(P&& partial, A&&... args) {
+        return {std::forward<P>(partial), std::forward<A>(args)...};
+    }
+
     /// TODO: partial arguments will have to be provided to the Overload trie
     /// iterators, such that they can be automatically inserted when traversing
     /// the trie, and only matching functions will be returned.  This might mess
@@ -6585,6 +6735,10 @@ public:
     /// vector would grow until the key is exhausted, then yield the results at the
     /// final level, and then pop the last pair of iterators off the stack as they are
     /// exhausted.  By the end, the stack is guaranteed to be empty.
+
+    /// TODO: Overload tries cannot store partial arguments, or at least needs to
+    /// figure out a way to check whether the remaining arguments still conform to the
+    /// enclosing signature.  Either way, it will need to account for them somehow.
 
     /* A trie-based data structure containing a set of dynamic overloads for a
     `py::Function` object, which can be dispatched to when the function is called from
@@ -7247,6 +7401,10 @@ public:
         /// harder to implement?
 
     };
+
+    [[nodiscard]] static Overloads overloads(const Object& fallback) {
+        return {fallback};
+    }
 
     /* A Trie-based data structure containing a pool of dynamic overloads for a
     `py::Function` object, which will be dispatched to when the function is called
@@ -9215,32 +9373,6 @@ public:
         }
     }
 
-    /* Unbind any partial arguments that have been accumulated thus far. */
-    [[nodiscard]] static constexpr Unbind unbind() noexcept {
-        return {};
-    }
-
-    /* Bind the given arguments to produce a partial signature.  This operation can
-    be chained - any existing partial arguments will be carried over whenever this
-    method is called. */
-    template <typename... Values>
-        requires (
-            !(impl::arg_pack<Values> || ...) &&
-            !(impl::kwarg_pack<Values> || ...) &&
-            Bind<Values...>::proper_argument_order &&
-            Bind<Values...>::no_qualified_arg_annotations &&
-            Bind<Values...>::no_duplicate_args &&
-            Bind<Values...>::no_extra_positional_args &&
-            Bind<Values...>::no_extra_keyword_args &&
-            Bind<Values...>::no_conflicting_values &&
-            Bind<Values...>::can_convert
-        )
-    [[nodiscard]] static constexpr auto bind(Values&&... values) noexcept
-        -> Bind<Values...>::signature
-    {
-        return {};
-    }
-
     /* Call a C++ function from C++ using Python-style arguments. */
     template <
         impl::inherits<Partial> P,
@@ -9344,7 +9476,7 @@ public:
         PyObject* func,
         A&&... args
     ) {
-        return Vectorcall{std::forward<P>(partial), std::forward<A>(args)...}(func);
+        return Bind<A...>{}(std::forward<P>(partial), func, std::forward<A>(args)...);
     }
 
     /* Call a Python function from C++ using Python-style arguments with overloads. */
@@ -9365,10 +9497,14 @@ public:
         PyObject* func,
         A&&... args
     ) {
-        Vectorcall vectorcall {std::forward<P>(partial), std::forward<A>(args)...};
         if (overloads.empty()) {
-            return vectorcall(func);
+            return Bind<A...>{}(
+                std::forward<P>(partial),
+                func,
+                std::forward<A>(args)...
+            )
         }
+        Vectorcall vectorcall {std::forward<P>(partial), std::forward<A>(args)...};
         PyObject* cached = overloads.cache_lookup(vectorcall);
         if (cached) {
             return vectorcall(cached);
@@ -9426,15 +9562,15 @@ public:
                 std::forward<F>(func)
             );
         }
+        vectorcall.normalize(std::forward<P>(partial));
         PyObject* cached = overloads.cache_lookup(vectorcall);
         if (cached) {
             return vectorcall(cached);
         }
-        vectorcall.normalize(std::forward<P>(partial));
         auto it = overloads.search(vectorcall);
         if (it == overloads.end()) {
-            /// TODO: validate the arguments here.  Unlike above, this branch can be
-            /// chosen since we don't know the arguments ahead of time.
+            vectorcall.validate();  // noreturn in this case
+            std::unreachable();
         }
         const Object& overload = *it;
         if (overload.is(overloads.fallback())) {
@@ -9483,8 +9619,8 @@ public:
         }
         auto it = overloads.search(vectorcall);
         if (it == overloads.end()) {
-            /// TODO: validate the arguments here.  Unlike above, this branch can be
-            /// chosen since we don't know the arguments ahead of time.
+            vectorcall.validate();  // noreturn in this case
+            std::unreachable();
         }
         const Object& overload = *it;
         if (overload.is(overloads.fallback())) {
@@ -9493,19 +9629,23 @@ public:
         return vectorcall(ptr(overload));
     }
 
-    /* Capture a Python function object and generate a `std::function` that matches the
-    enclosing signature, without any partial arguments.  A function of this form is
+    /* Capture a Python function object and generate a function object that matches
+    the enclosing signature, without any partial arguments.  A function of this form is
     generated whenever a dynamic Python object is narrowed to a `py::Function` type,
     effectively extending the compile-time C++ interface to the captured Python
     function. */
-    [[nodiscard]] static auto capture(PyObject* obj)
-        -> std::function<typename Unbind::type>
-    {
+    [[nodiscard]] static auto capture(PyObject* obj) {
         struct Func {
-            Object obj;
+            Object func;
             Return operator()(typename ArgTraits<Args>::unbind... args) const {
+                /// TODO: idk if this is correct or not.  It should just immediately
+                /// construct a vectorcall array on the stack and insert the arguments
+                /// into it.  This might be preferred when calling a Python function
+                /// from C++, to avoid any heap allocations.
+                /// -> If the enclosing parameter list accepts variadic positional or
+                /// keyword args, then the heap allocation is unavoidable.
                 PyObject* result = Bind<typename ArgTraits<Args>::unbind...>{}(
-                    ptr(obj),
+                    ptr(func),
                     std::forward<typename ArgTraits<Args>::unbind>(args)...
                 );
                 if constexpr (std::is_void_v<Return>) {
@@ -9518,13 +9658,21 @@ public:
         return Func{reinterpret_borrow<Object>(obj)};
     }
 
-    /// TODO: a capture() method that takes a C++ function that is compatible with this
-    /// signature and produces a `std::function<>` with this signature, which captures
-    /// it and does implicit conversions to and from the argument/return types.  Such a
-    /// capture() function would be used when converting a `py::def` (or any other
-    /// C++ function object) into a `py::Function`, wherein the `py::Function` is
-    /// restricted to only accept Python argument conventions and no qualifications,
-    /// etc.
+    /* Capture a C++ function object and generate a function object that matches the
+    enclosing signature, without any partial arguments.  A function of this form is
+    generated whenever a C++ function object is converted into a `py::Function` type,
+    allowing them to model functions with pure C++ arguments, as long as those
+    arguments are callable with the enclosing signature. */
+    template <typename F> requires (invocable<F>)
+    [[nodiscard]] static auto capture(F&& func) {
+        struct Func {
+            std::remove_cvref_t<F> func;
+            Return operator()(typename ArgTraits<Args>::unbind... args) const {
+                return func(std::forward<typename ArgTraits<Args>::unbind>(args)...);
+            }
+        };
+        return Func{std::forward<F>(func)};
+    }
 
     /* Produce a Python `inspect.Signature` object that matches this signature,
     allowing a corresponding function to be seamlessly introspected from Python. */
