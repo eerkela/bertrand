@@ -6399,7 +6399,7 @@ public:
         via the vectorcall protocol. */
         template <impl::inherits<Partial> P>
         [[maybe_unused]] Vectorcall& normalize(P&& parts) {
-            if (array == converted.data()) {
+            if (normalized()) {
                 return *this;
             }
 
@@ -6510,6 +6510,10 @@ public:
         //         );
         //     }
         // }
+
+        /// TODO: no need to expose a call operator that takes partials.  The partials
+        /// will always be merged in by this point, either via the constructor or the
+        /// .normalize() method.  
 
         /* Invoke a C++ function using denormalized vectorcall arguments, by providing
         separate partial arguments that will be directly merged into the C++ argument
@@ -9237,15 +9241,257 @@ public:
         return {};
     }
 
-    /// TODO:
-    /// operator()(P&&, D&&, F&&, A&&...) -> R
-    /// operator()(P&&, PyObject*, A&&...) -> R
-    /// operator()(Vectorcall{}, D&&, F&&) -> R
-    /// operator()(Vectorcall{}, PyObject*) -> R
-    /// -> The last 2 will assert that the vectorcall array is normalized by checking
-    /// if the array pointer is equal to the converted data pointer, which is a helper
-    /// method.  When this is implemented in the Python API for real, I would just
-    /// avoid the check and skip straight to the internals for performance reasons.
+    /* Call a C++ function from C++ using Python-style arguments. */
+    template <
+        impl::inherits<Partial> P,
+        impl::inherits<Defaults> D,
+        typename F,
+        typename... A
+    >
+        requires (
+            invocable<F> &&
+            Bind<A...>::proper_argument_order &&
+            Bind<A...>::no_qualified_arg_annotations &&
+            Bind<A...>::no_duplicate_args &&
+            Bind<A...>::no_extra_positional_args &&
+            Bind<A...>::no_extra_keyword_args &&
+            Bind<A...>::no_conflicting_values &&
+            Bind<A...>::can_convert &&
+            Bind<A...>::satisfies_required_args
+        )
+    static constexpr Return operator()(
+        P&& partial,
+        D&& defaults,
+        F&& func,
+        A&&... args
+    ) {
+        return Bind<A...>{}(
+            std::forward<P>(partial),
+            std::forward<D>(defaults),
+            std::forward<F>(func),
+            std::forward<A>(args)...
+        );
+    }
+
+    /* Call a C++ function from C++ using Python-style arguments with overloads. */
+    template <
+        impl::inherits<Partial> P,
+        impl::inherits<Defaults> D,
+        impl::inherits<Overloads> O,
+        typename F,
+        typename... A
+    >
+        requires (
+            invocable<F> &&
+            Bind<A...>::proper_argument_order &&
+            Bind<A...>::no_qualified_arg_annotations &&
+            Bind<A...>::no_duplicate_args &&
+            Bind<A...>::no_extra_positional_args &&
+            Bind<A...>::no_extra_keyword_args &&
+            Bind<A...>::no_conflicting_values &&
+            Bind<A...>::satisfies_required_args &&
+            Bind<A...>::can_convert
+        )
+    static constexpr Return operator()(
+        P&& partial,
+        D&& defaults,
+        O&& overloads,
+        F&& func,
+        A&&... args
+    ) {
+        if (overloads.empty()) {
+            return Bind<A...>{}(
+                std::forward<P>(partial),
+                std::forward<D>(defaults),
+                std::forward<F>(func),
+                std::forward<A>(args)...
+            );
+        }
+        Vectorcall vectorcall{std::forward<P>(partial), std::forward<A>(args)...};
+        PyObject* cached = overloads.cache_lookup(vectorcall);
+        if (cached) {
+            return vectorcall(cached);
+        }
+        auto it = overloads.search(vectorcall);
+        /// NOTE: it is impossible for the search to fail, since the arguments are
+        /// validated at compile time and the overload trie is known not to be empty.
+        const Object& overload = *it;
+        if (overload.is(overloads.fallback())) {
+            return Bind<A...>{}(
+                std::forward<P>(partial),
+                std::forward<D>(defaults),
+                std::forward<F>(func),
+                std::forward<A>(args)...
+            );
+        }
+        return vectorcall(ptr(overload));
+    }
+
+    /* Call a Python function from C++ using Python-style arguments. */
+    template <impl::inherits<Partial> P, typename... A>
+        requires (
+            Bind<A...>::proper_argument_order &&
+            Bind<A...>::no_qualified_arg_annotations &&
+            Bind<A...>::no_duplicate_args &&
+            Bind<A...>::no_extra_positional_args &&
+            Bind<A...>::no_extra_keyword_args &&
+            Bind<A...>::no_conflicting_values &&
+            Bind<A...>::satisfies_required_args &&
+            Bind<A...>::can_convert
+        )
+    static constexpr Return operator()(
+        P&& partial,
+        PyObject* func,
+        A&&... args
+    ) {
+        return Vectorcall{std::forward<P>(partial), std::forward<A>(args)...}(func);
+    }
+
+    /* Call a Python function from C++ using Python-style arguments with overloads. */
+    template <impl::inherits<Partial> P, impl::inherits<Overloads> O, typename... A>
+        requires (
+            Bind<A...>::proper_argument_order &&
+            Bind<A...>::no_qualified_arg_annotations &&
+            Bind<A...>::no_duplicate_args &&
+            Bind<A...>::no_extra_positional_args &&
+            Bind<A...>::no_extra_keyword_args &&
+            Bind<A...>::no_conflicting_values &&
+            Bind<A...>::satisfies_required_args &&
+            Bind<A...>::can_convert
+        )
+    static constexpr Return operator()(
+        P&& partial,
+        O&& overloads,
+        PyObject* func,
+        A&&... args
+    ) {
+        Vectorcall vectorcall {std::forward<P>(partial), std::forward<A>(args)...};
+        if (overloads.empty()) {
+            return vectorcall(func);
+        }
+        PyObject* cached = overloads.cache_lookup(vectorcall);
+        if (cached) {
+            return vectorcall(cached);
+        }
+        auto it = overloads.search(vectorcall);
+        /// NOTE: it is impossible for the search to fail, since the arguments are
+        /// validated at compile time and the overload trie is known not to be empty.
+        const Object& overload = *it;
+        if (overload.is(overloads.fallback())) {
+            return vectorcall(func);
+        }
+        return vectorcall(ptr(overload));
+    }
+
+    /* Call a C++ function from Python. */
+    template <impl::inherits<Partial> P, impl::inherits<Defaults> D, typename F>
+        requires (invocable<F>)
+    static constexpr Return operator()(
+        P&& partial,
+        D&& defaults,
+        PyObject* const* args,
+        size_t nargsf,
+        PyObject* kwnames,
+        F&& func
+    ) {
+        return Vectorcall{args, nargsf, kwnames}(
+            std::forward<P>(partial),
+            std::forward<D>(defaults),
+            std::forward<F>(func)
+        );
+    }
+
+    /* Call a C++ function from Python with overloads. */
+    template <
+        impl::inherits<Partial> P,
+        impl::inherits<Defaults> D,
+        impl::inherits<Overloads> O,
+        typename F
+    >
+        requires (invocable<F>)
+    static constexpr Return operator()(
+        P&& partial,
+        D&& defaults,
+        O&& overloads,
+        PyObject* const* args,
+        size_t nargsf,
+        PyObject* kwnames,
+        F&& func
+    ) {
+        Vectorcall vectorcall{args, nargsf, kwnames};
+        if (overloads.empty()) {
+            return vectorcall(
+                std::forward<P>(partial),
+                std::forward<D>(defaults),
+                std::forward<F>(func)
+            );
+        }
+        PyObject* cached = overloads.cache_lookup(vectorcall);
+        if (cached) {
+            return vectorcall(cached);
+        }
+        vectorcall.normalize(std::forward<P>(partial));
+        auto it = overloads.search(vectorcall);
+        if (it == overloads.end()) {
+            /// TODO: validate the arguments here.  Unlike above, this branch can be
+            /// chosen since we don't know the arguments ahead of time.
+        }
+        const Object& overload = *it;
+        if (overload.is(overloads.fallback())) {
+            return vectorcall(
+                std::forward<D>(defaults),
+                std::forward<F>(func)
+            );
+        }
+        return vectorcall(ptr(overload));
+    }
+
+    /* Call a Python function from Python. */
+    template <impl::inherits<Partial> P, typename F>
+        requires (invocable<F>)
+    static constexpr Return operator()(
+        P&& partial,
+        PyObject* const* args,
+        size_t nargsf,
+        PyObject* kwnames,
+        PyObject* func
+    ) {
+        Vectorcall vectorcall{args, nargsf, kwnames};
+        vectorcall.normalize(std::forward<P>(partial));
+        return vectorcall(func);
+    }
+
+    /* Call a Python function from Python with overloads. */
+    template <impl::inherits<Partial> P, impl::inherits<Overloads> O, typename F>
+        requires (invocable<F> )
+    static constexpr Return operator()(
+        P&& partial,
+        O&& overloads,
+        PyObject* const* args,
+        size_t nargsf,
+        PyObject* kwnames,
+        PyObject* func
+    ) {
+        Vectorcall vectorcall{args, nargsf, kwnames};
+        vectorcall.normalize(std::forward<P>(partial));
+        if (overloads.empty()) {
+            return vectorcall(func);
+        }
+        PyObject* cached = overloads.cache_lookup(vectorcall);
+        if (cached) {
+            return vectorcall(cached);
+        }
+        auto it = overloads.search(vectorcall);
+        if (it == overloads.end()) {
+            /// TODO: validate the arguments here.  Unlike above, this branch can be
+            /// chosen since we don't know the arguments ahead of time.
+        }
+        const Object& overload = *it;
+        if (overload.is(overloads.fallback())) {
+            return vectorcall(func);
+        }
+        return vectorcall(ptr(overload));
+    }
 
     /* Capture a Python function object and generate a `std::function` that matches the
     enclosing signature, without any partial arguments.  A function of this form is
