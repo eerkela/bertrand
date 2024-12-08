@@ -6718,59 +6718,11 @@ public:
         return {std::forward<P>(partial), std::forward<A>(args)...};
     }
 
-    /// TODO: partial arguments will have to be provided to the Overload trie
-    /// iterators, such that they can be automatically inserted when traversing
-    /// the trie, and only matching functions will be returned.  This might mess
-    /// with caching, since in practice, we would always need to include the
-    /// partial arguments in the key in order to make the hash stable and
-    /// unambiguous.
-    /// -> That actually may not require any changes, since basically I just have
-    /// to properly insert the partial arguments when building the key, which is
-    /// not always simple, but is at least centralized in the Partial<> class.
-    /// -> Actually yes it does, because the partial key isn't fully formed.
-
-    /// TODO: So basically, what the iterator needs to do is store a std::vector
-    /// which is pre-allocated to the maximum depth of the trie (or size of input key?),
-    /// and which stores pairs of iterators at every index in stack-like fashion.  The
-    /// vector would grow until the key is exhausted, then yield the results at the
-    /// final level, and then pop the last pair of iterators off the stack as they are
-    /// exhausted.  By the end, the stack is guaranteed to be empty.
-
-    /// TODO: Overload tries cannot store partial arguments, or at least needs to
-    /// figure out a way to check whether the remaining arguments still conform to the
-    /// enclosing signature.  Either way, it will need to account for them somehow.
-
     /* A trie-based data structure containing a set of dynamic overloads for a
     `py::Function` object, which can be dispatched to when the function is called from
     either Python or C++.  Uses a standardized key() format to allow for efficient
     caching. */
     struct Overloads {
-        struct Key : Vectorcall {
-            std::vector<uint64_t> kinds;
-
-            /// TODO: implement a specialized constructor here that also takes a
-            /// number of kinds equivalent to the number of arguments, and enforces
-            /// that.  Maybe there's a default constructor that builds a key for the
-            /// current signature?  That would handle the overload mechanism for C++
-            /// functions.  I would just inspect the function's signature and build
-            /// a key, which would be directly inserted at the C++ level into the
-            /// trie.
-
-            /// TODO: then, there would be an alternate constructor that takes an
-            /// `inspect.Signature` object and produces a key from that, which would
-            /// go through the `Inspect()` utility that I've already written.  Then,
-            /// overloading a function is as simple as calling `inspect.signature()`
-            /// on the function and then passing the result here to build a
-            /// corresponding key.  Such a constructor could potentially throw an
-            /// error, which would be propagated up to the user if the overloaded
-            /// signature is somehow incompatible.  The C++ equivalent would implement
-            /// this as a template constraint, which would be applied before the
-            /// overload() method can be called.
-
-            /// With those in place, the insert() method will simply accept an instance
-            /// of this class and a Python function to insert.
-        };
-
         struct instance {
             static bool operator()(PyObject* obj, PyObject* cls) {
                 int rc = PyObject_IsInstance(obj, cls);
@@ -6790,6 +6742,8 @@ public:
                 return rc;
             }
         };
+
+        struct Node;
 
     private:
         template <typename T>
@@ -6815,50 +6769,77 @@ public:
         /* A map of hashes to encoded Metadata structs describing the flattened
         contents of the trie. */
         using Data = std::unordered_map<size_t, Metadata>;
-        Data data;
 
-        /* A thin wrapper around an iterator over the `data` map, which yields function
-        objects just like the topological `search()` iterator, and can be compared to
-        the standardized sentinel type, allowing the use of a single, shared
-        `overloads.end()` method. */
-        struct DataIter {
-            std::ranges::iterator_t<Data> it;
-            std::ranges::sentinel_t<Data> end;
+        /* Base class for topological iterators over the trie. */
+        template <typename check> requires (valid_check<check>)
+        struct BaseIterator {
+        protected:
+            using Edge = Node::Edge;
+            using Edges = Node::Edges;
+            using Param = Vectorcall::Param;
+            using Stack = std::vector<typename Edges::template Iterator<check>>;
 
-            Object& operator*() { return it->second.func; }
-            Object* operator->() { return &(**this); }
-            const Object& operator*() const { return it->second.func; }
+            Stack stack;
+            Edge* deepest;
+
+        public:
+            using iterator_category = std::input_iterator_tag;
+            using difference_type = std::ptrdiff_t;
+            using value_type = Object;
+            using pointer = value_type*;
+            using reference = value_type&;
+
+            template <impl::inherits<Partial> P>
+            BaseIterator(const Edges& init, size_t capacity) {
+                stack.reserve(capacity + 1);
+                stack.emplace_back(
+                    init->template search<check>(Py_Ellipsis)
+                );
+                deepest = &(*stack.back());
+            }
+
+            /* The overall trie iterator dereferences only to those functions that are
+            callable with the given key. */
+            const Object& operator*() const { return deepest->target->func; }
             const Object* operator->() const { return &(**this); }
+            Object& operator*() { return deepest->target->func; }
+            Object* operator->() { return &(**this); }
 
-            auto& operator++() { ++it; return *this; }
-            auto operator++(int) { return DataIter{it++, end}; }
-
-            friend bool operator==(const DataIter& self, const DataIter& other) {
-                return self.it == other.it;
+            /* Contextually convert the iterator to a bool in order to replicate Python
+            `if func[...]:` syntax. */
+            explicit operator bool() const {
+                return stack.empty();
             }
 
-            friend bool operator!=(const DataIter& self, const DataIter& other) {
-                return self.it != other.it;
+            friend bool operator==(const BaseIterator& self, const BaseIterator& other) {
+                return self.deepest == other.deepest;
             }
 
-            friend bool operator==(const DataIter& self, impl::Sentinel) {
-                return self.it == self.end;
+            friend bool operator!=(const BaseIterator& self, const BaseIterator& other) {
+                return self.deepest != other.deepest;
             }
 
-            friend bool operator!=(const DataIter& self, impl::Sentinel) {
-                return self.it != self.end;
+            friend bool operator==(const BaseIterator& self, impl::Sentinel) {
+                return self.stack.empty();
             }
 
-            friend bool operator==(impl::Sentinel, const DataIter& self) {
-                return self == impl::Sentinel{};
+            friend bool operator==(impl::Sentinel, const BaseIterator& self) {
+                return self.stack.empty();
             }
 
-            friend bool operator!=(impl::Sentinel, const DataIter& self) {
-                return self != impl::Sentinel{};
+            friend bool operator!=(const BaseIterator& self, impl::Sentinel) {
+                return !self.stack.empty();
+            }
+
+            friend bool operator!=(impl::Sentinel, const BaseIterator& self) {
+                return !self.stack.empty();
             }
         };
 
     public:
+        Overloads(const Object& fallback) : m_fallback(fallback) {}
+        Overloads(Object&& fallback) : m_fallback(std::move(fallback)) {}
+
         /* A single node in the overload trie, which holds the topologically-sorted
         edge maps necessary for traversal, insertion, and deletion of candidate
         functions, as well as a (possibly null) terminal function to call if this
@@ -6983,10 +6964,12 @@ public:
 
                 auto size() const { return map.size(); }
                 auto empty() const { return map.empty(); }
-                auto begin() const { return map.begin(); }
-                auto cbegin() const { return map.cbegin(); }
-                auto end() const { return map.end(); }
-                auto cend() const { return map.cend(); }
+                Iterator<instance> begin() const {
+                    return {Py_Ellipsis, map.begin(), map.end()};
+                }
+                Iterator<instance> cbegin() const { return begin(); }
+                impl::Sentinel end() const { return {}; }
+                impl::Sentinel cend() const { return end(); }
 
                 /* A sorted iterator over the individual edges that match a particular
                 value within an overload key.  The generalized trie iterator consists of a
@@ -7021,10 +7004,13 @@ public:
                     ) : value(value),
                         set([](PyObject* value, auto& it, auto& end) {
                             while (it != end) {
-                                if (value == Py_Ellipsis || check{}(value, it->first)) {
+                                if (
+                                    value == Py_Ellipsis ||
+                                    check{}(value, it->first)
+                                ) {
                                     return SetView{it->second.begin(), it->second.end()};
                                 }
-                                ++(it);
+                                ++it;
                             }
                             return SetView{SetView::empty.begin(), SetView::empty.end()};
                         }(value, it, end)),
@@ -7037,10 +7023,10 @@ public:
                         map(MapView::empty.begin(), MapView::empty.end())
                     {}
 
-                    Edge& operator*() { return *(set.begin); }
-                    Edge* operator->() { return &(**this); }
                     const Edge& operator*() const { return *(set.begin); }
                     const Edge* operator->() const { return &(**this); }
+                    Edge& operator*() { return *(set.begin); }
+                    Edge* operator->() { return &(**this); }
 
                     Iterator& operator++() {
                         if (set.begin != set.end) {
@@ -7049,7 +7035,10 @@ public:
                         if (set.begin == set.end) {
                             ++(map.begin);
                             while (map.begin != map.end) {
-                                if (value == Py_Ellipsis || check{}(value, map.begin->first)) {
+                                if (
+                                    value == Py_Ellipsis ||
+                                    check{}(value, map.begin->first)
+                                ) {
                                     set.begin = map.begin->second.begin();
                                     set.end = map.begin->second.end();
                                     break;
@@ -7085,13 +7074,20 @@ public:
                 Iterator<check> search(PyObject* value) const {
                     return {value, map.begin(), map.end()};
                 }
-
             };
 
         public:
             Object func;
             Edges positional;
             std::unordered_map<std::string_view, Edges> keyword;
+            Edges wildcard;
+
+            auto size() const { return wildcard.size(); }
+            auto empty() const { return wildcard.empty(); }
+            auto begin() const { return wildcard.begin(); }
+            auto cbegin() const { return wildcard.cbegin(); }
+            auto end() const { return wildcard.end(); }
+            auto cend() const { return wildcard.cend(); }
 
             /* Return a sorted iterator over the outgoing edges that could potentially
             match a given parameter in an overload key.  Can return an empty iterator
@@ -7115,14 +7111,157 @@ public:
             }
         };
 
+        /* Return a reference to the root node of the overload trie.  This can be null
+        if the function has no overloads beyond the fallback implementation.  In that
+        case, the entire overload trie is deleted to save space, and will be rebuilt
+        the first time an overload is registered. */
+        std::shared_ptr<Node> root() const {
+            return m_leading_edges.begin()->target;
+        }
+
+        /* Return the maximum depth of the trie, which is equivalent to the total
+        number of arguments of its longest overload.  Variadic arguments take up a
+        single position for the purposes of this calculation. */
+        size_t depth() const noexcept {
+            return m_depth;
+        }
+
+        /* Return a reference to the fallback function that will be chosen if no other
+        overloads match a given (valid) argument set. */
+        const Object& fallback() const {
+            /// TODO: store this as a member
+        }
+
+        /* Search against the function's overload cache to find a precomputed route
+        through the trie.  Whenever the `search()` method is called, the first result
+        is always inserted here to optimize repeated calls with the same signature.  If
+        no cached function is found, this method returns null, forcing a full search of
+        the trie. */
+        PyObject* cache_lookup(size_t hash) const {
+            auto it = m_cache.find(hash);
+            return it == m_cache.end() ? nullptr : it->second;
+        }
+
+        /* Manually clear the overload cache, forcing paths to be recomputed on
+        subsequent searches. */
+        void flush() noexcept {
+            m_cache.clear();
+        }
+
+        /* Returns true if a function is present in the trie, as indicated by a series
+        of `==` checks. */
+        bool contains(const Object& func) const {
+            for (const auto& pair : m_data) {
+                if (pair.second.func == func) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// TODO: Maybe Iterator inherits from PartialIterator?  PartialIterator
+        /// will not have a vectorcall key, but will have a stack of
+        /// Edges::Iterator<instance> objects, as well as the other fields.
+
+        /// Iterator (same as PartialIterator, but uses wildcards at every level)
+        /// PartialIterator (stores partials internally and substitutes where appropriate)
+        /// SearchIterator (stores a full key)
+
+        /// TODO: the only trick here is that the stack can contain wildcard
+        /// iterators initialized with ellipsis, possibly interleaved with others.
+
+        /* A generalized iterator that takes a set of partial arguments and yields all
+        the functions that are reachable from those arguments.  Note that the partials
+        do not need to fully satisfy the target signature, and the results are yielded
+        in topological order, as if they were being searched normally. */
+        template <typename check> requires (valid_check<check>)
+        struct Iterator : BaseIterator<check> {
+        private:
+            using Base = BaseIterator<check>;
+            using Edge = Node::Edge;
+            using Edges = Node::Edges;
+            using Param = Vectorcall::Param;
+            using Stack = std::vector<typename Edges::template Iterator<check>>;
+
+        public:
+            template <impl::inherits<Partial> P>
+            Iterator(const Edges& init, size_t max_depth) :
+                Base(init, max_depth)
+            {
+                // explore();
+            }
+
+        };
+
+        /* A generalized iterator that takes a set of partial arguments and yields all
+        the functions that are reachable from those arguments.  Note that the partials
+        do not need to fully satisfy the target signature, and the results are yielded
+        in topological order, as if they were being searched normally. */
+        template <typename check> requires (valid_check<check>)
+        struct PartialIterator : BaseIterator<check> {
+        private:
+            using Base = BaseIterator<check>;
+            using Edge = Node::Edge;
+            using Edges = Node::Edges;
+            using Param = Vectorcall::Param;
+            using Stack = std::vector<typename Edges::template Iterator<check>>;
+
+            Partial partial;
+
+        public:
+            template <impl::inherits<Partial> P>
+            PartialIterator(P&& partial, const Edges& init, size_t max_depth) :
+                Base(init, max_depth), partial(std::forward<P>(partial))
+            {
+                // explore();
+            }
+
+        };
+
+        /* Return an iterator over all of the overloads contained in the trie, in
+        topological order. */
+        template <typename check = instance> requires (valid_check<check>)
+        Iterator<check> begin() const {
+            return {m_leading_edges, m_data};
+        }
+
+        /* Return an iterator over all of the overloads contained in the trie, in
+        topological order. */
+        template <typename check = instance> requires (valid_check<check>)
+        Iterator<check> cbegin() const {
+            return {m_leading_edges, m_data};
+        }
+
+        /* Return an iterator over a subset of the overloads contained in the trie that
+        follow from the given partial arguments, in topological order. */
+        template <typename check = instance, impl::inherits<Partial> P>
+            requires (valid_check<check>)
+        PartialIterator<check> begin(P&& partial) const {
+            return {std::forward<P>(partial), m_leading_edges, m_data};
+        }
+
+        /* Return an iterator over a subset of the overloads contained in the trie that
+        follow from the given partial arguments, in topological order. */
+        template <typename check = instance, impl::inherits<Partial> P>
+            requires (valid_check<check>)
+        PartialIterator<check> cbegin(P&& partial) const {
+            return {std::forward<P>(partial), m_leading_edges, m_data};
+        }
+
+        impl::Sentinel end() const { return {}; }
+        impl::Sentinel cend() const { return {}; }
+        auto size() const { return m_data.size() - !m_data.empty(); }
+        auto empty() const { return m_data.empty(); }
+
         /* An iterator that traverses the trie in topological order, returning the
         subset of overloads that match a given argument list.  As long as the arguments
         are valid, the final overload will always be the base implementation.
         Otherwise, the iterator may be empty, indicating that the function cannot be
         called with the given arguments. */
         template <typename check> requires (valid_check<check>)
-        struct Iterator {
+        struct SearchIterator : BaseIterator<check> {
         private:
+            using Base = BaseIterator<check>;
             using Edge = Node::Edge;
             using Edges = Node::Edges;
             using Param = Vectorcall::Param;
@@ -7130,20 +7269,20 @@ public:
 
             void advance() {
                 bool reset = false;
-                Edge* curr = &(*stack.back());
-                while (++stack.back() == impl::Sentinel{}) {
-                    stack.pop_back();
-                    if (stack.empty()) {
+                Edge* curr = &(*Base::stack.back());
+                while (++Base::stack.back() == impl::Sentinel{}) {
+                    Base::stack.pop_back();
+                    if (Base::stack.empty()) {
                         return;
                     }
                     if (deepest == curr) {
                         reset = true;
                     }
-                    curr = &(*stack.back());
+                    curr = &(*Base::stack.back());
                 }
                 if (reset) {
-                    deepest = &(*stack[0]);
-                    for (auto& it : stack) {
+                    deepest = &(*Base::stack[0]);
+                    for (auto& it : Base::stack) {
                         if (it->mask > deepest->mask) {
                             deepest = &(*it);
                         }
@@ -7153,16 +7292,16 @@ public:
 
             void explore() {
                 size_t n = key.size() + 1;
-                while (stack.size() < n) {
-                    stack.emplace_back(
-                        stack.back()->target->template search<check>(
-                            key[stack.size() - 1]
+                while (Base::stack.size() < n) {
+                    Base::stack.emplace_back(
+                        Base::stack.back()->target->template search<check>(
+                            key[Base::stack.size() - 1]
                         )
                     );
-                    if (stack.back() == impl::Sentinel{}) {
-                        stack.pop_back();
+                    if (Base::stack.back() == impl::Sentinel{}) {
+                        Base::stack.pop_back();
                         advance();
-                        if (stack.empty()) {
+                        if (Base::stack.empty()) {
                             return;
                         }
                     } else {
@@ -7175,7 +7314,7 @@ public:
 
                 if (deepest->target->func.is(nullptr)) {
                     advance();
-                    if (!stack.empty()) {
+                    if (!Base::stack.empty()) {
                         explore();
                     }
                     return;
@@ -7194,7 +7333,7 @@ public:
                     }
                     if ((mask & metadata.required) != metadata.required) {
                         advance();
-                        if (!stack.empty()) {
+                        if (!Base::stack.empty()) {
                             explore();
                         }
                     }
@@ -7202,106 +7341,41 @@ public:
             }
 
             Vectorcall key;
-            Stack stack;
-            Edge* deepest;
             const Data* data;
 
         public:
-            using iterator_category = std::input_iterator_tag;
-            using difference_type = std::ptrdiff_t;
-            using value_type = Object;
-            using pointer = value_type*;
-            using reference = value_type&;
-
-            Iterator(const Vectorcall& key, const Edges& init, const Data& data) :
-                key(key), data(&data)
+            template <impl::inherits<Vectorcall> V>
+            SearchIterator(V&& key, const Edges& init, const Data& data) :
+                Base(init, key.size()),
+                key(std::forward<V>(key)),
+                data(&data)
             {
-                stack.reserve(key.size() + 1);
-                stack.emplace_back(
-                    init->template search<check>(Ellipsis)
-                );
-                deepest = &(*stack.back());
                 explore();
             }
-
-            Iterator(Vectorcall&& key, const Edges& init, const Data& data) :
-                key(std::move(key)), data(&data)
-            {
-                stack.reserve(key.size() + 1);
-                stack.emplace_back(
-                    init->template search<check>(Ellipsis)
-                );
-                deepest = &(*stack.back());
-                explore();
-            }
-
-            /* The overall trie iterator dereferences only to those functions that are
-            callable with the given key. */
-            Object& operator*() { return deepest->target->func; }
-            Object* operator->() { return &(**this); }
-            const Object& operator*() const { return deepest->target->func; }
-            const Object* operator->() const { return &(**this); }
 
             /* Incrementing the iterator traverses the trie until the next full match
             is found.  As long as the args are valid, the iterator will always contain
             the function's base implementation as the final overload. */
-            Iterator& operator++() {
-                if (!stack.empty()) {
+            SearchIterator& operator++() {
+                if (!Base::stack.empty()) {
                     advance();
-                    if (!stack.empty()) {
+                    if (!Base::stack.empty()) {
                         explore();
                     }
                 }
                 return *this;
             }
-
-            /* Contextually convert the iterator to a bool in order to replicate Python
-            `if func[...]:` syntax. */
-            explicit operator bool() const {
-                return stack.empty();
-            }
-
-            friend bool operator==(const Iterator& self, const Iterator& other) {
-                return self.deepest == other.deepest;
-            }
-
-            friend bool operator!=(const Iterator& self, const Iterator& other) {
-                return self.deepest != other.deepest;
-            }
-
-            friend bool operator==(const Iterator& self, impl::Sentinel) {
-                return self.stack.empty();
-            }
-
-            friend bool operator==(impl::Sentinel, const Iterator& self) {
-                return self.stack.empty();
-            }
-
-            friend bool operator!=(const Iterator& self, impl::Sentinel) {
-                return !self.stack.empty();
-            }
-
-            friend bool operator!=(impl::Sentinel, const Iterator& self) {
-                return !self.stack.empty();
-            }
         };
-
-        std::shared_ptr<Node> root() const { return root_edges.begin()->target; }
-        bool empty() const { return data.empty(); }
-        size_t size() const { return data.size() - !data.empty(); }
-        auto begin() const { return DataIter{data.begin(), data.end()}; }
-        auto cbegin() const { return DataIter{data.begin(), data.end()}; }
-        impl::Sentinel end() const { return {}; }
-        impl::Sentinel cend() const { return {}; }
 
         /* Topologically search the trie with a given argument list, returning a sorted
         iterator over the matching overloads.  The first item is always the most
         specific matching overload, and the last item is always the function's base
         implementation.  An empty iterator can be returned if the arguments do not
         conform to the enclosing signature. */
-        template <typename check, impl::is<Vectorcall> Key> requires (valid_check<check>)
-        Iterator<check> search(Key&& key) const {
-            return {std::forward<Key>(key), root_edges, data};
+        template <typename check, impl::inherits<Vectorcall> V>
+            requires (valid_check<check>)
+        SearchIterator<check> search(V&& key) const {
+            return {std::forward<V>(key), m_leading_edges, m_data};
         }
 
         /* Insert a function into the trie.  Throws a TypeError if the function is not
@@ -7317,43 +7391,32 @@ public:
         /* Remove a function from the overload trie.  Throws a KeyError if the function
         is not contained within the trie (as determined by an equality check). */
         void remove(const Object& func) {
-            auto it = data.begin();
-            auto end = data.end();
-            while (it != end) {
-                if (it->second.func == func) {
+            for (const auto& pair : m_data) {
+                if (pair.second.func == func) {
                     /// TODO: purge all edges with the same hash from the trie, which
                     /// will also drop any orphaned nodes thanks to the shared pointer.
                     return;
                 }
-                ++it;
             }
             throw KeyError(repr(func));
         }
 
-        /* Returns true if the function is present in the trie. */
-        bool contains(const Object& func) const {
-            auto it = data.begin();
-            auto end = data.end();
-            while (it != end) {
-                if (it->second.func == func) {
-                    return true;
-                }
-                ++it;
-            }
-            return false;
-        }
-
         /* Remove all overloads from the trie, resetting it to its default state. */
         void clear() noexcept {
-            data.clear();
-            root_edges.begin()->target.reset();
+            m_data.clear();
+            m_leading_edges.begin()->target.reset();
         }
 
     private:
+        Object m_fallback;
+        size_t m_depth = 0;
+        Data m_data = {};
+        mutable std::unordered_map<size_t, PyObject*> m_cache = {};
+
         /* A placeholder edge container with only a single element, which describes a
         null edge to the root of the trie, which is used as the initial value for an
         iterator traversal. */
-        Node::Edges root_edges = {
+        Node::Edges m_leading_edges = {
             .map = {
                 Py_NewRef(&PyBaseObject_Type),
                 {
@@ -9440,7 +9503,7 @@ public:
             );
         }
         Vectorcall vectorcall{std::forward<P>(partial), std::forward<A>(args)...};
-        PyObject* cached = overloads.cache_lookup(vectorcall);
+        PyObject* cached = overloads.cache_lookup(vectorcall.hash);
         if (cached) {
             return vectorcall(cached);
         }
@@ -9505,7 +9568,7 @@ public:
             )
         }
         Vectorcall vectorcall {std::forward<P>(partial), std::forward<A>(args)...};
-        PyObject* cached = overloads.cache_lookup(vectorcall);
+        PyObject* cached = overloads.cache_lookup(vectorcall.hash);
         if (cached) {
             return vectorcall(cached);
         }
@@ -9563,7 +9626,7 @@ public:
             );
         }
         vectorcall.normalize(std::forward<P>(partial));
-        PyObject* cached = overloads.cache_lookup(vectorcall);
+        PyObject* cached = overloads.cache_lookup(vectorcall.hash);
         if (cached) {
             return vectorcall(cached);
         }
@@ -9613,7 +9676,7 @@ public:
         if (overloads.empty()) {
             return vectorcall(func);
         }
-        PyObject* cached = overloads.cache_lookup(vectorcall);
+        PyObject* cached = overloads.cache_lookup(vectorcall.hash);
         if (cached) {
             return vectorcall(cached);
         }
