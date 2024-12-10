@@ -2296,7 +2296,7 @@ public:
                 ) {
                     if constexpr (J2 == pos_pack_idx<A...>) {
                         auto& pack = impl::unpack_arg<J2>(std::forward<A>(args)...);
-                        out.insert(out.end(), pack.begin(), pack.end());
+                        out.insert(out.end(), pack.begin, pack.end);
                     } else {
                         out.emplace_back(impl::unpack_arg<J2>(
                             std::forward<A>(args)...
@@ -2490,7 +2490,7 @@ public:
                     ) {
                         out.emplace_back(
                             Partial::template name<K>,
-                            to_python(
+                            py::to_python(
                                 std::forward<P>(parts).template get<K>()
                             ),
                             impl::ArgKind::KW
@@ -2498,7 +2498,7 @@ public:
                     } else {
                         out.emplace_back(
                             "",
-                            to_python(
+                            py::to_python(
                                 std::forward<P>(parts).template get<K>()
                             ),
                             impl::ArgKind::POS
@@ -2533,7 +2533,7 @@ public:
                 ) {
                     using T = Signature::at<I>;
                     try {
-                        array[idx] = release(to_python(
+                        array[idx] = release(py::to_python(
                             std::forward<P>(parts).template get<K>()
                         ));
                         ++idx;
@@ -3257,7 +3257,7 @@ public:
                         if constexpr (J < pos_range) {
                             out.emplace_back(
                                 "",
-                                to_python(
+                                py::to_python(
                                     impl::unpack_arg<J>(std::forward<A>(args)...)
                                 ),
                                 impl::ArgKind::POS
@@ -3279,7 +3279,7 @@ public:
                             if (pack.has_value()) {
                                 out.emplace_back(
                                     "",
-                                    to_python(pack.value()),
+                                    py::to_python(pack.value()),
                                     impl::ArgKind::POS
                                 );
                                 return call<I + 1, J, K>::python::key(
@@ -3329,7 +3329,7 @@ public:
                             assert_no_keyword_conflict(std::forward<A>(args)...);
                             out.emplace_back(
                                 "",
-                                to_python(
+                                py::to_python(
                                     impl::unpack_arg<J>(std::forward<A>(args)...)
                                 ),
                                 impl::ArgKind::POS
@@ -3352,7 +3352,7 @@ public:
                             if (pack.has_value()) {
                                 out.emplace_back(
                                     "",
-                                    to_python(pack.value()),
+                                    py::to_python(pack.value()),
                                     impl::ArgKind::POS
                                 );
                                 return call<I + 1, J, K>::python::key(
@@ -3376,7 +3376,7 @@ public:
                                 );
                             }
                         }
-                        if constexpr (Signature<Return(A...)>::template hash<name>) {
+                        if constexpr (Signature<Return(A...)>::template has<name>) {
                             assert_no_keyword_conflict(std::forward<A>(args)...);
                             return key_reorder(
                                 out,
@@ -3393,7 +3393,7 @@ public:
                             if (node) {
                                 out.emplace_back(
                                     ArgTraits<T>::name,
-                                    to_python(std::move(node.mapped())),
+                                    py::to_python(std::move(node.mapped())),
                                     impl::ArgKind::KW
                                 );
                                 return call<I + 1, J, K>::python::key(
@@ -3442,7 +3442,7 @@ public:
                             if (node) {
                                 out.emplace_back(
                                     ArgTraits<T>::name,
-                                    to_python(std::move(node.mapped())),
+                                    py::to_python(std::move(node.mapped())),
                                     impl::ArgKind::KW
                                 );
                                 return call<I + 1, J, K>::python::key(
@@ -3912,7 +3912,7 @@ public:
                 ) {
                     using T = Signature::at<I>;
                     try {
-                        array[idx] = release(to_python(
+                        array[idx] = release(py::to_python(
                             std::forward<decltype(value)>(value)
                         ));
                         ++idx;
@@ -3950,7 +3950,7 @@ public:
                 ) {
                     using T = Signature::at<I>;
                     try {
-                        array[idx] = release(to_python(
+                        array[idx] = release(py::to_python(
                             std::forward<decltype(value)>(value)
                         ));
                         ++idx;
@@ -4064,7 +4064,7 @@ public:
                     ) {
                         out.emplace_back(
                             ArgTraits<Signature::at<I>>::name,
-                            to_python(impl::unpack_arg<kw>(
+                            py::to_python(impl::unpack_arg<kw>(
                                 std::forward<decltype(args)>(args)...
                             )),
                             impl::ArgKind::KW
@@ -4230,7 +4230,7 @@ public:
                         for (auto& value : pack) {
                             out.emplace_back(
                                 "",
-                                to_python(value),
+                                py::to_python(value),
                                 impl::ArgKind::POS
                             );
                             hash = impl::hash_combine(
@@ -4244,7 +4244,7 @@ public:
                     } else {
                         out.emplace_back(
                             "",
-                            to_python(
+                            py::to_python(
                                 impl::unpack_arg<J2>(std::forward<A>(args)...)
                             ),
                             impl::ArgKind::POS
@@ -4324,7 +4324,7 @@ public:
                                 /// TODO: this forces the parameter list to hold
                                 /// a string rather than a string_view?
                                 std::move(node.key()),
-                                to_python(std::move(node.mapped())),
+                                py::to_python(std::move(node.mapped())),
                                 impl::ArgKind::KW
                             );
                             hash = impl::hash_combine(
@@ -4338,7 +4338,7 @@ public:
                     } else {
                         out.emplace_back(
                             ArgTraits<Signature::at<I>>::name,
-                            to_python(
+                            py::to_python(
                                 impl::unpack_arg<J2>(std::forward<A>(args)...)
                             ),
                             impl::ArgKind::KW
@@ -5095,9 +5095,29 @@ public:
         sequences and fold expressions, which are inlined into the final call. */
         template <size_t I, size_t J, size_t K>
         struct call {  // terminal case
+            /// TODO: need some sort of way to calculate the true number of combined
+            /// partial/source keywords
 
-            /// TODO: a ::create() method that constructs a normalized vectorcall
-            /// array from C++ arguments.
+            template <typename P, typename... A>
+            static void create(
+                std::vector<PyObject*>& args,
+                PyObject* kwnames,
+                size_t kw_idx,
+                size_t& hash,
+                P&& parts,
+                A&&... values
+            ) {
+                if constexpr (pos_pack_idx<A...> < sizeof...(A)) {
+                    constexpr size_t idx = pos_pack_idx<A...>;
+                    auto& pack = impl::unpack_arg<idx>(std::forward<A>(values)...);
+                    pack.validate();
+                }
+                if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
+                    constexpr size_t idx = kw_pack_idx<A...>;
+                    auto& pack = impl::unpack_arg<idx>(std::forward<A>(values)...);
+                    pack.validate();
+                }
+            }
 
             template <typename P>
             static void normalize(
@@ -5194,8 +5214,246 @@ public:
                 requires (K2 < Partial::n && Partial::template rfind<K2> == I)
             static constexpr size_t consecutive<K2> = consecutive<K2 + 1> + 1;
 
-            /// TODO: a ::create() method that constructs a normalized vectorcall
-            /// array from C++ arguments.
+            template <typename P, typename... A>
+            static void create(
+                std::vector<PyObject*>& args,
+                PyObject* kwnames,
+                size_t kw_idx,
+                size_t& hash,
+                P&& parts,
+                A&&... values
+            ) {
+                using T = Signature::at<I>;
+
+                if constexpr (ArgTraits<T>::posonly()) {
+                    normalize_posonly(
+                        args,
+                        hash,
+                        std::forward<P>(parts)
+                    );
+                    call<I + 1, J, K + 1>::create(
+                        args,
+                        kwnames,
+                        kw_idx,
+                        hash,
+                        std::forward<P>(parts),
+                        std::forward<A>(values)...
+                    );
+
+                } else if constexpr (ArgTraits<T>::pos()) {
+                    using Source = Signature<Return(A...)>;
+                    constexpr StaticStr name = Partial::template name<K>;
+                    auto value = py::to_python(
+                        std::forward<P>(parts).template get<K>()
+                    );
+                    args.emplace_back(release(value));
+                    if constexpr (J < Source::kw_idx) {
+                        hash = impl::hash_combine(
+                            hash,
+                            arg_hash(
+                                std::string_view{"", 0},
+                                args.back(),
+                                impl::ArgKind::POS
+                            )
+                        );
+                    } else {
+                        PyTuple_SET_ITEM(
+                            kwnames,
+                            kw_idx++,
+                            release(impl::template_string<name>())
+                        );
+                        hash = impl::hash_combine(
+                            hash,
+                            arg_hash(
+                                std::string_view(name),
+                                args.back(),
+                                impl::ArgKind::KW
+                            )
+                        );
+                    }
+                    call<I + 1, J, K + 1>::create(
+                        args,
+                        kwnames,
+                        kw_idx,
+                        hash,
+                        std::forward<P>(parts),
+                        std::forward<A>(values)...
+                    );
+
+                } else if constexpr (ArgTraits<T>::kw()) {
+                    normalize_kwonly(
+                        args,
+                        kwnames,
+                        kw_idx,
+                        hash,
+                        std::forward<P>(parts)
+                    );
+                    call<I + 1, J, K + 1>::create(
+                        args,
+                        kwnames,
+                        kw_idx,
+                        hash,
+                        std::forward<P>(parts),
+                        std::forward<A>(values)...
+                    );
+
+                } else if constexpr (ArgTraits<T>::args()) {
+                    using Source = Signature<Return(A...)>;
+                    constexpr size_t next = std::min(Source::kw_idx, kw_pack_idx<A...>);
+                    normalize_args(
+                        args,
+                        hash,
+                        std::forward<P>(parts)
+                    );
+                    []<size_t J2 = J>(
+                        this auto&& self,
+                        std::vector<PyObject*>& args,
+                        size_t& hash,
+                        auto&&... values
+                    ) {
+                        if constexpr (J2 < next) {
+                            if constexpr (J2 == pos_pack_idx<A...>) {
+                                auto& pack = impl::unpack_arg<J2>(
+                                    std::forward<decltype(values)>(values)...
+                                );
+                                while (pack.has_value()) {
+                                    args.emplace_back(release(py::to_python(
+                                        pack.value()
+                                    )));
+                                    hash = impl::hash_combine(
+                                        hash,
+                                        arg_hash(
+                                            std::string_view{"", 0},
+                                            args.back(),
+                                            impl::ArgKind::POS
+                                        )
+                                    );
+                                }
+                            } else {
+                                args.emplace_back(release(py::to_python(
+                                    impl::unpack_arg<J2>(
+                                        std::forward<decltype(values)>(values)...
+                                    )
+                                )));
+                                hash = impl::hash_combine(
+                                    hash,
+                                    arg_hash(
+                                        std::string_view{"", 0},
+                                        args.back(),
+                                        impl::ArgKind::POS
+                                    )
+                                );
+                            }
+                            std::forward<decltype(self)>(self).template operator()<J2 + 1>(
+                                args,
+                                std::forward<decltype(values)>(values)...
+                            );
+                        }
+                    }(args, hash, std::forward<A>(values)...);
+                    call<I + 1, next, Partial::kw_idx>::create(
+                        args,
+                        kwnames,
+                        kw_idx,
+                        hash,
+                        std::forward<P>(parts),
+                        std::forward<A>(values)...
+                    );
+
+                } else if constexpr (ArgTraits<T>::kwargs()) {
+                    normalize_kwargs(
+                        args,
+                        kwnames,
+                        kw_idx,
+                        hash,
+                        std::forward<P>(parts)
+                    );
+                    []<size_t J2 = J>(
+                        this auto&& self,
+                        std::vector<PyObject*>& args,
+                        PyObject* kwnames,
+                        size_t& kw_idx,
+                        size_t& hash,
+                        auto&&... values
+                    ) {
+                        if constexpr (J2 < sizeof...(A)) {
+                            if constexpr (J2 == kw_pack_idx<A...>) {
+                                auto& pack = impl::unpack_arg<J2>(
+                                    std::forward<decltype(values)>(values)...
+                                );
+                                auto it = pack.begin();
+                                auto end = pack.end();
+                                while (it != end) {
+                                    // postfix++ needed to increment before invalidating
+                                    auto node = pack.extract(it++);
+                                    args.emplace_back(release(py::to_python(
+                                        std::move(node.mapped())
+                                    )));
+                                    PyObject* kwname = PyUnicode_FromStringAndSize(
+                                        node.key().data(),
+                                        node.key().size()
+                                    );
+                                    if (kwname == nullptr) {
+                                        Exception::from_python();
+                                    }
+                                    PyTuple_SET_ITEM(
+                                        kwnames,
+                                        kw_idx++,
+                                        kwname  // steals reference
+                                    );
+                                    hash = impl::hash_combine(
+                                        hash,
+                                        arg_hash(
+                                            node.key(),
+                                            args.back(),
+                                            impl::ArgKind::KW
+                                        )
+                                    );
+                                }
+                            } else {
+                                using T = impl::unpack_type<J2, A...>;
+                                constexpr StaticStr name = ArgTraits<T>::name;
+                                args.emplace_back(release(py::to_python(
+                                    *impl::unpack_arg<J2>(
+                                        std::forward<decltype(values)>(values)...
+                                    )
+                                )));
+                                PyTuple_SET_ITEM(
+                                    kwnames,
+                                    kw_idx++,
+                                    release(impl::template_string<name>())
+                                );
+                                hash = impl::hash_combine(
+                                    hash,
+                                    arg_hash(
+                                        std::string_view(name),
+                                        args.back(),
+                                        impl::ArgKind::KW
+                                    )
+                                );
+                            }
+                            std::forward<decltype(self)>(self).template operator()<J2 + 1>(
+                                args,
+                                kwnames,
+                                kw_idx,
+                                hash,
+                                std::forward<decltype(values)>(values)...
+                            );
+                        }
+                    }(args, kwnames, kw_idx, hash, std::forward<A>(values)...);
+                    call<I + 1, sizeof...(A), Partial::n>::create(
+                        args,
+                        kwnames,
+                        kw_idx,
+                        hash,
+                        std::forward<P>(parts),
+                        std::forward<A>(values)...
+                    );
+
+                } else {
+                    static_assert(false, "invalid argument kind");
+                    std::unreachable();
+                }
+            }
 
             template <typename P>
             static void normalize(
@@ -5338,6 +5596,16 @@ public:
             ) {
                 using T = Signature::at<I>;
                 using pytype = impl::python_type<typename ArgTraits<T>::type>;
+                constexpr StaticStr name = ArgTraits<T>::name;
+                if constexpr (!name.empty()) {
+                    auto node = kwargs.extract(std::string_view(name));
+                    if (node) {
+                        throw TypeError(
+                            "received multiple values for argument '" +
+                            name + "'"
+                        );
+                    }
+                }
 
                 if constexpr (ArgTraits<T>::posonly()) {
                     normalize_posonly(
@@ -5647,7 +5915,7 @@ public:
                 size_t& hash,
                 P&& parts
             ) {
-                auto value = to_python(
+                auto value = py::to_python(
                     std::forward<P>(parts).template get<K>()
                 );
                 args.emplace_back(release(value));
@@ -5671,7 +5939,9 @@ public:
                 size_t idx,
                 size_t nargs
             ) {
-                auto value = to_python(
+                using T = Signature::at<I>;
+                constexpr StaticStr name = ArgTraits<T>::name;
+                auto value = py::to_python(
                     std::forward<P>(parts).template get<K>()
                 );
                 args.emplace_back(release(value));
@@ -5685,7 +5955,6 @@ public:
                         )
                     );
                 } else {
-                    constexpr StaticStr name = Partial::template name<K>;
                     PyTuple_SET_ITEM(
                         kwnames,
                         kw_idx++,
@@ -5710,8 +5979,9 @@ public:
                 size_t& hash,
                 P&& parts
             ) {
-                constexpr StaticStr name = Partial::template name<K>;
-                auto value = to_python(
+                using T = Signature::at<I>;
+                constexpr StaticStr name = ArgTraits<T>::name;
+                auto value = py::to_python(
                     std::forward<P>(parts).template get<K>()
                 );
                 args.emplace_back(release(value));
@@ -5737,7 +6007,7 @@ public:
                 P&& parts
             ) {
                 if constexpr (K2 < Partial::kw_idx) {
-                    args.emplace_back(release(to_python(
+                    args.emplace_back(release(py::to_python(
                         std::forward<P>(parts).template get<K2>()
                     )));
                     hash = impl::hash_combine(
@@ -5766,7 +6036,7 @@ public:
             ) {
                 if constexpr (K2 < Partial::n) {
                     constexpr StaticStr name = Partial::template name<K2>;
-                    auto value = to_python(std::forward<decltype(parts)>(
+                    auto value = py::to_python(std::forward<decltype(parts)>(
                         parts
                     ).template get<K2>());
                     args.emplace_back(release(value));
@@ -5881,6 +6151,626 @@ public:
                 !(K < Partial::n && Partial::template rfind<K> == I)
             )
         struct call<I, J, K> {  // insert Python argument(s) or default value
+            /// TODO: need a way to calculate the true number of combined partial/source
+            /// keywords, which will be used to determine the size of the kwnames tuple.
+
+            template <typename P, typename... A>
+            static void create(
+                std::vector<PyObject*>& args,
+                PyObject* kwnames,
+                size_t kw_idx,
+                size_t& hash,
+                P&& parts,
+                A&&... values
+            ) {
+                using Source = Signature<Return(A...)>;
+                using T = Signature::at<I>;
+                static constexpr StaticStr name = ArgTraits<T>::name;
+                static constexpr size_t pos_range = std::min({
+                    pos_pack_idx<A...>,
+                    Source::kw_idx,
+                    kw_pack_idx<A...>
+                });
+
+                static constexpr auto assert_no_kwarg_conflict = [](auto&&... values) {
+                    if constexpr (!name.empty() && kw_pack_idx<A...> < sizeof...(A)) {
+                        auto& pack = impl::unpack_arg<kw_pack_idx<A...>>(
+                            std::forward<decltype(values)>(values)...
+                        );
+                        auto node = pack.extract(name);
+                        if (node) {
+                            throw TypeError(
+                                "conflicting value for parameter '" + name +
+                                "' at index " + StaticStr<>::from_int<I>
+                            );
+                        }
+                    }
+                };
+
+                constexpr auto insert_positional = [](
+                    std::vector<PyObject*>& args,
+                    PyObject* kwnames,
+                    size_t kw_idx,
+                    size_t& hash,
+                    auto&& parts,
+                    auto&&... values
+                ) {
+                    assert_no_kwarg_conflict(std::forward<decltype(values)>(values)...);
+                    args.emplace_back(release(py::to_python(
+                        impl::unpack_arg<J>(
+                            std::forward<decltype(values)>(values)...
+                        )
+                    )));
+                    hash = impl::hash_combine(
+                        hash,
+                        arg_hash(
+                            std::string_view{"", 0},
+                            args.back(),
+                            impl::ArgKind::POS
+                        )
+                    );
+                    call<I + 1, J + 1, K>::create(
+                        args,
+                        kwnames,
+                        kw_idx,
+                        hash,
+                        std::forward<decltype(parts)>(parts),
+                        std::forward<decltype(values)>(values)...
+                    );
+                };
+
+                constexpr auto insert_from_arg_pack = [](
+                    std::vector<PyObject*>& args,
+                    PyObject* kwnames,
+                    size_t kw_idx,
+                    size_t& hash,
+                    auto&& parts,
+                    auto&&... values
+                ) {
+                    auto& pack = impl::unpack_arg<J>(
+                        std::forward<decltype(values)>(values)...
+                    );
+                    if (pack.has_value()) {
+                        assert_no_kwarg_conflict(
+                            std::forward<decltype(values)>(values)...
+                        );
+                        args.emplace_back(release(py::to_python(
+                            pack.value()
+                        )));
+                        hash = impl::hash_combine(
+                            hash,
+                            arg_hash(
+                                std::string_view{"", 0},
+                                args.back(),
+                                impl::ArgKind::POS
+                            )
+                        );
+                        call<I + 1, J, K>::create(
+                            args,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<decltype(parts)>(parts),
+                            std::forward<decltype(values)>(values)...
+                        );
+                    } else {
+                        []<size_t... Prev, size_t... Next>(
+                            std::index_sequence<Prev...>,
+                            std::index_sequence<Next...>,
+                            std::vector<PyObject*>& args,
+                            PyObject* kwnames,
+                            size_t kw_idx,
+                            size_t& hash,
+                            auto&& parts,
+                            auto&&... values
+                        ) {
+                            call<I, J, K>::create(
+                                args,
+                                kwnames,
+                                kw_idx,
+                                hash,
+                                std::forward<decltype(parts)>(parts),
+                                impl::unpack_arg<Prev>(
+                                    std::forward<decltype(values)>(values)
+                                )...,
+                                impl::unpack_arg<J + 1 + Next>(
+                                    std::forward<decltype(values)>(values)
+                                )...
+                            );
+                        }(
+                            std::make_index_sequence<J>{},
+                            std::make_index_sequence<sizeof...(A) - (J + 1)>{},
+                            args,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<decltype(parts)>(parts),
+                            std::forward<decltype(values)>(values)...
+                        );
+                    }
+                };
+
+                constexpr auto insert_keyword = [](
+                    std::vector<PyObject*>& args,
+                    PyObject* kwnames,
+                    size_t kw_idx,
+                    size_t& hash,
+                    auto&& parts,
+                    auto&&... values
+                ) {
+                    constexpr size_t kw = Source::template idx<name>;
+                    assert_no_kwarg_conflict(std::forward<decltype(values)>(values)...);
+                    []<size_t... Prev, size_t... Next, size_t... Rest>(
+                        std::index_sequence<Prev...>,
+                        std::index_sequence<Next...>,
+                        std::index_sequence<Rest...>,
+                        std::vector<PyObject*>& args,
+                        PyObject* kwnames,
+                        size_t kw_idx,
+                        size_t& hash,
+                        auto&& parts,
+                        auto&&... values
+                    ) {
+                        args.emplace_back(release(py::to_python(
+                            impl::unpack_arg<kw>(
+                                std::forward<decltype(values)>(values)...
+                            )
+                        )));
+                        PyTuple_SET_ITEM(
+                            kwnames,
+                            kw_idx++,
+                            release(impl::template_string<name>())
+                        );
+                        hash = impl::hash_combine(
+                            hash,
+                            arg_hash(
+                                std::string_view(name),
+                                args.back(),
+                                impl::ArgKind::KW
+                            )
+                        );
+                        call<I + 1, J + 1, K>::create(
+                            args,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<decltype(parts)>(parts),
+                            impl::unpack_arg<Prev>(
+                                std::forward<decltype(values)>(values)
+                            )...,
+                            impl::unpack_arg<kw>(
+                                std::forward<decltype(values)>(values)...
+                            ),
+                            impl::unpack_arg<J + Next>(
+                                std::forward<decltype(values)>(values)
+                            )...,
+                            impl::unpack_arg<kw + 1 + Rest>(
+                                std::forward<decltype(values)>(values)
+                            )...
+                        );
+                    }(
+                        std::make_index_sequence<J>{},
+                        std::make_index_sequence<kw - J>{},
+                        std::make_index_sequence<sizeof...(A) - (kw + 1)>{},
+                        args,
+                        kwnames,
+                        kw_idx,
+                        hash,
+                        std::forward<decltype(parts)>(parts),
+                        std::forward<decltype(values)>(values)...
+                    );
+                };
+
+                constexpr auto insert_from_kwarg_pack = [](
+                    std::vector<PyObject*>& args,
+                    PyObject* kwnames,
+                    size_t kw_idx,
+                    size_t& hash,
+                    auto&& parts,
+                    auto&&... values
+                ) {
+                    auto& pack = impl::unpack_arg<kw_pack_idx<A...>>(
+                        std::forward<decltype(values)>(values)...
+                    );
+                    if (auto node = pack.extract(name)) {
+                        args.emplace_back(release(py::to_python(
+                            std::move(node.mapped())
+                        )));
+                        PyTuple_SET_ITEM(
+                            kwnames,
+                            kw_idx++,
+                            release(impl::template_string<name>())
+                        );
+                        hash = impl::hash_combine(
+                            hash,
+                            arg_hash(
+                                std::string_view(name),
+                                args.back(),
+                                impl::ArgKind::KW
+                            )
+                        );
+                        call<I + 1, J, K>::create(
+                            args,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<decltype(parts)>(parts),
+                            std::forward<decltype(values)>(values)...
+                        );
+                    }
+                };
+
+                constexpr auto insert_args = []<size_t J2 = J>(
+                    this auto&& self,
+                    std::vector<PyObject*>& args,
+                    PyObject* kwnames,
+                    size_t kw_idx,
+                    size_t& hash,
+                    auto&& parts,
+                    auto&&... values
+                ) {
+                    if constexpr (J2 < pos_range) {
+                        args.emplace_back(release(py::to_python(
+                            impl::unpack_arg<J2>(
+                                std::forward<decltype(values)>(values)...
+                            )
+                        )));
+                        hash = impl::hash_combine(
+                            hash,
+                            arg_hash(
+                                std::string_view{"", 0},
+                                args.back(),
+                                impl::ArgKind::POS
+                            )
+                        );
+                        return std::forward<decltype(self)>(
+                            self
+                        ).template operator()<J2 + 1>(
+                            args,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<decltype(parts)>(parts),
+                            std::forward<decltype(values)>(values)...
+                        );
+                    }
+                    if constexpr (J2 < sizeof...(A) && J2 == pos_pack_idx<A...>) {
+                        auto& pack = impl::unpack_arg<J2>(
+                            std::forward<decltype(values)>(values)...
+                        );
+                        while (pack.has_value()) {
+                            args.emplace_back(release(py::to_python(
+                                pack.value()
+                            )));
+                            hash = impl::hash_combine(
+                                hash,
+                                arg_hash(
+                                    std::string_view{"", 0},
+                                    args.back(),
+                                    impl::ArgKind::POS
+                                )
+                            );
+                        }
+                        return []<size_t... Prev, size_t... Next>(
+                            std::index_sequence<Prev...>,
+                            std::index_sequence<Next...>,
+                            std::vector<PyObject*>& args,
+                            PyObject* kwnames,
+                            size_t kw_idx,
+                            size_t& hash,
+                            auto&& parts,
+                            auto&&... values
+                        ) {
+                            return call<I + 1, J2, K>::create(
+                                args,
+                                kwnames,
+                                kw_idx,
+                                hash,
+                                std::forward<decltype(parts)>(parts),
+                                impl::unpack_arg<Prev>(
+                                    std::forward<decltype(values)>(values)
+                                )...,
+                                impl::unpack_arg<J2 + 1 + Next>(
+                                    std::forward<decltype(values)>(values)...
+                                )...
+                            );
+                        }(
+                            std::make_index_sequence<J2>{},
+                            std::make_index_sequence<sizeof...(A) - (J2 + 1)>{},
+                            args,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<decltype(parts)>(parts),
+                            std::forward<decltype(values)>(values)...
+                        );
+                    }
+                    return call<I + 1, J2, K>::create(
+                        args,
+                        kwnames,
+                        kw_idx,
+                        hash,
+                        std::forward<P>(parts),
+                        std::forward<A>(values)...
+                    );
+                };
+
+                constexpr auto insert_kwargs = []<size_t J2 = J>(
+                    this auto&& self,
+                    std::vector<PyObject*>& args,
+                    PyObject* kwnames,
+                    size_t kw_idx,
+                    size_t& hash,
+                    auto&& parts,
+                    auto&&... values
+                ) {
+                    if constexpr (J2 < kw_pack_idx<A...>) {
+                        using T = impl::unpack_type<J2, A...>;
+                        constexpr StaticStr name = ArgTraits<T>::name;
+                        args.emplace_back(release(py::to_python(
+                            *impl::unpack_arg<J2>(
+                                std::forward<decltype(values)>(values)...
+                            )
+                        )));
+                        PyTuple_SET_ITEM(
+                            kwnames,
+                            kw_idx++,
+                            release(impl::template_string<name>())
+                        );
+                        hash = impl::hash_combine(
+                            hash,
+                            arg_hash(
+                                std::string_view{"", 0},
+                                args.back(),
+                                impl::ArgKind::POS
+                            )
+                        );
+                        return std::forward<decltype(self)>(
+                            self
+                        ).template operator()<J2 + 1>(
+                            args,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<decltype(parts)>(parts),
+                            std::forward<decltype(values)>(values)...
+                        );
+                    }
+                    if constexpr (J2 < sizeof...(A) && J2 == kw_pack_idx<A...>) {
+                        auto& pack = impl::unpack_arg<J2>(
+                            std::forward<decltype(values)>(values)...
+                        );
+                        auto it = pack.begin();
+                        auto end = pack.end();
+                        while (it != end) {
+                            // postfix++ required to increment before invalidating
+                            auto node = pack.extract(it++);
+                            args.emplace_back(release(py::to_python(
+                                std::move(node.mapped())
+                            )));
+                            PyObject* name = PyUnicode_FromStringAndSize(
+                                node.key().data(),
+                                node.key().size()
+                            );
+                            if (name == nullptr) {
+                                Exception::from_python();
+                            }
+                            PyTuple_SET_ITEM(
+                                kwnames,
+                                kw_idx++,
+                                name  // steals reference
+                            );
+                            hash = impl::hash_combine(
+                                hash,
+                                arg_hash(
+                                    node.key(),
+                                    args.back(),
+                                    impl::ArgKind::KW
+                                )
+                            );
+                        }
+                        return []<size_t... Prev, size_t... Next>(
+                            std::index_sequence<Prev...>,
+                            std::index_sequence<Next...>,
+                            std::vector<PyObject*>& args,
+                            PyObject* kwnames,
+                            size_t kw_idx,
+                            size_t& hash,
+                            auto&& parts,
+                            auto&&... values
+                        ) {
+                            return call<I + 1, J2, K>::create(
+                                args,
+                                kwnames,
+                                kw_idx,
+                                hash,
+                                std::forward<decltype(parts)>(parts),
+                                impl::unpack_arg<Prev>(
+                                    std::forward<decltype(values)>(values)
+                                )...,
+                                impl::unpack_arg<J2 + 1 + Next>(
+                                    std::forward<decltype(values)>(values)...
+                                )...
+                            );
+                        }(
+                            std::make_index_sequence<J2>{},
+                            std::make_index_sequence<sizeof...(A) - (J2 + 1)>{},
+                            args,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<decltype(parts)>(parts),
+                            std::forward<decltype(values)>(values)...
+                        );
+                    }
+                    return call<I + 1, J2, K>::create(
+                        args,
+                        kwnames,
+                        kw_idx,
+                        hash,
+                        std::forward<P>(parts),
+                        std::forward<A>(values)...
+                    );
+                };
+
+                if constexpr (ArgTraits<T>::posonly()) {
+                    if constexpr (J < pos_range) {
+                        return insert_positional(
+                            args,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<P>(parts),
+                            std::forward<A>(values)...
+                        );
+                    }
+                    if constexpr (J == pos_pack_idx<A...>) {
+                        return insert_from_arg_pack(
+                            args,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<P>(parts),
+                            std::forward<A>(values)...
+                        );
+                    }
+                    if constexpr (ArgTraits<T>::opt()) {
+                        return call<I + 1, J, K>::create(
+                            args,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<P>(parts),
+                            std::forward<A>(values)...,
+                            std::forward<P>(parts).template get<K>()
+                        );
+                    }
+                    if constexpr (name.empty()) {
+                        throw TypeError(
+                            "no match for positional-only parameter at "
+                            "index " + StaticStr<>::from_int<I>
+                        );
+                    } else {
+                        throw TypeError(
+                            "no match for positional-only parameter '" +
+                            name + "' at index " + StaticStr<>::from_int<I>
+                        );
+                    }
+                } else if constexpr (ArgTraits<T>::pos()) {
+                    if constexpr (J < pos_range) {
+                        return insert_positional(
+                            args,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<P>(parts),
+                            std::forward<A>(values)...
+                        );
+                    }
+                    if constexpr (J == pos_pack_idx<A...>) {
+                        return insert_from_arg_pack(
+                            args,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<P>(parts),
+                            std::forward<A>(values)...
+                        );
+                    }
+                    if constexpr (Source::template has<name>) {
+                        return insert_keyword(
+                            args,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<P>(parts),
+                            std::forward<A>(values)...
+                        );
+                    }
+                    if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
+                        insert_from_kwarg_pack(  // no early return
+                            args,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<P>(parts),
+                            std::forward<A>(values)...
+                        );
+                    }
+                    if constexpr (ArgTraits<T>::opt()) {
+                        return call<I + 1, J, K>::create(
+                            args,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<P>(parts),
+                            std::forward<A>(values)...,
+                            std::forward<P>(parts).template get<K>()
+                        );
+                    }
+                    throw TypeError(
+                        "no match for parameter '" + name + "' at index " +
+                        StaticStr<>::from_int<I>
+                    );
+                } else if constexpr (ArgTraits<T>::kw()) {
+                    if constexpr (Source::template has<name>) {
+                        return insert_keyword(
+                            args,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<P>(parts),
+                            std::forward<A>(values)...
+                        );
+                    }
+                    if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
+                        insert_from_kwarg_pack(  // no early return
+                            args,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<P>(parts),
+                            std::forward<A>(values)...
+                        );
+                    }
+                    if constexpr (ArgTraits<T>::opt()) {
+                        return call<I + 1, J, K>::create(
+                            args,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<P>(parts),
+                            std::forward<A>(values)...,
+                            std::forward<P>(parts).template get<K>()
+                        );
+                    }
+                    throw TypeError(
+                        "no match for keyword-only parameter '" + name +
+                        "' at index " + StaticStr<>::from_int<I>
+                    );
+                } else if constexpr (ArgTraits<T>::args()) {
+                    return insert_args(
+                        args,
+                        kwnames,
+                        kw_idx,
+                        hash,
+                        std::forward<P>(parts),
+                        std::forward<A>(values)...
+                    );
+                } else if constexpr (ArgTraits<T>::kwargs()) {
+                    return insert_kwargs(
+                        args,
+                        kwnames,
+                        kw_idx,
+                        hash,
+                        std::forward<P>(parts),
+                        std::forward<A>(values)...
+                    );
+                } else {
+                    static_assert(false, "invalid argument kind");
+                    std::unreachable();
+                }
+            }
 
             template <typename P>
             static void normalize(
@@ -6095,7 +6985,7 @@ public:
                             ))
                         );
                     }
-                    auto node = kwargs.extract(name);
+                    auto node = kwargs.extract(std::string_view(name));
                     if (node) {
                         return call<I + 1, K>{}(
                             std::forward<P>(parts),
@@ -6133,7 +7023,7 @@ public:
 
                 // keyword-only
                 } else if constexpr (ArgTraits<T>::kw()) {
-                    auto node = kwargs.extract(name);
+                    auto node = kwargs.extract(std::string_view(name));
                     if (node) {
                         return call<I + 1, K>{}(
                             std::forward<P>(parts),
@@ -6463,7 +7353,7 @@ public:
                         )
                     );
                 } else {
-                    auto node = kwargs.extract(name);
+                    auto node = kwargs.extract(std::string_view(name));
                     if (node) {
                         args.emplace_back(release(impl::implicit_cast<pytype>(
                             reinterpret_borrow<Object>(node.mapped().second)
@@ -6501,7 +7391,7 @@ public:
                 using T = Signature::at<I>;
                 if constexpr (!ArgTraits<T>::opt()) {
                     throw TypeError(
-                        "no match for parameter '" + ArgTraits<T>::name +
+                        "no match for keyword-only parameter '" + ArgTraits<T>::name +
                         "' at index " + StaticStr<>::from_int<I>
                     );
                 }
@@ -6517,7 +7407,7 @@ public:
                 using T = Signature::at<I>;
                 using pytype = impl::python_type<typename ArgTraits<T>::type>;
                 constexpr StaticStr name = ArgTraits<T>::name;
-                auto node = kwargs.extract(name);
+                auto node = kwargs.extract(std::string_view(name));
                 if (node) {
                     args.emplace_back(release(impl::implicit_cast<pytype>(
                         reinterpret_borrow<Object>(node.mapped().second)
@@ -6538,8 +7428,8 @@ public:
                 } else {
                     if constexpr (!ArgTraits<T>::opt()) {
                         throw TypeError(
-                            "no match for parameter '" + name + "' at index " +
-                            StaticStr<>::from_int<I>
+                            "no match for keyword-only parameter '" + name +
+                            "' at index " + StaticStr<>::from_int<I>
                         );
                     }
                 }
@@ -6674,7 +7564,7 @@ public:
             nargs(PyVectorcall_NARGS(nargsf)),
             kwcount(kwnames ? PyTuple_GET_SIZE(kwnames) : 0),
             flags(nargsf - nargs),
-            array(has_offset ? args - 1 : args),
+            array(args - has_offset),
             kwnames(reinterpret_borrow<Object>(kwnames)),
             hash(0)
         {}
@@ -6702,17 +7592,24 @@ public:
                 kwcount ? PyTuple_New(kwcount) : nullptr
             )),
             hash(0)
-         {
-            /// TODO: use the infrastructure from Bind<>::call<I, J, K>::python{}(...)
-            /// to construct the vectorcall array
-            size_t size = nargs + kwcount;
-            converted.reserve(size);
-            //  hash = call<0, 0, 0>::construct(
-            //      std::forward<P>(parts),
-            //      converted,
-            //      kwnames,
-            //      std::forward<Values>(values)...
-            //  );
+        {
+            converted.reserve(nargs + kwcount + 1);
+            converted.emplace_back(nullptr);
+            try {
+                call<0, 0, 0>::create(
+                    converted,
+                    ptr(kwnames),
+                    0,
+                    hash,
+                    std::forward<P>(parts),
+                    std::forward<Values>(values)...
+                );
+            } catch (...) {
+                for (size_t i = 1, n = converted.size(); i < n; ++i) {
+                    Py_DECREF(converted[i]);
+                }
+                throw;
+            }
             array = converted.data();
         }
 
@@ -6860,52 +7757,54 @@ public:
             if (normalized()) {
                 return *this;
             }
-            converted.reserve(Partial::n + nargs + kwcount);
+            size_t n = nargs + kwcount + Partial::n;
+            size_t n_kw = kwcount + call<0, 0, 0>::partial_keywords(
+                /// TODO: pass the required arguments
+            );
+            converted.reserve(n + 1);
+            converted.emplace_back(nullptr);
+            Object old_kwnames = std::move(kwnames);
             try {
-                if (kwcount) {
-                    Kwargs kwargs {array, nargs, ptr(kwnames), kwcount};
-                    kwnames = reinterpret_steal<Object>(
-                        PyTuple_New(Partial::n_kw + kwcount)
-                    );
-                    call<0, 0, 0>(
+                if (n_kw) {
+                    Kwargs kwargs {array, nargs, ptr(old_kwnames), kwcount};
+                    kwnames = reinterpret_steal<Object>(PyTuple_New(n_kw));
+                    call<0, 0, 0>::normalize(
                         converted,
                         ptr(kwnames),
                         0,
                         hash,
                         std::forward<P>(parts),
-                        array,
+                        array + has_offset,
                         0,
                         nargs,
                         kwargs
                     );
                 } else {
-                    if constexpr (Partial::n_kw) {
-                        kwnames = reinterpret_steal<Object>(
-                            PyTuple_New(Partial::n_kw)
-                        );
-                    }
-                    call<0, 0, 0>(
+                    call<0, 0, 0>::normalize(
                         converted,
-                        ptr(kwnames),
+                        nullptr,
                         0,
                         hash,
                         std::forward<P>(parts),
-                        array,
+                        array + has_offset,
                         0,
                         nargs
                     );
                 }
             } catch (...) {
-                for (PyObject* item : converted) {
-                    Py_DECREF(item);
+                for (size_t i = 1, end = converted.size(); i < end; ++i) {
+                    Py_DECREF(converted[i]);
                 }
+                converted.clear();
+                kwnames = std::move(old_kwnames);
                 hash = 0;
                 throw;
             }
             array = converted.data();
-            nargs = nargs + Partial::n_posonly;
-            kwcount = kwcount + Partial::n_kw;
+            nargs = n - n_kw;
+            kwcount = n_kw;
             flags |= PY_VECTORCALL_ARGUMENTS_OFFSET;
+            has_offset = true;
             return *this;
         }
 
@@ -6995,6 +7894,10 @@ public:
             }
         }
 
+        /// TODO: it might be possible to delegate to this method for the optimized
+        /// case from Bind<> where the argument array can be stack-allocated by calling
+        /// the naive constructor and then immediately invoking this function
+
         /* Invoke a C++ function using denormalized vectorcall arguments, by providing
         separate partial arguments that will be directly merged into the C++ argument
         list, without any extra allocations. */
@@ -7007,7 +7910,7 @@ public:
                     std::forward<P>(parts),
                     std::forward<D>(defaults),
                     kwargs,
-                    converted.empty() ? args : converted.data(),
+                    converted.empty() ? args : converted.data(),  // TODO: just pass the array
                     0,
                     nargs,
                     std::forward<F>(func)
