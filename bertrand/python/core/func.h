@@ -1116,6 +1116,86 @@ private:
     template <typename A, typename... As>
     static constexpr bool kw_pack_idx<A, As...> = kw_pack_idx<As...> + 1;
 
+    template <typename F, typename... A>
+    static constexpr decltype(auto) invoke_with_packs(F&& func, A&&... args) {
+        using Source = Signature<Return(A...)>;
+        if constexpr (Source::has_args && Source::has_kwargs) {
+            return []<size_t... Prev, size_t... Next>(
+                std::index_sequence<Prev...>,
+                std::index_sequence<Next...>,
+                auto&& func,
+                auto&&... args
+            ) {
+                return std::forward<decltype(func)>(func)(
+                    impl::unpack_arg<Prev>(
+                        std::forward<decltype(args)>(args)...
+                    )...,
+                    PositionalPack(impl::unpack_arg<Source::args_idx>(
+                        std::forward<decltype(args)>(args)...
+                    )),
+                    impl::unpack_arg<Source::args_idx + 1 + Next>(
+                        std::forward<decltype(args)>(args)...
+                    )...,
+                    KeywordPack(impl::unpack_arg<Source::kwargs_idx>(
+                        std::forward<decltype(args)>(args)...
+                    ))
+                );
+            }(
+                std::make_index_sequence<Source::args_idx>{},
+                std::make_index_sequence<
+                    Source::kwargs_idx - (Source::args_idx + 1)
+                >{},
+                std::forward<F>(func),
+                std::forward<A>(args)...
+            );
+        } else if constexpr (Source::has_args) {
+            return []<size_t... Prev, size_t... Next>(
+                std::index_sequence<Prev...>,
+                std::index_sequence<Next...>,
+                auto&& func,
+                auto&&... args
+            ) {
+                return std::forward<decltype(func)>(func)(
+                    impl::unpack_arg<Prev>(
+                        std::forward<decltype(args)>(args)...
+                    )...,
+                    PositionalPack(impl::unpack_arg<Source::args_idx>(
+                        std::forward<decltype(args)>(args)...
+                    )),
+                    impl::unpack_arg<Source::args_idx + 1 + Next>(
+                        std::forward<decltype(args)>(args)...
+                    )...
+                );
+            }(
+                std::make_index_sequence<Source::args_idx>{},
+                std::make_index_sequence<Source::n - (Source::args_idx + 1)>{},
+                std::forward<F>(func),
+                std::forward<A>(args)...
+            );
+        } else if constexpr (Source::has_kwargs) {
+            return []<size_t... Prev>(
+                std::index_sequence<Prev...>,
+                auto&& func,
+                auto&&... args
+            ) {
+                return std::forward<decltype(func)>(func)(
+                    impl::unpack_arg<Prev>(
+                        std::forward<decltype(args)>(args)...
+                    )...,
+                    KeywordPack(impl::unpack_arg<Source::kwargs_idx>(
+                        std::forward<decltype(args)>(args)...
+                    ))
+                );
+            }(
+                std::make_index_sequence<Source::kwargs_idx>{},
+                std::forward<F>(func),
+                std::forward<A>(args)...
+            );
+        } else {
+            return std::forward<F>(func)(std::forward<A>(args)...);
+        }
+    }
+
     /* Conditionally convert to the Arg<> annotation at index I using aggregate
     initialization to extend the lifetimes of temporaries. */
     template <size_t I, typename T> requires (I < Signature::n)
@@ -4997,7 +5077,7 @@ public:
     their C++ counterparts, and corresponding type safety guarantees. */
     struct Vectorcall {
     private:
-        static constexpr std::string_view arg_name(PyObject* name) {
+        static std::string_view arg_name(PyObject* name) {
             Py_ssize_t len;
             const char* str = PyUnicode_AsUTF8AndSize(name, &len);
             if (str == nullptr) {
@@ -5044,16 +5124,8 @@ public:
                     map.reserve(kwcount);
                     for (size_t i = 0; i < kwcount; ++i) {
                         PyObject* kwname = PyTuple_GET_ITEM(kwnames, i);
-                        Py_ssize_t len;
-                        const char* name = PyUnicode_AsUTF8AndSize(
-                            kwname,
-                            &len
-                        );
-                        if (name == nullptr) {
-                            Exception::from_python();
-                        }
                         map.emplace(
-                            std::string_view{name, static_cast<size_t>(len)},
+                            arg_name(kwname),
                             Value{kwname, array[nargs + i]}
                         );
                     }
@@ -5095,8 +5167,8 @@ public:
         sequences and fold expressions, which are inlined into the final call. */
         template <size_t I, size_t J, size_t K>
         struct call {  // terminal case
-            /// TODO: need some sort of way to calculate the true number of combined
-            /// partial/source keywords
+            template <typename... A>
+            static constexpr size_t n_partial_kw = 0;
 
             template <typename P, typename... A>
             static void create(
@@ -5218,6 +5290,27 @@ public:
             template <size_t K2>
                 requires (K2 < Partial::n && Partial::template rfind<K2> == I)
             static constexpr size_t consecutive<K2> = consecutive<K2 + 1> + 1;
+
+            template <typename... A>
+            static constexpr size_t n_partial_kw = [] {
+                using T = Signature::at<I>;
+                constexpr size_t next = call<
+                    I + 1,
+                    J,
+                    K + consecutive<K>
+                >::template n_partial_kw<A...>;
+                if constexpr (ArgTraits<T>::kwonly() || ArgTraits<T>::kwargs()) {
+                    return next + consecutive<K>;
+                } else if constexpr (ArgTraits<Signature::at<I>>::kw()) {
+                    constexpr size_t cutoff = std::min(
+                        Signature::kw_idx,
+                        Signature::kwargs_idx
+                    );
+                    return next + (J >= cutoff);
+                } else {
+                    return next;
+                }
+            }();
 
             template <typename P, typename... A>
             static void create(
@@ -6213,8 +6306,34 @@ public:
                 !(K < Partial::n && Partial::template rfind<K> == I)
             )
         struct call<I, J, K> {  // insert Python argument(s) or default value
-            /// TODO: need a way to calculate the true number of combined partial/source
-            /// keywords, which will be used to determine the size of the kwnames tuple.
+            template <typename... A>
+            static constexpr size_t n_partial_kw = [] {
+                /// NOTE: this always overestimates J with respect to optional
+                /// arguments, but it doesn't matter because all we care about is the
+                /// location of J relative to the last positional argument in the
+                /// source signature, and no missing arguments can appear before that,
+                /// Thus, any subsequent positional-or-keyword arguments with partial
+                /// values will be promoted to keywords in order to allow Python to
+                /// insert the correct defaults, without needing to manually specify
+                /// them here.
+                using Source = Signature<Return(A...)>;
+                if constexpr (Source::has_args && J == Source::args_idx) {
+                    return call<
+                        std::min(
+                            Signature::kwonly_idx,
+                            Signature::kwargs_idx
+                        ),
+                        J + 1,
+                        K
+                    >::template n_partial_kw<A...>;
+                } else {
+                    return call<
+                        I + 1,
+                        J + 1,
+                        K
+                    >::template n_partial_kw<A...>;
+                }
+            }();
 
             template <typename P, typename... A>
             static void create(
@@ -7680,20 +7799,21 @@ public:
         leaving the lowest bits available for our use. */
         enum class Flags : size_t {
             NORMALIZED      = 0b1,
-            ALL             = 0b1,  // covers all extra flags
+            ALL             = 0b1,  // masks all extra flags
         };
 
     public:
-        size_t nargs;
         size_t kwcount;
+        size_t nargs;
         size_t flags;
         Object kwnames;
         PyObject** storage;
         PyObject* const* array;
         size_t hash;
 
-        /* Adopt a vectorcall array directly from Python, without any extra
-        normalization. */
+        /* Adopt an unnormalized vectorcall array directly from Python, without any
+        extra work.  Such an argument array can be called directly with partial
+        arguments to avoid extra allocations during the call procedure. */
         Vectorcall(PyObject* const* args, size_t nargsf, PyObject* kwnames) :
             nargs(PyVectorcall_NARGS(nargsf)),
             kwcount(kwnames ? PyTuple_GET_SIZE(kwnames) : 0),
@@ -7704,7 +7824,10 @@ public:
             hash(0)
         {}
 
-        /* Build a heap-allocated vectorcall array from C++. */
+        /* Build a normalized vectorcall array from C++.  Note that this will always
+        involve a heap allocation for the array itself, since the possible presence of
+        parameter packs in the source arguments means its size cannot be known at
+        compile time. */
         template <impl::inherits<Partial> P, typename... A>
             requires (
                 Bind<A...>::proper_argument_order &&
@@ -7717,8 +7840,31 @@ public:
                 Bind<A...>::satisfies_required_args
             )
         Vectorcall(P&& parts, A&&... args) :
-            nargs(0),  /// TODO: calculate this from Partial::n_posonly and unpacking the values
-            kwcount(0),  /// TODO: calculate this from Partial::n_kwonly and unpacking the values
+            kwcount([](auto&&... args) {
+                using Source = Signature<Vectorcall(A...)>;
+                constexpr size_t base =
+                    call<0, 0, 0>::template partial_keywords<A...> + Source::n_kw;
+                if constexpr (Source::has_kwargs) {
+                    auto& pack = impl::unpack_arg<Source::kwargs_idx>(
+                        std::forward<decltype(args)>(args)...
+                    );
+                    return base + pack.size();
+                }
+                return base;
+            }(std::forward<A>(args)...)),
+            nargs([](auto&&... args) {
+                using Source = Signature<Return(A...)>;
+                constexpr size_t base =
+                    (Partial::n - call<0, 0, 0>::template partial_keywords<A...>) +
+                    Source::n_pos;
+                if constexpr (Source::has_args) {
+                    auto& pack = impl::unpack_arg<Source::args_idx>(
+                        std::forward<decltype(args)>(args)...
+                    );
+                    return base + pack.size();
+                }
+                return base;
+            }(std::forward<A>(args)...)),
             flags(PY_VECTORCALL_ARGUMENTS_OFFSET | Flags::NORMALIZED),
             kwnames([](size_t kwcount) {
                 if (kwcount) {
@@ -7739,7 +7885,26 @@ public:
             size_t kw_idx = 0;
             try {
                 storage[0] = nullptr;
-                call<0, 0, 0>::create(
+                invoke_with_packs(
+                    [](
+                        PyObject** array,
+                        size_t& idx,
+                        PyObject* kwnames,
+                        size_t& kw_idx,
+                        size_t& hash,
+                        auto&& parts,
+                        auto&&... args
+                    ){
+                        call<0, 0, 0>::create(
+                            array,
+                            idx,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<decltype(parts)>(parts),
+                            std::forward<decltype(args)>(args)...
+                        );
+                    },
                     storage + 1,
                     idx,
                     ptr(kwnames),
@@ -7757,8 +7922,14 @@ public:
             }
         }
 
-        /* Build a stack-allocated vectorcall array from C++ by providing the array
-        buffer as an out parameter, whose lifetime is managed in an external scope. */
+        /* Build a normalized vectorcall array from C++.  This is identical to the
+        generalized C++ constructor except that the underlying array is stack-allocated
+        and managed in an external scope, instead of using the heap.  The incoming
+        arguments must not include any parameter packs so that the size of the array
+        can be verified at compile time.  Using this constructor where possible avoids
+        an extra heap allocation, thereby improving performance.  The user must ensure
+        that the lifetime of the array exceeds that of the Vectorcall arguments, and
+        any existing contents will be overwritten. */
         template <impl::inherits<Partial> P, typename... A>
             requires (
                 !(impl::arg_pack<A> || ...) &&
@@ -7777,8 +7948,11 @@ public:
             P&& parts,
             A&&... args
         ) :
-            nargs(0),  /// TODO: calculate this from Partial::n_posonly and unpacking the values
-            kwcount(0),  /// TODO: calculate this from Partial::n_kwonly and unpacking the values
+            kwcount(
+                call<0, 0, 0>::template n_partial_kw<A...> +
+                Signature<Vectorcall(A...)>::n_kw
+            ),
+            nargs(Partial::n + sizeof...(A) - kwcount),
             flags(PY_VECTORCALL_ARGUMENTS_OFFSET | Flags::NORMALIZED),
             kwnames([](size_t kwcount) {
                 if (kwcount) {
@@ -7799,7 +7973,26 @@ public:
             size_t kw_idx = 0;
             try {
                 out[0] = nullptr;
-                call<0, 0, 0>::create(
+                invoke_with_packs(
+                    [](
+                        PyObject** array,
+                        size_t& idx,
+                        PyObject* kwnames,
+                        size_t& kw_idx,
+                        size_t& hash,
+                        auto&& parts,
+                        auto&&... args
+                    ){
+                        call<0, 0, 0>::create(
+                            array,
+                            idx,
+                            kwnames,
+                            kw_idx,
+                            hash,
+                            std::forward<decltype(parts)>(parts),
+                            std::forward<decltype(args)>(args)...
+                        );
+                    },
                     out.data() + 1,
                     idx,
                     ptr(kwnames),
@@ -7817,8 +8010,8 @@ public:
         }
 
         Vectorcall(const Vectorcall& other) :
-            nargs(other.nargs),
             kwcount(other.kwcount),
+            nargs(other.nargs),
             flags(other.flags),
             kwnames(other.kwnames),
             storage(nullptr),
@@ -7837,16 +8030,16 @@ public:
         }
 
         Vectorcall(Vectorcall&& other) :
-            nargs(other.nargs),
             kwcount(other.kwcount),
+            nargs(other.nargs),
             flags(other.flags),
             kwnames(other.kwnames),
             storage(other.storage),
             array(other.array),
             hash(other.hash)
         {
-            other.nargs = 0;
             other.kwcount = 0;
+            other.nargs = 0;
             other.flags = 0;
             other.kwnames = nullptr;
             other.storage = nullptr;
@@ -7863,8 +8056,8 @@ public:
                     delete[] storage;
                     storage = nullptr;
                 }
-                nargs = other.nargs;
                 kwcount = other.kwcount;
+                nargs = other.nargs;
                 flags = other.flags;
                 kwnames = other.kwnames;
                 if (other.storage) {
@@ -7892,15 +8085,15 @@ public:
                     delete[] storage;
                     storage = nullptr;
                 }
-                nargs = other.nargs;
                 kwcount = other.kwcount;
+                nargs = other.nargs;
                 flags = other.flags;
                 kwnames = other.kwnames;
                 storage = other.storage;
                 array = other.array;
                 hash = other.hash;
-                other.nargs = 0;
                 other.kwcount = 0;
+                other.nargs = 0;
                 other.flags = 0;
                 other.kwnames = reinterpret_steal<Object>(nullptr);
                 other.storage = nullptr;
@@ -8056,8 +8249,9 @@ public:
         void validate() const {
             constexpr Signature sig;
             uint64_t mask = 0;
+            size_t offset = this->offset();
             for (size_t i = 0; i < nargs; ++i) {
-                Object value = reinterpret_borrow<Object>(array[i]);
+                Object value = reinterpret_borrow<Object>(array[i + offset]);
                 const Callback* callback = sig[i];
                 if (!callback) {
                     throw TypeError(
@@ -8074,12 +8268,12 @@ public:
                 }
                 mask |= callback->mask;
             }
-            for (size_t i = 0; i < kwcount; ++i) {
+            for (size_t i = 0, transition = offset + nargs; i < kwcount; ++i) {
                 Object name = reinterpret_borrow<Object>(
                     PyTuple_GET_ITEM(ptr(kwnames), i)
                 );
                 Object value = reinterpret_borrow<Object>(
-                    array[i + nargs]
+                    array[transition + i]
                 );
                 const Callback* callback = sig[arg_name(ptr(name))];
                 if (!callback) {
@@ -8107,7 +8301,7 @@ public:
                 uint64_t missing = Signature::required & ~mask;
                 std::string msg = "missing required arguments: [";
                 size_t i = 0;
-                while (i < n) {
+                while (i < Signature::n) {
                     if (missing & (1ULL << i)) {
                         const Callback& callback = positional_table[i];
                         if (callback.name.empty()) {
@@ -8120,13 +8314,13 @@ public:
                     }
                     ++i;
                 }
-                while (i < n) {
+                while (i < Signature::n) {
                     if (missing & (1ULL << i)) {
                         const Callback& callback = positional_table[i];
-                        if (check.name.empty()) {
+                        if (callback.name.empty()) {
                             msg += ", <parameter " + std::to_string(i) + ">";
                         } else {
-                            msg += ", '" + std::string(check.name) + "'";
+                            msg += ", '" + std::string(callback.name) + "'";
                         }
                     }
                     ++i;
@@ -8135,10 +8329,6 @@ public:
                 throw TypeError(msg);
             }
         }
-
-        /// TODO: it might be possible to delegate to this method for the optimized
-        /// case from Bind<> where the argument array can be stack-allocated by calling
-        /// the naive constructor and then immediately invoking this function
 
         /* Invoke a C++ function using denormalized vectorcall arguments, by providing
         separate partial arguments that will be directly merged into the C++ argument
@@ -8174,7 +8364,9 @@ public:
         template <impl::inherits<Defaults> D, typename F>
             requires (Signature::invocable<F>)
         Return operator()(D&& defaults, F&& func) const {
-            /// TODO: complications
+            /// TODO: it might be possible to delegate to this method for the optimized
+            /// case from Bind<> where the argument array can be stack-allocated by calling
+            /// the naive constructor and then immediately invoking this function
         }
 
         /* Invoke a Python function using the stored arguments, converting the result
