@@ -1738,12 +1738,7 @@ public:
         return {};
     }
 
-    /// TODO: the purpose of the Bind<...>{}(partial, pyfunc, args...) method is to
-    /// avoid any extra heap allocations if I can help it.  If the arguments do not
-    /// contain positional or keyword parameter packs (most common case), then the
-    /// vectorcall array can be allocated on the stack, which will be a lot faster.
-    /// in the common case that a Python function is being called from C++ without any
-    /// fancy syntax.
+    /// TODO: delete python interactions in Bind<...>
 
     /* Bind a C++ argument list to the enclosing signature, inserting default
     values and partial arguments where necessary to satisfy the signature.  This
@@ -7845,10 +7840,9 @@ public:
                 constexpr size_t base =
                     call<0, 0, 0>::template partial_keywords<A...> + Source::n_kw;
                 if constexpr (Source::has_kwargs) {
-                    auto& pack = impl::unpack_arg<Source::kwargs_idx>(
+                    return base + impl::unpack_arg<Source::kwargs_idx>(
                         std::forward<decltype(args)>(args)...
-                    );
-                    return base + pack.size();
+                    ).size();
                 }
                 return base;
             }(std::forward<A>(args)...)),
@@ -7858,10 +7852,9 @@ public:
                     (Partial::n - call<0, 0, 0>::template partial_keywords<A...>) +
                     Source::n_pos;
                 if constexpr (Source::has_args) {
-                    auto& pack = impl::unpack_arg<Source::args_idx>(
+                    return base + impl::unpack_arg<Source::args_idx>(
                         std::forward<decltype(args)>(args)...
-                    );
-                    return base + pack.size();
+                    ).size();
                 }
                 return base;
             }(std::forward<A>(args)...)),
@@ -8404,8 +8397,36 @@ public:
             Bind<A...>::satisfies_required_args &&
             Bind<A...>::can_convert
         )
-    [[nodiscard]] static Vectorcall vectorcall(P&& partial, A&&... args) {
+    [[nodiscard]] static Vectorcall vectorcall(
+        P&& partial,
+        A&&... args
+    ) {
         return {std::forward<P>(partial), std::forward<A>(args)...};
+    }
+
+    template <impl::inherits<Partial> P, typename... A>
+        requires (
+            !(impl::arg_pack<A> || ...) &&
+            !(impl::kwarg_pack<A> || ...) &&
+            Bind<A...>::proper_argument_order &&
+            Bind<A...>::no_qualified_arg_annotations &&
+            Bind<A...>::no_duplicate_args &&
+            Bind<A...>::no_extra_positional_args &&
+            Bind<A...>::no_extra_keyword_args &&
+            Bind<A...>::no_conflicting_values &&
+            Bind<A...>::satisfies_required_args &&
+            Bind<A...>::can_convert
+        )
+    [[nodiscard]] static Vectorcall vectorcall(
+        std::array<PyObject*, Partial::n + sizeof...(A) + 1>& out,
+        P&& partial,
+        A&&... args
+    ) {
+        return {
+            out,
+            std::forward<P>(partial),
+            std::forward<A>(args)...
+        };
     }
 
     /* A trie-based data structure containing a set of dynamic overloads for a
@@ -11190,24 +11211,51 @@ public:
                 std::forward<A>(args)...
             );
         }
-        Vectorcall vectorcall{std::forward<P>(partial), std::forward<A>(args)...};
-        PyObject* cached = overloads.cache_lookup(vectorcall.hash);
-        if (cached) {
-            return vectorcall(cached);
-        }
-        auto it = overloads.search(vectorcall);
-        /// NOTE: it is impossible for the search to fail, since the arguments are
-        /// validated at compile time and the overload trie is known not to be empty.
-        const Object& overload = *it;
-        if (overload.is(overloads.fallback())) {
-            return Bind<A...>{}(
+
+        using Source = Signature<Return(A...)>;
+        if constexpr (!Source::has_args && !Source::has_kwargs) {
+            /// NOTE: value array can be stack allocated in this case
+            std::array<PyObject*, Partial::n + sizeof...(A) + 1> array;
+            Vectorcall vectorcall{
+                array,
                 std::forward<P>(partial),
-                std::forward<D>(defaults),
-                std::forward<F>(func),
                 std::forward<A>(args)...
-            );
+            };
+            PyObject* cached = overloads.cache_lookup(vectorcall.hash);
+            if (cached) {
+                return vectorcall(cached);
+            }
+            /// NOTE: it is impossible for the search to fail, since the arguments are
+            /// validated at compile time and the overload trie is known not to be empty
+            auto it = overloads.search(vectorcall);
+            const Object& overload = *it;
+            if (overload.is(overloads.fallback())) {
+                return Bind<A...>{}(
+                    std::forward<P>(partial),
+                    std::forward<D>(defaults),
+                    std::forward<F>(func),
+                    std::forward<A>(args)...
+                );
+            }
+            return vectorcall(ptr(overload));
+        } else {
+            Vectorcall vectorcall{std::forward<P>(partial), std::forward<A>(args)...};
+            PyObject* cached = overloads.cache_lookup(vectorcall.hash);
+            if (cached) {
+                return vectorcall(cached);
+            }
+            auto it = overloads.search(vectorcall);
+            const Object& overload = *it;
+            if (overload.is(overloads.fallback())) {
+                return Bind<A...>{}(
+                    std::forward<P>(partial),
+                    std::forward<D>(defaults),
+                    std::forward<F>(func),
+                    std::forward<A>(args)...
+                );
+            }
+            return vectorcall(ptr(overload));
         }
-        return vectorcall(ptr(overload));
     }
 
     /* Call a Python function from C++ using Python-style arguments. */
@@ -11226,8 +11274,22 @@ public:
         P&& partial,
         PyObject* func,
         A&&... args
-    ) {
-        return Bind<A...>{}(std::forward<P>(partial), func, std::forward<A>(args)...);
+    ) { 
+        using Source = Signature<Return(A...)>;
+        if constexpr (!Source::has_args && !Source::has_kwargs) {
+            /// NOTE: value array can be stack allocated in this case
+            std::array<PyObject*, Partial::n + sizeof...(A) + 1> array;
+            return Vectorcall{
+                array,
+                std::forward<P>(partial),
+                std::forward<A>(args)...
+            }(func);
+        } else {
+            return Vectorcall{
+                std::forward<P>(partial),
+                std::forward<A>(args)...
+            }(func);
+        }
     }
 
     /* Call a Python function from C++ using Python-style arguments with overloads. */
@@ -11248,26 +11310,49 @@ public:
         PyObject* func,
         A&&... args
     ) {
-        if (overloads.empty()) {
-            return Bind<A...>{}(
+        using Source = Signature<Return(A...)>;
+        if constexpr (!Source::has_args && !Source::has_kwargs) {
+            /// NOTE: value array can be stack allocated in this case
+            std::array<PyObject*, Partial::n + sizeof...(A) + 1> array;
+            Vectorcall vectorcall{
+                array,
                 std::forward<P>(partial),
-                func,
                 std::forward<A>(args)...
-            )
+            };
+            if (overloads.empty()) {
+                return vectorcall(func);
+            }
+            PyObject* cached = overloads.cache_lookup(vectorcall.hash);
+            if (cached) {
+                return vectorcall(cached);
+            }
+            /// NOTE: it is impossible for the search to fail, since the arguments are
+            /// validated at compile time and the overload trie is known not to be empty
+            auto it = overloads.search(vectorcall);
+            const Object& overload = *it;
+            if (overload.is(overloads.fallback())) {
+                return vectorcall(func);
+            }
+            return vectorcall(ptr(overload));
+        } else {
+            Vectorcall vectorcall{
+                std::forward<P>(partial),
+                std::forward<A>(args)...
+            };
+            if (overloads.empty()) {
+                return vectorcall(func);
+            }
+            PyObject* cached = overloads.cache_lookup(vectorcall.hash);
+            if (cached) {
+                return vectorcall(cached);
+            }
+            auto it = overloads.search(vectorcall);
+            const Object& overload = *it;
+            if (overload.is(overloads.fallback())) {
+                return vectorcall(func);
+            }
+            return vectorcall(ptr(overload));
         }
-        Vectorcall vectorcall {std::forward<P>(partial), std::forward<A>(args)...};
-        PyObject* cached = overloads.cache_lookup(vectorcall.hash);
-        if (cached) {
-            return vectorcall(cached);
-        }
-        auto it = overloads.search(vectorcall);
-        /// NOTE: it is impossible for the search to fail, since the arguments are
-        /// validated at compile time and the overload trie is known not to be empty.
-        const Object& overload = *it;
-        if (overload.is(overloads.fallback())) {
-            return vectorcall(func);
-        }
-        return vectorcall(ptr(overload));
     }
 
     /* Call a C++ function from Python. */
