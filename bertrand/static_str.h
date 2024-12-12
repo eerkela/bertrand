@@ -1889,8 +1889,17 @@ namespace impl {
     template <StaticStr... Keys>
     struct perfect_hash {
     private:
-        static constexpr std::pair<size_t, size_t> minmax =
-            std::minmax({Keys.size()...});
+        using minmax_type = std::pair<size_t, size_t>;
+
+        template <size_t>
+        struct _minmax {
+            static constexpr minmax_type value = std::minmax({Keys.size()...});
+        };
+        template <>
+        struct _minmax<0> {
+            static constexpr minmax_type value = {0, 0};
+        };
+        static constexpr minmax_type minmax = _minmax<sizeof...(Keys)>::value;
 
     public:
         static constexpr size_t table_size = next_prime(
@@ -1993,8 +2002,17 @@ namespace impl {
     template <StaticStr... Keys>
     struct minimal_perfect_hash {
     private:
-        static constexpr std::pair<size_t, size_t> minmax =
-            std::minmax({Keys.size()...});
+        using minmax_type = std::pair<size_t, size_t>;
+
+        template <size_t>
+        struct _minmax {
+            static constexpr minmax_type value = std::minmax({Keys.size()...});
+        };
+        template <>
+        struct _minmax<0> {
+            static constexpr minmax_type value = {0, 0};
+        };
+        static constexpr minmax_type minmax = _minmax<sizeof...(Keys)>::value;
 
     public:
         static constexpr size_t table_size = sizeof...(Keys);

@@ -141,17 +141,6 @@ namespace impl {
 }
 
 
-/// TODO: ok, now we're cooking.  Now that I have a robust implementation for
-/// compile-time minimal perfect hash tables, I can generate one for every signature
-/// to simplify keyword argument handling, etc.  That comes with the benefit that
-/// the map can be queried at runtime with minimal cost, so the same data structure
-/// can also be used to validate Python arguments at runtime.  In fact, if every
-/// Signature holds such a table as a constexpr member, then I would also get it
-/// for free on defaults and partials, since they rely on nested inner signatures,
-/// and can just directly forward everything.  That means I can then use those maps
-/// in the Vectorcall::normalize() algorithm as well, in order to ensure that there
-/// are never any conflicts when inserting partial arguments, etc.
-
 /// TODO: also, Signature can potentially also expose a helper type that converts
 /// the signature to a canonicalized Python form, which would be used whenever a
 /// `py::def` is converted into a `py::Function`.  That would mean the Python
@@ -318,8 +307,7 @@ public:
     using with_args = Signature<Return(As...)>;
 
     template <typename Func>
-    static constexpr bool invocable =
-        std::is_invocable_r_v<Return, Func, Args...>;
+    static constexpr bool invocable = std::is_invocable_r_v<Return, Func, Args...>;
 
     /* Holds a series of template constraints that can be used to validate function
     signatures according to Python calling conventions. */
@@ -924,60 +912,69 @@ private:
         },
     };
 
-    template <typename, size_t, typename...>
-    struct extract_keywords;
-    template <typename... out, size_t I, typename... Ts>
-    struct extract_keywords<args<out...>, I, Ts...> {
-        using type = StaticMap<size_t, ArgTraits<out>::name...>;
-        static constexpr type operator()(auto&&... indices) {
-            return {std::forward<decltype(indices)>(indices)...};
-        }
+    template <bool valid>
+    struct get_keyword_table {
+        using KeywordTable = StaticMap<size_t>;
+        static constexpr KeywordTable table = {};
     };
-    template <typename... out, size_t I, typename T, typename... Ts>
-    struct extract_keywords<args<out...>, I, T, Ts...> {
-        template <typename>
-        struct filter {
-            using type = args<out...>;
-            static constexpr auto operator()(auto&&... indices) noexcept {
-                return extract_keywords<type, I + 1, Ts...>{}(
-                    std::forward<decltype(indices)>(indices)...
-                );
+    template <>
+    struct get_keyword_table<true> {
+        template <typename, size_t, typename...>
+        struct extract_keywords;
+        template <typename... out, size_t I, typename... Ts>
+        struct extract_keywords<args<out...>, I, Ts...> {
+            using type = StaticMap<size_t, ArgTraits<out>::name...>;
+            static constexpr type operator()(auto&&... indices) {
+                return {std::forward<decltype(indices)>(indices)...};
             }
         };
-        template <typename U> requires (ArgTraits<U>::kw())
-        struct filter<U> {
-            using type = args<out..., U>;
+        template <typename... out, size_t I, typename T, typename... Ts>
+        struct extract_keywords<args<out...>, I, T, Ts...> {
+            template <typename>
+            struct filter {
+                using type = args<out...>;
+                static constexpr auto operator()(auto&&... indices) noexcept {
+                    return extract_keywords<type, I + 1, Ts...>{}(
+                        std::forward<decltype(indices)>(indices)...
+                    );
+                }
+            };
+            template <typename U> requires (ArgTraits<U>::kw())
+            struct filter<U> {
+                using type = args<out..., U>;
+                static constexpr auto operator()(auto&&... indices) noexcept {
+                    return extract_keywords<type, I + 1, Ts...>{}(
+                        std::forward<decltype(indices)>(indices)...,
+                        I
+                    );
+                }
+            };
+            using type = extract_keywords<typename filter<T>::type, I + 1, Ts...>::type;
             static constexpr auto operator()(auto&&... indices) noexcept {
-                return extract_keywords<type, I + 1, Ts...>{}(
-                    std::forward<decltype(indices)>(indices)...,
-                    I
-                );
+                return filter<T>{}(std::forward<decltype(indices)>(indices)...);
             }
         };
-        using type = extract_keywords<typename filter<T>::type, I + 1, Ts...>::type;
-        static constexpr auto operator()(auto&&... indices) noexcept {
-            return filter<T>{}(std::forward<decltype(indices)>(indices)...);
-        }
+        using KeywordTable = extract_keywords<args<>, 0, Args...>::type;
+        static constexpr KeywordTable table = extract_keywords<args<>, 0, Args...>{}();
     };
 
-    /* A flat array of callback objects aligned to the indices of the enclosing
-    signature. */
     using PositionalTable = std::array<Callback, n>;
     static constexpr auto positional_table =
-        []<size_t... Is>(std::index_sequence<Is...>) -> PositionalTable {
-            return {Callback::template create<Is>()...};
+        []<size_t... Is>(std::index_sequence<Is...>) {
+            return PositionalTable{Callback::template create<Is>()...};
         }(std::make_index_sequence<n>{});
 
-    /// TODO: keyword table should not be initialized if there are conflicting
-    /// keyword argument names, so as not to cause a compile-time error before that
-    /// condition has been checked.
+    using KeywordTable = get_keyword_table<
+        args_fit_within_bitset &&
+        proper_argument_order &&
+        no_duplicate_args
+    >::KeywordTable;
+    static constexpr KeywordTable keyword_table = get_keyword_table<
+        args_fit_within_bitset &&
+        proper_argument_order &&
+        no_duplicate_args
+    >::table;
 
-    /* A compile-time minimal perfect hash table mapping keyword names to indices in
-    the positional table that can be used to validate keyword arguments. */
-    using KeywordTable = extract_keywords<args<>, 0, Args...>::type;
-    static constexpr auto keyword_table = extract_keywords<args<>, 0, Args...>{}();
-
-    /* Formulate a new signature without any partial arguments. */
     template <typename out, typename...>
     struct _unbind { using type = out; };
     template <typename R, typename... out, typename A, typename... As>
@@ -988,8 +985,6 @@ private:
         >::type;
     };
 
-    /* A single entry in the ::Defaults or ::Partial tuple, which can be easily
-    cross-referenced with the enclosing signature. */
     template <size_t I, StaticStr Name, typename T>
     struct Element {
         static constexpr size_t index = I;
@@ -1001,11 +996,6 @@ private:
         }
     };
 
-    /* Source positional packs must be converted to this type, which
-    encloses a pair of iterators over the positional arguments.  The
-    iterators are consumed as arguments are extracted from the pack,
-    allowing for efficient validation by simply checking whether all
-    elements were consumed, and listing those that weren't. */
     template <typename Pack>
     struct PositionalPack {
         std::ranges::iterator_t<const Pack&> begin;
@@ -1041,12 +1031,6 @@ private:
         }
     };
 
-    /* Source keyword packs must be converted to this type, which encloses
-    a temporary map of keyword names to their corresponding values.  The
-    `.extract()` method is used to destructively search the map and fill
-    in corresponding values, allowing for efficient validation by simply
-    checking whether the map is empty, and listing any remaining contents
-    if not. */
     template <typename Pack>
     struct KeywordPack {
         using Map = std::unordered_map<
@@ -1196,8 +1180,6 @@ private:
         }
     }
 
-    /* Conditionally convert to the Arg<> annotation at index I using aggregate
-    initialization to extend the lifetimes of temporaries. */
     template <size_t I, typename T> requires (I < Signature::n)
     static constexpr auto to_arg(T&& value) -> impl::unpack_type<I, Args...> {
         if constexpr (impl::is_arg<impl::unpack_type<I, Args...>>) {
@@ -1206,91 +1188,6 @@ private:
             return std::forward<T>(value);
         }
     };
-
-    template <size_t I, typename D>
-    static Object _to_python(D&& defaults, const Object& Parameter) {
-        using T = Signature::at<I>;
-
-        if constexpr (ArgTraits<T>::posonly()) {
-            if constexpr (ArgTraits<T>::name.empty()) {
-                constexpr StaticStr name = "_" + StaticStr<>::from_int<I + 1>;
-                if constexpr (ArgTraits<T>::opt()) {
-                    return Parameter(
-                        arg<"name"> = impl::template_string<name>(),
-                        arg<"kind"> = getattr<"POSITIONAL_ONLY">(Parameter),
-                        arg<"annotation"> = Type<typename ArgTraits<T>::type>(),
-                        arg<"default"> = std::forward<D>(defaults).template get<I>()
-                    );
-                } else {
-                    return Parameter(
-                        arg<"name"> = impl::template_string<name>(),
-                        arg<"kind"> = getattr<"POSITIONAL_ONLY">(Parameter),
-                        arg<"annotation"> = Type<typename ArgTraits<T>::type>()
-                    );
-                }
-            } else {
-                if constexpr (ArgTraits<T>::opt()) {
-                    return Parameter(
-                        arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
-                        arg<"kind"> = getattr<"POSITIONAL_ONLY">(Parameter),
-                        arg<"annotation"> = Type<typename ArgTraits<T>::type>(),
-                        arg<"default"> = std::forward<D>(defaults).template get<I>()
-                    );
-                } else {
-                    return Parameter(
-                        arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
-                        arg<"kind"> = getattr<"POSITIONAL_ONLY">(Parameter),
-                        arg<"annotation"> = Type<typename ArgTraits<T>::type>()
-                    );
-                }
-            }
-        } else if constexpr (ArgTraits<T>::pos()) {
-            if constexpr (ArgTraits<T>::opt()) {
-                return Parameter(
-                    arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
-                    arg<"kind"> = getattr<"POSITIONAL_OR_KEYWORD">(Parameter),
-                    arg<"annotation"> = Type<typename ArgTraits<T>::type>(),
-                    arg<"default"> = std::forward<D>(defaults).template get<I>()
-                );
-            } else {
-                return Parameter(
-                    arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
-                    arg<"kind"> = getattr<"POSITIONAL_OR_KEYWORD">(Parameter),
-                    arg<"annotation"> = Type<typename ArgTraits<T>::type>()
-                );
-            }
-        } else if constexpr (ArgTraits<T>::kwonly()) {
-            if constexpr (ArgTraits<T>::opt()) {
-                return Parameter(
-                    arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
-                    arg<"kind"> = getattr<"KEYWORD_ONLY">(Parameter),
-                    arg<"annotation"> = Type<typename ArgTraits<T>::type>(),
-                    arg<"default"> = std::forward<D>(defaults).template get<I>()
-                );
-            } else {
-                return Parameter(
-                    arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
-                    arg<"kind"> = getattr<"KEYWORD_ONLY">(Parameter),
-                    arg<"annotation"> = Type<typename ArgTraits<T>::type>()
-                );
-            }
-        } else if constexpr (ArgTraits<T>::args()) {
-            return Parameter(
-                arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
-                arg<"kind"> = getattr<"VAR_POSITIONAL">(Parameter),
-                arg<"annotation"> = Type<typename ArgTraits<T>::type>()
-            );
-        } else if constexpr (ArgTraits<T>::kwargs()) {
-            return Parameter(
-                arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
-                arg<"kind"> = getattr<"VAR_KEYWORD">(Parameter),
-                arg<"annotation"> = Type<typename ArgTraits<T>::type>()
-            );
-        } else {
-            static_assert(false, "invalid argument kind");
-            std::unreachable();
-        }
-    }
 
 public:
     /* A tuple holding a partial value for every bound argument in the enclosing
@@ -3312,6 +3209,13 @@ public:
             );
         }
 
+        /* Python flags are joined into the argument count and occupy the highest bits,
+        leaving the lowest bits available for our use. */
+        enum class Flags : size_t {
+            NORMALIZED      = 0b1,
+            ALL             = 0b1,  // masks all extra flags
+        };
+
         /* The kwnames tuple must be converted into a temporary map that can be
         destructively searched during the call algorithm.  If any arguments remain by
         the time the underlying function is called, then they are considered extras. */
@@ -3380,9 +3284,8 @@ public:
         template <size_t I, size_t J, size_t K>
         struct call {  // terminal case
             template <typename... A>
-            static constexpr size_t n_partial_kw = 0;
-
-            static constexpr size_t count_partial_kw(size_t idx, size_t nargs) {
+            static constexpr size_t n_partial_kw() { return 0; }
+            static constexpr size_t n_partial_kw(size_t idx, size_t nargs) {
                 return 0;
             }
 
@@ -3520,13 +3423,13 @@ public:
             static constexpr size_t consecutive<K2> = consecutive<K2 + 1> + 1;
 
             template <typename... A>
-            static constexpr size_t n_partial_kw = [] {
+            static constexpr size_t n_partial_kw() {
                 using T = Signature::at<I>;
                 constexpr size_t next = call<
                     I + 1,
                     J,
                     K + consecutive<K>
-                >::template n_partial_kw<A...>;
+                >::template n_partial_kw<A...>();
                 if constexpr (ArgTraits<T>::kwonly() || ArgTraits<T>::kwargs()) {
                     return next + consecutive<K>;
                 } else if constexpr (ArgTraits<T>::kw()) {
@@ -3538,15 +3441,15 @@ public:
                 } else {
                     return next;
                 }
-            }();
+            }
 
-            static constexpr size_t count_partial_kw(size_t idx, size_t nargs) {
+            static constexpr size_t n_partial_kw(size_t idx, size_t nargs) {
                 using T = Signature::at<I>;
                 size_t next = call<
                     I + 1,
                     J,
                     K + consecutive<K>
-                >::count_partial_kw(idx, nargs);
+                >::n_partial_kw(idx, nargs);
                 if constexpr (ArgTraits<T>::kwonly() || ArgTraits<T>::kwargs()) {
                     return next + consecutive<K>;
                 } else if constexpr (ArgTraits<T>::kw()) {
@@ -4059,34 +3962,34 @@ public:
             /// called, which must be accounted for when allocating the argument array.
 
             template <typename... A>
-            static constexpr size_t n_partial_kw = [] {
+            static constexpr size_t n_partial_kw() {
                 using Source = Signature<Return(A...)>;
                 if constexpr (ArgTraits<Signature::at<I>>::args()) {
                     return call<
                         I + 1,
                         std::min(Source::kw_idx, Source::kwargs_idx),
                         K
-                    >::template n_partial_kw<A...>;
+                    >::template n_partial_kw<A...>();
                 } else if constexpr (Source::has_args && J == Source::args_idx) {
                     return call<
                         std::min(Signature::kwonly_idx, Signature::kwargs_idx),
                         J + 1,
                         K
-                    >::template n_partial_kw<A...>;
+                    >::template n_partial_kw<A...>();
                 } else {
                     return call<
                         I + 1,
                         J + 1,
                         K
-                    >::template n_partial_kw<A...>;
+                    >::template n_partial_kw<A...>();
                 }
-            }();
+            }
 
-            static constexpr size_t count_partial_kw(size_t idx, size_t nargs) {
+            static constexpr size_t n_partial_kw(size_t idx, size_t nargs) {
                 if constexpr (ArgTraits<Signature::at<I>>::args()) {
-                    return call<I + 1, J, K>::count_partial_kw(nargs, nargs);
+                    return call<I + 1, J, K>::n_partial_kw(nargs, nargs);
                 } else {
-                    return call<I + 1, J, K>::count_partial_kw(++idx, nargs);
+                    return call<I + 1, J, K>::n_partial_kw(++idx, nargs);
                 }
             }
 
@@ -5556,13 +5459,6 @@ public:
             }
         };
 
-        /* Python flags are joined into the argument count and occupy the highest bits,
-        leaving the lowest bits available for our use. */
-        enum class Flags : size_t {
-            NORMALIZED      = 0b1,
-            ALL             = 0b1,  // masks all extra flags
-        };
-
     public:
         size_t kwcount;
         size_t nargs;
@@ -5604,7 +5500,7 @@ public:
             kwcount([](auto&&... args) {
                 using Source = Signature<Vectorcall(A...)>;
                 constexpr size_t base =
-                    call<0, 0, 0>::template partial_keywords<A...> + Source::n_kw;
+                    call<0, 0, 0>::template n_partial_kw<A...>() + Source::n_kw;
                 if constexpr (Source::has_kwargs) {
                     return base + impl::unpack_arg<Source::kwargs_idx>(
                         std::forward<decltype(args)>(args)...
@@ -5615,7 +5511,7 @@ public:
             nargs([](auto&&... args) {
                 using Source = Signature<Return(A...)>;
                 constexpr size_t base =
-                    (Partial::n - call<0, 0, 0>::template partial_keywords<A...>) +
+                    (Partial::n - call<0, 0, 0>::template n_partial_kw<A...>()) +
                     Source::n_pos;
                 if constexpr (Source::has_args) {
                     return base + impl::unpack_arg<Source::args_idx>(
@@ -5708,7 +5604,7 @@ public:
             A&&... args
         ) :
             kwcount(
-                call<0, 0, 0>::template n_partial_kw<A...> +
+                call<0, 0, 0>::template n_partial_kw<A...>() +
                 Signature<Vectorcall(A...)>::n_kw
             ),
             nargs(Partial::n + sizeof...(A) - kwcount),
@@ -5911,6 +5807,12 @@ public:
             };
         }
 
+        /* Recombine the positional argument count with the encoded Python flags,
+        leaving out any extra bertrand flags. */
+        [[nodiscard]] size_t nargsf() const noexcept {
+            return nargs + (flags & ~Flags::ALL);
+        }
+
         /* Indicates whether the `PY_VECTORCALL_ARGUMENTS_OFFSET` flag is set, meaning
         that an extra first element is prepended to the array, which can contain a
         forwarded `self` argument to make downstream calls more efficient. */
@@ -5921,12 +5823,6 @@ public:
         /* Check whether the Python arguments have been normalized. */
         [[nodiscard]] bool normalized() const noexcept {
             return flags & Flags::NORMALIZED;
-        }
-
-        /* Recombine the positional argument count with the encoded Python flags,
-        leaving out any extra bertrand flags. */
-        [[nodiscard]] size_t nargsf() const noexcept {
-            return nargs + (flags & ~Flags::ALL);
         }
 
         /* Convert the Python arguments into equivalent Bertrand types and insert any
@@ -5945,7 +5841,7 @@ public:
                 return *this;
             }
             size_t n = nargs + kwcount + Partial::n;
-            size_t n_kw = kwcount + call<0, 0, 0>::count_partial_kw(0, nargs);
+            size_t n_kw = kwcount + call<0, 0, 0>::n_partial_kw(0, nargs);
             size_t idx = 0;
             size_t kw_idx = 0;
             size_t old_idx = 0;
@@ -6263,10 +6159,7 @@ public:
 
             BaseIterator(const Edges& init, size_t capacity) {
                 stack.reserve(capacity + 1);
-                /// TODO: replace with init.begin<check>()?
-                stack.emplace_back(
-                    init->template search<check>(Py_Ellipsis)
-                );
+                stack.emplace_back(init->template search<check>(nullptr));
                 deepest = &(*stack.back());
             }
 
@@ -6457,7 +6350,7 @@ public:
                 auto size() const { return map.size(); }
                 auto empty() const { return map.empty(); }
                 Iterator<instance> begin() const {
-                    return {Py_Ellipsis, map.begin(), map.end()};
+                    return {nullptr, map.begin(), map.end()};
                 }
                 Iterator<instance> cbegin() const { return begin(); }
                 impl::Sentinel end() const { return {}; }
@@ -6496,10 +6389,7 @@ public:
                     ) : value(value),
                         set([](PyObject* value, auto& it, auto& end) {
                             while (it != end) {
-                                if (
-                                    value == Py_Ellipsis ||
-                                    check{}(value, it->first)
-                                ) {
+                                if (!value || check{}(value, it->first)) {
                                     return SetView{it->second.begin(), it->second.end()};
                                 }
                                 ++it;
@@ -6527,10 +6417,7 @@ public:
                         if (set.begin == set.end) {
                             ++(map.begin);
                             while (map.begin != map.end) {
-                                if (
-                                    value == Py_Ellipsis ||
-                                    check{}(value, map.begin->first)
-                                ) {
+                                if (!value || check{}(value, map.begin->first)) {
                                     set.begin = map.begin->second.begin();
                                     set.end = map.begin->second.end();
                                     break;
@@ -8790,7 +8677,7 @@ public:
     constexpr Signature(const T&) noexcept {}
     constexpr Signature() = default;
 
-    [[nodiscard]] static constexpr bool empty() noexcept { return n == 0; }
+    [[nodiscard]] static constexpr bool empty() noexcept { return !n; }
     [[nodiscard]] static constexpr size_t size() noexcept { return n; }
     [[nodiscard]] static auto begin() { return positional_table.begin(); }
     [[nodiscard]] static auto cbegin() { return positional_table.cbegin(); }
@@ -9277,49 +9164,164 @@ public:
     allowing a corresponding function to be seamlessly introspected from Python. */
     template <impl::inherits<Defaults> D>
     [[nodiscard]] static Object to_python(D&& defaults) {
-        /// TODO: just iterate over the callback table here?  All the necessary
-        /// info should be encoded into it.
-
         Object inspect = reinterpret_steal<Object>(PyImport_Import(
             ptr(impl::template_string<"inspect">())
         ));
         if (inspect.is(nullptr)) {
             Exception::from_python();
         }
-        Object Signature = getattr<"Signature">(inspect);
-        Object Parameter = getattr<"Parameter">(inspect);
 
         // build the parameter annotations
         Object tuple = reinterpret_steal<Object>(PyTuple_New(Signature::n));
         if (tuple.is(nullptr)) {
             Exception::from_python();
         }
-        []<size_t... Is>(
-            std::index_sequence<Is...>,
+        []<size_t I = 0>(
+            this auto&& self,
             PyObject* tuple,
             auto&& defaults,
             const Object& Parameter
         ) {
-            (PyTuple_SET_ITEM(
-                tuple,
-                Is,
-                release(_to_python<Is>(
+            if constexpr (I < Signature::n) {
+                using T = Signature::at<I>;
+
+                if constexpr (ArgTraits<T>::posonly()) {
+                    if constexpr (ArgTraits<T>::name.empty()) {
+                        constexpr StaticStr name = "_" + StaticStr<>::from_int<I + 1>;
+                        if constexpr (ArgTraits<T>::opt()) {
+                            PyTuple_SET_ITEM(
+                                tuple,
+                                I,
+                                release(Parameter(
+                                    arg<"name"> = impl::template_string<name>(),
+                                    arg<"kind"> = getattr<"POSITIONAL_ONLY">(Parameter),
+                                    arg<"annotation"> = Type<typename ArgTraits<T>::type>(),
+                                    arg<"default"> = std::forward<D>(defaults).template get<I>()
+                                ))
+                            );
+                        } else {
+                            PyTuple_SET_ITEM(
+                                tuple,
+                                I,
+                                release(Parameter(
+                                    arg<"name"> = impl::template_string<name>(),
+                                    arg<"kind"> = getattr<"POSITIONAL_ONLY">(Parameter),
+                                    arg<"annotation"> = Type<typename ArgTraits<T>::type>()
+                                ))
+                            );
+                        }
+                    } else {
+                        if constexpr (ArgTraits<T>::opt()) {
+                            PyTuple_SET_ITEM(
+                                tuple,
+                                I,
+                                release(Parameter(
+                                    arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
+                                    arg<"kind"> = getattr<"POSITIONAL_ONLY">(Parameter),
+                                    arg<"annotation"> = Type<typename ArgTraits<T>::type>(),
+                                    arg<"default"> = std::forward<D>(defaults).template get<I>()
+                                ))
+                            );
+                        } else {
+                            PyTuple_SET_ITEM(
+                                tuple,
+                                I,
+                                release(Parameter(
+                                    arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
+                                    arg<"kind"> = getattr<"POSITIONAL_ONLY">(Parameter),
+                                    arg<"annotation"> = Type<typename ArgTraits<T>::type>()
+                                ))
+                            );
+                        }
+                    }
+                } else if constexpr (ArgTraits<T>::pos()) {
+                    if constexpr (ArgTraits<T>::opt()) {
+                        PyTuple_SET_ITEM(
+                            tuple,
+                            I,
+                            release(Parameter(
+                                arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
+                                arg<"kind"> = getattr<"POSITIONAL_OR_KEYWORD">(Parameter),
+                                arg<"annotation"> = Type<typename ArgTraits<T>::type>(),
+                                arg<"default"> = std::forward<D>(defaults).template get<I>()
+                            ))
+                        );
+                    } else {
+                        PyTuple_SET_ITEM(
+                            tuple,
+                            I,
+                            release(Parameter(
+                                arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
+                                arg<"kind"> = getattr<"POSITIONAL_OR_KEYWORD">(Parameter),
+                                arg<"annotation"> = Type<typename ArgTraits<T>::type>()
+                            ))
+                        );
+                    }
+                } else if constexpr (ArgTraits<T>::kwonly()) {
+                    if constexpr (ArgTraits<T>::opt()) {
+                        PyTuple_SET_ITEM(
+                            tuple,
+                            I,
+                            release(Parameter(
+                                arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
+                                arg<"kind"> = getattr<"KEYWORD_ONLY">(Parameter),
+                                arg<"annotation"> = Type<typename ArgTraits<T>::type>(),
+                                arg<"default"> = std::forward<D>(defaults).template get<I>()
+                            ))
+                        );
+                    } else {
+                        PyTuple_SET_ITEM(
+                            tuple,
+                            I,
+                            release(Parameter(
+                                arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
+                                arg<"kind"> = getattr<"KEYWORD_ONLY">(Parameter),
+                                arg<"annotation"> = Type<typename ArgTraits<T>::type>()
+                            ))
+                        );
+                    }
+                } else if constexpr (ArgTraits<T>::args()) {
+                    PyTuple_SET_ITEM(
+                        tuple,
+                        I,
+                        release(Parameter(
+                            arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
+                            arg<"kind"> = getattr<"VAR_POSITIONAL">(Parameter),
+                            arg<"annotation"> = Type<typename ArgTraits<T>::type>()
+                        ))
+                    );
+                } else if constexpr (ArgTraits<T>::kwargs()) {
+                    PyTuple_SET_ITEM(
+                        tuple,
+                        I,
+                        release(Parameter(
+                            arg<"name"> = impl::template_string<ArgTraits<T>::name>(),
+                            arg<"kind"> = getattr<"VAR_KEYWORD">(Parameter),
+                            arg<"annotation"> = Type<typename ArgTraits<T>::type>()
+                        ))
+                    );
+                } else {
+                    static_assert(false, "invalid argument kind");
+                    std::unreachable();
+                }
+
+                std::forward<decltype(self)>(self).template operator()<I + 1>(
+                    tuple,
                     std::forward<decltype(defaults)>(defaults),
                     Parameter
-                ))
-            ), ...);
+                );
+            }
         }(
-            std::make_index_sequence<Signature::n>{},
             ptr(tuple),
             std::forward<D>(defaults),
-            Parameter
+            getattr<"Parameter">(inspect)
         );
 
-        // get the return annotation
-        Type<Return> return_type;
-
         // construct the signature object
-        return Signature(tuple, arg<"return_annotation"> = return_type);
+        return getattr<"Signature">(inspect)(
+            tuple,
+            arg<"return_annotation"> = Type<Return>()
+        );
     }
 };
 
@@ -10026,7 +10028,7 @@ namespace impl {
         preserved, so that they can be interpreted by the callback map if necessary.
         The default behavior in this case is to simply extract the underlying type,
         but custom callbacks can be added to interpret these annotations as needed. */
-        inline static std::vector<Callback> callbacks {
+        inline static std::deque<Callback> callbacks {
             /// NOTE: Callbacks are linearly searched, so more common constructs should
             /// be generally placed at the front of the list for performance reasons.
             {
