@@ -6921,7 +6921,9 @@ public:
 
             /// TODO: if I replace Metadata with inspect(), then each edge can
             /// reference an inspect::Param object here, which replaces the need for
-            /// everything except the target node.
+            /// everything except the target node.  The edges also don't need to store
+            /// the buffer for the name, since it would all just view into the same
+            /// string being used by Python for the signature.
 
             size_t hash;
             std::string name;
@@ -10224,6 +10226,10 @@ that their parameter lists are identical.  Strict `<` or `>` ordering occurs
 when the subtype relationships hold, but the parameter lists are not
 identical. */
 [[nodiscard]] bool operator<(const inspect& lhs, const inspect& rhs) {
+    if (rhs.size() < lhs.size()) {
+        return false;
+    }
+
     constexpr auto issubclass = [](PyObject* lhs, PyObject* rhs) {
         int rc = PyObject_IsSubclass(lhs, rhs);
         if (rc < 0) {
@@ -10239,74 +10245,62 @@ identical. */
         return rc;
     };
 
-    bool equal = true;
+    if (!issubclass(
+        ptr(lhs.return_annotation()),
+        ptr(rhs.return_annotation())
+    )) {
+        return false;
+    }
+    bool equal = isequal(
+        ptr(lhs.return_annotation()),
+        ptr(rhs.return_annotation())
+    );
+
     auto l = lhs.begin();
-    auto l_end = lhs.end();
     auto r = rhs.begin();
-    auto r_end = rhs.end();
-    while (l != l_end && r != r_end) {
+    auto end = lhs.end();
+    while (l != end) {
         if (r->args()) {
-            while (l->pos()) {
+            while (l != end && l->pos()) {
                 equal = false;
-                if (!issubclass(
-                    ptr(l->annotation),
-                    ptr(r->annotation))
-                ) {
+                if (!issubclass(ptr(l->type), ptr(r->type))) {
                     return false;
                 }
                 ++l;
             }
             if (l->args()) {
                 if (equal) {
-                    equal = isequal(
-                        ptr(l->annotation),
-                        ptr(r->annotation)
-                    );
+                    equal = isequal(ptr(l->type), ptr(r->type));
                 }
-                if (!issubclass(
-                    ptr(l->annotation),
-                    ptr(r->annotation))
-                ) {
+                if (!issubclass(ptr(l->type), ptr(r->type))) {
                     return false;
                 }
                 ++l;
             }
         } else if (r->kwargs()) {
-            while (l->kwonly()) {
+            while (l != end && l->kwonly()) {
                 equal = false;
-                if (!issubclass(
-                    ptr(l->annotation),
-                    ptr(r->annotation))
-                ) {
+                if (!issubclass(ptr(l->type), ptr(r->type))) {
                     return false;
                 }
                 ++l;
             }
             if (l->kwargs()) {
                 if (equal) {
-                    equal = isequal(
-                        ptr(l->annotation),
-                        ptr(r->annotation)
-                    );
+                    equal = isequal(ptr(l->type), ptr(r->type));
                 }
-                if (!issubclass(
-                    ptr(l->annotation),
-                    ptr(r->annotation))
-                ) {
+                if (!issubclass(ptr(l->type), ptr(r->type))) {
                     return false;
                 }
                 ++l;
             }
         } else {
             if (equal) {
-                equal = isequal(
-                    ptr(l->annotation),
-                    ptr(r->annotation)
-                );
+                equal = isequal(ptr(l->type), ptr(r->type));
             }
             if (l->name != r->name || l->kind != r->kind || !issubclass(
-                ptr(l->annotation),
-                ptr(r->annotation)
+                ptr(l->type),
+                ptr(r->type)
             )) {
                 return false;
             }
@@ -10314,35 +10308,196 @@ identical. */
         }
         ++r;
     }
+    return !equal;
+}
+template <typename F>
+[[nodiscard]] bool operator<(const inspect& lhs, const Signature<F>& rhs) {
+    if (rhs.size() < lhs.size()) {
+        return false;
+    }
+
+    constexpr auto issubclass = [](PyObject* lhs, PyObject* rhs) {
+        int rc = PyObject_IsSubclass(lhs, rhs);
+        if (rc < 0) {
+            Exception::from_python();
+        }
+        return rc;
+    };
+    constexpr auto isequal = [](PyObject* lhs, PyObject* rhs) {
+        int rc = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
+        if (rc < 0) {
+            Exception::from_python();
+        }
+        return rc;
+    };
+
+    Object type = rhs.returns().type();
     if (!issubclass(
         ptr(lhs.return_annotation()),
+        ptr(type)
+    )) {
+        return false;
+    }
+    bool equal = isequal(
+        ptr(lhs.return_annotation()),
+        ptr(type)
+    );
+
+    auto l = lhs.begin();
+    auto r = rhs.begin();
+    auto end = lhs.end();
+    while (l != end) {
+        type = r->type();
+        if (r->args()) {
+            while (l != end && l->pos()) {
+                equal = false;
+                if (!issubclass(ptr(l->type), ptr(type))) {
+                    return false;
+                }
+                ++l;
+            }
+            if (l->args()) {
+                if (equal) {
+                    equal = isequal(ptr(l->type), ptr(type));
+                }
+                if (!issubclass(ptr(l->type), ptr(type))) {
+                    return false;
+                }
+                ++l;
+            }
+        } else if (r->kwargs()) {
+            while (l != end && l->kwonly()) {
+                equal = false;
+                if (!issubclass(ptr(l->type), ptr(type))) {
+                    return false;
+                }
+                ++l;
+            }
+            if (l->kwargs()) {
+                if (equal) {
+                    equal = isequal(ptr(l->type), ptr(type));
+                }
+                if (!issubclass(ptr(l->type), ptr(type))) {
+                    return false;
+                }
+                ++l;
+            }
+        } else {
+            if (equal) {
+                equal = isequal(ptr(l->type), ptr(type));
+            }
+            if (l->name != r->name || l->kind != r->kind || !issubclass(
+                ptr(l->type),
+                ptr(type)
+            )) {
+                return false;
+            }
+            ++l;
+        }
+        ++r;
+    }
+    return !equal;
+}
+template <typename F>
+[[nodiscard]] bool operator<(const Signature<F>& lhs, const inspect& rhs) {
+    if (rhs.size() < lhs.size()) {
+        return false;
+    }
+
+    constexpr auto issubclass = [](PyObject* lhs, PyObject* rhs) {
+        int rc = PyObject_IsSubclass(lhs, rhs);
+        if (rc < 0) {
+            Exception::from_python();
+        }
+        return rc;
+    };
+    constexpr auto isequal = [](PyObject* lhs, PyObject* rhs) {
+        int rc = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
+        if (rc < 0) {
+            Exception::from_python();
+        }
+        return rc;
+    };
+
+    Object type = lhs.returns().type();
+    if (!issubclass(
+        ptr(type),
         ptr(rhs.return_annotation())
     )) {
         return false;
     }
-    if (equal) {
-        equal = isequal(
-            ptr(lhs.return_annotation()),
-            ptr(rhs.return_annotation())
-        );
+    bool equal = isequal(
+        ptr(type),
+        ptr(rhs.return_annotation())
+    );
+
+    auto l = lhs.begin();
+    auto r = rhs.begin();
+    auto end = lhs.end();
+    while (l != end) {
+        type = l->type();
+        if (r->args()) {
+            while (l != end && l->pos()) {
+                equal = false;
+                if (!issubclass(ptr(type), ptr(r->type))) {
+                    return false;
+                }
+                ++l;
+            }
+            if (l->args()) {
+                if (equal) {
+                    equal = isequal(ptr(type), ptr(r->type));
+                }
+                if (!issubclass(ptr(type), ptr(r->type))) {
+                    return false;
+                }
+                ++l;
+            }
+        } else if (r->kwargs()) {
+            while (l != end && l->kwonly()) {
+                equal = false;
+                if (!issubclass(ptr(type), ptr(r->type))) {
+                    return false;
+                }
+                ++l;
+            }
+            if (l->kwargs()) {
+                if (equal) {
+                    equal = isequal(ptr(type), ptr(r->type));
+                }
+                if (!issubclass(ptr(type), ptr(r->type))) {
+                    return false;
+                }
+                ++l;
+            }
+        } else {
+            if (equal) {
+                equal = isequal(ptr(type), ptr(r->type));
+            }
+            if (l->name != r->name || l->kind != r->kind || !issubclass(
+                ptr(type),
+                ptr(r->type)
+            )) {
+                return false;
+            }
+            ++l;
+        }
+        ++r;
     }
-    return !equal && l == l_end && r != r_end;
-}
-template <typename F>
-[[nodiscard]] bool operator<(const inspect& lhs, const Signature<F>& rhs) {
-    /// TODO:
-}
-template <typename F>
-[[nodiscard]] bool operator<(const Signature<F>& lhs, const inspect& rhs) {
-    return rhs > lhs;
+    return !equal;
 }
 template <typename L, typename R>
 [[nodiscard]] constexpr bool operator<(const Signature<L>& lhs, const Signature<R>& rhs) {
-    /// TODO:
+    /// TODO: this one can be computed entirely at compile time and used as a template
+    /// constraint.
 }
 
 
 [[nodiscard]] bool operator<=(const inspect& lhs, const inspect& rhs) {
+    if (rhs.size() < lhs.size()) {
+        return false;
+    }
+
     constexpr auto issubclass = [](PyObject* lhs, PyObject* rhs) {
         int rc = PyObject_IsSubclass(lhs, rhs);
         if (rc < 0) {
@@ -10351,35 +10506,35 @@ template <typename L, typename R>
         return rc;
     };
 
+    if (!issubclass(
+        ptr(lhs.return_annotation()),
+        ptr(rhs.return_annotation())
+    )) {
+        return false;
+    }
+
     auto l = lhs.begin();
-    auto l_end = lhs.end();
     auto r = rhs.begin();
-    auto r_end = rhs.end();
-    while (l != l_end && r != r_end) {
+    auto end = lhs.end();
+    while (l != end) {
         if (r->args()) {
-            while (l->pos() || l->args()) {
-                if (!issubclass(
-                    ptr(l->annotation),
-                    ptr(r->annotation))
-                ) {
+            while (l != end && (l->pos() || l->args())) {
+                if (!issubclass(ptr(l->type), ptr(r->type))) {
                     return false;
                 }
                 ++l;
             }
         } else if (r->kwargs()) {
-            while (l->kwonly() || l->kwargs()) {
-                if (!issubclass(
-                    ptr(l->annotation),
-                    ptr(r->annotation))
-                ) {
+            while (l != end && (l->kwonly() || l->kwargs())) {
+                if (!issubclass(ptr(l->type), ptr(r->type))) {
                     return false;
                 }
                 ++l;
             }
         } else {
             if (l->name != r->name || l->kind != r->kind || !issubclass(
-                ptr(l->annotation),
-                ptr(r->annotation)
+                ptr(l->type),
+                ptr(r->type)
             )) {
                 return false;
             }
@@ -10387,29 +10542,164 @@ template <typename L, typename R>
         }
         ++r;
     }
+    return true;
+}
+template <typename F>
+[[nodiscard]] bool operator<=(const inspect& lhs, const Signature<F>& rhs) {
+    if (rhs.size() < lhs.size()) {
+        return false;
+    }
+
+    constexpr auto issubclass = [](PyObject* lhs, PyObject* rhs) {
+        int rc = PyObject_IsSubclass(lhs, rhs);
+        if (rc < 0) {
+            Exception::from_python();
+        }
+        return rc;
+    };
+
+    Object type = rhs.returns().type();
     if (!issubclass(
+        ptr(lhs.return_annotation()),
+        ptr(type)
+    )) {
+        return false;
+    }
+
+    auto l = lhs.begin();
+    auto r = rhs.begin();
+    auto end = lhs.end();
+    while (l != end) {
+        type = r->type();
+        if (r->args()) {
+            while (l != end && (l->pos() || l->args())) {
+                if (!issubclass(ptr(l->type), ptr(type))) {
+                    return false;
+                }
+                ++l;
+            }
+        } else if (r->kwargs()) {
+            while (l != end && (l->kwonly() || l->kwargs())) {
+                if (!issubclass(ptr(l->type), ptr(type))) {
+                    return false;
+                }
+                ++l;
+            }
+        } else {
+            if (l->name != r->name || l->kind != r->kind || !issubclass(
+                ptr(l->type),
+                ptr(type)
+            )) {
+                return false;
+            }
+            ++l;
+        }
+        ++r;
+    }
+    return true;
+}
+template <typename F>
+[[nodiscard]] bool operator<=(const Signature<F>& lhs, const inspect& rhs) {
+    if (rhs.size() < lhs.size()) {
+        return false;
+    }
+
+    constexpr auto issubclass = [](PyObject* lhs, PyObject* rhs) {
+        int rc = PyObject_IsSubclass(lhs, rhs);
+        if (rc < 0) {
+            Exception::from_python();
+        }
+        return rc;
+    };
+
+    Object type = lhs.returns().type();
+    if (!issubclass(
+        ptr(type),
+        ptr(lhs.return_annotation())
+    )) {
+        return false;
+    }
+
+    auto l = lhs.begin();
+    auto r = rhs.begin();
+    auto end = lhs.end();
+    while (l != end) {
+        type = l->type();
+        if (r->args()) {
+            while (l != end && (l->pos() || l->args())) {
+                if (!issubclass(ptr(type), ptr(r->type))) {
+                    return false;
+                }
+                ++l;
+            }
+        } else if (r->kwargs()) {
+            while (l != end && (l->kwonly() || l->kwargs())) {
+                if (!issubclass(ptr(type), ptr(r->type))) {
+                    return false;
+                }
+                ++l;
+            }
+        } else {
+            if (l->name != r->name || l->kind != r->kind || !issubclass(
+                ptr(type),
+                ptr(r->type)
+            )) {
+                return false;
+            }
+            ++l;
+        }
+        ++r;
+    }
+    return true;
+}
+template <typename L, typename R>
+[[nodiscard]] constexpr bool operator<=(const Signature<L>& lhs, const Signature<R>& rhs) {
+    /// TODO: this one can be computed entirely at compile time and used as a template
+    /// constraint.
+}
+
+
+[[nodiscard]] bool operator==(const inspect& lhs, const inspect& rhs) {
+    if (lhs.size() != rhs.size()) {
+        return false;
+    }
+
+    constexpr auto isequal = [](PyObject* lhs, PyObject* rhs) {
+        int rc = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
+        if (rc < 0) {
+            Exception::from_python();
+        }
+        return rc;
+    };
+
+    if (!isequal(
         ptr(lhs.return_annotation()),
         ptr(rhs.return_annotation())
     )) {
         return false;
     }
-    return l == l_end && r != r_end;
+
+    auto l = lhs.begin();
+    auto r = rhs.begin();
+    auto end = lhs.end();
+    while (l != end) {
+        if (l->name != r->name || l->kind != r->kind || !isequal(
+            ptr(l->type),
+            ptr(r->type)
+        )) {
+            return false;
+        }
+        ++l;
+        ++r;
+    }
+    return true;
 }
 template <typename F>
-[[nodiscard]] bool operator<=(const inspect& lhs, const Signature<F>& rhs) {
-    /// TODO:
-}
-template <typename F>
-[[nodiscard]] bool operator<=(const Signature<F>& lhs, const inspect& rhs) {
-    return rhs >= lhs;
-}
-template <typename L, typename R>
-[[nodiscard]] constexpr bool operator<=(const Signature<L>& lhs, const Signature<R>& rhs) {
-    /// TODO:
-}
+[[nodiscard]] bool operator==(const inspect& lhs, const Signature<F>& rhs) {
+    if (lhs.size() != rhs.size()) {
+        return false;
+    }
 
-
-[[nodiscard]] bool operator==(const inspect& lhs, const inspect& rhs) {
     constexpr auto isequal = [](PyObject* lhs, PyObject* rhs) {
         int rc = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
         if (rc < 0) {
@@ -10418,72 +10708,85 @@ template <typename L, typename R>
         return rc;
     };
 
+    if (!isequal(
+        ptr(lhs.return_annotation()),
+        ptr(rhs.returns().type())
+    )) {
+        return false;
+    }
+
     auto l = lhs.begin();
-    auto l_end = lhs.end();
     auto r = rhs.begin();
-    auto r_end = rhs.end();
-    while (l != l_end && r != r_end) {
+    auto end = lhs.end();
+    while (l != end) {
         if (l->name != r->name || l->kind != r->kind || !isequal(
-            ptr(l->annotation),
-            ptr(r->annotation)
+            ptr(l->type),
+            ptr(r->type())
         )) {
             return false;
         }
         ++l;
         ++r;
     }
-    return l == l_end && r == r_end;
-}
-template <typename F>
-[[nodiscard]] bool operator==(const inspect& lhs, const Signature<F>& rhs) {
-    /// TODO:
+    return true;
 }
 template <typename F>
 [[nodiscard]] bool operator==(const Signature<F>& lhs, const inspect& rhs) {
-    return rhs == lhs;
+    if (lhs.size() != rhs.size()) {
+        return false;
+    }
+
+    constexpr auto isequal = [](PyObject* lhs, PyObject* rhs) {
+        int rc = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
+        if (rc < 0) {
+            Exception::from_python();
+        }
+        return rc;
+    };
+
+    if (!isequal(
+        ptr(lhs.returns().type()),
+        ptr(rhs.return_annotation())
+    )) {
+        return false;
+    }
+
+    auto l = lhs.begin();
+    auto r = rhs.begin();
+    auto end = lhs.end();
+    while (l != end) {
+        if (l->name != r->name || l->kind != r->kind || !isequal(
+            ptr(l->type()),
+            ptr(r->type)
+        )) {
+            return false;
+        }
+        ++l;
+        ++r;
+    }
+    return true;
 }
 template <typename L, typename R>
 [[nodiscard]] constexpr bool operator==(const Signature<L>& lhs, const Signature<R>& rhs) {
-    /// TODO:
+    /// TODO: this one can be computed entirely at compile time and used as a template
+    /// constraint.
 }
 
 
 [[nodiscard]] bool operator!=(const inspect& lhs, const inspect& rhs) {
-    constexpr auto isequal = [](PyObject* lhs, PyObject* rhs) {
-        int rc = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
-        if (rc < 0) {
-            Exception::from_python();
-        }
-        return rc;
-    };
-
-    auto l = lhs.begin();
-    auto l_end = lhs.end();
-    auto r = rhs.begin();
-    auto r_end = rhs.end();
-    while (l != l_end && r != r_end) {
-        if (l->name == r->name && l->kind == r->kind && isequal(
-            ptr(l->annotation),
-            ptr(r->annotation)
-        )) {
-            return false;
-        }
-        ++l;
-        ++r;
-    }
-    return l != l_end || r != r_end;
+    return !(lhs == rhs);
 }
 template <typename F>
 [[nodiscard]] bool operator!=(const inspect& lhs, const Signature<F>& rhs) {
-    /// TODO:
+    return !(lhs == rhs);
 }
 template <typename F>
 [[nodiscard]] bool operator!=(const Signature<F>& lhs, const inspect& rhs) {
-    return rhs != lhs;
+    return !(rhs == lhs);
 }
 template <typename L, typename R>
 [[nodiscard]] constexpr bool operator!=(const Signature<L>& lhs, const Signature<R>& rhs) {
-    /// TODO:
+    return !(lhs == rhs);
 }
 
 
