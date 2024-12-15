@@ -221,11 +221,6 @@ namespace impl {
 /// C++ -> snake_case
 
 
-/// TODO: since inspect() is now relatively small, it might make sense to use it
-/// for the metadata in the overload trie, and to maybe topologically sort them in the
-/// data container.
-
-
 /* Inspect a Python function object and extract its signature, so that it can be
 analyzed from C++ and converted into proper overload keys, etc. */
 struct inspect {
@@ -274,55 +269,22 @@ private:
         return reinterpret_steal<Object>(types);
     }
 
-    Object get_signature() const {
-        Object inspect = import_inspect();
-        Object typing = import_typing();
-        Object empty = getattr<"empty">(getattr<"Parameter">(inspect));
-        Object signature = getattr<"signature">(inspect)(m_func);
-        Object parameters = getattr<"values">(
-            getattr<"parameters">(signature)
-        )();
-        Py_ssize_t size = PyObject_Length(ptr(parameters));
-        if (size < 0) {
-            Exception::from_python();
-        }
-        Object hints = getattr<"get_type_hints">(typing)(
-            m_func,
-            arg<"include_extras"> = reinterpret_borrow<Object>(Py_True)
-        );
-        Object new_params = reinterpret_steal<Object>(PyTuple_New(size));
-        Py_ssize_t idx = 0;
-        for (Object param : parameters) {
-            Object annotation = reinterpret_steal<Object>(PyDict_GetItem(
-                ptr(hints),
-                ptr(getattr<"name">(param))
-            ));
-            if (annotation.is(nullptr)) {
-                annotation = empty;
+    Object get_name() {
+        auto str = impl::template_string<"__name__">();
+        if (PyObject_HasAttr(ptr(m_func), ptr(str))) {
+            PyObject* name = PyObject_GetAttr(ptr(m_func), ptr(str));
+            if (name == nullptr) {
+                Exception::from_python();
             }
-            PyTuple_SET_ITEM(
-                ptr(new_params),
-                idx++,
-                release(getattr<"replace">(param)(
-                    arg<"annotation"> = parse(annotation)
-                ))
-            );
+            return reinterpret_steal<Object>(name);
         }
-        Object new_return = reinterpret_steal<Object>(PyDict_GetItem(
-            ptr(hints),
-            ptr(impl::template_string<"return">())
-        ));
-        if (new_return.is(nullptr)) {
-            new_return = empty;
-        }
-        return getattr<"replace">(signature)(
-            arg<"return_annotation"> = parse(new_return),
-            arg<"parameters"> = new_params
-        );
+        return impl::template_string<"">();
     }
 
-    std::vector<Param> get_parameters() const {
+    Object initialize() {
+        // imports
         Object inspect = import_inspect();
+        Object typing = import_typing();
         Object Parameter = getattr<"Parameter">(inspect);
         Object empty = getattr<"empty">(Parameter);
         Object POSITIONAL_ONLY = getattr<"POSITIONAL_ONLY">(Parameter);
@@ -331,29 +293,57 @@ private:
         Object KEYWORD_ONLY = getattr<"KEYWORD_ONLY">(Parameter);
         Object VAR_KEYWORD = getattr<"VAR_KEYWORD">(Parameter);
 
-        std::vector<Param> out;
-        Object params = getattr<"values">(
-            getattr<"parameters">(m_signature)
+        // get signature + normalized type hints
+        Object signature = getattr<"signature">(inspect)(m_func);
+        Object parameters = getattr<"values">(
+            getattr<"parameters">(signature)
         )();
-        Py_ssize_t len = PyObject_Length(ptr(params));
-        if (len < 0) {
+        Py_ssize_t size = PyObject_Length(ptr(parameters));
+        if (size < 0) {
+            Exception::from_python();
+        } else if (size > 64) {
+            throw ValueError(
+                "bertrand functions are limited to 64 parameters (received: " + 
+                std::to_string(size) + ")"
+            );
+        }
+        Object hints = getattr<"get_type_hints">(typing)(
+            m_func,
+            arg<"include_extras"> = reinterpret_borrow<Object>(Py_True)
+        );
+
+        // allocate new parameters tuple + parameter array + name map
+        Object new_params = reinterpret_steal<Object>(PyTuple_New(size));
+        if (new_params.is(nullptr)) {
             Exception::from_python();
         }
-        out.reserve(len);
-        size_t idx = 0;
-        for (Object param : params) {
+        m_parameters.reserve(size);
+        m_names.reserve(size);
+
+        // parse each parameter
+        Py_ssize_t idx = 0;
+        for (Object param : parameters) {
+            // replace the annotation with the normalized + parsed type hint
+            Object annotation = reinterpret_steal<Object>(PyDict_GetItem(
+                ptr(hints),
+                ptr(getattr<"name">(param))
+            ));
+            if (annotation.is(nullptr)) {
+                annotation = empty;
+            }
+            annotation = parse(annotation);
+            param = getattr<"replace">(param)(arg<"annotation"> = annotation);
+
+            // get parameter name, kind, and default value
             const char* name = PyUnicode_AsUTF8AndSize(
                 ptr(getattr<"name">(param)),
-                &len
+                &size
             );
             if (name == nullptr) {
                 Exception::from_python();
             }
-
-            Object annotation = getattr<"annotation">(param);
-            Object default_value = getattr<"default">(param);
-
             impl::ArgKind kind;
+            Object default_value = getattr<"default">(param);
             Object py_kind = getattr<"kind">(param);
             if (py_kind.is(POSITIONAL_ONLY)) {
                 kind = default_value.is(empty) ?
@@ -375,60 +365,63 @@ private:
                 throw TypeError("unrecognized parameter kind: " + repr(kind));
             }
 
-            out.emplace_back(
-                std::string_view(name, len),
+            // update fields
+            m_parameters.emplace_back(
+                std::string_view(name, size),
+                impl::parameter_hash(
+                    name,
+                    ptr(annotation),
+                    kind
+                ),
                 std::move(annotation),
                 std::move(default_value),
                 1ULL << idx++,
                 kind
             );
-        }
-        return out;
-    }
+            m_names.emplace(m_parameters.back().name, &m_parameters.back());
+            m_hash = impl::hash_combine(m_hash, m_parameters.back().hash);
+            m_required <<= 1;
+            m_required |= !(kind.opt() | kind.variadic());
 
-    std::unordered_map<std::string_view, const Param*> get_names() const {
-        std::unordered_map<std::string_view, const Param*> out;
-        out.reserve(m_parameters.size());
-        for (const Param& param : m_parameters) {
-            out.emplace(param.name, &param);
+            // insert into new parameters tuple
+            PyTuple_SET_ITEM(
+                ptr(new_params),
+                idx++,
+                release(param)
+            );
         }
-        return out;
-    }
 
-    Object get_return_annotation() const {
-        return parse(getattr<"return_annotation">(m_signature));
-    }
-
-    size_t get_hash() const {
-        size_t hash = 0;
-        for (const Param& param : m_parameters) {
-            hash = impl::hash_combine(hash, param.hash());
+        // normalize return annotation
+        Object new_return = reinterpret_steal<Object>(PyDict_GetItem(
+            ptr(hints),
+            ptr(impl::template_string<"return">())
+        ));
+        if (new_return.is(nullptr)) {
+            new_return = empty;
         }
-        hash = impl::hash_combine(
-            hash,
+        m_return_annotation = parse(new_return);
+        m_hash = impl::hash_combine(
+            m_hash,
             PyType_Check(ptr(m_return_annotation)) ?
                 reinterpret_cast<size_t>(ptr(m_return_annotation)) :
                 reinterpret_cast<size_t>(Py_TYPE(ptr(m_return_annotation)))
         );
-        return hash;
-    }
 
-    uint64_t get_required() const {
-        uint64_t mask = 0;
-        for (const Param& param : m_parameters) {
-            mask <<= 1;
-            mask |= !(param.opt() | param.variadic());
-        }
-        return mask;
+        // return the new signature
+        return getattr<"replace">(signature)(
+            arg<"return_annotation"> = m_return_annotation,
+            arg<"parameters"> = new_params
+        );
     }
 
     Object m_func;
-    Object m_signature = get_signature();
-    std::vector<Param> m_parameters = get_parameters();
-    std::unordered_map<std::string_view, const Param*> m_names = get_names();
-    Object m_return_annotation = get_return_annotation();
-    size_t m_hash = get_hash();
-    uint64_t m_required = get_required();
+    Object m_name = get_name();
+    size_t m_hash = 0;
+    uint64_t m_required = 0;
+    std::unordered_map<std::string_view, const Param*> m_names;
+    std::vector<Param> m_parameters;
+    Object m_return_annotation = reinterpret_steal<Object>(nullptr);
+    Object m_signature = initialize();
 
 public:
     explicit inspect(const Object& func) : m_func(func) {}
@@ -437,6 +430,20 @@ public:
     /* Get a reference to the function being inspected. */
     [[nodiscard]] const Object& function() const {
         return m_func;
+    }
+
+    /* Get the name of the function by introspecting its `__name__` attribute, if it
+    has one.  Otherwise, returns an empty string. */
+    [[nodiscard]] std::string_view name() const {
+        Py_ssize_t size;
+        const char* data = PyUnicode_AsUTF8AndSize(
+            ptr(m_name),
+            &size
+        );
+        if (data == nullptr) {
+            Exception::from_python();
+        }
+        return {data, static_cast<size_t>(size)};
     }
 
     /* Get a reference to the normalized `inspect.Signature` instance that was
@@ -480,6 +487,7 @@ public:
     analogous to an `inspect.Parameter` instance in Python. */
     struct Param {
         std::string_view name;
+        size_t hash;
         Object type;
         Object default_value;
         uint64_t mask;
@@ -493,14 +501,6 @@ public:
         [[nodiscard]] bool kwargs() const noexcept { return kind.kwargs(); }
         [[nodiscard]] bool opt() const noexcept { return kind.opt(); }
         [[nodiscard]] bool variadic() const noexcept { return kind.variadic(); }
-
-        [[nodiscard]] size_t hash() const {
-            return impl::parameter_hash(
-                name.data(),
-                ptr(type),
-                kind
-            );
-        }
 
         [[nodiscard]] size_t index() const {
             size_t idx = 0;
@@ -886,9 +886,155 @@ public:
         }
     };
 
+    /* Convert the signature into a string representation for debugging purposes.  The
+    provided `prefix` will be prepended to each output line, and if `max_width` is
+    provided, then the algorithm will attempt to wrap the output to that width, with
+    each parameter indented on a separate line.  If a single parameter exceeds the
+    maximum width, then it will be wrapped onto multiple lines with an additional level
+    of indentation for the extra lines.  Note that the maximum width is not a hard
+    limit; individual components can exceed it, but never on the same line as another
+    component. */
+    [[nodiscard]] std::string to_string(
+        const std::string& prefix = "",
+        size_t max_width = std::numeric_limits<size_t>::max(),
+        size_t indent = 4
+    ) const {
+        constexpr auto get_components = [](
+            std::vector<std::string>& components,
+            const Param& param
+        ) {
+            components.emplace_back(std::string(param.name));
+            components.emplace_back(demangle(PyType_Check(ptr(param.type)) ?
+                reinterpret_cast<PyTypeObject*>(ptr(param.type))->tp_name :
+                Py_TYPE(ptr(param.type))->tp_name
+            ));
+            components.emplace_back(param.opt() ?
+                repr(param.default_value) : ""
+            );
+        };
+
+        // convert function name + parameters + return type into a flat list of strings
+        std::vector<std::string> components;
+        components.reserve(m_parameters.size() * 3 + 2);
+        components.emplace_back(std::string(name()) + "(");
+        for (const Param& param : m_parameters) {
+            get_components(components, param);
+        }
+        components.emplace_back(") -> " + demangle(
+            PyType_Check(ptr(m_return_annotation)) ?
+                reinterpret_cast<PyTypeObject*>(ptr(m_return_annotation))->tp_name :
+                Py_TYPE(ptr(m_return_annotation))->tp_name
+        ));
+
+        // check if the entire signature fits on one line
+        size_t length = prefix.size() + components[0].size();
+        if (components.size() > 2) {
+            std::string& name = components[1];
+            std::string& type = components[2];
+            std::string& default_value = components[3];
+            length += name.size() + /* ": " */ 2 + type.size();
+            if (!default_value.empty()) {
+                length += /* " = " */ 3 + default_value.size();
+            }
+            if (length <= max_width) {
+                for (size_t i = 4, end = components.size() - 1; i < end; i += 3) {
+                    length += /* ", " */ 2;
+                    std::string& name = components[i];
+                    std::string& type = components[i + 1];
+                    std::string& default_value = components[i + 2];
+                    length += name.size() + /* ": " */ 2 + type.size();
+                    if (!default_value.empty()) {
+                        length += /* " = " */ default_value.size() + 3;
+                    }
+                    if (length > max_width) {
+                        break;
+                    }
+                }
+            }
+        }
+        length += components.back().size();
+
+        // if the signature fits on one line, return it immediately
+        if (length <= max_width) {
+            std::string out;
+            out.reserve(length);
+            out += prefix;
+            out += components[0];
+            if (components.size() > 2) {
+                out += components[1] + ": ";
+                out += components[2];
+                if (!components[3].empty()) {
+                    out += " = " + components[3];
+                }
+                for (size_t i = 4, end = components.size() - 1; i < end; i += 3) {
+                    out += ", " + components[i] + ": ";
+                    out += components[i + 1];
+                    if (!components[i + 2].empty()) {
+                        out += " = " + components[i + 2];
+                    }
+                }
+            }
+            out += components.back();
+            return out;
+        }
+
+        // otherwise, indent the parameters onto separate lines
+        std::string out = prefix + components[0] + "\n";
+        std::string line = prefix + std::string(indent, ' ');
+        if (components.size() > 2) {
+            std::string& name = components[1];
+            std::string& type = components[2];
+            std::string& default_value = components[3];
+            line += name + ": ";
+            if (line.size() + type.size() <= max_width) {
+                line += type;
+            } else {
+                out += line + "\n";
+                line = prefix + std::string(indent * 2, ' ') + type;
+            }
+            if (!default_value.empty()) {
+                if (line.size() + 3 + default_value.size() <= max_width) {
+                    line += " = " + default_value;
+                } else {
+                    out += line + "\n";
+                    line = prefix + std::string(indent * 2, ' ');
+                    line += "= " + default_value;
+                }
+            }
+            out += line;
+            for (size_t i = 4, end = components.size() - 1; i < end; i += 3) {
+                out += ",\n";
+                line = prefix + std::string(indent, ' ');
+                std::string& name = components[i];
+                std::string& type = components[i + 1];
+                std::string& default_value = components[i + 2];
+                line += name + ": ";
+                if (line.size() + type.size() <= max_width) {
+                    line += type;
+                } else {
+                    out += line + "\n";
+                    line = prefix + std::string(indent * 2, ' ') + type;
+                }
+                if (!default_value.empty()) {
+                    if (line.size() + 3 + default_value.size() <= max_width) {
+                        line += " = " + default_value;
+                    } else {
+                        out += line + "\n";
+                        line = prefix + std::string(indent * 2, ' ');
+                        line += "= " + default_value;
+                    }
+                }
+                out += line;
+            }
+            out += "\n";
+        }
+        out += prefix + components.back();
+        return out;
+    }
+
     /* Convert the inspected signature into a valid key that can be used to
     specialize the `bertrand.Function` template on the Python side. */
-    Object key() const {
+    [[nodiscard]] Object key() const {
         Object inspect = import_inspect();
         Object Parameter = getattr<"Parameter">(inspect);
         Object empty = getattr<"empty">(Parameter);
@@ -1022,6 +1168,22 @@ public:
         return _template_key;
     }
 };
+
+
+}  // namespace py
+
+
+namespace std {
+    template <py::impl::is<py::inspect> T>
+    struct hash<T> {
+        [[nodiscard]] static size_t operator()(const py::inspect& inspect) {
+            return inspect.hash();
+        }
+    };
+}
+
+
+namespace py {
 
 
 /// TODO: also, Signature can potentially also expose a helper type that converts
@@ -6980,6 +7142,12 @@ public:
 
             /// TODO: I can probably replace this with just an instance of the
             /// inspect() class, except for the edge path.
+            /// -> This also simplifies memory management for the keyword names, since
+            /// they'll be stored within the signature and reference counted along with
+            /// it, meaning that the string_views should always be stable, regardless
+            /// of whether the Metadata struct is copied or moved.  That means the
+            /// `data` set can now be stored as an unordered_set for faster lookups
+            /// during iteration.
 
             friend bool operator<(const Metadata& lhs, const Metadata& rhs) {
                 return lhs.hash < rhs.hash;
@@ -6998,14 +7166,19 @@ public:
         address stability as overloads are inserted and removed. */
         using Data = std::set<Metadata, std::less<>>;
 
+        /// TODO: while clever, storing a leading edge like this interferes with the
+        /// simplifications offered by using the inspect() class.
+
         /* A placeholder edge that leads to the root node of the trie.  All trie
         iterators are initialized with an iterator to this edge in order to bootstrap
         traversal.  It also provides a convenient place to store extra bookkeeping
         without contributing to the overall memory footprint of the trie. */
+        size_t m_depth = 0;
+        inspect m_signature;
         Edge m_leading_edge = {
-            .hash = 0,  // hijacked to store maximum depth of the trie
-            .name = "",  /// TODO: perhaps this holds the name of the function?
-            .type = reinterpret_steal<Object>(nullptr),  /// TODO: stores specific function type?
+            .hash = 0,
+            .name = "",
+            .type = reinterpret_steal<Object>(nullptr),
             .kind = 0,
             .target = nullptr,  // root of the trie
             .mask = 0,
@@ -7015,17 +7188,21 @@ public:
         mutable std::unordered_map<size_t, PyObject*> m_cache = {};
 
     public:
-        Overloads(const Object& fallback) :
+        Overloads(
+            std::string&& name,
+            const Object& fallback
+        ) :
+            m_signature(inspect(fallback)),
             m_leading_node(fallback, {{nullptr, {&m_leading_edge}}})
         {
-            /// TODO: recreating the logic from the comparison operator might result
-            /// in a better error message that points to the specific types that may
-            /// be mismatching.
-            auto sig = inspect(fallback);
-            if (sig != Signature{}) {
+            if (m_signature != Signature{}) {
+                constexpr size_t max_width = 80;
+                std::string prefix = std::string(8, ' ');
                 throw TypeError(
-                    "fallback overload must exactly match the expected signature: " +
-                    repr(sig.signature())
+                    "signature mismatch\n    expected:\n" +
+                    Signature{}.to_string(prefix, max_width, 4) +
+                    "\n    received:\n" +
+                    m_signature.to_string(prefix, max_width, 4)
                 );
             };
         }
@@ -10121,6 +10298,12 @@ public:
             arg<"return_annotation"> = Type<Return>()
         );
     }
+
+    [[nodiscard]] static std::string to_string() {
+        /// TODO: implement this to match the formatting for a Python signature
+        /// where possible.  Ideally, it should be as similar as possible to the
+        /// base Python version, but with defaults converted to ellipsis.
+    }
 };
 
 
@@ -10196,6 +10379,8 @@ struct Signature<R(C::*)(A...) const volatile & noexcept> : Signature<R(A...)> {
 template <impl::has_call_operator T>
 struct Signature<T> : Signature<decltype(&std::remove_reference_t<T>::operator())> {};
 
+/// TODO: specialization for subclasses of DefTag?
+
 
 /* Checks whether two signatures are compatible with each other, meaning that
 one can be registered as a viable overload of the other.  Also allows
@@ -10226,7 +10411,7 @@ that their parameter lists are identical.  Strict `<` or `>` ordering occurs
 when the subtype relationships hold, but the parameter lists are not
 identical. */
 [[nodiscard]] bool operator<(const inspect& lhs, const inspect& rhs) {
-    if (rhs.size() < lhs.size()) {
+    if (lhs.size() < rhs.size()) {
         return false;
     }
 
@@ -10257,52 +10442,53 @@ identical. */
     );
 
     auto l = lhs.begin();
+    auto l_end = lhs.end();
     auto r = rhs.begin();
-    auto end = lhs.end();
-    while (l != end) {
+    auto r_end = rhs.end();
+    while (r != r_end) {
         if (r->args()) {
-            while (l != end && l->pos()) {
+            while (l != l_end && l->pos()) {
                 equal = false;
                 if (!issubclass(ptr(l->type), ptr(r->type))) {
                     return false;
                 }
                 ++l;
             }
-            if (l->args()) {
-                if (equal) {
-                    equal = isequal(ptr(l->type), ptr(r->type));
-                }
+            if (l != l_end && l->args()) {
                 if (!issubclass(ptr(l->type), ptr(r->type))) {
                     return false;
+                }
+                if (equal) {
+                    equal = isequal(ptr(l->type), ptr(r->type));
                 }
                 ++l;
             }
         } else if (r->kwargs()) {
-            while (l != end && l->kwonly()) {
+            while (l != l_end && l->kwonly()) {
                 equal = false;
                 if (!issubclass(ptr(l->type), ptr(r->type))) {
                     return false;
                 }
                 ++l;
             }
-            if (l->kwargs()) {
-                if (equal) {
-                    equal = isequal(ptr(l->type), ptr(r->type));
-                }
+            if (l != l_end && l->kwargs()) {
                 if (!issubclass(ptr(l->type), ptr(r->type))) {
                     return false;
+                }
+                if (equal) {
+                    equal = isequal(ptr(l->type), ptr(r->type));
                 }
                 ++l;
             }
         } else {
-            if (equal) {
-                equal = isequal(ptr(l->type), ptr(r->type));
-            }
-            if (l->name != r->name || l->kind != r->kind || !issubclass(
+            if (l == l_end || l->name != r->name || l->kind != r->kind || !issubclass(
                 ptr(l->type),
                 ptr(r->type)
             )) {
                 return false;
+            }
+            if (equal) {
+                equal = isequal(ptr(l->type), ptr(r->type));
             }
             ++l;
         }
@@ -10312,7 +10498,7 @@ identical. */
 }
 template <typename F>
 [[nodiscard]] bool operator<(const inspect& lhs, const Signature<F>& rhs) {
-    if (rhs.size() < lhs.size()) {
+    if (lhs.size() < rhs.size()) {
         return false;
     }
 
@@ -10344,53 +10530,54 @@ template <typename F>
     );
 
     auto l = lhs.begin();
+    auto l_end = lhs.end();
     auto r = rhs.begin();
-    auto end = lhs.end();
-    while (l != end) {
+    auto r_end = lhs.end();
+    while (r != r_end) {
         type = r->type();
         if (r->args()) {
-            while (l != end && l->pos()) {
+            while (l != l_end && l->pos()) {
                 equal = false;
                 if (!issubclass(ptr(l->type), ptr(type))) {
                     return false;
                 }
                 ++l;
             }
-            if (l->args()) {
-                if (equal) {
-                    equal = isequal(ptr(l->type), ptr(type));
-                }
+            if (l != l_end && l->args()) {
                 if (!issubclass(ptr(l->type), ptr(type))) {
                     return false;
+                }
+                if (equal) {
+                    equal = isequal(ptr(l->type), ptr(type));
                 }
                 ++l;
             }
         } else if (r->kwargs()) {
-            while (l != end && l->kwonly()) {
+            while (l != l_end && l->kwonly()) {
                 equal = false;
                 if (!issubclass(ptr(l->type), ptr(type))) {
                     return false;
                 }
                 ++l;
             }
-            if (l->kwargs()) {
-                if (equal) {
-                    equal = isequal(ptr(l->type), ptr(type));
-                }
+            if (l != l_end && l->kwargs()) {
                 if (!issubclass(ptr(l->type), ptr(type))) {
                     return false;
+                }
+                if (equal) {
+                    equal = isequal(ptr(l->type), ptr(type));
                 }
                 ++l;
             }
         } else {
-            if (equal) {
-                equal = isequal(ptr(l->type), ptr(type));
-            }
-            if (l->name != r->name || l->kind != r->kind || !issubclass(
+            if (l == l_end || l->name != r->name || l->kind != r->kind || !issubclass(
                 ptr(l->type),
                 ptr(type)
             )) {
                 return false;
+            }
+            if (equal) {
+                equal = isequal(ptr(l->type), ptr(type));
             }
             ++l;
         }
@@ -10400,7 +10587,7 @@ template <typename F>
 }
 template <typename F>
 [[nodiscard]] bool operator<(const Signature<F>& lhs, const inspect& rhs) {
-    if (rhs.size() < lhs.size()) {
+    if (lhs.size() < rhs.size()) {
         return false;
     }
 
@@ -10432,53 +10619,55 @@ template <typename F>
     );
 
     auto l = lhs.begin();
+    auto l_end = lhs.end();
     auto r = rhs.begin();
-    auto end = lhs.end();
-    while (l != end) {
-        type = l->type();
+    auto r_end = lhs.end();
+    while (r != r_end) {
         if (r->args()) {
-            while (l != end && l->pos()) {
+            while (l != l_end && l->pos()) {
+                type = l->type();
                 equal = false;
                 if (!issubclass(ptr(type), ptr(r->type))) {
                     return false;
                 }
                 ++l;
             }
-            if (l->args()) {
-                if (equal) {
-                    equal = isequal(ptr(type), ptr(r->type));
-                }
+            if (l != l_end && l->args()) {
+                type = l->type();
                 if (!issubclass(ptr(type), ptr(r->type))) {
                     return false;
+                }
+                if (equal) {
+                    equal = isequal(ptr(type), ptr(r->type));
                 }
                 ++l;
             }
         } else if (r->kwargs()) {
-            while (l != end && l->kwonly()) {
+            while (l != l_end && l->kwonly()) {
                 equal = false;
                 if (!issubclass(ptr(type), ptr(r->type))) {
                     return false;
                 }
                 ++l;
             }
-            if (l->kwargs()) {
-                if (equal) {
-                    equal = isequal(ptr(type), ptr(r->type));
-                }
+            if (l != l_end && l->kwargs()) {
                 if (!issubclass(ptr(type), ptr(r->type))) {
                     return false;
+                }
+                if (equal) {
+                    equal = isequal(ptr(type), ptr(r->type));
                 }
                 ++l;
             }
         } else {
-            if (equal) {
-                equal = isequal(ptr(type), ptr(r->type));
-            }
-            if (l->name != r->name || l->kind != r->kind || !issubclass(
+            if (l == l_end || l->name != r->name || l->kind != r->kind || !issubclass(
                 ptr(type),
                 ptr(r->type)
             )) {
                 return false;
+            }
+            if (equal) {
+                equal = isequal(ptr(type), ptr(r->type));
             }
             ++l;
         }
@@ -10488,13 +10677,16 @@ template <typename F>
 }
 template <typename L, typename R>
 [[nodiscard]] constexpr bool operator<(const Signature<L>& lhs, const Signature<R>& rhs) {
+    if constexpr (lhs.size() < rhs.size()) {
+        return false;
+    }
     /// TODO: this one can be computed entirely at compile time and used as a template
     /// constraint.
 }
 
 
 [[nodiscard]] bool operator<=(const inspect& lhs, const inspect& rhs) {
-    if (rhs.size() < lhs.size()) {
+    if (lhs.size() < rhs.size()) {
         return false;
     }
 
@@ -10514,25 +10706,26 @@ template <typename L, typename R>
     }
 
     auto l = lhs.begin();
+    auto l_end = lhs.end();
     auto r = rhs.begin();
-    auto end = lhs.end();
-    while (l != end) {
+    auto r_end = lhs.end();
+    while (r != r_end) {
         if (r->args()) {
-            while (l != end && (l->pos() || l->args())) {
+            while (l != l_end && (l->pos() || l->args())) {
                 if (!issubclass(ptr(l->type), ptr(r->type))) {
                     return false;
                 }
                 ++l;
             }
         } else if (r->kwargs()) {
-            while (l != end && (l->kwonly() || l->kwargs())) {
+            while (l != l_end && (l->kwonly() || l->kwargs())) {
                 if (!issubclass(ptr(l->type), ptr(r->type))) {
                     return false;
                 }
                 ++l;
             }
         } else {
-            if (l->name != r->name || l->kind != r->kind || !issubclass(
+            if (l == l_end || l->name != r->name || l->kind != r->kind || !issubclass(
                 ptr(l->type),
                 ptr(r->type)
             )) {
@@ -10546,7 +10739,7 @@ template <typename L, typename R>
 }
 template <typename F>
 [[nodiscard]] bool operator<=(const inspect& lhs, const Signature<F>& rhs) {
-    if (rhs.size() < lhs.size()) {
+    if (lhs.size() < rhs.size()) {
         return false;
     }
 
@@ -10567,26 +10760,27 @@ template <typename F>
     }
 
     auto l = lhs.begin();
+    auto l_end = lhs.end();
     auto r = rhs.begin();
-    auto end = lhs.end();
-    while (l != end) {
+    auto r_end = lhs.end();
+    while (r != r_end) {
         type = r->type();
         if (r->args()) {
-            while (l != end && (l->pos() || l->args())) {
+            while (l != l_end && (l->pos() || l->args())) {
                 if (!issubclass(ptr(l->type), ptr(type))) {
                     return false;
                 }
                 ++l;
             }
         } else if (r->kwargs()) {
-            while (l != end && (l->kwonly() || l->kwargs())) {
+            while (l != l_end && (l->kwonly() || l->kwargs())) {
                 if (!issubclass(ptr(l->type), ptr(type))) {
                     return false;
                 }
                 ++l;
             }
         } else {
-            if (l->name != r->name || l->kind != r->kind || !issubclass(
+            if (l == l_end || l->name != r->name || l->kind != r->kind || !issubclass(
                 ptr(l->type),
                 ptr(type)
             )) {
@@ -10600,7 +10794,7 @@ template <typename F>
 }
 template <typename F>
 [[nodiscard]] bool operator<=(const Signature<F>& lhs, const inspect& rhs) {
-    if (rhs.size() < lhs.size()) {
+    if (lhs.size() < rhs.size()) {
         return false;
     }
 
@@ -10621,26 +10815,28 @@ template <typename F>
     }
 
     auto l = lhs.begin();
+    auto l_end = lhs.end();
     auto r = rhs.begin();
-    auto end = lhs.end();
-    while (l != end) {
-        type = l->type();
+    auto r_end = lhs.end();
+    while (r != r_end) {
         if (r->args()) {
-            while (l != end && (l->pos() || l->args())) {
+            while (l != l_end && (l->pos() || l->args())) {
+                type = l->type();
                 if (!issubclass(ptr(type), ptr(r->type))) {
                     return false;
                 }
                 ++l;
             }
         } else if (r->kwargs()) {
-            while (l != end && (l->kwonly() || l->kwargs())) {
+            while (l != l_end && (l->kwonly() || l->kwargs())) {
+                type = l->type();
                 if (!issubclass(ptr(type), ptr(r->type))) {
                     return false;
                 }
                 ++l;
             }
         } else {
-            if (l->name != r->name || l->kind != r->kind || !issubclass(
+            if (l == l_end || l->name != r->name || l->kind != r->kind || !issubclass(
                 ptr(type),
                 ptr(r->type)
             )) {
@@ -10654,13 +10850,16 @@ template <typename F>
 }
 template <typename L, typename R>
 [[nodiscard]] constexpr bool operator<=(const Signature<L>& lhs, const Signature<R>& rhs) {
+    if constexpr (lhs.size() < rhs.size()) {
+        return false;
+    }
     /// TODO: this one can be computed entirely at compile time and used as a template
     /// constraint.
 }
 
 
 [[nodiscard]] bool operator==(const inspect& lhs, const inspect& rhs) {
-    if (lhs.size() != rhs.size()) {
+    if (lhs.size() != rhs.size() || lhs.hash() != rhs.hash()) {
         return false;
     }
 
@@ -10681,16 +10880,13 @@ template <typename L, typename R>
 
     auto l = lhs.begin();
     auto r = rhs.begin();
-    auto end = lhs.end();
-    while (l != end) {
+    for (size_t i = 0, end = lhs.size(); i < end; ++i, ++l, ++r) {
         if (l->name != r->name || l->kind != r->kind || !isequal(
             ptr(l->type),
             ptr(r->type)
         )) {
             return false;
         }
-        ++l;
-        ++r;
     }
     return true;
 }
@@ -10699,6 +10895,7 @@ template <typename F>
     if (lhs.size() != rhs.size()) {
         return false;
     }
+    /// TODO: compare hashes?
 
     constexpr auto isequal = [](PyObject* lhs, PyObject* rhs) {
         int rc = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
@@ -10717,16 +10914,13 @@ template <typename F>
 
     auto l = lhs.begin();
     auto r = rhs.begin();
-    auto end = lhs.end();
-    while (l != end) {
+    for (size_t i = 0, end = rhs.size(); i < end; ++i, ++l, ++r) {
         if (l->name != r->name || l->kind != r->kind || !isequal(
             ptr(l->type),
             ptr(r->type())
         )) {
             return false;
         }
-        ++l;
-        ++r;
     }
     return true;
 }
@@ -10735,6 +10929,7 @@ template <typename F>
     if (lhs.size() != rhs.size()) {
         return false;
     }
+    /// TODO: compare hashes?
 
     constexpr auto isequal = [](PyObject* lhs, PyObject* rhs) {
         int rc = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
@@ -10753,21 +10948,21 @@ template <typename F>
 
     auto l = lhs.begin();
     auto r = rhs.begin();
-    auto end = lhs.end();
-    while (l != end) {
+    for (size_t i = 0, end = lhs.size(); i < end; ++i, ++l, ++r) {
         if (l->name != r->name || l->kind != r->kind || !isequal(
             ptr(l->type()),
             ptr(r->type)
         )) {
             return false;
         }
-        ++l;
-        ++r;
     }
     return true;
 }
 template <typename L, typename R>
 [[nodiscard]] constexpr bool operator==(const Signature<L>& lhs, const Signature<R>& rhs) {
+    if constexpr (lhs.size() != rhs.size()) {
+        return false;
+    }
     /// TODO: this one can be computed entirely at compile time and used as a template
     /// constraint.
 }
