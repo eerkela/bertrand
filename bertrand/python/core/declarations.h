@@ -71,6 +71,7 @@ namespace impl {
     using bertrand::fnv1a_seed;
     using bertrand::fnv1a_prime;
     using bertrand::fnv1a;
+    using bertrand::FNV1a;
     using bertrand::hash_combine;
     using bertrand::qualify;
     using bertrand::qualify_lvalue;

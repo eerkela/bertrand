@@ -329,6 +329,19 @@ constexpr size_t fnv1a(
 }
 
 
+/* A wrapper around the `bertrand::fnv1a()` function that allows it to be used in
+template expressions. */
+struct FNV1a {
+    static constexpr size_t operator()(
+        const char* str,
+        size_t seed = fnv1a_seed,
+        size_t prime = fnv1a_prime
+    ) noexcept {
+        return fnv1a(str, seed, prime);
+    }
+};
+
+
 /* Merge several hashes into a single value.  Based on `boost::hash_combine()`:
 https://www.boost.org/doc/libs/1_86_0/libs/container_hash/doc/html/hash.html#notes_hash_combine */
 template <std::convertible_to<size_t>... Hashes>
