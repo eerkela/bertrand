@@ -22,9 +22,6 @@ template <typename T>
 struct Signature;
 
 
-/// TODO: args should go up here?
-
-
 template <typename Self, typename... Args>
     requires (
         __call__<Self, Args...>::enable &&
@@ -68,6 +65,9 @@ decltype(auto) Object::operator()(this Self&& self, Args&&... args) {
         );
     }
 }
+
+
+/// TODO: args should go up here?
 
 
 namespace impl {
@@ -201,1033 +201,827 @@ namespace impl {
         using Return = R;
     };
 
-    /* Inspect a Python function object and extract its signature, so that it can be
-    analyzed from C++ and converted into proper overload keys, etc. */
-    struct Inspect {
-        struct Param;
-        struct Callback;
+}
 
-    private:
 
-        static Object import_bertrand() {
-            PyObject* bertrand = PyImport_Import(
-                ptr(template_string<"bertrand">())
-            );
-            if (bertrand == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Object>(bertrand);
+/// TODO: maybe a convention I can stick to is that classes that have no Python
+/// equivalent are lowercase, and Python wrappers are always uppercase?
+/// -> That's a good idea from an API design perspective, but it's scary to do before
+/// Signature is finished.  Once that's done, I can rename to signature<F> accordingly.
+
+/// py::StaticStr -> py::static_str
+/// py::StaticMap -> py::static_map
+/// py::StaticSet -> py::static_set
+/// py::Interface<T> -> py::interface<T>
+/// py::Disable -> py::disable
+/// py::Returns -> py::returns
+
+
+/// Python -> CamelCase
+/// C++ -> snake_case
+
+
+/// TODO: since inspect() is now relatively small, it might make sense to use it
+/// for the metadata in the overload trie, and to maybe topologically sort them in the
+/// data container.
+
+
+/* Inspect a Python function object and extract its signature, so that it can be
+analyzed from C++ and converted into proper overload keys, etc. */
+struct inspect {
+    struct Param;
+    struct Callback;
+
+private:
+
+    static Object import_bertrand() {
+        PyObject* bertrand = PyImport_Import(
+            ptr(impl::template_string<"bertrand">())
+        );
+        if (bertrand == nullptr) {
+            Exception::from_python();
         }
+        return reinterpret_steal<Object>(bertrand);
+    }
 
-        static Object import_inspect() {
-            PyObject* inspect = PyImport_Import(
-                ptr(template_string<"inspect">())
-            );
-            if (inspect == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Object>(inspect);
+    static Object import_inspect() {
+        PyObject* inspect = PyImport_Import(
+            ptr(impl::template_string<"inspect">())
+        );
+        if (inspect == nullptr) {
+            Exception::from_python();
         }
+        return reinterpret_steal<Object>(inspect);
+    }
 
-        static Object import_typing() {
-            PyObject* typing = PyImport_Import(
-                ptr(template_string<"typing">())
-            );
-            if (typing == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Object>(typing);
+    static Object import_typing() {
+        PyObject* typing = PyImport_Import(
+            ptr(impl::template_string<"typing">())
+        );
+        if (typing == nullptr) {
+            Exception::from_python();
         }
+        return reinterpret_steal<Object>(typing);
+    }
 
-        static Object import_types() {
-            PyObject* types = PyImport_Import(
-                ptr(template_string<"types">())
-            );
-            if (types == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Object>(types);
+    static Object import_types() {
+        PyObject* types = PyImport_Import(
+            ptr(impl::template_string<"types">())
+        );
+        if (types == nullptr) {
+            Exception::from_python();
         }
+        return reinterpret_steal<Object>(types);
+    }
 
-        Object get_signature() const {
-            Object inspect = import_inspect();
-            Object typing = import_typing();
-            Object empty = getattr<"empty">(getattr<"Parameter">(inspect));
-            Object signature = getattr<"signature">(inspect)(m_func);
-            Object parameters = getattr<"values">(
-                getattr<"parameters">(signature)
-            )();
-            Py_ssize_t size = PyObject_Length(ptr(parameters));
-            if (size < 0) {
-                Exception::from_python();
-            }
-            Object hints = getattr<"get_type_hints">(typing)(
-                m_func,
-                arg<"include_extras"> = reinterpret_borrow<Object>(Py_True)
-            );
-            Object new_params = reinterpret_steal<Object>(PyTuple_New(size));
-            Py_ssize_t idx = 0;
-            for (Object param : parameters) {
-                Object annotation = reinterpret_steal<Object>(PyDict_GetItem(
-                    ptr(hints),
-                    ptr(getattr<"name">(param))
-                ));
-                if (annotation.is(nullptr)) {
-                    annotation = empty;
-                }
-                PyTuple_SET_ITEM(
-                    ptr(new_params),
-                    idx++,
-                    release(getattr<"replace">(param)(
-                        arg<"annotation"> = parse(annotation)
-                    ))
-                );
-            }
-            Object new_return = reinterpret_steal<Object>(PyDict_GetItem(
+    Object get_signature() const {
+        Object inspect = import_inspect();
+        Object typing = import_typing();
+        Object empty = getattr<"empty">(getattr<"Parameter">(inspect));
+        Object signature = getattr<"signature">(inspect)(m_func);
+        Object parameters = getattr<"values">(
+            getattr<"parameters">(signature)
+        )();
+        Py_ssize_t size = PyObject_Length(ptr(parameters));
+        if (size < 0) {
+            Exception::from_python();
+        }
+        Object hints = getattr<"get_type_hints">(typing)(
+            m_func,
+            arg<"include_extras"> = reinterpret_borrow<Object>(Py_True)
+        );
+        Object new_params = reinterpret_steal<Object>(PyTuple_New(size));
+        Py_ssize_t idx = 0;
+        for (Object param : parameters) {
+            Object annotation = reinterpret_steal<Object>(PyDict_GetItem(
                 ptr(hints),
-                ptr(template_string<"return">())
+                ptr(getattr<"name">(param))
             ));
-            if (new_return.is(nullptr)) {
-                new_return = empty;
+            if (annotation.is(nullptr)) {
+                annotation = empty;
             }
-            return getattr<"replace">(signature)(
-                arg<"return_annotation"> = parse(new_return),
-                arg<"parameters"> = new_params
+            PyTuple_SET_ITEM(
+                ptr(new_params),
+                idx++,
+                release(getattr<"replace">(param)(
+                    arg<"annotation"> = parse(annotation)
+                ))
             );
         }
+        Object new_return = reinterpret_steal<Object>(PyDict_GetItem(
+            ptr(hints),
+            ptr(impl::template_string<"return">())
+        ));
+        if (new_return.is(nullptr)) {
+            new_return = empty;
+        }
+        return getattr<"replace">(signature)(
+            arg<"return_annotation"> = parse(new_return),
+            arg<"parameters"> = new_params
+        );
+    }
 
-        std::vector<Param> get_parameters() const {
-            Object inspect = import_inspect();
-            Object Parameter = getattr<"Parameter">(inspect);
-            Object empty = getattr<"empty">(Parameter);
-            Object POSITIONAL_ONLY = getattr<"POSITIONAL_ONLY">(Parameter);
-            Object POSITIONAL_OR_KEYWORD = getattr<"POSITIONAL_OR_KEYWORD">(Parameter);
-            Object VAR_POSITIONAL = getattr<"VAR_POSITIONAL">(Parameter);
-            Object KEYWORD_ONLY = getattr<"KEYWORD_ONLY">(Parameter);
-            Object VAR_KEYWORD = getattr<"VAR_KEYWORD">(Parameter);
+    std::vector<Param> get_parameters() const {
+        Object inspect = import_inspect();
+        Object Parameter = getattr<"Parameter">(inspect);
+        Object empty = getattr<"empty">(Parameter);
+        Object POSITIONAL_ONLY = getattr<"POSITIONAL_ONLY">(Parameter);
+        Object POSITIONAL_OR_KEYWORD = getattr<"POSITIONAL_OR_KEYWORD">(Parameter);
+        Object VAR_POSITIONAL = getattr<"VAR_POSITIONAL">(Parameter);
+        Object KEYWORD_ONLY = getattr<"KEYWORD_ONLY">(Parameter);
+        Object VAR_KEYWORD = getattr<"VAR_KEYWORD">(Parameter);
 
-            std::vector<Param> out;
-            Object params = getattr<"values">(
-                getattr<"parameters">(m_signature)
-            )();
-            Py_ssize_t len = PyObject_Length(ptr(params));
-            if (len < 0) {
+        std::vector<Param> out;
+        Object params = getattr<"values">(
+            getattr<"parameters">(m_signature)
+        )();
+        Py_ssize_t len = PyObject_Length(ptr(params));
+        if (len < 0) {
+            Exception::from_python();
+        }
+        out.reserve(len);
+        size_t idx = 0;
+        for (Object param : params) {
+            const char* name = PyUnicode_AsUTF8AndSize(
+                ptr(getattr<"name">(param)),
+                &len
+            );
+            if (name == nullptr) {
                 Exception::from_python();
             }
-            out.reserve(len);
-            for (Object param : params) {
-                const char* name = PyUnicode_AsUTF8AndSize(
-                    ptr(getattr<"name">(param)),
-                    &len
-                );
-                if (name == nullptr) {
-                    Exception::from_python();
-                }
 
-                Object annotation = getattr<"annotation">(param);
-                Object default_value = getattr<"default">(param);
+            Object annotation = getattr<"annotation">(param);
+            Object default_value = getattr<"default">(param);
 
-                ArgKind kind;
-                Object py_kind = getattr<"kind">(param);
-                if (py_kind.is(POSITIONAL_ONLY)) {
-                    kind = default_value.is(empty) ?
-                        ArgKind::POS : ArgKind::POS | ArgKind::OPT;
-                } else if (py_kind.is(POSITIONAL_OR_KEYWORD)) {
-                    kind = default_value.is(empty) ?
-                        ArgKind::POS | ArgKind::KW :
-                        ArgKind::POS | ArgKind::KW | ArgKind::OPT;
-                } else if (py_kind.is(KEYWORD_ONLY)) {
-                    kind = default_value.is(empty) ?
-                        ArgKind::KW : ArgKind::KW | ArgKind::OPT;
-                } else if (py_kind.is(VAR_POSITIONAL)) {
-                    kind = ArgKind::POS | ArgKind::VARIADIC;
-                } else if (py_kind.is(VAR_KEYWORD)) {
-                    kind = ArgKind::KW | ArgKind::VARIADIC;
-                } else {
-                    throw TypeError("unrecognized parameter kind: " + repr(kind));
-                }
-
-                out.emplace_back(
-                    std::string_view(name, len),
-                    std::move(annotation),
-                    std::move(default_value),
-                    kind
-                );
-            }
-            return out;
-        }
-
-        std::unordered_map<std::string_view, const Param*> get_names() const {
-            std::unordered_map<std::string_view, const Param*> out;
-            out.reserve(m_parameters.size());
-            for (const Param& param : m_parameters) {
-                out.emplace(param.name, &param);
-            }
-            return out;
-        }
-
-        Object get_return_annotation() const {
-            return parse(getattr<"return_annotation">(m_signature));
-        }
-
-        size_t get_hash() const {
-            size_t hash = 0;
-            for (const Param& param : m_parameters) {
-                hash = impl::hash_combine(hash, param.hash());
-            }
-            hash = impl::hash_combine(
-                hash,
-                PyType_Check(ptr(m_return_annotation)) ?
-                    reinterpret_cast<size_t>(ptr(m_return_annotation)) :
-                    reinterpret_cast<size_t>(Py_TYPE(ptr(m_return_annotation)))
-            );
-            return hash;
-        }
-
-        Object m_func;
-        Object m_signature = get_signature();
-        std::vector<Param> m_parameters = get_parameters();
-        std::unordered_map<std::string_view, const Param*> m_names = get_names();
-        Object m_return_annotation = get_return_annotation();
-        size_t m_hash = get_hash();
-
-    public:
-        Inspect(const Object& func) : m_func(func) {}
-        Inspect(Object&& func) : m_func(std::move(func)) {}
-
-        /* Get a reference to the function being inspected. */
-        [[nodiscard]] const Object& function() const {
-            return m_func;
-        }
-
-        /* Get a reference to the normalized `inspect.Signature` instance that was
-        obtained from the function.  Note that any inline type annotations will be
-        passed through `typing.get_type_hints(include_extras=True)`, and then parsed
-        according to the `parse()` helper within this class.  This means that
-        stringized annotations (i.e. `from future import __annotations__`), forward
-        references, and future PEP formats will be resolved and passed through the
-        callback map to obtain proper bertrand types, which can be enforced during
-        overload resolution. */
-        [[nodiscard]] const Object& signature() const {
-            return m_signature;
-        }
-
-        /* Get a reference to the normalized parameter array. */
-        [[nodiscard]] const std::vector<Param> parameters() const {
-            return m_parameters;
-        }
-
-        /* Get a reference to the normalized return annotation, which is parsed just
-        like any other parameter annotation. */
-        [[nodiscard]] const Object& return_annotation() const {
-            return m_return_annotation;
-        }
-
-        /* Return a unique hash associated with this signature, under which a matching
-        overload will be registered.  This combines the name, annotation, and kind
-        (positional, keyword, optional, variadic, etc.) of each parameter, as well as
-        the return type in order to quickly identify unique overloads. */
-        [[nodiscard]] size_t hash() const {
-            return m_hash;
-        }
-
-        /* A lightweight representation of a single parameter in the signature,
-        analogous to an `inspect.Parameter` instance in Python. */
-        struct Param {
-            std::string_view name;
-            Object annotation;
-            Object default_value;
             impl::ArgKind kind;
-
-            [[nodiscard]] bool posonly() const noexcept { return kind.posonly(); }
-            [[nodiscard]] bool pos() const noexcept { return kind.pos(); }
-            [[nodiscard]] bool args() const noexcept { return kind.args(); }
-            [[nodiscard]] bool kwonly() const noexcept { return kind.kwonly(); }
-            [[nodiscard]] bool kw() const noexcept { return kind.kw(); }
-            [[nodiscard]] bool kwargs() const noexcept { return kind.kwargs(); }
-            [[nodiscard]] bool opt() const noexcept { return kind.opt(); }
-            [[nodiscard]] bool variadic() const noexcept { return kind.variadic(); }
-
-            [[nodiscard]] size_t hash() const {
-                return impl::parameter_hash(
-                    name.data(),
-                    ptr(annotation),
-                    kind
-                );
-            }
-        };
-
-        /* Get the parameter at index i.  Allows Python-style negative indexing, which
-        counts backwards from the tail of the parameter list, and raises an IndexError
-        if the index is out of bounds. */
-        [[nodiscard]] const Param& operator[](int i) const {
-            if (i < 0) {
-                i += m_parameters.size();
-            }
-            if (i < 0 || i >= m_parameters.size()) {
-                throw IndexError("index out of range");
-            }
-            return m_parameters[i];
-        }
-
-        /* Look up a specific parameter by name.  Raises a KeyError if the named
-        parameter is not present. */
-        [[nodiscard]] const Param& operator[](std::string_view name) const {
-            auto it = m_names.find(name);
-            if (it == m_names.end()) {
-                throw KeyError(std::string(name));
-            }
-            return *it->second;
-        }
-
-        auto size() const { return m_parameters.size(); }
-        auto empty() const { return m_parameters.empty(); }
-
-        auto begin() const { return m_parameters.begin(); }
-        auto cbegin() const { return m_parameters.cbegin(); }
-        auto rbegin() const { return m_parameters.rbegin(); }
-        auto crbegin() const { return m_parameters.crbegin(); }
-        auto end() const { return m_parameters.end(); }
-        auto cend() const { return m_parameters.cend(); }
-        auto rend() const { return m_parameters.rend(); }
-        auto crend() const { return m_parameters.crend(); }
-
-        /* Parse a Python-style type hint by linearly searching the callback map,
-        converting the hint into a uniform object that can be used as the target of an
-        `isinstance()` or `issubclass()` check.  The search stops at the first callback
-        that returns true, recurring if necessary for instances of `typing.Annotated`,
-        union types, etc.  If no callbacks match the hint, then it is returned as-is
-        and assumed to implement the required operators. */
-        [[nodiscard]] static Object parse(Object hint) {
-            std::vector<Object> keys;
-            parse(hint, keys);
-
-            auto it = keys.begin();
-            auto end = keys.end();
-            while (it != end) {
-                bool duplicate = false;
-                auto it2 = it;
-                while (++it2 != end) {
-                    if (*it2 == *it) {
-                        duplicate = true;
-                        break;
-                    }
-                }
-                if (duplicate) {
-                    it = keys.erase(it);
-                } else {
-                    ++it;
-                }
-            }
-
-            if (keys.empty()) {
-                return reinterpret_borrow<Object>(
-                    reinterpret_cast<PyObject*>(Py_TYPE(Py_None))
-                );
-            } else if (keys.size() == 1) {
-                return std::move(keys.back());
+            Object py_kind = getattr<"kind">(param);
+            if (py_kind.is(POSITIONAL_ONLY)) {
+                kind = default_value.is(empty) ?
+                    impl::ArgKind::POS :
+                    impl::ArgKind::POS | impl::ArgKind::OPT;
+            } else if (py_kind.is(POSITIONAL_OR_KEYWORD)) {
+                kind = default_value.is(empty) ?
+                    impl::ArgKind::POS | impl::ArgKind::KW :
+                    impl::ArgKind::POS | impl::ArgKind::KW | impl::ArgKind::OPT;
+            } else if (py_kind.is(KEYWORD_ONLY)) {
+                kind = default_value.is(empty) ?
+                    impl::ArgKind::KW :
+                    impl::ArgKind::KW | impl::ArgKind::OPT;
+            } else if (py_kind.is(VAR_POSITIONAL)) {
+                kind = impl::ArgKind::POS | impl::ArgKind::VARIADIC;
+            } else if (py_kind.is(VAR_KEYWORD)) {
+                kind = impl::ArgKind::KW | impl::ArgKind::VARIADIC;
             } else {
-                Object bertrand = import_bertrand();
-                Object key = reinterpret_steal<Object>(
-                    PyTuple_New(keys.size())
-                );
-                if (key.is(nullptr)) {
-                    Exception::from_python();
+                throw TypeError("unrecognized parameter kind: " + repr(kind));
+            }
+
+            out.emplace_back(
+                std::string_view(name, len),
+                std::move(annotation),
+                std::move(default_value),
+                1ULL << idx++,
+                kind
+            );
+        }
+        return out;
+    }
+
+    std::unordered_map<std::string_view, const Param*> get_names() const {
+        std::unordered_map<std::string_view, const Param*> out;
+        out.reserve(m_parameters.size());
+        for (const Param& param : m_parameters) {
+            out.emplace(param.name, &param);
+        }
+        return out;
+    }
+
+    Object get_return_annotation() const {
+        return parse(getattr<"return_annotation">(m_signature));
+    }
+
+    size_t get_hash() const {
+        size_t hash = 0;
+        for (const Param& param : m_parameters) {
+            hash = impl::hash_combine(hash, param.hash());
+        }
+        hash = impl::hash_combine(
+            hash,
+            PyType_Check(ptr(m_return_annotation)) ?
+                reinterpret_cast<size_t>(ptr(m_return_annotation)) :
+                reinterpret_cast<size_t>(Py_TYPE(ptr(m_return_annotation)))
+        );
+        return hash;
+    }
+
+    uint64_t get_required() const {
+        uint64_t mask = 0;
+        for (const Param& param : m_parameters) {
+            mask <<= 1;
+            mask |= !(param.opt() | param.variadic());
+        }
+        return mask;
+    }
+
+    Object m_func;
+    Object m_signature = get_signature();
+    std::vector<Param> m_parameters = get_parameters();
+    std::unordered_map<std::string_view, const Param*> m_names = get_names();
+    Object m_return_annotation = get_return_annotation();
+    size_t m_hash = get_hash();
+    uint64_t m_required = get_required();
+
+public:
+    explicit inspect(const Object& func) : m_func(func) {}
+    explicit inspect(Object&& func) : m_func(std::move(func)) {}
+
+    /* Get a reference to the function being inspected. */
+    [[nodiscard]] const Object& function() const {
+        return m_func;
+    }
+
+    /* Get a reference to the normalized `inspect.Signature` instance that was
+    obtained from the function.  Note that any inline type annotations will be
+    passed through `typing.get_type_hints(include_extras=True)`, and then parsed
+    according to the `parse()` helper within this class.  This means that
+    stringized annotations (i.e. `from future import __annotations__`), forward
+    references, and future PEP formats will be resolved and passed through the
+    callback map to obtain proper bertrand types, which can be enforced during
+    overload resolution. */
+    [[nodiscard]] const Object& signature() const {
+        return m_signature;
+    }
+
+    /* Get a reference to the normalized parameter array. */
+    [[nodiscard]] const std::vector<Param> parameters() const {
+        return m_parameters;
+    }
+
+    /* Get a reference to the normalized return annotation, which is parsed just
+    like any other parameter annotation. */
+    [[nodiscard]] const Object& return_annotation() const {
+        return m_return_annotation;
+    }
+
+    /* Return a unique hash associated with this signature, under which a matching
+    overload will be registered.  This combines the name, annotation, and kind
+    (positional, keyword, optional, variadic, etc.) of each parameter, as well as
+    the return type in order to quickly identify unique overloads. */
+    [[nodiscard]] size_t hash() const {
+        return m_hash;
+    }
+
+    /* Return a bitmask encoding the positions of all of the required arguments within
+    the signature, for easy comparison during overload resolution. */
+    [[nodiscard]] uint64_t required() const {
+        return m_required;
+    }
+
+    /* A lightweight representation of a single parameter in the signature,
+    analogous to an `inspect.Parameter` instance in Python. */
+    struct Param {
+        std::string_view name;
+        Object type;
+        Object default_value;
+        uint64_t mask;
+        impl::ArgKind kind;
+
+        [[nodiscard]] bool posonly() const noexcept { return kind.posonly(); }
+        [[nodiscard]] bool pos() const noexcept { return kind.pos(); }
+        [[nodiscard]] bool args() const noexcept { return kind.args(); }
+        [[nodiscard]] bool kwonly() const noexcept { return kind.kwonly(); }
+        [[nodiscard]] bool kw() const noexcept { return kind.kw(); }
+        [[nodiscard]] bool kwargs() const noexcept { return kind.kwargs(); }
+        [[nodiscard]] bool opt() const noexcept { return kind.opt(); }
+        [[nodiscard]] bool variadic() const noexcept { return kind.variadic(); }
+
+        [[nodiscard]] size_t hash() const {
+            return impl::parameter_hash(
+                name.data(),
+                ptr(type),
+                kind
+            );
+        }
+
+        [[nodiscard]] size_t index() const {
+            size_t idx = 0;
+            uint64_t mask = this->mask;
+            while (mask >>= 1) {
+                ++idx;
+            }
+            return idx;
+        }
+    };
+
+    /* Get the parameter at index i.  Allows Python-style negative indexing, which
+    counts backwards from the tail of the parameter list, and raises an IndexError
+    if the index is out of bounds. */
+    [[nodiscard]] const Param& operator[](int i) const {
+        if (i < 0) {
+            i += m_parameters.size();
+        }
+        if (i < 0 || i >= m_parameters.size()) {
+            throw IndexError("index out of range");
+        }
+        return m_parameters[i];
+    }
+
+    /* Look up a specific parameter by name.  Raises a KeyError if the named
+    parameter is not present. */
+    [[nodiscard]] const Param& operator[](std::string_view name) const {
+        auto it = m_names.find(name);
+        if (it == m_names.end()) {
+            throw KeyError(std::string(name));
+        }
+        return *it->second;
+    }
+
+    /* Look up a specific parameter by name.  Returns a null pointer if the named
+    parameter is not present. */
+    [[nodiscard]] const Param* get(std::string_view name) const {
+        auto it = m_names.find(name);
+        return it == m_names.end() ? nullptr : it->second;
+    }
+
+    /* Check whether a given parameter name is present in the signature. */
+    [[nodiscard]] bool contains(std::string_view name) const {
+        return m_names.contains(name);
+    }
+
+    auto size() const { return m_parameters.size(); }
+    auto empty() const { return m_parameters.empty(); }
+
+    auto begin() const { return m_parameters.begin(); }
+    auto cbegin() const { return m_parameters.cbegin(); }
+    auto rbegin() const { return m_parameters.rbegin(); }
+    auto crbegin() const { return m_parameters.crbegin(); }
+    auto end() const { return m_parameters.end(); }
+    auto cend() const { return m_parameters.cend(); }
+    auto rend() const { return m_parameters.rend(); }
+    auto crend() const { return m_parameters.crend(); }
+
+    /* Parse a Python-style type hint by linearly searching the callback map,
+    converting the hint into a uniform object that can be used as the target of an
+    `isinstance()` or `issubclass()` check.  The search stops at the first callback
+    that returns true, recurring if necessary for instances of `typing.Annotated`,
+    union types, etc.  If no callbacks match the hint, then it is returned as-is
+    and assumed to implement the required operators. */
+    [[nodiscard]] static Object parse(Object hint) {
+        std::vector<Object> keys;
+        parse(hint, keys);
+
+        auto it = keys.begin();
+        auto end = keys.end();
+        while (it != end) {
+            bool duplicate = false;
+            auto it2 = it;
+            while (++it2 != end) {
+                if (*it2 == *it) {
+                    duplicate = true;
+                    break;
                 }
-                size_t i = 0;
-                for (Object& type : keys) {
-                    PyTuple_SET_ITEM(ptr(key), i++, release(type));
-                }
-                Object specialization = reinterpret_steal<Object>(PyObject_GetItem(
-                    ptr(getattr<"Union">(bertrand)),
-                    ptr(key)
-                ));
-                if (specialization.is(nullptr)) {
-                    Exception::from_python();
-                }
-                return specialization;
+            }
+            if (duplicate) {
+                it = keys.erase(it);
+            } else {
+                ++it;
             }
         }
 
-        /* Parse a Python-style type hint in-place, inserting the constituent types
-        into the output vector.  This is intended to be called from within the callback
-        mechanism itself, in order to trigger recursion for composite hints, such as
-        aliases, unions, etc. */
-        static void parse(Object hint, std::vector<Object>& out) {
-            for (const Callback& cb : callbacks) {
-                if (cb(hint, out)) {
-                    return;
-                }
+        if (keys.empty()) {
+            return reinterpret_borrow<Object>(
+                reinterpret_cast<PyObject*>(Py_TYPE(Py_None))
+            );
+        } else if (keys.size() == 1) {
+            return std::move(keys.back());
+        } else {
+            Object bertrand = import_bertrand();
+            Object key = reinterpret_steal<Object>(
+                PyTuple_New(keys.size())
+            );
+            if (key.is(nullptr)) {
+                Exception::from_python();
             }
-            Object typing = import_typing();
-            Object origin = getattr<"get_origin">(typing)(hint);
-            if (origin.is(getattr<"Annotated">(typing))) {
-                parse(reinterpret_borrow<Object>(PyTuple_GET_ITEM(
-                    ptr(getattr<"get_args">(typing)(hint)),
-                    0
-                )), out);
+            size_t i = 0;
+            for (Object& type : keys) {
+                PyTuple_SET_ITEM(ptr(key), i++, release(type));
+            }
+            Object specialization = reinterpret_steal<Object>(PyObject_GetItem(
+                ptr(getattr<"Union">(bertrand)),
+                ptr(key)
+            ));
+            if (specialization.is(nullptr)) {
+                Exception::from_python();
+            }
+            return specialization;
+        }
+    }
+
+    /* Parse a Python-style type hint in-place, inserting the constituent types
+    into the output vector.  This is intended to be called from within the callback
+    mechanism itself, in order to trigger recursion for composite hints, such as
+    aliases, unions, etc. */
+    static void parse(Object hint, std::vector<Object>& out) {
+        for (const Callback& cb : callbacks) {
+            if (cb(hint, out)) {
                 return;
             }
-            out.emplace_back(std::move(hint));
+        }
+        Object typing = import_typing();
+        Object origin = getattr<"get_origin">(typing)(hint);
+        if (origin.is(getattr<"Annotated">(typing))) {
+            parse(reinterpret_borrow<Object>(PyTuple_GET_ITEM(
+                ptr(getattr<"get_args">(typing)(hint)),
+                0
+            )), out);
+            return;
+        }
+        out.emplace_back(std::move(hint));
+    }
+
+    /* A callback function to use when parsing inline type hints within a Python
+    function declaration. */
+    struct Callback {
+        using Func = std::function<bool(Object, std::vector<Object>&)>;
+        std::string id;
+        Func func;
+        bool operator()(const Object& hint, std::vector<Object>& out) const {
+            return func(hint, out);
+        }
+    };
+
+    /* An extendable series of callback functions that are used to parse
+    Python-style type hints, normalizing them into a format that can be used during
+    overload resolution and type safety checks.
+
+    Each callback is tested in order and expected to return true if it can handle
+    the hint, in which case the search terminates and the final state of the `out`
+    vector will be converted into a normalized hint.  If the vector is empty, then
+    the normalized hint will be `NoneType`, indicating a void function.  If the
+    vector contains only a single unique item, then it will be returned directly.
+    Otherwise, the vector will be converted into a `bertrand.Union` type,
+    parametrized by the unique types in the vector, in the same order that they
+    were added.
+
+    Note that `inspect.get_type_hints(include_extras=True)` is used to extract the
+    type hints from the function signature, meaning that stringized annotations and
+    forward references will be normalized before any callbacks are invoked.  The
+    `include_extras` flag is used to ensure that `typing.Annotated` hints are
+    preserved, so that they can be interpreted by the callback map if necessary.
+    The default behavior in this case is to simply extract the underlying type and
+    recur, but custom callbacks can be added to interpret these annotations if
+    needed.
+    
+    If no callbacks match a particular hint, then the default behavior is to
+    simply add it anyways, assuming that it is a valid type.  Any other behavior
+    must be added by appending a callback for that case. */
+    inline static std::deque<Callback> callbacks {
+        /// NOTE: Callbacks are linearly searched, so more common constructs should
+        /// be generally placed at the front of the list for performance reasons.
+        {
+            "inspect.Parameter.empty",
+            [](Object hint, std::vector<Object>& out) -> bool {
+                if (hint.is(getattr<"empty">(
+                    getattr<"Parameter">(import_inspect())
+                ))) {
+                    out.emplace_back(reinterpret_borrow<Object>(
+                        reinterpret_cast<PyObject*>(&PyBaseObject_Type)
+                    ));
+                    return true;
+                }
+                return false;
+            }
+        },
+        {
+            /// TODO: handling GenericAlias types is going to be fairly complicated, 
+            /// and will require interactions with the global type map, and thus a
+            /// forward declaration here.
+            "types.GenericAlias",
+            [](Object hint, std::vector<Object>& out) -> bool {
+                Object types = import_types();
+                int rc = PyObject_IsInstance(
+                    ptr(hint),
+                    ptr(getattr<"GenericAlias">(types))
+                );
+                if (rc < 0) {
+                    Exception::from_python();
+                } else if (rc) {
+                    Object typing = import_typing();
+                    Object origin = getattr<"get_origin">(typing)(hint);
+                    /// TODO: search in type map or fall back to Object
+                    Object args = getattr<"get_args">(typing)(hint);
+                    /// TODO: parametrize the bertrand type with the same args.  If
+                    /// this causes a template error, then fall back to its default
+                    /// specialization (i.e. list[Object]).
+                    throw NotImplementedError(
+                        "generic type subscription is not yet implemented"
+                    );
+                    return true;
+                }
+                return false;
+            }
+        },
+        {
+            "types.UnionType",
+            [](Object hint, std::vector<Object>& out) -> bool {
+                Object types = import_types();
+                int rc = PyObject_IsInstance(
+                    ptr(hint),
+                    ptr(getattr<"UnionType">(types))
+                );
+                if (rc < 0) {
+                    Exception::from_python();
+                } else if (rc) {
+                    Object args = getattr<"get_args">(types)(hint);
+                    Py_ssize_t len = PyTuple_GET_SIZE(ptr(args));
+                    for (Py_ssize_t i = 0; i < len; ++i) {
+                        parse(reinterpret_borrow<Object>(
+                            PyTuple_GET_ITEM(ptr(args), i)
+                        ), out);
+                    }
+                    return true;
+                }
+                return false;
+            }
+        },
+        {
+            /// NOTE: when `typing.get_origin()` is called on a `typing.Optional`,
+            /// it returns `typing.Union`, meaning that this handler will also
+            /// implicitly cover `Optional` annotations for free.
+            "typing.Union",
+            [](Object hint, std::vector<Object>& out) -> bool {
+                Object typing = import_typing();
+                Object origin = getattr<"get_origin">(typing)(hint);
+                if (origin.is(nullptr)) {
+                    Exception::from_python();
+                } else if (origin.is(getattr<"Union">(typing))) {
+                    Object args = getattr<"get_args">(typing)(hint);
+                    Py_ssize_t len = PyTuple_GET_SIZE(ptr(args));
+                    for (Py_ssize_t i = 0; i < len; ++i) {
+                        parse(reinterpret_borrow<Object>(
+                            PyTuple_GET_ITEM(ptr(args), i)
+                        ), out);
+                    }
+                    return true;
+                }
+                return false;
+            }
+        },
+        {
+            "typing.Any",
+            [](Object hint, std::vector<Object>& out) -> bool {
+                Object typing = import_typing();
+                Object origin = getattr<"get_origin">(typing)(hint);
+                if (origin.is(nullptr)) {
+                    Exception::from_python();
+                } else if (origin.is(getattr<"Any">(typing))) {
+                    out.emplace_back(reinterpret_borrow<Object>(
+                        reinterpret_cast<PyObject*>(&PyBaseObject_Type)
+                    ));
+                    return true;
+                }
+                return false;
+            }
+        },
+        {
+            "typing.TypeAliasType",
+            [](Object hint, std::vector<Object>& out) -> bool {
+                Object typing = import_typing();
+                int rc = PyObject_IsInstance(
+                    ptr(hint),
+                    ptr(getattr<"TypeAliasType">(typing))
+                );
+                if (rc < 0) {
+                    Exception::from_python();
+                } else if (rc) {
+                    parse(getattr<"__value__">(hint), out);
+                    return true;
+                }
+                return false;
+            }
+        },
+        {
+            "typing.Literal",
+            [](Object hint, std::vector<Object>& out) -> bool {
+                Object typing = import_typing();
+                Object origin = getattr<"get_origin">(typing)(hint);
+                if (origin.is(nullptr)) {
+                    Exception::from_python();
+                } else if (origin.is(getattr<"Literal">(typing))) {
+                    Object args = getattr<"get_args">(typing)(hint);
+                    if (args.is(nullptr)) {
+                        Exception::from_python();
+                    }
+                    Py_ssize_t len = PyTuple_GET_SIZE(ptr(args));
+                    for (Py_ssize_t i = 0; i < len; ++i) {
+                        out.emplace_back(reinterpret_borrow<Object>(
+                            reinterpret_cast<PyObject*>(Py_TYPE(
+                                PyTuple_GET_ITEM(ptr(args), i)
+                            ))
+                        ));
+                    }
+                    return true;
+                }
+                return false;
+            }
+        },
+        {
+            "typing.LiteralString",
+            [](Object hint, std::vector<Object>& out) -> bool {
+                Object typing = import_typing();
+                if (hint.is(getattr<"LiteralString">(typing))) {
+                    out.emplace_back(reinterpret_borrow<Object>(
+                        reinterpret_cast<PyObject*>(&PyUnicode_Type)
+                    ));
+                    return true;
+                }
+                return false;
+            }
+        },
+        {
+            "typing.AnyStr",
+            [](Object hint, std::vector<Object>& out) -> bool {
+                Object typing = import_typing();
+                if (hint.is(getattr<"AnyStr">(typing))) {
+                    out.emplace_back(reinterpret_borrow<Object>(
+                        reinterpret_cast<PyObject*>(&PyUnicode_Type)
+                    ));
+                    out.emplace_back(reinterpret_borrow<Object>(
+                        reinterpret_cast<PyObject*>(&PyBytes_Type)
+                    ));
+                    return true;
+                }
+                return false;
+            }
+        },
+        {
+            "typing.NoReturn",
+            [](Object hint, std::vector<Object>& out) -> bool {
+                Object typing = import_typing();
+                if (
+                    hint.is(getattr<"NoReturn">(typing)) ||
+                    hint.is(getattr<"Never">(typing))
+                ) {
+                    /// NOTE: this handler models NoReturn/Never by not pushing a
+                    /// type to the `out` set, giving an empty return type.
+                    return true;
+                }
+                return false;
+            }
+        },
+        {
+            "typing.TypeGuard",
+            [](Object hint, std::vector<Object>& out) -> bool {
+                Object typing = import_typing();
+                Object origin = getattr<"get_origin">(typing)(hint);
+                if (origin.is(nullptr)) {
+                    Exception::from_python();
+                } else if (origin.is(getattr<"TypeGuard">(typing))) {
+                    out.emplace_back(reinterpret_borrow<Object>(
+                        reinterpret_cast<PyObject*>(&PyBool_Type)
+                    ));
+                    return true;
+                }
+                return false;
+            }
+        }
+    };
+
+    /* Convert the inspected signature into a valid key that can be used to
+    specialize the `bertrand.Function` template on the Python side. */
+    Object key() const {
+        Object inspect = import_inspect();
+        Object Parameter = getattr<"Parameter">(inspect);
+        Object empty = getattr<"empty">(Parameter);
+        Object POSITIONAL_ONLY = getattr<"POSITIONAL_ONLY">(Parameter);
+        Object POSITIONAL_OR_KEYWORD = getattr<"POSITIONAL_OR_KEYWORD">(Parameter);
+        Object VAR_POSITIONAL = getattr<"VAR_POSITIONAL">(Parameter);
+        Object KEYWORD_ONLY = getattr<"KEYWORD_ONLY">(Parameter);
+
+        Py_ssize_t len = PyObject_Length(ptr(parameters));
+        if (len < 0) {
+            Exception::from_python();
+        }
+        Object result = reinterpret_steal<Object>(PyTuple_New(len + 1));
+        if (result.is(nullptr)) {
+            Exception::from_python();
         }
 
-        /* A callback function to use when parsing inline type hints within a Python
-        function declaration. */
-        struct Callback {
-            using Func = std::function<bool(Object, std::vector<Object>&)>;
-            std::string id;
-            Func func;
-            bool operator()(const Object& hint, std::vector<Object>& out) const {
-                return func(hint, out);
-            }
-        };
-
-        /* An extendable series of callback functions that are used to parse
-        Python-style type hints, normalizing them into a format that can be used during
-        overload resolution and type safety checks.
-
-        Each callback is tested in order and expected to return true if it can handle
-        the hint, in which case the search terminates and the final state of the `out`
-        vector will be converted into a normalized hint.  If the vector is empty, then
-        the normalized hint will be `NoneType`, indicating a void function.  If the
-        vector contains only a single unique item, then it will be returned directly.
-        Otherwise, the vector will be converted into a `bertrand.Union` type,
-        parametrized by the unique types in the vector, in the same order that they
-        were added.
-
-        Note that `inspect.get_type_hints(include_extras=True)` is used to extract the
-        type hints from the function signature, meaning that stringized annotations and
-        forward references will be normalized before any callbacks are invoked.  The
-        `include_extras` flag is used to ensure that `typing.Annotated` hints are
-        preserved, so that they can be interpreted by the callback map if necessary.
-        The default behavior in this case is to simply extract the underlying type and
-        recur, but custom callbacks can be added to interpret these annotations if
-        needed.
-        
-        If no callbacks match a particular hint, then the default behavior is to
-        simply add it anyways, assuming that it is a valid type.  Any other behavior
-        must be added by appending a callback for that case. */
-        inline static std::deque<Callback> callbacks {
-            /// NOTE: Callbacks are linearly searched, so more common constructs should
-            /// be generally placed at the front of the list for performance reasons.
-            {
-                "inspect.Parameter.empty",
-                [](Object hint, std::vector<Object>& out) -> bool {
-                    if (hint.is(getattr<"empty">(
-                        getattr<"Parameter">(import_inspect())
-                    ))) {
-                        out.emplace_back(reinterpret_borrow<Object>(
-                            reinterpret_cast<PyObject*>(&PyBaseObject_Type)
-                        ));
-                        return true;
-                    }
-                    return false;
-                }
-            },
-            {
-                /// TODO: handling GenericAlias types is going to be fairly complicated, 
-                /// and will require interactions with the global type map, and thus a
-                /// forward declaration here.
-                "types.GenericAlias",
-                [](Object hint, std::vector<Object>& out) -> bool {
-                    Object types = import_types();
-                    int rc = PyObject_IsInstance(
-                        ptr(hint),
-                        ptr(getattr<"GenericAlias">(types))
-                    );
-                    if (rc < 0) {
-                        Exception::from_python();
-                    } else if (rc) {
-                        Object typing = import_typing();
-                        Object origin = getattr<"get_origin">(typing)(hint);
-                        /// TODO: search in type map or fall back to Object
-                        Object args = getattr<"get_args">(typing)(hint);
-                        /// TODO: parametrize the bertrand type with the same args.  If
-                        /// this causes a template error, then fall back to its default
-                        /// specialization (i.e. list[Object]).
-                        throw NotImplementedError(
-                            "generic type subscription is not yet implemented"
-                        );
-                        return true;
-                    }
-                    return false;
-                }
-            },
-            {
-                "types.UnionType",
-                [](Object hint, std::vector<Object>& out) -> bool {
-                    Object types = import_types();
-                    int rc = PyObject_IsInstance(
-                        ptr(hint),
-                        ptr(getattr<"UnionType">(types))
-                    );
-                    if (rc < 0) {
-                        Exception::from_python();
-                    } else if (rc) {
-                        Object args = getattr<"get_args">(types)(hint);
-                        Py_ssize_t len = PyTuple_GET_SIZE(ptr(args));
-                        for (Py_ssize_t i = 0; i < len; ++i) {
-                            parse(reinterpret_borrow<Object>(
-                                PyTuple_GET_ITEM(ptr(args), i)
-                            ), out);
-                        }
-                        return true;
-                    }
-                    return false;
-                }
-            },
-            {
-                /// NOTE: when `typing.get_origin()` is called on a `typing.Optional`,
-                /// it returns `typing.Union`, meaning that this handler will also
-                /// implicitly cover `Optional` annotations for free.
-                "typing.Union",
-                [](Object hint, std::vector<Object>& out) -> bool {
-                    Object typing = import_typing();
-                    Object origin = getattr<"get_origin">(typing)(hint);
-                    if (origin.is(nullptr)) {
-                        Exception::from_python();
-                    } else if (origin.is(getattr<"Union">(typing))) {
-                        Object args = getattr<"get_args">(typing)(hint);
-                        Py_ssize_t len = PyTuple_GET_SIZE(ptr(args));
-                        for (Py_ssize_t i = 0; i < len; ++i) {
-                            parse(reinterpret_borrow<Object>(
-                                PyTuple_GET_ITEM(ptr(args), i)
-                            ), out);
-                        }
-                        return true;
-                    }
-                    return false;
-                }
-            },
-            {
-                "typing.Any",
-                [](Object hint, std::vector<Object>& out) -> bool {
-                    Object typing = import_typing();
-                    Object origin = getattr<"get_origin">(typing)(hint);
-                    if (origin.is(nullptr)) {
-                        Exception::from_python();
-                    } else if (origin.is(getattr<"Any">(typing))) {
-                        out.emplace_back(reinterpret_borrow<Object>(
-                            reinterpret_cast<PyObject*>(&PyBaseObject_Type)
-                        ));
-                        return true;
-                    }
-                    return false;
-                }
-            },
-            {
-                "typing.TypeAliasType",
-                [](Object hint, std::vector<Object>& out) -> bool {
-                    Object typing = import_typing();
-                    int rc = PyObject_IsInstance(
-                        ptr(hint),
-                        ptr(getattr<"TypeAliasType">(typing))
-                    );
-                    if (rc < 0) {
-                        Exception::from_python();
-                    } else if (rc) {
-                        parse(getattr<"__value__">(hint), out);
-                        return true;
-                    }
-                    return false;
-                }
-            },
-            {
-                "typing.Literal",
-                [](Object hint, std::vector<Object>& out) -> bool {
-                    Object typing = import_typing();
-                    Object origin = getattr<"get_origin">(typing)(hint);
-                    if (origin.is(nullptr)) {
-                        Exception::from_python();
-                    } else if (origin.is(getattr<"Literal">(typing))) {
-                        Object args = getattr<"get_args">(typing)(hint);
-                        if (args.is(nullptr)) {
-                            Exception::from_python();
-                        }
-                        Py_ssize_t len = PyTuple_GET_SIZE(ptr(args));
-                        for (Py_ssize_t i = 0; i < len; ++i) {
-                            out.emplace_back(reinterpret_borrow<Object>(
-                                reinterpret_cast<PyObject*>(Py_TYPE(
-                                    PyTuple_GET_ITEM(ptr(args), i)
-                                ))
-                            ));
-                        }
-                        return true;
-                    }
-                    return false;
-                }
-            },
-            {
-                "typing.LiteralString",
-                [](Object hint, std::vector<Object>& out) -> bool {
-                    Object typing = import_typing();
-                    if (hint.is(getattr<"LiteralString">(typing))) {
-                        out.emplace_back(reinterpret_borrow<Object>(
-                            reinterpret_cast<PyObject*>(&PyUnicode_Type)
-                        ));
-                        return true;
-                    }
-                    return false;
-                }
-            },
-            {
-                "typing.AnyStr",
-                [](Object hint, std::vector<Object>& out) -> bool {
-                    Object typing = import_typing();
-                    if (hint.is(getattr<"AnyStr">(typing))) {
-                        out.emplace_back(reinterpret_borrow<Object>(
-                            reinterpret_cast<PyObject*>(&PyUnicode_Type)
-                        ));
-                        out.emplace_back(reinterpret_borrow<Object>(
-                            reinterpret_cast<PyObject*>(&PyBytes_Type)
-                        ));
-                        return true;
-                    }
-                    return false;
-                }
-            },
-            {
-                "typing.NoReturn",
-                [](Object hint, std::vector<Object>& out) -> bool {
-                    Object typing = import_typing();
-                    if (
-                        hint.is(getattr<"NoReturn">(typing)) ||
-                        hint.is(getattr<"Never">(typing))
-                    ) {
-                        /// NOTE: this handler models NoReturn/Never by not pushing a
-                        /// type to the `out` set, giving an empty return type.
-                        return true;
-                    }
-                    return false;
-                }
-            },
-            {
-                "typing.TypeGuard",
-                [](Object hint, std::vector<Object>& out) -> bool {
-                    Object typing = import_typing();
-                    Object origin = getattr<"get_origin">(typing)(hint);
-                    if (origin.is(nullptr)) {
-                        Exception::from_python();
-                    } else if (origin.is(getattr<"TypeGuard">(typing))) {
-                        out.emplace_back(reinterpret_borrow<Object>(
-                            reinterpret_cast<PyObject*>(&PyBool_Type)
-                        ));
-                        return true;
-                    }
-                    return false;
-                }
-            }
-        };
-
-        /* Convert the inspected signature into a valid key that can be used to
-        specialize the `bertrand.Function` template on the Python side. */
-        Object key() const {
-            Object inspect = import_inspect();
-            Object Parameter = getattr<"Parameter">(inspect);
-            Object empty = getattr<"empty">(Parameter);
-            Object POSITIONAL_ONLY = getattr<"POSITIONAL_ONLY">(Parameter);
-            Object POSITIONAL_OR_KEYWORD = getattr<"POSITIONAL_OR_KEYWORD">(Parameter);
-            Object VAR_POSITIONAL = getattr<"VAR_POSITIONAL">(Parameter);
-            Object KEYWORD_ONLY = getattr<"KEYWORD_ONLY">(Parameter);
-
-            Py_ssize_t len = PyObject_Length(ptr(parameters));
-            if (len < 0) {
+        // first element lists type of bound `self` argument and return type as a
+        // slice
+        Object returns = this->returns();
+        if (returns.is(reinterpret_cast<PyObject*>(Py_TYPE(Py_None)))) {
+            returns = None;
+        }
+        Object cls = getattr<"__self__">(func, None);
+        if (PyType_Check(ptr(cls))) {
+            PyObject* slice = PySlice_New(
+                ptr(reinterpret_borrow<Object>(
+                    reinterpret_cast<PyObject*>(&PyType_Type)
+                )[cls]),
+                Py_None,
+                ptr(returns)
+            );
+            if (slice == nullptr) {
                 Exception::from_python();
             }
-            Object result = reinterpret_steal<Object>(PyTuple_New(len + 1));
-            if (result.is(nullptr)) {
+            PyTuple_SET_ITEM(ptr(result), 0, slice);  // steals a reference
+        } else {
+            PyObject* slice = PySlice_New(
+                reinterpret_cast<PyObject*>(Py_TYPE(ptr(cls))),
+                Py_None,
+                ptr(returns)
+            );
+            if (slice == nullptr) {
                 Exception::from_python();
             }
+            PyTuple_SET_ITEM(ptr(result), 0, slice);  // steals a reference
+        }
 
-            // first element lists type of bound `self` argument and return type as a
-            // slice
-            Object returns = this->returns();
-            if (returns.is(reinterpret_cast<PyObject*>(Py_TYPE(Py_None)))) {
-                returns = None;
-            }
-            Object cls = getattr<"__self__">(func, None);
-            if (PyType_Check(ptr(cls))) {
-                PyObject* slice = PySlice_New(
-                    ptr(reinterpret_borrow<Object>(
-                        reinterpret_cast<PyObject*>(&PyType_Type)
-                    )[cls]),
-                    Py_None,
-                    ptr(returns)
-                );
-                if (slice == nullptr) {
-                    Exception::from_python();
-                }
-                PyTuple_SET_ITEM(ptr(result), 0, slice);  // steals a reference
-            } else {
-                PyObject* slice = PySlice_New(
-                    reinterpret_cast<PyObject*>(Py_TYPE(ptr(cls))),
-                    Py_None,
-                    ptr(returns)
-                );
-                if (slice == nullptr) {
-                    Exception::from_python();
-                }
-                PyTuple_SET_ITEM(ptr(result), 0, slice);  // steals a reference
-            }
-
-            /// remaining elements are parameters, with slices, '/', '*', etc.
-            const Params<std::vector<Param>>& key = this->key();
-            Py_ssize_t offset = 1;
-            Py_ssize_t posonly_idx = std::numeric_limits<Py_ssize_t>::max();
-            Py_ssize_t kwonly_idx = std::numeric_limits<Py_ssize_t>::max();
-            for (Py_ssize_t i = 0; i < len; ++i) {
-                const Param& param = key[i];
-                if (param.posonly()) {
-                    posonly_idx = i;
-                    if (!param.opt()) {
-                        PyTuple_SET_ITEM(
-                            ptr(result),
-                            i + offset,
-                            Py_NewRef(ptr(param.value))
-                        );
-                    } else {
-                        PyObject* slice = PySlice_New(
-                            ptr(param.value),
-                            Py_Ellipsis,
-                            Py_None
-                        );
-                        if (slice == nullptr) {
-                            Exception::from_python();
-                        }
-                        PyTuple_SET_ITEM(ptr(result), i + offset, slice);
-                    }
+        /// remaining elements are parameters, with slices, '/', '*', etc.
+        const Params<std::vector<Param>>& key = this->key();
+        Py_ssize_t offset = 1;
+        Py_ssize_t posonly_idx = std::numeric_limits<Py_ssize_t>::max();
+        Py_ssize_t kwonly_idx = std::numeric_limits<Py_ssize_t>::max();
+        for (Py_ssize_t i = 0; i < len; ++i) {
+            const Param& param = key[i];
+            if (param.posonly()) {
+                posonly_idx = i;
+                if (!param.opt()) {
+                    PyTuple_SET_ITEM(
+                        ptr(result),
+                        i + offset,
+                        Py_NewRef(ptr(param.value))
+                    );
                 } else {
-                    // insert '/' delimiter if there are any posonly arguments
-                    if (i > posonly_idx) {
-                        PyObject* grow;
-                        if (_PyTuple_Resize(&grow, len + offset + 1) < 0) {
-                            Exception::from_python();
-                        }
-                        result = reinterpret_steal<Object>(grow);
-                        PyTuple_SET_ITEM(
-                            ptr(result),
-                            i + offset,
-                            release(template_string<"/">())
-                        );
-                        ++offset;
-
-                    // insert '*' delimiter if there are any kwonly arguments
-                    } else if (
-                        param.kwonly() &&
-                        kwonly_idx == std::numeric_limits<Py_ssize_t>::max()
-                    ) {
-                        kwonly_idx = i;
-                        PyObject* grow;
-                        if (_PyTuple_Resize(&grow, len + offset + 1) < 0) {
-                            Exception::from_python();
-                        }
-                        result = reinterpret_steal<Object>(grow);
-                        PyTuple_SET_ITEM(
-                            ptr(result),
-                            i + offset,
-                            release(template_string<"*">())
-                        );
-                        ++offset;
-                    }
-
-                    // insert parameter identifier
-                    Object name = reinterpret_steal<Object>(
-                        PyUnicode_FromStringAndSize(
-                            param.name.data(),
-                            param.name.size()
-                        )
-                    );
-                    if (name.is(nullptr)) {
-                        Exception::from_python();
-                    }
                     PyObject* slice = PySlice_New(
-                        ptr(name),
                         ptr(param.value),
-                        param.opt() ? Py_Ellipsis : Py_None
+                        Py_Ellipsis,
+                        Py_None
                     );
                     if (slice == nullptr) {
                         Exception::from_python();
                     }
                     PyTuple_SET_ITEM(ptr(result), i + offset, slice);
                 }
-            }
-            _template_key = result;
-            return _template_key;
-        }
+            } else {
+                // insert '/' delimiter if there are any posonly arguments
+                if (i > posonly_idx) {
+                    PyObject* grow;
+                    if (_PyTuple_Resize(&grow, len + offset + 1) < 0) {
+                        Exception::from_python();
+                    }
+                    result = reinterpret_steal<Object>(grow);
+                    PyTuple_SET_ITEM(
+                        ptr(result),
+                        i + offset,
+                        release(template_string<"/">())
+                    );
+                    ++offset;
 
-        /// TODO: perhaps the same comparison operators are enabled for Signature<> and
-        /// made constexpr, so that they can be placed into template constraints?
-
-        /* Checks whether two signatures are compatible with each other, meaning that
-        one can be registered as a viable overload of the other.  Also allows
-        topological ordering of signatures, where `<` checks will sort signatures from
-        most restrictive to least restrictive.
-
-        Two signatures are considered compatible if every parameter in the lesser
-        signature has an equivalent in the greater signature with the same name and
-        kind, and the lesser annotation is a subtype of the greater.  Arguments must
-        also be given in the same order, and if any in the lesser signature have
-        default values, then the same must also be true in the greater (though the
-        default values may differ between them).  Note that the reverse is not always
-        true, meaning that if the greater signature defines a parameter as having a
-        default value, then it may be required in the lesser signature without
-        violating compatibility.
-
-        Variadic arguments in both signatures are special cases.  First, if the lesser
-        signature accepts variadic arguments of either kind, then the greater
-        signature must as well, and the lesser annotation must be a subtype of the
-        greater annotation.  Similar to default values, the reverse does not always
-        hold, meaning that if the greater signature has variadic arguments, then the
-        lesser signature can accept any number of additional arguments of the same kind
-        with arbitrary names (including other variadic arguments), as long as the
-        annotations are compatible with the greater argument's annotation.
-
-        Equality occurs when two signatures are compatible in both directions, meaning
-        that their parameter lists are identical.  Strict `<` or `>` ordering occurs
-        when the subtype relationships hold, but the parameter lists are not
-        identical. */
-        [[nodiscard]] friend bool operator<(const Inspect& lhs, const Inspect& rhs) {
-            constexpr auto issubclass = [](PyObject* lhs, PyObject* rhs) {
-                int rc = PyObject_IsSubclass(lhs, rhs);
-                if (rc < 0) {
-                    Exception::from_python();
+                // insert '*' delimiter if there are any kwonly arguments
+                } else if (
+                    param.kwonly() &&
+                    kwonly_idx == std::numeric_limits<Py_ssize_t>::max()
+                ) {
+                    kwonly_idx = i;
+                    PyObject* grow;
+                    if (_PyTuple_Resize(&grow, len + offset + 1) < 0) {
+                        Exception::from_python();
+                    }
+                    result = reinterpret_steal<Object>(grow);
+                    PyTuple_SET_ITEM(
+                        ptr(result),
+                        i + offset,
+                        release(template_string<"*">())
+                    );
+                    ++offset;
                 }
-                return rc;
-            };
-            constexpr auto isequal = [](PyObject* lhs, PyObject* rhs) {
-                int rc = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
-                if (rc < 0) {
-                    Exception::from_python();
-                }
-                return rc;
-            };
 
-            bool equal = true;
-            auto l = lhs.begin();
-            auto l_end = lhs.end();
-            auto r = rhs.begin();
-            auto r_end = rhs.end();
-            while (l != l_end && r != r_end) {
-                if (r->args()) {
-                    while (l->pos()) {
-                        equal = false;
-                        if (!issubclass(
-                            ptr(l->annotation),
-                            ptr(r->annotation))
-                        ) {
-                            return false;
-                        }
-                        ++l;
-                    }
-                    if (l->args()) {
-                        if (equal) {
-                            equal = isequal(
-                                ptr(l->annotation),
-                                ptr(r->annotation)
-                            );
-                        }
-                        if (!issubclass(
-                            ptr(l->annotation),
-                            ptr(r->annotation))
-                        ) {
-                            return false;
-                        }
-                        ++l;
-                    }
-                } else if (r->kwargs()) {
-                    while (l->kwonly()) {
-                        equal = false;
-                        if (!issubclass(
-                            ptr(l->annotation),
-                            ptr(r->annotation))
-                        ) {
-                            return false;
-                        }
-                        ++l;
-                    }
-                    if (l->kwargs()) {
-                        if (equal) {
-                            equal = isequal(
-                                ptr(l->annotation),
-                                ptr(r->annotation)
-                            );
-                        }
-                        if (!issubclass(
-                            ptr(l->annotation),
-                            ptr(r->annotation))
-                        ) {
-                            return false;
-                        }
-                        ++l;
-                    }
-                } else {
-                    if (equal) {
-                        equal = isequal(
-                            ptr(l->annotation),
-                            ptr(r->annotation)
-                        );
-                    }
-                    if (l->name != r->name || l->kind != r->kind || !issubclass(
-                        ptr(l->annotation),
-                        ptr(r->annotation)
-                    )) {
-                        return false;
-                    }
-                    ++l;
-                }
-                ++r;
-            }
-            return !equal && l == l_end && r != r_end;
-        }
-        template <typename F>
-        [[nodiscard]] friend bool operator<(const Inspect& lhs, const Signature<F>& rhs) {
-            /// TODO:
-        }
-        template <typename F>
-        [[nodiscard]] friend bool operator<(const Signature<F>& lhs, const Inspect& rhs) {
-            return rhs > lhs;
-        }
-        [[nodiscard]] friend bool operator<=(const Inspect& lhs, const Inspect& rhs) {
-            constexpr auto issubclass = [](PyObject* lhs, PyObject* rhs) {
-                int rc = PyObject_IsSubclass(lhs, rhs);
-                if (rc < 0) {
-                    Exception::from_python();
-                }
-                return rc;
-            };
-
-            auto l = lhs.begin();
-            auto l_end = lhs.end();
-            auto r = rhs.begin();
-            auto r_end = rhs.end();
-            while (l != l_end && r != r_end) {
-                if (r->args()) {
-                    while (l->pos() || l->args()) {
-                        if (!issubclass(
-                            ptr(l->annotation),
-                            ptr(r->annotation))
-                        ) {
-                            return false;
-                        }
-                        ++l;
-                    }
-                } else if (r->kwargs()) {
-                    while (l->kwonly() || l->kwargs()) {
-                        if (!issubclass(
-                            ptr(l->annotation),
-                            ptr(r->annotation))
-                        ) {
-                            return false;
-                        }
-                        ++l;
-                    }
-                } else {
-                    if (l->name != r->name || l->kind != r->kind || !issubclass(
-                        ptr(l->annotation),
-                        ptr(r->annotation)
-                    )) {
-                        return false;
-                    }
-                    ++l;
-                }
-                ++r;
-            }
-            return l == l_end && r != r_end;
-        }
-        template <typename F>
-        [[nodiscard]] friend bool operator<=(const Inspect& lhs, const Signature<F>& rhs) {
-            /// TODO:
-        }
-        template <typename F>
-        [[nodiscard]] friend bool operator<=(const Signature<F>& lhs, const Inspect& rhs) {
-            return rhs >= lhs;
-        }
-        [[nodiscard]] friend bool operator==(const Inspect& lhs, const Inspect& rhs) {
-            auto l = lhs.begin();
-            auto l_end = lhs.end();
-            auto r = rhs.begin();
-            auto r_end = rhs.end();
-            while (l != l_end && r != r_end) {
-                int rc = PyObject_RichCompareBool(
-                    ptr(l->annotation),
-                    ptr(r->annotation),
-                    Py_EQ
+                // insert parameter identifier
+                Object name = reinterpret_steal<Object>(
+                    PyUnicode_FromStringAndSize(
+                        param.name.data(),
+                        param.name.size()
+                    )
                 );
-                if (rc < 0) {
+                if (name.is(nullptr)) {
                     Exception::from_python();
                 }
-                if (l->name != r->name || !rc || l->kind != r->kind) {
-                    return false;
-                }
-                ++l;
-                ++r;
-            }
-            return l == l_end && r == r_end;
-        }
-        template <typename F>
-        [[nodiscard]] friend bool operator==(const Inspect& lhs, const Signature<F>& rhs) {
-            /// TODO:
-        }
-        template <typename F>
-        [[nodiscard]] friend bool operator==(const Signature<F>& lhs, const Inspect& rhs) {
-            return rhs == lhs;
-        }
-        [[nodiscard]] friend bool operator!=(const Inspect& lhs, const Inspect& rhs) {
-            auto l = lhs.begin();
-            auto l_end = lhs.end();
-            auto r = rhs.begin();
-            auto r_end = rhs.end();
-            while (l != l_end && r != r_end) {
-                int rc = PyObject_RichCompareBool(
-                    ptr(l->annotation),
-                    ptr(r->annotation),
-                    Py_EQ
+                PyObject* slice = PySlice_New(
+                    ptr(name),
+                    ptr(param.value),
+                    param.opt() ? Py_Ellipsis : Py_None
                 );
-                if (rc < 0) {
+                if (slice == nullptr) {
                     Exception::from_python();
                 }
-                if (l->name == r->name && rc && l->kind == r->kind) {
-                    return false;
-                }
-                ++l;
-                ++r;
+                PyTuple_SET_ITEM(ptr(result), i + offset, slice);
             }
-            return l != l_end || r != r_end;
         }
-        template <typename F>
-        [[nodiscard]] friend bool operator!=(const Inspect& lhs, const Signature<F>& rhs) {
-            /// TODO:
-        }
-        template <typename F>
-        [[nodiscard]] friend bool operator!=(const Signature<F>& lhs, const Inspect& rhs) {
-            return rhs != lhs;
-        }
-        [[nodiscard]] friend bool operator>=(const Inspect& lhs, const Inspect& rhs) {
-            return rhs <= lhs;
-        }
-        template <typename F>
-        [[nodiscard]] friend bool operator>=(const Inspect& lhs, const Signature<F>& rhs) {
-            return rhs <= lhs;
-        }
-        template <typename F>
-        [[nodiscard]] friend bool operator>=(const Signature<F>& lhs, const Inspect& rhs) {
-            return rhs <= lhs;
-        }
-        [[nodiscard]] friend bool operator>(const Inspect& lhs, const Inspect& rhs) {
-            return rhs < lhs;
-        }
-        template <typename F>
-        [[nodiscard]] friend bool operator>(const Inspect& lhs, const Signature<F>& rhs) {
-            return rhs < lhs;
-        }
-        template <typename F>
-        [[nodiscard]] friend bool operator>(const Signature<F>& lhs, const Inspect& rhs) {
-            return rhs < lhs;
-        }
-
-    };
-
-}
+        _template_key = result;
+        return _template_key;
+    }
+};
 
 
 /// TODO: also, Signature can potentially also expose a helper type that converts
@@ -1252,7 +1046,6 @@ namespace impl {
 /// 3
 
 
-
 /* The canonical form of `py::Signature`, which encapsulates all of the internal
 call machinery, most of which is evaluated at compile time.  All other
 specializations should redirect to this form in order to avoid reimplementing the
@@ -1272,10 +1065,6 @@ struct Signature<Return(Args...)> : impl::SignatureBase<Return> {
 private:
     template <typename T>
     using ArgTraits = impl::ArgTraits<T>;
-
-    template <typename T>
-    using Params = impl::Params<T>;
-    using Param = impl::Param;
 
     /// TODO: these helpers shouldn't count partial arguments?  That means they'll
     /// always take them into account, and there won't be any issues with Partial
@@ -7130,6 +6919,10 @@ public:
         struct Edge {
             using Filter = std::function<bool(const Edge&)>;
 
+            /// TODO: if I replace Metadata with inspect(), then each edge can
+            /// reference an inspect::Param object here, which replaces the need for
+            /// everything except the target node.
+
             size_t hash;
             std::string name;
             Object type;
@@ -7183,6 +6976,9 @@ public:
             std::vector<Edge> path;
             std::unordered_map<std::string_view, uint64_t> keywords;
 
+            /// TODO: I can probably replace this with just an instance of the
+            /// inspect() class, except for the edge path.
+
             friend bool operator<(const Metadata& lhs, const Metadata& rhs) {
                 return lhs.hash < rhs.hash;
             }
@@ -7220,7 +7016,16 @@ public:
         Overloads(const Object& fallback) :
             m_leading_node(fallback, {{nullptr, {&m_leading_edge}}})
         {
-            impl::Inspect(fallback).template matches<Signature>();
+            /// TODO: recreating the logic from the comparison operator might result
+            /// in a better error message that points to the specific types that may
+            /// be mismatching.
+            auto sig = inspect(fallback);
+            if (sig != Signature{}) {
+                throw TypeError(
+                    "fallback overload must exactly match the expected signature: " +
+                    repr(sig.signature())
+                );
+            };
         }
 
         /* A single node in the overload trie, which holds the topologically-sorted
@@ -7453,7 +7258,7 @@ public:
         `inspect.signature()` call), or a ValueError if it conflicts with an existing
         overload. */
         void insert(const Object& func) {
-            /// TODO: Inspect{} the function here to get the signature, validate it,
+            /// TODO: inspect{} the function here to get the signature, validate it,
             /// and then insert into the metadata map + encode into the overload trie,
             /// building new nodes as needed.
         }
@@ -10388,6 +10193,332 @@ template <typename R, typename C, typename... A>
 struct Signature<R(C::*)(A...) const volatile & noexcept> : Signature<R(A...)> {};
 template <impl::has_call_operator T>
 struct Signature<T> : Signature<decltype(&std::remove_reference_t<T>::operator())> {};
+
+
+/* Checks whether two signatures are compatible with each other, meaning that
+one can be registered as a viable overload of the other.  Also allows
+topological ordering of signatures, where `<` checks will sort signatures from
+most restrictive to least restrictive.
+
+Two signatures are considered compatible if every parameter in the lesser
+signature has an equivalent in the greater signature with the same name and
+kind, and the lesser annotation is a subtype of the greater.  Arguments must
+also be given in the same order, and if any in the lesser signature have
+default values, then the same must also be true in the greater (though the
+default values may differ between them).  Note that the reverse is not always
+true, meaning that if the greater signature defines a parameter as having a
+default value, then it may be required in the lesser signature without
+violating compatibility.
+
+Variadic arguments in both signatures are special cases.  First, if the lesser
+signature accepts variadic arguments of either kind, then the greater
+signature must as well, and the lesser annotation must be a subtype of the
+greater annotation.  Similar to default values, the reverse does not always
+hold, meaning that if the greater signature has variadic arguments, then the
+lesser signature can accept any number of additional arguments of the same kind
+with arbitrary names (including other variadic arguments), as long as the
+annotations are compatible with the greater argument's annotation.
+
+Equality occurs when two signatures are compatible in both directions, meaning
+that their parameter lists are identical.  Strict `<` or `>` ordering occurs
+when the subtype relationships hold, but the parameter lists are not
+identical. */
+[[nodiscard]] bool operator<(const inspect& lhs, const inspect& rhs) {
+    constexpr auto issubclass = [](PyObject* lhs, PyObject* rhs) {
+        int rc = PyObject_IsSubclass(lhs, rhs);
+        if (rc < 0) {
+            Exception::from_python();
+        }
+        return rc;
+    };
+    constexpr auto isequal = [](PyObject* lhs, PyObject* rhs) {
+        int rc = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
+        if (rc < 0) {
+            Exception::from_python();
+        }
+        return rc;
+    };
+
+    bool equal = true;
+    auto l = lhs.begin();
+    auto l_end = lhs.end();
+    auto r = rhs.begin();
+    auto r_end = rhs.end();
+    while (l != l_end && r != r_end) {
+        if (r->args()) {
+            while (l->pos()) {
+                equal = false;
+                if (!issubclass(
+                    ptr(l->annotation),
+                    ptr(r->annotation))
+                ) {
+                    return false;
+                }
+                ++l;
+            }
+            if (l->args()) {
+                if (equal) {
+                    equal = isequal(
+                        ptr(l->annotation),
+                        ptr(r->annotation)
+                    );
+                }
+                if (!issubclass(
+                    ptr(l->annotation),
+                    ptr(r->annotation))
+                ) {
+                    return false;
+                }
+                ++l;
+            }
+        } else if (r->kwargs()) {
+            while (l->kwonly()) {
+                equal = false;
+                if (!issubclass(
+                    ptr(l->annotation),
+                    ptr(r->annotation))
+                ) {
+                    return false;
+                }
+                ++l;
+            }
+            if (l->kwargs()) {
+                if (equal) {
+                    equal = isequal(
+                        ptr(l->annotation),
+                        ptr(r->annotation)
+                    );
+                }
+                if (!issubclass(
+                    ptr(l->annotation),
+                    ptr(r->annotation))
+                ) {
+                    return false;
+                }
+                ++l;
+            }
+        } else {
+            if (equal) {
+                equal = isequal(
+                    ptr(l->annotation),
+                    ptr(r->annotation)
+                );
+            }
+            if (l->name != r->name || l->kind != r->kind || !issubclass(
+                ptr(l->annotation),
+                ptr(r->annotation)
+            )) {
+                return false;
+            }
+            ++l;
+        }
+        ++r;
+    }
+    if (!issubclass(
+        ptr(lhs.return_annotation()),
+        ptr(rhs.return_annotation())
+    )) {
+        return false;
+    }
+    if (equal) {
+        equal = isequal(
+            ptr(lhs.return_annotation()),
+            ptr(rhs.return_annotation())
+        );
+    }
+    return !equal && l == l_end && r != r_end;
+}
+template <typename F>
+[[nodiscard]] bool operator<(const inspect& lhs, const Signature<F>& rhs) {
+    /// TODO:
+}
+template <typename F>
+[[nodiscard]] bool operator<(const Signature<F>& lhs, const inspect& rhs) {
+    return rhs > lhs;
+}
+template <typename L, typename R>
+[[nodiscard]] constexpr bool operator<(const Signature<L>& lhs, const Signature<R>& rhs) {
+    /// TODO:
+}
+
+
+[[nodiscard]] bool operator<=(const inspect& lhs, const inspect& rhs) {
+    constexpr auto issubclass = [](PyObject* lhs, PyObject* rhs) {
+        int rc = PyObject_IsSubclass(lhs, rhs);
+        if (rc < 0) {
+            Exception::from_python();
+        }
+        return rc;
+    };
+
+    auto l = lhs.begin();
+    auto l_end = lhs.end();
+    auto r = rhs.begin();
+    auto r_end = rhs.end();
+    while (l != l_end && r != r_end) {
+        if (r->args()) {
+            while (l->pos() || l->args()) {
+                if (!issubclass(
+                    ptr(l->annotation),
+                    ptr(r->annotation))
+                ) {
+                    return false;
+                }
+                ++l;
+            }
+        } else if (r->kwargs()) {
+            while (l->kwonly() || l->kwargs()) {
+                if (!issubclass(
+                    ptr(l->annotation),
+                    ptr(r->annotation))
+                ) {
+                    return false;
+                }
+                ++l;
+            }
+        } else {
+            if (l->name != r->name || l->kind != r->kind || !issubclass(
+                ptr(l->annotation),
+                ptr(r->annotation)
+            )) {
+                return false;
+            }
+            ++l;
+        }
+        ++r;
+    }
+    if (!issubclass(
+        ptr(lhs.return_annotation()),
+        ptr(rhs.return_annotation())
+    )) {
+        return false;
+    }
+    return l == l_end && r != r_end;
+}
+template <typename F>
+[[nodiscard]] bool operator<=(const inspect& lhs, const Signature<F>& rhs) {
+    /// TODO:
+}
+template <typename F>
+[[nodiscard]] bool operator<=(const Signature<F>& lhs, const inspect& rhs) {
+    return rhs >= lhs;
+}
+template <typename L, typename R>
+[[nodiscard]] constexpr bool operator<=(const Signature<L>& lhs, const Signature<R>& rhs) {
+    /// TODO:
+}
+
+
+[[nodiscard]] bool operator==(const inspect& lhs, const inspect& rhs) {
+    constexpr auto isequal = [](PyObject* lhs, PyObject* rhs) {
+        int rc = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
+        if (rc < 0) {
+            Exception::from_python();
+        }
+        return rc;
+    };
+
+    auto l = lhs.begin();
+    auto l_end = lhs.end();
+    auto r = rhs.begin();
+    auto r_end = rhs.end();
+    while (l != l_end && r != r_end) {
+        if (l->name != r->name || l->kind != r->kind || !isequal(
+            ptr(l->annotation),
+            ptr(r->annotation)
+        )) {
+            return false;
+        }
+        ++l;
+        ++r;
+    }
+    return l == l_end && r == r_end;
+}
+template <typename F>
+[[nodiscard]] bool operator==(const inspect& lhs, const Signature<F>& rhs) {
+    /// TODO:
+}
+template <typename F>
+[[nodiscard]] bool operator==(const Signature<F>& lhs, const inspect& rhs) {
+    return rhs == lhs;
+}
+template <typename L, typename R>
+[[nodiscard]] constexpr bool operator==(const Signature<L>& lhs, const Signature<R>& rhs) {
+    /// TODO:
+}
+
+
+[[nodiscard]] bool operator!=(const inspect& lhs, const inspect& rhs) {
+    constexpr auto isequal = [](PyObject* lhs, PyObject* rhs) {
+        int rc = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
+        if (rc < 0) {
+            Exception::from_python();
+        }
+        return rc;
+    };
+
+    auto l = lhs.begin();
+    auto l_end = lhs.end();
+    auto r = rhs.begin();
+    auto r_end = rhs.end();
+    while (l != l_end && r != r_end) {
+        if (l->name == r->name && l->kind == r->kind && isequal(
+            ptr(l->annotation),
+            ptr(r->annotation)
+        )) {
+            return false;
+        }
+        ++l;
+        ++r;
+    }
+    return l != l_end || r != r_end;
+}
+template <typename F>
+[[nodiscard]] bool operator!=(const inspect& lhs, const Signature<F>& rhs) {
+    /// TODO:
+}
+template <typename F>
+[[nodiscard]] bool operator!=(const Signature<F>& lhs, const inspect& rhs) {
+    return rhs != lhs;
+}
+template <typename L, typename R>
+[[nodiscard]] constexpr bool operator!=(const Signature<L>& lhs, const Signature<R>& rhs) {
+    /// TODO:
+}
+
+
+[[nodiscard]] bool operator>=(const inspect& lhs, const inspect& rhs) {
+    return rhs <= lhs;
+}
+template <typename F>
+[[nodiscard]] bool operator>=(const inspect& lhs, const Signature<F>& rhs) {
+    return rhs <= lhs;
+}
+template <typename F>
+[[nodiscard]] bool operator>=(const Signature<F>& lhs, const inspect& rhs) {
+    return rhs <= lhs;
+}
+template <typename L, typename R>
+[[nodiscard]] constexpr bool operator>=(const Signature<L>& lhs, const Signature<R>& rhs) {
+    return rhs <= lhs;
+}
+
+
+[[nodiscard]] bool operator>(const inspect& lhs, const inspect& rhs) {
+    return rhs < lhs;
+}
+template <typename F>
+[[nodiscard]] bool operator>(const inspect& lhs, const Signature<F>& rhs) {
+    return rhs < lhs;
+}
+template <typename F>
+[[nodiscard]] bool operator>(const Signature<F>& lhs, const inspect& rhs) {
+    return rhs < lhs;
+}
+template <typename L, typename R>
+[[nodiscard]] constexpr bool operator>(const Signature<L>& lhs, const Signature<R>& rhs) {
+    return rhs < lhs;
+}
 
 
 /* A template constraint that controls whether the `py::call()` operator is enabled
