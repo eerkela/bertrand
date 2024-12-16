@@ -269,60 +269,6 @@ namespace impl {
         return out;
     }
 
-    // /* A simple representation of a single parameter in a function signature or call
-    // site, for use when searching for overloads. */
-    // struct Param {
-    //     /// TODO: in order to properly support variadic kwargs from C++ (which are
-    //     /// represented using KeywordPacks), these need to own the underlying string
-    //     /// data.  Alternatively, I can try to figure out how to store string_views
-    //     /// in the keyword pack.
-    //     std::string_view name;
-    //     Object value;  // may be a type or instance
-    //     ArgKind kind;
-
-    //     constexpr bool posonly() const noexcept { return kind.posonly(); }
-    //     constexpr bool pos() const noexcept { return kind.pos(); }
-    //     constexpr bool args() const noexcept { return kind.args(); }
-    //     constexpr bool kwonly() const noexcept { return kind.kwonly(); }
-    //     constexpr bool kw() const noexcept { return kind.kw(); }
-    //     constexpr bool kwargs() const noexcept { return kind.kwargs(); }
-    //     constexpr bool opt() const noexcept { return kind.opt(); }
-    //     constexpr bool variadic() const noexcept { return kind.variadic(); }
-
-    //     /* Compute a hash of this parameter's name, type, and kind, using the given
-    //     FNV-1a hash seed and prime. */
-    //     size_t hash(size_t seed, size_t prime) const noexcept {
-    //         return hash_combine(
-    //             fnv1a(name.data(), seed, prime),
-    //             PyType_Check(ptr(value)) ?
-    //                 reinterpret_cast<size_t>(ptr(value)) :
-    //                 reinterpret_cast<size_t>(Py_TYPE(ptr(value))),
-    //             static_cast<size_t>(kind)
-    //         );
-    //     }
-    // };
-
-    // /* A read-only container of `Param` objects that also holds a combined hash
-    // suitable for cache optimization when searching a function's overload trie.  The
-    // underlying container type is flexible, and will generally be either a `std::array`
-    // (if the number of arguments is known ahead of time) or a `std::vector` (if they
-    // must be dynamic), but any container that supports read-only iteration, item access,
-    // and `size()` queries is technically supported. */
-    // template <yields<const Param&> T>
-    //     requires (has_size<T> && lookup_yields<T, const Param&, size_t>)
-    // struct Params {
-    //     T value;
-    //     size_t hash = 0;
-
-    //     const Param& operator[](size_t i) const noexcept { return value[i]; }
-    //     size_t size() const noexcept { return std::ranges::size(value); }
-    //     bool empty() const noexcept { return std::ranges::empty(value); }
-    //     auto begin() const noexcept { return std::ranges::begin(value); }
-    //     auto cbegin() const noexcept { return std::ranges::cbegin(value); }
-    //     auto end() const noexcept { return std::ranges::end(value); }
-    //     auto cend() const noexcept { return std::ranges::cend(value); }
-    // };
-
     /// TODO: canonical_function_type is probably not necessary?
     template <typename T>
     constexpr bool _canonical_function_type = false;
@@ -365,7 +311,16 @@ namespace impl {
 
 
 /* Inspect a Python function object and extract its signature, so that it can be
-analyzed from C++ and converted into proper overload keys, etc. */
+analyzed from C++ and converted into proper overload/template keys, etc.
+
+This class works just like the `inspect.signature()` function in Python, with extra
+logic for normalizing type hints and handling partial functions.  It houses a static
+callback table that can be extended from C++ to handle custom types.  Partial arguments
+are inferred by searching for a `__partial__` attribute on the function object, which
+should be a tuple of (name, value) pairs in the same order as the function's
+parameters, or `None` if no partials are present.  Alternatively, if a `__self__`
+attribute is present, then it will be used to bind the first parameter of the function,
+as if it were a method. */
 struct inspect {
     struct Param;
     struct Callback;
@@ -436,6 +391,46 @@ private:
         Object KEYWORD_ONLY = getattr<"KEYWORD_ONLY">(Parameter);
         Object VAR_KEYWORD = getattr<"VAR_KEYWORD">(Parameter);
 
+        // search for partial arguments or __self__ attribute on function
+        Object partials = getattr<"__partial__">(m_func, None);
+        Object self = getattr<"__self__">(
+            m_func,
+            reinterpret_steal<Object>(nullptr)
+        );
+        size_t partial_idx = 0;
+        size_t partial_size = 0;
+        if (!partials.is(None)) {
+            if (!PyTuple_Check(ptr(partials))) {
+                throw TypeError(
+                    "__partial__ attribute must be a tuple of (name, "
+                    "value) pairs"
+                );
+            }
+            partial_size = PyTuple_GET_SIZE(ptr(partials));
+        } else if (!self.is(nullptr)) {
+            /// NOTE: the `__self__` parameter would ordinarily not show up in the
+            /// inspect.signature() call, so it needs to be removed and added back in
+            /// manually.
+            m_func = getattr<"__func__">(self, m_func);
+        }
+        constexpr auto partial_is_positional = [](PyObject* pair) {
+            if (
+                !PyTuple_Check(pair) ||
+                PyTuple_GET_SIZE(pair) != 2 ||
+                !PyUnicode_Check(PyTuple_GET_ITEM(pair, 0))
+            ) {
+                throw TypeError(
+                    "__partial__ attribute must be a tuple of (name, "
+                    "value) pairs"
+                );
+            }
+            int rc = PyObject_Not(PyTuple_GET_ITEM(pair, 0));
+            if (rc < 0) {
+                Exception::from_python();
+            }
+            return rc;
+        };
+
         // get signature + normalized type hints
         Object signature = getattr<"signature">(inspect)(m_func);
         Object parameters = getattr<"values">(
@@ -466,10 +461,20 @@ private:
         // parse each parameter
         Py_ssize_t idx = 0;
         for (Object param : parameters) {
-            // replace the annotation with the normalized + parsed type hint
+            // get name and buffer
+            Object py_name = getattr<"name">(param);
+            const char* name = PyUnicode_AsUTF8AndSize(
+                ptr(py_name),
+                &size
+            );
+            if (name == nullptr) {
+                Exception::from_python();
+            }
+
+            // parse type annotation
             Object annotation = reinterpret_steal<Object>(PyDict_GetItem(
                 ptr(hints),
-                ptr(getattr<"name">(param))
+                ptr(py_name)
             ));
             if (annotation.is(nullptr)) {
                 annotation = empty;
@@ -477,38 +482,156 @@ private:
             annotation = parse(annotation);
             param = getattr<"replace">(param)(arg<"annotation"> = annotation);
 
-            // get parameter name, kind, and default value
-            const char* name = PyUnicode_AsUTF8AndSize(
-                ptr(getattr<"name">(param)),
-                &size
-            );
-            if (name == nullptr) {
-                Exception::from_python();
-            }
-            impl::ArgKind kind;
+            // get default value
             Object default_value = getattr<"default">(param);
+
+            // determine parameter kind and possible partial value(s)
             Object py_kind = getattr<"kind">(param);
+            Object partial = reinterpret_steal<Object>(nullptr);
+            impl::ArgKind kind;
             if (py_kind.is(POSITIONAL_ONLY)) {
+                if (!partials.is(None) && partial_idx < partial_size) {
+                    PyObject* pair = PyTuple_GET_ITEM(ptr(partials), partial_idx);
+                    if (partial_is_positional(pair)) {
+                        partial = reinterpret_borrow<Object>(PyTuple_GET_ITEM(pair, 1));
+                        ++partial_idx;
+                    }
+                } else if (idx == 0 && !self.is(nullptr)) {
+                    partial = self;
+                }
                 kind = default_value.is(empty) ?
                     impl::ArgKind::POS :
                     impl::ArgKind::POS | impl::ArgKind::OPT;
             } else if (py_kind.is(POSITIONAL_OR_KEYWORD)) {
+                if (!partials.is(None) && partial_idx < partial_size) {
+                    PyObject* pair = PyTuple_GET_ITEM(ptr(partials), partial_idx);
+                    if (partial_is_positional(pair)) {
+                        partial = reinterpret_borrow<Object>(PyTuple_GET_ITEM(pair, 1));
+                        ++partial_idx;
+                    } else {
+                        int rc = PyObject_RichCompareBool(
+                            PyTuple_GET_ITEM(pair, 0),
+                            ptr(py_name),
+                            Py_EQ
+                        );
+                        if (rc < 0) {
+                            Exception::from_python();
+                        }
+                        if (rc) {
+                            partial = reinterpret_borrow<Object>(
+                                PyTuple_GET_ITEM(pair, 1)
+                            );
+                            ++partial_idx;
+                        }
+                    }
+                } else if (idx == 0 && !self.is(nullptr)) {
+                    partial = self;
+                }
                 kind = default_value.is(empty) ?
                     impl::ArgKind::POS | impl::ArgKind::KW :
                     impl::ArgKind::POS | impl::ArgKind::KW | impl::ArgKind::OPT;
             } else if (py_kind.is(KEYWORD_ONLY)) {
+                if (!partials.is(None) && partial_idx < partial_size) {
+                    PyObject* pair = PyTuple_GET_ITEM(ptr(partials), partial_idx);
+                    if (!partial_is_positional(pair)) {
+                        int rc = rc = PyObject_RichCompareBool(
+                            PyTuple_GET_ITEM(pair, 0),
+                            ptr(py_name),
+                            Py_EQ
+                        );
+                        if (rc < 0) {
+                            Exception::from_python();
+                        }
+                        if (rc) {
+                            partial = reinterpret_borrow<Object>(
+                                PyTuple_GET_ITEM(pair, 1)
+                            );
+                            ++partial_idx;
+                        }
+                    }
+                }
                 kind = default_value.is(empty) ?
                     impl::ArgKind::KW :
                     impl::ArgKind::KW | impl::ArgKind::OPT;
             } else if (py_kind.is(VAR_POSITIONAL)) {
+                if (!partials.is(None) && partial_idx < partial_size) {
+                    Object out = reinterpret_steal<Object>(nullptr);
+                    while (partial_idx < partial_size) {
+                        PyObject* pair = PyTuple_GET_ITEM(ptr(partials), partial_idx);
+                        if (partial_is_positional(pair)) {
+                            if (out.is(nullptr)) {
+                                out = reinterpret_steal<Object>(
+                                    PyList_New(1)
+                                );
+                                if (out.is(nullptr)) {
+                                    Exception::from_python();
+                                }
+                                PyList_SET_ITEM(
+                                    ptr(out),
+                                    0,
+                                    Py_NewRef(PyTuple_GET_ITEM(pair, 1))
+                                );
+                            } else {
+                                if (PyList_Append(
+                                    ptr(out),
+                                    PyTuple_GET_ITEM(pair, 1)
+                                )) {
+                                    Exception::from_python();
+                                }
+                            }
+                            ++partial_idx;
+                        } else {
+                            break;  // stop at first keyword arg
+                        }
+                    }
+                    if (!out.is(nullptr)) {
+                        partial = reinterpret_steal<Object>(
+                            PyList_AsTuple(ptr(out))
+                        );
+                    }
+                }
                 kind = impl::ArgKind::POS | impl::ArgKind::VARIADIC;
             } else if (py_kind.is(VAR_KEYWORD)) {
+                if (!partials.is(None) && partial_idx < partial_size) {
+                    Object out = reinterpret_steal<Object>(nullptr);
+                    while (partial_idx < partial_size) {
+                        PyObject* pair = PyTuple_GET_ITEM(ptr(partials), partial_idx);
+                        if (!partial_is_positional(pair)) {
+                            if (out.is(nullptr)) {
+                                out = reinterpret_steal<Object>(
+                                    PyList_New(1)
+                                );
+                                if (out.is(nullptr)) {
+                                    Exception::from_python();
+                                }
+                                PyList_SET_ITEM(
+                                    ptr(out),
+                                    0,
+                                    PyTuple_GET_ITEM(pair, 1)
+                                );
+                            } else {
+                                if (PyList_Append(
+                                    ptr(out),
+                                    PyTuple_GET_ITEM(pair, 1)
+                                )) {
+                                    Exception::from_python();
+                                }
+                            }
+                            ++partial_idx;
+                        }
+                    }
+                    if (!out.is(nullptr)) {
+                        partial = reinterpret_steal<Object>(
+                            PyList_AsTuple(ptr(out))
+                        );
+                    }
+                }
                 kind = impl::ArgKind::KW | impl::ArgKind::VARIADIC;
             } else {
                 throw TypeError("unrecognized parameter kind: " + repr(kind));
             }
 
-            // update fields
+            // insert parsed parameter + update name map, hash, and required bitmask
             m_parameters.emplace_back(
                 std::string_view(name, size),
                 impl::parameter_hash(
@@ -518,6 +641,7 @@ private:
                 ),
                 std::move(annotation),
                 std::move(default_value),
+                std::move(partial),
                 1ULL << idx++,
                 kind
             );
@@ -526,11 +650,17 @@ private:
             m_required <<= 1;
             m_required |= !(kind.opt() | kind.variadic());
 
-            // insert into new parameters tuple
+            // insert into reconstructed parameters tuple
             PyTuple_SET_ITEM(
                 ptr(new_params),
                 idx++,
                 release(param)
+            );
+        }
+        if (partial_idx != partial_size) {
+            throw TypeError(
+                "invalid partial arguments provided for function: " +
+                repr(partials)
             );
         }
 
@@ -550,7 +680,7 @@ private:
                 reinterpret_cast<size_t>(Py_TYPE(ptr(m_return_annotation)))
         );
 
-        // return the new signature
+        // replace the original parameters with the newly-normalized ones
         return getattr<"replace">(signature)(
             arg<"return_annotation"> = m_return_annotation,
             arg<"parameters"> = new_params
@@ -565,6 +695,7 @@ private:
     std::vector<Param> m_parameters;
     Object m_return_annotation = reinterpret_steal<Object>(nullptr);
     Object m_signature = initialize();
+    mutable Object m_key = reinterpret_steal<Object>(nullptr);
 
 public:
     explicit inspect(const Object& func) : m_func(func) {}
@@ -597,6 +728,9 @@ public:
             return reinterpret_steal<Object>(str);
         }(name))
     {}
+
+    /// TODO: this class will eventually need a bunch of really tight integrations
+    /// with `py::Function`, so when I finally get to that, I'll have to revisit this.
 
     /* Get a reference to the function being inspected. */
     [[nodiscard]] const Object& function() const {
@@ -661,6 +795,7 @@ public:
         size_t hash;
         Object type;
         Object default_value;
+        Object partial;
         uint64_t mask;
         impl::ArgKind kind;
 
@@ -671,6 +806,7 @@ public:
         [[nodiscard]] bool kw() const noexcept { return kind.kw(); }
         [[nodiscard]] bool kwargs() const noexcept { return kind.kwargs(); }
         [[nodiscard]] bool opt() const noexcept { return kind.opt(); }
+        [[nodiscard]] bool bound() const noexcept { return !partial.is(nullptr); }
         [[nodiscard]] bool variadic() const noexcept { return kind.variadic(); }
 
         [[nodiscard]] size_t index() const {
@@ -1104,138 +1240,117 @@ public:
 
     /* Convert the inspected signature into a valid key that can be used to
     specialize the `bertrand.Function` template on the Python side. */
-    [[nodiscard]] Object key() const {
-        Object inspect = import_inspect();
-        Object Parameter = getattr<"Parameter">(inspect);
-        Object empty = getattr<"empty">(Parameter);
-        Object POSITIONAL_ONLY = getattr<"POSITIONAL_ONLY">(Parameter);
-        Object POSITIONAL_OR_KEYWORD = getattr<"POSITIONAL_OR_KEYWORD">(Parameter);
-        Object VAR_POSITIONAL = getattr<"VAR_POSITIONAL">(Parameter);
-        Object KEYWORD_ONLY = getattr<"KEYWORD_ONLY">(Parameter);
-
-        Py_ssize_t len = PyObject_Length(ptr(parameters));
-        if (len < 0) {
-            Exception::from_python();
+    [[nodiscard]] const Object& key() const {
+        if (!m_key.is(nullptr)) {
+            return m_key;
         }
-        Object result = reinterpret_steal<Object>(PyTuple_New(len + 1));
+
+        Object bertrand = import_bertrand();
+        Object Arg = getattr<"Arg">(bertrand);
+        Object partials = getattr<"__partial__">(m_func, None);
+        Object self = getattr<"__self__">(m_func, None);
+        Object result = reinterpret_steal<Object>(
+            PyTuple_New(m_parameters.size() + 1)
+        );
         if (result.is(nullptr)) {
             Exception::from_python();
         }
 
-        // first element lists type of bound `self` argument and return type as a
-        // slice
-        Object returns = this->returns();
+        // first element describes the return type
+        size_t idx = 0;
+        Object returns = return_annotation();
         if (returns.is(reinterpret_cast<PyObject*>(Py_TYPE(Py_None)))) {
             returns = None;
         }
-        Object cls = getattr<"__self__">(func, None);
-        if (PyType_Check(ptr(cls))) {
-            PyObject* slice = PySlice_New(
-                ptr(reinterpret_borrow<Object>(
-                    reinterpret_cast<PyObject*>(&PyType_Type)
-                )[cls]),
-                Py_None,
-                ptr(returns)
-            );
-            if (slice == nullptr) {
-                Exception::from_python();
-            }
-            PyTuple_SET_ITEM(ptr(result), 0, slice);  // steals a reference
-        } else {
-            PyObject* slice = PySlice_New(
-                reinterpret_cast<PyObject*>(Py_TYPE(ptr(cls))),
-                Py_None,
-                ptr(returns)
-            );
-            if (slice == nullptr) {
-                Exception::from_python();
-            }
-            PyTuple_SET_ITEM(ptr(result), 0, slice);  // steals a reference
-        }
+        PyTuple_SET_ITEM(ptr(result), idx++, release(returns));
 
-        /// remaining elements are parameters, with slices, '/', '*', etc.
-        const Params<std::vector<Param>>& key = this->key();
-        Py_ssize_t offset = 1;
-        Py_ssize_t posonly_idx = std::numeric_limits<Py_ssize_t>::max();
-        Py_ssize_t kwonly_idx = std::numeric_limits<Py_ssize_t>::max();
-        for (Py_ssize_t i = 0; i < len; ++i) {
-            const Param& param = key[i];
+        // remaining are parameters, expressed as specializations of `bertrand.Arg`
+        for (const Param& param : m_parameters) {
+            // append "*"/"**" to name if variadic
+            PyObject* str;
+            if (param.args()) {
+                std::string name = "*" + std::string(param.name);
+                str = PyUnicode_FromStringAndSize(
+                    name.data(),
+                    name.size()
+                );
+            } else if (param.kwargs()) {
+                std::string name = "**" + std::string(param.name);
+                str = PyUnicode_FromStringAndSize(
+                    name.data(),
+                    name.size()
+                );
+            } else {
+                str = PyUnicode_FromStringAndSize(
+                    param.name.data(),
+                    param.name.size()
+                );
+            }
+            if (str == nullptr) {
+                Exception::from_python();
+            }
+
+            // parametrize Arg with name and type
+            Object key = reinterpret_steal<Object>(PyTuple_Pack(
+                2,
+                str,
+                ptr(param.type)
+            ));
+            Py_DECREF(str);
+            if (key.is(nullptr)) {
+                Exception::from_python();
+            }
+            Object specialization = reinterpret_steal<Object>(PyObject_GetItem(
+                ptr(Arg),
+                ptr(key)
+            ));
+            if (specialization.is(nullptr)) {
+                Exception::from_python();
+            }
+
+            // apply positional/keyword/optional flags
             if (param.posonly()) {
-                posonly_idx = i;
-                if (!param.opt()) {
-                    PyTuple_SET_ITEM(
-                        ptr(result),
-                        i + offset,
-                        Py_NewRef(ptr(param.value))
+                if (param.opt()) {
+                    specialization = getattr<"opt">(
+                        getattr<"pos">(specialization)
                     );
                 } else {
-                    PyObject* slice = PySlice_New(
-                        ptr(param.value),
-                        Py_Ellipsis,
-                        Py_None
-                    );
-                    if (slice == nullptr) {
-                        Exception::from_python();
-                    }
-                    PyTuple_SET_ITEM(ptr(result), i + offset, slice);
+                    specialization = getattr<"pos">(specialization);
                 }
-            } else {
-                // insert '/' delimiter if there are any posonly arguments
-                if (i > posonly_idx) {
-                    PyObject* grow;
-                    if (_PyTuple_Resize(&grow, len + offset + 1) < 0) {
-                        Exception::from_python();
-                    }
-                    result = reinterpret_steal<Object>(grow);
-                    PyTuple_SET_ITEM(
-                        ptr(result),
-                        i + offset,
-                        release(template_string<"/">())
-                    );
-                    ++offset;
-
-                // insert '*' delimiter if there are any kwonly arguments
-                } else if (
-                    param.kwonly() &&
-                    kwonly_idx == std::numeric_limits<Py_ssize_t>::max()
-                ) {
-                    kwonly_idx = i;
-                    PyObject* grow;
-                    if (_PyTuple_Resize(&grow, len + offset + 1) < 0) {
-                        Exception::from_python();
-                    }
-                    result = reinterpret_steal<Object>(grow);
-                    PyTuple_SET_ITEM(
-                        ptr(result),
-                        i + offset,
-                        release(template_string<"*">())
-                    );
-                    ++offset;
+            } else if (param.pos()) {
+                if (param.opt()) {
+                    specialization = getattr<"opt">(specialization);
                 }
-
-                // insert parameter identifier
-                Object name = reinterpret_steal<Object>(
-                    PyUnicode_FromStringAndSize(
-                        param.name.data(),
-                        param.name.size()
-                    )
+            } else if (param.kw()) {
+                if (param.opt()) {
+                    specialization = getattr<"opt">(
+                        getattr<"kw">(specialization)
+                    );
+                } else {
+                    specialization = getattr<"kw">(specialization);
+                }
+            } else if (!(param.args() || param.kwargs())) {
+                throw TypeError(
+                    "invalid parameter kind: " +
+                    std::to_string(param.kind)
                 );
-                if (name.is(nullptr)) {
-                    Exception::from_python();
-                }
-                PyObject* slice = PySlice_New(
-                    ptr(name),
-                    ptr(param.value),
-                    param.opt() ? Py_Ellipsis : Py_None
-                );
-                if (slice == nullptr) {
-                    Exception::from_python();
-                }
-                PyTuple_SET_ITEM(ptr(result), i + offset, slice);
             }
+
+            // append bound partial argument if present
+            if (param.bound()) {
+                specialization = reinterpret_steal<Object>(PyObject_GetItem(
+                    ptr(getattr<"bind">(specialization)),
+                    ptr(param.partial)
+                ));
+            }
+
+            // insert result into key tuple
+            PyTuple_SET_ITEM(ptr(result), idx++, release(specialization));
         }
-        _template_key = result;
-        return _template_key;
+
+        // cache and return the key
+        m_key = result;
+        return m_key;
     }
 };
 
@@ -7263,6 +7378,12 @@ public:
             m_signature(inspect(fallback)),
             m_leading_node(fallback, {{nullptr, {&m_leading_edge}}})
         {
+            /// TODO: if I receive an instance of `bertrand.Function`, then the
+            /// signature check can be done just through some type checks rather than
+            /// building a full signature object.  That would greatly increase the
+            /// performance of conversions from Python -> C++ in the case where you're
+            /// using bertrand types from the beginning.
+
             if (m_signature != Signature{}) {
                 constexpr size_t max_width = 80;
                 std::string prefix = std::string(8, ' ');

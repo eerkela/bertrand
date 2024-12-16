@@ -530,10 +530,10 @@ public:
     template <typename U> requires (std::convertible_to<map, U>)
     [[nodiscard]] constexpr operator U() && { return std::move(value); }
     [[nodiscard]] constexpr decltype(auto) operator[](const std::string& key) {
-        return value[key];
+        return value.at(key);
     }
     [[nodiscard]] constexpr decltype(auto) operator[](std::string&& key) {
-        return value[std::move(key)];
+        return value.at(std::move(key));
     }
 
     template <typename... Vs>
