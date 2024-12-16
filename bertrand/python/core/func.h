@@ -126,6 +126,118 @@ namespace impl {
         );
     }
 
+    inline std::string format_signature(
+        const std::string& prefix,
+        size_t max_width,
+        size_t indent,
+        std::vector<std::string>& components
+    ) {
+        // check if the entire signature fits on one line
+        size_t length = prefix.size() + components.front().size();
+        if (components.size() > 2) {
+            std::string& name = components[1];
+            std::string& type = components[2];
+            std::string& default_value = components[3];
+            length += name.size() + /* ": " */ 2 + type.size();
+            if (!default_value.empty()) {
+                length += /* " = " */ 3 + default_value.size();
+            }
+            if (length <= max_width) {
+                for (size_t i = 4, end = components.size() - 1; i < end; i += 3) {
+                    length += /* ", " */ 2;
+                    std::string& name = components[i];
+                    std::string& type = components[i + 1];
+                    std::string& default_value = components[i + 2];
+                    length += name.size() + /* ": " */ 2 + type.size();
+                    if (!default_value.empty()) {
+                        length += /* " = " */ default_value.size() + 3;
+                    }
+                    if (length > max_width) {
+                        break;
+                    }
+                }
+            }
+        }
+        length += components.back().size();
+
+        // if the signature fits on one line, return it immediately
+        if (length <= max_width) {
+            std::string out;
+            out.reserve(length);
+            out += prefix;
+            out += std::move(components.front());
+            if (components.size() > 2) {
+                out += std::move(components[1]) + ": ";
+                out += std::move(components[2]);
+                if (!components[3].empty()) {
+                    out += " = " + std::move(components[3]);
+                }
+                for (size_t i = 4, end = components.size() - 1; i < end; i += 3) {
+                    out += ", " + std::move(components[i]) + ": ";
+                    out += std::move(components[i + 1]);
+                    if (!components[i + 2].empty()) {
+                        out += " = " + std::move(components[i + 2]);
+                    }
+                }
+            }
+            out += std::move(components.back());
+            return out;
+        }
+
+        // otherwise, indent the parameters onto separate lines
+        std::string out = prefix + components.front() + "\n";
+        std::string line = prefix + std::string(indent, ' ');
+        if (components.size() > 2) {
+            std::string& name = components[1];
+            std::string& type = components[2];
+            std::string& default_value = components[3];
+            line += std::move(name) + ": ";
+            if (line.size() + type.size() <= max_width) {
+                line += std::move(type);
+            } else {
+                out += std::move(line) + "\n";
+                line = prefix + std::string(indent * 2, ' ') + std::move(type);
+            }
+            if (!default_value.empty()) {
+                if (line.size() + 3 + default_value.size() <= max_width) {
+                    line += " = " + std::move(default_value);
+                } else {
+                    out += std::move(line) + "\n";
+                    line = prefix + std::string(indent * 2, ' ');
+                    line += "= " + std::move(default_value);
+                }
+            }
+            out += line;
+            for (size_t i = 4, end = components.size() - 1; i < end; i += 3) {
+                out += ",\n";
+                line = prefix + std::string(indent, ' ');
+                std::string& name = components[i];
+                std::string& type = components[i + 1];
+                std::string& default_value = components[i + 2];
+                line += std::move(name) + ": ";
+                if (line.size() + type.size() <= max_width) {
+                    line += std::move(type);
+                } else {
+                    out += std::move(line) + "\n";
+                    line = prefix + std::string(indent * 2, ' ') + type;
+                }
+                if (!default_value.empty()) {
+                    if (line.size() + 3 + default_value.size() <= max_width) {
+                        line += " = " + std::move(default_value);
+                    } else {
+                        out += std::move(line) + "\n";
+                        line = prefix + std::string(indent * 2, ' ');
+                        line += "= " + std::move(default_value);
+                    }
+                }
+                out += std::move(line);
+            }
+            out += "\n";
+        }
+        out += prefix + components.back();
+        return out;
+    }
+
     // /* A simple representation of a single parameter in a function signature or call
     // site, for use when searching for overloads. */
     // struct Param {
@@ -426,6 +538,34 @@ private:
 public:
     explicit inspect(const Object& func) : m_func(func) {}
     explicit inspect(Object&& func) : m_func(std::move(func)) {}
+
+    explicit inspect(const Object& func, std::string_view name) :
+        m_func(func),
+        m_name([](std::string_view name) {
+            PyObject* str = PyUnicode_FromStringAndSize(
+                name.data(),
+                name.size()
+            );
+            if (str == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Object>(str);
+        }(name))
+    {}
+
+    explicit inspect(Object&& func, std::string_view name) :
+        m_func(std::move(func)),
+        m_name([](std::string_view name) {
+            PyObject* str = PyUnicode_FromStringAndSize(
+                name.data(),
+                name.size()
+            );
+            if (str == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Object>(str);
+        }(name))
+    {}
 
     /* Get a reference to the function being inspected. */
     [[nodiscard]] const Object& function() const {
@@ -908,12 +1048,9 @@ public:
                 reinterpret_cast<PyTypeObject*>(ptr(param.type))->tp_name :
                 Py_TYPE(ptr(param.type))->tp_name
             ));
-            components.emplace_back(param.opt() ?
-                repr(param.default_value) : ""
-            );
+            components.emplace_back(param.opt() ? "..." : "");
         };
 
-        // convert function name + parameters + return type into a flat list of strings
         std::vector<std::string> components;
         components.reserve(m_parameters.size() * 3 + 2);
         components.emplace_back(std::string(name()) + "(");
@@ -926,110 +1063,12 @@ public:
                 Py_TYPE(ptr(m_return_annotation))->tp_name
         ));
 
-        // check if the entire signature fits on one line
-        size_t length = prefix.size() + components[0].size();
-        if (components.size() > 2) {
-            std::string& name = components[1];
-            std::string& type = components[2];
-            std::string& default_value = components[3];
-            length += name.size() + /* ": " */ 2 + type.size();
-            if (!default_value.empty()) {
-                length += /* " = " */ 3 + default_value.size();
-            }
-            if (length <= max_width) {
-                for (size_t i = 4, end = components.size() - 1; i < end; i += 3) {
-                    length += /* ", " */ 2;
-                    std::string& name = components[i];
-                    std::string& type = components[i + 1];
-                    std::string& default_value = components[i + 2];
-                    length += name.size() + /* ": " */ 2 + type.size();
-                    if (!default_value.empty()) {
-                        length += /* " = " */ default_value.size() + 3;
-                    }
-                    if (length > max_width) {
-                        break;
-                    }
-                }
-            }
-        }
-        length += components.back().size();
-
-        // if the signature fits on one line, return it immediately
-        if (length <= max_width) {
-            std::string out;
-            out.reserve(length);
-            out += prefix;
-            out += components[0];
-            if (components.size() > 2) {
-                out += components[1] + ": ";
-                out += components[2];
-                if (!components[3].empty()) {
-                    out += " = " + components[3];
-                }
-                for (size_t i = 4, end = components.size() - 1; i < end; i += 3) {
-                    out += ", " + components[i] + ": ";
-                    out += components[i + 1];
-                    if (!components[i + 2].empty()) {
-                        out += " = " + components[i + 2];
-                    }
-                }
-            }
-            out += components.back();
-            return out;
-        }
-
-        // otherwise, indent the parameters onto separate lines
-        std::string out = prefix + components[0] + "\n";
-        std::string line = prefix + std::string(indent, ' ');
-        if (components.size() > 2) {
-            std::string& name = components[1];
-            std::string& type = components[2];
-            std::string& default_value = components[3];
-            line += name + ": ";
-            if (line.size() + type.size() <= max_width) {
-                line += type;
-            } else {
-                out += line + "\n";
-                line = prefix + std::string(indent * 2, ' ') + type;
-            }
-            if (!default_value.empty()) {
-                if (line.size() + 3 + default_value.size() <= max_width) {
-                    line += " = " + default_value;
-                } else {
-                    out += line + "\n";
-                    line = prefix + std::string(indent * 2, ' ');
-                    line += "= " + default_value;
-                }
-            }
-            out += line;
-            for (size_t i = 4, end = components.size() - 1; i < end; i += 3) {
-                out += ",\n";
-                line = prefix + std::string(indent, ' ');
-                std::string& name = components[i];
-                std::string& type = components[i + 1];
-                std::string& default_value = components[i + 2];
-                line += name + ": ";
-                if (line.size() + type.size() <= max_width) {
-                    line += type;
-                } else {
-                    out += line + "\n";
-                    line = prefix + std::string(indent * 2, ' ') + type;
-                }
-                if (!default_value.empty()) {
-                    if (line.size() + 3 + default_value.size() <= max_width) {
-                        line += " = " + default_value;
-                    } else {
-                        out += line + "\n";
-                        line = prefix + std::string(indent * 2, ' ');
-                        line += "= " + default_value;
-                    }
-                }
-                out += line;
-            }
-            out += "\n";
-        }
-        out += prefix + components.back();
-        return out;
+        return impl::format_signature(
+            prefix,
+            max_width,
+            indent,
+            components
+        );
     }
 
     /* Convert the inspected signature into a valid key that can be used to

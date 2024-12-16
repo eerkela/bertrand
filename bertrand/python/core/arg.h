@@ -10,6 +10,9 @@ namespace py {
 
 namespace impl {
 
+    template <typename T>
+    struct ArgTraits;
+
     struct ArgKind {
         enum Flags : uint8_t {
             POS                 = 0b1,
@@ -96,7 +99,9 @@ namespace impl {
 
     template <StaticStr Name>
     concept arg_name =
-        _arg_name<Name> || _variadic_args_name<Name> || _variadic_kwargs_name<Name>;
+        _arg_name<Name> ||
+        _variadic_args_name<Name> ||
+        _variadic_kwargs_name<Name>;
 
     template <StaticStr Name>
     concept variadic_args_name =
@@ -112,202 +117,26 @@ namespace impl {
         !_variadic_args_name<Name> &&
         _variadic_kwargs_name<Name>;
 
+    template <typename... Vs>
+    static constexpr bool names_are_unique = true;
+    template <typename V, typename... Vs>
+    static constexpr bool names_are_unique<V, Vs...> =
+        (
+            impl::ArgTraits<V>::name.empty() ||
+            ((impl::ArgTraits<V>::name != impl::ArgTraits<Vs>::name) && ...)
+        ) &&
+        names_are_unique<Vs...>;
+
+    template <typename, typename = void>
+    struct detect_arg {
+        static constexpr bool value = false;
+    };
     template <typename T>
-    struct ArgTraits;
-
-    template <typename Arg, typename... Ts>
-    struct BoundArg;
-
-    template <typename Arg, typename... Ts>
-    struct can_bind {
-    private:
-        template <typename... Us>
-        static constexpr bool _names_are_unique = true;
-        template <typename U, typename... Us>
-        static constexpr bool _names_are_unique<U, Us...> =
-            ((ArgTraits<U>::name != ArgTraits<Us>::name) && ...) &&
-            _names_are_unique<Us...>;
-
-    public:
-        static constexpr bool can_convert = (
-            std::is_convertible_v<
-                Ts,
-                typename ArgTraits<Arg>::type
-            > && ...
-        );
-        static constexpr bool values_are_not_optional = (
-            !ArgTraits<Ts>::opt() && ...
-        );
-        static constexpr bool values_are_not_variadic = (
-            !ArgTraits<Ts>::variadic() && ...
-        );
-        static constexpr bool values_are_positional = (
-            ArgTraits<Ts>::posonly() && ...
-        );
-        static constexpr bool values_are_keyword = (
-            ArgTraits<Ts>::kw() && ...
-        );
-        static constexpr bool names_are_unique = _names_are_unique<Ts...>;
-        static constexpr bool names_match_arg = (
-            (ArgTraits<Ts>::name == ArgTraits<Arg>::name) && ...
-        );
+    struct detect_arg<T, std::void_t<typename T::_detect_arg>> {
+        static constexpr bool value = true;
     };
-
-    template <typename Arg, typename... Vs>
-    concept can_bind_arg =
-        can_bind<Arg, Vs...>::can_convert &&
-        can_bind<Arg, Vs...>::values_are_not_optional &&
-        can_bind<Arg, Vs...>::values_are_not_variadic && (
-            (ArgTraits<Arg>::posonly() && (
-                sizeof...(Vs) == 1 &&
-                can_bind<Arg, Vs...>::values_are_positional
-            )) ||
-            (ArgTraits<Arg>::pos() && (
-                sizeof...(Vs) == 1 && (
-                    can_bind<Arg, Vs...>::values_are_positional ||
-                    can_bind<Arg, Vs...>::names_match_arg
-                )
-            )) ||
-            (ArgTraits<Arg>::kwonly() && (
-                sizeof...(Vs) == 1 && (
-                    can_bind<Arg, Vs...>::values_are_keyword &&
-                    can_bind<Arg, Vs...>::names_match_arg
-                )
-            )) ||
-            (ArgTraits<Arg>::args() && can_bind<Arg, Vs...>::values_are_positional) ||
-            (ArgTraits<Arg>::kwargs() && (
-                can_bind<Arg, Vs...>::values_are_keyword &&
-                can_bind<Arg, Vs...>::names_are_unique
-            ))
-        );
-
-    template <typename Arg>
-    struct OptionalArg {
-        static constexpr StaticStr name = Arg::name;
-        static constexpr ArgKind kind = Arg::kind | ArgKind::OPT;
-        using type = Arg::type;
-        template <typename V> requires (can_bind_arg<OptionalArg, V>)
-        using bind = ArgTraits<OptionalArg>::template bind<V>;
-        using unbind = OptionalArg;
-
-        type value;
-
-        [[nodiscard]] constexpr std::remove_reference_t<type>& operator*() {
-            return value;
-        }
-        [[nodiscard]] constexpr const std::remove_reference_t<type>& operator*() const {
-            return value;
-        }
-        [[nodiscard]] constexpr std::remove_reference_t<type>* operator->() {
-            return &value;
-        }
-        [[nodiscard]] constexpr const std::remove_reference_t<type>* operator->() const {
-            return &value;
-        }
-
-        [[nodiscard]] constexpr operator type() && {
-            if constexpr (std::is_lvalue_reference_v<type>) {
-                return value;
-            } else {
-                return std::move(value);
-            }
-        }
-
-        template <typename U> requires (std::convertible_to<type, U>)
-        [[nodiscard]] constexpr operator U() && {
-            if constexpr (std::is_lvalue_reference_v<type>) {
-                return value;
-            } else {
-                return std::move(value);
-            }
-        }
-    };
-
-    template <StaticStr Name, typename T>
-    struct PositionalArg {
-        static constexpr StaticStr name = Name;
-        static constexpr ArgKind kind = ArgKind::POS;
-        using type = T;
-        using opt = OptionalArg<PositionalArg>;
-        template <typename V> requires (can_bind_arg<PositionalArg, V>)
-        using bind = ArgTraits<PositionalArg>::template bind<V>;
-        using unbind = PositionalArg;
-
-        type value;
-
-        [[nodiscard]] constexpr std::remove_reference_t<type>& operator*() {
-            return value;
-        }
-        [[nodiscard]] constexpr const std::remove_reference_t<type>& operator*() const {
-            return value;
-        }
-        [[nodiscard]] constexpr std::remove_reference_t<type>* operator->() {
-            return &value;
-        }
-        [[nodiscard]] constexpr const std::remove_reference_t<type>* operator->() const {
-            return &value;
-        }
-
-        [[nodiscard]] constexpr operator type() && {
-            if constexpr (std::is_lvalue_reference_v<type>) {
-                return value;
-            } else {
-                return std::move(value);
-            }
-        }
-
-        template <typename U> requires (std::convertible_to<type, U>)
-        [[nodiscard]] constexpr operator U() && {
-            if constexpr (std::is_lvalue_reference_v<type>) {
-                return value;
-            } else {
-                return std::move(value);
-            }
-        }
-    };
-
-    template <StaticStr Name, typename T>
-    struct KeywordArg {
-        static constexpr StaticStr name = Name;
-        static constexpr ArgKind kind = ArgKind::KW;
-        using type = T;
-        using opt = OptionalArg<KeywordArg>;
-        template <typename V> requires (can_bind_arg<KeywordArg, V>)
-        using bind = ArgTraits<KeywordArg>::template bind<V>;
-        using unbind = KeywordArg;
-
-        type value;
-
-        [[nodiscard]] constexpr std::remove_reference_t<type>& operator*() {
-            return value;
-        }
-        [[nodiscard]] constexpr const std::remove_reference_t<type>& operator*() const {
-            return value;
-        }
-        [[nodiscard]] constexpr std::remove_reference_t<type>* operator->() {
-            return &value;
-        }
-        [[nodiscard]] constexpr const std::remove_reference_t<type>* operator->() const {
-            return &value;
-        }
-
-        [[nodiscard]] constexpr operator type() && {
-            if constexpr (std::is_lvalue_reference_v<type>) {
-                return value;
-            } else {
-                return std::move(value);
-            }
-        }
-
-        template <typename U> requires (std::convertible_to<type, U>)
-        [[nodiscard]] constexpr operator U() && {
-            if constexpr (std::is_lvalue_reference_v<type>) {
-                return value;
-            } else {
-                return std::move(value);
-            }
-        }
-    };
+    template <typename T>
+    concept is_arg = detect_arg<std::remove_cvref_t<T>>::value;
 
     /* A keyword parameter pack obtained by double-dereferencing a Python object. */
     template <mapping_like T>
@@ -328,6 +157,9 @@ namespace impl {
         T value;
 
     private:
+        template <typename, typename>
+        friend struct detect_arg;
+        using _detect_arg = void;
 
         template <typename U>
         static constexpr bool can_iterate =
@@ -383,6 +215,12 @@ namespace impl {
     /* A positional parameter pack obtained by dereferencing a Python object. */
     template <iterable T> requires (has_size<T>)
     struct ArgPack {
+    private:
+        template <typename, typename>
+        friend struct detect_arg;
+        using _detect_arg = void;
+
+    public:
         using type = iter_type<T>;
         static constexpr StaticStr name = "";
         static constexpr ArgKind kind = ArgKind::POS | ArgKind::VARIADIC;
@@ -419,61 +257,387 @@ namespace impl {
     template <typename T>
     concept kwarg_pack = _kwarg_pack<std::remove_cvref_t<T>>;
 
+    template <typename Arg, typename... Ts>
+    struct Bound;
+
 }
 
 
-/* A compile-time argument annotation that represents a bound positional or keyword
-argument to a `py::Function`.  Uses aggregate initialization to extend the lifetime of
-temporaries.  Can also be used to indicate structural members in a `py::Union` or
-`py::Intersection` type, or named members in a `py::Tuple` type. */
+/* A family of compile-time argument annotations that represent positional and/or
+keyword arguments to a Python-style function.  Modifiers can be added to an argument
+to indicate its kind, such as positional-only, keyword-only, optional, bound to a
+partial value, or variadic (inferred from the argument name via leading `*` or `**`
+prefixes).  The default (without any modifiers) is positional-or-keyword, unbound, and
+required, similar to Python.
+
+Note that this class makes careful use of aggregate initialization to extend the
+lifetime of temporaries, meaning that it is safe to use with arbitrarily-qualified
+reference types.  Such references are guaranteed to remain valid for their full,
+natural lifespan, as if they were declared without the enclosing `Arg<>` wrapper.  In
+particular, that allows `Arg<>` annotations to be freely declared as function
+arguments without interfering with existing C++ parameter passing semantics. */
 template <StaticStr Name, typename T> requires (impl::arg_name<Name>)
 struct Arg {
+private:
+    template <typename, typename>
+    friend struct impl::detect_arg;
+    using _detect_arg = void;
+    using Value = std::remove_reference_t<T>;
+
+    /// NOTE: there's a lot of code duplication here.  This is intentional, in order to
+    /// maximize the clarity of error messages, restrict the ways in which annotations
+    /// can be combined, and allow aggregate initialization to handle temporaries
+    /// correctly.  The alternative would be a macro, a separate template helper, or
+    /// inheritance, all of which obfuscate errors, are inflexible, and/or complicate
+    /// aggregate initialization.
+
+public:
     static constexpr StaticStr name = Name;
     static constexpr impl::ArgKind kind = impl::ArgKind::POS | impl::ArgKind::KW;
     using type = T;
-    using pos = impl::PositionalArg<Name, T>;
-    using kw = impl::KeywordArg<Name, T>;
-    using opt = impl::OptionalArg<Arg>;
-    template <typename V> requires (impl::can_bind_arg<Arg, V>)
-    using bind = impl::ArgTraits<Arg>::template bind<V>;
-    using unbind = impl::ArgTraits<Arg>::unbind;
-
+    using bound_to = py::args<>;
+    using unbind = Arg;
     type value;
 
-    [[nodiscard]] constexpr std::remove_reference_t<type>& operator*() {
-        return value;
-    }
-    [[nodiscard]] constexpr const std::remove_reference_t<type>& operator*() const {
-        return value;
-    }
-    [[nodiscard]] constexpr std::remove_reference_t<type>* operator->() {
-        return &value;
-    }
-    [[nodiscard]] constexpr const std::remove_reference_t<type>* operator->() const {
-        return &value;
-    }
+    [[nodiscard]] constexpr Value& operator*() { return value; }
+    [[nodiscard]] constexpr const Value& operator*() const { return value; }
+    [[nodiscard]] constexpr Value* operator->() { return &value; }
+    [[nodiscard]] constexpr const Value* operator->() const { return &value; }
 
     /* Argument rvalues are normally generated whenever a function is called.  Making
     them convertible to the underlying type means they can be used to call external
-    C++ functions that are not aware of Python argument annotations. */
-    [[nodiscard]] constexpr operator type() && {
-        if constexpr (std::is_lvalue_reference_v<type>) {
-            return value;
-        } else {
-            return std::move(value);
-        }
+    C++ functions that are not aware of Python argument annotations, in a way that
+    conforms to traits like `std::is_invocable<>`, etc. */
+    [[nodiscard]] constexpr operator type() && { return std::forward<type>(value); }
+
+    /* Conversions to other types are also allowed, as long as the argument is given as
+    an rvalue and the underlying type supports it. */
+    template <typename U> requires (std::convertible_to<type, U>)
+    [[nodiscard]] constexpr operator U() && { return std::forward<type>(value); }
+
+    template <typename... Vs>
+    static constexpr bool can_bind = false;
+    template <std::convertible_to<type> V>
+    static constexpr bool can_bind<V> =
+        !impl::ArgTraits<V>::opt() &&
+        !impl::ArgTraits<V>::variadic() &&
+        (impl::ArgTraits<V>::name.empty() || impl::ArgTraits<V>::name == name);
+
+    /* Bind a partial value to this argument. */
+    template <std::convertible_to<type>... Vs>
+        requires (
+            sizeof...(Vs) == 1 &&
+            (!impl::ArgTraits<Vs>::opt() && ...) &&
+            (!impl::ArgTraits<Vs>::variadic() && ...) &&
+            ((impl::ArgTraits<Vs>::name.empty() || impl::ArgTraits<Vs>::name == name) && ...)
+        )
+    using bind = impl::Bound<Arg, Vs...>;
+
+    /* Marks the argument as optional. */
+    struct opt {
+    private:
+        template <typename, typename>
+        friend struct impl::detect_arg;
+        using _detect_arg = void;
+
+    public:
+        static constexpr StaticStr name = Name;
+        static constexpr impl::ArgKind kind = Arg::kind | impl::ArgKind::OPT;
+        using type = T;
+        using bound_to = py::args<>;
+        using unbind = opt;
+        type value;
+
+        [[nodiscard]] constexpr Value& operator*() { return value; }
+        [[nodiscard]] constexpr const Value& operator*() const { return value; }
+        [[nodiscard]] constexpr Value* operator->() { return &value; }
+        [[nodiscard]] constexpr const Value* operator->() const { return &value; }
+        [[nodiscard]] constexpr operator type() && { return std::forward<type>(value); }
+        template <typename U> requires (std::convertible_to<type, U>)
+        [[nodiscard]] constexpr operator U() && { return std::forward<type>(value); }
+
+        template <typename... Vs>
+        static constexpr bool can_bind = Arg::can_bind<Vs...>;
+
+        template <std::convertible_to<type>... Vs>
+            requires (
+                sizeof...(Vs) == 1 &&
+                (!impl::ArgTraits<Vs>::opt() && ...) &&
+                (!impl::ArgTraits<Vs>::variadic() && ...) &&
+                ((impl::ArgTraits<Vs>::name.empty() || impl::ArgTraits<Vs>::name == name) && ...)
+            )
+        using bind = impl::Bound<opt, Vs...>;
+    };
+
+    /* Marks the argument as positional-only. */
+    struct pos {
+    private:
+        template <typename, typename>
+        friend struct impl::detect_arg;
+        using _detect_arg = void;
+
+    public:
+        static constexpr StaticStr name = Name;
+        static constexpr impl::ArgKind kind = impl::ArgKind::POS;
+        using type = T;
+        using bound_to = py::args<>;
+        using unbind = pos;
+        type value;
+
+        [[nodiscard]] constexpr Value& operator*() { return value; }
+        [[nodiscard]] constexpr const Value& operator*() const { return value; }
+        [[nodiscard]] constexpr Value* operator->() { return &value; }
+        [[nodiscard]] constexpr const Value* operator->() const { return &value; }
+        [[nodiscard]] constexpr operator type() && { return std::forward<type>(value); }
+        template <typename U> requires (std::convertible_to<type, U>)
+        [[nodiscard]] constexpr operator U() && { return std::forward<type>(value); }
+
+        template <typename... Vs>
+        static constexpr bool can_bind = false;
+        template <std::convertible_to<type> V>
+        static constexpr bool can_bind<V> =
+            impl::ArgTraits<V>::posonly() &&
+            !impl::ArgTraits<V>::opt() &&
+            !impl::ArgTraits<V>::variadic() &&
+            (impl::ArgTraits<V>::name.empty() || impl::ArgTraits<V>::name == name);
+
+        template <std::convertible_to<type>... Vs>
+            requires (
+                sizeof...(Vs) == 1 &&
+                (impl::ArgTraits<Vs>::posonly() && ...) &&
+                (!impl::ArgTraits<Vs>::opt() && ...) &&
+                (!impl::ArgTraits<Vs>::variadic() && ...) &&
+                ((impl::ArgTraits<Vs>::name.empty() || impl::ArgTraits<Vs>::name == name) && ...)
+            )
+        using bind = impl::Bound<pos, Vs...>;
+
+        struct opt {
+        private:
+            template <typename, typename>
+            friend struct impl::detect_arg;
+            using _detect_arg = void;
+
+        public:
+            static constexpr StaticStr name = Name;
+            static constexpr impl::ArgKind kind = pos::kind | impl::ArgKind::OPT;
+            using type = T;
+            using bound_to = py::args<>;
+            using unbind = opt;
+            type value;
+
+            [[nodiscard]] constexpr Value& operator*() { return value; }
+            [[nodiscard]] constexpr const Value& operator*() const { return value; }
+            [[nodiscard]] constexpr Value* operator->() { return &value; }
+            [[nodiscard]] constexpr const Value* operator->() const { return &value; }
+            [[nodiscard]] constexpr operator type() && { return std::forward<type>(value); }
+            template <typename U> requires (std::convertible_to<type, U>)
+            [[nodiscard]] constexpr operator U() && { return std::forward<type>(value); }
+
+            template <typename... Vs>
+            static constexpr bool can_bind = pos::can_bind<Vs...>;
+
+            template <std::convertible_to<type>... Vs>
+                requires (
+                    sizeof...(Vs) == 1 &&
+                    (impl::ArgTraits<Vs>::posonly() && ...) &&
+                    (!impl::ArgTraits<Vs>::opt() && ...) &&
+                    (!impl::ArgTraits<Vs>::variadic() && ...) &&
+                    ((impl::ArgTraits<Vs>::name.empty() || impl::ArgTraits<Vs>::name == name) && ...)
+                )
+            using bind = impl::Bound<opt, Vs...>;
+        };
+    };
+
+    /* Marks the argument as keyword-only. */
+    struct kw {
+    private:
+        template <typename, typename>
+        friend struct impl::detect_arg;
+        using _detect_arg = void;
+
+    public:
+        static constexpr StaticStr name = Name;
+        static constexpr impl::ArgKind kind = impl::ArgKind::KW;
+        using type = T;
+        using bound_to = py::args<>;
+        using unbind = kw;
+        type value;
+
+        [[nodiscard]] constexpr Value& operator*() { return value; }
+        [[nodiscard]] constexpr const Value& operator*() const { return value; }
+        [[nodiscard]] constexpr Value* operator->() { return &value; }
+        [[nodiscard]] constexpr const Value* operator->() const { return &value; }
+        [[nodiscard]] constexpr operator type() && { return std::forward<type>(value); }
+        template <typename U> requires (std::convertible_to<type, U>)
+        [[nodiscard]] constexpr operator U() && { return std::forward<type>(value); }
+
+        template <typename... Vs>
+        static constexpr bool can_bind = false;
+        template <std::convertible_to<type> V>
+        static constexpr bool can_bind<V> =
+            impl::ArgTraits<V>::kw() &&
+            !impl::ArgTraits<V>::opt() &&
+            !impl::ArgTraits<V>::variadic() &&
+            (impl::ArgTraits<V>::name.empty() || impl::ArgTraits<V>::name == name);
+
+        template <std::convertible_to<type>... Vs>
+            requires (
+                sizeof...(Vs) == 1 &&
+                (impl::ArgTraits<Vs>::kw() && ...) &&
+                (!impl::ArgTraits<Vs>::opt() && ...) &&
+                (!impl::ArgTraits<Vs>::variadic() && ...) &&
+                ((impl::ArgTraits<Vs>::name.empty() || impl::ArgTraits<Vs>::name == name) && ...)
+            )
+        using bind = impl::Bound<kw, Vs...>;
+
+        struct opt {
+        private:
+            template <typename, typename>
+            friend struct impl::detect_arg;
+            using _detect_arg = void;
+
+        public:
+            static constexpr StaticStr name = Name;
+            static constexpr impl::ArgKind kind = kw::kind | impl::ArgKind::OPT;
+            using type = T;
+            using bound_to = py::args<>;
+            using unbind = opt;
+            type value;
+
+            [[nodiscard]] constexpr Value& operator*() { return value; }
+            [[nodiscard]] constexpr const Value& operator*() const { return value; }
+            [[nodiscard]] constexpr Value* operator->() { return &value; }
+            [[nodiscard]] constexpr const Value* operator->() const { return &value; }
+            [[nodiscard]] constexpr operator type() && { return std::forward<type>(value); }
+            template <typename U> requires (std::convertible_to<type, U>)
+            [[nodiscard]] constexpr operator U() && { return std::forward<type>(value); }
+
+            template <typename... Vs>
+            static constexpr bool can_bind = kw::can_bind<Vs...>;
+
+            template <std::convertible_to<type>... Vs>
+                requires (
+                    sizeof...(Vs) == 1 &&
+                    (impl::ArgTraits<Vs>::kw() && ...) &&
+                    (!impl::ArgTraits<Vs>::opt() && ...) &&
+                    (!impl::ArgTraits<Vs>::variadic() && ...) &&
+                    ((impl::ArgTraits<Vs>::name.empty() || impl::ArgTraits<Vs>::name == name) && ...)
+                )
+            using bind = impl::Bound<opt, Vs...>;
+        };
+    };
+};
+
+
+/* Specialization for variadic positional args, whose names are prefixed by a leading
+asterisk. */
+template <StaticStr Name, typename T> requires (impl::variadic_args_name<Name>)
+struct Arg<Name, T> {
+private:
+    template <typename, typename>
+    friend struct impl::detect_arg;
+    using _detect_arg = void;
+
+public:
+    static constexpr StaticStr name = Name;
+    static constexpr impl::ArgKind kind = impl::ArgKind::POS | impl::ArgKind::VARIADIC;
+    using type = T;
+    using vec = std::vector<std::conditional_t<
+        std::is_lvalue_reference_v<T>,
+        std::reference_wrapper<T>,
+        std::remove_reference_t<T>
+    >>;
+    using bound_to = py::args<>;
+    using unbind = Arg;
+    vec value;
+
+    [[nodiscard]] constexpr vec& operator*() { return value; }
+    [[nodiscard]] constexpr const vec& operator*() const { return value; }
+    [[nodiscard]] constexpr vec* operator->() { return &value; }
+    [[nodiscard]] constexpr const vec* operator->() const { return &value; }
+    [[nodiscard]] constexpr operator vec() && { return std::move(value); }
+    template <typename U> requires (std::convertible_to<vec, U>)
+    [[nodiscard]] constexpr operator U() && { return std::move(value); }
+    [[nodiscard]] constexpr decltype(auto) operator[](vec::size_type i) {
+        return value[i];
+    }
+    [[nodiscard]] constexpr decltype(auto) operator[](vec::size_type i) const {
+        return value[i];
     }
 
-    /* Conversions to other types are also allowed, as long as the underlying type
-    supports it. */
-    template <typename U> requires (std::convertible_to<type, U>)
-    [[nodiscard]] constexpr operator U() && {
-        if constexpr (std::is_lvalue_reference_v<type>) {
-            return value;
-        } else {
-            return std::move(value);
-        }
+    template <typename... Vs>
+    static constexpr bool can_bind = false;
+    template <std::convertible_to<T>... Vs>
+    static constexpr bool can_bind<Vs...> =
+        (impl::ArgTraits<Vs>::posonly() && ...) &&
+        (!impl::ArgTraits<Vs>::opt() && ...) &&
+        (!impl::ArgTraits<Vs>::variadic() && ...) &&
+        impl::names_are_unique<Vs...>;
+
+    template <std::convertible_to<T>... Vs>
+        requires (
+            (impl::ArgTraits<Vs>::posonly() && ...) &&
+            (!impl::ArgTraits<Vs>::opt() && ...) &&
+            (!impl::ArgTraits<Vs>::variadic() && ...) &&
+            impl::names_are_unique<Vs...>
+        )
+    using bind = impl::Bound<Arg, Vs...>;
+};
+
+
+/* Specialization for variadic keyword args, whose names are prefixed by 2 leading
+asterisks. */
+template <StaticStr Name, typename T> requires (impl::variadic_kwargs_name<Name>)
+struct Arg<Name, T> {
+private:
+    template <typename, typename>
+    friend struct impl::detect_arg;
+    using _detect_arg = void;
+
+public:
+    static constexpr StaticStr name = Name;
+    static constexpr impl::ArgKind kind = impl::ArgKind::KW | impl::ArgKind::VARIADIC;
+    using type = T;
+    using map = std::unordered_map<std::string, std::conditional_t<
+        std::is_lvalue_reference_v<type>,
+        std::reference_wrapper<type>,
+        std::remove_reference_t<type>
+    >>;
+    using bound_to = py::args<>;
+    using unbind = Arg;
+    map value;
+
+    [[nodiscard]] constexpr map& operator*() { return value; }
+    [[nodiscard]] constexpr const map& operator*() const { return value; }
+    [[nodiscard]] constexpr map* operator->() { return &value; }
+    [[nodiscard]] constexpr const map* operator->() const { return &value; }
+    [[nodiscard]] constexpr operator map() && { return std::move(value); }
+    template <typename U> requires (std::convertible_to<map, U>)
+    [[nodiscard]] constexpr operator U() && { return std::move(value); }
+    [[nodiscard]] constexpr decltype(auto) operator[](const std::string& key) {
+        return value[key];
     }
+    [[nodiscard]] constexpr decltype(auto) operator[](std::string&& key) {
+        return value[std::move(key)];
+    }
+
+    template <typename... Vs>
+    static constexpr bool can_bind = false;
+    template <std::convertible_to<T>... Vs>
+    static constexpr bool can_bind<Vs...> =
+        (impl::ArgTraits<Vs>::kw() && ...) &&
+        (!impl::ArgTraits<Vs>::opt() && ...) &&
+        (!impl::ArgTraits<Vs>::variadic() && ...) &&
+        impl::names_are_unique<Vs...>;
+
+    template <std::convertible_to<T>... Vs>
+        requires (
+            (impl::ArgTraits<Vs>::kw() && ...) &&
+            (!impl::ArgTraits<Vs>::opt() && ...) &&
+            (!impl::ArgTraits<Vs>::variadic() && ...) &&
+            impl::names_are_unique<Vs...>
+        )
+    using bind = impl::Bound<Arg, Vs...>;
 };
 
 
@@ -488,25 +652,6 @@ namespace impl {
             return {std::forward<T>(value)};
         }
     };
-
-    template <typename T>
-    constexpr bool _is_arg = false;
-    template <typename T>
-    constexpr bool _is_arg<OptionalArg<T>> = true;
-    template <typename Arg, typename... Ts>
-    constexpr bool _is_arg<BoundArg<Arg, Ts...>> = true;
-    template <StaticStr Name, typename T>
-    constexpr bool _is_arg<PositionalArg<Name, T>> = true;
-    template <StaticStr Name, typename T>
-    constexpr bool _is_arg<Arg<Name, T>> = true;
-    template <StaticStr Name, typename T>
-    constexpr bool _is_arg<KeywordArg<Name, T>> = true;
-    template <typename T>
-    constexpr bool _is_arg<ArgPack<T>> = true;
-    template <typename T>
-    constexpr bool _is_arg<KwargPack<T>> = true;
-    template <typename T>
-    concept is_arg = _is_arg<std::remove_cvref_t<T>>;
 
     /* Inspect a C++ argument at compile time.  Normalizes unannotated types to
     positional-only arguments to maintain C++ style. */
@@ -525,10 +670,19 @@ namespace impl {
         static constexpr bool opt() noexcept        { return kind.opt(); }
         static constexpr bool variadic() noexcept   { return kind.variadic(); }
 
-        template <typename... Vs> requires (can_bind_arg<T, Vs...>)
-        using bind                                  = BoundArg<T, Vs...>;
-        using unbind                                = T;
+        template <typename... Vs>
+        static constexpr bool can_bind = false;
+        template <std::convertible_to<type> V>
+        static constexpr bool can_bind<V> =
+            impl::ArgTraits<V>::posonly() &&
+            !impl::ArgTraits<V>::opt() &&
+            !impl::ArgTraits<V>::variadic() &&
+            (impl::ArgTraits<V>::name.empty() || impl::ArgTraits<V>::name == name);
+
+        template <typename... Vs> requires (can_bind<Vs...>)
+        using bind                                  = Bound<T, Vs...>;
         using bound_to                              = py::args<>;
+        using unbind                                = T;
     };
 
     /* Inspect a C++ argument at compile time.  Forwards to the annotated type's
@@ -536,25 +690,12 @@ namespace impl {
     template <is_arg T>
     struct ArgTraits<T> {
     private:
-        template <typename U>
-        struct _bound {
-            template <typename... Vs>
-            using bind = BoundArg<U, Vs...>;
-            using unbind = U;
-            using types = args<>;
-        };
-        template <typename U, typename... Us>
-        struct _bound<BoundArg<U, Us...>> {
-            template <typename... Vs>
-            using bind = BoundArg<U, Us..., Vs...>;
-            using unbind = U;
-            using types = args<Us...>;
-        };
+        using T2 = std::remove_cvref_t<T>;
 
     public:
-        using type                                  = std::remove_cvref_t<T>::type;
-        static constexpr StaticStr name             = std::remove_cvref_t<T>::name;
-        static constexpr ArgKind kind               = std::remove_cvref_t<T>::kind;
+        using type                                  = T2::type;
+        static constexpr StaticStr name             = T2::name;
+        static constexpr ArgKind kind               = T2::kind;
         static constexpr bool posonly() noexcept    { return kind.posonly(); }
         static constexpr bool pos() noexcept        { return kind.pos(); }
         static constexpr bool args() noexcept       { return kind.args(); }
@@ -565,198 +706,144 @@ namespace impl {
         static constexpr bool opt() noexcept        { return kind.opt(); }
         static constexpr bool variadic() noexcept   { return kind.variadic(); }
 
-        template <typename... Vs> requires (can_bind_arg<T, Vs...>)
-        using bind                                  = _bound<std::remove_cvref_t<T>>::template bind<Vs...>;
-        using unbind                                = _bound<std::remove_cvref_t<T>>::unbind;
-        using bound_to                              = _bound<std::remove_cvref_t<T>>::types;
+        template <typename... Vs>
+        static constexpr bool can_bind = T2::template can_bind<Vs...>;
+
+        template <typename... Vs> requires (can_bind<Vs...>)
+        using bind                                  = T2::template bind<Vs...>;
+        using unbind                                = T2::unbind;
+        using bound_to                              = T2::bound_to;
     };
 
-    template <is_arg Arg, typename T>
-        requires (
-            !ArgTraits<Arg>::bound() &&
-            !variadic_args_name<ArgTraits<Arg>::name> &&
-            !variadic_kwargs_name<ArgTraits<Arg>::name>
-        )
-    struct BoundArg<Arg, T> {
+    template <typename Arg, typename T> requires (!ArgTraits<Arg>::variadic())
+    struct Bound<Arg, T> {
+    private:
+        template <typename, typename>
+        friend struct detect_arg;
+        using _detect_arg = void;
+        using Value = std::remove_reference_t<typename ArgTraits<Arg>::type>;
+
+    public:
         static constexpr StaticStr name = ArgTraits<Arg>::name;
         static constexpr ArgKind kind = ArgTraits<Arg>::kind;
         using type = ArgTraits<Arg>::type;
+        using bound_to = ArgTraits<Arg>::bound_to;
         using unbind = Arg;
-
         type value;
 
-        [[nodiscard]] constexpr std::remove_reference_t<type>& operator*() {
-            return value;
-        }
-        [[nodiscard]] constexpr const std::remove_reference_t<type>& operator*() const {
-            return value;
-        }
-        [[nodiscard]] constexpr std::remove_reference_t<type>* operator->() {
-            return &value;
-        }
-        [[nodiscard]] constexpr const std::remove_reference_t<type>* operator->() const {
-            return &value;
-        }
-
-        [[nodiscard]] constexpr operator type() && {
-            if constexpr (std::is_lvalue_reference_v<type>) {
-                return value;
-            } else {
-                return std::move(value);
-            }
-        }
-
+        [[nodiscard]] constexpr Value& operator*() { return value; }
+        [[nodiscard]] constexpr const Value& operator*() const { return value; }
+        [[nodiscard]] constexpr Value* operator->() { return &value; }
+        [[nodiscard]] constexpr const Value* operator->() const { return &value; }
+        [[nodiscard]] constexpr operator type() && { return std::forward<type>(value); }
         template <typename U> requires (std::convertible_to<type, U>)
-        [[nodiscard]] constexpr operator U() && {
-            if constexpr (std::is_lvalue_reference_v<type>) {
-                return value;
-            } else {
-                return std::move(value);
-            }
-        }
+        [[nodiscard]] constexpr operator U() && { return std::forward<type>(value); }
+
+        template <typename... Vs>
+        static constexpr bool can_bind = ArgTraits<Arg>::template can_bind<Vs...>;
+        template <typename... Vs> requires (can_bind<Vs...>)
+        using bind = ArgTraits<Arg>::template bind<Vs...>;
     };
 
-    template <is_arg Arg, typename... Ts>
-        requires (
-            !ArgTraits<Arg>::bound() &&
-            variadic_args_name<ArgTraits<Arg>::name> &&
-            !variadic_kwargs_name<ArgTraits<Arg>::name>
-        )
-    struct BoundArg<Arg, Ts...> {
+    template <typename Arg, typename... Ts> requires (ArgTraits<Arg>::args())
+    struct Bound<Arg, Ts...> {
+    private:
+        template <typename, typename>
+        friend struct detect_arg;
+        using _detect_arg = void;
+
+        template <typename, typename...>
+        struct rebind;
+        template <typename... curr, typename... Vs>
+        struct rebind<py::args<curr...>, Vs...> {
+            static constexpr bool value =
+                ArgTraits<Arg>::template can_bind<curr..., Vs...>;
+            using type = ArgTraits<Arg>::template bind<curr..., Vs...>;
+        };
+
+    public:
         static constexpr StaticStr name = ArgTraits<Arg>::name;
-        static constexpr impl::ArgKind kind = ArgKind::POS | ArgKind::VARIADIC;
-        using type = std::conditional_t<
-            std::is_lvalue_reference_v<typename ArgTraits<Arg>::type>,
-            std::reference_wrapper<typename ArgTraits<Arg>::type>,
-            std::remove_reference_t<typename ArgTraits<Arg>::type>
-        >;
+        static constexpr impl::ArgKind kind = ArgTraits<Arg>::kind;
+        using type = ArgTraits<Arg>::type;
+        using vec = std::vector<std::conditional_t<
+            std::is_lvalue_reference_v<type>,
+            std::reference_wrapper<type>,
+            std::remove_reference_t<type>
+        >>;
+        using bound_to = py::args<Ts...>;
         using unbind = Arg;
+        vec value;
 
-        std::vector<type> value;
+        [[nodiscard]] constexpr vec& operator*() { return value; }
+        [[nodiscard]] constexpr const vec& operator*() const { return value; }
+        [[nodiscard]] constexpr vec* operator->() { return &value; }
+        [[nodiscard]] constexpr const vec* operator->() const { return &value; }
+        [[nodiscard]] constexpr operator vec() && { return std::move(value); }
+        template <typename U> requires (std::convertible_to<vec, U>)
+        [[nodiscard]] constexpr operator U() && { return std::move(value); }
+        [[nodiscard]] constexpr decltype(auto) operator[](vec::size_type i) {
+            return value[i];
+        }
+        [[nodiscard]] constexpr decltype(auto) operator[](vec::size_type i) const {
+            return value[i];
+        }
 
-        [[nodiscard]] std::vector<type>& operator*() {
-            return value;
-        }
-        [[nodiscard]] constexpr const std::vector<type>& operator*() const {
-            return value;
-        }
-        [[nodiscard]] std::vector<type>* operator->() {
-            return &value;
-        }
-        [[nodiscard]] constexpr const std::vector<type>* operator->() const {
-            return &value;
-        }
-
-        [[nodiscard]] constexpr operator std::vector<type>() && {
-            return std::move(value);
-        }
+        template <typename... Vs>
+        static constexpr bool can_bind = rebind<bound_to, Vs...>::value;
+        template <typename... Vs> requires (can_bind<Vs...>)
+        using bind = rebind<bound_to, Vs...>::type;
     };
 
-    template <is_arg Arg, typename... Ts>
-        requires (
-            !ArgTraits<Arg>::bound() &&
-            !variadic_args_name<ArgTraits<Arg>::name> &&
-            variadic_kwargs_name<ArgTraits<Arg>::name>
-        )
-    struct BoundArg<Arg, Ts...> {
+    template <typename Arg, typename... Ts> requires (ArgTraits<Arg>::kwargs())
+    struct Bound<Arg, Ts...> {
+    private:
+        template <typename, typename>
+        friend struct detect_arg;
+        using _detect_arg = void;
+
+        template <typename, typename...>
+        struct rebind;
+        template <typename... curr, typename... Vs>
+        struct rebind<py::args<curr...>, Vs...> {
+            static constexpr bool value =
+                ArgTraits<Arg>::template can_bind<curr..., Vs...>;
+            using type = ArgTraits<Arg>::template bind<curr..., Vs...>;
+        };
+
+    public:
         static constexpr StaticStr name = ArgTraits<Arg>::name;
-        static constexpr ArgKind kind = ArgKind::KW | ArgKind::VARIADIC;
-        using type = std::conditional_t<
-            std::is_lvalue_reference_v<typename ArgTraits<Arg>::type>,
-            std::reference_wrapper<typename ArgTraits<Arg>::type>,
-            std::remove_reference_t<typename ArgTraits<Arg>::type>
-        >;
+        static constexpr impl::ArgKind kind = ArgTraits<Arg>::kind;
+        using type = ArgTraits<Arg>::type;
+        using map = std::unordered_map<std::string, std::conditional_t<
+            std::is_lvalue_reference_v<type>,
+            std::reference_wrapper<type>,
+            std::remove_reference_t<type>
+        >>;
+        using bound_to = py::args<Ts...>;
         using unbind = Arg;
+        map value;
 
-        std::unordered_map<std::string, type> value;
+        [[nodiscard]] constexpr map& operator*() { return value; }
+        [[nodiscard]] constexpr const map& operator*() const { return value; }
+        [[nodiscard]] constexpr map* operator->() { return &value; }
+        [[nodiscard]] constexpr const map* operator->() const { return &value; }
+        [[nodiscard]] constexpr operator map() && { return std::move(value); }
+        template <typename U> requires (std::convertible_to<map, U>)
+        [[nodiscard]] constexpr operator U() && { return std::move(value); }
+        [[nodiscard]] constexpr decltype(auto) operator[](const std::string& key) {
+            return value[key];
+        }
+        [[nodiscard]] constexpr decltype(auto) operator[](std::string&& key) {
+            return value[std::move(key)];
+        }
 
-        [[nodiscard]] constexpr std::unordered_map<std::string, type>& operator*() {
-            return value;
-        }
-        [[nodiscard]] constexpr const std::unordered_map<std::string, type>& operator*() const {
-            return value;
-        }
-        [[nodiscard]] constexpr std::unordered_map<std::string, type>* operator->() {
-            return &value;
-        }
-        [[nodiscard]] constexpr const std::unordered_map<std::string, type>* operator->() const {
-            return &value;
-        }
-
-        [[nodiscard]] constexpr operator std::unordered_map<std::string, type>() && {
-            return std::move(value);
-        }
+        template <typename... Vs>
+        static constexpr bool can_bind = rebind<bound_to, Vs...>::value;
+        template <typename... Vs> requires (can_bind<Vs...>)
+        using bind = rebind<bound_to, Vs...>::type;
     };
 
 }
-
-
-template <StaticStr Name, typename T> requires (impl::variadic_args_name<Name>)
-struct Arg<Name, T> {
-    static constexpr StaticStr name = Name;
-    static constexpr impl::ArgKind kind = impl::ArgKind::POS | impl::ArgKind::VARIADIC;
-    using type = std::conditional_t<
-        std::is_lvalue_reference_v<T>,
-        std::reference_wrapper<T>,
-        std::remove_reference_t<T>
-    >;
-    template <typename... Vs> requires (impl::can_bind_arg<Arg, Vs...>)
-    using bind = impl::ArgTraits<Arg>::template bind<Vs...>;
-    using unbind = Arg;
-
-    std::vector<type> value;
-
-    [[nodiscard]] std::vector<type>& operator*() {
-        return value;
-    }
-    [[nodiscard]] constexpr const std::vector<type>& operator*() const {
-        return value;
-    }
-    [[nodiscard]] std::vector<type>* operator->() {
-        return &value;
-    }
-    [[nodiscard]] constexpr const std::vector<type>* operator->() const {
-        return &value;
-    }
-
-    [[nodiscard]] constexpr operator std::vector<type>() && {
-        return std::move(value);
-    }
-};
-
-
-template <StaticStr Name, typename T> requires (impl::variadic_kwargs_name<Name>)
-struct Arg<Name, T> {
-    static constexpr StaticStr name = Name;
-    static constexpr impl::ArgKind kind = impl::ArgKind::KW | impl::ArgKind::VARIADIC;
-    using type = std::conditional_t<
-        std::is_lvalue_reference_v<T>,
-        std::reference_wrapper<T>,
-        std::remove_reference_t<T>
-    >;
-    template <typename... Vs> requires (impl::can_bind_arg<Arg, Vs...>)
-    using bind = impl::ArgTraits<Arg>::template bind<Vs...>;
-    using unbind = Arg;
-
-    std::unordered_map<std::string, T> value;
-
-    [[nodiscard]] constexpr std::unordered_map<std::string, T>& operator*() {
-        return value;
-    }
-    [[nodiscard]] constexpr const std::unordered_map<std::string, T>& operator*() const {
-        return value;
-    }
-    [[nodiscard]] constexpr std::unordered_map<std::string, T>* operator->() {
-        return &value;
-    }
-    [[nodiscard]] constexpr const std::unordered_map<std::string, T>* operator->() const {
-        return &value;
-    }
-
-    [[nodiscard]] constexpr operator std::unordered_map<std::string, T>() && {
-        return std::move(value);
-    }
-};
 
 
 /* A compile-time factory for binding keyword arguments with Python syntax.  constexpr
