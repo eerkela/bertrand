@@ -4,7 +4,6 @@
 #include "declarations.h"
 #include "object.h"
 #include "except.h"
-#include "arg.h"
 #include "ops.h"
 #include "access.h"
 #include "iter.h"
@@ -67,7 +66,39 @@ decltype(auto) Object::operator()(this Self&& self, Args&&... args) {
 }
 
 
-/// TODO: args should go up here?
+/* Dereference operator is used to emulate Python container unpacking when calling a
+`py::Function` object.
+
+A single unpacking operator passes the contents of an iterable container as positional
+arguments to a function.  Unlike Python, only one such operator is allowed per call,
+and it must be the last positional argument in the parameter list.  This allows the
+type checker to ensure that the container's value type is minimally convertible to each
+of the remaining positional arguments ahead of time, although in most cases, the number
+of arguments cannot be determined until runtime.  Thus, if any arguments are missing or
+extras are provided, the call will raise an exception similar to Python, rather than
+failing statically at compile time.  This can be avoided by using standard positional
+and keyword arguments instead, which can be fully verified at compile time, or by
+including variadic positional arguments in the function signature, which will fully
+consume any remaining arguments according to Python semantics.
+
+A second unpacking operator promotes the arguments into keywords, and can only be used
+if the container is dict-like, meaning it possess both `::key_type` and `::mapped_type`
+aliases, and that indexing it with an instance of the key type returns a value of the
+mapped type.  The actual unpacking is robust, and does not depend on the container
+returning key-value pairs, although it will prefer them if so, followed by the result
+of the `.items()` method if present, or by zipping `.keys()` and `.values()` if both
+exist, and finally by iterating over the keys and indexing the container.  Similar to
+the positional unpacking operator, only one of these may be present as the last keyword
+argument in the parameter list, and a compile-time check is made to ensure that the
+mapped type is convertible to any missing keyword arguments that are not explicitly
+provided.
+
+In both cases, the extra runtime complexity results in a small performance degradation
+over a typical function call, which is minimized as much as possible. */
+template <impl::inherits<Object> Self> requires (impl::iterable<Self>)
+[[nodiscard]] auto operator*(Self&& self) {
+    return impl::ArgPack<Self>{std::forward<Self>(self)};
+}
 
 
 namespace impl {
@@ -1264,8 +1295,6 @@ struct Signature<Return(Args...)> : impl::SignatureBase<Return> {
     struct Overloads;
 
 private:
-    template <typename T>
-    using ArgTraits = impl::ArgTraits<T>;
 
     /// TODO: these helpers shouldn't count partial arguments?  That means they'll
     /// always take them into account, and there won't be any issues with Partial
@@ -14822,8 +14851,8 @@ parameter is a type object, and thus the method is a class method.)doc";
         static PyObject* method(PyFunction* self, void*) noexcept {
             try {
                 if constexpr (Sig::n < 1 || !(
-                    impl::ArgTraits<typename Sig::template at<0>>::pos() ||
-                    impl::ArgTraits<typename Sig::template at<0>>::args()
+                    ArgTraits<typename Sig::template at<0>>::pos() ||
+                    ArgTraits<typename Sig::template at<0>>::args()
                 )) {
                     PyErr_SetString(
                         PyExc_TypeError,
@@ -14861,8 +14890,8 @@ parameter is a type object, and thus the method is a class method.)doc";
         static PyObject* classmethod(PyFunction* self, void*) noexcept {
             try {
                 if constexpr (Sig::n < 1 || !(
-                    impl::ArgTraits<typename Sig::template at<0>>::pos() ||
-                    impl::ArgTraits<typename Sig::template at<0>>::args()
+                    ArgTraits<typename Sig::template at<0>>::pos() ||
+                    ArgTraits<typename Sig::template at<0>>::args()
                 )) {
                     PyErr_SetString(
                         PyExc_TypeError,
@@ -14936,8 +14965,8 @@ parameter is a type object, and thus the method is a class method.)doc";
         ) noexcept {
             try {
                 if constexpr (Sig::n < 1 || !(
-                    impl::ArgTraits<typename Sig::template at<0>>::pos() ||
-                    impl::ArgTraits<typename Sig::template at<0>>::args()
+                    ArgTraits<typename Sig::template at<0>>::pos() ||
+                    ArgTraits<typename Sig::template at<0>>::args()
                 )) {
                     PyErr_SetString(
                         PyExc_TypeError,
@@ -14946,7 +14975,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                     );
                     return nullptr;
                 } else {
-                    using T = impl::ArgTraits<typename Sig::template at<0>>::type;
+                    using T = ArgTraits<typename Sig::template at<0>>::type;
                     size_t nargs = PyVectorcall_NARGS(nargsf);
                     PyObject* cls;
                     if (nargs == 0) {
@@ -15361,7 +15390,7 @@ parameter is a type object, and thus the method is a class method.)doc";
             if constexpr (Sig::n == 0 || !(Sig::has_pos || Sig::has_args)) {
                 Py_RETURN_NONE;
             } else {
-                using T = impl::ArgTraits<typename Sig::template at<0>>::type;
+                using T = ArgTraits<typename Sig::template at<0>>::type;
                 return release(Type<T>());
             }
         }
@@ -15379,7 +15408,7 @@ parameter is a type object, and thus the method is a class method.)doc";
             PyObject* const* args,
             size_t nargsf
         ) noexcept {
-            using T = impl::ArgTraits<typename Sig::template at<0>>::type;
+            using T = ArgTraits<typename Sig::template at<0>>::type;
             size_t nargs = PyVectorcall_NARGS(nargsf);
             if (nargs != 2) {
                 PyErr_SetString(
@@ -15434,7 +15463,7 @@ parameter is a type object, and thus the method is a class method.)doc";
             PyObject* const* args,
             size_t nargsf
         ) noexcept {
-            using T = impl::ArgTraits<typename Sig::template at<0>>::type;
+            using T = ArgTraits<typename Sig::template at<0>>::type;
             size_t nargs = PyVectorcall_NARGS(nargsf);
             if (nargs != 2) {
                 PyErr_SetString(
@@ -15644,9 +15673,9 @@ parameter is a type object, and thus the method is a class method.)doc";
         static bool validate_parameter(const Param& param) {
             using T = Sig::template at<I>;
             return (
-                param.name == impl::ArgTraits<T>::name &&
-                param.kind == impl::ArgTraits<T>::kind &&
-                param.value == ptr(Type<typename impl::ArgTraits<T>::type>())
+                param.name == ArgTraits<T>::name &&
+                param.kind == ArgTraits<T>::kind &&
+                param.value == ptr(Type<typename ArgTraits<T>::type>())
             );
         }
 
@@ -15658,7 +15687,7 @@ parameter is a type object, and thus the method is a class method.)doc";
             if (default_value.is(getattr<"empty">(signature.signature))) {
                 throw TypeError(
                     "missing default value for parameter '" +
-                    impl::ArgTraits<typename Sig::Defaults::template at<J>>::name + "'"
+                    ArgTraits<typename Sig::Defaults::template at<J>>::name + "'"
                 );
             }
             return default_value;
@@ -15798,7 +15827,7 @@ parameter is a type object, and thus the method is a class method.)doc";
         template <size_t I>
         static Object build_parameter(PyFunction* self, const Object& Parameter) {
             using T = Sig::template at<I>;
-            using Traits = impl::ArgTraits<T>;
+            using Traits = ArgTraits<T>;
 
             Object name = reinterpret_steal<Object>(
                 PyUnicode_FromStringAndSize(
@@ -16698,13 +16727,13 @@ struct __template__<F> {
     template <size_t I, size_t PosOnly, size_t KwOnly>
     static void populate(PyObject* tuple, size_t& offset) {
         using T = Func::template at<I>;
-        Type<typename impl::ArgTraits<T>::type> type;
+        Type<typename ArgTraits<T>::type> type;
 
         /// NOTE: `/` and `*` argument delimiters must be inserted where necessary to
         /// model positional-only and keyword-only arguments correctly in Python.
         if constexpr (
             (I == PosOnly) ||
-            ((I == Func::n - 1) && impl::ArgTraits<T>::posonly())
+            ((I == Func::n - 1) && ArgTraits<T>::posonly())
         ) {
             PyObject* str = PyUnicode_FromStringAndSize("/", 1);
             if (str == nullptr) {
@@ -16722,11 +16751,11 @@ struct __template__<F> {
             ++offset;
         }
 
-        if constexpr (impl::ArgTraits<T>::posonly()) {
-            if constexpr (impl::ArgTraits<T>::name.empty()) {
-                if constexpr (impl::ArgTraits<T>::opt()) {
+        if constexpr (ArgTraits<T>::posonly()) {
+            if constexpr (ArgTraits<T>::name.empty()) {
+                if constexpr (ArgTraits<T>::opt()) {
                     PyObject* slice = PySlice_New(
-                        Type<typename impl::ArgTraits<T>::type>(),
+                        Type<typename ArgTraits<T>::type>(),
                         Py_Ellipsis,
                         Py_None
                     );
@@ -16740,14 +16769,14 @@ struct __template__<F> {
             } else {
                 Object name = reinterpret_steal<Object>(
                     PyUnicode_FromStringAndSize(
-                        impl::ArgTraits<T>::name,
-                        impl::ArgTraits<T>::name.size()
+                        ArgTraits<T>::name,
+                        ArgTraits<T>::name.size()
                     )
                 );
                 if (name.is(nullptr)) {
                     Exception::from_python();
                 }
-                if constexpr (impl::ArgTraits<T>::opt()) {
+                if constexpr (ArgTraits<T>::opt()) {
                     PyObject* slice = PySlice_New(
                         ptr(name),
                         ptr(type),
@@ -16770,11 +16799,11 @@ struct __template__<F> {
                 }
             }
 
-        } else if constexpr (impl::ArgTraits<T>::kw()) {
+        } else if constexpr (ArgTraits<T>::kw()) {
             Object name = reinterpret_steal<Object>(
                 PyUnicode_FromStringAndSize(
-                    impl::ArgTraits<T>::name,
-                    impl::ArgTraits<T>::name.size()
+                    ArgTraits<T>::name,
+                    ArgTraits<T>::name.size()
                 )
             );
             if (name.is(nullptr)) {
@@ -16783,18 +16812,18 @@ struct __template__<F> {
             PyObject* slice = PySlice_New(
                 ptr(name),
                 ptr(type),
-                impl::ArgTraits<T>::opt() ? Py_Ellipsis : Py_None
+                ArgTraits<T>::opt() ? Py_Ellipsis : Py_None
             );
             if (slice == nullptr) {
                 Exception::from_python();
             }
             PyTuple_SET_ITEM(tuple, I + offset, slice);
 
-        } else if constexpr (impl::ArgTraits<T>::args()) {
+        } else if constexpr (ArgTraits<T>::args()) {
             Object name = reinterpret_steal<Object>(
                 PyUnicode_FromStringAndSize(
-                    "*" + impl::ArgTraits<T>::name,
-                    impl::ArgTraits<T>::name.size() + 1
+                    "*" + ArgTraits<T>::name,
+                    ArgTraits<T>::name.size() + 1
                 )
             );
             if (name.is(nullptr)) {
@@ -16810,11 +16839,11 @@ struct __template__<F> {
             }
             PyTuple_SET_ITEM(tuple, I + offset, slice);
 
-        } else if constexpr (impl::ArgTraits<T>::kwargs()) {
+        } else if constexpr (ArgTraits<T>::kwargs()) {
             Object name = reinterpret_steal<Object>(
                 PyUnicode_FromStringAndSize(
-                    "**" + impl::ArgTraits<T>::name,
-                    impl::ArgTraits<T>::name.size() + 2
+                    "**" + ArgTraits<T>::name,
+                    ArgTraits<T>::name.size() + 2
                 )
             );
             if (name.is(nullptr)) {
@@ -16845,10 +16874,10 @@ struct __template__<F> {
 
         Object rtype = std::is_void_v<typename Func::Return> ?
             Object(None) :
-            Object(Type<typename impl::ArgTraits<typename Func::Return>::type>());
+            Object(Type<typename ArgTraits<typename Func::Return>::type>());
         if constexpr (Func::has_self) {
             Object slice = reinterpret_steal<Object>(PySlice_New(
-                Type<typename impl::ArgTraits<typename Func::Self>::type>(),
+                Type<typename ArgTraits<typename Func::Self>::type>(),
                 Py_None,
                 ptr(rtype)
             ));

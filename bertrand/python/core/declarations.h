@@ -45,9 +45,13 @@
 
 #include <bertrand/common.h>
 #include <bertrand/static_str.h>
+#include <bertrand/arg.h>
 
 
 namespace py {
+using bertrand::Arg;
+using bertrand::ArgTraits;
+using bertrand::arg;
 using bertrand::args;
 using bertrand::StaticStr;
 using bertrand::StaticMap;
@@ -63,6 +67,15 @@ using bertrand::demangle;
 
 
 namespace impl {
+    using bertrand::ArgPack;
+    using bertrand::KwargPack;
+    using bertrand::ArgKind;
+    using bertrand::arg_name;
+    using bertrand::variadic_args_name;
+    using bertrand::variadic_kwargs_name;
+    using bertrand::arg_pack;
+    using bertrand::kwarg_pack;
+    using bertrand::is_arg;
     using bertrand::is_args;
     using bertrand::Sentinel;
     using bertrand::index_of;
