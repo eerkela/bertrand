@@ -13,8 +13,6 @@ namespace bertrand {
 
 template <typename T>
 struct ArgTraits;
-template <typename Arg, typename... Ts>
-struct BoundArg;
 template <iterable T> requires (has_size<T>)
 struct ArgPack;
 template <mapping_like T>
@@ -78,6 +76,9 @@ struct ArgKind {
 
 
 namespace impl {
+
+    template <typename Arg, typename... Ts>
+    struct BoundArg;
 
     constexpr bool isalpha(char c) {
         return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
@@ -245,7 +246,7 @@ public:
             (!ArgTraits<Vs>::variadic() && ...) &&
             ((ArgTraits<Vs>::name.empty() || ArgTraits<Vs>::name == name) && ...)
         )
-    using bind = BoundArg<Arg, Vs...>;
+    using bind = impl::BoundArg<Arg, Vs...>;
 
     /* Marks the argument as optional. */
     struct opt {
@@ -280,7 +281,7 @@ public:
                 (!ArgTraits<Vs>::variadic() && ...) &&
                 ((ArgTraits<Vs>::name.empty() || ArgTraits<Vs>::name == name) && ...)
             )
-        using bind = BoundArg<opt, Vs...>;
+        using bind = impl::BoundArg<opt, Vs...>;
     };
 
     /* Marks the argument as positional-only. */
@@ -323,7 +324,7 @@ public:
                 (!ArgTraits<Vs>::variadic() && ...) &&
                 ((ArgTraits<Vs>::name.empty() || ArgTraits<Vs>::name == name) && ...)
             )
-        using bind = BoundArg<pos, Vs...>;
+        using bind = impl::BoundArg<pos, Vs...>;
 
         struct opt {
         private:
@@ -358,7 +359,7 @@ public:
                     (!ArgTraits<Vs>::variadic() && ...) &&
                     ((ArgTraits<Vs>::name.empty() || ArgTraits<Vs>::name == name) && ...)
                 )
-            using bind = BoundArg<opt, Vs...>;
+            using bind = impl::BoundArg<opt, Vs...>;
         };
     };
 
@@ -402,7 +403,7 @@ public:
                 (!ArgTraits<Vs>::variadic() && ...) &&
                 ((ArgTraits<Vs>::name.empty() || ArgTraits<Vs>::name == name) && ...)
             )
-        using bind = BoundArg<kw, Vs...>;
+        using bind = impl::BoundArg<kw, Vs...>;
 
         struct opt {
         private:
@@ -437,7 +438,7 @@ public:
                     (!ArgTraits<Vs>::variadic() && ...) &&
                     ((ArgTraits<Vs>::name.empty() || ArgTraits<Vs>::name == name) && ...)
                 )
-            using bind = BoundArg<opt, Vs...>;
+            using bind = impl::BoundArg<opt, Vs...>;
         };
     };
 };
@@ -495,7 +496,7 @@ public:
             (!ArgTraits<Vs>::variadic() && ...) &&
             impl::names_are_unique<Vs...>
         )
-    using bind = BoundArg<Arg, Vs...>;
+    using bind = impl::BoundArg<Arg, Vs...>;
 };
 
 
@@ -551,7 +552,7 @@ public:
             (!ArgTraits<Vs>::variadic() && ...) &&
             impl::names_are_unique<Vs...>
         )
-    using bind = BoundArg<Arg, Vs...>;
+    using bind = impl::BoundArg<Arg, Vs...>;
 };
 
 
@@ -691,7 +692,7 @@ struct ArgTraits {
         (ArgTraits<V>::name.empty() || ArgTraits<V>::name == name);
 
     template <typename... Vs> requires (can_bind<Vs...>)
-    using bind                                  = BoundArg<T, Vs...>;
+    using bind                                  = impl::BoundArg<T, Vs...>;
     using bound_to                              = bertrand::args<>;
     using unbind                                = T;
 };
@@ -728,138 +729,135 @@ public:
 };
 
 
-template <typename Arg, typename T> requires (!ArgTraits<Arg>::variadic())
-struct BoundArg<Arg, T> {
-private:
-    template <typename, typename>
-    friend struct detect_arg;
-    using _detect_arg = void;
-    using Value = std::remove_reference_t<typename ArgTraits<Arg>::type>;
-
-public:
-    static constexpr StaticStr name = ArgTraits<Arg>::name;
-    static constexpr ArgKind kind = ArgTraits<Arg>::kind;
-    using type = ArgTraits<Arg>::type;
-    using bound_to = ArgTraits<Arg>::bound_to;
-    using unbind = Arg;
-    type value;
-
-    [[nodiscard]] constexpr Value& operator*() { return value; }
-    [[nodiscard]] constexpr const Value& operator*() const { return value; }
-    [[nodiscard]] constexpr Value* operator->() { return &value; }
-    [[nodiscard]] constexpr const Value* operator->() const { return &value; }
-    [[nodiscard]] constexpr operator type() && { return std::forward<type>(value); }
-    template <typename U> requires (std::convertible_to<type, U>)
-    [[nodiscard]] constexpr operator U() && { return std::forward<type>(value); }
-
-    template <typename... Vs>
-    static constexpr bool can_bind = ArgTraits<Arg>::template can_bind<Vs...>;
-    template <typename... Vs> requires (can_bind<Vs...>)
-    using bind = ArgTraits<Arg>::template bind<Vs...>;
-};
-
-
-template <typename Arg, typename... Ts> requires (ArgTraits<Arg>::args())
-struct BoundArg<Arg, Ts...> {
-private:
-    template <typename, typename>
-    friend struct detect_arg;
-    using _detect_arg = void;
-
-    template <typename, typename...>
-    struct rebind;
-    template <typename... curr, typename... Vs>
-    struct rebind<bertrand::args<curr...>, Vs...> {
-        static constexpr bool value =
-            ArgTraits<Arg>::template can_bind<curr..., Vs...>;
-        using type = ArgTraits<Arg>::template bind<curr..., Vs...>;
-    };
-
-public:
-    static constexpr StaticStr name = ArgTraits<Arg>::name;
-    static constexpr ArgKind kind = ArgTraits<Arg>::kind;
-    using type = ArgTraits<Arg>::type;
-    using vec = std::vector<std::conditional_t<
-        std::is_lvalue_reference_v<type>,
-        std::reference_wrapper<type>,
-        std::remove_reference_t<type>
-    >>;
-    using bound_to = bertrand::args<Ts...>;
-    using unbind = Arg;
-    vec value;
-
-    [[nodiscard]] constexpr vec& operator*() { return value; }
-    [[nodiscard]] constexpr const vec& operator*() const { return value; }
-    [[nodiscard]] constexpr vec* operator->() { return &value; }
-    [[nodiscard]] constexpr const vec* operator->() const { return &value; }
-    [[nodiscard]] constexpr operator vec() && { return std::move(value); }
-    template <typename U> requires (std::convertible_to<vec, U>)
-    [[nodiscard]] constexpr operator U() && { return std::move(value); }
-    [[nodiscard]] constexpr decltype(auto) operator[](vec::size_type i) {
-        return value[i];
-    }
-    [[nodiscard]] constexpr decltype(auto) operator[](vec::size_type i) const {
-        return value[i];
-    }
-
-    template <typename... Vs>
-    static constexpr bool can_bind = rebind<bound_to, Vs...>::value;
-    template <typename... Vs> requires (can_bind<Vs...>)
-    using bind = rebind<bound_to, Vs...>::type;
-};
-
-
-template <typename Arg, typename... Ts> requires (ArgTraits<Arg>::kwargs())
-struct BoundArg<Arg, Ts...> {
-private:
-    template <typename, typename>
-    friend struct detect_arg;
-    using _detect_arg = void;
-
-    template <typename, typename...>
-    struct rebind;
-    template <typename... curr, typename... Vs>
-    struct rebind<bertrand::args<curr...>, Vs...> {
-        static constexpr bool value =
-            ArgTraits<Arg>::template can_bind<curr..., Vs...>;
-        using type = ArgTraits<Arg>::template bind<curr..., Vs...>;
-    };
-
-public:
-    static constexpr StaticStr name = ArgTraits<Arg>::name;
-    static constexpr ArgKind kind = ArgTraits<Arg>::kind;
-    using type = ArgTraits<Arg>::type;
-    using map = std::unordered_map<std::string, std::conditional_t<
-        std::is_lvalue_reference_v<type>,
-        std::reference_wrapper<type>,
-        std::remove_reference_t<type>
-    >>;
-    using bound_to = bertrand::args<Ts...>;
-    using unbind = Arg;
-    map value;
-
-    [[nodiscard]] constexpr map& operator*() { return value; }
-    [[nodiscard]] constexpr const map& operator*() const { return value; }
-    [[nodiscard]] constexpr map* operator->() { return &value; }
-    [[nodiscard]] constexpr const map* operator->() const { return &value; }
-    [[nodiscard]] constexpr operator map() && { return std::move(value); }
-    template <typename U> requires (std::convertible_to<map, U>)
-    [[nodiscard]] constexpr operator U() && { return std::move(value); }
-    [[nodiscard]] constexpr decltype(auto) operator[](const std::string& key) {
-        return value[key];
-    }
-    [[nodiscard]] constexpr decltype(auto) operator[](std::string&& key) {
-        return value[std::move(key)];
-    }
-
-    template <typename... Vs>
-    static constexpr bool can_bind = rebind<bound_to, Vs...>::value;
-    template <typename... Vs> requires (can_bind<Vs...>)
-    using bind = rebind<bound_to, Vs...>::type;
-};
-
-
 namespace impl {
+
+    template <typename Arg, typename T> requires (!ArgTraits<Arg>::variadic())
+    struct BoundArg<Arg, T> {
+    private:
+        template <typename, typename>
+        friend struct detect_arg;
+        using _detect_arg = void;
+        using Value = std::remove_reference_t<typename ArgTraits<Arg>::type>;
+
+    public:
+        static constexpr StaticStr name = ArgTraits<Arg>::name;
+        static constexpr ArgKind kind = ArgTraits<Arg>::kind;
+        using type = ArgTraits<Arg>::type;
+        using bound_to = ArgTraits<Arg>::bound_to;
+        using unbind = Arg;
+        type value;
+
+        [[nodiscard]] constexpr Value& operator*() { return value; }
+        [[nodiscard]] constexpr const Value& operator*() const { return value; }
+        [[nodiscard]] constexpr Value* operator->() { return &value; }
+        [[nodiscard]] constexpr const Value* operator->() const { return &value; }
+        [[nodiscard]] constexpr operator type() && { return std::forward<type>(value); }
+        template <typename U> requires (std::convertible_to<type, U>)
+        [[nodiscard]] constexpr operator U() && { return std::forward<type>(value); }
+
+        template <typename... Vs>
+        static constexpr bool can_bind = ArgTraits<Arg>::template can_bind<Vs...>;
+        template <typename... Vs> requires (can_bind<Vs...>)
+        using bind = ArgTraits<Arg>::template bind<Vs...>;
+    };
+
+    template <typename Arg, typename... Ts> requires (ArgTraits<Arg>::args())
+    struct BoundArg<Arg, Ts...> {
+    private:
+        template <typename, typename>
+        friend struct detect_arg;
+        using _detect_arg = void;
+
+        template <typename, typename...>
+        struct rebind;
+        template <typename... curr, typename... Vs>
+        struct rebind<bertrand::args<curr...>, Vs...> {
+            static constexpr bool value =
+                ArgTraits<Arg>::template can_bind<curr..., Vs...>;
+            using type = ArgTraits<Arg>::template bind<curr..., Vs...>;
+        };
+
+    public:
+        static constexpr StaticStr name = ArgTraits<Arg>::name;
+        static constexpr ArgKind kind = ArgTraits<Arg>::kind;
+        using type = ArgTraits<Arg>::type;
+        using vec = std::vector<std::conditional_t<
+            std::is_lvalue_reference_v<type>,
+            std::reference_wrapper<type>,
+            std::remove_reference_t<type>
+        >>;
+        using bound_to = bertrand::args<Ts...>;
+        using unbind = Arg;
+        vec value;
+
+        [[nodiscard]] constexpr vec& operator*() { return value; }
+        [[nodiscard]] constexpr const vec& operator*() const { return value; }
+        [[nodiscard]] constexpr vec* operator->() { return &value; }
+        [[nodiscard]] constexpr const vec* operator->() const { return &value; }
+        [[nodiscard]] constexpr operator vec() && { return std::move(value); }
+        template <typename U> requires (std::convertible_to<vec, U>)
+        [[nodiscard]] constexpr operator U() && { return std::move(value); }
+        [[nodiscard]] constexpr decltype(auto) operator[](vec::size_type i) {
+            return value[i];
+        }
+        [[nodiscard]] constexpr decltype(auto) operator[](vec::size_type i) const {
+            return value[i];
+        }
+
+        template <typename... Vs>
+        static constexpr bool can_bind = rebind<bound_to, Vs...>::value;
+        template <typename... Vs> requires (can_bind<Vs...>)
+        using bind = rebind<bound_to, Vs...>::type;
+    };
+
+    template <typename Arg, typename... Ts> requires (ArgTraits<Arg>::kwargs())
+    struct BoundArg<Arg, Ts...> {
+    private:
+        template <typename, typename>
+        friend struct detect_arg;
+        using _detect_arg = void;
+
+        template <typename, typename...>
+        struct rebind;
+        template <typename... curr, typename... Vs>
+        struct rebind<bertrand::args<curr...>, Vs...> {
+            static constexpr bool value =
+                ArgTraits<Arg>::template can_bind<curr..., Vs...>;
+            using type = ArgTraits<Arg>::template bind<curr..., Vs...>;
+        };
+
+    public:
+        static constexpr StaticStr name = ArgTraits<Arg>::name;
+        static constexpr ArgKind kind = ArgTraits<Arg>::kind;
+        using type = ArgTraits<Arg>::type;
+        using map = std::unordered_map<std::string, std::conditional_t<
+            std::is_lvalue_reference_v<type>,
+            std::reference_wrapper<type>,
+            std::remove_reference_t<type>
+        >>;
+        using bound_to = bertrand::args<Ts...>;
+        using unbind = Arg;
+        map value;
+
+        [[nodiscard]] constexpr map& operator*() { return value; }
+        [[nodiscard]] constexpr const map& operator*() const { return value; }
+        [[nodiscard]] constexpr map* operator->() { return &value; }
+        [[nodiscard]] constexpr const map* operator->() const { return &value; }
+        [[nodiscard]] constexpr operator map() && { return std::move(value); }
+        template <typename U> requires (std::convertible_to<map, U>)
+        [[nodiscard]] constexpr operator U() && { return std::move(value); }
+        [[nodiscard]] constexpr decltype(auto) operator[](const std::string& key) {
+            return value[key];
+        }
+        [[nodiscard]] constexpr decltype(auto) operator[](std::string&& key) {
+            return value[std::move(key)];
+        }
+
+        template <typename... Vs>
+        static constexpr bool can_bind = rebind<bound_to, Vs...>::value;
+        template <typename... Vs> requires (can_bind<Vs...>)
+        using bind = rebind<bound_to, Vs...>::type;
+    };
 
     /* A singleton argument factory that allows arguments to be constructed via
     familiar assignment syntax, which extends the lifetime of temporaries. */
