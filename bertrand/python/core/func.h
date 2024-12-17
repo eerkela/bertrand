@@ -9,6 +9,32 @@
 #include "iter.h"
 
 
+/// NOTE: Beware all ye who enter here, for this is the land of complexity.
+/// Functions require incredibly detailed compile-time and runtime logic over
+/// the cross product of possible C++ and Python paradigms, including (but not
+/// limited to):
+///
+///     Static vs dynamic typing
+///     Compile-time vs runtime introspection + validation
+///     ABI limitations
+///     Arbitrary argument order
+///     Variadic arguments
+///     Partial function application
+///     Function overloading + chaining
+///     Asynchronous execution
+///     Descriptor protocol
+///     Structural typing
+///     Caching
+///     Performance + memory concerns
+///     Extension support
+///
+/// All of this serves as bedrock for the rest of Bertrand's core features, and
+/// must be defined very early in the dependency chain, before any conveniences
+/// that would simplify the logic.  They therefore require heavy use of the
+/// (unsafe) CPython API, which is both verbose and error-prone.  If any of
+/// this scares you (as it should), then turn back now while you still can!
+
+
 namespace py {
 
 
@@ -66,32 +92,32 @@ decltype(auto) Object::operator()(this Self&& self, Args&&... args) {
 }
 
 
-/* Dereference operator is used to emulate Python container unpacking when calling a
-`py::Function` object.
+/* The dereference operator is used to emulate Python container unpacking when calling
+a Python-style function from C++.
 
 A single unpacking operator passes the contents of an iterable container as positional
 arguments to a function.  Unlike Python, only one such operator is allowed per call,
 and it must be the last positional argument in the parameter list.  This allows the
-type checker to ensure that the container's value type is minimally convertible to each
-of the remaining positional arguments ahead of time, although in most cases, the number
-of arguments cannot be determined until runtime.  Thus, if any arguments are missing or
-extras are provided, the call will raise an exception similar to Python, rather than
-failing statically at compile time.  This can be avoided by using standard positional
-and keyword arguments instead, which can be fully verified at compile time, or by
-including variadic positional arguments in the function signature, which will fully
-consume any remaining arguments according to Python semantics.
+compiler to ensure that the container's value type is minimally convertible to each of
+the remaining positional arguments ahead of time, even though the number of arguments
+cannot be determined until runtime.  Thus, if any arguments are missing or extras are
+provided, the call will raise an exception similar to Python, rather than failing
+statically at compile time.  This can be avoided by using standard positional and
+keyword arguments instead, which can be fully verified at compile time, or by including
+variadic positional arguments in the function signature, which will consume any
+remaining arguments according to Python semantics.
 
 A second unpacking operator promotes the arguments into keywords, and can only be used
-if the container is dict-like, meaning it possess both `::key_type` and `::mapped_type`
-aliases, and that indexing it with an instance of the key type returns a value of the
-mapped type.  The actual unpacking is robust, and does not depend on the container
-returning key-value pairs, although it will prefer them if so, followed by the result
-of the `.items()` method if present, or by zipping `.keys()` and `.values()` if both
-exist, and finally by iterating over the keys and indexing the container.  Similar to
-the positional unpacking operator, only one of these may be present as the last keyword
-argument in the parameter list, and a compile-time check is made to ensure that the
-mapped type is convertible to any missing keyword arguments that are not explicitly
-provided.
+if the container is mapping-like, meaning it possess both `::key_type` and
+`::mapped_type` aliases, and that indexing it with an instance of the key type returns
+a value of the mapped type.  The actual unpacking is robust, and will attempt to use
+iterators over the container to produce key-value pairs, either directly through
+`begin()` and `end()` or by calling the `.items()` method if present, followed by
+zipping `.keys()` and `.values()` if both exist, and finally by iterating over the keys
+and indexing into the container.  Similar to the positional unpacking operator, only
+one of these may be present as the last keyword argument in the parameter list, and a
+compile-time check is made to ensure that the mapped type is convertible to any missing
+keyword arguments that are not explicitly provided at the call site.
 
 In both cases, the extra runtime complexity results in a small performance degradation
 over a typical function call, which is minimized as much as possible. */
@@ -102,6 +128,12 @@ template <impl::inherits<Object> Self> requires (impl::iterable<Self>)
 
 
 namespace impl {
+
+    /// TODO: determine whether I can eliminate the get_parameter_name() function.
+    /// It is only strictly needed for the `bertrand.Arg[]` indexing operator, which
+    /// may actually be covered by JIT compilation + C++ template constraints on the
+    /// Python side.  If so, then there should be no situation where a parameter name
+    /// can be invalid.
 
     /* Validate a C++ string that represents an argument name, throwing an error if it
     does not conform to Python naming conventions. */
@@ -269,14 +301,6 @@ namespace impl {
         return out;
     }
 
-    /// TODO: canonical_function_type is probably not necessary?
-    template <typename T>
-    constexpr bool _canonical_function_type = false;
-    template <typename R, typename... Args>
-    constexpr bool _canonical_function_type<R(Args...)> = true;
-    template <typename F>
-    concept canonical_function_type = _canonical_function_type<F>;
-
     template <typename F>
     concept normalized_signature =
         Signature<F>::enable &&
@@ -305,22 +329,29 @@ namespace impl {
 /// py::Disable -> py::disable
 /// py::Returns -> py::returns
 
-
 /// Python -> CamelCase
 /// C++ -> snake_case
 
 
-/* Inspect a Python function object and extract its signature, so that it can be
-analyzed from C++ and converted into proper overload/template keys, etc.
+/* Inspect a Python function object and extract its signature so that it can be
+easily analyzed from C++.
 
 This class works just like the `inspect.signature()` function in Python, with extra
-logic for normalizing type hints and handling partial functions.  It houses a static
-callback table that can be extended from C++ to handle custom types.  Partial arguments
-are inferred by searching for a `__partial__` attribute on the function object, which
-should be a tuple of (name, value) pairs in the same order as the function's
-parameters, or `None` if no partials are present.  Alternatively, if a `__self__`
-attribute is present, then it will be used to bind the first parameter of the function,
-as if it were a method. */
+logic for normalizing type hints and handling partial functions.  It also houses a
+static callback table that can be extended from C++ to handle custom type annotations.
+Partial arguments are inferred by searching for a `__partial__` attribute on the
+function object, which should be a tuple of (name, value) pairs in the same order as
+the function's parameters, or `None` if no partials are present.  Alternatively, if a
+`__self__` attribute is present, then it will be used to bind the first parameter of
+the function as if it were a method.
+
+Instances of this type are stored as keys within a function's overload trie, in order
+to uniquely identify all possible signatures, and check for conflicts between them.  It
+is somewhat expensive to construct, and is only necessary when dealing with
+dynamically-typed Python functions, whose signatures cannot be known ahead of time.
+For C++ functions where the signature is encoded at compile time, the `py::signature`
+class should be used instead, which is much more detailed and eliminates runtime
+overhead. */
 struct inspect {
     struct Param;
     struct Callback;
@@ -738,7 +769,8 @@ public:
     }
 
     /* Get the name of the function by introspecting its `__name__` attribute, if it
-    has one.  Otherwise, returns an empty string. */
+    has one or by using an explicit name that was provided to the constructor.
+    Otherwise, returns an empty string. */
     [[nodiscard]] std::string_view name() const {
         Py_ssize_t size;
         const char* data = PyUnicode_AsUTF8AndSize(
@@ -751,14 +783,13 @@ public:
         return {data, static_cast<size_t>(size)};
     }
 
-    /* Get a reference to the normalized `inspect.Signature` instance that was
-    obtained from the function.  Note that any inline type annotations will be
-    passed through `typing.get_type_hints(include_extras=True)`, and then parsed
-    according to the `parse()` helper within this class.  This means that
-    stringized annotations (i.e. `from future import __annotations__`), forward
-    references, and future PEP formats will be resolved and passed through the
-    callback map to obtain proper bertrand types, which can be enforced during
-    overload resolution. */
+    /* Get a reference to the normalized `inspect.Signature` instance that was obtained
+    from the function.  Note that any inline type annotations will be passed through
+    `typing.get_type_hints(include_extras=True)`, and then parsed according to the
+    `parse()` helper within this class.  This means that stringized annotations (e.g.
+    `from future import __annotations__`), forward references, and future PEP formats
+    will be resolved and passed through the callback map to obtain proper bertrand
+    types, which can be enforced at runtime. */
     [[nodiscard]] const Object& signature() const {
         return m_signature;
     }
@@ -768,8 +799,8 @@ public:
         return m_parameters;
     }
 
-    /* Get a reference to the normalized return annotation, which is parsed just
-    like any other parameter annotation. */
+    /* Get a reference to the normalized return annotation, which is parsed using the
+    same callbacks as any other parameter annotation. */
     [[nodiscard]] const Object& return_annotation() const {
         return m_return_annotation;
     }
@@ -854,17 +885,16 @@ public:
         return m_names.contains(name);
     }
 
-    auto size() const { return m_parameters.size(); }
-    auto empty() const { return m_parameters.empty(); }
-
-    auto begin() const { return m_parameters.begin(); }
-    auto cbegin() const { return m_parameters.cbegin(); }
-    auto rbegin() const { return m_parameters.rbegin(); }
-    auto crbegin() const { return m_parameters.crbegin(); }
-    auto end() const { return m_parameters.end(); }
-    auto cend() const { return m_parameters.cend(); }
-    auto rend() const { return m_parameters.rend(); }
-    auto crend() const { return m_parameters.crend(); }
+    [[nodiscard]] auto size() const { return m_parameters.size(); }
+    [[nodiscard]] auto empty() const { return m_parameters.empty(); }
+    [[nodiscard]] auto begin() const { return m_parameters.begin(); }
+    [[nodiscard]] auto cbegin() const { return m_parameters.cbegin(); }
+    [[nodiscard]] auto rbegin() const { return m_parameters.rbegin(); }
+    [[nodiscard]] auto crbegin() const { return m_parameters.crbegin(); }
+    [[nodiscard]] auto end() const { return m_parameters.end(); }
+    [[nodiscard]] auto cend() const { return m_parameters.cend(); }
+    [[nodiscard]] auto rend() const { return m_parameters.rend(); }
+    [[nodiscard]] auto crend() const { return m_parameters.crend(); }
 
     /* Parse a Python-style type hint by linearly searching the callback map,
     converting the hint into a uniform object that can be used as the target of an
@@ -965,22 +995,23 @@ public:
     vector will be converted into a normalized hint.  If the vector is empty, then
     the normalized hint will be `NoneType`, indicating a void function.  If the
     vector contains only a single unique item, then it will be returned directly.
-    Otherwise, the vector will be converted into a `bertrand.Union` type,
+    Otherwise, the vector will be converted into a `bertrand.Union` type, which is
     parametrized by the unique types in the vector, in the same order that they
     were added.
 
-    Note that `inspect.get_type_hints(include_extras=True)` is used to extract the
+    Note that `typing.get_type_hints(include_extras=True)` is used to extract the
     type hints from the function signature, meaning that stringized annotations and
-    forward references will be normalized before any callbacks are invoked.  The
+    forward references will be resolved before any callbacks are invoked.  The
     `include_extras` flag is used to ensure that `typing.Annotated` hints are
     preserved, so that they can be interpreted by the callback map if necessary.
     The default behavior in this case is to simply extract the underlying type and
-    recur, but custom callbacks can be added to interpret these annotations if
-    needed.
+    recur if no callbacks match the annotated type.  Custom callbacks can be registered
+    to interpret these annotations if needed.
     
-    If no callbacks match a particular hint, then the default behavior is to
-    simply add it anyways, assuming that it is a valid type.  Any other behavior
-    must be added by appending a callback for that case. */
+    If no callbacks match a particular hint, then the default behavior is to simply add
+    it anyways, assuming that it is a valid type.  Any other behavior must be added by
+    appending a callback for that case.  A final callback that always returns true
+    would completely replace the default behavior, for instance. */
     inline static std::deque<Callback> callbacks {
         /// NOTE: Callbacks are linearly searched, so more common constructs should
         /// be generally placed at the front of the list for performance reasons.
@@ -1206,24 +1237,20 @@ public:
         size_t max_width = std::numeric_limits<size_t>::max(),
         size_t indent = 4
     ) const {
-        constexpr auto get_components = [](
-            std::vector<std::string>& components,
-            const Param& param
-        ) {
+        std::vector<std::string> components;
+        components.reserve(m_parameters.size() * 3 + 2);
+        components.emplace_back(std::string(name()) + "(");
+
+        for (const Param& param : m_parameters) {
             components.emplace_back(std::string(param.name));
             components.emplace_back(demangle(PyType_Check(ptr(param.type)) ?
                 reinterpret_cast<PyTypeObject*>(ptr(param.type))->tp_name :
                 Py_TYPE(ptr(param.type))->tp_name
             ));
             components.emplace_back(param.opt() ? "..." : "");
-        };
-
-        std::vector<std::string> components;
-        components.reserve(m_parameters.size() * 3 + 2);
-        components.emplace_back(std::string(name()) + "(");
-        for (const Param& param : m_parameters) {
-            get_components(components, param);
         }
+
+        /// TODO: what if the return type is None?
         components.emplace_back(") -> " + demangle(
             PyType_Check(ptr(m_return_annotation)) ?
                 reinterpret_cast<PyTypeObject*>(ptr(m_return_annotation))->tp_name :
@@ -1238,8 +1265,12 @@ public:
         );
     }
 
-    /* Convert the inspected signature into a valid key that can be used to
-    specialize the `bertrand.Function` template on the Python side. */
+    /* Convert the inspected signature into a template key that can be used to
+    specialize the `bertrand.Function` type on the Python side.  This is used to
+    implement C++-style CTAD in Python, in which an arbitrary Python function can be
+    inspected and converted to a proper `bertrand.Function` type with a matching
+    signature, possibly involving JIT compilation if the template type does not already
+    exist. */
     [[nodiscard]] const Object& key() const {
         if (!m_key.is(nullptr)) {
             return m_key;
@@ -1336,7 +1367,7 @@ public:
                 );
             }
 
-            // append bound partial argument if present
+            // append bound partial value(s) if present
             if (param.bound()) {
                 specialization = reinterpret_steal<Object>(PyObject_GetItem(
                     ptr(getattr<"bind">(specialization)),
@@ -1371,11 +1402,11 @@ namespace std {
 namespace py {
 
 
-/// TODO: also, Signature can potentially also expose a helper type that converts
-/// the signature to a canonicalized Python form, which would be used whenever a
-/// `py::def` is converted into a `py::Function`.  That would mean the Python
-/// function would have a std::function that included only Python arguments, and
-/// that std::function would encapsulate a `py::def` that expects the C++ arguments.
+/// TODO: also, Signature can potentially expose a helper type that converts
+/// the signature to a canonicalized Python form (assuming that's valid), which would
+/// be used whenever a `py::def` is converted into a `py::Function`.  That would mean
+/// the Python function would have a std::function that included only Python arguments,
+/// and that std::function would encapsulate a `py::def` that expects the C++ arguments.
 /// The Python function would then trigger an implicit conversion from the Python
 /// types to the C++ types, and then call the C++ function with the converted
 /// arguments, and then convert the return value back to a Python type.  This would
@@ -1393,10 +1424,10 @@ namespace py {
 /// 3
 
 
-/* The canonical form of `py::Signature`, which encapsulates all of the internal
-call machinery, most of which is evaluated at compile time.  All other
-specializations should redirect to this form in order to avoid reimplementing the
-nuts and bolts of the function system. */
+/* The canonical form of `py::Signature`, which encapsulates all of the internal call
+machinery, as much of which as possible is evaluated at compile time.  All other
+specializations should redirect to this form in order to avoid reimplementing the nuts
+and bolts of the function ecosystem. */
 template <typename Return, typename... Args>
 struct Signature<Return(Args...)> : impl::SignatureBase<Return> {
     static constexpr bool enable = true;
@@ -1410,11 +1441,6 @@ struct Signature<Return(Args...)> : impl::SignatureBase<Return> {
     struct Overloads;
 
 private:
-
-    /// TODO: these helpers shouldn't count partial arguments?  That means they'll
-    /// always take them into account, and there won't be any issues with Partial
-    /// or Defaults subsignatures because they'll never contain partial args.
-
     template <typename...>
     static constexpr size_t _n_posonly = 0;
     template <typename T, typename... Ts>
@@ -1529,11 +1555,10 @@ public:
     template <typename... As>
     using with_args = Signature<Return(As...)>;
 
-    template <typename Func>
-    static constexpr bool invocable = std::is_invocable_r_v<Return, Func, Args...>;
-
     /* Holds a series of template constraints that can be used to validate function
-    signatures according to Python calling conventions. */
+    signatures according to Python calling conventions.  Individual constraints are
+    broken up into the smallest possible components, in order to improve the
+    specificity of error messages. */
     template <impl::inherits<impl::SignatureTag> _Source>
     struct Check {
     private:
@@ -1957,36 +1982,55 @@ public:
             _can_convert<0, 0>;
 
         static constexpr bool viable_overload =
-            _viable_overload<0, 0>; 
+            _viable_overload<0, 0>;
     };
 
+    /* True if a given function can be called with this signature's arguments and
+    returns a compatible type, after accounting for implicit conversions. */
+    template <typename Func>
+    static constexpr bool invocable =
+        std::is_invocable_r_v<Return, Func, Args...>;
+
+    /* True if the return type is a Python object. */
     static constexpr bool return_is_python =
         Check<Signature>::return_is_python;
 
+    /* True if the return type is convertible to a Python object. */
     static constexpr bool return_is_convertible_to_python =
         Check<Signature>::return_is_convertible_to_python;
 
+    /* True if the arguments are given in the proper order (no positional after keyword,
+    no required after optional, etc.). */
     static constexpr bool proper_argument_order =
         Check<Signature>::proper_argument_order;
 
+    /* True if the arguments fit within the width of the bitset necessary to validate
+    them during overload resolution (64). */
     static constexpr bool args_fit_within_bitset =
         Check<Signature>::args_fit_within_bitset;
 
+    /* True if all argument types are Python objects. */
     static constexpr bool args_are_python =
         Check<Signature>::args_are_python;
 
+    /* True if all argument types are convertible to Python objects. */
     static constexpr bool args_are_convertible_to_python =
         Check<Signature>::args_are_convertible_to_python;
 
+    /* True if the return type lacks cvref qualifications. */
     static constexpr bool no_qualified_return =
         Check<Signature>::no_qualified_return;
 
+    /* True if the return types lack cvref qualifications. */
     static constexpr bool no_qualified_args =
         Check<Signature>::no_qualified_args;
 
+    /* True if none of the `Arg<>` annotations are themselves cvref-qualified. */
     static constexpr bool no_qualified_arg_annotations =
         Check<Signature>::no_qualified_arg_annotations;
 
+    /* True if there are no duplicate parameter names and at most one variadic
+    positional/keyword argument, respectively. */
     static constexpr bool no_duplicate_args =
         Check<Signature>::no_duplicate_args;
 
@@ -1997,12 +2041,8 @@ public:
     runtime.  Such callbacks are typically returned by the index operator and
     associated accessors. */
     struct Callback {
-        std::string_view name;
-        impl::ArgKind kind;
-        uint64_t mask;
-        Object(*type)();
-        bool(*isinstance)(const Object&);
-        bool(*issubclass)(const Object&);
+    private:
+        friend Signature;
 
         template <size_t I>
         [[nodiscard]] static constexpr Callback create() {
@@ -2046,6 +2086,14 @@ public:
             };
         }
 
+    public:
+        std::string_view name;
+        impl::ArgKind kind;
+        uint64_t mask;
+        Object(*type)();
+        bool(*isinstance)(const Object&);
+        bool(*issubclass)(const Object&);
+
         [[nodiscard]] constexpr bool posonly() const noexcept { return kind.posonly(); }
         [[nodiscard]] constexpr bool pos() const noexcept { return kind.pos(); }
         [[nodiscard]] constexpr bool args() const noexcept { return kind.args(); }
@@ -2054,15 +2102,6 @@ public:
         [[nodiscard]] constexpr bool kwargs() const noexcept { return kind.kwargs(); }
         [[nodiscard]] constexpr bool opt() const noexcept { return kind.opt(); }
         [[nodiscard]] constexpr bool variadic() const noexcept { return kind.variadic(); }
-
-        [[nodiscard]] constexpr size_t index() noexcept {
-            size_t result = 0;
-            uint64_t mask = this->mask;
-            while (mask >>= 1) {
-                ++result;
-            }
-            return result;
-        }
 
         [[nodiscard]] size_t hash() const noexcept {
             Object type = this->type();
@@ -2078,6 +2117,15 @@ public:
                 static_cast<size_t>(kind)
             );
         }
+
+        [[nodiscard]] constexpr size_t index() noexcept {
+            size_t result = 0;
+            uint64_t mask = this->mask;
+            while (mask >>= 1) {
+                ++result;
+            }
+            return result;
+        }
     };
 
     /* A bitmask with a 1 in the position of all of the required arguments in the
@@ -2085,10 +2133,10 @@ public:
 
     Each callback stores a one-hot encoded mask that is progressively joined into a
     single observed bitmask as each argument is processed.  The result can then be
-    compared to this constant to determine if all required arguments have been
-    accounted for.  If that comparison evaluates to false, then further bitwise
-    inspection can be done to determine exactly which arguments are missing, as
-    well as their names for a comprehensive error message.
+    compared to this constant to quickly determine if all required arguments have been
+    accounted for.  If that comparison fails, then further bitwise inspection can be
+    done to determine exactly which arguments are missing, as well as their names for
+    a comprehensive error message.
 
     Note that this mask effectively limits the number of arguments that a function
     can accept to 64, which is reasonable for most functions.  The performance
@@ -2135,6 +2183,8 @@ private:
         },
     };
 
+    /* In order to avoid superfluous compile errors, the perfect keyword hash map
+    should not be created unless the signature is well-formed. */
     template <bool valid>
     struct get_keyword_table {
         using KeywordTable = StaticMap<size_t>;
@@ -2181,12 +2231,19 @@ private:
         static constexpr KeywordTable table = extract_keywords<args<>, 0, Args...>{}();
     };
 
+    /* A flat array of callback objects whose indices are aligned to the enclosing
+    parameter list. */
     using PositionalTable = std::array<Callback, n>;
     static constexpr auto positional_table =
         []<size_t... Is>(std::index_sequence<Is...>) {
             return PositionalTable{Callback::template create<Is>()...};
         }(std::make_index_sequence<n>{});
 
+    /// TODO: maybe the keyword table can store pointers to the callbacks instead of
+    /// indices?  That might be slightly more efficient.
+
+    /* A perfect hash map of keyword names to their corresponding indices in the
+    positional table. */
     using KeywordTable = get_keyword_table<
         args_fit_within_bitset &&
         proper_argument_order &&
@@ -2208,6 +2265,8 @@ private:
         >::type;
     };
 
+    /* An single element stored in a ::Partial or ::Defaults tuple, which can be easily
+    cross-referenced against the enclosing signature. */
     template <size_t I, StaticStr Name, typename T>
     struct Element {
         static constexpr size_t index = I;
@@ -2219,6 +2278,11 @@ private:
         }
     };
 
+    /* A temporary container describing the contents of a `*` unpacking operator at a
+    function's call site.  Encloses an iterator over the unpacked container, which is
+    incremented every time an argument is consumed from the pack.  If it is not empty
+    by the end of the call, then we know extra arguments were given that could not be
+    matched. */
     template <typename Pack>
     struct PositionalPack {
         std::ranges::iterator_t<const Pack&> begin;
@@ -2254,6 +2318,11 @@ private:
         }
     };
 
+    /* A temporary container describing the contents of a `**` unpacking operator at a
+    function's call site.  Encloses an unordered map of strings to values, which is
+    destructively searched every time an argument is consumed from the pack.  If the
+    map is not empty by the end of the call, then we know extra arguments were given
+    that could not be matched. */
     template <typename Pack>
     struct KeywordPack {
         using Map = std::unordered_map<
@@ -2424,10 +2493,8 @@ public:
     private:
         /// TODO: count/index helpers just like Defaults?
 
-        /* Build a sub-signature holding only the bound arguments from the
-        enclosing signature.  This will be a specialization of the enclosing class,
-        which is used to bind arguments to this class's constructor using the same
-        semantics as the function's call operator. */
+        /* Build a sub-signature holding only the bound arguments from the enclosing
+        signature. */
         template <typename out, typename...>
         struct extract { using type = out; };
         template <typename... out, typename A, typename... As>
@@ -2460,8 +2527,8 @@ public:
         };
         using Inner = extract<Signature<Partial()>, Args...>::type;
 
-        /* Build a std::tuple of Elements that hold the bound values in a way that
-        can be cross-referenced with the target signature. */
+        /* Build a std::tuple of Elements that hold the bound values in a way that can
+        be cross-referenced with the target signature. */
         template <typename out, size_t, typename...>
         struct collect { using type = out; };
         template <typename... out, size_t I, typename A, typename... As>
@@ -2490,6 +2557,9 @@ public:
 
         using Tuple = collect<std::tuple<>, 0, Args...>::type;
         Tuple values;
+
+        /// TODO: build() might be able to be replaced by a non-index sequence version
+        /// that uses recursive lambdas instead.
 
         template <size_t K, typename... As>
         static constexpr decltype(auto) build(As&&... args) {
@@ -2588,7 +2658,7 @@ public:
         }
     };
 
-    /* Construct a partial tuple for the enclosing signature. */
+    /* Instance-level constructor for a `::Partial` tuple. */
     template <typename... A>
         requires (
             !(impl::arg_pack<A> || ...) &&
@@ -2674,9 +2744,7 @@ public:
             (I == T::index) ? 0 : 1 + _find<I, std::tuple<Ts...>>;
 
         /* Build a sub-signature holding only the arguments marked as optional from
-        the enclosing signature.  This will be a specialization of the enclosing
-        class, which is used to bind arguments to this class's constructor using
-        the same semantics as the function's call operator. */
+        the enclosing signature. */
         template <typename out, typename...>
         struct extract { using type = out; };
         template <typename... out, typename A, typename... As>
@@ -2700,8 +2768,7 @@ public:
         };
         using Inner = extract<Signature<Defaults()>, Args...>::type;
 
-        /* Build a std::tuple of Elements instances to hold the default values
-        themselves. */
+        /* Build a std::tuple of Elements to hold the default values themselves. */
         template <typename out, size_t, typename...>
         struct collect { using type = out; };
         template <typename... out, size_t I, typename A, typename... As>
@@ -2819,7 +2886,7 @@ public:
         }
     };
 
-    /* Construct a defaults tuple for the enclosing signature. */
+    /* Instance-level constructor for a `::Defaults` tuple. */
     template <typename... A>
         requires (
             !(impl::arg_pack<A> || ...) &&
@@ -2848,12 +2915,12 @@ public:
 
     /* Bind a C++ argument list to the enclosing signature, inserting default values
     and partial arguments where necessary.  This enables and implements the signature's
-    pure C++ call operator as a 3-way merge between the partial arguments, default
-    values, and given source arguments, provided they fulfill the enclosing signature.
-    Additionally, bound arguments can be saved and encoded into a partial signature in
-    a chainable fashion, using the same infrastructure to simulate a normal function
-    call at every step.  Any existing partial arguments will be folded into the
-    resulting signature, facilitating higher-order function composition
+    pure C++ call operator as a 3-way, compile-time merge between the partial
+    arguments, default values, and given source arguments, provided they fulfill the
+    enclosing signature.  Additionally, bound arguments can be saved and encoded into a
+    partial signature in a chainable fashion, using the same infrastructure to simulate
+    a normal function call at every step.  Any existing partial arguments will be
+    folded into the resulting signature, facilitating higher-order function composition
     (currying, etc.) that can be done entirely at compile time. */
     template <typename... Values>
     struct Bind {
@@ -4213,6 +4280,8 @@ public:
             );
         }
 
+        /// TODO: use invoke_with_packs to simplify the C++ call operator
+
         /* Invoke a C++ function from C++ using Python-style arguments. */
         template <impl::inherits<Partial> P, impl::inherits<Defaults> D, typename F>
             requires (
@@ -4344,7 +4413,7 @@ public:
         }
     };
 
-    /* Bind the given C++ arguments to produce a partial object in chainable fashion.
+    /* Bind the given C++ arguments to produce a partial tuple in chainable fashion.
     Any existing partial arguments will be carried over whenever this method is
     called. */
     template <impl::inherits<Partial> P, typename... A>
@@ -4384,20 +4453,20 @@ public:
     to efficiently forward the `self` argument for bound methods, etc.  The presence of
     this argument is determined by the `PY_VECTORCALL_ARGUMENTS_OFFSET` flag, which is
     encoded in nargsf.  You can check for its presence by bitwise AND-ing against
-    nargsf, and the true number of arguments must be extracted using
-    `PyVectorcall_NARGS(nargsf)` to account for this.  Any vectorcall array that is
-    produced from C++ will include this offset by default in order to speed up
-    downstream code, although vectorcall arrays passed in from Python might not use it.
-    If `PY_VECTORCALL_ARGUMENTS_OFFSET` is set and 'x' is written to, then it must
-    always be reset to its original value before the function returns to allow for
-    nested forwarding/scoping using the same argument list.
+    nargsf, and the true number of positional arguments must be extracted using
+    `PyVectorcall_NARGS(nargsf)` to account for this.  By default, any vectorcall array
+    that is produced by Bertrand will include this offset in order to speed up
+    downstream code, but vectorcall arrays passed in from Python might not use it.  If
+    `PY_VECTORCALL_ARGUMENTS_OFFSET` is set and 'x' is written to, then it must always
+    be reset to its original value before the function returns to allow for nested
+    forwarding/scoping using the same argument list.
 
     Type safety is handled by either converting C++ arguments to Python via
     `py::to_python()` or converting Python arguments to C++ by interpreting them as
-    dynamic `py::Object` types and implicitly converting them to the expected C++
-    type using the same infrastructure as ordinary bertrand conversions.  This means
-    that any changes made to the `__isinstance__` or `__cast__` control structs will be
-    reflected here as well, and the conversion will always be as efficient as possible.
+    dynamic `py::Object` types and implicitly converting to the expected C++ type.
+    This means that any changes made to the `__isinstance__` or `__cast__` control
+    structs will be reflected here as well, and the conversion will always be as
+    efficient as possible thanks to compile-time specialization.
 
     In some cases, an additional conversion may be required to handle Python types that
     lack sufficient type information for the check, such as standard Python containers
@@ -4405,13 +4474,9 @@ public:
     elementwise to the contents of the container, which can be expensive if the
     container is large.  This can be avoided by using Bertrand types as inputs to the
     function, in which case the check is always O(1) in time, due to the 1:1
-    equivalence between Bertrand wrappers and their C++ counterparts, and corresponding
-    type safety guarantees. */
+    equivalence between Bertrand wrappers and their C++ counterparts. */
     struct Vectorcall {
     private:
-        /// TODO: does this need to do any filtering to ensure the argument name is
-        /// valid, or is that already handled?  If not, see get_parameter_name at the
-        /// start of the file.
         static std::string_view arg_name(PyObject* name) {
             Py_ssize_t len;
             const char* str = PyUnicode_AsUTF8AndSize(name, &len);
@@ -4429,7 +4494,7 @@ public:
             return impl::parameter_hash(name, value, kind);
         }
 
-        /* Python flags are joined into the argument count and occupy the highest bits,
+        /* Python flags are joined into `nargsf` and occupy only the highest bits,
         leaving the lowest bits available for our use. */
         enum class Flags : size_t {
             NORMALIZED      = 0b1,
@@ -4437,8 +4502,10 @@ public:
         };
 
         /* The kwnames tuple must be converted into a temporary map that can be
-        destructively searched during the call algorithm.  If any arguments remain by
-        the time the underlying function is called, then they are considered extras. */
+        destructively searched during the call algorithm, analogous to KwargPack above,
+        but lighter weight, since it doesn't need to own the keyword name buffers.
+        If any arguments remain by the time the underlying function is called, then
+        they are considered extras. */
         struct Kwargs {
             using Value = std::pair<PyObject*, PyObject*>;
             using Map = std::unordered_map<std::string_view, Value>;
@@ -4493,14 +4560,12 @@ public:
             auto end() { return map.end(); }
         };
 
-        /* Invoking a C++ function from Python involves translating a
-        vectorcall array and kwnames tuple into a valid C++ parameter list that
-        exactly matches the enclosing signature.  This is yet another 3-way
-        merge between partial arguments, converted vectorcall arguments, and
-        default values, in that order of precedence, and is essentially the
-        inverse of the Bind<>::call<>::python algorithm.  It uses techniques
-        from Bind<>::call<>::cpp to build up the C++ argument list via index
-        sequences and fold expressions, which are inlined into the final call. */
+        /* Invoking a C++ function from Python involves translating a vectorcall array
+        and kwnames tuple into a valid C++ parameter list that exactly matches the
+        enclosing signature.  This is implemented as a 3-way merge between partial
+        arguments, converted vectorcall arguments, and default values, in that order of
+        precedence.  The merge is controlled entirely via index sequences and fold
+        expressions, which can be inlined directly into the final call. */
         template <size_t I, size_t J, size_t K>
         struct call {  // terminal case
             template <typename... A>
@@ -6612,9 +6677,9 @@ public:
         PyObject* const* array;
         size_t hash;
 
-        /* Adopt an unnormalized vectorcall array directly from Python, without any
-        extra work.  Such an argument array can be called directly with partial
-        arguments to avoid extra allocations during the call procedure. */
+        /* Adopt a denormalized vectorcall array directly from Python, without any
+        extra work.  Such an array can be directly called along with partial arguments
+        to avoid extra allocations during the call procedure. */
         Vectorcall(PyObject* const* args, size_t nargsf, PyObject* kwnames) :
             nargs(PyVectorcall_NARGS(nargsf)),
             kwcount(kwnames ? PyTuple_GET_SIZE(kwnames) : 0),
@@ -6724,11 +6789,11 @@ public:
         /* Build a normalized vectorcall array from C++.  This is identical to the
         generalized C++ constructor except that the underlying array is stack-allocated
         and managed in an external scope, instead of using the heap.  The incoming
-        arguments must not include any parameter packs so that the size of the array
+        arguments must not include any parameter packs, so that the size of the array
         can be verified at compile time.  Using this constructor where possible avoids
         an extra heap allocation, thereby improving performance.  The user must ensure
         that the lifetime of the array exceeds that of the Vectorcall arguments, and
-        any existing contents will be overwritten. */
+        any existing contents stored in the array will be overwritten. */
         template <impl::inherits<Partial> P, typename... A>
             requires (
                 !(impl::arg_pack<A> || ...) &&
@@ -6935,7 +7000,8 @@ public:
         };
 
         /* Index into the vectorcall array, returning an individual argument as a
-        lightweight Param struct for debugging purposes. */
+        lightweight Param struct.  In the interest of performance, no bounds checking
+        is done prior to access. */
         [[nodiscard]] Param operator[](size_t i) const {
             if (i < nargs) {
                 return {
@@ -6964,21 +7030,18 @@ public:
             return flags & PY_VECTORCALL_ARGUMENTS_OFFSET;
         }
 
-        /* Check whether the Python arguments have been normalized. */
+        /* Check whether the Python arguments have been normalized, and therefore
+        include any partial arguments, with all arguments having proper bertrand
+        types. */
         [[nodiscard]] bool normalized() const noexcept {
             return flags & Flags::NORMALIZED;
         }
 
         /* Convert the Python arguments into equivalent Bertrand types and insert any
         partial arguments in order to form a stable overload key with a consistent
-        hash, suitable for trie traversal with caching.  This method is only used when
-        a `py::Function` with dynamic overloads is called from Python, in which case we
-        adopt the vectorcall array using the `from_python()` constructor and then
-        normalize it into a key suitable for trie traversal + caching.
-
-        This method operates by side effect, such that the `array`, `nargs`, `flags`,
-        and `kwnames` members can then be used to directly invoke a Python function
-        via the vectorcall protocol. */
+        hash, suitable for trie traversal.  This method operates by side effect, such
+        that the `array`, `nargs`, `flags`, and `kwnames` members can then be used to
+        directly invoke a Python function via the vectorcall protocol. */
         template <impl::inherits<Partial> P>
         [[maybe_unused]] Vectorcall& normalize(P&& parts) {
             if (normalized()) {
@@ -7039,8 +7102,12 @@ public:
         }
 
         /* Assert that the arguments satisfy the enclosing signature, raising an
-        appropriate TypeError if any required arguments are missing, extras or
-        duplicate values are given, or any arguments fail to pass a type check. */
+        appropriate TypeError if there are any mismatches.  Normally, such validation
+        is done automatically as part of the normal call operator, but in the case of
+        overloads, it is possible for an empty iterator to be returned upon searching
+        with a vectorcall array.  If that occurs, then this method is called to
+        diagnose the problem, without contributing any overhead to the rest of the call
+        logic. */
         void validate() const {
             constexpr Signature sig;
             uint64_t mask = 0;
@@ -7126,7 +7193,7 @@ public:
         }
 
         /* Invoke a C++ function using denormalized vectorcall arguments, by providing
-        separate partial arguments which will be directly merged into the C++ argument
+        a separate partial tuple which will be directly merged into the C++ argument
         list, without any extra allocations. */
         template <impl::inherits<Partial> P, impl::inherits<Defaults> D, typename F>
             requires (Signature::invocable<F>)
@@ -7154,8 +7221,8 @@ public:
             }
         }
 
-        /* Invoke a Python function using the stored arguments, converting the result
-        to the expected return type. */
+        /* Invoke a Python function using normalized vectorcall arguments, converting
+        the result to the expected return type. */
         Return operator()(PyObject* func) const {
             Object result = reinterpret_steal<Object>(PyObject_Vectorcall(
                 func,
@@ -7169,6 +7236,20 @@ public:
             if constexpr (!std::is_void_v<Return>) {
                 return result;
             }
+        }
+
+        /// TODO: implement key()
+
+        /* Convert a normalized vectorcall array into a template key that can be used
+        to specialize the `bertrand.Function` type on the Python side.  This is used to
+        implement the `Function.bind()` method in Python, which produces a partial
+        function with the given arguments already filled in.  That method is chainable,
+        meaning that any existing partial arguments (inserted during normalization)
+        will be carried over into the new partial function object. */
+        Object key() {
+            /// TODO: after producing this key, I would specialize `bertrand.Function[]`
+            /// accordingly, and then pass the normalized vectorcall arguments to its
+            /// standard Python constructor, and everything should work as expected.
         }
     };
 
@@ -7371,8 +7452,10 @@ public:
         mutable std::unordered_map<size_t, PyObject*> m_cache = {};
 
     public:
+        template <impl::inherits<Defaults> D>
         Overloads(
             std::string&& name,
+            D&& defaults,
             const Object& fallback
         ) :
             m_signature(inspect(fallback)),
@@ -7388,10 +7471,17 @@ public:
                 constexpr size_t max_width = 80;
                 std::string prefix = std::string(8, ' ');
                 throw TypeError(
-                    "signature mismatch\n    expected:\n" +
-                    Signature{}.to_string(prefix, max_width, 4) +
-                    "\n    received:\n" +
-                    m_signature.to_string(prefix, max_width, 4)
+                    "signature mismatch\n    expected:\n" + Signature{}.to_string(
+                        name,
+                        std::forward<D>(defaults),
+                        prefix,
+                        max_width,
+                        4
+                    ) + "\n    received:\n" + m_signature.to_string(
+                        prefix,
+                        max_width,
+                        4
+                    )
                 );
             };
         }
@@ -10324,6 +10414,57 @@ public:
         return Func{std::forward<F>(func)};
     }
 
+    /* Produce a string representation of this signature for debugging purposes.  The
+    provided `prefix` will be prepended to each output line, and if `max_width` is
+    provided, then the algorithm will attempt to wrap the output to that width, with
+    each parameter indented on a separate line.  If a single parameter exceeds the
+    maximum width, then it will be wrapped onto multiple lines with an additional level
+    of indentation for the extra lines.  Note that the maximum width is not a hard
+    limit; individual components can exceed it, but never on the same line as another
+    component. */
+    template <impl::inherits<Defaults> D>
+    [[nodiscard]] static std::string to_string(
+        const std::string& name,
+        D&& defaults,
+        const std::string& prefix = "",
+        size_t max_width = std::numeric_limits<size_t>::max(),
+        size_t indent = 4
+    ) {
+        std::vector<std::string> components;
+        components.reserve(n * 3 + 2);
+        components.emplace_back(name + "(");
+
+        []<size_t I = 0>(
+            this auto&& self,
+            auto&& defaults,
+            std::vector<std::string>& components
+        ) {
+            if constexpr (I < n) {
+                using T = Signature::at<I>;
+
+                /// TODO: name, type, and default value for each parameter
+
+                std::forward<decltype(self)>(self).template operator()<I + 1>(
+                    std::forward<decltype(defaults)>(defaults),
+                    components
+                );
+            }
+        }(components);
+
+        if constexpr (std::is_void_v<Return>) {
+            components.emplace_back(") -> None");
+        } else {
+            components.emplace_back(std::string(") -> " + type_name<Return>));
+        }
+
+        return impl::format_signature(
+            prefix,
+            max_width,
+            indent,
+            components
+        );
+    }
+
     /* Produce a Python `inspect.Signature` object that matches this signature,
     allowing a corresponding function to be seamlessly introspected from Python. */
     template <impl::inherits<Defaults> D>
@@ -10488,10 +10629,100 @@ public:
         );
     }
 
-    [[nodiscard]] static std::string to_string() {
-        /// TODO: implement this to match the formatting for a Python signature
-        /// where possible.  Ideally, it should be as similar as possible to the
-        /// base Python version, but with defaults converted to ellipsis.
+    /// TODO: maybe I need some extra facilities to convert Python arguments into a
+    /// Partial/Defaults object, for use in the Python-level constructor for
+    /// py::Function?
+
+    /* Translate this signature into a template key that can be used to specialize the
+    `py::Function` type from Python. */
+    [[nodiscard]] static Object key() {
+        Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+            ptr(impl::template_string<"bertrand">())
+        ));
+        Object Arg = getattr<"Arg">(bertrand);
+        Object result = reinterpret_steal<Object>(
+            PyTuple_New(Signature::n + 1)
+        );
+        if (result.is(nullptr)) {
+            Exception::from_python();
+        }
+
+        // first element describes the return type
+        if constexpr (std::is_void_v<Return>) {
+            PyTuple_SET_ITEM(ptr(result), 0, Py_NewRef(Py_None));
+        } else {
+            PyTuple_SET_ITEM(ptr(result), 0, release(Type<Return>()));
+        }
+
+        // remaining are parameters, expressed as specializations of `bertrand.Arg`
+        []<size_t I = 0>(this auto&& self, PyObject* Arg, PyObject* result) {
+            if constexpr (I < n) {
+                using T = at<I>;
+
+                // parametrize Arg with proper name and type
+                Object str = reinterpret_steal<Object>(
+                    PyUnicode_FromStringAndSize(
+                        ArgTraits<T>::name.data(),
+                        ArgTraits<T>::name.size()
+                    )
+                );
+                if (str.is(nullptr)) {
+                    Exception::from_python();
+                }
+                Object key = reinterpret_steal<Object>(PyTuple_Pack(
+                    2,
+                    ptr(str),
+                    ptr(Type<typename ArgTraits<T>::type>())
+                ));
+                if (key.is(nullptr)) {
+                    Exception::from_python();
+                }
+                Object specialization = reinterpret_steal<Object>(PyObject_GetItem(
+                    Arg,
+                    ptr(key)
+                ));
+
+                // apply positional/keyword/optional flags
+                if constexpr (ArgTraits<T>::posonly()) {
+                    if constexpr (ArgTraits<T>::opt()) {
+                        specialization = getattr<"opt">(
+                            getattr<"pos">(specialization)
+                        );
+                    } else {
+                        specialization = getattr<"pos">(specialization);
+                    }
+                } else if constexpr (ArgTraits<T>::pos()) {
+                    if constexpr (ArgTraits<T>::opt()) {
+                        specialization = getattr<"opt">(specialization);
+                    }
+                } else if constexpr (ArgTraits<T>::kw()) {
+                    if constexpr (ArgTraits<T>::opt()) {
+                        specialization = getattr<"opt">(
+                            getattr<"kw">(specialization)
+                        );
+                    } else {
+                        specialization = getattr<"kw">(specialization);
+                    }
+                } else if constexpr (!(ArgTraits<T>::args() || ArgTraits<T>::kwargs())) {
+                    static_assert(false, "invalid argument kind");
+                    std::unreachable();
+                }
+
+                // append bound partial value(s) if present
+                if constexpr (ArgTraits<T>::bound()) {
+                    /// TODO: implement this
+                }
+
+                // recur until all parameters are processed
+                PyTuple_SET_ITEM(result, I + 1, release(specialization));
+                std::forward<decltype(self)>(self).template operator()<I + 1>(
+                    Arg,
+                    result
+                );
+            }
+        }(ptr(Arg), ptr(result));
+
+        return result;
     }
 };
 
