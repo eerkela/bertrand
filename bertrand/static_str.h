@@ -529,7 +529,7 @@ public:
 
     constexpr operator const char*() const { return buffer; }
     constexpr explicit operator bool() const { return !empty(); }
-    constexpr explicit operator std::string() const { return {buffer}; }
+    constexpr explicit operator std::string() const { return {buffer, N}; }
     constexpr explicit operator std::string_view() const { return {buffer, N}; }
 
     constexpr const char* data() const { return buffer; }

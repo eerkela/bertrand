@@ -17,8 +17,7 @@
 ///     Static vs dynamic typing
 ///     Compile-time vs runtime introspection + validation
 ///     ABI limitations
-///     Arbitrary argument order
-///     Variadic arguments
+///     Arbitrary argument order + variadic arguments
 ///     Partial function application
 ///     Function overloading + chaining
 ///     Asynchronous execution
@@ -193,53 +192,85 @@ namespace impl {
         const std::string& prefix,
         size_t max_width,
         size_t indent,
-        std::vector<std::string>& components
+        std::vector<std::string>& components,
+        size_t last_posonly,
+        size_t first_kwonly
     ) {
-        // check if the entire signature fits on one line
+        std::string param_open          = "(";
+        std::string param_close         = ") -> ";
+        std::string type_sep            = ": ";
+        std::string default_sep         = " = ";
+        std::string sep                 = ", ";
+        std::string tab                 = std::string(indent, ' ');
+        std::string line_sep            = "\n";
+        std::string kwonly_sep          = "*";
+        std::string posonly_sep         = "/";
+
+        components.front() += param_open;
+        components.back() = param_close + components.back();
+
+        // add delimiters to parameters and compute hypothetical one-liner length
         size_t length = prefix.size() + components.front().size();
         if (components.size() > 2) {
             std::string& name = components[1];
             std::string& type = components[2];
             std::string& default_value = components[3];
-            length += name.size() + /* ": " */ 2 + type.size();
+            type = type_sep + type;
             if (!default_value.empty()) {
-                length += /* " = " */ 3 + default_value.size();
+                default_value = default_sep + default_value;
             }
+            length += name.size() + type.size() + default_value.size();
             if (length <= max_width) {
                 for (size_t i = 4, end = components.size() - 1; i < end; i += 3) {
-                    length += /* ", " */ 2;
+                    length += sep.size();
                     std::string& name = components[i];
                     std::string& type = components[i + 1];
                     std::string& default_value = components[i + 2];
-                    length += name.size() + /* ": " */ 2 + type.size();
+                    name += type_sep;
                     if (!default_value.empty()) {
-                        length += /* " = " */ default_value.size() + 3;
+                        default_value = default_sep + default_value;
                     }
-                    if (length > max_width) {
-                        break;
+                    length += name.size() + type.size() + default_value.size();
+                    size_t adjusted = (i - 4) / 3;
+                    if (adjusted == last_posonly) {
+                        length += sep.size() + posonly_sep.size();
+                    } else if (adjusted == first_kwonly) {
+                        length += sep.size() + kwonly_sep.size();
                     }
                 }
             }
         }
         length += components.back().size();
 
-        // if the signature fits on one line, return it immediately
+        // if the whole signature fits on one line, return it as such
         if (length <= max_width) {
             std::string out;
             out.reserve(length);
             out += prefix;
             out += std::move(components.front());
             if (components.size() > 2) {
-                out += std::move(components[1]) + ": ";
-                out += std::move(components[2]);
-                if (!components[3].empty()) {
-                    out += " = " + std::move(components[3]);
+                size_t i = 1;
+                size_t j = 0;
+                if (j == first_kwonly) {
+                    out += kwonly_sep + sep;
                 }
-                for (size_t i = 4, end = components.size() - 1; i < end; i += 3) {
-                    out += ", " + std::move(components[i]) + ": ";
-                    out += std::move(components[i + 1]);
-                    if (!components[i + 2].empty()) {
-                        out += " = " + std::move(components[i + 2]);
+                out += std::move(components[i++]);
+                out += std::move(components[i++]);
+                out += std::move(components[i++]);
+                if (j == last_posonly) {
+                    out += sep + posonly_sep;
+                }
+                ++j;
+                for (size_t end = components.size() - 1; i < end; ++j) {
+                    out += sep;
+                    if (j == first_kwonly) {
+                        out += kwonly_sep + sep;
+                    }
+                    out += std::move(components[i++]);
+                    out += std::move(components[i++]);
+                    out += std::move(components[i++]);
+                    if (j == last_posonly) {
+                        out += sep + posonly_sep;
                     }
                 }
             }
@@ -248,54 +279,64 @@ namespace impl {
         }
 
         // otherwise, indent the parameters onto separate lines
-        std::string out = prefix + components.front() + "\n";
-        std::string line = prefix + std::string(indent, ' ');
+        std::string out = prefix + components.front() + line_sep;
+        std::string line = prefix + tab;
         if (components.size() > 2) {
-            std::string& name = components[1];
-            std::string& type = components[2];
-            std::string& default_value = components[3];
-            line += std::move(name) + ": ";
+            size_t i = 1;
+            size_t j = 0;
+            if (j == first_kwonly) {
+                out += line + kwonly_sep + sep + line_sep;
+            }
+            std::string& name = components[i++];
+            std::string& type = components[i++];
+            std::string& default_value = components[i++];
+            line += std::move(name);
             if (line.size() + type.size() <= max_width) {
                 line += std::move(type);
             } else {
-                out += std::move(line) + "\n";
-                line = prefix + std::string(indent * 2, ' ') + std::move(type);
+                out += std::move(line) + line_sep;
+                line = prefix + tab + tab + std::move(type);
             }
-            if (!default_value.empty()) {
-                if (line.size() + 3 + default_value.size() <= max_width) {
-                    line += " = " + std::move(default_value);
-                } else {
-                    out += std::move(line) + "\n";
-                    line = prefix + std::string(indent * 2, ' ');
-                    line += "= " + std::move(default_value);
-                }
+            if (line.size() + default_value.size() <= max_width) {
+                line += std::move(default_value);
+            } else {
+                out += std::move(line) + line_sep;
+                line = prefix + tab + tab +
+                    std::move(default_value).substr(1);  // remove leading space
             }
             out += line;
-            for (size_t i = 4, end = components.size() - 1; i < end; i += 3) {
-                out += ",\n";
-                line = prefix + std::string(indent, ' ');
-                std::string& name = components[i];
-                std::string& type = components[i + 1];
-                std::string& default_value = components[i + 2];
-                line += std::move(name) + ": ";
+            if (j == last_posonly) {
+                out += sep + line_sep + prefix + tab + posonly_sep;
+            }
+            for (size_t end = components.size() - 1; i < end; ++j) {
+                out += sep + line_sep;
+                line = prefix + tab;
+                if (j == first_kwonly) {
+                    out += line + kwonly_sep + sep + line_sep;
+                }
+                std::string& name = components[i++];
+                std::string& type = components[i++];
+                std::string& default_value = components[i++];
+                line += std::move(name);
                 if (line.size() + type.size() <= max_width) {
                     line += std::move(type);
                 } else {
-                    out += std::move(line) + "\n";
-                    line = prefix + std::string(indent * 2, ' ') + type;
+                    out += std::move(line) + line_sep;
+                    line = prefix + tab + tab + std::move(type);
                 }
-                if (!default_value.empty()) {
-                    if (line.size() + 3 + default_value.size() <= max_width) {
-                        line += " = " + std::move(default_value);
-                    } else {
-                        out += std::move(line) + "\n";
-                        line = prefix + std::string(indent * 2, ' ');
-                        line += "= " + std::move(default_value);
-                    }
+                if (line.size() + default_value.size() <= max_width) {
+                    line += std::move(default_value);
+                } else {
+                    out += std::move(line) + line_sep;
+                    line = prefix + tab + tab +
+                        std::move(default_value).substr(1);  // remove leading space
                 }
                 out += std::move(line);
+                if (j == last_posonly) {
+                    out += sep + line_sep + prefix + tab + posonly_sep;
+                }
             }
-            out += "\n";
+            out += line_sep;
         }
         out += prefix + components.back();
         return out;
@@ -331,6 +372,14 @@ namespace impl {
 
 /// Python -> CamelCase
 /// C++ -> snake_case
+
+
+/// TODO: inspect.signature() intentionally leaves out partial arguments, so it might
+/// not be a bad idea to do the same on this end.  The problem is that I need the
+/// full signature to instantiate templates on both sides of the language divide,
+/// including partials, so there has to be some way to satisfy both requirements.
+/// Perhaps what I can do is encode the full signature into __partial__, and then
+/// synthesize them in some way here?
 
 
 /* Inspect a Python function object and extract its signature so that it can be
@@ -524,11 +573,18 @@ private:
                 if (!partials.is(None) && partial_idx < partial_size) {
                     PyObject* pair = PyTuple_GET_ITEM(ptr(partials), partial_idx);
                     if (partial_is_positional(pair)) {
-                        partial = reinterpret_borrow<Object>(PyTuple_GET_ITEM(pair, 1));
+                        partial = reinterpret_borrow<Object>(pair);
                         ++partial_idx;
                     }
                 } else if (idx == 0 && !self.is(nullptr)) {
-                    partial = self;
+                    partial = reinterpret_steal<Object>(PyTuple_Pack(
+                        2,
+                        ptr(impl::template_string<"">()),
+                        ptr(self)
+                    ));
+                    if (partial.is(nullptr)) {
+                        Exception::from_python();
+                    }
                 }
                 kind = default_value.is(empty) ?
                     impl::ArgKind::POS :
@@ -537,7 +593,7 @@ private:
                 if (!partials.is(None) && partial_idx < partial_size) {
                     PyObject* pair = PyTuple_GET_ITEM(ptr(partials), partial_idx);
                     if (partial_is_positional(pair)) {
-                        partial = reinterpret_borrow<Object>(PyTuple_GET_ITEM(pair, 1));
+                        partial = reinterpret_borrow<Object>(pair);
                         ++partial_idx;
                     } else {
                         int rc = PyObject_RichCompareBool(
@@ -549,14 +605,19 @@ private:
                             Exception::from_python();
                         }
                         if (rc) {
-                            partial = reinterpret_borrow<Object>(
-                                PyTuple_GET_ITEM(pair, 1)
-                            );
+                            partial = reinterpret_borrow<Object>(pair);
                             ++partial_idx;
                         }
                     }
                 } else if (idx == 0 && !self.is(nullptr)) {
-                    partial = self;
+                    partial = reinterpret_steal<Object>(PyTuple_Pack(
+                        2,
+                        ptr(impl::template_string<"">()),
+                        ptr(self)
+                    ));
+                    if (partial.is(nullptr)) {
+                        Exception::from_python();
+                    }
                 }
                 kind = default_value.is(empty) ?
                     impl::ArgKind::POS | impl::ArgKind::KW :
@@ -574,9 +635,7 @@ private:
                             Exception::from_python();
                         }
                         if (rc) {
-                            partial = reinterpret_borrow<Object>(
-                                PyTuple_GET_ITEM(pair, 1)
-                            );
+                            partial = reinterpret_borrow<Object>(pair);
                             ++partial_idx;
                         }
                     }
@@ -591,22 +650,13 @@ private:
                         PyObject* pair = PyTuple_GET_ITEM(ptr(partials), partial_idx);
                         if (partial_is_positional(pair)) {
                             if (out.is(nullptr)) {
-                                out = reinterpret_steal<Object>(
-                                    PyList_New(1)
-                                );
+                                out = reinterpret_steal<Object>(PyList_New(1));
                                 if (out.is(nullptr)) {
                                     Exception::from_python();
                                 }
-                                PyList_SET_ITEM(
-                                    ptr(out),
-                                    0,
-                                    Py_NewRef(PyTuple_GET_ITEM(pair, 1))
-                                );
+                                PyList_SET_ITEM(ptr(out), 0, Py_NewRef(pair));
                             } else {
-                                if (PyList_Append(
-                                    ptr(out),
-                                    PyTuple_GET_ITEM(pair, 1)
-                                )) {
+                                if (PyList_Append(ptr(out), pair)) {
                                     Exception::from_python();
                                 }
                             }
@@ -629,22 +679,13 @@ private:
                         PyObject* pair = PyTuple_GET_ITEM(ptr(partials), partial_idx);
                         if (!partial_is_positional(pair)) {
                             if (out.is(nullptr)) {
-                                out = reinterpret_steal<Object>(
-                                    PyList_New(1)
-                                );
+                                out = reinterpret_steal<Object>(PyList_New(1));
                                 if (out.is(nullptr)) {
                                     Exception::from_python();
                                 }
-                                PyList_SET_ITEM(
-                                    ptr(out),
-                                    0,
-                                    PyTuple_GET_ITEM(pair, 1)
-                                );
+                                PyList_SET_ITEM(ptr(out), 0, Py_NewRef(pair));
                             } else {
-                                if (PyList_Append(
-                                    ptr(out),
-                                    PyTuple_GET_ITEM(pair, 1)
-                                )) {
+                                if (PyList_Append(ptr(out), pair)) {
                                     Exception::from_python();
                                 }
                             }
@@ -1224,6 +1265,14 @@ public:
         }
     };
 
+    /// TODO: The output from to_string can be directly inserted into the .pyi file
+    /// for the function, since it's in the right format, and is even pretty-printed.
+    /// -> Good idea, but it requires some finagling to ensure the types are always
+    /// printed in a way that allows them to be imported by static type checkers on the
+    /// Python side, and another optional argument would be added to this method to
+    /// trigger that.  I'll probably have to revisit that when I actually try to build
+    /// the .pyi files, and can test more directly.
+
     /* Convert the signature into a string representation for debugging purposes.  The
     provided `prefix` will be prepended to each output line, and if `max_width` is
     provided, then the algorithm will attempt to wrap the output to that width, with
@@ -1234,34 +1283,71 @@ public:
     component. */
     [[nodiscard]] std::string to_string(
         const std::string& prefix = "",
+        bool keep_defaults = true,
         size_t max_width = std::numeric_limits<size_t>::max(),
         size_t indent = 4
     ) const {
         std::vector<std::string> components;
         components.reserve(m_parameters.size() * 3 + 2);
-        components.emplace_back(std::string(name()) + "(");
+        components.emplace_back(std::string(name()));
 
-        for (const Param& param : m_parameters) {
-            components.emplace_back(std::string(param.name));
+        size_t args_idx = std::numeric_limits<size_t>::max();
+        size_t kwargs_idx = std::numeric_limits<size_t>::max();
+        size_t last_posonly = std::numeric_limits<size_t>::max();
+        size_t first_kwonly = std::numeric_limits<size_t>::max();
+        for (size_t i = 0, end = m_parameters.size(); i < end; ++i) {
+            const Param& param = m_parameters[i];
+            if (param.args()) {
+                args_idx = i;
+                components.emplace_back("*" + std::string(param.name));
+            } else if (param.kwargs()) {
+                kwargs_idx = i;
+                components.emplace_back("**" + std::string(param.name));
+            } else {
+                if (param.posonly()) {
+                    last_posonly = i;
+                } else if (param.kwonly() && first_kwonly > end) {
+                    first_kwonly = i;
+                }
+                components.emplace_back(std::string(param.name));
+            }
             components.emplace_back(demangle(PyType_Check(ptr(param.type)) ?
                 reinterpret_cast<PyTypeObject*>(ptr(param.type))->tp_name :
                 Py_TYPE(ptr(param.type))->tp_name
             ));
-            components.emplace_back(param.opt() ? "..." : "");
+            if (param.opt()) {
+                if (keep_defaults) {
+                    components.emplace_back(repr(param.default_value));
+                } else {
+                    components.emplace_back("...");
+                }
+            } else {
+                components.emplace_back("");
+            }
         }
 
-        /// TODO: what if the return type is None?
-        components.emplace_back(") -> " + demangle(
-            PyType_Check(ptr(m_return_annotation)) ?
-                reinterpret_cast<PyTypeObject*>(ptr(m_return_annotation))->tp_name :
-                Py_TYPE(ptr(m_return_annotation))->tp_name
-        ));
+        if (m_return_annotation.is(reinterpret_cast<PyObject*>(Py_TYPE(Py_None)))) {
+            components.emplace_back("None");
+        } else {
+            components.emplace_back(demangle(
+                PyType_Check(ptr(m_return_annotation)) ?
+                    reinterpret_cast<PyTypeObject*>(ptr(m_return_annotation))->tp_name :
+                    Py_TYPE(ptr(m_return_annotation))->tp_name
+            ));
+        }
 
+        /// NOTE: a signature containing multiple "*" parameters is malformed in
+        /// Python - all parameters after "*args" are keyword-only by design.
+        if (args_idx < m_parameters.size()) {
+            first_kwonly = std::numeric_limits<size_t>::max();
+        }
         return impl::format_signature(
             prefix,
             max_width,
             indent,
-            components
+            components,
+            last_posonly,
+            first_kwonly
         );
     }
 
@@ -1367,19 +1453,97 @@ public:
                 );
             }
 
-            // append bound partial value(s) if present
+            // append bound partial type(s) if present
             if (param.bound()) {
-                specialization = reinterpret_steal<Object>(PyObject_GetItem(
-                    ptr(getattr<"bind">(specialization)),
-                    ptr(param.partial)
-                ));
+                if (param.args()) {
+                    size_t size = PyTuple_GET_SIZE(ptr(param.partial));
+                    Object out = reinterpret_steal<Object>(PyTuple_New(size));
+                    if (out.is(nullptr)) {
+                        Exception::from_python();
+                    }
+                    for (size_t i = 0; i < size; ++i) {
+                        PyObject* pair = PyTuple_GET_ITEM(ptr(param.partial), i);
+                        PyObject* type = reinterpret_cast<PyObject*>(Py_TYPE(
+                            PyTuple_GET_ITEM(pair, 1)
+                        ));
+                        PyTuple_SET_ITEM(ptr(out), i, Py_NewRef(type));
+                    }
+                    specialization = reinterpret_steal<Object>(PyObject_GetItem(
+                        ptr(getattr<"bind">(specialization)),
+                        ptr(out)
+                    ));
+                } else if (param.kwargs()) {
+                    size_t size = PyTuple_GET_SIZE(ptr(param.partial));
+                    Object out = reinterpret_steal<Object>(PyTuple_New(size));
+                    if (out.is(nullptr)) {
+                        Exception::from_python();
+                    }
+                    for (size_t i = 0; i < size; ++i) {
+                        PyObject* pair = PyTuple_GET_ITEM(ptr(param.partial), i);
+                        PyObject* type = reinterpret_cast<PyObject*>(Py_TYPE(
+                            PyTuple_GET_ITEM(pair, 1)
+                        ));
+                        Object template_params = reinterpret_steal<Object>(
+                            PyTuple_Pack(2, PyTuple_GET_ITEM(pair, 0), type)
+                        );
+                        if (template_params.is(nullptr)) {
+                            Exception::from_python();
+                        }
+                        Object kw = reinterpret_steal<Object>(PyObject_GetItem(
+                            ptr(Arg),
+                            ptr(template_params)
+                        ));
+                        if (kw.is(nullptr)) {
+                            Exception::from_python();
+                        }
+                        PyTuple_SET_ITEM(ptr(out), i, release(kw));
+                    }
+                    specialization = reinterpret_steal<Object>(PyObject_GetItem(
+                        ptr(getattr<"bind">(specialization)),
+                        ptr(out)
+                    ));
+                } else {
+                    PyObject* name = PyTuple_GET_ITEM(ptr(param.partial), 0);
+                    PyObject* value = PyTuple_GET_ITEM(ptr(param.partial), 1);
+                    PyObject* type = reinterpret_cast<PyObject*>(Py_TYPE(value));
+                    int rc = PyObject_Not(name);
+                    if (rc < 0) {
+                        Exception::from_python();
+                    } else if (rc) {
+                        specialization = reinterpret_steal<Object>(PyObject_GetItem(
+                            ptr(getattr<"bind">(specialization)),
+                            type
+                        ));
+                    } else {
+                        Object template_params = reinterpret_steal<Object>(
+                            PyTuple_Pack(2, name, type)
+                        );
+                        if (template_params.is(nullptr)) {
+                            Exception::from_python();
+                        }
+                        Object kw = reinterpret_steal<Object>(PyObject_GetItem(
+                            ptr(Arg),
+                            ptr(template_params)
+                        ));
+                        if (kw.is(nullptr)) {
+                            Exception::from_python();
+                        }
+                        specialization = reinterpret_steal<Object>(PyObject_GetItem(
+                            ptr(getattr<"bind">(specialization)),
+                            ptr(kw)
+                        ));
+                    }
+                    if (specialization.is(nullptr)) {
+                        Exception::from_python();
+                    }
+                }
             }
 
             // insert result into key tuple
             PyTuple_SET_ITEM(ptr(result), idx++, release(specialization));
         }
 
-        // cache and return the key
+        // cache and return the completed key
         m_key = result;
         return m_key;
     }
@@ -10421,7 +10585,84 @@ public:
     maximum width, then it will be wrapped onto multiple lines with an additional level
     of indentation for the extra lines.  Note that the maximum width is not a hard
     limit; individual components can exceed it, but never on the same line as another
-    component. */
+    component.
+    
+    The output from this method is directly written into a .pyi file when bindings are
+    generated, allowing static type checkers to validate C++ function signatures and
+    provide high-quality syntax highlighting/autocompletion. */
+    [[nodiscard]] static std::string to_string(
+        const std::string& name,
+        const std::string& prefix = "",
+        size_t max_width = std::numeric_limits<size_t>::max(),
+        size_t indent = 4
+    ) {
+        std::vector<std::string> components;
+        components.reserve(n * 3 + 2);
+        components.emplace_back(name);
+
+        /// TODO: appending the demangled type name is probably wrong, since it doesn't
+        /// always yield valid Python source code.  Instead, I should probably try to
+        /// convert the type to Python and return its qualified name?  That way, the
+        /// .pyi file would be able to import the type correctly.  That will need some
+        /// work, and demangling might be another option to the method that directs it
+        /// to do this.
+
+        size_t last_posonly = std::numeric_limits<size_t>::max();
+        size_t first_kwonly = std::numeric_limits<size_t>::max();
+        []<size_t I = 0>(
+            this auto&& self,
+            auto&& defaults,
+            std::vector<std::string>& components,
+            size_t& last_posonly,
+            size_t& first_kwonly
+        ) {
+            if constexpr (I < n) {
+                using T = Signature::at<I>;
+                if constexpr (ArgTraits<T>::args()) {
+                    components.emplace_back(std::string("*" + ArgTraits<T>::name));
+                } else if constexpr (ArgTraits<T>::kwargs()) {
+                    components.emplace_back(std::string("**" + ArgTraits<T>::name));
+                } else {
+                    if constexpr (ArgTraits<T>::posonly()) {
+                        last_posonly = I;
+                    } else if constexpr (ArgTraits<T>::kwonly() && !Signature::has_args) {
+                        if (first_kwonly == std::numeric_limits<size_t>::max()) {
+                            first_kwonly = I;
+                        }
+                    }
+                    components.emplace_back(std::string(ArgTraits<T>::name));
+                }
+                components.emplace_back(
+                    std::string(type_name<typename ArgTraits<T>::type>)
+                );
+                if constexpr (ArgTraits<T>::opt()) {
+                    components.emplace_back("...");
+                } else {
+                    components.emplace_back("");
+                }
+                std::forward<decltype(self)>(self).template operator()<I + 1>(
+                    std::forward<decltype(defaults)>(defaults),
+                    components
+                );
+            }
+        }(components);
+
+        if constexpr (std::is_void_v<Return>) {
+            components.emplace_back("None");
+        } else {
+            components.emplace_back(std::string(type_name<Return>));
+        }
+
+        return impl::format_signature(
+            prefix,
+            max_width,
+            indent,
+            components,
+            last_posonly,
+            first_kwonly
+        );
+    }
+
     template <impl::inherits<Defaults> D>
     [[nodiscard]] static std::string to_string(
         const std::string& name,
@@ -10432,18 +10673,43 @@ public:
     ) {
         std::vector<std::string> components;
         components.reserve(n * 3 + 2);
-        components.emplace_back(name + "(");
+        components.emplace_back(name);
 
+        size_t last_posonly = std::numeric_limits<size_t>::max();
+        size_t first_kwonly = std::numeric_limits<size_t>::max();
         []<size_t I = 0>(
             this auto&& self,
             auto&& defaults,
-            std::vector<std::string>& components
+            std::vector<std::string>& components,
+            size_t& last_posonly,
+            size_t& first_kwonly
         ) {
             if constexpr (I < n) {
                 using T = Signature::at<I>;
-
-                /// TODO: name, type, and default value for each parameter
-
+                if constexpr (ArgTraits<T>::args()) {
+                    components.emplace_back(std::string("*" + ArgTraits<T>::name));
+                } else if constexpr (ArgTraits<T>::kwargs()) {
+                    components.emplace_back(std::string("**" + ArgTraits<T>::name));
+                } else {
+                    if constexpr (ArgTraits<T>::posonly()) {
+                        last_posonly = I;
+                    } else if constexpr (ArgTraits<T>::kwonly() && !Signature::has_args) {
+                        if (first_kwonly == std::numeric_limits<size_t>::max()) {
+                            first_kwonly = I;
+                        }
+                    }
+                    components.emplace_back(std::string(ArgTraits<T>::name));
+                }
+                components.emplace_back(
+                    std::string(type_name<typename ArgTraits<T>::type>)
+                );
+                if constexpr (ArgTraits<T>::opt()) {
+                    components.emplace_back(repr(
+                        defaults.template get<Defaults::template find<I>>()
+                    ));
+                } else {
+                    components.emplace_back("");
+                }
                 std::forward<decltype(self)>(self).template operator()<I + 1>(
                     std::forward<decltype(defaults)>(defaults),
                     components
@@ -10452,16 +10718,18 @@ public:
         }(components);
 
         if constexpr (std::is_void_v<Return>) {
-            components.emplace_back(") -> None");
+            components.emplace_back("None");
         } else {
-            components.emplace_back(std::string(") -> " + type_name<Return>));
+            components.emplace_back(std::string(type_name<Return>));
         }
 
         return impl::format_signature(
             prefix,
             max_width,
             indent,
-            components
+            components,
+            last_posonly,
+            first_kwonly
         );
     }
 
@@ -10632,9 +10900,11 @@ public:
     /// TODO: maybe I need some extra facilities to convert Python arguments into a
     /// Partial/Defaults object, for use in the Python-level constructor for
     /// py::Function?
+    /// -> defaults are inferred from the signature, so they don't need to be
+    /// considered.
 
-    /* Translate this signature into a template key that can be used to specialize the
-    `py::Function` type from Python. */
+    /* Convert a C++ signature into a template key that can be used to specialize the
+    `bertrand.Function` type on the Python side. */
     [[nodiscard]] static Object key() {
         Object bertrand = reinterpret_steal<Object>(PyImport_Import(
             ptr(impl::template_string<"bertrand">())
@@ -10710,7 +10980,7 @@ public:
 
                 // append bound partial value(s) if present
                 if constexpr (ArgTraits<T>::bound()) {
-                    /// TODO: implement this
+                    /// TODO: implement this similar to what is done in inspect()
                 }
 
                 // recur until all parameters are processed

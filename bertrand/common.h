@@ -1,6 +1,7 @@
 #ifndef BERTRAND_COMMON_H
 #define BERTRAND_COMMON_H
 
+#include <cmath>
 #include <concepts>
 #include <cstddef>
 #include <memory>

@@ -454,7 +454,7 @@ private:
     using _detect_arg = void;
 
 public:
-    static constexpr StaticStr name = Name;
+    static constexpr StaticStr name = StaticStr<>::removeprefix<Name, "*">();
     static constexpr ArgKind kind = ArgKind::POS | ArgKind::VARIADIC;
     using type = T;
     using vec = std::vector<std::conditional_t<
@@ -510,7 +510,7 @@ private:
     using _detect_arg = void;
 
 public:
-    static constexpr StaticStr name = Name;
+    static constexpr StaticStr name = StaticStr<>::removeprefix<Name, "**">();
     static constexpr ArgKind kind = ArgKind::KW | ArgKind::VARIADIC;
     using type = T;
     using map = std::unordered_map<std::string, std::conditional_t<
