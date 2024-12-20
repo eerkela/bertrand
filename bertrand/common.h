@@ -130,6 +130,8 @@ namespace impl {
         using type = T;
     };
 
+    struct chain_tag {};
+
     template <typename T>
     constexpr bool _is_args = false;
     template <typename... Ts>
@@ -145,10 +147,12 @@ namespace impl {
             std::remove_reference_t<T>
         > value;
         constexpr ArgsBase(T value, Ts... ts) :
-            ArgsBase<Ts...>(std::forward<Ts>(ts)...), value(std::forward<T>(value))
+            ArgsBase<Ts...>(std::forward<Ts>(ts)...),
+            value(std::forward<T>(value))
         {}
         constexpr ArgsBase(ArgsBase&& other) :
-            ArgsBase<Ts...>(std::move(other)), value([](ArgsBase&& other) {
+            ArgsBase<Ts...>(std::move(other)),
+            value([](ArgsBase&& other) {
                 if constexpr (std::is_lvalue_reference_v<T>) {
                     return other.value;
                 } else {
@@ -1211,6 +1215,164 @@ public:
 template <typename... Ts>
 args(Ts&&...) -> args<Ts...>;
 
+
+/* A higher-order function that merges a sequence of component functions into a single
+operation.  When called, the chain will evaluate the first function with the input
+arguments, then pass the result to the next function, and so on, until the final result
+is returned. */
+template <typename F, typename... Fs>
+struct chain : impl::chain_tag {
+private:
+    std::remove_cvref_t<F> func;
+
+public:
+    static constexpr size_t n = 1;
+
+    /* Get the unqualified type of the component function at index I. */
+    template <size_t I> requires (I < n)
+    using at = std::remove_cvref_t<F>;
+
+    constexpr chain(F func) : func(std::forward<F>(func)) {}
+
+    /* Get the component function at index I. */
+    template <size_t I> requires (I < n)
+    [[nodiscard]] constexpr decltype(auto) get(this auto&& self) {
+        return std::forward<decltype(self)>(self).func;
+    }
+
+    /* Invoke the function chain. */
+    template <typename... A> requires (std::is_invocable_v<F, A...>)
+    constexpr decltype(auto) operator()(this auto&& self, A&&... args) {
+        return std::forward<decltype(self)>(self).func(std::forward<A>(args)...);
+    }
+};
+
+
+template <typename F1, typename F2, typename... Fs>
+struct chain<F1, F2, Fs...> : chain<F2, Fs...> {
+private:
+    std::remove_cvref_t<F1> func;
+
+    template <size_t I>
+    struct _at { using type = chain<F2, Fs...>::template at<I - 1>; };
+    template <>
+    struct _at<0> { using type = std::remove_cvref_t<F1>; };
+
+public:
+    static constexpr size_t n = chain<F2, Fs...>::n + 1;
+
+    /* Get the unqualified type of the component function at index I. */
+    template <size_t I> requires (I < n)
+    using at = _at<I>::type;
+
+    constexpr chain(F1 func, F2 next, Fs... rest) :
+        chain<F2, Fs...>(std::forward<F2>(next), std::forward<Fs>(rest)...),
+        func(std::forward<F1>(func))
+    {}
+
+    /* Get the component function at index I. */
+    template <size_t I> requires (I < n)
+    [[nodiscard]] constexpr decltype(auto) get(this auto&& self) {
+        if constexpr (I == 0) {
+            return std::forward<decltype(self)>(self).func;
+        } else {
+            using parent = qualify<chain<F2, Fs...>, decltype(self)>;
+            return static_cast<parent>(self).template get<I - 1>();
+        }
+    }
+
+    /* Invoke the function chain. */
+    template <typename... A> requires (std::is_invocable_v<F1, A...>)
+    constexpr decltype(auto) operator()(this auto&& self, A&&... args) {
+        using parent = qualify<chain<F2, Fs...>, decltype(self)>;
+        return static_cast<parent>(self)(
+            std::forward<decltype(self)>(self).func(std::forward<A>(args)...)
+        );
+    }
+};
+
+
+template <typename F1, typename... Fs>
+chain(F1&&, Fs&&...) -> chain<F1, Fs...>;
+
+
+template <inherits<impl::chain_tag> Self, inherits<impl::chain_tag> Next>
+[[nodiscard]] constexpr decltype(auto) operator>>(Self&& self, Next&& next) {
+    return []<size_t... Is, size_t... Js>(
+        std::index_sequence<Is...>,
+        std::index_sequence<Js...>,
+        auto&& self,
+        auto&& next
+    ) {
+        return chain(
+            std::forward<decltype(self)>(self).template get<Is>()...,
+            std::forward<decltype(next)>(next).template get<Js>()...
+        );
+    }(
+        std::make_index_sequence<std::remove_cvref_t<Self>::n>{},
+        std::make_index_sequence<std::remove_cvref_t<Next>::n>{},
+        std::forward<Self>(self),
+        std::forward<Next>(next)
+    );
+}
+
+
+template <inherits<impl::chain_tag> Self, typename Next>
+[[nodiscard]] constexpr decltype(auto) operator>>(Self&& self, Next&& next) {
+    return []<size_t... Is>(std::index_sequence<Is...>, auto&& self, auto&& next) {
+        return chain(
+            std::forward<decltype(self)>(self).template get<Is>()...,
+            std::forward<decltype(next)>(next)
+        );
+    }(
+        std::make_index_sequence<std::remove_cvref_t<Self>::n>{},
+        std::forward<Self>(self),
+        std::forward<Next>(next)
+    );
+}
+
+
+template <typename Prev, inherits<impl::chain_tag> Self>
+[[nodiscard]] constexpr decltype(auto) operator>>(Prev&& prev, Self&& self) {
+    return []<size_t... Is>(std::index_sequence<Is...>, auto&& prev, auto&& self) {
+        return chain(
+            std::forward<decltype(prev)>(prev),
+            std::forward<decltype(self)>(self).template get<Is>()...
+        );
+    }(
+        std::make_index_sequence<std::remove_cvref_t<Self>::n>{},
+        std::forward<Prev>(prev),
+        std::forward<Self>(self)
+    );
+}
+
+
+}
+
+
+namespace std {
+
+    /* Specializing `std::tuple_size` allows function chains to be decomposed using
+    structured bindings. */
+    template <bertrand::inherits<bertrand::impl::chain_tag> T>
+    struct tuple_size<T> :
+        std::integral_constant<size_t, std::remove_cvref_t<T>::n>
+    {};
+
+    /* Specializing `std::tuple_element` allows function chains to be decomposed using
+    structured bindings. */
+    template <size_t I, bertrand::inherits<bertrand::impl::chain_tag> T>
+        requires (I < std::remove_cvref_t<T>::n)
+    struct tuple_element<I, T> {
+        using type = decltype(std::declval<T>().template get<I>());
+    };
+
+    /* `std::get<I>(chain)` extracts the I-th function in the chain. */
+    template <size_t I, bertrand::inherits<bertrand::impl::chain_tag> T>
+        requires (I < std::remove_cvref_t<T>::n)
+    [[nodiscard]] constexpr decltype(auto) get(T&& chain) {
+        return std::forward<T>(chain).template get<I>();
+    }
 
 }
 

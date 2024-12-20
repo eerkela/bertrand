@@ -214,9 +214,10 @@ public:
     using unbind = Arg;
     type value;
 
-    [[nodiscard]] constexpr Value& operator*() { return value; }
-    [[nodiscard]] constexpr const Value& operator*() const { return value; }
+    [[nodiscard]] constexpr type operator*() && { std::forward<type>(value); }
+    [[nodiscard]] constexpr Value& operator*() & { return value; }
     [[nodiscard]] constexpr Value* operator->() { return &value; }
+    [[nodiscard]] constexpr const Value& operator*() const & { return value; }
     [[nodiscard]] constexpr const Value* operator->() const { return &value; }
 
     /* Argument rvalues are normally generated whenever a function is called.  Making
@@ -263,7 +264,8 @@ public:
         using unbind = opt;
         type value;
 
-        [[nodiscard]] constexpr Value& operator*() { return value; }
+        [[nodiscard]] constexpr type operator*() && { std::forward<type>(value); }
+        [[nodiscard]] constexpr Value& operator*() & { return value; }
         [[nodiscard]] constexpr const Value& operator*() const { return value; }
         [[nodiscard]] constexpr Value* operator->() { return &value; }
         [[nodiscard]] constexpr const Value* operator->() const { return &value; }
@@ -299,7 +301,8 @@ public:
         using unbind = pos;
         type value;
 
-        [[nodiscard]] constexpr Value& operator*() { return value; }
+        [[nodiscard]] constexpr type operator*() && { std::forward<type>(value); }
+        [[nodiscard]] constexpr Value& operator*() & { return value; }
         [[nodiscard]] constexpr const Value& operator*() const { return value; }
         [[nodiscard]] constexpr Value* operator->() { return &value; }
         [[nodiscard]] constexpr const Value* operator->() const { return &value; }
@@ -340,7 +343,8 @@ public:
             using unbind = opt;
             type value;
 
-            [[nodiscard]] constexpr Value& operator*() { return value; }
+            [[nodiscard]] constexpr type operator*() && { std::forward<type>(value); }
+            [[nodiscard]] constexpr Value& operator*() & { return value; }
             [[nodiscard]] constexpr const Value& operator*() const { return value; }
             [[nodiscard]] constexpr Value* operator->() { return &value; }
             [[nodiscard]] constexpr const Value* operator->() const { return &value; }
@@ -378,7 +382,8 @@ public:
         using unbind = kw;
         type value;
 
-        [[nodiscard]] constexpr Value& operator*() { return value; }
+        [[nodiscard]] constexpr type operator*() && { std::forward<type>(value); }
+        [[nodiscard]] constexpr Value& operator*() & { return value; }
         [[nodiscard]] constexpr const Value& operator*() const { return value; }
         [[nodiscard]] constexpr Value* operator->() { return &value; }
         [[nodiscard]] constexpr const Value* operator->() const { return &value; }
@@ -419,7 +424,8 @@ public:
             using unbind = opt;
             type value;
 
-            [[nodiscard]] constexpr Value& operator*() { return value; }
+            [[nodiscard]] constexpr type operator*() && { std::forward<type>(value); }
+            [[nodiscard]] constexpr Value& operator*() & { return value; }
             [[nodiscard]] constexpr const Value& operator*() const { return value; }
             [[nodiscard]] constexpr Value* operator->() { return &value; }
             [[nodiscard]] constexpr const Value* operator->() const { return &value; }
@@ -665,70 +671,6 @@ public:
 };
 
 
-/* Inspect a C++ argument at compile time.  Normalizes unannotated types to
-positional-only arguments to maintain C++ style. */
-template <typename T>
-struct ArgTraits {
-    using type                                  = T;
-    static constexpr StaticStr name             = "";
-    static constexpr ArgKind kind               = ArgKind::POS;
-    static constexpr bool posonly() noexcept    { return kind.posonly(); }
-    static constexpr bool pos() noexcept        { return kind.pos(); }
-    static constexpr bool args() noexcept       { return kind.args(); }
-    static constexpr bool kwonly() noexcept     { return kind.kwonly(); }
-    static constexpr bool kw() noexcept         { return kind.kw(); }
-    static constexpr bool kwargs() noexcept     { return kind.kwargs(); }
-    static constexpr bool bound() noexcept      { return bound_to::n > 0; }
-    static constexpr bool opt() noexcept        { return kind.opt(); }
-    static constexpr bool variadic() noexcept   { return kind.variadic(); }
-
-    template <typename... Vs>
-    static constexpr bool can_bind = false;
-    template <std::convertible_to<type> V>
-    static constexpr bool can_bind<V> =
-        ArgTraits<V>::posonly() &&
-        !ArgTraits<V>::opt() &&
-        !ArgTraits<V>::variadic() &&
-        (ArgTraits<V>::name.empty() || ArgTraits<V>::name == name);
-
-    template <typename... Vs> requires (can_bind<Vs...>)
-    using bind                                  = impl::BoundArg<T, Vs...>;
-    using bound_to                              = bertrand::args<>;
-    using unbind                                = T;
-};
-
-
-/* Inspect a C++ argument at compile time.  Forwards to the annotated type's
-interface where possible. */
-template <is_arg T>
-struct ArgTraits<T> {
-private:
-    using T2 = std::remove_cvref_t<T>;
-
-public:
-    using type                                  = T2::type;
-    static constexpr StaticStr name             = T2::name;
-    static constexpr ArgKind kind               = T2::kind;
-    static constexpr bool posonly() noexcept    { return kind.posonly(); }
-    static constexpr bool pos() noexcept        { return kind.pos(); }
-    static constexpr bool args() noexcept       { return kind.args(); }
-    static constexpr bool kwonly() noexcept     { return kind.kwonly(); }
-    static constexpr bool kw() noexcept         { return kind.kw(); }
-    static constexpr bool kwargs() noexcept     { return kind.kwargs(); }
-    static constexpr bool bound() noexcept      { return bound_to::n > 0; }
-    static constexpr bool opt() noexcept        { return kind.opt(); }
-    static constexpr bool variadic() noexcept   { return kind.variadic(); }
-
-    template <typename... Vs>
-    static constexpr bool can_bind = T2::template can_bind<Vs...>;
-
-    template <typename... Vs> requires (can_bind<Vs...>)
-    using bind                                  = T2::template bind<Vs...>;
-    using unbind                                = T2::unbind;
-    using bound_to                              = T2::bound_to;
-};
-
-
 namespace impl {
 
     template <typename Arg, typename T> requires (!ArgTraits<Arg>::variadic())
@@ -880,6 +822,70 @@ instances of this class can be used to provide an even more Pythonic syntax:
 */
 template <StaticStr name>
 constexpr impl::ArgFactory<name> arg {};
+
+
+/* Inspect a C++ argument at compile time.  Normalizes unannotated types to
+positional-only arguments to maintain C++ style. */
+template <typename T>
+struct ArgTraits {
+    using type                                  = T;
+    static constexpr StaticStr name             = "";
+    static constexpr ArgKind kind               = ArgKind::POS;
+    static constexpr bool posonly() noexcept    { return kind.posonly(); }
+    static constexpr bool pos() noexcept        { return kind.pos(); }
+    static constexpr bool args() noexcept       { return kind.args(); }
+    static constexpr bool kwonly() noexcept     { return kind.kwonly(); }
+    static constexpr bool kw() noexcept         { return kind.kw(); }
+    static constexpr bool kwargs() noexcept     { return kind.kwargs(); }
+    static constexpr bool bound() noexcept      { return bound_to::n > 0; }
+    static constexpr bool opt() noexcept        { return kind.opt(); }
+    static constexpr bool variadic() noexcept   { return kind.variadic(); }
+
+    template <typename... Vs>
+    static constexpr bool can_bind = false;
+    template <std::convertible_to<type> V>
+    static constexpr bool can_bind<V> =
+        ArgTraits<V>::posonly() &&
+        !ArgTraits<V>::opt() &&
+        !ArgTraits<V>::variadic() &&
+        (ArgTraits<V>::name.empty() || ArgTraits<V>::name == name);
+
+    template <typename... Vs> requires (can_bind<Vs...>)
+    using bind                                  = impl::BoundArg<T, Vs...>;
+    using bound_to                              = bertrand::args<>;
+    using unbind                                = T;
+};
+
+
+/* Inspect a C++ argument at compile time.  Forwards to the annotated type's
+interface where possible. */
+template <is_arg T>
+struct ArgTraits<T> {
+private:
+    using T2 = std::remove_cvref_t<T>;
+
+public:
+    using type                                  = T2::type;
+    static constexpr StaticStr name             = T2::name;
+    static constexpr ArgKind kind               = T2::kind;
+    static constexpr bool posonly() noexcept    { return kind.posonly(); }
+    static constexpr bool pos() noexcept        { return kind.pos(); }
+    static constexpr bool args() noexcept       { return kind.args(); }
+    static constexpr bool kwonly() noexcept     { return kind.kwonly(); }
+    static constexpr bool kw() noexcept         { return kind.kw(); }
+    static constexpr bool kwargs() noexcept     { return kind.kwargs(); }
+    static constexpr bool bound() noexcept      { return bound_to::n > 0; }
+    static constexpr bool opt() noexcept        { return kind.opt(); }
+    static constexpr bool variadic() noexcept   { return kind.variadic(); }
+
+    template <typename... Vs>
+    static constexpr bool can_bind = T2::template can_bind<Vs...>;
+
+    template <typename... Vs> requires (can_bind<Vs...>)
+    using bind                                  = T2::template bind<Vs...>;
+    using unbind                                = T2::unbind;
+    using bound_to                              = T2::bound_to;
+};
 
 
 }

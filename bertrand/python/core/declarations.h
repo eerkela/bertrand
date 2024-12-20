@@ -67,16 +67,6 @@ using bertrand::demangle;
 
 
 namespace impl {
-    using bertrand::ArgPack;
-    using bertrand::KwargPack;
-    using bertrand::ArgKind;
-    using bertrand::arg_name;
-    using bertrand::variadic_args_name;
-    using bertrand::variadic_kwargs_name;
-    using bertrand::arg_pack;
-    using bertrand::kwarg_pack;
-    using bertrand::is_arg;
-    using bertrand::is_args;
     using bertrand::Sentinel;
     using bertrand::index_of;
     using bertrand::unpack_type;
@@ -246,6 +236,17 @@ namespace impl {
     using bertrand::has_ixor;
     using bertrand::ixor_type;
     using bertrand::ixor_returns;
+    using bertrand::chain;
+    using bertrand::ArgPack;
+    using bertrand::KwargPack;
+    using bertrand::ArgKind;
+    using bertrand::arg_name;
+    using bertrand::variadic_args_name;
+    using bertrand::variadic_kwargs_name;
+    using bertrand::arg_pack;
+    using bertrand::kwarg_pack;
+    using bertrand::is_arg;
+    using bertrand::is_args;
 
     struct BertrandTag {};
     struct UnionTag : BertrandTag {};

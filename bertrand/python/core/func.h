@@ -805,7 +805,7 @@ public:
     /// with `py::Function`, so when I finally get to that, I'll have to revisit this.
 
     /* Get a reference to the function being inspected. */
-    [[nodiscard]] const Object& function() const {
+    [[nodiscard]] const Object& function() const noexcept {
         return m_func;
     }
 
@@ -831,18 +831,18 @@ public:
     `from future import __annotations__`), forward references, and future PEP formats
     will be resolved and passed through the callback map to obtain proper bertrand
     types, which can be enforced at runtime. */
-    [[nodiscard]] const Object& signature() const {
+    [[nodiscard]] const Object& signature() const noexcept {
         return m_signature;
     }
 
     /* Get a reference to the normalized parameter array. */
-    [[nodiscard]] const std::vector<Param> parameters() const {
+    [[nodiscard]] const std::vector<Param>& parameters() const noexcept {
         return m_parameters;
     }
 
     /* Get a reference to the normalized return annotation, which is parsed using the
     same callbacks as any other parameter annotation. */
-    [[nodiscard]] const Object& return_annotation() const {
+    [[nodiscard]] const Object& return_annotation() const noexcept {
         return m_return_annotation;
     }
 
@@ -850,13 +850,13 @@ public:
     overload will be registered.  This combines the name, annotation, and kind
     (positional, keyword, optional, variadic, etc.) of each parameter, as well as
     the return type in order to quickly identify unique overloads. */
-    [[nodiscard]] size_t hash() const {
+    [[nodiscard]] size_t hash() const noexcept {
         return m_hash;
     }
 
     /* Return a bitmask encoding the positions of all of the required arguments within
     the signature, for easy comparison during overload resolution. */
-    [[nodiscard]] uint64_t required() const {
+    [[nodiscard]] uint64_t required() const noexcept {
         return m_required;
     }
 
@@ -1265,14 +1265,6 @@ public:
         }
     };
 
-    /// TODO: The output from to_string can be directly inserted into the .pyi file
-    /// for the function, since it's in the right format, and is even pretty-printed.
-    /// -> Good idea, but it requires some finagling to ensure the types are always
-    /// printed in a way that allows them to be imported by static type checkers on the
-    /// Python side, and another optional argument would be added to this method to
-    /// trigger that.  I'll probably have to revisit that when I actually try to build
-    /// the .pyi files, and can test more directly.
-
     /* Convert the signature into a string representation for debugging purposes.  The
     provided `prefix` will be prepended to each output line, and if `max_width` is
     provided, then the algorithm will attempt to wrap the output to that width, with
@@ -1671,6 +1663,12 @@ private:
     static constexpr size_t _kwargs_idx<T, Ts...> =
         ArgTraits<T>::kwargs() ? 0 : _kwargs_idx<Ts...> + 1;
 
+    template <typename...>
+    static constexpr size_t _opt_idx = 0;
+    template <typename T, typename... Ts>
+    static constexpr size_t _opt_idx<T, Ts...> =
+        ArgTraits<T>::opt() ? 0 : _opt_idx<Ts...> + 1;
+
     template <size_t I>
     static constexpr uint64_t _required = 0;
     template <size_t I> requires (I < sizeof...(Args))
@@ -1709,6 +1707,7 @@ public:
     static constexpr size_t kwonly_idx          = _kwonly_idx<Args...>;
     static constexpr size_t args_idx            = _args_idx<Args...>;
     static constexpr size_t kwargs_idx          = _kwargs_idx<Args...>;
+    static constexpr size_t opt_idx             = _opt_idx<Args...>;
 
     template <size_t I> requires (I < n)
     using at = impl::unpack_type<I, Args...>;
@@ -1785,13 +1784,14 @@ public:
         static constexpr bool _proper_argument_order<I> = [] {
             using T = Source::template at<I>;
             return !((
-                ArgTraits<T>::posonly() &&
-                (I > std::min({
-                    Source::args_idx,
-                    Source::kw_idx,
-                    Source::kwargs_idx
-                })) ||
-                (!ArgTraits<T>::opt() && I > Source::Defaults::pos_idx)
+                ArgTraits<T>::posonly() && (
+                    (I > std::min({
+                        Source::args_idx,
+                        Source::kw_idx,
+                        Source::kwargs_idx
+                    })) ||
+                    (!ArgTraits<T>::opt() && I > Source::opt_idx)
+                )
             ) || (
                 ArgTraits<T>::pos() && (
                     (I > std::min({
@@ -1799,7 +1799,7 @@ public:
                         Source::kwonly_idx,
                         Source::kwargs_idx
                     })) ||
-                    (!ArgTraits<T>::opt() && I > Source::Defaults::pos_idx)
+                    (!ArgTraits<T>::opt() && I > Source::opt_idx)
                 )
             ) || (
                 ArgTraits<T>::args() && (I > std::min(
@@ -4616,8 +4616,8 @@ public:
     Where 'x' is an optional first element that can be temporarily written to in order
     to efficiently forward the `self` argument for bound methods, etc.  The presence of
     this argument is determined by the `PY_VECTORCALL_ARGUMENTS_OFFSET` flag, which is
-    encoded in nargsf.  You can check for its presence by bitwise AND-ing against
-    nargsf, and the true number of positional arguments must be extracted using
+    encoded in `nargsf`.  You can check for its presence by bitwise AND-ing against
+    `nargsf`, and the true number of positional arguments must be extracted using
     `PyVectorcall_NARGS(nargsf)` to account for this.  By default, any vectorcall array
     that is produced by Bertrand will include this offset in order to speed up
     downstream code, but vectorcall arrays passed in from Python might not use it.  If
@@ -7748,9 +7748,6 @@ public:
         using Data = std::set<Metadata, std::less<>>;
         using Cache = std::unordered_map<size_t, PyObject*>;
 
-        /// TODO: while clever, storing a leading edge like this interferes with the
-        /// simplifications offered by using the inspect() class.
-
         /* A placeholder edge that leads to the root node of the trie.  All trie
         iterators are initialized with an iterator to this edge in order to bootstrap
         traversal.  It also provides a convenient place to store extra bookkeeping
@@ -7770,8 +7767,8 @@ public:
         mutable Cache m_cache = {};
 
     public:
-        Overloads(std::string&& name, const Object& fallback) :
-            m_signature(inspect(fallback)),
+        Overloads(std::string_view name, const Object& fallback) :
+            m_signature(inspect(fallback, name)),
             m_leading_node(fallback, {{nullptr, {&m_leading_edge}}})
         {
             /// TODO: if I receive an instance of `bertrand.Function`, then the
@@ -7779,6 +7776,12 @@ public:
             /// building a full signature object.  That would greatly increase the
             /// performance of conversions from Python -> C++ in the case where you're
             /// using bertrand types from the beginning.
+
+            /// TODO: may not need to store the signature explicitly?  Not doing so
+            /// would save some memory, but it might also make it slightly harder to
+            /// insert overloads.  Since the fallback signature is retained, all I
+            /// need to do right now is wrtie the insertion logic such that it takes
+            /// an inspect() instance and uses that to build the insertion key.
 
             if (m_signature != Signature{}) {
                 constexpr size_t max_width = 80;
@@ -7797,6 +7800,51 @@ public:
                     )
                 );
             };
+        }
+
+        /* Get the name of the fallback function. */
+        [[nodiscard]] std::string_view name() const noexcept {
+            return m_signature.name();
+        }
+
+        /* Return a reference to the fallback function that will be chosen if no other
+        overloads match a given (valid) argument set. */
+        [[nodiscard]] const Object& fallback() const noexcept {
+            return m_leading_node.func;
+        }
+
+        /* Indicates whether the trie contains any overloads. */
+        [[nodiscard]] auto empty() const noexcept {
+            return m_data.empty();
+        }
+
+        /* The number of overloads stored within the trie, ignoring the fallback
+        implementation. */
+        [[nodiscard]] auto size() const noexcept {
+            return m_data.size() - !m_data.empty();
+        }
+
+        /* The maximum depth of the trie, which is equivalent to the total number of
+        arguments of its longest overload.  Variadic arguments take up a single
+        position for the purposes of this calculation. */
+        [[nodiscard]] size_t depth() const noexcept {
+            return m_leading_node.hash;
+        }
+
+        /* Search against the function's overload cache to find a precomputed route
+        through the trie.  Whenever `begin()` is called with a vectorcall array, the
+        first result is always inserted here to optimize repeated calls with the same
+        signature.  If no cached function is found, this method returns null, forcing a
+        full search of the trie. */
+        [[nodiscard]] PyObject* cache_lookup(size_t hash) const noexcept {
+            auto it = m_cache.find(hash);
+            return it == m_cache.end() ? nullptr : it->second;
+        }
+
+        /* Manually clear the overload cache, forcing paths to be recomputed on
+        subsequent searches. */
+        void flush() noexcept {
+            m_cache.clear();
         }
 
         /* A single node in the overload trie, which holds the topologically-sorted
@@ -7837,8 +7885,6 @@ public:
                 }
             };
 
-            static bool yield_all(const Edge& edge) noexcept { return true; }
-
         public:
             using Set = std::set<Edge*, EdgeSort>;
             using Map = std::map<PyObject*, Set, TopoSort>;
@@ -7873,9 +7919,9 @@ public:
             struct Iterator {
                 using iterator_category = std::input_iterator_tag;
                 using difference_type = std::ptrdiff_t;
-                using value_type = const Edge;
-                using pointer = value_type*;
-                using reference = value_type&;
+                using value_type = Edge;
+                using pointer = const Edge*;
+                using reference = const Edge&;
 
                 PyObject* value;
 
@@ -7903,7 +7949,7 @@ public:
                         auto& end
                     ) {
                         while (it != end) {
-                            if (!value || check{}(value, it->first)) {
+                            if (value == nullptr || check{}(value, it->first)) {
                                 return SetView{it->second.begin(), it->second.end()};
                             }
                             ++it;
@@ -7929,7 +7975,7 @@ public:
                     if (set.begin == set.end) {
                         ++(map.begin);
                         while (map.begin != map.end) {
-                            if (!value || check{}(value, map.begin->first)) {
+                            if (value == nullptr || check{}(value, map.begin->first)) {
                                 set.begin = map.begin->second.begin();
                                 set.end = map.begin->second.end();
                                 break;
@@ -7974,54 +8020,12 @@ public:
             impl::Sentinel cend() const { return {}; }
         };
 
-        /// TODO: ::name() + name(std::string) [setter], ::type() + type(Object) [setter]
-
         /* Return a reference to the root node of the overload trie.  This can be null
         if the function has no overloads beyond the fallback implementation.  In that
         case, the entire overload trie is deleted to save space, and will be rebuilt
         the first time an overload is registered. */
-        [[nodiscard]] std::shared_ptr<Node> root() const {
+        [[nodiscard]] std::shared_ptr<Node> root() const noexcept {
             return m_leading_edge.target;
-        }
-
-        /* Return a reference to the fallback function that will be chosen if no other
-        overloads match a given (valid) argument set. */
-        [[nodiscard]] const Object& fallback() const {
-            return m_leading_node.func;
-        }
-
-        /* Indicates whether the trie contains any overloads. */
-        [[nodiscard]] auto empty() const {
-            return m_data.empty();
-        }
-
-        /* The number of overloads stored within the trie, ignoring the fallback
-        implementation. */
-        [[nodiscard]] auto size() const {
-            return m_data.size() - !m_data.empty();
-        }
-
-        /* The maximum depth of the trie, which is equivalent to the total number of
-        arguments of its longest overload.  Variadic arguments take up a single
-        position for the purposes of this calculation. */
-        [[nodiscard]] size_t depth() const noexcept {
-            return m_leading_node.hash;
-        }
-
-        /* Search against the function's overload cache to find a precomputed route
-        through the trie.  Whenever `begin()` is called with a vectorcall array, the
-        first result is always inserted here to optimize repeated calls with the same
-        signature.  If no cached function is found, this method returns null, forcing a
-        full search of the trie. */
-        [[nodiscard]] PyObject* cache_lookup(size_t hash) const {
-            auto it = m_cache.find(hash);
-            return it == m_cache.end() ? nullptr : it->second;
-        }
-
-        /* Manually clear the overload cache, forcing paths to be recomputed on
-        subsequent searches. */
-        void flush() noexcept {
-            m_cache.clear();
         }
 
         /* Insert a function into the trie.  Throws a TypeError if the function is not
@@ -10398,6 +10402,11 @@ public:
         }
     }
 
+    /// TODO: py::Function determines which overload to call by checking whether
+    /// overloads.fallback().is(self).  If true, then the function is implemented in
+    /// C++, and we call the C++ overload with the internal std::function.  Otherwise,
+    /// the function is implemented in Python, and we call the Python overload instead.
+
     /* Call a C++ function from C++ using Python-style arguments. */
     template <
         impl::inherits<Partial> P,
@@ -10708,61 +10717,88 @@ public:
         return vectorcall(ptr(*it));
     }
 
-    /// TODO: capture() and possibly other logic that relies on invocable<> should
-    /// account for variadic arguments?  So a function accepting variadic positional
-    /// arguments could forward to another function that accepts any number of
-    /// positional arguments as long as the types match, and the translation logic
-    /// would index into the parameter pack to extract the arguments, throwing an
-    /// error if any are missing or extra.
 
-    /* Capture a Python function object and generate a function object that matches
-    the enclosing signature, without any partial arguments.  A function of this form is
-    generated whenever a dynamic Python object is narrowed to a `py::Function` type,
-    effectively extending the compile-time C++ interface to the captured Python
-    function. */
-    [[nodiscard]] static auto capture(PyObject* obj) {
-        struct Func {
-            Object func;
-            Return operator()(typename ArgTraits<Args>::unbind... args) const {
-                /// TODO: idk if this is correct or not.  It should just immediately
-                /// construct a vectorcall array on the stack and insert the arguments
-                /// into it.  This might be preferred when calling a Python function
-                /// from C++, to avoid any heap allocations.
-                /// -> If the enclosing parameter list accepts variadic positional or
-                /// keyword args, then the heap allocation is unavoidable.
+    template <typename rtype, typename F1, typename... Fs>
+    struct PipedFunction {
+        static constexpr bool enable = true;
+        using type = rtype;
 
-                /// TODO: stack allocation can only be done if none of the arguments
-                /// are variadic.
+        std::remove_cvref_t<F1> func;
+        constexpr PipedFunction(F1 func, Fs...) : func(std::forward<F1>(func)) {}
 
+        template <typename... A> requires (std::is_invocable_v<F1, A...>)
+        type constexpr operator()(this auto&& self, A&&... args) {
+            return std::forward<decltype(self)>(self).func(std::forward<A>(args)...);
+        }
+    };
+    template <typename rtype, typename F1, typename F2, typename... Fs>
+        requires (std::is_invocable_v<F2, rtype>)
+    struct PipedFunction<rtype, F1, F2, Fs...> :
+        PipedFunction<std::invoke_result_t<F2, rtype>, F2, Fs...>
+    {
 
-                PyObject* result = Bind<typename ArgTraits<Args>::unbind...>{}(
-                    ptr(func),
-                    std::forward<typename ArgTraits<Args>::unbind>(args)...
-                );
-                if constexpr (std::is_void_v<Return>) {
-                    Py_DECREF(result);
-                } else {
-                    return reinterpret_steal<Object>(result);
-                }
-            }
-        };
-        return Func{reinterpret_borrow<Object>(obj)};
-    }
+        using Base = PipedFunction<std::invoke_result_t<F2, rtype>, F2, Fs...>;
 
-    /* Capture a C++ function object and generate a function object that matches the
+        // static constexpr bool enable =
+        //     can_capture<out, F2, Fs...>::enable;
+        // using type =
+        //     can_capture<out, F2, Fs...>::type;
+
+        std::remove_cvref_t<F1> func;
+        constexpr PipedFunction(F1 func, F2 next, Fs... rest) :
+            Base(std::forward<F2>(next), std::forward<Fs>(rest)...),
+            func(std::forward<F1>(func))
+        {}
+
+        template <typename... A> requires (std::is_invocable_v<F1, A...>)
+        Base::type constexpr operator()(this auto&& self, A&&... args) {
+            return Base::operator()(
+                std::forward<decltype(self)>(self).func(std::forward<A>(args)...)
+            );
+        }
+    };
+    template <typename rtype, typename F1, typename F2, typename... Fs>
+        requires (!std::is_invocable_v<F2, rtype>)
+    struct can_capture<rtype, F1, F2, Fs...> {
+        using type = void;
+        static constexpr bool enable = false;
+    };
+
+    template <typename... Fs>
+    struct FunctionPipe {};
+    template <typename F, typename... Fs>
+    struct FunctionPipe<F, Fs...> : FunctionPipe<Fs...> {
+        std::remove_cvref_t<F> func;
+        constexpr FunctionPipe(F func, Fs... chain) :
+            FunctionPipe<Fs...>{std::forward<Fs>(chain)...},
+            func(std::forward<F>(func))
+        {}
+    };
+
+    /// TODO: capture() could capture multiple functions in order to facilitate
+    /// chaining.  The first function must be callable with the enclosing signature,
+    /// and each subsequent function must be callable with the output from the previous
+    /// function.
+
+    /* Capture a C++ function and generate a new function object that matches the
     enclosing signature, without any partial arguments.  A function of this form is
     generated whenever a C++ function object is converted into a `py::Function` type,
-    allowing them to model functions with pure C++ arguments, as long as those
-    arguments are callable with the enclosing signature. */
-    template <typename F> requires (invocable<F>)
-    [[nodiscard]] static auto capture(F&& func) {
-        struct Func {
-            std::remove_cvref_t<F> func;
+    allowing it to model functions with pure C++ arguments, as long as those arguments
+    are implicitly convertible from the enclosing signature. */
+    template <typename F, typename... Fs> requires (can_capture<Return, F, Fs...>::enable)
+    [[nodiscard]] static constexpr auto capture(F&& func, Fs&&... chain) {
+        using rtype = can_capture<Return, F, Fs...>::type;
+
+        struct Func : FunctionPipe<F, Fs...> {
+            constexpr Func(F func, Fs... chain) :
+                FunctionPipe<F, Fs...>(std::forward<F>(func), std::forward<Fs>(chain)...)
+            {}
+
             Return operator()(typename ArgTraits<Args>::unbind... args) const {
                 return func(std::forward<typename ArgTraits<Args>::unbind>(args)...);
             }
         };
-        return Func{std::forward<F>(func)};
+        return Func{std::forward<F>(func), std::forward<Fs>(chain)...};
     }
 
     /* Produce a string representation of this signature for debugging purposes.  The
@@ -10773,8 +10809,8 @@ public:
     of indentation for the extra lines.  Note that the maximum width is not a hard
     limit; individual components can exceed it, but never on the same line as another
     component.
-    
-    The output from this method is directly written into a .pyi file when bindings are
+
+    The output from this method is directly written to a .pyi file when bindings are
     generated, allowing static type checkers to validate C++ function signatures and
     provide high-quality syntax highlighting/autocompletion. */
     [[nodiscard]] static std::string to_string(
@@ -10792,7 +10828,8 @@ public:
         /// convert the type to Python and return its qualified name?  That way, the
         /// .pyi file would be able to import the type correctly.  That will need some
         /// work, and demangling might be another option to the method that directs it
-        /// to do this.
+        /// to do this.  I'll probably have to revisit that when I actually try to
+        /// build the .pyi files, and can test more directly.
 
         size_t last_posonly = std::numeric_limits<size_t>::max();
         size_t first_kwonly = std::numeric_limits<size_t>::max();
