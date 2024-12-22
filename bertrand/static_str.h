@@ -3017,13 +3017,13 @@ namespace std {
         }
     };
 
-    /* Specialize std::tuple_size to allow for structured bindings. */
+    /* Specialize `std::tuple_size` to allow for structured bindings. */
     template <typename Value, bertrand::StaticStr... Keys>
     struct tuple_size<bertrand::StaticMap<Value, Keys...>> :
         std::integral_constant<size_t, sizeof...(Keys)>
     {};
 
-    /* Specialize std::tuple_element to allow for structured bindings. */
+    /* Specialize `std::tuple_element` to allow for structured bindings. */
     template <size_t I, typename Value, bertrand::StaticStr... Keys>
         requires (I < sizeof...(Keys))
     struct tuple_element<I, bertrand::StaticMap<Value, Keys...>> {

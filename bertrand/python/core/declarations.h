@@ -236,7 +236,6 @@ namespace impl {
     using bertrand::has_ixor;
     using bertrand::ixor_type;
     using bertrand::ixor_returns;
-    using bertrand::chain;
     using bertrand::ArgPack;
     using bertrand::KwargPack;
     using bertrand::ArgKind;
@@ -246,7 +245,10 @@ namespace impl {
     using bertrand::arg_pack;
     using bertrand::kwarg_pack;
     using bertrand::is_arg;
+    using bertrand::impl::args_tag;
     using bertrand::is_args;
+    using bertrand::impl::chain_tag;
+    using bertrand::chain;
 
     struct BertrandTag {};
     struct UnionTag : BertrandTag {};
@@ -627,6 +629,11 @@ custom call operator which takes an instance of `From` and returns an instance o
  */
 template <typename From, typename To = void>
 struct __cast__                                             : Disable {};
+
+
+/// TODO: see if I can eliminate the __explicit_cast__ control struct.  It's
+/// unnecessarily confusing, and can interfere with expected C++ behavior
+/// (i.e. static_cast<> not doing any work at runtime).
 
 
 /* Enables explicit conversions between any `py::Object` subclass and an arbitrary

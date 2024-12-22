@@ -801,6 +801,9 @@ public:
         }(name))
     {}
 
+    /// TODO: figure out copy/move constructors/assignment operators
+
+
     /// TODO: this class will eventually need a bunch of really tight integrations
     /// with `py::Function`, so when I finally get to that, I'll have to revisit this.
 
@@ -895,9 +898,7 @@ public:
     counts backwards from the tail of the parameter list, and raises an IndexError
     if the index is out of bounds. */
     [[nodiscard]] const Param& operator[](int i) const {
-        if (i < 0) {
-            i += m_parameters.size();
-        }
+        i += m_parameters.size() * (i < 0);
         if (i < 0 || i >= m_parameters.size()) {
             throw IndexError("index out of range");
         }
@@ -1540,6 +1541,225 @@ public:
         return m_key;
     }
 };
+
+
+/* Checks whether two signatures are compatible with each other, meaning that
+one can be registered as a viable overload of the other.  Also allows
+topological ordering of signatures, where `<` checks will sort signatures from
+most restrictive to least restrictive.
+
+Two signatures are considered compatible if every parameter in the lesser
+signature has an equivalent in the greater signature with the same name and
+kind, and the lesser annotation is a subtype of the greater.  Arguments must
+also be given in the same order, and if any in the lesser signature have
+default values, then the same must also be true in the greater (though the
+default values may differ between them).  Note that the reverse is not always
+true, meaning that if the greater signature defines a parameter as having a
+default value, then it may be required in the lesser signature without
+violating compatibility.
+
+Variadic arguments in both signatures are special cases.  First, if the lesser
+signature accepts variadic arguments of either kind, then the greater
+signature must as well, and the lesser annotation must be a subtype of the
+greater annotation.  Similar to default values, the reverse does not always
+hold, meaning that if the greater signature has variadic arguments, then the
+lesser signature can accept any number of additional arguments of the same kind
+with arbitrary names (including other variadic arguments), as long as the
+annotations are compatible with the greater argument's annotation.
+
+Equality occurs when two signatures are compatible in both directions, meaning
+that their parameter lists are identical.  Strict `<` or `>` ordering occurs
+when the subtype relationships hold, but the parameter lists are not
+identical. */
+[[nodiscard]] bool operator<(const inspect& lhs, const inspect& rhs) {
+    if (lhs.size() < rhs.size()) {
+        return false;
+    }
+
+    constexpr auto issubclass = [](PyObject* lhs, PyObject* rhs) {
+        int rc = PyObject_IsSubclass(lhs, rhs);
+        if (rc < 0) {
+            Exception::from_python();
+        }
+        return rc;
+    };
+    constexpr auto isequal = [](PyObject* lhs, PyObject* rhs) {
+        int rc = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
+        if (rc < 0) {
+            Exception::from_python();
+        }
+        return rc;
+    };
+
+    if (!issubclass(
+        ptr(lhs.return_annotation()),
+        ptr(rhs.return_annotation())
+    )) {
+        return false;
+    }
+    bool equal = isequal(
+        ptr(lhs.return_annotation()),
+        ptr(rhs.return_annotation())
+    );
+
+    auto l = lhs.begin();
+    auto l_end = lhs.end();
+    auto r = rhs.begin();
+    auto r_end = rhs.end();
+    while (r != r_end) {
+        if (r->args()) {
+            while (l != l_end && l->pos()) {
+                equal = false;
+                if (!issubclass(ptr(l->type), ptr(r->type))) {
+                    return false;
+                }
+                ++l;
+            }
+            if (l != l_end && l->args()) {
+                if (!issubclass(ptr(l->type), ptr(r->type))) {
+                    return false;
+                }
+                if (equal) {
+                    equal = isequal(ptr(l->type), ptr(r->type));
+                }
+                ++l;
+            }
+        } else if (r->kwargs()) {
+            while (l != l_end && l->kwonly()) {
+                equal = false;
+                if (!issubclass(ptr(l->type), ptr(r->type))) {
+                    return false;
+                }
+                ++l;
+            }
+            if (l != l_end && l->kwargs()) {
+                if (!issubclass(ptr(l->type), ptr(r->type))) {
+                    return false;
+                }
+                if (equal) {
+                    equal = isequal(ptr(l->type), ptr(r->type));
+                }
+                ++l;
+            }
+        } else {
+            if (l == l_end || l->name != r->name || l->kind != r->kind || !issubclass(
+                ptr(l->type),
+                ptr(r->type)
+            )) {
+                return false;
+            }
+            if (equal) {
+                equal = isequal(ptr(l->type), ptr(r->type));
+            }
+            ++l;
+        }
+        ++r;
+    }
+    return !equal;
+}
+
+
+[[nodiscard]] bool operator<=(const inspect& lhs, const inspect& rhs) {
+    if (lhs.size() < rhs.size()) {
+        return false;
+    }
+
+    constexpr auto issubclass = [](PyObject* lhs, PyObject* rhs) {
+        int rc = PyObject_IsSubclass(lhs, rhs);
+        if (rc < 0) {
+            Exception::from_python();
+        }
+        return rc;
+    };
+
+    if (!issubclass(
+        ptr(lhs.return_annotation()),
+        ptr(rhs.return_annotation())
+    )) {
+        return false;
+    }
+
+    auto l = lhs.begin();
+    auto l_end = lhs.end();
+    auto r = rhs.begin();
+    auto r_end = lhs.end();
+    while (r != r_end) {
+        if (r->args()) {
+            while (l != l_end && (l->pos() || l->args())) {
+                if (!issubclass(ptr(l->type), ptr(r->type))) {
+                    return false;
+                }
+                ++l;
+            }
+        } else if (r->kwargs()) {
+            while (l != l_end && (l->kwonly() || l->kwargs())) {
+                if (!issubclass(ptr(l->type), ptr(r->type))) {
+                    return false;
+                }
+                ++l;
+            }
+        } else {
+            if (l == l_end || l->name != r->name || l->kind != r->kind || !issubclass(
+                ptr(l->type),
+                ptr(r->type)
+            )) {
+                return false;
+            }
+            ++l;
+        }
+        ++r;
+    }
+    return true;
+}
+
+
+[[nodiscard]] bool operator==(const inspect& lhs, const inspect& rhs) {
+    if (lhs.size() != rhs.size() || lhs.hash() != rhs.hash()) {
+        return false;
+    }
+
+    constexpr auto isequal = [](PyObject* lhs, PyObject* rhs) {
+        int rc = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
+        if (rc < 0) {
+            Exception::from_python();
+        }
+        return rc;
+    };
+
+    if (!isequal(
+        ptr(lhs.return_annotation()),
+        ptr(rhs.return_annotation())
+    )) {
+        return false;
+    }
+
+    auto l = lhs.begin();
+    auto r = rhs.begin();
+    for (size_t i = 0, end = lhs.size(); i < end; ++i, ++l, ++r) {
+        if (l->name != r->name || l->kind != r->kind || !isequal(
+            ptr(l->type),
+            ptr(r->type)
+        )) {
+            return false;
+        }
+    }
+    return true;
+}
+
+
+[[nodiscard]] bool operator!=(const inspect& lhs, const inspect& rhs) {
+    return !(lhs == rhs);
+}
+
+
+[[nodiscard]] bool operator>=(const inspect& lhs, const inspect& rhs) {
+    return rhs <= lhs;
+}
+
+
+[[nodiscard]] bool operator>(const inspect& lhs, const inspect& rhs) {
+    return rhs < lhs;
+}
 
 
 }  // namespace py
@@ -7662,45 +7882,28 @@ public:
         have identical origins and require the same type.  A unique edge will always be
         created for each parameter in a key when it is first inserted. */
         struct Edge {
-            /// TODO: if I replace Metadata with inspect(), then each edge can
-            /// reference an inspect::Param object here, which replaces the need for
-            /// everything except the target node.  The edges also don't need to store
-            /// the buffer for the name, since it would all just view into the same
-            /// string being used by Python for the signature.
-
-            size_t hash;
-            std::string name;
-            Object type;
-            impl::ArgKind kind;
+            const py::inspect::Param* param;
             std::shared_ptr<Node> target;
-            uint64_t mask;
 
-            /* When inserted into an associative container, Edges will be sorted by
-            kind, with positional < keyword < optional < variadic.  Ties are broken
-            either by hash or address of target node, both of which can be searched
-            directly using transparent comparisons. */
-            friend bool operator<(const Edge& lhs, const Edge& rhs) {
-                return
-                    lhs.kind < rhs.kind ||
-                    lhs.hash < rhs.hash ||
-                    lhs.target < rhs.target;
-            }
-
-            friend bool operator<(const Edge& lhs, size_t rhs) {
-                return lhs.hash < rhs;
-            }
-
-            friend bool operator<(size_t lhs, const Edge& rhs) {
-                return lhs < rhs.hash;
-            }
-
-            friend bool operator<(const Edge& lhs, std::shared_ptr<Node> rhs) {
-                return lhs.target < rhs;
-            }
-
-            friend bool operator<(std::shared_ptr<Node> lhs, const Edge& rhs) {
-                return lhs < rhs.target;
-            }
+            /* When inserted into an associative container, Edge pointers will be
+            sorted by kind, with positional < keyword < optional < variadic.  Ties are
+            broken either by hash or address of target node, both of which can be
+            searched directly using transparent comparisons. */
+            struct Less {
+                using is_transparent = void;
+                static bool operator()(const Edge* lhs, const Edge* rhs) {
+                    return
+                        lhs->param.kind < rhs->param.kind ||
+                        lhs->param.hash < rhs->param.hash ||
+                        lhs->target < rhs->target;
+                }
+                static bool operator()(const Edge* lhs, size_t rhs) {
+                    return lhs->param.hash < rhs;
+                }
+                static bool operator()(size_t lhs, const Edge* rhs) {
+                    return lhs < rhs->param.hash;
+                }
+            };
         };
 
     private:
@@ -7709,142 +7912,261 @@ public:
             std::same_as<T, instance> || std::same_as<T, subclass>;
 
         /* An encoded representation of a function that has been inserted into the
-        overload trie.  Includes the function itself, a hash of the signature that it
-        was inserted under, a bitmask of the required arguments that must be
-        satisfied to invoke the function, and a canonical path of edges to follow when
-        removing the function from the trie.  Also includes an immutable map of keyword
-        names to component required bitmasks to correct for arbitrary keyword order. */
+        overload trie.  The function itself is stored as an inspect.Signature object,
+        from which a canonical path of edges can be generated, which are traversed when
+        the function is removed from the trie. */
         struct Metadata {
-            Object func;
-            size_t hash;
-            uint64_t required;
+            py::inspect signature;
             std::vector<Edge> path;
-            std::unordered_map<std::string_view, uint64_t> keywords;
 
-            /// TODO: I can probably replace this with just an instance of the
-            /// inspect() class, except for the edge path.
-            /// -> This also simplifies memory management for the keyword names, since
-            /// they'll be stored within the signature and reference counted along with
-            /// it, meaning that the string_views should always be stable, regardless
-            /// of whether the Metadata struct is copied or moved.  That means the
-            /// `data` set can now be stored as an unordered_set for faster lookups
-            /// during iteration.
-
-            friend bool operator<(const Metadata& lhs, const Metadata& rhs) {
-                return lhs.hash < rhs.hash;
+            Metadata(py::inspect&& signature) : signature(std::move(signature)) {
+                path.reserve(signature.size());
+                for (const auto& param : signature) {
+                    path.emplace_back(&param, nullptr);
+                }
             }
 
-            friend bool operator<(const Metadata& lhs, size_t rhs) {
-                return lhs.hash < rhs;
+            Metadata(const Metadata& other) : signature(other.signature) {
+                path.reserve(signature.size());
+                auto s = signature.begin();
+                auto s_end = signature.end();
+                auto p = other.path.begin();
+                auto p_end = other.path.end();
+                while (s != s_end && p != p_end) {
+                    path.emplace_back(&*s, p->target);
+                    ++s;
+                    ++p;
+                }
             }
 
-            friend bool operator<(size_t lhs, const Metadata& rhs) {
-                return lhs < rhs.hash;
+            Metadata& operator=(const Metadata& other) {
+                if (&other != this) {
+                    signature = other.signature;
+                    path.clear();
+                    path.reserve(signature.size());
+                    auto s = signature.begin();
+                    auto s_end = signature.end();
+                    auto p = other.path.begin();
+                    auto p_end = other.path.end();
+                    while (s != s_end && p != p_end) {
+                        path.emplace_back(&*s, p->target);
+                        ++s;
+                        ++p;
+                    }
+                    path.shrink_to_fit();
+                }
+                return *this;
             }
+
+            Metadata(Metadata&& other) = default;
+            Metadata& operator=(Metadata&& other) = default;
+
+            /* Starting from the root node of the trie, insert all edges associated
+            with the tracked overload and allocate new nodes as needed. */
+            void insert(std::shared_ptr<Node> root) {
+                constexpr bool keep_defaults = false;
+                constexpr size_t max_width = 80;
+                constexpr size_t indent = 4;
+                constexpr std::string prefix(8, ' ');
+
+                std::shared_ptr<Node> curr = root;
+                int first_keyword = -1;
+                int last_required = 0;
+                for (int i = 0, end = signature.size(); i < end; ++i) {
+                    try {
+                        Edge& edge = path[i];
+                        if (edge.param->posonly()) {
+                            curr->insert(edge);
+                            // if (!data->path.back().param->opt()) {
+                            //     ++first_keyword;
+                            //     last_required = i;
+                            // }
+                        } else if (edge.param->pos()) {
+
+                        } else if (edge.param->kw()) {
+
+                        } else if (edge.param->args()) {
+
+                        } else if (edge.param->kwargs()) {
+
+                        } else {
+                            throw ValueError("invalid parameter kind");
+                        }
+                        curr = edge->target;
+
+                    // if an error occurs, remove all edges that have been added thus far
+                    } catch (...) {
+                        curr = root;
+                        for (int j = 0; j < i; ++j) {
+                            Edge& edge = path[j];
+                            curr->remove(edge.hash);
+                            curr = edge.target;
+                            edge.target.reset();
+                        }
+                        throw;
+                    }
+                }
+
+                // backfill the terminal functions and full keywords for each node
+                try {
+                    /// TODO: insert terminal functions as needed
+
+                } catch (...) {
+                    curr = root;
+                    for (int i = 0, end = signature.size(); i < end; ++i) {
+                        Edge& edge = path[i];
+                        curr->remove(signature.hash());
+                        if (i >= last_required) {
+                            edge.target->func = reinterpret_steal<Object>(nullptr);
+                        }
+                        curr = edge.target;
+                        edge.target.reset();
+                    }
+                    throw;
+                }
+            }
+
+            /* Starting from the root node of the trie, remove all edges associated
+            with the tracked overload and deallocate any orphaned nodes as needed. */
+            void remove(std::shared_ptr<Node> root) {
+                if (root->func.is(signature.function())) {
+                    root->func = reinterpret_steal<Object>(nullptr);
+                }
+                for (Edge& edge : path) {
+                    root->remove(signature.hash());
+                    if (edge.target->func.is(signature.function())) {
+                        edge.target->func = reinterpret_steal<Object>(nullptr);
+                    }
+                    root = edge.target;
+                    edge.target.reset();
+                }
+            }
+
+            struct Hash {
+                using is_transparent = void;
+                static size_t operator()(const std::unique_ptr<Metadata>& meta) {
+                    return meta->signature.hash();
+                }
+            };
+
+            struct Equal {
+                using is_transparent = void;
+                static bool operator()(
+                    const std::unique_ptr<Metadata>& lhs,
+                    const std::unique_ptr<Metadata>& rhs
+                ) {
+                    return lhs->signature == rhs->signature;
+                }
+                static bool operator()(
+                    const std::unique_ptr<Metadata>& lhs,
+                    size_t rhs
+                ) {
+                    return lhs->signature.hash() == rhs;
+                }
+                static bool operator()(
+                    size_t lhs,
+                    const std::unique_ptr<Metadata>& rhs
+                ) {
+                    return lhs == rhs->signature.hash();
+                }
+            };
         };
 
-        /* Metadata is stored in an associative set rather than a hash set to ensure
-        address stability as overloads are inserted and removed. */
-        using Data = std::set<Metadata, std::less<>>;
+        using Data = std::unordered_set<
+            std::unique_ptr<Metadata>,
+            typename Metadata::Hash,
+            typename Metadata::Equal
+        >;
         using Cache = std::unordered_map<size_t, PyObject*>;
 
-        /* A placeholder edge that leads to the root node of the trie.  All trie
-        iterators are initialized with an iterator to this edge in order to bootstrap
-        traversal.  It also provides a convenient place to store extra bookkeeping
-        without contributing to the overall memory footprint of the trie. */
         size_t m_depth = 0;
-        inspect m_signature;
-        Edge m_leading_edge = {
-            .hash = 0,
+        Metadata* m_fallback = nullptr;
+        py::inspect::Param m_leading_param = {
             .name = "",
+            .hash = 0,
             .type = reinterpret_steal<Object>(nullptr),
-            .kind = 0,
-            .target = nullptr,  // root of the trie
+            .default_value = reinterpret_steal<Object>(nullptr),
+            .partial = reinterpret_steal<Object>(nullptr),
             .mask = 0,
+            .kind = 0
         };
-        Node m_leading_node;
+        Edge m_leading_edge = {
+            .param = &m_leading_param,
+            .target = nullptr,  // root of the trie
+        };
+        Node m_leading_node = {
+            .func = reinterpret_steal<Object>(nullptr),
+            .edges = {{nullptr, {&m_leading_edge}}}
+        };
         Data m_data = {};
         mutable Cache m_cache = {};
 
     public:
-        Overloads(std::string_view name, const Object& fallback) :
-            m_signature(inspect(fallback, name)),
-            m_leading_node(fallback, {{nullptr, {&m_leading_edge}}})
-        {
+        Overloads(std::string_view name, const Object& fallback) {
+            auto data = std::make_unique<Metadata>(py::inspect(fallback, name));
+
             /// TODO: if I receive an instance of `bertrand.Function`, then the
             /// signature check can be done just through some type checks rather than
             /// building a full signature object.  That would greatly increase the
             /// performance of conversions from Python -> C++ in the case where you're
             /// using bertrand types from the beginning.
+            /// TODO: do this check in the py::Function class, rather than here, so
+            /// that I can avoid comparison with the Signature template when this class
+            /// is lifted out of ::Signature<...>.
 
-            /// TODO: may not need to store the signature explicitly?  Not doing so
-            /// would save some memory, but it might also make it slightly harder to
-            /// insert overloads.  Since the fallback signature is retained, all I
-            /// need to do right now is wrtie the insertion logic such that it takes
-            /// an inspect() instance and uses that to build the insertion key.
-
-            if (m_signature != Signature{}) {
+            if (data->signature != Signature{}) {
                 constexpr size_t max_width = 80;
-                std::string prefix = std::string(8, ' ');
+                constexpr size_t indent = 4;
+                constexpr std::string prefix(8, ' ');
                 throw TypeError(
                     "signature mismatch\n    expected:\n" + Signature{}.to_string(
                         name,
                         prefix,
                         max_width,
-                        4
-                    ) + "\n    received:\n" + m_signature.to_string(
+                        indent
+                    ) + "\n    received:\n" + data->signature.to_string(
                         false,
                         prefix,
                         max_width,
-                        4
+                        indent
                     )
                 );
             };
-        }
 
-        /* Get the name of the fallback function. */
-        [[nodiscard]] std::string_view name() const noexcept {
-            return m_signature.name();
+            m_fallback = data.get();
+            m_depth = data->signature.size();
+            m_data.emplace(std::move(data));
         }
 
         /* Return a reference to the fallback function that will be chosen if no other
         overloads match a given (valid) argument set. */
         [[nodiscard]] const Object& fallback() const noexcept {
-            return m_leading_node.func;
+            return m_fallback->signature.function();
+        }
+
+        /* Get the stored signature of the fallback function. */
+        [[nodiscard]] const py::inspect& inspect() const noexcept {
+            return m_fallback->signature;
         }
 
         /* Indicates whether the trie contains any overloads. */
         [[nodiscard]] auto empty() const noexcept {
-            return m_data.empty();
+            return m_data.size() == 1;
         }
 
-        /* The number of overloads stored within the trie, ignoring the fallback
+        /* The total number of overloads stored within the trie, excluding the fallback
         implementation. */
         [[nodiscard]] auto size() const noexcept {
-            return m_data.size() - !m_data.empty();
+            return m_data.size() - 1;
         }
+
+        /// TODO: remember to track this during insertions/removals
 
         /* The maximum depth of the trie, which is equivalent to the total number of
-        arguments of its longest overload.  Variadic arguments take up a single
+        arguments of the longest overload.  Variadic arguments take up a single
         position for the purposes of this calculation. */
         [[nodiscard]] size_t depth() const noexcept {
-            return m_leading_node.hash;
-        }
-
-        /* Search against the function's overload cache to find a precomputed route
-        through the trie.  Whenever `begin()` is called with a vectorcall array, the
-        first result is always inserted here to optimize repeated calls with the same
-        signature.  If no cached function is found, this method returns null, forcing a
-        full search of the trie. */
-        [[nodiscard]] PyObject* cache_lookup(size_t hash) const noexcept {
-            auto it = m_cache.find(hash);
-            return it == m_cache.end() ? nullptr : it->second;
-        }
-
-        /* Manually clear the overload cache, forcing paths to be recomputed on
-        subsequent searches. */
-        void flush() noexcept {
-            m_cache.clear();
+            return m_depth;
         }
 
         /* A single node in the overload trie, which holds the topologically-sorted
@@ -7855,44 +8177,24 @@ public:
         private:
             struct TopoSort {
                 static bool operator()(PyObject* lhs, PyObject* rhs) {
-                    int rc = PyObject_IsSubclass(
-                        lhs,
-                        rhs
-                    );
-                    if (rc < 0) {
-                        Exception::from_python();
-                    }
-                    return rc || lhs < rhs;  // ties broken by address for stability
-                }
-            };
-
-            struct EdgeSort {
-                using is_transparent = void;  // enables transparent comparisons
-                static bool operator()(const Edge* lhs, const Edge* rhs) {
-                    return *lhs < *rhs;
-                }
-                static bool operator()(const Edge* lhs, size_t rhs) {
-                    return *lhs < rhs;
-                }
-                static bool operator()(size_t lhs, const Edge* rhs) {
-                    return lhs < *rhs;
-                }
-                static bool operator()(const Edge* lhs, std::shared_ptr<Node> rhs) {
-                    return *lhs < rhs;
-                }
-                static bool operator()(std::shared_ptr<Node> lhs, const Edge* rhs) {
-                    return lhs < *rhs;
+                    return subclass{}(lhs, rhs) || lhs < rhs;  // ties broken by address
                 }
             };
 
         public:
-            using Set = std::set<Edge*, EdgeSort>;
+            using Set = std::set<Edge*, typename Edge::Less>;
             using Map = std::map<PyObject*, Set, TopoSort>;
 
             Object func;
             Map edges;
 
-            /// TODO: insert()
+            [[nodiscard]] auto size() const { return edges.size(); }
+            [[nodiscard]] auto empty() const { return edges.empty(); }
+
+            /* Insert an outgoing edge to another node. */
+            [[maybe_unused]] bool insert(Edge& edge) {
+                /// TODO: insert the edge into the map
+            }
 
             /* Purge all outgoing edges that match a particular hash. */
             void remove(size_t hash) {
@@ -7907,9 +8209,6 @@ public:
                     }
                 }
             }
-
-            auto size() const { return edges.size(); }
-            auto empty() const { return edges.empty(); }
 
             /* A sorted iterator over the individual edges that match a particular
             value within an overload key.  The top-level trie iterator consists of a
@@ -8008,34 +8307,44 @@ public:
             pointer (the default) for the value will bypass the type check, yielding
             all outgoing edges regardless of type. */
             template <typename check = instance> requires (valid_check<check>)
-            Iterator<check> begin(PyObject* value = nullptr) const {
-                return {value, edges.begin(), edges.end()};
-            }
-            template <typename check = instance> requires (valid_check<check>)
-            Iterator<check> cbegin(PyObject* value = nullptr) const {
+            [[nodiscard]] Iterator<check> begin(PyObject* value = nullptr) const {
                 return {value, edges.begin(), edges.end()};
             }
 
-            impl::Sentinel end() const { return {}; }
-            impl::Sentinel cend() const { return {}; }
+            [[nodiscard]] impl::Sentinel end() const { return {}; }
         };
 
         /* Return a reference to the root node of the overload trie.  This can be null
         if the function has no overloads beyond the fallback implementation.  In that
         case, the entire overload trie is deleted to save space, and will be rebuilt
-        the first time an overload is registered. */
+        the first time a new overload is registered. */
         [[nodiscard]] std::shared_ptr<Node> root() const noexcept {
             return m_leading_edge.target;
         }
 
-        /* Insert a function into the trie.  Throws a TypeError if the function is not
-        a viable overload of the enclosing signature (as determined by an
-        `inspect.signature()` call), or a ValueError if it conflicts with an existing
-        overload. */
-        void insert(const Object& func) {
-            /// TODO: inspect{} the function here to get the signature, validate it,
-            /// and then insert into the metadata map + encode into the overload trie,
-            /// building new nodes as needed.
+        /* Search against the function's overload cache to find a precomputed route
+        through the trie.  Whenever `begin()` is called with a vectorcall array, the
+        first result is always inserted here to optimize repeated calls with the same
+        signature.  If no cached function is found, this method returns null, forcing a
+        full search of the trie.
+
+        Note that all arguments must be properly normalized in order for cache searches
+        to remain stable.  This means inserting any partial arguments and converting to
+        proper Bertrand types before initiating a search.  If this is not done, then it
+        is possible for several distinct signatures to erroneously resolve to a single
+        overload, since some Python types (e.g. generics) are opaque to the Python
+        type system, and will produce an ambiguous hash.  Normalizing to Bertrand types
+        avoids this by narrowing such arguments sufficiently for cache searches to be
+        effective. */
+        [[nodiscard]] PyObject* cache_lookup(size_t hash) const noexcept {
+            auto it = m_cache.find(hash);
+            return it == m_cache.end() ? nullptr : it->second;
+        }
+
+        /* Manually clear the overload cache, forcing paths to be recomputed on
+        subsequent searches. */
+        void flush() noexcept {
+            m_cache.clear();
         }
 
         /* Returns true if a function is present in the trie, as indicated by a
@@ -8049,48 +8358,127 @@ public:
             return false;
         }
 
-        /* Remove a function from the overload trie.  Returns true if the function was
-        successfully removed, or false if it was not found after a linear search of
-        equality checks against the trie's encoded contents. */
-        [[maybe_unused]] bool remove(const Object& func) {
-            Node* root = m_leading_edge.target.get();
-            for (Metadata& metadata : m_data) {
-                if (metadata.func == func) {
-                    Node* curr = root;
-                    if (curr->func.is(metadata.func)) {
-                        curr->func = reinterpret_steal<Object>(nullptr);
-                    }
-                    for (Edge& edge : metadata.path) {
-                        curr->remove(edge.hash);
-                        if (edge.target->func.is(metadata.func)) {
-                            edge.target->func = reinterpret_steal<Object>(nullptr);
-                        }
-                        curr = edge.target.get();
-                    }
-                    if (m_data.size() == 2) {
-                        clear();
-                    } else {
-                        auto it = m_cache.begin();
-                        auto end = m_cache.end();
-                        while (it != end) {
-                            if (metadata.func.is(it->second)) {
-                                m_cache.extract(it++);
-                            } else {
-                                ++it;
+        /* Insert a function into the trie.  Throws a TypeError if the function is not
+        a viable overload of the enclosing signature (as determined by an
+        `inspect.signature()` call), or a ValueError if it conflicts with an existing
+        overload. */
+        void insert(const Object& func) {
+            constexpr bool keep_defaults = false;
+            constexpr size_t max_width = 80;
+            constexpr size_t indent = 4;
+            constexpr std::string prefix(8, ' ');
+
+            auto data = std::make_unique<Metadata>(py::inspect(func));
+
+            // inspect the function and ensure that it is a viable overload of the
+            // enclosing signature
+            if (data->signature >= this->inspect()) {
+                throw TypeError(
+                    "overload must not be more general than the fallback signature\n"
+                    "    fallback:\n" + this->inspect().to_string(
+                        keep_defaults,
+                        prefix,
+                        max_width,
+                        indent
+                    ) + "\n    overload:\n" + data->signature.to_string(
+                        keep_defaults,
+                        prefix,
+                        max_width,
+                        indent
+                    )
+                );
+            }
+
+            try {
+                // construct root node and insert fallback if it doesn't already exist
+                if (m_leading_edge.target == nullptr) {
+                    m_leading_edge.target = std::make_shared<Node>();
+                    m_fallback->insert(m_leading_edge.target);
+                }
+
+                // if the signature is empty, then the root node is the terminal node
+                if (data->signature.empty()) {
+                    if (!m_leading_edge.target->func.is(nullptr)) {
+                        for (const std::unique_ptr<Metadata>& existing : m_data) {
+                            if (!existing->signature.required()) {
+                                throw TypeError(
+                                    "ambiguous overload\n    existing:\n" +
+                                    existing->signature.to_string(
+                                        keep_defaults,
+                                        prefix,
+                                        max_width,
+                                        indent
+                                    ) + "\n    new:\n" +
+                                    data->signature.to_string(
+                                        keep_defaults,
+                                        prefix,
+                                        max_width,
+                                        indent
+                                    )
+                                );
                             }
                         }
+                    }
+                    m_leading_edge.target->func = data->signature.function();
+
+                // otherwise, insert edges linking each parameter in the trie
+                } else {
+                    data->insert(m_leading_edge.target);
+                }
+
+            } catch (...) {
+                if (empty()) {
+                    clear();
+                }
+                throw;
+            }
+
+            // track the function and path in the metadata set
+            m_data.emplace(std::move(data));
+            m_cache.clear();
+        }
+
+        /* Remove a function from the overload trie.  Returns the function that was
+        removed or None if no matching function was found.  Raises a KeyError if an
+        attempt is made to delete the fallback function.
+
+        This works by iterating over the trie's encoded contents and performing an
+        equality check against the input key, which allows transparent comparisons if
+        the function and/or key overrides the `__eq__` method. */
+        [[maybe_unused]] Object remove(const Object& key) {
+            for (std::unique_ptr<Metadata>& metadata : m_data) {
+                if (metadata->signature.function() == key) {
+                    if (metadata->signature.function().is(fallback())) {
+                        throw KeyError("cannot remove the fallback implementation");
+                    }
+                    Object result = metadata->signature.function();
+                    metadata->remove(root());
+                    if (m_data.size() <= 2) {
+                        clear();
+                    } else {
+                        m_cache.clear();
                         m_data.erase(metadata);
                     }
-                    return true;
+                    return result;
                 }
             }
-            return false;
+            return reinterpret_borrow<Object>(Py_None);
         }
 
         /* Remove all overloads from the trie, resetting it to its default state. */
         void clear() noexcept {
             m_cache.clear();
-            m_data.clear();
+            auto it = m_data.begin();
+            while (it != m_data.end()) {
+                if (it->func.is(fallback())) {
+                    for (Edge& edge : it->path) {
+                        edge.target.reset();
+                    }
+                    ++it;
+                } else {
+                    it = m_data.erase(it);
+                }
+            }
             m_leading_edge.target.reset();
         }
 
@@ -10717,88 +11105,20 @@ public:
         return vectorcall(ptr(*it));
     }
 
-
-    template <typename rtype, typename F1, typename... Fs>
-    struct PipedFunction {
-        static constexpr bool enable = true;
-        using type = rtype;
-
-        std::remove_cvref_t<F1> func;
-        constexpr PipedFunction(F1 func, Fs...) : func(std::forward<F1>(func)) {}
-
-        template <typename... A> requires (std::is_invocable_v<F1, A...>)
-        type constexpr operator()(this auto&& self, A&&... args) {
-            return std::forward<decltype(self)>(self).func(std::forward<A>(args)...);
-        }
-    };
-    template <typename rtype, typename F1, typename F2, typename... Fs>
-        requires (std::is_invocable_v<F2, rtype>)
-    struct PipedFunction<rtype, F1, F2, Fs...> :
-        PipedFunction<std::invoke_result_t<F2, rtype>, F2, Fs...>
-    {
-
-        using Base = PipedFunction<std::invoke_result_t<F2, rtype>, F2, Fs...>;
-
-        // static constexpr bool enable =
-        //     can_capture<out, F2, Fs...>::enable;
-        // using type =
-        //     can_capture<out, F2, Fs...>::type;
-
-        std::remove_cvref_t<F1> func;
-        constexpr PipedFunction(F1 func, F2 next, Fs... rest) :
-            Base(std::forward<F2>(next), std::forward<Fs>(rest)...),
-            func(std::forward<F1>(func))
-        {}
-
-        template <typename... A> requires (std::is_invocable_v<F1, A...>)
-        Base::type constexpr operator()(this auto&& self, A&&... args) {
-            return Base::operator()(
-                std::forward<decltype(self)>(self).func(std::forward<A>(args)...)
-            );
-        }
-    };
-    template <typename rtype, typename F1, typename F2, typename... Fs>
-        requires (!std::is_invocable_v<F2, rtype>)
-    struct can_capture<rtype, F1, F2, Fs...> {
-        using type = void;
-        static constexpr bool enable = false;
-    };
-
-    template <typename... Fs>
-    struct FunctionPipe {};
-    template <typename F, typename... Fs>
-    struct FunctionPipe<F, Fs...> : FunctionPipe<Fs...> {
-        std::remove_cvref_t<F> func;
-        constexpr FunctionPipe(F func, Fs... chain) :
-            FunctionPipe<Fs...>{std::forward<Fs>(chain)...},
-            func(std::forward<F>(func))
-        {}
-    };
-
-    /// TODO: capture() could capture multiple functions in order to facilitate
-    /// chaining.  The first function must be callable with the enclosing signature,
-    /// and each subsequent function must be callable with the output from the previous
-    /// function.
-
     /* Capture a C++ function and generate a new function object that matches the
     enclosing signature, without any partial arguments.  A function of this form is
     generated whenever a C++ function object is converted into a `py::Function` type,
     allowing it to model functions with pure C++ arguments, as long as those arguments
     are implicitly convertible from the enclosing signature. */
-    template <typename F, typename... Fs> requires (can_capture<Return, F, Fs...>::enable)
-    [[nodiscard]] static constexpr auto capture(F&& func, Fs&&... chain) {
-        using rtype = can_capture<Return, F, Fs...>::type;
-
-        struct Func : FunctionPipe<F, Fs...> {
-            constexpr Func(F func, Fs... chain) :
-                FunctionPipe<F, Fs...>(std::forward<F>(func), std::forward<Fs>(chain)...)
-            {}
-
-            Return operator()(typename ArgTraits<Args>::unbind... args) const {
+    template <typename F> requires (invocable<F>)
+    [[nodiscard]] static constexpr auto capture(F&& func) {
+        struct Func {
+            std::remove_cvref_t<F> func;
+            constexpr Return operator()(typename ArgTraits<Args>::unbind... args) const {
                 return func(std::forward<typename ArgTraits<Args>::unbind>(args)...);
             }
         };
-        return Func{std::forward<F>(func), std::forward<Fs>(chain)...};
+        return Func{std::forward<F>(func)};
     }
 
     /* Produce a string representation of this signature for debugging purposes.  The
@@ -11299,120 +11619,6 @@ struct Signature<T> : Signature<decltype(&std::remove_reference_t<T>::operator()
 /// TODO: specialization for subclasses of DefTag?
 
 
-/* Checks whether two signatures are compatible with each other, meaning that
-one can be registered as a viable overload of the other.  Also allows
-topological ordering of signatures, where `<` checks will sort signatures from
-most restrictive to least restrictive.
-
-Two signatures are considered compatible if every parameter in the lesser
-signature has an equivalent in the greater signature with the same name and
-kind, and the lesser annotation is a subtype of the greater.  Arguments must
-also be given in the same order, and if any in the lesser signature have
-default values, then the same must also be true in the greater (though the
-default values may differ between them).  Note that the reverse is not always
-true, meaning that if the greater signature defines a parameter as having a
-default value, then it may be required in the lesser signature without
-violating compatibility.
-
-Variadic arguments in both signatures are special cases.  First, if the lesser
-signature accepts variadic arguments of either kind, then the greater
-signature must as well, and the lesser annotation must be a subtype of the
-greater annotation.  Similar to default values, the reverse does not always
-hold, meaning that if the greater signature has variadic arguments, then the
-lesser signature can accept any number of additional arguments of the same kind
-with arbitrary names (including other variadic arguments), as long as the
-annotations are compatible with the greater argument's annotation.
-
-Equality occurs when two signatures are compatible in both directions, meaning
-that their parameter lists are identical.  Strict `<` or `>` ordering occurs
-when the subtype relationships hold, but the parameter lists are not
-identical. */
-[[nodiscard]] bool operator<(const inspect& lhs, const inspect& rhs) {
-    if (lhs.size() < rhs.size()) {
-        return false;
-    }
-
-    constexpr auto issubclass = [](PyObject* lhs, PyObject* rhs) {
-        int rc = PyObject_IsSubclass(lhs, rhs);
-        if (rc < 0) {
-            Exception::from_python();
-        }
-        return rc;
-    };
-    constexpr auto isequal = [](PyObject* lhs, PyObject* rhs) {
-        int rc = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
-        if (rc < 0) {
-            Exception::from_python();
-        }
-        return rc;
-    };
-
-    if (!issubclass(
-        ptr(lhs.return_annotation()),
-        ptr(rhs.return_annotation())
-    )) {
-        return false;
-    }
-    bool equal = isequal(
-        ptr(lhs.return_annotation()),
-        ptr(rhs.return_annotation())
-    );
-
-    auto l = lhs.begin();
-    auto l_end = lhs.end();
-    auto r = rhs.begin();
-    auto r_end = rhs.end();
-    while (r != r_end) {
-        if (r->args()) {
-            while (l != l_end && l->pos()) {
-                equal = false;
-                if (!issubclass(ptr(l->type), ptr(r->type))) {
-                    return false;
-                }
-                ++l;
-            }
-            if (l != l_end && l->args()) {
-                if (!issubclass(ptr(l->type), ptr(r->type))) {
-                    return false;
-                }
-                if (equal) {
-                    equal = isequal(ptr(l->type), ptr(r->type));
-                }
-                ++l;
-            }
-        } else if (r->kwargs()) {
-            while (l != l_end && l->kwonly()) {
-                equal = false;
-                if (!issubclass(ptr(l->type), ptr(r->type))) {
-                    return false;
-                }
-                ++l;
-            }
-            if (l != l_end && l->kwargs()) {
-                if (!issubclass(ptr(l->type), ptr(r->type))) {
-                    return false;
-                }
-                if (equal) {
-                    equal = isequal(ptr(l->type), ptr(r->type));
-                }
-                ++l;
-            }
-        } else {
-            if (l == l_end || l->name != r->name || l->kind != r->kind || !issubclass(
-                ptr(l->type),
-                ptr(r->type)
-            )) {
-                return false;
-            }
-            if (equal) {
-                equal = isequal(ptr(l->type), ptr(r->type));
-            }
-            ++l;
-        }
-        ++r;
-    }
-    return !equal;
-}
 template <typename F>
 [[nodiscard]] bool operator<(const inspect& lhs, const Signature<F>& rhs) {
     if (lhs.size() < rhs.size()) {
@@ -11602,58 +11808,6 @@ template <typename L, typename R>
 }
 
 
-[[nodiscard]] bool operator<=(const inspect& lhs, const inspect& rhs) {
-    if (lhs.size() < rhs.size()) {
-        return false;
-    }
-
-    constexpr auto issubclass = [](PyObject* lhs, PyObject* rhs) {
-        int rc = PyObject_IsSubclass(lhs, rhs);
-        if (rc < 0) {
-            Exception::from_python();
-        }
-        return rc;
-    };
-
-    if (!issubclass(
-        ptr(lhs.return_annotation()),
-        ptr(rhs.return_annotation())
-    )) {
-        return false;
-    }
-
-    auto l = lhs.begin();
-    auto l_end = lhs.end();
-    auto r = rhs.begin();
-    auto r_end = lhs.end();
-    while (r != r_end) {
-        if (r->args()) {
-            while (l != l_end && (l->pos() || l->args())) {
-                if (!issubclass(ptr(l->type), ptr(r->type))) {
-                    return false;
-                }
-                ++l;
-            }
-        } else if (r->kwargs()) {
-            while (l != l_end && (l->kwonly() || l->kwargs())) {
-                if (!issubclass(ptr(l->type), ptr(r->type))) {
-                    return false;
-                }
-                ++l;
-            }
-        } else {
-            if (l == l_end || l->name != r->name || l->kind != r->kind || !issubclass(
-                ptr(l->type),
-                ptr(r->type)
-            )) {
-                return false;
-            }
-            ++l;
-        }
-        ++r;
-    }
-    return true;
-}
 template <typename F>
 [[nodiscard]] bool operator<=(const inspect& lhs, const Signature<F>& rhs) {
     if (lhs.size() < rhs.size()) {
@@ -11775,38 +11929,6 @@ template <typename L, typename R>
 }
 
 
-[[nodiscard]] bool operator==(const inspect& lhs, const inspect& rhs) {
-    if (lhs.size() != rhs.size() || lhs.hash() != rhs.hash()) {
-        return false;
-    }
-
-    constexpr auto isequal = [](PyObject* lhs, PyObject* rhs) {
-        int rc = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
-        if (rc < 0) {
-            Exception::from_python();
-        }
-        return rc;
-    };
-
-    if (!isequal(
-        ptr(lhs.return_annotation()),
-        ptr(rhs.return_annotation())
-    )) {
-        return false;
-    }
-
-    auto l = lhs.begin();
-    auto r = rhs.begin();
-    for (size_t i = 0, end = lhs.size(); i < end; ++i, ++l, ++r) {
-        if (l->name != r->name || l->kind != r->kind || !isequal(
-            ptr(l->type),
-            ptr(r->type)
-        )) {
-            return false;
-        }
-    }
-    return true;
-}
 template <typename F>
 [[nodiscard]] bool operator==(const inspect& lhs, const Signature<F>& rhs) {
     if (lhs.size() != rhs.size()) {
@@ -11885,9 +12007,6 @@ template <typename L, typename R>
 }
 
 
-[[nodiscard]] bool operator!=(const inspect& lhs, const inspect& rhs) {
-    return !(lhs == rhs);
-}
 template <typename F>
 [[nodiscard]] bool operator!=(const inspect& lhs, const Signature<F>& rhs) {
     return !(lhs == rhs);
@@ -11902,9 +12021,6 @@ template <typename L, typename R>
 }
 
 
-[[nodiscard]] bool operator>=(const inspect& lhs, const inspect& rhs) {
-    return rhs <= lhs;
-}
 template <typename F>
 [[nodiscard]] bool operator>=(const inspect& lhs, const Signature<F>& rhs) {
     return rhs <= lhs;
@@ -11919,9 +12035,6 @@ template <typename L, typename R>
 }
 
 
-[[nodiscard]] bool operator>(const inspect& lhs, const inspect& rhs) {
-    return rhs < lhs;
-}
 template <typename F>
 [[nodiscard]] bool operator>(const inspect& lhs, const Signature<F>& rhs) {
     return rhs < lhs;

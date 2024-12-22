@@ -16,6 +16,8 @@ namespace bertrand {
 
 template <typename... Ts>
 struct args;
+template <typename F, typename... Fs>
+struct chain;
 
 
 namespace impl {
@@ -130,6 +132,7 @@ namespace impl {
         using type = T;
     };
 
+    struct args_tag {};
     struct chain_tag {};
 
     template <typename T>
@@ -137,8 +140,13 @@ namespace impl {
     template <typename... Ts>
     constexpr bool _is_args<args<Ts...>> = true;
 
+    template <typename T>
+    constexpr bool _is_chain = false;
+    template <typename F, typename... Fs>
+    constexpr bool _is_chain<chain<F, Fs...>> = true;
+
     template <typename... Ts>
-    struct ArgsBase {};
+    struct ArgsBase : args_tag {};
     template <typename T, typename... Ts>
     struct ArgsBase<T, Ts...> : ArgsBase<Ts...> {
         std::conditional_t<
@@ -164,7 +172,6 @@ namespace impl {
     template <typename T, typename... Ts>
         requires (std::is_void_v<T> || (std::is_void_v<Ts> || ...))
     struct ArgsBase<T, Ts...> {};
-
 }
 
 
@@ -1013,7 +1020,7 @@ concept ixor_returns = requires(L& l, R r) {
 
 
 template <typename T>
-concept is_args = impl::_is_args<T>;
+concept is_args = impl::_is_args<std::remove_cvref_t<T>>;
 
 
 /* Save a set of input arguments for later use.  Returns an args<> container, which
@@ -1216,6 +1223,10 @@ template <typename... Ts>
 args(Ts&&...) -> args<Ts...>;
 
 
+template <typename T>
+concept is_chain = impl::_is_chain<std::remove_cvref_t<T>>;
+
+
 /* A higher-order function that merges a sequence of component functions into a single
 operation.  When called, the chain will evaluate the first function with the input
 arguments, then pass the result to the next function, and so on, until the final result
@@ -1265,7 +1276,7 @@ public:
     template <size_t I> requires (I < n)
     using at = _at<I>::type;
 
-    constexpr chain(F1 func, F2 next, Fs... rest) :
+    constexpr chain(F1 first, F2 next, Fs... rest) :
         chain<F2, Fs...>(std::forward<F2>(next), std::forward<Fs>(rest)...),
         func(std::forward<F1>(func))
     {}
@@ -1296,7 +1307,7 @@ template <typename F1, typename... Fs>
 chain(F1&&, Fs&&...) -> chain<F1, Fs...>;
 
 
-template <inherits<impl::chain_tag> Self, inherits<impl::chain_tag> Next>
+template <is_chain Self, is_chain Next>
 [[nodiscard]] constexpr decltype(auto) operator>>(Self&& self, Next&& next) {
     return []<size_t... Is, size_t... Js>(
         std::index_sequence<Is...>,
@@ -1317,7 +1328,7 @@ template <inherits<impl::chain_tag> Self, inherits<impl::chain_tag> Next>
 }
 
 
-template <inherits<impl::chain_tag> Self, typename Next>
+template <is_chain Self, typename Next>
 [[nodiscard]] constexpr decltype(auto) operator>>(Self&& self, Next&& next) {
     return []<size_t... Is>(std::index_sequence<Is...>, auto&& self, auto&& next) {
         return chain(
@@ -1332,7 +1343,7 @@ template <inherits<impl::chain_tag> Self, typename Next>
 }
 
 
-template <typename Prev, inherits<impl::chain_tag> Self>
+template <typename Prev, is_chain Self>
 [[nodiscard]] constexpr decltype(auto) operator>>(Prev&& prev, Self&& self) {
     return []<size_t... Is>(std::index_sequence<Is...>, auto&& prev, auto&& self) {
         return chain(
@@ -1354,21 +1365,21 @@ namespace std {
 
     /* Specializing `std::tuple_size` allows function chains to be decomposed using
     structured bindings. */
-    template <bertrand::inherits<bertrand::impl::chain_tag> T>
+    template <bertrand::is_chain T>
     struct tuple_size<T> :
         std::integral_constant<size_t, std::remove_cvref_t<T>::n>
     {};
 
     /* Specializing `std::tuple_element` allows function chains to be decomposed using
     structured bindings. */
-    template <size_t I, bertrand::inherits<bertrand::impl::chain_tag> T>
+    template <size_t I, bertrand::is_chain T>
         requires (I < std::remove_cvref_t<T>::n)
     struct tuple_element<I, T> {
         using type = decltype(std::declval<T>().template get<I>());
     };
 
     /* `std::get<I>(chain)` extracts the I-th function in the chain. */
-    template <size_t I, bertrand::inherits<bertrand::impl::chain_tag> T>
+    template <size_t I, bertrand::is_chain T>
         requires (I < std::remove_cvref_t<T>::n)
     [[nodiscard]] constexpr decltype(auto) get(T&& chain) {
         return std::forward<T>(chain).template get<I>();
