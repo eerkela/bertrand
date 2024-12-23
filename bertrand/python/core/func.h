@@ -7878,355 +7878,48 @@ public:
     private:
         struct Metadata;
 
+        template <typename T>
+        static constexpr bool valid_check =
+            std::same_as<T, instance> || std::same_as<T, subclass>;
+
     public:
         struct Node;
 
-        /// TODO: edges now track the metadata instance that created them, so that
-        /// I can determine the resolved overload straight from the last edge that
-        /// that was traversed, rather than the deepest edge that was reached or
-        /// requiring a separate hash table lookup.
+        /// TODO: ownership over the nodes is now complicated, since multiple edges
+        /// may overlap.
 
         /* A single link between two nodes in the trie, which describes how to traverse
         from one to the other.  Multiple edges may share the same target node if they
-        have identical origins and require the same type.  A unique edge will always be
-        created for each parameter in a key when it is first inserted. */
+        require the same type and have identical origins, kinds, and names.  A unique
+        edge will always be created for each parameter in a signature when it is first
+        inserted. */
         struct Edge {
-            Metadata* owner;
-            const py::inspect::Param* param;
+            const py::inspect::Param& param;
             std::shared_ptr<Node> target;
 
             /* When inserted into an associative container, Edge pointers will be
             sorted by kind, with positional < keyword < optional < variadic.  Ties are
-            broken either by hash or address of target node, both of which can be
-            searched directly using transparent comparisons. */
+            broken by name. */
             struct Less {
                 using is_transparent = void;
                 static bool operator()(const Edge* lhs, const Edge* rhs) {
                     return
                         lhs->param.kind < rhs->param.kind ||
-                        lhs->param.hash < rhs->param.hash ||
-                        lhs->target < rhs->target;
+                        lhs->param.name < rhs->param.name;
                 }
                 static bool operator()(const Edge* lhs, size_t rhs) {
-                    return lhs->param.hash < rhs;
+                    return lhs->owner.signature.hash() < rhs;
                 }
                 static bool operator()(size_t lhs, const Edge* rhs) {
-                    return lhs < rhs->param.hash;
+                    return lhs < rhs->owner.signature.hash();
                 }
             };
         };
-
-    private:
-        template <typename T>
-        static constexpr bool valid_check =
-            std::same_as<T, instance> || std::same_as<T, subclass>;
-
-        /* An encoded representation of a function that has been inserted into the
-        overload trie.  The function itself is stored as an inspect.Signature object,
-        from which a canonical path of edges can be generated, which are traversed when
-        the function is removed from the trie. */
-        struct Metadata {
-            py::inspect signature;
-            std::vector<Edge> path;
-
-            Metadata(py::inspect&& signature) : signature(std::move(signature)) {
-                path.reserve(signature.size());
-                for (const auto& param : signature) {
-                    path.emplace_back(&param, nullptr);
-                }
-            }
-
-            Metadata(const Metadata& other) : signature(other.signature) {
-                path.reserve(signature.size());
-                auto s = signature.begin();
-                auto s_end = signature.end();
-                auto p = other.path.begin();
-                auto p_end = other.path.end();
-                while (s != s_end && p != p_end) {
-                    path.emplace_back(&*s, p->target);
-                    ++s;
-                    ++p;
-                }
-            }
-
-            Metadata& operator=(const Metadata& other) {
-                if (&other != this) {
-                    signature = other.signature;
-                    path.clear();
-                    path.reserve(signature.size());
-                    auto s = signature.begin();
-                    auto s_end = signature.end();
-                    auto p = other.path.begin();
-                    auto p_end = other.path.end();
-                    while (s != s_end && p != p_end) {
-                        path.emplace_back(&*s, p->target);
-                        ++s;
-                        ++p;
-                    }
-                    path.shrink_to_fit();
-                }
-                return *this;
-            }
-
-            Metadata(Metadata&& other) = default;
-            Metadata& operator=(Metadata&& other) = default;
-
-            /* Starting from the root node of the trie, insert all edges associated
-            with the tracked overload and allocate new nodes as needed. */
-            void insert(std::shared_ptr<Node> root) {
-                constexpr bool keep_defaults = false;
-                constexpr size_t max_width = 80;
-                constexpr size_t indent = 4;
-                constexpr std::string prefix(8, ' ');
-
-                /// TODO: It should be possible to compress the trie slightly by
-                /// sharing edges between nodes based on name and kind alone.  That
-                /// might even be necessary to ensure ambiguous overloads are caught
-                /// correctly.
-                /// -> See excalidraw diagram for further explanation.  Basically,
-                /// I think positional edges can be reused, but keyword (-only?) edges
-                /// have to point to unique nodes.
-                /// -> Maybe the solution is to also reuse keywords if they have the
-                /// same type, name, and kind, but compensate by determining the final
-                /// overload from the last source parameter, rather than the deepest
-                /// node that was traversed.  That should also mean that I can drop a
-                /// lot of special handling for that case in the iterator class.
-                /// TODO: This does require some changes to the traversal mechanism,
-                /// since the last parsed argument does not necessarily have a
-                /// `data` pointer for us to exploit.  What I could do is have a
-                /// separate pointer that refers to the metadata instance that created
-                /// this edge, and then use that to determine the final overload?
-                /// There has to be some concept of ownership over every node in the
-                /// trie.
-                /// TODO: ownership is not per-node, but per-edge, such that we get the
-                /// final overload directly from the last edge that was traversed,
-                /// and don't store anything extra on the node itself.
-
-
-                std::shared_ptr<Node> curr = root;
-                try {
-                    // insert an edge linking each parameter in the trie, allocating
-                    // nodes where they do not already exist
-                    int first_keyword = -1;
-                    int last_required = 0;
-                    for (int i = 0, end = signature.size(); i < end; ++i) {
-                        Edge& edge = path[i];
-                        curr->insert(edge);
-                        if (!(edge.param->opt() || edge.param->variadic())) {
-                            first_keyword += edge.param->posonly();
-                            last_required = i;
-                        }
-                        edge.target = std::make_shared<Node>();
-                        curr = edge->target;
-                    }
-
-                    // backfill the terminal functions and full keywords for each node
-                    std::string_view name;
-                    int start = static_cast<int>(signature.size()) - 1;
-                    for (int i = start; i > first_keyword; ++i) {
-                        Edge& edge = path[i];
-                        if (i >= last_required) {
-                            if (edge.target->data) {
-                                throw TypeError(
-                                    "ambiguous overload\n    existing:\n" +
-                                    edge.target->data->signature.to_string(
-                                        keep_defaults,
-                                        prefix,
-                                        max_width,
-                                        indent
-                                    ) + "\n    new:\n" +
-                                    signature.to_string(
-                                        keep_defaults,
-                                        prefix,
-                                        max_width,
-                                        indent
-                                    )
-                                );
-                            }
-                            edge.target->data = this;
-                        }
-                        for (int j = first_keyword, end = signature.size(); j < end; ++j) {
-                            Edge& kw = path[j];
-                            if (!(
-                                kw.param->posonly() ||
-                                kw.param->args() ||
-                                kw.param->name == edge.param->name || // incoming edge
-                                (i < start && kw.param->name == name)  // outgoing edge
-                            )) {
-                                // insert a keyword edge
-                                edge.target->insert(kw);
-                            }
-                        }
-                        name = edge.param->name;
-                    }
-
-                    /// TODO: the previous algorithm extended backfill to the root node
-                    /// here, but that would need to be done in the calling method,
-                    /// since only there do we have unfettered access to the root node.
-
-                // if an error occurs, remove all edges and drop all nodes that have
-                // been added thus far
-                } catch (...) {
-                    curr = root;
-                    for (Edge& edge : path) {
-                        curr->remove(signature.hash());
-                        if (edge.target->data == this) {
-                            edge.target->data = nullptr;
-                        }
-                        curr = edge.target;
-                        edge.target.reset();
-                    }
-                    throw;
-                }
-            }
-
-            /* Starting from the root node of the trie, remove all edges associated
-            with the tracked overload and deallocate any orphaned nodes as needed. */
-            void remove(std::shared_ptr<Node> root) {
-                if (root->data == this) {
-                    root->data = nullptr;
-                }
-                for (Edge& edge : path) {
-                    root->remove(signature.hash());
-                    if (edge.target->data == this) {
-                        edge.target->data = nullptr;
-                    }
-                    root = edge.target;
-                    edge.target.reset();
-                }
-            }
-
-            struct Hash {
-                using is_transparent = void;
-                static size_t operator()(const std::unique_ptr<Metadata>& meta) {
-                    return meta->signature.hash();
-                }
-            };
-
-            struct Equal {
-                using is_transparent = void;
-                static bool operator()(
-                    const std::unique_ptr<Metadata>& lhs,
-                    const std::unique_ptr<Metadata>& rhs
-                ) {
-                    return lhs->signature == rhs->signature;
-                }
-                static bool operator()(
-                    const std::unique_ptr<Metadata>& lhs,
-                    size_t rhs
-                ) {
-                    return lhs->signature.hash() == rhs;
-                }
-                static bool operator()(
-                    size_t lhs,
-                    const std::unique_ptr<Metadata>& rhs
-                ) {
-                    return lhs == rhs->signature.hash();
-                }
-            };
-        };
-
-        using Data = std::unordered_set<
-            std::unique_ptr<Metadata>,
-            typename Metadata::Hash,
-            typename Metadata::Equal
-        >;
-        using Cache = std::unordered_map<size_t, PyObject*>;
-
-        size_t m_depth = 0;
-        Metadata* m_fallback = nullptr;
-        py::inspect::Param m_leading_param = {
-            .name = "",
-            .hash = 0,
-            .type = reinterpret_steal<Object>(nullptr),
-            .default_value = reinterpret_steal<Object>(nullptr),
-            .partial = reinterpret_steal<Object>(nullptr),
-            .mask = 0,
-            .kind = 0
-        };
-        Edge m_leading_edge = {
-            .param = &m_leading_param,
-            .target = nullptr,  // root of the trie
-        };
-        Node m_leading_node = {
-            .data = nullptr,
-            .edges = {{nullptr, {&m_leading_edge}}}
-        };
-        Data m_data = {};
-        mutable Cache m_cache = {};
-
-    public:
-        Overloads(std::string_view name, const Object& fallback) {
-            auto data = std::make_unique<Metadata>(py::inspect(fallback, name));
-
-            /// TODO: if I receive an instance of `bertrand.Function`, then the
-            /// signature check can be done just through some type checks rather than
-            /// building a full signature object.  That would greatly increase the
-            /// performance of conversions from Python -> C++ in the case where you're
-            /// using bertrand types from the beginning.
-            /// TODO: do this check in the py::Function class, rather than here, so
-            /// that I can avoid comparison with the Signature template when this class
-            /// is lifted out of ::Signature<...>.
-
-            if (data->signature != Signature{}) {
-                constexpr size_t max_width = 80;
-                constexpr size_t indent = 4;
-                constexpr std::string prefix(8, ' ');
-                throw TypeError(
-                    "signature mismatch\n    expected:\n" + Signature{}.to_string(
-                        name,
-                        prefix,
-                        max_width,
-                        indent
-                    ) + "\n    received:\n" + data->signature.to_string(
-                        false,
-                        prefix,
-                        max_width,
-                        indent
-                    )
-                );
-            };
-
-            m_fallback = data.get();
-            m_depth = data->signature.size();
-            m_data.emplace(std::move(data));
-        }
-
-        /* Return a reference to the fallback function that will be chosen if no other
-        overloads match a given (valid) argument set. */
-        [[nodiscard]] const Object& fallback() const noexcept {
-            return m_fallback->signature.function();
-        }
-
-        /* Get the stored signature of the fallback function. */
-        [[nodiscard]] const py::inspect& inspect() const noexcept {
-            return m_fallback->signature;
-        }
-
-        /* Indicates whether the trie contains any overloads. */
-        [[nodiscard]] auto empty() const noexcept {
-            return m_data.size() == 1;
-        }
-
-        /* The total number of overloads stored within the trie, excluding the fallback
-        implementation. */
-        [[nodiscard]] auto size() const noexcept {
-            return m_data.size() - 1;
-        }
-
-        /// TODO: remember to track this during insertions/removals
-
-        /* The maximum depth of the trie, which is equivalent to the total number of
-        arguments of the longest overload.  Variadic arguments take up a single
-        position for the purposes of this calculation. */
-        [[nodiscard]] size_t depth() const noexcept {
-            return m_depth;
-        }
 
         /* A single node in the overload trie, which holds the topologically-sorted
-        edge maps necessary for traversal, insertion, and deletion of candidate
-        functions, as well as a (possibly null) terminal function to call if this
-        is the last node in a given argument list. */
+        edges necessary for traversal, insertion, and deletion of candidate functions,
+        as well as a marker to indicate that this the last required node in a given
+        argument list, which is used to detect ambiguous overloads. */
         struct Node {
         private:
             struct TopoSort {
@@ -8239,38 +7932,54 @@ public:
             using Set = std::set<Edge*, typename Edge::Less>;
             using Map = std::map<PyObject*, Set, TopoSort>;
 
-            Metadata* data = nullptr;
-            Map edges = {};
+            /// TODO: when doing traversals, we iterate over the matches for the
+            /// final node we find and try them in order, comparing against the
+            /// required bitmask.  The first one that returns true is the overload we
+            /// return from iterators, etc.
 
+            /* Holds all of the downstream functions that reference this node, stored
+            in topological order.  If this is the last node that is visited during a
+            search, then each contained function will be tried in sorted order, and the
+            first full match will be returned.  If a removal causes this set to become
+            empty, then the node will be removed from the trie. */
+            std::set<Metadata*, typename Metadata::Less> matches;
+
+            /* Marks this as a terminal node for a particular path through the trie, in
+            order to identify ambiguities.  When an overload is inserted into the trie,
+            it will identify the last required node on its path, and assign itself to
+            this field for that node and all subsequent nodes.  If this pointer is not
+            null for any of those nodes, then the overload is ambiguous, and the
+            pointer leads to the conflicting overload, for diagnostic purposes.  The
+            value of this pointer will always be present in the `matches` set. */
+            Metadata* terminal = nullptr;
+
+            /* A map of outgoing edges emanating from this node, for traversal. */
+            Map edges;
+
+            Node(Metadata* owner) : matches{owner} {}
+
+            /* The number of outgoing edges emanating from this node. */
             [[nodiscard]] auto size() const { return edges.size(); }
+
+            /* Indicates whether this node has any outgoing edges. */
             [[nodiscard]] auto empty() const { return edges.empty(); }
 
-            /* Insert an outgoing edge to a new node. */
-            [[maybe_unused]] void insert(Edge& edge) {
+            /* Insert an outgoing edge to a new node.  Returns true if the insertion
+            resulted in the creation of a new edge, or false if an existing edge was
+            reused. */
+            [[maybe_unused]] bool insert(Edge& edge) {
+                /// TODO: maybe I should also accept a Metadata* pointer, which would
+                /// be inserted into the matches.
                 auto [outer, new_type] = edges.try_emplace(
-                    ptr(edge.param->type),
+                    ptr(edge.param.type),
                     Set{}
                 );
                 auto [inner, new_edge] = outer->second.emplace(&edge);
-                if (!new_edge) {
-                    if (new_type) {
-                        edges.erase(outer);
-                    }
-                    /// NOTE: this should never occur unless the incoming edge is an
-                    /// exact duplicate of an existing edge, which should be impossible
-                    if (edge.param->name.empty()) {
-                        throw TypeError(
-                            "edge already exists for positional-only parameter at "
-                            "index " + std::to_string(edge.param->index())
-                        );
-                    } else {
-                        throw TypeError(
-                            "edge already exists for parameter '" +
-                            std::string(edge.param->name) + "'"
-                        );
-                    }
-                }
+                return new_edge;
             }
+
+            /// TODO: not sure if this removal strategy is appropriate for the new,
+            /// compressed trie structure.
 
             /* Purge all outgoing edges that match a particular hash. */
             void remove(size_t hash) {
@@ -8345,17 +8054,15 @@ public:
 
                 Iterator& operator++() {
                     if (set.begin != set.end) {
-                        ++(set.begin);
+                        ++set.begin;
                     }
                     if (set.begin == set.end) {
-                        ++(map.begin);
-                        while (map.begin != map.end) {
+                        while (++map.begin != map.end) {
                             if (value == nullptr || check{}(value, map.begin->first)) {
                                 set.begin = map.begin->second.begin();
                                 set.end = map.begin->second.end();
                                 break;
                             }
-                            ++(map.begin);
                         }
                     }
                     return *this;
@@ -8381,7 +8088,7 @@ public:
             /* Return a shallow iterator over the subset of outgoing edges that match a
             given value according to the templated type check.  Supplying a null
             pointer (the default) for the value will bypass the type check, yielding
-            all outgoing edges regardless of type. */
+            all matching edges regardless of type. */
             template <typename check = instance> requires (valid_check<check>)
             [[nodiscard]] Iterator<check> begin(PyObject* value = nullptr) const {
                 return {value, edges.begin(), edges.end()};
@@ -8389,6 +8096,296 @@ public:
 
             [[nodiscard]] impl::Sentinel end() const { return {}; }
         };
+
+    private:
+        /* An encoded representation of a function that has been inserted into the
+        overload trie.  The function itself is stored as an inspect.Signature object,
+        from which a canonical path of edges is generated, which are traversed when
+        the function is removed from the trie. */
+        struct Metadata {
+        private:
+            void copy_edges(const std::vector<Edge>& other) {
+                path.reserve(signature.size());
+                auto s = signature.begin();
+                auto s_end = signature.end();
+                auto p = other.begin();
+                auto p_end = other.end();
+                while (s != s_end && p != p_end) {
+                    path.emplace_back(*this, *s, p->target);
+                    ++s;
+                    ++p;
+                }
+            }
+
+        public:
+            py::inspect signature;
+            std::vector<Edge> path;
+
+            /// TODO: ownership is now per-node rather than per-edge, so the copy/move
+            /// logic can be simplified
+
+            Metadata(py::inspect&& signature) : signature(std::move(signature)) {
+                path.reserve(this->signature.size());
+                for (const auto& param : this->signature) {
+                    path.emplace_back(this, &param, nullptr);
+                }
+            }
+
+            Metadata(const Metadata& other) : signature(other.signature) {
+                copy_edges(other.path);
+            }
+
+            Metadata(Metadata&& other) : signature(std::move(other.signature)) {
+                copy_edges(other.path);
+            }
+
+            Metadata& operator=(const Metadata& other) {
+                if (&other != this) {
+                    signature = other.signature;
+                    path.clear();
+                    copy_edges(other.path);
+                    path.shrink_to_fit();
+                }
+                return *this;
+            }
+
+            Metadata& operator=(Metadata&& other) {
+                if (&other != this) {
+                    signature = std::move(other.signature);
+                    path.clear();
+                    copy_edges(other.path);
+                    path.shrink_to_fit();
+                }
+                return *this;
+            }
+
+            /// TODO: insertions need to account for shared edges.
+
+            /* Starting from the root node of the trie, insert all edges associated
+            with the tracked overload and allocate new nodes as needed. */
+            void insert(std::shared_ptr<Node> root) {
+                constexpr bool keep_defaults = false;
+                constexpr size_t max_width = 80;
+                constexpr size_t indent = 4;
+                constexpr std::string prefix(8, ' ');
+
+                std::shared_ptr<Node> curr = root;
+                try {
+                    // insert an edge linking each parameter in the trie, allocating
+                    // nodes where they do not already exist
+                    int first_keyword = -1;
+                    int last_required = 0;
+                    for (int i = 0, end = signature.size(); i < end; ++i) {
+                        Edge& edge = path[i];
+                        curr->insert(edge);
+                        if (!(edge.param.opt() || edge.param.variadic())) {
+                            first_keyword += edge.param.posonly();
+                            last_required = i;
+                        }
+                        edge.target = std::make_shared<Node>();
+                        curr = edge.target;
+                    }
+
+                    // backfill the terminal functions and full keywords for each node
+                    std::string_view name;
+                    int start = static_cast<int>(signature.size()) - 1;
+                    for (int i = start; i > first_keyword; ++i) {
+                        Edge& edge = path[i];
+                        if (i >= last_required) {
+                            if (edge.target->data) {
+                                throw TypeError(
+                                    "ambiguous overload\n    existing:\n" +
+                                    edge.target->data->signature.to_string(
+                                        keep_defaults,
+                                        prefix,
+                                        max_width,
+                                        indent
+                                    ) + "\n    new:\n" +
+                                    signature.to_string(
+                                        keep_defaults,
+                                        prefix,
+                                        max_width,
+                                        indent
+                                    )
+                                );
+                            }
+                            edge.target->data = this;
+                        }
+                        for (int j = first_keyword, end = signature.size(); j < end; ++j) {
+                            Edge& kw = path[j];
+                            if (!(
+                                kw.param.posonly() ||
+                                kw.param.args() ||
+                                kw.param.name == edge.param.name || // incoming edge
+                                (i < start && kw.param.name == name)  // outgoing edge
+                            )) {
+                                // insert a keyword edge
+                                edge.target->insert(kw);
+                            }
+                        }
+                        name = edge.param.name;
+                    }
+
+                    /// TODO: the previous algorithm extended backfill to the root node
+                    /// here, but that would need to be done in the calling method,
+                    /// since only there do we have unfettered access to the root node.
+
+                // if an error occurs, remove all edges and drop all nodes that have
+                // been added thus far
+                } catch (...) {
+                    curr = root;
+                    for (Edge& edge : path) {
+                        curr->remove(signature.hash());
+                        if (edge.target->data == this) {
+                            edge.target->data = nullptr;
+                        }
+                        curr = edge.target;
+                        edge.target.reset();
+                    }
+                    throw;
+                }
+            }
+
+            /// TODO: removals of this form are incorrect if a removed edge is shared
+            /// with another overload, since it will either orphan the other node or
+            /// leave behind an edge with a dangling owner.
+
+            /* Starting from the root node of the trie, remove all edges associated
+            with the tracked overload and deallocate any orphaned nodes as needed. */
+            void remove(std::shared_ptr<Node> root) {
+                if (root->terminal == this) {
+                    root->terminal = nullptr;
+                }
+                for (Edge& edge : path) {
+                    root->remove(signature.hash());
+                    if (edge.target->terminal == this) {
+                        edge.target->terminal = nullptr;
+                    }
+                    root = edge.target;
+                    edge.target.reset();
+                }
+            }
+
+            friend bool operator<(const Metadata& lhs, const Metadata& rhs) {
+                return lhs.signature < rhs.signature;
+            }
+
+            friend bool operator<(const Metadata& lhs, size_t rhs) {
+                return lhs.signature.hash() < rhs;
+            }
+
+            friend bool operator<(size_t lhs, const Metadata& rhs) {
+                return lhs < rhs.signature.hash();
+            }
+
+            struct Less {
+                using is_transparent = void;
+                static bool operator()(const Metadata* lhs, const Metadata* rhs) {
+                    return *lhs < *rhs;
+                }
+                static bool operator()(const Metadata* lhs, size_t rhs) {
+                    return *lhs < rhs;
+                }
+                static bool operator()(size_t lhs, const Metadata* rhs) {
+                    return lhs < *rhs;
+                }
+            };
+        };
+
+        /* Metadata is stored in a topologically-sorted, associative set to ensure
+        address stability. */
+        using Data = std::set<Metadata, std::less<>>;
+        using Cache = std::unordered_map<size_t, PyObject*>;
+
+        size_t m_depth = 0;
+        Metadata* m_fallback = nullptr;
+        py::inspect::Param m_leading_param = {
+            .name = "",
+            .hash = 0,
+            .type = reinterpret_steal<Object>(nullptr),
+            .default_value = reinterpret_steal<Object>(nullptr),
+            .partial = reinterpret_steal<Object>(nullptr),
+            .mask = 0,
+            .kind = 0
+        };
+        Edge m_leading_edge = {
+            .param = &m_leading_param,
+            .target = nullptr,  // root of the trie
+        };
+        Node m_leading_node = {
+            .data = nullptr,
+            .edges = {{nullptr, {&m_leading_edge}}}
+        };
+        Data m_data = {};
+        mutable Cache m_cache = {};
+
+    public:
+        Overloads(std::string_view name, const Object& fallback) {
+            py::inspect signature(fallback, name);
+
+            /// TODO: if I receive an instance of `bertrand.Function`, then the
+            /// signature check can be done just through some type checks rather than
+            /// building a full signature object.  That would greatly increase the
+            /// performance of conversions from Python -> C++ in the case where you're
+            /// using bertrand types from the beginning.
+            /// TODO: do this check in the py::Function class, rather than here, so
+            /// that I can avoid comparison with the Signature template when this class
+            /// is lifted out of ::Signature<...>.
+
+            if (signature != Signature{}) {
+                constexpr size_t max_width = 80;
+                constexpr size_t indent = 4;
+                constexpr std::string prefix(8, ' ');
+                throw TypeError(
+                    "signature mismatch\n    expected:\n" + Signature{}.to_string(
+                        name,
+                        prefix,
+                        max_width,
+                        indent
+                    ) + "\n    received:\n" + signature.to_string(
+                        false,
+                        prefix,
+                        max_width,
+                        indent
+                    )
+                );
+            };
+
+            m_data.emplace(std::move(signature));
+            m_fallback = &*m_data.begin();
+            m_depth = m_fallback->size();
+        }
+
+        /* Return a reference to the fallback function that will be chosen if no other
+        overloads match a given (valid) argument set. */
+        [[nodiscard]] const Object& fallback() const noexcept {
+            return m_fallback->signature.function();
+        }
+
+        /* Get the stored signature of the fallback function. */
+        [[nodiscard]] const py::inspect& inspect() const noexcept {
+            return m_fallback->signature;
+        }
+
+        /* Indicates whether the trie contains any overloads. */
+        [[nodiscard]] auto empty() const noexcept {
+            return m_data.size() == 1;
+        }
+
+        /* The total number of overloads stored within the trie, excluding the fallback
+        implementation. */
+        [[nodiscard]] auto size() const noexcept {
+            return m_data.size() - 1;
+        }
+
+        /// TODO: remember to track this during insertions/removals
+
+        /* The maximum depth of the trie, which is equivalent to the total number of
+        arguments of the longest overload.  Variadic arguments take up a single
+        position for the purposes of this calculation. */
+        [[nodiscard]] size_t depth() const noexcept {
+            return m_depth;
+        }
 
         /* Return a reference to the root node of the overload trie.  This can be null
         if the function has no overloads beyond the fallback implementation.  In that
@@ -8398,7 +8395,7 @@ public:
             return m_leading_edge.target;
         }
 
-        /* Search against the function's overload cache to find a precomputed route
+        /* Search against the function's overload cache to find a precomputed path
         through the trie.  Whenever `begin()` is called with a vectorcall array, the
         first result is always inserted here to optimize repeated calls with the same
         signature.  If no cached function is found, this method returns null, forcing a
@@ -8407,11 +8404,10 @@ public:
         Note that all arguments must be properly normalized in order for cache searches
         to remain stable.  This means inserting any partial arguments and converting to
         proper Bertrand types before initiating a search.  If this is not done, then it
-        is possible for several distinct signatures to erroneously resolve to a single
-        overload, since some Python types (e.g. generics) are opaque to the Python
-        type system, and will produce an ambiguous hash.  Normalizing to Bertrand types
-        avoids this by narrowing such arguments sufficiently for cache searches to be
-        effective. */
+        is possible for several distinct signatures to resolve to a single overload,
+        since some Python types (e.g. generics) are opaque to the Python type system,
+        and will produce an ambiguous hash.  Normalizing to Bertrand types avoids this
+        by narrowing such arguments sufficiently for cache searches to be effective. */
         [[nodiscard]] PyObject* cache_lookup(size_t hash) const noexcept {
             auto it = m_cache.find(hash);
             return it == m_cache.end() ? nullptr : it->second;
@@ -8424,10 +8420,10 @@ public:
         }
 
         /* Returns true if a function is present in the trie, as indicated by a
-        linear search of equality checks against the trie's encoded contents. */
+        linear search of `==` checks against each encoded function. */
         [[nodiscard]] bool contains(const Object& func) const {
-            for (const auto& metadata : m_data) {
-                if (metadata.func == func) {
+            for (const Metadata& metadata : m_data) {
+                if (metadata.signature.function() == func) {
                     return true;
                 }
             }
@@ -8522,18 +8518,18 @@ public:
         equality check against the input key, which allows transparent comparisons if
         the function and/or key overrides the `__eq__` method. */
         [[maybe_unused]] Object remove(const Object& key) {
-            for (std::unique_ptr<Metadata>& metadata : m_data) {
-                if (metadata->signature.function() == key) {
-                    if (metadata->signature.function().is(fallback())) {
+            for (const Metadata& metadata : m_data) {
+                if (metadata.signature.function() == key) {
+                    if (metadata.signature.function().is(fallback())) {
                         throw KeyError("cannot remove the fallback implementation");
                     }
-                    Object result = metadata->signature.function();
-                    metadata->remove(root());
+                    Object result = metadata.signature.function();
+                    metadata.remove(root());
                     if (m_data.size() <= 2) {
                         clear();
                     } else {
                         m_cache.clear();
-                        m_data.erase(metadata);
+                        m_data.erase(metadata.signature.hash());
                     }
                     return result;
                 }
@@ -8546,8 +8542,8 @@ public:
             m_cache.clear();
             auto it = m_data.begin();
             while (it != m_data.end()) {
-                if ((*it)->signature.function().is(fallback())) {
-                    for (Edge& edge : (*it)->path) {
+                if (&*it == m_fallback) {
+                    for (Edge& edge : it->path) {
                         edge.target.reset();
                     }
                     ++it;
@@ -8565,7 +8561,7 @@ public:
         template <typename check> requires (valid_check<check>)
         struct Iterator {
         private:
-            struct Param {
+            struct Argument {
                 std::string name;
                 Object value;
                 impl::ArgKind kind;
@@ -8576,17 +8572,16 @@ public:
                 Node::template Iterator<check> outgoing;
             };
 
-            std::vector<Param> key;
+            std::vector<Argument> key;
             std::vector<Frame> stack;
 
             /* Check whether an outgoing edge is already contained within the stack,
-            indicating a cycle or a duplicate keyword argument that has already been
-            parsed. */
+            indicating a cycle or a duplicate keyword from an overlapping key. */
             bool has_cycle(const Edge* edge) const {
                 for (Frame& frame : stack | std::views::reverse) {
-                    /// TODO: not sure if this condition is correct
                     if (frame.incoming == edge || (
                         frame.incoming->param->kind.kw() &&
+                        edge->param->kind.kw() &&
                         frame.incoming->param->name == edge->param->name
                     )) {
                         return true;
@@ -8613,24 +8608,25 @@ public:
             topologically searching for an outgoing edge that has not yet been
             traversed and matches the corresponding key parameter.  Returns the next
             outgoing edge or null if no candidates are found. */
-            const Edge* grow(size_t index, const Param& param) {
+            const Edge* grow(size_t index) {
+                const Argument& arg = key[index];
                 const Edge* edge = &(*stack.back().outgoing);
                 stack.emplace_back(
                     index,
                     edge,
-                    edge->target->template begin<check>(ptr(param.value))
+                    edge->target->template begin<check>(ptr(arg.value))
                 );
                 while (stack.back().outgoing != impl::Sentinel{}) {
                     edge = &(*stack.back().outgoing);
                     if (!has_cycle(edge) && (
                         (
-                            param.kind.pos() && edge->kind.pos()
+                            arg.kind.pos() && edge->kind.pos()
                         ) || (
-                            param.kind.kw() && edge->kind.kw() && edge->name == param.name
+                            arg.kind.kw() && edge->kind.kw() && edge->name == arg.name
                         ) || (
-                            param.kind.args() && edge->kind.pos()
+                            arg.kind.args() && edge->kind.pos()
                         ) || (
-                            param.kind.kwargs() && edge->kind.kw()
+                            arg.kind.kwargs() && edge->kind.kw()
                         ))
                     ) {
                         return edge;
@@ -8650,37 +8646,23 @@ public:
             all outgoing edges of the corresponding kind, regardless of type.
             Otherwise, only the outgoing edges that pass the type check will be
             considered.  Variadic wildcards are handled by recursively consuming all
-            outgoing non-cyclic edges of that kind, stopping at the first leaf.
+            outgoing, non-cyclic edges of that kind, stopping at the first leaf.
 
             Once all parameters have been exhausted and a candidate node has been
-            reached (defined as the deepest node that was traversed), the algorithm
-            will check to see if that node has a corresponding function.  If not, we
-            advance the stack and recur to identify the next candidate node, stopping
-            when the stack is empty.
-
-            If a candidate function has been identified, then we search the metadata
-            map to retrieve the required bitmask along that path, and reconstruct an
-            equivalent bitmask from the current state of the stack.  If the two
-            bitmasks compare equal, then we have found a valid overload.  Otherwise, we
-            advance the stack and recur until a match is found. */
+            reached, the algorithm will check to see if that node has a corresponding
+            function whose required arguments are fully satisfied by the given
+            arguments.  If not, we advance the stack and recur to identify the next
+            candidate node, stopping when the stack is empty. */
             void explore() {
                 // grow the stack until all key parameters have been exhausted
                 size_t index = stack.back().index;
                 while (index < key.size()) {
-                    const Param& param = key[index];
-                    if (param.kind.variadic() && param.value.is(nullptr)) {
-                        /// TODO: variadic growth might have problems with keywords from
-                        /// other overloads, whose edges have been reused.  In the
-                        /// excalidraw example, a **kwargs edge after the fallback
-                        /// implementation's last arg would also catch the outgoing edge
-                        /// to one of the overloads, even though a keyword argument of
-                        /// the same name has already been followed.  This might be
-                        /// as simple as just comparing the names of the outgoing keyword
-                        /// arguments to the names of the incoming keyword edges, and
-                        /// only following the edge if none match.  This may be part
-                        /// of the has_cycle() operation.
-                        while (grow(index, param));
-                    } else if (!grow(index, param)) {
+                    const Argument& arg = key[index];
+                    if (arg.kind.variadic() && arg.value.is(nullptr)) {
+                        while (grow(index)) {
+                            // do nothing
+                        }
+                    } else if (!grow(index)) {
                         advance();
                         if (stack.empty()) {
                             return;
@@ -8707,11 +8689,11 @@ public:
                 const Metadata* metadata = stack.back().outgoing->owner;
                 uint64_t mask = 0;
                 for (size_t i = 0, n = key.size(); i < n; ++i) {
-                    const Param& param = key[i];
-                    if (param.name.empty()) {
+                    const Argument& arg = key[i];
+                    if (arg.name.empty()) {
                         mask |= 1ULL << i;
                     } else {
-                        mask |= metadata->signature[param.name];
+                        mask |= metadata->signature[arg.name].mask;
                     }
                 }
                 uint64_t required = metadata->signature.required();
@@ -8730,7 +8712,7 @@ public:
                 }
 
                 template <typename P>
-                static void key(P&&, std::vector<Param>&) {}
+                static void key(P&&, std::vector<Argument>&) {}
             };
             template <size_t I, size_t K>
                 requires (
@@ -8746,7 +8728,7 @@ public:
                 }
 
                 template <typename P>
-                static void key(P&& partial, std::vector<Param>& key) {
+                static void key(P&& partial, std::vector<Argument>& key) {
                     key.emplace_back(
                         std::string(Partial::template name<K>),
                         py::to_python(std::forward<P>(partial).template get<K>()),
@@ -8769,7 +8751,7 @@ public:
                 }
 
                 template <typename P>
-                static void key(P&& partial, std::vector<Param>& key) {
+                static void key(P&& partial, std::vector<Argument>& key) {
                     using T = Signature::at<I>;
                     key.emplace_back(
                         std::string(ArgTraits<T>::name),
@@ -8791,11 +8773,11 @@ public:
             using reference = const value_type&;
 
             template <impl::inherits<Vectorcall> V>
-            Iterator(const Node& init, V&& key, Cache& cache) {
-                size_t size = key.size();
-                this->key.reserve(size);
-                for (auto param : key) {
-                    this->key.emplace_back(
+            Iterator(const Node& init, V&& args, Cache& cache) {
+                size_t size = args.size();
+                key.reserve(size);
+                for (const auto& param : args) {
+                    key.emplace_back(
                         std::string(param.name),
                         reinterpret_borrow<Object>(param.value),
                         param.kind
@@ -8805,14 +8787,14 @@ public:
                 stack.emplace_back(0, nullptr, init->template begin<check>());
                 explore();
                 if (!stack.empty()) {
-                    cache[key.hash] = ptr(**this);
+                    cache[args.hash] = ptr(**this);
                 }
             }
 
             template <impl::inherits<Partial> P>
             Iterator(const Node& init, P&& partial, size_t max_depth) {
-                this->key.reserve(resolve_partial<0, 0>::size(0));
-                resolve_partial<0, 0>::key(std::forward<P>(partial), this->key);
+                key.reserve(resolve_partial<0, 0>::size(0));
+                resolve_partial<0, 0>::key(std::forward<P>(partial), key);
                 stack.reserve(max_depth + 2);
                 stack.emplace_back(0, nullptr, init->template begin<check>());
                 explore();
