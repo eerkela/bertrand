@@ -1,6 +1,7 @@
 #ifndef BERTRAND_COMMON_H
 #define BERTRAND_COMMON_H
 
+#include <bit>
 #include <cmath>
 #include <concepts>
 #include <cstddef>
@@ -14,6 +15,8 @@
 namespace bertrand {
 
 
+template <size_t N>
+struct bitset;
 template <typename... Ts>
 struct args;
 template <typename F, typename... Fs>
@@ -132,8 +135,14 @@ namespace impl {
         using type = T;
     };
 
+    struct bitset_tag {};
     struct args_tag {};
     struct chain_tag {};
+
+    template <typename T>
+    constexpr bool _is_bitset = false;
+    template <size_t N>
+    constexpr bool _is_bitset<bitset<N>> = true;
 
     template <typename T>
     constexpr bool _is_args = false;
@@ -1020,6 +1029,937 @@ concept ixor_returns = requires(L& l, R r) {
 
 
 template <typename T>
+concept is_bitset = impl::_is_bitset<std::remove_cvref_t<T>>;
+
+
+/* A simple bitset type that stores flags in a contiguous array, which can be
+lexicographically compared and therefore stored in associative containers.  In
+contrast, `std::bitset<N>` does not provide the required comparison operators. */
+template <size_t N>
+struct bitset : impl::bitset_tag {
+    using Word = size_t;
+    struct Ref;
+
+private:
+    static constexpr size_t bits_per_element = sizeof(Word) * 8;
+    static constexpr size_t array_size =
+        (N + bits_per_element - 1) / bits_per_element;
+
+    std::array<Word, array_size> m_data;
+
+public:
+    /* Construct an empty bitset initialized to zero. */
+    constexpr bitset() noexcept : m_data{} {}
+
+    /* Construct a bitset from an integer value. */
+    constexpr bitset(Word value) noexcept : m_data{} {
+        if constexpr (array_size == 1 && N < bits_per_element) {
+            constexpr Word mask = (Word(1) << N) - 1;
+            m_data[0] = value & mask;
+        } else if constexpr (array_size >= 1) {
+            m_data[0] = value;
+        }
+    }
+
+    /* Construct a bitset from a string of 1s and 0s (possibly prefixed with "0b"). */
+    constexpr bitset(std::string_view str) noexcept : m_data{} {
+        constexpr std::string_view prefix = "0b";
+        if (str.starts_with(prefix)) {
+            str.remove_prefix(prefix.size());
+        }
+        for (size_t i = 0; i < N && i < str.size(); ++i) {
+            if (str[i] == '1') {
+                m_data[i / bits_per_element] |= Word(1) << (i % bits_per_element);
+            } else if (str[i] != '0') {
+                throw std::invalid_argument(
+                    "bitset string must contain only 1s and 0s"
+                );
+            }
+        }
+    }
+
+    /* The number of bits that are held in the set. */
+    [[nodiscard]] static constexpr size_t size() noexcept {
+        return N;
+    }
+
+    /* The total number of bits that were allocated.  */
+    [[nodiscard]] static constexpr size_t capacity() noexcept {
+        return array_size * bits_per_element;
+    }
+
+    /* Get the underlying array that backs the bitset. */
+    [[nodiscard]] constexpr auto& data() noexcept { return m_data; }
+    [[nodiscard]] constexpr const auto& data() const noexcept { return m_data; }
+
+    /* Bitsets evalute true if any of their bits are set. */
+    [[nodiscard]] explicit constexpr operator bool() const noexcept {
+        return any();
+    }
+
+    /* Convert the bitset to an integer representation if it fits within the platform's
+    word size. */
+    template <typename Self>
+        requires (std::remove_cvref_t<Self>::size() <= sizeof(Word) * 8)
+    [[nodiscard]] explicit constexpr operator Word(this Self&& self) noexcept {
+        if constexpr (array_size == 0) {
+            return 0;
+        } else {
+            return self.m_data[0];
+        }
+    }
+
+    /* Convert the bitset to a string representation. */
+    [[nodiscard]] explicit constexpr operator std::string() const noexcept {
+        constexpr int diff = '1' - '0';
+        std::string result;
+        result.reserve(N);
+        for (size_t i = 0; i < N; ++i) {
+            result.push_back('0' + diff * (*this)[i]);
+        }
+        return result;
+    }
+
+    /* A mutable reference to a single bit in the set. */
+    struct Ref {
+    private:
+        friend bitset;
+
+        Word& value;
+        Word index;
+
+        constexpr Ref(Word& value, Word index) noexcept :
+            value(value),
+            index(index)
+        {}
+
+    public:
+        [[maybe_unused]] Ref& operator=(bool x) noexcept {
+            value = (value & ~(Word(1) << index)) | (x << index);
+            return *this;
+        }
+
+        [[maybe_unused]] Ref& flip() noexcept {
+            value ^= Word(1) << index;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr operator bool() const noexcept {
+            return value & (Word(1) << index);
+        }
+
+        [[nodiscard]] constexpr bool operator~() const noexcept {
+            return !*this;
+        }
+    };
+
+    /* Get the value of a specific bit in the set. */
+    [[nodiscard]] constexpr bool operator[](size_t index) const noexcept {
+        Word mask = Word(1) << (index % bits_per_element);
+        return m_data[index / bits_per_element] & mask;
+    }
+    [[nodiscard]] constexpr Ref operator[](size_t index) noexcept {
+        return {m_data[index / bits_per_element], index % bits_per_element};
+    }
+
+    /* Get the value of a specific bit in the set, performing a bounds check on the
+    way.  Also available as `std::get<I>(bitset)`, which allows for structured
+    bindings. */
+    template <size_t I> requires (I < N)
+    [[nodiscard]] constexpr bool get() const noexcept {
+        return (*this)[I];
+    }
+    template <size_t I> requires (I < N)
+    [[nodiscard]] constexpr Ref get() noexcept {
+        return (*this)[I];
+    }
+    [[nodiscard]] constexpr bool get(size_t index) const {
+        if (index >= N) {
+            throw std::out_of_range("bitset index out of range");
+        }
+        return (*this)[index];
+    }
+    [[nodiscard]] constexpr Ref get(size_t index) {
+        if (index >= N) {
+            throw std::out_of_range("bitset index out of range");
+        }
+        return (*this)[index];
+    }
+
+    /* An iterator over the individual bits within the set. */
+    struct Iterator {
+    private:
+        friend bitset;
+
+        /// TODO: this should store and yield refs?
+
+        ssize_t index;
+        bitset* self;
+        mutable bool cache;
+
+        Iterator(bitset* self, ssize_t index) noexcept : self(self), index(index) {}
+
+    public:
+        using iterator_category = std::random_access_iterator_tag;
+        using difference_type = ssize_t;
+        using value_type = bool;
+        using pointer = bool*;
+        using reference = bool;
+
+        [[nodiscard]] constexpr bool operator*() const noexcept {
+            return (*self)[index];
+        }
+
+        [[nodiscard]] constexpr const pointer operator->() const noexcept {
+            cache = **this;
+            return &cache;
+        }
+
+        [[nodiscard]] constexpr pointer operator->() noexcept {
+            cache = **this;
+            return &cache;
+        }
+
+        [[nodiscard]] constexpr reference operator[](difference_type n) const noexcept {
+            return (*self)[index + n];
+        }
+
+        [[maybe_unused]] constexpr Iterator& operator++() noexcept {
+            ++index;
+            return *this;
+        }
+
+        [[maybe_unused]] constexpr Iterator operator++(int) noexcept {
+            Iterator copy = *this;
+            ++index;
+            return copy;
+        }
+
+        [[maybe_unused]] constexpr Iterator& operator+=(difference_type n) noexcept {
+            index += n;
+            return *this;
+        }
+
+        [[nodiscard]] friend constexpr Iterator operator+(
+            const Iterator& lhs,
+            difference_type rhs
+        ) noexcept {
+            return {lhs.self, lhs.index + rhs};
+        }
+
+        [[nodiscard]] friend constexpr Iterator operator+(
+            difference_type lhs,
+            const Iterator& rhs
+        ) noexcept {
+            return {rhs.self, rhs.index + lhs};
+        }
+
+        [[maybe_unused]] constexpr Iterator& operator--() noexcept {
+            --index;
+            return *this;
+        }
+
+        [[maybe_unused]] constexpr Iterator operator--(int) noexcept {
+            Iterator copy = *this;
+            --index;
+            return copy;
+        }
+
+        [[maybe_unused]] constexpr Iterator& operator-=(difference_type n) noexcept {
+            index -= n;
+            return *this;
+        }
+
+        [[nodiscard]] friend constexpr Iterator operator-(
+            const Iterator& lhs,
+            difference_type rhs
+        ) noexcept {
+            return {lhs.self, lhs.index - rhs};
+        }
+
+        [[nodiscard]] friend constexpr Iterator operator-(
+            difference_type lhs,
+            const Iterator& rhs
+        ) noexcept {
+            return {rhs.self, lhs - rhs.index};
+        }
+
+        [[nodiscard]] friend constexpr difference_type operator-(
+            const Iterator& lhs,
+            const Iterator& rhs
+        ) noexcept {
+            return lhs.index - rhs.index;
+        }
+
+        [[nodiscard]] friend constexpr auto operator<=>(
+            const Iterator& lhs,
+            const Iterator& rhs
+        ) noexcept {
+            return lhs.index <=> rhs.index;
+        }
+    };
+
+    /* A read-only iterator over the individual bits within the set. */
+    struct ConstIterator {
+    private:
+        friend bitset;
+
+        ssize_t index;
+        const bitset* self;
+        mutable bool cache;
+
+        ConstIterator(const bitset* self, ssize_t index) noexcept :
+            self(self),
+            index(index)
+        {}
+
+    public:
+        using iterator_category = std::random_access_iterator_tag;
+        using difference_type = ssize_t;
+        using value_type = bool;
+        using pointer = const bool*;
+        using reference = bool;
+
+        [[nodiscard]] constexpr bool operator*() const noexcept {
+            return (*self)[index];
+        }
+
+        [[nodiscard]] constexpr pointer operator->() const noexcept {
+            cache = **this;
+            return &cache;
+        }
+
+        [[nodiscard]] constexpr reference operator[](difference_type n) const noexcept {
+            return (*self)[index + n];
+        }
+
+        [[maybe_unused]] constexpr ConstIterator& operator++() noexcept {
+            ++index;
+            return *this;
+        }
+
+        [[maybe_unused]] constexpr ConstIterator operator++(int) noexcept {
+            ConstIterator copy = *this;
+            ++index;
+            return copy;
+        }
+
+        [[maybe_unused]] constexpr ConstIterator& operator+=(difference_type n) noexcept {
+            index += n;
+            return *this;
+        }
+
+        [[nodiscard]] friend constexpr ConstIterator operator+(
+            const ConstIterator& lhs,
+            difference_type rhs
+        ) noexcept {
+            return {lhs.self, lhs.index + rhs};
+        }
+
+        [[nodiscard]] friend constexpr ConstIterator operator+(
+            difference_type lhs,
+            const ConstIterator& rhs
+        ) noexcept {
+            return {rhs.self, rhs.index + lhs};
+        }
+
+        [[maybe_unused]] constexpr ConstIterator& operator--() noexcept {
+            --index;
+            return *this;
+        }
+
+        [[maybe_unused]] constexpr ConstIterator operator--(int) noexcept {
+            ConstIterator copy = *this;
+            --index;
+            return copy;
+        }
+
+        [[maybe_unused]] constexpr ConstIterator& operator-=(difference_type n) noexcept {
+            index -= n;
+            return *this;
+        }
+
+        [[nodiscard]] friend constexpr ConstIterator operator-(
+            const ConstIterator& lhs,
+            difference_type rhs
+        ) noexcept {
+            return {lhs.self, lhs.index - rhs};
+        }
+
+        [[nodiscard]] friend constexpr ConstIterator operator-(
+            difference_type lhs,
+            const ConstIterator& rhs
+        ) noexcept {
+            return {rhs.self, lhs - rhs.index};
+        }
+
+        [[nodiscard]] friend constexpr difference_type operator-(
+            const ConstIterator& lhs,
+            const ConstIterator& rhs
+        ) noexcept {
+            return lhs.index - rhs.index;
+        }
+
+        [[nodiscard]] friend constexpr auto operator<=>(
+            const ConstIterator& lhs,
+            const ConstIterator& rhs
+        ) noexcept {
+            return lhs.index <=> rhs.index;
+        }
+    };
+
+    [[nodiscard]] constexpr Iterator begin() noexcept {
+        return {this, 0};
+    }
+    [[nodiscard]] constexpr ConstIterator begin() const noexcept {
+        return {this, 0};
+    }
+    [[nodiscard]] constexpr ConstIterator cbegin() const noexcept {
+        return {this, 0};
+    }
+    [[nodiscard]] constexpr Iterator end() noexcept {
+        return {this, N};
+    }
+    [[nodiscard]] constexpr ConstIterator end() const noexcept {
+        return {this, N};
+    }
+    [[nodiscard]] constexpr ConstIterator cend() const noexcept {
+        return {this, N};
+    }
+
+    using ReverseIterator = std::reverse_iterator<Iterator>;
+    using ConstReverseIterator = std::reverse_iterator<ConstIterator>;
+
+    [[nodiscard]] constexpr ReverseIterator rbegin() noexcept {
+        return {end()};
+    }
+    [[nodiscard]] constexpr ConstReverseIterator rbegin() const noexcept {
+        return {end()};
+    }
+    [[nodiscard]] constexpr ConstReverseIterator crbegin() const noexcept {
+        return {cend()};
+    }
+    [[nodiscard]] constexpr ReverseIterator rend() noexcept {
+        return {begin()};
+    }
+    [[nodiscard]] constexpr ConstReverseIterator rend() const noexcept {
+        return {begin()};
+    }
+    [[nodiscard]] constexpr ConstReverseIterator crend() const noexcept {
+        return {cbegin()};
+    }
+
+    /* Check if any of the bits are set. */
+    [[nodiscard]] constexpr bool any() const noexcept {
+        for (size_t i = 0; i < array_size; ++i) {
+            if (m_data[i]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /* Check if all of the bits are set. */
+    [[nodiscard]] constexpr bool all() const noexcept {
+        constexpr bool odd = N % bits_per_element;
+        for (size_t i = 0; i < array_size - odd; ++i) {
+            if (m_data[i] != std::numeric_limits<Word>::max()) {
+                return false;
+            }
+        }
+        if constexpr (odd) {
+            constexpr Word mask = (Word(1) << (N % bits_per_element)) - 1;
+            return m_data[array_size - 1] == mask;
+        } else {
+            return true;
+        }
+    }
+
+    /* Get the number of bits that are currently set. */
+    [[nodiscard]] constexpr size_t count() const noexcept {
+        size_t count = 0;
+        for (size_t i = 0; i < array_size; ++i) {
+            count += std::popcount(m_data[i]);
+        }
+        return count;
+    }
+
+    /* Return the index of the first bit that is set, or the size of the array if no
+    bits are set. */
+    [[nodiscard]] constexpr size_t first_one() const noexcept {
+        for (size_t i = 0; i < array_size; ++i) {
+            if (m_data[i]) {
+                return bits_per_element * i  + std::countr_zero(m_data[i]);
+            }
+        }
+        return N;
+    }
+
+    /* Return the index of the last bit that is set, or the size of the array if no
+    bits are set. */
+    [[nodiscard]] constexpr size_t last_one() const noexcept {
+        for (size_t i = array_size; i > 0;) {
+            --i;
+            if (m_data[i]) {
+                return
+                    bits_per_element * i +
+                    bits_per_element - 1 -
+                    std::countl_zero(m_data[i]);
+            }
+        }
+        return N;
+    }
+
+    /* Return the index of the first bit that is not set, or the size of the array if
+    all bits are set. */
+    [[nodiscard]] constexpr size_t first_zero() const noexcept {
+        for (size_t i = 0; i < array_size; ++i) {
+            if (m_data[i] != std::numeric_limits<Word>::max()) {
+                return bits_per_element * i + std::countr_one(m_data[i]);
+            }
+        }
+        return N;
+    }
+
+    /* Return the index of the last bit that is not set, or the size of the array if
+    all bits are set. */
+    [[nodiscard]] constexpr size_t last_zero() const noexcept {
+        for (size_t i = array_size; i > 0;) {
+            --i;
+            if (m_data[i] != std::numeric_limits<Word>::max()) {
+                return
+                    bits_per_element * i +
+                    bits_per_element - 1 -
+                    std::countl_one(m_data[i]);
+            }
+        }
+        return N;
+    }
+
+    /* Set all of the bits to the given value. */
+    constexpr void fill(bool value) noexcept {
+        constexpr bool odd = N % bits_per_element;
+        Word filled = std::numeric_limits<Word>::max() * value;
+        for (size_t i = 0; i < array_size - odd; ++i) {
+            m_data[i] = filled;
+        }
+        if constexpr (odd) {
+            Word mask = (Word(1) << (N % bits_per_element)) - 1;
+            m_data[array_size - 1] = filled & mask;
+        }
+    }
+
+    /* Set all of the bits within a certain range to the given value. */
+    constexpr void fill(bool value, size_t first, size_t last = N) noexcept {
+        last = std::min(last, N);
+        if (first >= last) {
+            return;
+        }
+        Word filled = std::numeric_limits<Word>::max() * value;
+        Word left = filled << (first % bits_per_element);
+        Word right = filled >> (bits_per_element - last % bits_per_element);
+        size_t i = first / bits_per_element;
+        size_t j = last / bits_per_element;
+        if (i == j) {
+            Word mask = left & right;
+            m_data[i] = (m_data[i] & ~mask) | (mask & filled);
+        } else {
+            m_data[i] = (m_data[i] & ~left) | (left & filled);
+            for (size_t k = i + 1; k < j; ++k) {
+                m_data[k] = filled;
+            }
+            m_data[j] = (m_data[j] & ~right) | (right & filled);
+        }
+    }
+
+    /* Toggle all of the bits in the set. */
+    constexpr void flip() noexcept {
+        constexpr bool odd = N % bits_per_element;
+        for (size_t i = 0; i < array_size - odd; ++i) {
+            m_data[i] ^= std::numeric_limits<Word>::max();
+        }
+        if constexpr (odd) {
+            Word mask = (Word(1) << (N % bits_per_element)) - 1;
+            m_data[array_size - 1] ^= mask;
+        }
+    }
+
+    /* Toggle all of the bits within a certain range. */
+    constexpr void flip(size_t first, size_t last = N) noexcept {
+        last = std::min(last, N);
+        if (first >= last) {
+            return;
+        }
+        constexpr Word filled = std::numeric_limits<Word>::max();
+        Word left = filled << (first % bits_per_element);
+        Word right = filled >> (bits_per_element - last % bits_per_element);
+        size_t i = first / bits_per_element;
+        size_t j = last / bits_per_element;
+        if (i == j) {
+            m_data[i] ^= left & right;
+        } else {
+            m_data[i] ^= left;
+            for (size_t k = i + 1; k < j; ++k) {
+                m_data[k] ^= filled;
+            }
+            m_data[j] ^= right;
+        }
+    }
+
+    /* Lexically compare two bitsets of equal size. */
+    [[nodiscard]] friend constexpr auto operator<=>(
+        const bitset& lhs,
+        const bitset& rhs
+    ) noexcept {
+        return lhs.data() <=> rhs.data();
+    }
+
+    [[nodiscard]] friend constexpr bool operator==(
+        const bitset& lhs,
+        const bitset& rhs
+    ) noexcept {
+        return lhs.data() == rhs.data();
+    }
+
+    /* Lexically compare against a single integer if the bitset fits within the
+    platform's word size. */
+    template <size_t N1> requires (N1 <= sizeof(Word) * 8)
+    [[nodiscard]] friend constexpr auto operator<=>(
+        const bitset<N1>& lhs,
+        Word rhs
+    ) noexcept {
+        if constexpr (N1) {
+            return lhs.m_data[0] <=> rhs;
+        } else {
+            return Word(0) <=> rhs;
+        }
+    }
+    template <size_t N1> requires (N1 <= sizeof(Word) * 8)
+    [[nodiscard]] friend constexpr auto operator<=>(
+        Word lhs,
+        const bitset<N1>& rhs
+    ) noexcept {
+        if constexpr (N1) {
+            return lhs <=> rhs.m_data[0];
+        } else {
+            return lhs <=> Word(0);
+        }
+    }
+
+    /* Apply a binary AND between the contents of two bitsets of equal size. */
+    [[nodiscard]] friend constexpr bitset operator&(
+        const bitset& lhs,
+        const bitset& rhs
+    ) noexcept {
+        bitset result;
+        for (size_t i = 0; i < array_size; ++i) {
+            result.m_data[i] = lhs.m_data[i] & rhs.m_data[i];
+        }
+        return result;
+    }
+    [[maybe_unused]] constexpr bitset& operator&=(
+        const bitset& other
+    ) noexcept {
+        for (size_t i = 0; i < array_size; ++i) {
+            m_data[i] &= other.m_data[i];
+        }
+        return *this;
+    }
+
+    /* Apply a binary AND against a single integer if the bitset fits within the
+    platform's word size. */
+    template <size_t N1> requires (N1 <= sizeof(Word) * 8)
+    [[nodiscard]] friend constexpr bitset operator&(
+        const bitset<N1>& lhs,
+        Word rhs
+    ) noexcept {
+        if constexpr (N1) {
+            return {lhs.m_data[0] & rhs};
+        } else {
+            return {};
+        }
+    }
+    template <size_t N1> requires (N1 <= sizeof(Word) * 8)
+    [[nodiscard]] friend constexpr bitset operator&(
+        Word lhs,
+        const bitset<N1>& rhs
+    ) noexcept {
+        if constexpr (N1) {
+            return {lhs & rhs.m_data[0]};
+        } else {
+            return {};
+        }
+    }
+    template <typename Self>
+        requires (
+            !std::is_const_v<std::remove_reference_t<Self>> &&
+            std::remove_cvref_t<Self>::size() <= sizeof(Word) * 8
+        )
+    [[maybe_unused]] constexpr auto operator&=(
+        this Self&& self,
+        Word other
+    ) noexcept
+        -> std::add_lvalue_reference_t<Self>
+    {
+        if constexpr (std::remove_cvref_t<Self>::size()) {
+            self.m_data[0] &= other;
+        }
+        return self;
+    }
+
+    /* Apply a binary OR between the contents of two bitsets of equal size. */
+    [[nodiscard]] friend constexpr bitset operator|(
+        const bitset& lhs,
+        const bitset& rhs
+    ) noexcept {
+        bitset result;
+        for (size_t i = 0; i < array_size; ++i) {
+            result.m_data[i] = lhs.m_data[i] | rhs.m_data[i];
+        }
+        return result;
+    }
+    [[maybe_unused]] constexpr bitset& operator|=(
+        const bitset& other
+    ) noexcept {
+        for (size_t i = 0; i < array_size; ++i) {
+            m_data[i] |= other.m_data[i];
+        }
+        return *this;
+    }
+
+    /* Apply a binary OR against a single integer if the bitset fits within the platform's
+    word size. */
+    template <size_t N1> requires (N1 <= sizeof(Word) * 8)
+    [[nodiscard]] friend constexpr bitset operator|(
+        const bitset<N1>& lhs,
+        Word rhs
+    ) noexcept {
+        if constexpr (N1) {
+            constexpr Word mask = (Word(1) << N1) - 1;
+            return {lhs.m_data[0] | (rhs & mask)};
+        } else {
+            return {};
+        }
+    }
+    template <size_t N1> requires (N1 <= sizeof(Word) * 8)
+    [[nodiscard]] friend constexpr bitset operator|(
+        Word lhs,
+        const bitset<N1>& rhs
+    ) noexcept {
+        if constexpr (N1) {
+            constexpr Word mask = (Word(1) << N1) - 1;
+            return {(lhs & mask) | rhs.m_data[0]};
+        } else {
+            return {};
+        }
+    }
+    template <typename Self>
+        requires (
+            !std::is_const_v<std::remove_reference_t<Self>> &&
+            std::remove_cvref_t<Self>::size() <= sizeof(Word) * 8
+        )
+    [[maybe_unused]] constexpr auto operator|=(
+        this Self&& self,
+        Word other
+    ) noexcept
+        -> std::add_lvalue_reference_t<Self>
+    {
+        if constexpr (std::remove_cvref_t<Self>::size()) {
+            constexpr Word mask = (Word(1) << std::remove_cvref_t<Self>::size()) - 1;
+            self.m_data[0] |= (other & mask);
+        }
+        return self;
+    }
+
+    /* Apply a binary XOR between the contents of two bitsets of equal size. */
+    [[nodiscard]] friend constexpr bitset operator^(
+        const bitset& lhs,
+        const bitset& rhs
+    ) noexcept {
+        bitset result;
+        for (size_t i = 0; i < array_size; ++i) {
+            result.m_data[i] = lhs.m_data[i] ^ rhs.m_data[i];
+        }
+        return result;
+    }
+    [[maybe_unused]] constexpr bitset& operator^=(
+        const bitset& other
+    ) noexcept {
+        for (size_t i = 0; i < array_size; ++i) {
+            m_data[i] ^= other.m_data[i];
+        }
+        return *this;
+    }
+
+    /* Apply a binary XOR against a single integer if the bitset fits within the
+    platform's word size. */
+    template <size_t N1> requires (N1 <= sizeof(Word) * 8)
+    [[nodiscard]] friend constexpr bitset operator^(
+        const bitset<N1>& lhs,
+        Word rhs
+    ) noexcept {
+        if constexpr (N1) {
+            constexpr Word mask = (Word(1) << N1) - 1;
+            return {lhs.m_data[0] ^ (rhs & mask)};
+        } else {
+            return {};
+        }
+    }
+    template <size_t N1> requires (N1 <= sizeof(Word) * 8)
+    [[nodiscard]] friend constexpr bitset operator^(
+        Word lhs,
+        const bitset<N1>& rhs
+    ) noexcept {
+        if constexpr (N1) {
+            constexpr Word mask = (Word(1) << N1) - 1;
+            return {(lhs & mask) ^ rhs.m_data[0]};
+        } else {
+            return {};
+        }
+    }
+    template <typename Self>
+        requires (
+            !std::is_const_v<std::remove_reference_t<Self>> &&
+            std::remove_cvref_t<Self>::size() <= sizeof(Word) * 8
+        )
+    [[maybe_unused]] constexpr auto operator^=(
+        this Self&& self,
+        Word other
+    ) noexcept
+        -> std::add_lvalue_reference_t<Self>
+    {
+        if constexpr (std::remove_cvref_t<Self>::size()) {
+            constexpr Word mask = (Word(1) << std::remove_cvref_t<Self>::size()) - 1;
+            self.m_data[0] ^= (other & mask);
+        }
+        return self;
+    }
+
+    /* Apply a binary left shift to the contents of the bitset. */
+    [[nodiscard]] constexpr bitset operator<<(size_t rhs) const noexcept {
+        bitset result;
+        size_t shift = rhs / bits_per_element;
+        if (shift < array_size) {
+            size_t remainder = rhs % bits_per_element;
+            for (size_t i = array_size; i-- > shift + 1;) {
+                size_t offset = i - shift;
+                result.m_data[i] = (m_data[offset] << remainder) |
+                    (m_data[offset - 1] >> (bits_per_element - remainder));
+            }
+            result.m_data[shift] = m_data[0] << remainder;
+        }
+        return result;
+    }
+    [[maybe_unused]] constexpr bitset& operator<<=(size_t rhs) noexcept {
+        size_t shift = rhs / bits_per_element;
+        if (shift < array_size) {
+            size_t remainder = rhs % bits_per_element;
+            for (size_t i = array_size; i-- > shift + 1;) {
+                size_t offset = i - shift;
+                m_data[i] = (m_data[offset] << remainder) |
+                    (m_data[offset - 1] >> (bits_per_element - remainder));
+            }
+            m_data[shift] = m_data[0] << remainder;
+            for (size_t i = shift; i-- > 0;) {
+                m_data[i] = 0;
+            }
+        } else {
+            for (size_t i = 0; i < array_size; ++i) {
+                m_data[i] = 0;
+            }
+        }
+        return *this;
+    }
+
+    /* Apply a binary right shift to the contents of the bitset. */
+    [[nodiscard]] constexpr bitset operator>>(size_t rhs) const noexcept {
+        bitset result;
+        size_t shift = rhs / bits_per_element;
+        if (shift < array_size) {
+            size_t end = array_size - shift - 1;
+            size_t remainder = rhs % bits_per_element;
+            for (size_t i = 0; i < end; ++i) {
+                size_t offset = i + shift;
+                result.m_data[i] = (m_data[offset] >> remainder) |
+                    (m_data[offset + 1] << (bits_per_element - remainder));
+            }
+            result.m_data[end] = m_data[array_size - 1] >> remainder;
+        }
+        return result;
+    }
+    [[maybe_unused]] constexpr bitset& operator>>=(size_t rhs) noexcept {
+        size_t shift = rhs / bits_per_element;
+        if (shift < array_size) {
+            size_t end = array_size - shift - 1;
+            size_t remainder = rhs % bits_per_element;
+            for (size_t i = 0; i < end; ++i) {
+                size_t offset = i + shift;
+                m_data[i] = (m_data[offset] >> remainder) |
+                    (m_data[offset + 1] << (bits_per_element - remainder));
+            }
+            m_data[end] = m_data[array_size - 1] >> remainder;
+            for (size_t i = array_size - shift; i < array_size; ++i) {
+                m_data[i] = 0;
+            }
+        } else {
+            for (size_t i = 0; i < array_size; ++i) {
+                m_data[i] = 0;
+            }
+        }
+        return *this;
+    }
+};
+
+
+template <std::unsigned_integral T>
+bitset(T) -> bitset<sizeof(T) * 8>;
+
+
+}  // namespace bertrand
+
+
+
+namespace std {
+
+    /* Specializing `std::tuple_size` allows bitsets to be decomposed using
+    structured bindings. */
+    template <bertrand::is_bitset T>
+    struct tuple_size<T> :
+        std::integral_constant<size_t, std::remove_cvref_t<T>::size()>
+    {};
+
+    /* Specializing `std::tuple_element` allows bitsets to be decomposed using
+    structured bindings. */
+    template <size_t I, bertrand::is_bitset T>
+        requires (I < std::remove_cvref_t<T>::size())
+    struct tuple_element<I, T> {
+        using type = bool;
+    };
+
+    /* `std::get<I>(chain)` extracts the I-th flag from the bitset. */
+    template <size_t I, bertrand::is_bitset T>
+        requires (I < std::remove_cvref_t<T>::size())
+    [[nodiscard]] constexpr bool get(T&& bitset) noexcept {
+        return std::forward<T>(bitset).template get<I>();
+    }
+
+}
+
+
+namespace bertrand {
+
+
+inline void test() {
+    constexpr bitset s{uint8_t(1)};
+    static_assert((s << 1) == uint8_t(2));
+
+    constexpr bitset<5> s2{"0b10101"};
+    // static_assert(std::string(s2) == "10101");
+}
+
+
+
+template <typename T>
 concept is_args = impl::_is_args<std::remove_cvref_t<T>>;
 
 
@@ -1362,6 +2302,7 @@ template <typename Prev, is_chain Self>
 
 
 namespace std {
+
 
     /* Specializing `std::tuple_size` allows function chains to be decomposed using
     structured bindings. */
