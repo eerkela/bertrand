@@ -5,6 +5,7 @@
 #include <cmath>
 #include <concepts>
 #include <cstddef>
+#include <iostream>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -1061,18 +1062,31 @@ public:
         }
     }
 
-    /* Construct a bitset from a string of 1s and 0s (possibly prefixed with "0b"). */
-    constexpr bitset(std::string_view str) noexcept : m_data{} {
-        constexpr std::string_view prefix = "0b";
-        if (str.starts_with(prefix)) {
-            str.remove_prefix(prefix.size());
-        }
+    /* Construct a bitset from a string of 1s and 0s. */
+    constexpr bitset(std::string_view str, char zero = '0', char one = '1') : m_data{} {
         for (size_t i = 0; i < N && i < str.size(); ++i) {
-            if (str[i] == '1') {
+            char c = str[i];
+            if (c == one) {
                 m_data[i / bits_per_element] |= Word(1) << (i % bits_per_element);
-            } else if (str[i] != '0') {
+            } else if (c != zero) {
                 throw std::invalid_argument(
-                    "bitset string must contain only 1s and 0s"
+                    "bitset string must contain only 1s and 0s, not: '" +
+                    std::string(1, c) + "'"
+                );
+            }
+        }
+    }
+
+    /* Construct a bitset from a string literal of 1s and 0s, allowing for CTAD. */
+    constexpr bitset(const char(&str)[N + 1], char zero = '0', char one = '1') : m_data{} {
+        for (size_t i = 0; i < N; ++i) {
+            char c = str[i];
+            if (c == one) {
+                m_data[i / bits_per_element] |= Word(1) << (i % bits_per_element);
+            } else if (c != zero) {
+                throw std::invalid_argument(
+                    "bitset string must contain only 1s and 0s, not: '" +
+                    std::string(1, c) + "'"
                 );
             }
         }
@@ -1097,18 +1111,6 @@ public:
         return any();
     }
 
-    /* Convert the bitset to an integer representation if it fits within the platform's
-    word size. */
-    template <typename Self>
-        requires (std::remove_cvref_t<Self>::size() <= sizeof(Word) * 8)
-    [[nodiscard]] explicit constexpr operator Word(this Self&& self) noexcept {
-        if constexpr (array_size == 0) {
-            return 0;
-        } else {
-            return self.m_data[0];
-        }
-    }
-
     /* Convert the bitset to a string representation. */
     [[nodiscard]] explicit constexpr operator std::string() const noexcept {
         constexpr int diff = '1' - '0';
@@ -1118,6 +1120,18 @@ public:
             result.push_back('0' + diff * (*this)[i]);
         }
         return result;
+    }
+
+    /* Convert the bitset to an integer representation if it fits within the platform's
+    word size. */
+    template <typename T>
+        requires (N <= sizeof(Word) * 8 && explicitly_convertible_to<Word, T>)
+    [[nodiscard]] explicit constexpr operator T() const noexcept {
+        if constexpr (array_size == 0) {
+            return static_cast<T>(Word(0));
+        } else {
+            return static_cast<T>(m_data[0]);
+        }
     }
 
     /* A mutable reference to a single bit in the set. */
@@ -1134,6 +1148,14 @@ public:
         {}
 
     public:
+        [[nodiscard]] constexpr operator bool() const noexcept {
+            return value & (Word(1) << index);
+        }
+
+        [[nodiscard]] constexpr bool operator~() const noexcept {
+            return !*this;
+        }
+
         [[maybe_unused]] Ref& operator=(bool x) noexcept {
             value = (value & ~(Word(1) << index)) | (x << index);
             return *this;
@@ -1142,14 +1164,6 @@ public:
         [[maybe_unused]] Ref& flip() noexcept {
             value ^= Word(1) << index;
             return *this;
-        }
-
-        [[nodiscard]] constexpr operator bool() const noexcept {
-            return value & (Word(1) << index);
-        }
-
-        [[nodiscard]] constexpr bool operator~() const noexcept {
-            return !*this;
         }
     };
 
@@ -1191,23 +1205,21 @@ public:
     private:
         friend bitset;
 
-        /// TODO: this should store and yield refs?
-
         ssize_t index;
         bitset* self;
-        mutable bool cache;
+        mutable Ref cache;
 
         Iterator(bitset* self, ssize_t index) noexcept : self(self), index(index) {}
 
     public:
         using iterator_category = std::random_access_iterator_tag;
         using difference_type = ssize_t;
-        using value_type = bool;
-        using pointer = bool*;
-        using reference = bool;
+        using value_type = Ref;
+        using pointer = Ref*;
+        using reference = Ref;
 
-        [[nodiscard]] constexpr bool operator*() const noexcept {
-            return (*self)[index];
+        [[nodiscard]] constexpr reference operator*() const noexcept {
+            return (*self)[static_cast<size_t>(index)];
         }
 
         [[nodiscard]] constexpr const pointer operator->() const noexcept {
@@ -1221,7 +1233,7 @@ public:
         }
 
         [[nodiscard]] constexpr reference operator[](difference_type n) const noexcept {
-            return (*self)[index + n];
+            return (*self)[static_cast<size_t>(index + n)];
         }
 
         [[maybe_unused]] constexpr Iterator& operator++() noexcept {
@@ -1291,11 +1303,47 @@ public:
             return lhs.index - rhs.index;
         }
 
-        [[nodiscard]] friend constexpr auto operator<=>(
+
+        [[nodiscard]] friend constexpr bool operator<(
             const Iterator& lhs,
             const Iterator& rhs
         ) noexcept {
-            return lhs.index <=> rhs.index;
+            return lhs.index < rhs.index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator<=(
+            const Iterator& lhs,
+            const Iterator& rhs
+        ) noexcept {
+            return lhs.index <= rhs.index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            const Iterator& lhs,
+            const Iterator& rhs
+        ) noexcept {
+            return lhs.index == rhs.index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(
+            const Iterator& lhs,
+            const Iterator& rhs
+        ) noexcept {
+            return lhs.index != rhs.index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator>=(
+            const Iterator& lhs,
+            const Iterator& rhs
+        ) noexcept {
+            return lhs.index >= rhs.index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator>(
+            const Iterator& lhs,
+            const Iterator& rhs
+        ) noexcept {
+            return lhs.index > rhs.index;
         }
     };
 
@@ -1400,11 +1448,46 @@ public:
             return lhs.index - rhs.index;
         }
 
-        [[nodiscard]] friend constexpr auto operator<=>(
+        [[nodiscard]] friend constexpr bool operator<(
             const ConstIterator& lhs,
             const ConstIterator& rhs
         ) noexcept {
-            return lhs.index <=> rhs.index;
+            return lhs.index < rhs.index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator<=(
+            const ConstIterator& lhs,
+            const ConstIterator& rhs
+        ) noexcept {
+            return lhs.index <= rhs.index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            const ConstIterator& lhs,
+            const ConstIterator& rhs
+        ) noexcept {
+            return lhs.index == rhs.index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(
+            const ConstIterator& lhs,
+            const ConstIterator& rhs
+        ) noexcept {
+            return lhs.index != rhs.index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator>=(
+            const ConstIterator& lhs,
+            const ConstIterator& rhs
+        ) noexcept {
+            return lhs.index >= rhs.index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator>(
+            const ConstIterator& lhs,
+            const ConstIterator& rhs
+        ) noexcept {
+            return lhs.index > rhs.index;
         }
     };
 
@@ -1606,14 +1689,26 @@ public:
         }
     }
 
-    /* Lexically compare two bitsets of equal size. */
-    [[nodiscard]] friend constexpr auto operator<=>(
+    /* Check whether one bitset is lexicographically less than another of the same
+    size. */
+    [[nodiscard]] friend constexpr bool operator<(
         const bitset& lhs,
         const bitset& rhs
     ) noexcept {
-        return lhs.data() <=> rhs.data();
+        return lhs.data() < rhs.data();
     }
 
+    /* Check whether one bitset is lexicographically less than or equal to another of
+    the same size. */
+    [[nodiscard]] friend constexpr bool operator<=(
+        const bitset& lhs,
+        const bitset& rhs
+    ) noexcept {
+        return lhs.data() <= rhs.data();
+    }
+
+    /* Check whether one bitset is lexicographically equal to another of the same
+    size. */
     [[nodiscard]] friend constexpr bool operator==(
         const bitset& lhs,
         const bitset& rhs
@@ -1621,29 +1716,45 @@ public:
         return lhs.data() == rhs.data();
     }
 
-    /* Lexically compare against a single integer if the bitset fits within the
-    platform's word size. */
-    template <size_t N1> requires (N1 <= sizeof(Word) * 8)
-    [[nodiscard]] friend constexpr auto operator<=>(
-        const bitset<N1>& lhs,
-        Word rhs
+    /* Check whether one bitset is lexicographically not equal to another of the same
+    size. */
+    [[nodiscard]] friend constexpr bool operator!=(
+        const bitset& lhs,
+        const bitset& rhs
     ) noexcept {
-        if constexpr (N1) {
-            return lhs.m_data[0] <=> rhs;
-        } else {
-            return Word(0) <=> rhs;
-        }
+        return lhs.data() != rhs.data();
     }
-    template <size_t N1> requires (N1 <= sizeof(Word) * 8)
-    [[nodiscard]] friend constexpr auto operator<=>(
-        Word lhs,
-        const bitset<N1>& rhs
+
+    /* Check whether one bitset is lexicographically greater than or equal to another of
+    the same size. */
+    [[nodiscard]] friend constexpr bool operator>=(
+        const bitset& lhs,
+        const bitset& rhs
     ) noexcept {
-        if constexpr (N1) {
-            return lhs <=> rhs.m_data[0];
-        } else {
-            return lhs <=> Word(0);
+        return lhs.data() >= rhs.data();
+    }
+
+    /* Check whether one bitset is lexicographically greater than another of the same
+    size. */
+    [[nodiscard]] friend constexpr bool operator>(
+        const bitset& lhs,
+        const bitset& rhs
+    ) noexcept {
+        return lhs.data() > rhs.data();
+    }
+
+    /* Apply a binary NOT to the contents of the bitset. */
+    [[nodiscard]] friend constexpr bitset operator~(const bitset& set) noexcept {
+        constexpr bool odd = N % bits_per_element;
+        bitset result;
+        for (size_t i = 0; i < array_size - odd; ++i) {
+            result.m_data[i] = ~set.m_data[i];
         }
+        if constexpr (odd) {
+            Word mask = (Word(1) << (N % bits_per_element)) - 1;
+            result.m_data[array_size - 1] = ~set.m_data[array_size - 1] & mask;
+        }
+        return result;
     }
 
     /* Apply a binary AND between the contents of two bitsets of equal size. */
@@ -1666,47 +1777,6 @@ public:
         return *this;
     }
 
-    /* Apply a binary AND against a single integer if the bitset fits within the
-    platform's word size. */
-    template <size_t N1> requires (N1 <= sizeof(Word) * 8)
-    [[nodiscard]] friend constexpr bitset operator&(
-        const bitset<N1>& lhs,
-        Word rhs
-    ) noexcept {
-        if constexpr (N1) {
-            return {lhs.m_data[0] & rhs};
-        } else {
-            return {};
-        }
-    }
-    template <size_t N1> requires (N1 <= sizeof(Word) * 8)
-    [[nodiscard]] friend constexpr bitset operator&(
-        Word lhs,
-        const bitset<N1>& rhs
-    ) noexcept {
-        if constexpr (N1) {
-            return {lhs & rhs.m_data[0]};
-        } else {
-            return {};
-        }
-    }
-    template <typename Self>
-        requires (
-            !std::is_const_v<std::remove_reference_t<Self>> &&
-            std::remove_cvref_t<Self>::size() <= sizeof(Word) * 8
-        )
-    [[maybe_unused]] constexpr auto operator&=(
-        this Self&& self,
-        Word other
-    ) noexcept
-        -> std::add_lvalue_reference_t<Self>
-    {
-        if constexpr (std::remove_cvref_t<Self>::size()) {
-            self.m_data[0] &= other;
-        }
-        return self;
-    }
-
     /* Apply a binary OR between the contents of two bitsets of equal size. */
     [[nodiscard]] friend constexpr bitset operator|(
         const bitset& lhs,
@@ -1727,50 +1797,6 @@ public:
         return *this;
     }
 
-    /* Apply a binary OR against a single integer if the bitset fits within the platform's
-    word size. */
-    template <size_t N1> requires (N1 <= sizeof(Word) * 8)
-    [[nodiscard]] friend constexpr bitset operator|(
-        const bitset<N1>& lhs,
-        Word rhs
-    ) noexcept {
-        if constexpr (N1) {
-            constexpr Word mask = (Word(1) << N1) - 1;
-            return {lhs.m_data[0] | (rhs & mask)};
-        } else {
-            return {};
-        }
-    }
-    template <size_t N1> requires (N1 <= sizeof(Word) * 8)
-    [[nodiscard]] friend constexpr bitset operator|(
-        Word lhs,
-        const bitset<N1>& rhs
-    ) noexcept {
-        if constexpr (N1) {
-            constexpr Word mask = (Word(1) << N1) - 1;
-            return {(lhs & mask) | rhs.m_data[0]};
-        } else {
-            return {};
-        }
-    }
-    template <typename Self>
-        requires (
-            !std::is_const_v<std::remove_reference_t<Self>> &&
-            std::remove_cvref_t<Self>::size() <= sizeof(Word) * 8
-        )
-    [[maybe_unused]] constexpr auto operator|=(
-        this Self&& self,
-        Word other
-    ) noexcept
-        -> std::add_lvalue_reference_t<Self>
-    {
-        if constexpr (std::remove_cvref_t<Self>::size()) {
-            constexpr Word mask = (Word(1) << std::remove_cvref_t<Self>::size()) - 1;
-            self.m_data[0] |= (other & mask);
-        }
-        return self;
-    }
-
     /* Apply a binary XOR between the contents of two bitsets of equal size. */
     [[nodiscard]] friend constexpr bitset operator^(
         const bitset& lhs,
@@ -1789,50 +1815,6 @@ public:
             m_data[i] ^= other.m_data[i];
         }
         return *this;
-    }
-
-    /* Apply a binary XOR against a single integer if the bitset fits within the
-    platform's word size. */
-    template <size_t N1> requires (N1 <= sizeof(Word) * 8)
-    [[nodiscard]] friend constexpr bitset operator^(
-        const bitset<N1>& lhs,
-        Word rhs
-    ) noexcept {
-        if constexpr (N1) {
-            constexpr Word mask = (Word(1) << N1) - 1;
-            return {lhs.m_data[0] ^ (rhs & mask)};
-        } else {
-            return {};
-        }
-    }
-    template <size_t N1> requires (N1 <= sizeof(Word) * 8)
-    [[nodiscard]] friend constexpr bitset operator^(
-        Word lhs,
-        const bitset<N1>& rhs
-    ) noexcept {
-        if constexpr (N1) {
-            constexpr Word mask = (Word(1) << N1) - 1;
-            return {(lhs & mask) ^ rhs.m_data[0]};
-        } else {
-            return {};
-        }
-    }
-    template <typename Self>
-        requires (
-            !std::is_const_v<std::remove_reference_t<Self>> &&
-            std::remove_cvref_t<Self>::size() <= sizeof(Word) * 8
-        )
-    [[maybe_unused]] constexpr auto operator^=(
-        this Self&& self,
-        Word other
-    ) noexcept
-        -> std::add_lvalue_reference_t<Self>
-    {
-        if constexpr (std::remove_cvref_t<Self>::size()) {
-            constexpr Word mask = (Word(1) << std::remove_cvref_t<Self>::size()) - 1;
-            self.m_data[0] ^= (other & mask);
-        }
-        return self;
     }
 
     /* Apply a binary left shift to the contents of the bitset. */
@@ -1908,18 +1890,71 @@ public:
         }
         return *this;
     }
+
+    /* Print the bitset to an output stream. */
+    [[maybe_unused]] friend std::ostream& operator<<(
+        std::ostream& os,
+        const bitset& set
+    ) {
+        os << std::string(set);
+        return os;
+    }
+
+    /* Read the bitset from an input stream. */
+    [[maybe_unused]] friend std::istream& operator>>(
+        std::istream& is,
+        bitset& set
+    ) {
+        char c;
+        is.get(c);
+        while (std::isspace(c)) {
+            is.get(c);
+        }
+        size_t i = 0;
+        if (c == '0') {
+            is.get(c);
+            if (c == 'b') {
+                is.get(c);
+            } else {
+                ++i;
+            }
+        }
+        bool one;
+        while (is.good() && i < N && (c == '0' || (one = (c == '1')))) {
+            set[i++] = one;
+            is.get(c);
+        }
+        return is;
+    }
+
 };
 
 
-template <std::unsigned_integral T>
+template <std::integral T>
 bitset(T) -> bitset<sizeof(T) * 8>;
+template <size_t N>
+bitset(const char(&)[N]) -> bitset<N - 1>;
 
 
 }  // namespace bertrand
 
 
-
 namespace std {
+
+    /* Specializing `std::hash` allows bitsets to be stored in hash tables. */
+    template <bertrand::is_bitset T>
+    struct hash<T> {
+        [[nodiscard]] static size_t operator()(const T& bitset) noexcept {
+            size_t result = 0;
+            for (size_t i = 0; i < std::remove_cvref_t<T>::size(); ++i) {
+                result ^= bertrand::hash_combine(
+                    result,
+                    bitset.data()[i]
+                );
+            }
+            return result;
+        }
+    };
 
     /* Specializing `std::tuple_size` allows bitsets to be decomposed using
     structured bindings. */
@@ -1947,15 +1982,6 @@ namespace std {
 
 
 namespace bertrand {
-
-
-inline void test() {
-    constexpr bitset s{uint8_t(1)};
-    static_assert((s << 1) == uint8_t(2));
-
-    constexpr bitset<5> s2{"0b10101"};
-    // static_assert(std::string(s2) == "10101");
-}
 
 
 
@@ -2072,13 +2098,12 @@ private:
         using type = filter<args<>, Us...>::type;
     };
 
-    template <typename result, size_t I>
-    struct _get_base { using type = result; };
+    template <typename out, size_t I>
+    struct _get_base { using type = out; };
     template <typename... Us, size_t I> requires (I < sizeof...(Ts))
     struct _get_base<impl::ArgsBase<Us...>, I> {
         using type = _get_base<
-            impl::ArgsBase<Us...,
-            unpack_type<I, Ts...>>,
+            impl::ArgsBase<Us..., unpack_type<I, Ts...>>,
             I + 1
         >::type;
     };
@@ -2095,6 +2120,13 @@ private:
     }
 
 public:
+    /* The total number of arguments being stored. */
+    [[nodiscard]] static constexpr size_t size() noexcept {
+        return sizeof...(Ts);
+    }
+
+    /// TODO: eventually, delete ::n in favor of ::size().
+
     static constexpr size_t n = sizeof...(Ts);
     template <typename T>
     static constexpr size_t index_of = bertrand::index_of<T, Ts...>;
@@ -2142,10 +2174,21 @@ public:
         std::forward<Us>(args)...
     ) {}
 
+    args(args&&) = default;
+
     args(const args&) = delete;
-    args(args&&) = delete;
     args& operator=(const args&) = delete;
     args& operator=(args&&) = delete;
+
+    /* Get the argument at index I. */
+    template <size_t I> requires (I < size())
+    [[nodiscard]] decltype(auto) get() && {
+        if constexpr (std::is_lvalue_reference_v<unpack_type<I, Ts...>>) {
+            return get_base<I>::value;
+        } else {
+            return std::move(get_base<I>::value);
+        }
+    }
 
     /* Calling a pack as an rvalue will perfectly forward the input arguments to an
     input function that is templated to accept them. */
@@ -2163,6 +2206,42 @@ template <typename... Ts>
 args(Ts&&...) -> args<Ts...>;
 
 
+}  // namespace bertrand
+
+
+namespace std {
+
+    /* Specializing `std::tuple_size` allows args packs to be decomposed using
+    structured bindings. */
+    template <bertrand::is_args T>
+    struct tuple_size<T> :
+        std::integral_constant<size_t, std::remove_cvref_t<T>::size()>
+    {};
+
+    /* Specializing `std::tuple_element` allows args packs to be decomposed using
+    structured bindings. */
+    template <size_t I, bertrand::is_args T>
+        requires (I < std::remove_cvref_t<T>::size())
+    struct tuple_element<I, T> {
+        using type = std::remove_cvref_t<T>::template at<I>;
+    };
+
+    /* `std::get<I>(args)` extracts the I-th argument from the pack. */
+    template <size_t I, bertrand::is_args T>
+        requires (
+            !std::is_lvalue_reference_v<T> &&
+            I < std::remove_cvref_t<T>::size()
+        )
+    [[nodiscard]] constexpr decltype(auto) get(T&& args) noexcept {
+        return std::forward<T>(args).template get<I>();
+    }
+
+}
+
+
+namespace bertrand {
+
+
 template <typename T>
 concept is_chain = impl::_is_chain<std::remove_cvref_t<T>>;
 
@@ -2177,16 +2256,19 @@ private:
     std::remove_cvref_t<F> func;
 
 public:
-    static constexpr size_t n = 1;
+    /* The number of component functions in the chain. */
+    [[nodiscard]] static constexpr size_t size() noexcept {
+        return 1;
+    }
 
     /* Get the unqualified type of the component function at index I. */
-    template <size_t I> requires (I < n)
+    template <size_t I> requires (I < size())
     using at = std::remove_cvref_t<F>;
 
     constexpr chain(F func) : func(std::forward<F>(func)) {}
 
     /* Get the component function at index I. */
-    template <size_t I> requires (I < n)
+    template <size_t I> requires (I < size())
     [[nodiscard]] constexpr decltype(auto) get(this auto&& self) {
         return std::forward<decltype(self)>(self).func;
     }
@@ -2210,10 +2292,13 @@ private:
     struct _at<0> { using type = std::remove_cvref_t<F1>; };
 
 public:
-    static constexpr size_t n = chain<F2, Fs...>::n + 1;
+    /* The number of component functions in the chain. */
+    [[nodiscard]] static constexpr size_t size() noexcept {
+        return chain<F2, Fs...>::size() + 1;
+    }
 
     /* Get the unqualified type of the component function at index I. */
-    template <size_t I> requires (I < n)
+    template <size_t I> requires (I < size())
     using at = _at<I>::type;
 
     constexpr chain(F1 first, F2 next, Fs... rest) :
@@ -2222,7 +2307,7 @@ public:
     {}
 
     /* Get the component function at index I. */
-    template <size_t I> requires (I < n)
+    template <size_t I> requires (I < size())
     [[nodiscard]] constexpr decltype(auto) get(this auto&& self) {
         if constexpr (I == 0) {
             return std::forward<decltype(self)>(self).func;
@@ -2260,8 +2345,8 @@ template <is_chain Self, is_chain Next>
             std::forward<decltype(next)>(next).template get<Js>()...
         );
     }(
-        std::make_index_sequence<std::remove_cvref_t<Self>::n>{},
-        std::make_index_sequence<std::remove_cvref_t<Next>::n>{},
+        std::make_index_sequence<std::remove_cvref_t<Self>::size()>{},
+        std::make_index_sequence<std::remove_cvref_t<Next>::size()>{},
         std::forward<Self>(self),
         std::forward<Next>(next)
     );
@@ -2276,7 +2361,7 @@ template <is_chain Self, typename Next>
             std::forward<decltype(next)>(next)
         );
     }(
-        std::make_index_sequence<std::remove_cvref_t<Self>::n>{},
+        std::make_index_sequence<std::remove_cvref_t<Self>::size()>{},
         std::forward<Self>(self),
         std::forward<Next>(next)
     );
@@ -2291,7 +2376,7 @@ template <typename Prev, is_chain Self>
             std::forward<decltype(self)>(self).template get<Is>()...
         );
     }(
-        std::make_index_sequence<std::remove_cvref_t<Self>::n>{},
+        std::make_index_sequence<std::remove_cvref_t<Self>::size()>{},
         std::forward<Prev>(prev),
         std::forward<Self>(self)
     );
@@ -2308,20 +2393,20 @@ namespace std {
     structured bindings. */
     template <bertrand::is_chain T>
     struct tuple_size<T> :
-        std::integral_constant<size_t, std::remove_cvref_t<T>::n>
+        std::integral_constant<size_t, std::remove_cvref_t<T>::size()>
     {};
 
     /* Specializing `std::tuple_element` allows function chains to be decomposed using
     structured bindings. */
     template <size_t I, bertrand::is_chain T>
-        requires (I < std::remove_cvref_t<T>::n)
+        requires (I < std::remove_cvref_t<T>::size())
     struct tuple_element<I, T> {
         using type = decltype(std::declval<T>().template get<I>());
     };
 
     /* `std::get<I>(chain)` extracts the I-th function in the chain. */
     template <size_t I, bertrand::is_chain T>
-        requires (I < std::remove_cvref_t<T>::n)
+        requires (I < std::remove_cvref_t<T>::size())
     [[nodiscard]] constexpr decltype(auto) get(T&& chain) {
         return std::forward<T>(chain).template get<I>();
     }
