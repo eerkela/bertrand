@@ -1035,8 +1035,8 @@ concept is_bitset = impl::_is_bitset<std::remove_cvref_t<T>>;
 
 /* A simple bitset type that stores flags in a fixed-size array of machine words.
 Allows a wider range of operations than `std::bitset<N>`, including bigint-style
-arithmetic operators and lexicographic comparisons, which allow bitsets to be stored
-in associative containers. */
+arithmetic operators and lexicographic comparisons, which allow bitsets to serve as
+portable, unsigned integers of arbitrary width. */
 template <size_t N>
 struct bitset : impl::bitset_tag {
     using Word = size_t;
@@ -1053,12 +1053,8 @@ private:
         Word lo;
     };
 
-    static constexpr int wide_cmp(BigWord a, BigWord b) noexcept {
-        if (a.hi < b.hi) return -1;
-        if (a.hi > b.hi) return 1;
-        if (a.lo < b.lo) return -1;
-        if (a.lo > b.lo) return 1;
-        return 0;
+    static constexpr bool wide_gt(BigWord a, BigWord b) noexcept {
+        return a.hi > b.hi || a.lo > b.lo;
     }
 
     static constexpr BigWord wide_sub(BigWord a, BigWord b) noexcept {
@@ -1071,14 +1067,14 @@ private:
         constexpr Word mask = (Word(1) << chunk) - 1;
 
         // 1. split a, b into low and high halves
-        BigWord A = {a >> chunk, a & mask};
-        BigWord B = {b >> chunk, b & mask};
+        BigWord x = {a >> chunk, a & mask};
+        BigWord y = {b >> chunk, b & mask};
 
         // 2. compute partial products
-        Word lo_lo = A.lo * B.lo;
-        Word lo_hi = A.lo * B.hi;
-        Word hi_lo = A.hi * B.lo;
-        Word hi_hi = A.hi * B.hi;
+        Word lo_lo = x.lo * y.lo;
+        Word lo_hi = x.lo * y.hi;
+        Word hi_lo = x.hi * y.lo;
+        Word hi_hi = x.hi * y.hi;
 
         // 3. combine cross terms
         Word cross = (lo_lo >> chunk) + (lo_hi & mask) + (hi_lo & mask);
@@ -1092,46 +1088,67 @@ private:
     }
 
     static constexpr BigWord wide_div(BigWord u, Word v) noexcept {
-        // 1. If the high bits are empty, then we devolve to a single word divide
+        /// NOTE: this implementation is taken from the libdivide reference:
+        /// https://github.com/ridiculousfish/libdivide/blob/master/doc/divlu.c
+        /// It should be much faster than the naive approach found in Hacker's Delight.
+        using Signed = std::make_signed_t<Word>;
+        constexpr size_t chunk = word_size / 2;
+        constexpr Word b = Word(1) << chunk;
+        constexpr Word mask = b - 1;
+
+        // 1. If the high bits are empty, then we devolve to a single word divide.
         if (!u.hi) {
             return {u.lo / v, u.lo % v};
         }
 
-        // 2. Left shift divisor until the most significant bit is set
+        // 2. Check for overflow and divide by zero.
+        if (u.hi >= v) {
+            return {~Word(0), ~Word(0)};
+        }
+
+        // 3. Left shift divisor until the most significant bit is set.  This cannot
+        // overflow the numerator because u.hi < v.  The strange bitwise AND is meant
+        // to avoid undefined behavior when shifting by a full word size.  It is taken
+        // from https://ridiculousfish.com/blog/posts/labor-of-division-episode-v.html
         size_t shift = std::countl_zero(v);
-        if (shift) {
-            v <<= shift;
-            u.hi = (u.hi << shift) | (u.lo >> (word_size - shift));
-            u.lo <<= shift;
+        v <<= shift;
+        u.hi <<= shift;
+        u.hi |= ((u.lo >> (-shift & (word_size - 1))) & (-Signed(shift) >> (word_size - 1)));
+        u.lo <<= shift;
+
+        // 4. Split divisor and low bits of numerator into partial words.
+        BigWord n = {u.lo >> chunk, u.lo & mask};
+        BigWord d = {v >> chunk, v & mask};
+
+        // 5. Estimate q1 = [n3 n2 n1] / [d1 d0].  Note that while qhat may be 2
+        // half-words, q1 is always just the lower half, which translates to the upper
+        // half of the final quotient.
+        Word qhat = n.hi / d.hi;
+        Word rhat = n.hi % d.hi;
+        Word c1 = qhat * d.lo;
+        Word c2 = rhat * b + n.lo;
+        if (c1 > c2) {
+            qhat -= 1 + ((c1 - c2) > v);
         }
+        Word q1 = qhat & mask;
 
-        // 3. Estimate the quotient
-        constexpr size_t chunk = word_size / 2;
-        Word q = u.hi >= v ? -1 : ((u.hi << chunk) | (u.lo >> chunk)) / (v >> chunk);
+        // 6. Compute the true (normalized) partial remainder.
+        Word r = n.hi * b + n.lo - q1 * v;
 
-        // 4. Multiply by divisor and refine by checking for overshoot
-        BigWord prod = wide_mul(q, v);
-        while (wide_cmp(prod, u) > 0) {
-            --q;
-            Word temp = prod.lo - v;
-            prod.hi -= temp > prod.lo;
-            prod.lo = temp;
+        // 7. Estimate q0 = [r1 r0 n0] / [d1 d0].  These are the bottom bits of the
+        // final quotient.
+        qhat = r / d.hi;
+        rhat = r % d.hi;
+        c1 = qhat * d.lo;
+        c2 = rhat * b + n.lo;
+        if (c1 > c2) {
+            qhat -= 1 + ((c1 - c2) > v);
         }
+        Word q0 = qhat & mask;
 
-        // 5. Quotient is now stable, subtract to get remainder
-        BigWord r = wide_sub(u, prod);
-
-        // 6. Unshift the remainder and quotient to get the final result
-        if (shift) {
-            r.lo >>= shift;
-            r.lo |= r.hi << (word_size - shift);
-            // r.hi is guaranteed to be zero
-        }
-        return {q, r.lo};
+        // 8. Return the quotient and unnormalized remainder
+        return {(q1 << chunk) | q0, ((r * b) + n.lo - (q0 * v)) >> shift};
     }
-
-    /// TODO: _divmod is super broken, but I don't know the algorithm well enough to
-    /// fix it.
 
     static constexpr void _divmod(
         const bitset& lhs,
@@ -1139,17 +1156,50 @@ private:
         bitset& quotient,
         bitset& remainder
     ) {
+        using Signed = std::make_signed_t<Word>;
+        constexpr size_t chunk = word_size / 2;
+        constexpr Word b = Word(1) << chunk;
+        constexpr Word mask = b - 1;
+
         if (!rhs) {
             throw std::domain_error("division by zero");
         }
-        quotient.fill(0);
         if (lhs < rhs || !lhs) {
             remainder = lhs;
+            quotient.fill(0);
+            return;
+        }
+
+        // 1. Compute effective lengths.
+        size_t lhs_last = lhs.last_one();
+        size_t rhs_last = rhs.last_one();
+        size_t n = (rhs_last + (word_size - 1)) / word_size;
+        size_t m = ((lhs_last + (word_size - 1)) / word_size) - n;
+
+        // 2. If the divisor is a single word, then we can avoid multi-word division.
+        if (n == 1) {
+            Word v = rhs.m_data[0];
+            Word rem = 0;
+            for (size_t i = m + n; i-- > 0;) {
+                auto [q, r] = wide_div({rem, lhs.m_data[i]}, v);
+                quotient.m_data[i] = q;
+                rem = r;
+            }
+            for (size_t i = m + n; i < array_size; ++i) {
+                quotient.m_data[i] = 0;
+            }
+            remainder.m_data[0] = rem;
+            for (size_t i = 1; i < n; ++i) {
+                remainder.m_data[i] = 0;
+            }
             return;
         }
 
         /// NOTE: this is based on Knuth's Algorithm D, which is among the simplest for
-        /// bigint division.
+        /// bigint division.  Much of the implementation was taken from:
+        /// https://skanthak.hier-im-netz.de/division.html
+        /// Which references the Hacker's Delight reference, with a helpful explanation
+        /// of the algorithm design.  See that or the Knuth reference for more details.
         std::array<Word, array_size> v = rhs.m_data;
         std::array<Word, array_size + 1> u;
         for (size_t i = 0; i < array_size; ++i) {
@@ -1157,76 +1207,74 @@ private:
         }
         u[array_size] = 0;
 
-        // 1. Compute effective lengths
-        size_t lhs_last = lhs.last_one();
-        size_t rhs_last = rhs.last_one();
-        size_t n = rhs_last / word_size;
-        size_t m = (lhs_last / word_size) - n;
-
-        // 2. Left shift until the highest set bit in the divisor is at the top of its
-        // respective word.
+        // 3. Left shift until the highest set bit in the divisor is at the top of its
+        // respective word.  The strange bitwise AND is meant to avoid undefined
+        // behavior when shifting by a full word size (i.e. shift == 0).  It is taken
+        // from https://ridiculousfish.com/blog/posts/labor-of-division-episode-v.html
         size_t shift = word_size - 1 - (rhs_last % word_size);
-        if (shift) {
-            for (size_t i = array_size + 1; i-- > 1;) {
-                u[i] = (u[i] << shift) |
-                    (u[i - 1] >> (word_size - shift));
-            }
-            u[0] <<= shift;
-            for (size_t i = array_size; i-- > 1;) {
-                v[i] = (v[i] << shift) |
-                    (v[i - 1] >> (word_size - shift));
-            }
-            v[0] <<= shift;
+        size_t shift_carry = -shift & (word_size - 1);
+        size_t shift_correct = -Signed(shift) >> (word_size - 1);
+        for (size_t i = array_size + 1; i-- > 1;) {
+            u[i] = (u[i] << shift) | ((u[i - 1] >> shift_carry) & shift_correct);
         }
+        u[0] <<= shift;
+        for (size_t i = array_size; i-- > 1;) {
+            v[i] = (v[i] << shift) | ((v[i - 1] >> shift_carry) & shift_correct);
+        }
+        v[0] <<= shift;
 
-        // 3. Trial division
+        // 4. Trial division
+        quotient.fill(0);
         for (size_t j = m + 1; j-- > 0;) {
             // take the top two words of the numerator for wide division
-            auto [q, r] = wide_div({u[j + n], u[j + n - 1]}, v[n - 1]);
+            auto [qhat, rhat] = wide_div({u[j + n] * b, u[j + n - 1]}, v[n - 1]);
 
             // refine quotient if guess is too large
-            BigWord prod = wide_mul(q, v[n - 2]);
-            while (wide_cmp(prod, {r, u[j + n - 2]}) > 0) {
-                --q;
-                r += v[n - 1];
-                if (r < v[n - 1]) {
-                    ++q;
+            while (qhat >= b || wide_gt(
+                wide_mul(qhat, v[n - 2]),
+                {rhat * b, u[j + n - 2]}
+            )) {
+                --qhat;
+                rhat += v[n - 1];
+                if (rhat >= b) {
                     break;
                 }
-                prod = wide_mul(q, v[n - 2]);
             }
 
-            // 4. Multiply and subtract
+            // 5. Multiply and subtract
             Word borrow = 0;
-            for (size_t k = 0; k <= n; ++k) {
-                prod = wide_mul(q, v[k]);
-                Word temp = u[j + k] - borrow;
-                borrow = temp > u[j + k];
+            for (size_t i = 0; i < n; ++i) {
+                BigWord prod = wide_mul(qhat, v[i]);
+                Word temp = u[i + j] - borrow;
+                borrow = temp > u[i + j];
                 temp -= prod.lo;
                 borrow += temp > prod.lo;
-                u[j + k] = temp;
+                u[i + j] = temp;
                 borrow += prod.hi;
             }
 
-            // 5. Correct negative remainder
-            if (u[j + n] < borrow) {
+            // 6. Correct negative remainder
+            quotient.m_data[j] = qhat;
+            if (borrow) {
                 --quotient.m_data[j];
-                Word carry = 0;
-                for (size_t k = 0; k <= n; ++k) {
-                    Word temp = u[j + k] + v[k] + carry;
-                    carry = temp < u[j + k];
-                    u[j + k] = temp;
+                borrow = 0;
+                for (size_t i = 0; i < n; ++i) {
+                    Word temp = u[i + j] + borrow;
+                    borrow = temp < u[i + j];
+                    temp += v[i];
+                    borrow += temp < v[i];
+                    u[i + j] = temp;
                 }
+                u[j + n] += borrow;
             }
         }
 
-        // 6. Unshift the remainder and quotient to get the final result
-        for (size_t i = 0; i < n; ++i) {
-            remainder.m_data[i] =
-                (u[i] >> shift) | (u[i + 1] << (word_size - shift));
+        // 7. Unshift the remainder and quotient to get the final result
+        for (size_t i = 0; i < n - 1; ++i) {
+            remainder.m_data[i] = (u[i] >> shift) | (u[i + 1] << (word_size - shift));
         }
-        remainder.m_data[n] = u[n] >> shift;
-        for (size_t i = n + 1; i < array_size; ++i) {
+        remainder.m_data[n - 1] = u[n - 1] >> shift;
+        for (size_t i = n; i < array_size; ++i) {
             remainder.m_data[i] = 0;
         }
     }
@@ -1350,12 +1398,10 @@ public:
         bitset quotient = *this;
         bitset divisor = base;
         bitset remainder;
-        while (quotient) {
+        for (size_t i = 0; quotient; ++i) {
             _divmod(quotient, divisor, quotient, remainder);
-            /// TODO: remainder comes out zero for some reason
-            result[i++] = digits[remainder.m_data[0]];
+            result[ceil - i - 1] = digits[remainder.m_data[0]];
         }
-        std::reverse(result.begin(), result.end());
         return result;
     }
 
@@ -2194,7 +2240,14 @@ public:
         const bitset& lhs,
         const bitset& rhs
     ) noexcept {
-        return lhs.data() < rhs.data();
+        for (size_t i = array_size; i-- > 0;) {
+            if (lhs.m_data[i] < rhs.m_data[i]) {
+                return true;
+            } else if (lhs.m_data[i] > rhs.m_data[i]) {
+                return false;
+            }
+        }
+        return false;
     }
 
     /* Check whether one bitset is lexicographically less than or equal to another of
@@ -2203,7 +2256,14 @@ public:
         const bitset& lhs,
         const bitset& rhs
     ) noexcept {
-        return lhs.data() <= rhs.data();
+        for (size_t i = array_size; i-- > 0;) {
+            if (lhs.m_data[i] < rhs.m_data[i]) {
+                return true;
+            } else if (lhs.m_data[i] > rhs.m_data[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /* Check whether one bitset is lexicographically equal to another of the same
@@ -2212,7 +2272,12 @@ public:
         const bitset& lhs,
         const bitset& rhs
     ) noexcept {
-        return lhs.data() == rhs.data();
+        for (size_t i = 0; i < array_size; ++i) {
+            if (lhs.m_data[i] != rhs.m_data[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /* Check whether one bitset is lexicographically not equal to another of the same
@@ -2221,7 +2286,12 @@ public:
         const bitset& lhs,
         const bitset& rhs
     ) noexcept {
-        return lhs.data() != rhs.data();
+        for (size_t i = 0; i < array_size; ++i) {
+            if (lhs.m_data[i] != rhs.m_data[i]) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /* Check whether one bitset is lexicographically greater than or equal to another of
@@ -2230,7 +2300,14 @@ public:
         const bitset& lhs,
         const bitset& rhs
     ) noexcept {
-        return lhs.data() >= rhs.data();
+        for (size_t i = array_size; i-- > 0;) {
+            if (lhs.m_data[i] > rhs.m_data[i]) {
+                return true;
+            } else if (lhs.m_data[i] < rhs.m_data[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /* Check whether one bitset is lexicographically greater than another of the same
@@ -2239,7 +2316,14 @@ public:
         const bitset& lhs,
         const bitset& rhs
     ) noexcept {
-        return lhs.data() > rhs.data();
+        for (size_t i = array_size; i-- > 0;) {
+            if (lhs.m_data[i] > rhs.m_data[i]) {
+                return true;
+            } else if (lhs.m_data[i] < rhs.m_data[i]) {
+                return false;
+            }
+        }
+        return false;
     }
 
     /* Add two bitsets of equal size. */
@@ -2710,34 +2794,6 @@ namespace std {
 
 
 namespace bertrand {
-
-
-inline void test() {
-    // constexpr bitset<5> s = "11111";
-    // static_assert((((s << 1) >> 2) << 1).to_string() == "01110");
-
-    constexpr bitset<10> s = 5;
-    static_assert(s.to_string(10) == "0000");
-
-
-    // constexpr double log2[] = {
-    //     0.0, 0.0, 1.0, 1.5849625007211563, 2.0,
-    //     2.321928094887362, 2.584962500721156, 2.807354922057604,
-    //     3.0, 3.169925001442312, 3.321928094887362,
-    //     3.4594316186372973, 3.584962500721156, 3.700439718141092,
-    //     3.807354922057604, 3.9068905956085187, 4.0,
-    //     4.087462841250339, 4.169925001442312, 4.247927513443585,
-    //     4.321928094887363, 4.392317422778761, 4.459431618637297,
-    //     4.523561956057013, 4.584962500721156, 4.643856189774724,
-    //     4.700439718141092, 4.754887502163469, 4.807354922057604,
-    //     4.857980995127572, 4.906890595608518, 4.954196310386875,
-    //     5.0, 5.044394119358453, 5.087462841250339,
-    //     5.129283016944966, 5.169925001442312
-    // };
-    // constexpr double len = 10 / log2[4];
-    // constexpr size_t ceil = size_t(len) + (size_t(len) < len);
-    // static_assert(ceil == 15);
-}
 
 
 template <typename T>
