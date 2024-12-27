@@ -1033,20 +1033,203 @@ template <typename T>
 concept is_bitset = impl::_is_bitset<std::remove_cvref_t<T>>;
 
 
-/* A simple bitset type that stores flags in a contiguous array, which can be
-lexicographically compared and therefore stored in associative containers.  In
-contrast, `std::bitset<N>` does not provide the required comparison operators. */
+/* A simple bitset type that stores flags in a fixed-size array of machine words.
+Allows a wider range of operations than `std::bitset<N>`, including bigint-style
+arithmetic operators and lexicographic comparisons, which allow bitsets to be stored
+in associative containers. */
 template <size_t N>
 struct bitset : impl::bitset_tag {
     using Word = size_t;
     struct Ref;
 
 private:
-    static constexpr size_t bits_per_element = sizeof(Word) * 8;
-    static constexpr size_t array_size =
-        (N + bits_per_element - 1) / bits_per_element;
+    static constexpr size_t word_size = sizeof(Word) * 8;
+    static constexpr size_t array_size = (N + word_size - 1) / word_size;
 
     std::array<Word, array_size> m_data;
+
+    struct BigWord {
+        Word hi;
+        Word lo;
+    };
+
+    static constexpr int wide_cmp(BigWord a, BigWord b) noexcept {
+        if (a.hi < b.hi) return -1;
+        if (a.hi > b.hi) return 1;
+        if (a.lo < b.lo) return -1;
+        if (a.lo > b.lo) return 1;
+        return 0;
+    }
+
+    static constexpr BigWord wide_sub(BigWord a, BigWord b) noexcept {
+        Word temp = a.lo - b.lo;
+        return {a.hi - b.hi - (temp > a.lo), temp};
+    }
+
+    static constexpr BigWord wide_mul(Word a, Word b) noexcept {
+        constexpr size_t chunk = word_size / 2;
+        constexpr Word mask = (Word(1) << chunk) - 1;
+
+        // 1. split a, b into low and high halves
+        BigWord A = {a >> chunk, a & mask};
+        BigWord B = {b >> chunk, b & mask};
+
+        // 2. compute partial products
+        Word lo_lo = A.lo * B.lo;
+        Word lo_hi = A.lo * B.hi;
+        Word hi_lo = A.hi * B.lo;
+        Word hi_hi = A.hi * B.hi;
+
+        // 3. combine cross terms
+        Word cross = (lo_lo >> chunk) + (lo_hi & mask) + (hi_lo & mask);
+        Word carry = cross >> chunk;
+
+        // 4. compute result
+        return {
+            hi_hi + (lo_hi >> chunk) + (hi_lo >> chunk) + carry,
+            (lo_lo & mask) | (cross << chunk)
+        };
+    }
+
+    static constexpr BigWord wide_div(BigWord u, Word v) noexcept {
+        // 1. If the high bits are empty, then we devolve to a single word divide
+        if (!u.hi) {
+            return {u.lo / v, u.lo % v};
+        }
+
+        // 2. Left shift divisor until the most significant bit is set
+        size_t shift = std::countl_zero(v);
+        if (shift) {
+            v <<= shift;
+            u.hi = (u.hi << shift) | (u.lo >> (word_size - shift));
+            u.lo <<= shift;
+        }
+
+        // 3. Estimate the quotient
+        constexpr size_t chunk = word_size / 2;
+        Word q = u.hi >= v ? -1 : ((u.hi << chunk) | (u.lo >> chunk)) / (v >> chunk);
+
+        // 4. Multiply by divisor and refine by checking for overshoot
+        BigWord prod = wide_mul(q, v);
+        while (wide_cmp(prod, u) > 0) {
+            --q;
+            Word temp = prod.lo - v;
+            prod.hi -= temp > prod.lo;
+            prod.lo = temp;
+        }
+
+        // 5. Quotient is now stable, subtract to get remainder
+        BigWord r = wide_sub(u, prod);
+
+        // 6. Unshift the remainder and quotient to get the final result
+        if (shift) {
+            r.lo >>= shift;
+            r.lo |= r.hi << (word_size - shift);
+            // r.hi is guaranteed to be zero
+        }
+        return {q, r.lo};
+    }
+
+    /// TODO: _divmod is super broken, but I don't know the algorithm well enough to
+    /// fix it.
+
+    static constexpr void _divmod(
+        const bitset& lhs,
+        const bitset& rhs,
+        bitset& quotient,
+        bitset& remainder
+    ) {
+        if (!rhs) {
+            throw std::domain_error("division by zero");
+        }
+        quotient.fill(0);
+        if (lhs < rhs || !lhs) {
+            remainder = lhs;
+            return;
+        }
+
+        /// NOTE: this is based on Knuth's Algorithm D, which is among the simplest for
+        /// bigint division.
+        std::array<Word, array_size> v = rhs.m_data;
+        std::array<Word, array_size + 1> u;
+        for (size_t i = 0; i < array_size; ++i) {
+            u[i] = lhs.m_data[i];
+        }
+        u[array_size] = 0;
+
+        // 1. Compute effective lengths
+        size_t lhs_last = lhs.last_one();
+        size_t rhs_last = rhs.last_one();
+        size_t n = rhs_last / word_size;
+        size_t m = (lhs_last / word_size) - n;
+
+        // 2. Left shift until the highest set bit in the divisor is at the top of its
+        // respective word.
+        size_t shift = word_size - 1 - (rhs_last % word_size);
+        if (shift) {
+            for (size_t i = array_size + 1; i-- > 1;) {
+                u[i] = (u[i] << shift) |
+                    (u[i - 1] >> (word_size - shift));
+            }
+            u[0] <<= shift;
+            for (size_t i = array_size; i-- > 1;) {
+                v[i] = (v[i] << shift) |
+                    (v[i - 1] >> (word_size - shift));
+            }
+            v[0] <<= shift;
+        }
+
+        // 3. Trial division
+        for (size_t j = m + 1; j-- > 0;) {
+            // take the top two words of the numerator for wide division
+            auto [q, r] = wide_div({u[j + n], u[j + n - 1]}, v[n - 1]);
+
+            // refine quotient if guess is too large
+            BigWord prod = wide_mul(q, v[n - 2]);
+            while (wide_cmp(prod, {r, u[j + n - 2]}) > 0) {
+                --q;
+                r += v[n - 1];
+                if (r < v[n - 1]) {
+                    ++q;
+                    break;
+                }
+                prod = wide_mul(q, v[n - 2]);
+            }
+
+            // 4. Multiply and subtract
+            Word borrow = 0;
+            for (size_t k = 0; k <= n; ++k) {
+                prod = wide_mul(q, v[k]);
+                Word temp = u[j + k] - borrow;
+                borrow = temp > u[j + k];
+                temp -= prod.lo;
+                borrow += temp > prod.lo;
+                u[j + k] = temp;
+                borrow += prod.hi;
+            }
+
+            // 5. Correct negative remainder
+            if (u[j + n] < borrow) {
+                --quotient.m_data[j];
+                Word carry = 0;
+                for (size_t k = 0; k <= n; ++k) {
+                    Word temp = u[j + k] + v[k] + carry;
+                    carry = temp < u[j + k];
+                    u[j + k] = temp;
+                }
+            }
+        }
+
+        // 6. Unshift the remainder and quotient to get the final result
+        for (size_t i = 0; i < n; ++i) {
+            remainder.m_data[i] =
+                (u[i] >> shift) | (u[i + 1] << (word_size - shift));
+        }
+        remainder.m_data[n] = u[n] >> shift;
+        for (size_t i = n + 1; i < array_size; ++i) {
+            remainder.m_data[i] = 0;
+        }
+    }
 
 public:
     /* Construct an empty bitset initialized to zero. */
@@ -1054,7 +1237,7 @@ public:
 
     /* Construct a bitset from an integer value. */
     constexpr bitset(Word value) noexcept : m_data{} {
-        if constexpr (array_size == 1 && N < bits_per_element) {
+        if constexpr (array_size == 1 && N < word_size) {
             constexpr Word mask = (Word(1) << N) - 1;
             m_data[0] = value & mask;
         } else if constexpr (array_size >= 1) {
@@ -1067,7 +1250,7 @@ public:
         for (size_t i = 0; i < N && i < str.size(); ++i) {
             char c = str[i];
             if (c == one) {
-                m_data[i / bits_per_element] |= Word(1) << (i % bits_per_element);
+                m_data[i / word_size] |= Word(1) << (i % word_size);
             } else if (c != zero) {
                 throw std::invalid_argument(
                     "bitset string must contain only 1s and 0s, not: '" +
@@ -1082,7 +1265,7 @@ public:
         for (size_t i = 0; i < N; ++i) {
             char c = str[i];
             if (c == one) {
-                m_data[i / bits_per_element] |= Word(1) << (i % bits_per_element);
+                m_data[i / word_size] |= Word(1) << (i % word_size);
             } else if (c != zero) {
                 throw std::invalid_argument(
                     "bitset string must contain only 1s and 0s, not: '" +
@@ -1092,34 +1275,9 @@ public:
         }
     }
 
-    /* The number of bits that are held in the set. */
-    [[nodiscard]] static constexpr size_t size() noexcept {
-        return N;
-    }
-
-    /* The total number of bits that were allocated.  */
-    [[nodiscard]] static constexpr size_t capacity() noexcept {
-        return array_size * bits_per_element;
-    }
-
-    /* Get the underlying array that backs the bitset. */
-    [[nodiscard]] constexpr auto& data() noexcept { return m_data; }
-    [[nodiscard]] constexpr const auto& data() const noexcept { return m_data; }
-
     /* Bitsets evalute true if any of their bits are set. */
     [[nodiscard]] explicit constexpr operator bool() const noexcept {
         return any();
-    }
-
-    /* Convert the bitset to a string representation. */
-    [[nodiscard]] explicit constexpr operator std::string() const noexcept {
-        constexpr int diff = '1' - '0';
-        std::string result;
-        result.reserve(N);
-        for (size_t i = 0; i < N; ++i) {
-            result.push_back('0' + diff * (*this)[i]);
-        }
-        return result;
     }
 
     /* Convert the bitset to an integer representation if it fits within the platform's
@@ -1132,6 +1290,376 @@ public:
         } else {
             return static_cast<T>(m_data[0]);
         }
+    }
+
+    /* Convert the bitset to a string representation. */
+    [[nodiscard]] explicit constexpr operator std::string() const noexcept {
+        constexpr int diff = '1' - '0';
+        std::string result;
+        result.reserve(N);
+        for (size_t i = N; i-- > 0;) {
+            result.push_back('0' + diff * (*this)[i]);
+        }
+        return result;
+    }
+
+    /* Convert the bitset into a string representation.  Defaults to base 2 with the
+    given zero and one characters, but also allows bases up to 36, in which case the
+    zero and one characters will be ignored.  The result is always padded to the exact
+    width needed to represent the bitset in the chosen base, including leading zeroes
+    if needed. */
+    [[nodiscard]] constexpr std::string to_string(
+        size_t base = 2,
+        char zero = '0',
+        char one = '1'
+    ) const {
+        if (base < 2) {
+            throw std::invalid_argument("bitset base must be at least 2");
+        } else if (base > 36) {
+            throw std::invalid_argument("bitset base must be at most 36");
+        }
+        if (base == 2) {
+            int diff = one - zero;
+            std::string result;
+            result.reserve(N);
+            for (size_t i = N; i-- > 0;) {
+                result.push_back(zero + (diff * (*this)[i]));
+            }
+            return result;
+        }
+        constexpr char digits[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+        constexpr double log2[] = {
+            0.0, 0.0, 1.0, 1.5849625007211563, 2.0,
+            2.321928094887362, 2.584962500721156, 2.807354922057604,
+            3.0, 3.169925001442312, 3.321928094887362,
+            3.4594316186372973, 3.584962500721156, 3.700439718141092,
+            3.807354922057604, 3.9068905956085187, 4.0,
+            4.087462841250339, 4.169925001442312, 4.247927513443585,
+            4.321928094887363, 4.392317422778761, 4.459431618637297,
+            4.523561956057013, 4.584962500721156, 4.643856189774724,
+            4.700439718141092, 4.754887502163469, 4.807354922057604,
+            4.857980995127572, 4.906890595608518, 4.954196310386875,
+            5.0, 5.044394119358453, 5.087462841250339,
+            5.129283016944966, 5.169925001442312
+        };
+        double len = N / log2[base];
+        size_t ceil = len;
+        ceil += ceil < len;
+        std::string result(ceil, '0');
+        size_t i = 0;
+        bitset quotient = *this;
+        bitset divisor = base;
+        bitset remainder;
+        while (quotient) {
+            _divmod(quotient, divisor, quotient, remainder);
+            /// TODO: remainder comes out zero for some reason
+            result[i++] = digits[remainder.m_data[0]];
+        }
+        std::reverse(result.begin(), result.end());
+        return result;
+    }
+
+    /* The number of bits that are held in the set. */
+    [[nodiscard]] static constexpr size_t size() noexcept {
+        return N;
+    }
+
+    /* The total number of bits that were allocated.  This will always be a multiple of
+    the machine's word size. */
+    [[nodiscard]] static constexpr size_t capacity() noexcept {
+        return array_size * word_size;
+    }
+
+    /* Get the underlying array that backs the bitset. */
+    [[nodiscard]] constexpr auto& data() noexcept { return m_data; }
+    [[nodiscard]] constexpr const auto& data() const noexcept { return m_data; }
+
+    /* Check if any of the bits are set. */
+    [[nodiscard]] constexpr bool any() const noexcept {
+        for (size_t i = 0; i < array_size; ++i) {
+            if (m_data[i]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /* Check if any of the bits are set within a particular range. */
+    [[nodiscard]] constexpr bool any(size_t first, size_t last = N) const noexcept {
+        last = std::min(last, N);
+        if (first >= last) {
+            return false;
+        }
+        bitset temp;
+        temp.fill(1);
+        temp <<= N - last;
+        temp >>= N - last + first;
+        temp <<= first;  // [first, last).
+        return *this & temp;
+    }
+
+    /* Check if all of the bits are set. */
+    [[nodiscard]] constexpr bool all() const noexcept {
+        constexpr bool odd = N % word_size;
+        for (size_t i = 0; i < array_size - odd; ++i) {
+            if (m_data[i] != std::numeric_limits<Word>::max()) {
+                return false;
+            }
+        }
+        if constexpr (odd) {
+            constexpr Word mask = (Word(1) << (N % word_size)) - 1;
+            return m_data[array_size - 1] == mask;
+        } else {
+            return true;
+        }
+    }
+
+    /* Check if all of the bits are set within a particular range. */
+    [[nodiscard]] constexpr bool all(size_t first, size_t last = N) const noexcept {
+        last = std::min(last, N);
+        if (first >= last) {
+            return true;
+        }
+        bitset temp;
+        temp.fill(1);
+        temp <<= N - last;
+        temp >>= N - last + first;
+        temp <<= first;  // [first, last).
+        return (*this & temp) == temp;
+    }
+
+    /* Get the number of bits that are currently set. */
+    [[nodiscard]] constexpr size_t count() const noexcept {
+        size_t count = 0;
+        for (size_t i = 0; i < array_size; ++i) {
+            count += std::popcount(m_data[i]);
+        }
+        return count;
+    }
+
+    /* Get the number of bits that are currently set within a particular range. */
+    [[nodiscard]] constexpr size_t count(size_t first, size_t last = N) const noexcept {
+        last = std::min(last, N);
+        if (first >= last) {
+            return 0;
+        }
+        bitset temp;
+        temp.fill(1);
+        temp <<= N - last;
+        temp >>= N - last + first;
+        temp <<= first;  // [first, last).
+        size_t count = 0;
+        for (size_t i = 0; i < array_size; ++i) {
+            count += std::popcount(m_data[i] & temp.m_data[i]);
+        }
+        return count;
+    }
+
+    /* Return the index of the first bit that is set, or the size of the array if no
+    bits are set. */
+    [[nodiscard]] constexpr size_t first_one() const noexcept {
+        for (size_t i = 0; i < array_size; ++i) {
+            Word curr = m_data[i];
+            if (curr) {
+                return word_size * i  + std::countr_zero(curr);
+            }
+        }
+        return N;
+    }
+
+    /* Return the index of the first bit that is set within a given range, or the size
+    of the array if no bits are set. */
+    [[nodiscard]] constexpr size_t first_one(size_t first, size_t last = N) const noexcept {
+        last = std::min(last, N);
+        if (first >= last) {
+            return N;
+        }
+        bitset temp;
+        temp.fill(1);
+        temp <<= N - last;
+        temp >>= N - last + first;
+        temp <<= first;  // [first, last).
+        for (size_t i = 0; i < array_size; ++i) {
+            Word curr = m_data[i] & temp.m_data[i];
+            if (curr) {
+                return word_size * i + std::countr_zero(curr);
+            }
+        }
+        return N;
+    }
+
+    /* Return the index of the last bit that is set, or the size of the array if no
+    bits are set. */
+    [[nodiscard]] constexpr size_t last_one() const noexcept {
+        for (size_t i = array_size; i-- > 0;) {
+            Word curr = m_data[i];
+            if (curr) {
+                return word_size * i + word_size - 1 - std::countl_zero(curr);
+            }
+        }
+        return N;
+    }
+
+    /* Return the index of the last bit that is set within a given range, or the size
+    of the array if no bits are set. */
+    [[nodiscard]] constexpr size_t last_one(size_t first, size_t last = N) const noexcept {
+        last = std::min(last, N);
+        if (first >= last) {
+            return N;
+        }
+        bitset temp;
+        temp.fill(1);
+        temp <<= N - last;
+        temp >>= N - last + first;
+        temp <<= first;  // [first, last).
+        for (size_t i = array_size; i-- > 0;) {
+            Word curr = m_data[i] & temp.m_data[i];
+            if (curr) {
+                return word_size * i + word_size - 1 - std::countl_zero(curr);
+            }
+        }
+        return N;
+    }
+
+    /* Return the index of the first bit that is not set, or the size of the array if
+    all bits are set. */
+    [[nodiscard]] constexpr size_t first_zero() const noexcept {
+        for (size_t i = 0; i < array_size; ++i) {
+            Word curr = m_data[i];
+            if (curr != std::numeric_limits<Word>::max()) {
+                return word_size * i + std::countr_one(curr);
+            }
+        }
+        return N;
+    }
+
+    /* Return the index of the first bit that is not set within a given range, or the
+    size of the array if all bits are set. */
+    [[nodiscard]] constexpr size_t first_zero(size_t first, size_t last = N) const noexcept {
+        last = std::min(last, N);
+        if (first >= last) {
+            return N;
+        }
+        bitset temp;
+        temp.fill(1);
+        temp <<= N - last;
+        temp >>= N - last + first;
+        temp <<= first;  // [first, last).
+        for (size_t i = 0; i < array_size; ++i) {
+            Word curr = m_data[i] & temp.m_data[i];
+            if (curr != temp.m_data[i]) {
+                return word_size * i + std::countr_one(curr);
+            }
+        }
+        return N;
+    }
+
+    /* Return the index of the last bit that is not set, or the size of the array if
+    all bits are set. */
+    [[nodiscard]] constexpr size_t last_zero() const noexcept {
+        constexpr bool odd = N % word_size;
+        if constexpr (odd) {
+            constexpr Word mask = (Word(1) << (N % word_size)) - 1;
+            Word curr = m_data[array_size - 1];
+            if (curr != mask) {
+                return
+                    word_size * (array_size - 1) +
+                    word_size - 1 -
+                    std::countl_one(curr | ~mask);
+            }
+        }
+        for (size_t i = array_size - odd; i-- > 0;) {
+            Word curr = m_data[i];
+            if (curr != std::numeric_limits<Word>::max()) {
+                return word_size * i + word_size - 1 - std::countl_one(curr);
+            }
+        }
+        return N;
+    }
+
+    /* Return the index of the last bit that is not set within a given range, or the
+    size of the array if all bits are set. */
+    [[nodiscard]] constexpr size_t last_zero(size_t first, size_t last = N) const noexcept {
+        last = std::min(last, N);
+        if (first >= last) {
+            return N;
+        }
+        bitset temp;
+        temp.fill(1);
+        temp <<= N - last;
+        temp >>= N - last + first;
+        temp <<= first;  // [first, last).
+        for (size_t i = array_size; i-- > 0;) {
+            Word curr = m_data[i] & temp.m_data[i];
+            if (curr != temp.m_data[i]) {
+                return
+                    word_size * i +
+                    word_size - 1 -
+                    std::countl_one(curr | ~temp.m_data[i]);
+            }
+        }
+        return N;
+    }
+
+    /* Set all of the bits to the given value. */
+    [[maybe_unused]] constexpr bitset& fill(bool value) noexcept {
+        constexpr bool odd = N % word_size;
+        Word filled = std::numeric_limits<Word>::max() * value;
+        for (size_t i = 0; i < array_size - odd; ++i) {
+            m_data[i] = filled;
+        }
+        if constexpr (odd) {
+            constexpr Word mask = (Word(1) << (N % word_size)) - 1;
+            m_data[array_size - 1] = filled & mask;
+        }
+        return *this;
+    }
+
+    /* Set all of the bits within a certain range to the given value. */
+    [[maybe_unused]] constexpr bitset& fill(bool value, size_t first, size_t last = N) noexcept {
+        last = std::min(last, N);
+        if (first >= last) {
+            return;
+        }
+        bitset temp;
+        temp.fill(1);
+        temp <<= N - last;
+        temp >>= N - last + first;
+        temp <<= first;  // [first, last).
+        if (value) {
+            *this |= temp;
+        } else {
+            *this &= ~temp;
+        }
+        return *this;
+    }
+
+    /* Toggle all of the bits in the set. */
+    [[maybe_unused]] constexpr bitset& flip() noexcept {
+        constexpr bool odd = N % word_size;
+        for (size_t i = 0; i < array_size - odd; ++i) {
+            m_data[i] ^= std::numeric_limits<Word>::max();
+        }
+        if constexpr (odd) {
+            constexpr Word mask = (Word(1) << (N % word_size)) - 1;
+            m_data[array_size - 1] ^= mask;
+        }
+        return *this;
+    }
+
+    /* Toggle all of the bits within a certain range. */
+    [[maybe_unused]] constexpr bitset& flip(size_t first, size_t last = N) noexcept {
+        last = std::min(last, N);
+        if (first >= last) {
+            return;
+        }
+        bitset temp;
+        temp.fill(1);
+        temp <<= N - last;
+        temp >>= N - last + first;
+        temp <<= first;  // [first, last).
+        *this ^= temp;
+        return *this;
     }
 
     /* A mutable reference to a single bit in the set. */
@@ -1167,13 +1695,13 @@ public:
         }
     };
 
-    /* Get the value of a specific bit in the set. */
+    /* Get the value of a specific bit in the set, without bounds checking. */
     [[nodiscard]] constexpr bool operator[](size_t index) const noexcept {
-        Word mask = Word(1) << (index % bits_per_element);
-        return m_data[index / bits_per_element] & mask;
+        Word mask = Word(1) << (index % word_size);
+        return m_data[index / word_size] & mask;
     }
     [[nodiscard]] constexpr Ref operator[](size_t index) noexcept {
-        return {m_data[index / bits_per_element], index % bits_per_element};
+        return {m_data[index / word_size], index % word_size};
     }
 
     /* Get the value of a specific bit in the set, performing a bounds check on the
@@ -1491,6 +2019,133 @@ public:
         }
     };
 
+    /* An iterator that decomposes a bitmask into its one-hot components. */
+    struct MaskIterator {
+    private:
+        friend bitset;
+
+        bitset* self;
+        size_t index;
+        size_t last;
+        bitset curr;
+
+        MaskIterator(bitset* self, size_t first, size_t last) noexcept :
+            self(self),
+            index(self->first_one(first, last)),
+            last(last),
+            curr{1}
+        {
+            curr <<= index;
+        }
+
+    public:
+        using iterator_category = std::forward_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using value_type = bitset;
+        using pointer = const bitset*;
+        using reference = const bitset&;
+
+        [[nodiscard]] constexpr reference operator*() const noexcept {
+            return curr;
+        }
+
+        [[nodiscard]] constexpr pointer operator->() const noexcept {
+            return &curr;
+        }
+
+        [[maybe_unused]] constexpr MaskIterator& operator++() noexcept {
+            size_t new_index = self->first_one(index + 1);
+            curr <<= new_index - index;
+            index = new_index;
+            return *this;
+        }
+
+        [[maybe_unused]] constexpr MaskIterator operator++(int) noexcept {
+            MaskIterator copy = *this;
+            ++*this;
+            return copy;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            const MaskIterator& lhs,
+            const MaskIterator& rhs
+        ) noexcept {
+            return lhs.index == rhs.index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            const MaskIterator& lhs,
+            const Iterator& rhs
+        ) noexcept {
+            return lhs.index >= lhs.last;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            const Iterator& lhs,
+            const MaskIterator& rhs
+        ) noexcept {
+            return rhs.index >= rhs.last;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            const MaskIterator& lhs,
+            const ConstIterator& rhs
+        ) noexcept {
+            return lhs.index >= lhs.last;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            const ConstIterator& lhs,
+            const MaskIterator& rhs
+        ) noexcept {
+            return rhs.index >= rhs.last;
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(
+            const MaskIterator& lhs,
+            const MaskIterator& rhs
+        ) noexcept {
+            return lhs.index != rhs.index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(
+            const MaskIterator& lhs,
+            const Iterator& rhs
+        ) noexcept {
+            return lhs.index < lhs.last;
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(
+            const Iterator& lhs,
+            const MaskIterator& rhs
+        ) noexcept {
+            return rhs.index < rhs.last;
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(
+            const MaskIterator& lhs,
+            const ConstIterator& rhs
+        ) noexcept {
+            return lhs.index < lhs.last;
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(
+            const ConstIterator& lhs,
+            const MaskIterator& rhs
+        ) noexcept {
+            return rhs.index < rhs.last;
+        }
+    };
+
+    /* Return an iterator over the one-hot masks that make up the bitset. */
+    [[nodiscard]] constexpr MaskIterator components(
+        size_t first = 0,
+        size_t last = N
+    ) const noexcept {
+        return {this, first, std::min(last, N)};
+    }
+
+    /* Return a forward iterator over the individual flags within the set. */
     [[nodiscard]] constexpr Iterator begin() noexcept {
         return {this, 0};
     }
@@ -1513,6 +2168,7 @@ public:
     using ReverseIterator = std::reverse_iterator<Iterator>;
     using ConstReverseIterator = std::reverse_iterator<ConstIterator>;
 
+    /* Return a reverse iterator over the individual flags within the set. */
     [[nodiscard]] constexpr ReverseIterator rbegin() noexcept {
         return {end()};
     }
@@ -1530,163 +2186,6 @@ public:
     }
     [[nodiscard]] constexpr ConstReverseIterator crend() const noexcept {
         return {cbegin()};
-    }
-
-    /* Check if any of the bits are set. */
-    [[nodiscard]] constexpr bool any() const noexcept {
-        for (size_t i = 0; i < array_size; ++i) {
-            if (m_data[i]) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /* Check if all of the bits are set. */
-    [[nodiscard]] constexpr bool all() const noexcept {
-        constexpr bool odd = N % bits_per_element;
-        for (size_t i = 0; i < array_size - odd; ++i) {
-            if (m_data[i] != std::numeric_limits<Word>::max()) {
-                return false;
-            }
-        }
-        if constexpr (odd) {
-            constexpr Word mask = (Word(1) << (N % bits_per_element)) - 1;
-            return m_data[array_size - 1] == mask;
-        } else {
-            return true;
-        }
-    }
-
-    /* Get the number of bits that are currently set. */
-    [[nodiscard]] constexpr size_t count() const noexcept {
-        size_t count = 0;
-        for (size_t i = 0; i < array_size; ++i) {
-            count += std::popcount(m_data[i]);
-        }
-        return count;
-    }
-
-    /* Return the index of the first bit that is set, or the size of the array if no
-    bits are set. */
-    [[nodiscard]] constexpr size_t first_one() const noexcept {
-        for (size_t i = 0; i < array_size; ++i) {
-            if (m_data[i]) {
-                return bits_per_element * i  + std::countr_zero(m_data[i]);
-            }
-        }
-        return N;
-    }
-
-    /* Return the index of the last bit that is set, or the size of the array if no
-    bits are set. */
-    [[nodiscard]] constexpr size_t last_one() const noexcept {
-        for (size_t i = array_size; i > 0;) {
-            --i;
-            if (m_data[i]) {
-                return
-                    bits_per_element * i +
-                    bits_per_element - 1 -
-                    std::countl_zero(m_data[i]);
-            }
-        }
-        return N;
-    }
-
-    /* Return the index of the first bit that is not set, or the size of the array if
-    all bits are set. */
-    [[nodiscard]] constexpr size_t first_zero() const noexcept {
-        for (size_t i = 0; i < array_size; ++i) {
-            if (m_data[i] != std::numeric_limits<Word>::max()) {
-                return bits_per_element * i + std::countr_one(m_data[i]);
-            }
-        }
-        return N;
-    }
-
-    /* Return the index of the last bit that is not set, or the size of the array if
-    all bits are set. */
-    [[nodiscard]] constexpr size_t last_zero() const noexcept {
-        for (size_t i = array_size; i > 0;) {
-            --i;
-            if (m_data[i] != std::numeric_limits<Word>::max()) {
-                return
-                    bits_per_element * i +
-                    bits_per_element - 1 -
-                    std::countl_one(m_data[i]);
-            }
-        }
-        return N;
-    }
-
-    /* Set all of the bits to the given value. */
-    constexpr void fill(bool value) noexcept {
-        constexpr bool odd = N % bits_per_element;
-        Word filled = std::numeric_limits<Word>::max() * value;
-        for (size_t i = 0; i < array_size - odd; ++i) {
-            m_data[i] = filled;
-        }
-        if constexpr (odd) {
-            Word mask = (Word(1) << (N % bits_per_element)) - 1;
-            m_data[array_size - 1] = filled & mask;
-        }
-    }
-
-    /* Set all of the bits within a certain range to the given value. */
-    constexpr void fill(bool value, size_t first, size_t last = N) noexcept {
-        last = std::min(last, N);
-        if (first >= last) {
-            return;
-        }
-        Word filled = std::numeric_limits<Word>::max() * value;
-        Word left = filled << (first % bits_per_element);
-        Word right = filled >> (bits_per_element - last % bits_per_element);
-        size_t i = first / bits_per_element;
-        size_t j = last / bits_per_element;
-        if (i == j) {
-            Word mask = left & right;
-            m_data[i] = (m_data[i] & ~mask) | (mask & filled);
-        } else {
-            m_data[i] = (m_data[i] & ~left) | (left & filled);
-            for (size_t k = i + 1; k < j; ++k) {
-                m_data[k] = filled;
-            }
-            m_data[j] = (m_data[j] & ~right) | (right & filled);
-        }
-    }
-
-    /* Toggle all of the bits in the set. */
-    constexpr void flip() noexcept {
-        constexpr bool odd = N % bits_per_element;
-        for (size_t i = 0; i < array_size - odd; ++i) {
-            m_data[i] ^= std::numeric_limits<Word>::max();
-        }
-        if constexpr (odd) {
-            Word mask = (Word(1) << (N % bits_per_element)) - 1;
-            m_data[array_size - 1] ^= mask;
-        }
-    }
-
-    /* Toggle all of the bits within a certain range. */
-    constexpr void flip(size_t first, size_t last = N) noexcept {
-        last = std::min(last, N);
-        if (first >= last) {
-            return;
-        }
-        constexpr Word filled = std::numeric_limits<Word>::max();
-        Word left = filled << (first % bits_per_element);
-        Word right = filled >> (bits_per_element - last % bits_per_element);
-        size_t i = first / bits_per_element;
-        size_t j = last / bits_per_element;
-        if (i == j) {
-            m_data[i] ^= left & right;
-        } else {
-            m_data[i] ^= left;
-            for (size_t k = i + 1; k < j; ++k) {
-                m_data[k] ^= filled;
-            }
-            m_data[j] ^= right;
-        }
     }
 
     /* Check whether one bitset is lexicographically less than another of the same
@@ -1743,15 +2242,237 @@ public:
         return lhs.data() > rhs.data();
     }
 
+    /* Add two bitsets of equal size. */
+    [[nodiscard]] friend constexpr bitset operator+(
+        const bitset& lhs,
+        const bitset& rhs
+    ) noexcept {
+        constexpr bool odd = N % word_size;
+        bitset result;
+        Word carry = 0;
+        for (size_t i = 0; i < array_size - odd; ++i) {
+            Word a = lhs.m_data[i] + carry;
+            carry = a < lhs.m_data[i];
+            Word b = a + rhs.m_data[i];
+            carry |= b < a;
+            result.m_data[i] = b;
+        }
+        if constexpr (odd) {
+            constexpr Word mask = (Word(1) << (N % word_size)) - 1;
+            Word sum = lhs.m_data[array_size - 1] + carry + rhs.m_data[array_size - 1];
+            result.m_data[array_size - 1] = sum & mask;
+        }
+        return result;
+    }
+    [[maybe_unused]] constexpr bitset& operator+=(const bitset& other) noexcept {
+        constexpr bool odd = N % word_size;
+        Word carry = 0;
+        for (size_t i = 0; i < array_size - odd; ++i) {
+            Word a = m_data[i] + carry;
+            carry = a < m_data[i];
+            Word b = a + other.m_data[i];
+            carry |= b < a;
+            m_data[i] = b;
+        }
+        if constexpr (odd) {
+            constexpr Word mask = (Word(1) << (N % word_size)) - 1;
+            Word sum = m_data[array_size - 1] + carry + other.m_data[array_size - 1];
+            m_data[array_size - 1] = sum & mask;
+        }
+        return *this;
+    }
+
+    /* Subtract two bitsets of equal size. */
+    [[nodiscard]] friend constexpr bitset operator-(
+        const bitset& lhs,
+        const bitset& rhs
+    ) noexcept {
+        constexpr bool odd = N % word_size;
+        bitset result;
+        Word borrow = 0;
+        for (size_t i = 0; i < array_size - odd; ++i) {
+            Word a = lhs.m_data[i] - borrow;
+            borrow = a > lhs.m_data[i];
+            Word b = a - rhs.m_data[i];
+            borrow |= b > a;
+            result.m_data[i] = b;
+        }
+        if constexpr (odd) {
+            constexpr Word mask = (Word(1) << (N % word_size)) - 1;
+            Word diff = lhs.m_data[array_size - 1] - borrow - rhs.m_data[array_size - 1];
+            result.m_data[array_size - 1] = diff & mask;
+        }
+        return result;
+    }
+    [[maybe_unused]] constexpr bitset& operator-=(const bitset& other) noexcept {
+        constexpr bool odd = N % word_size;
+        Word borrow = 0;
+        for (size_t i = 0; i < array_size - odd; ++i) {
+            Word a = m_data[i] - borrow;
+            borrow = a > m_data[i];
+            Word b = a - other.m_data[i];
+            borrow |= b > a;
+            m_data[i] = b;
+        }
+        if constexpr (odd) {
+            constexpr Word mask = (Word(1) << (N % word_size)) - 1;
+            Word diff = m_data[array_size - 1] - borrow - other.m_data[array_size - 1];
+            m_data[array_size - 1] = diff & mask;
+        }
+        return *this;
+    }
+
+    /* Multiply two bitsets of equal size. */
+    [[nodiscard]] friend constexpr bitset operator*(
+        const bitset& lhs,
+        const bitset& rhs
+    ) noexcept {
+        /// NOTE: this uses schoolbook multiplication, which is generally fastest for
+        /// small set sizes, up to a couple thousand bits.
+        constexpr size_t chunk = word_size / 2;
+        bitset result;
+        Word carry = 0;
+        for (size_t i = 0; i < array_size; ++i) {
+            Word carry = 0;
+            for (size_t j = 0; j + i < array_size; ++j) {
+                size_t k = j + i;
+                BigWord prod = wide_mul(lhs.m_data[i], rhs.m_data[j]);
+                prod.lo += result.m_data[k];
+                if (prod.lo < result.m_data[k]) {
+                    ++prod.hi;
+                }
+                prod.lo += carry;
+                if (prod.lo < carry) {
+                    ++prod.hi;
+                }
+                result.m_data[k] = prod.lo;
+                carry = prod.hi;
+            }
+        }
+        if constexpr (N % word_size) {
+            constexpr Word mask = (Word(1) << (N % word_size)) - 1;
+            result.m_data[array_size - 1] &= mask;
+        }
+        return result;
+    }
+    [[maybe_unused]] constexpr bitset& operator*=(const bitset& other) noexcept {
+        *this = *this * other;
+        return *this;
+    }
+
+    /* Divide this bitset by another and return both the quotient and remainder.  This
+    is slightly more efficient than doing separate `/` and `%` operations if both are
+    needed. */
+    [[nodiscard]] constexpr std::pair<bitset, bitset> divmod(const bitset& d) const {
+        bitset quotient, remainder;
+        _divmod(*this, d, quotient, remainder);
+        return {quotient, remainder};
+    }
+    [[nodiscard]] constexpr bitset divmod(const bitset& d, bitset& remainder) const {
+        bitset quotient;
+        _divmod(*this, d, quotient, remainder);
+        return quotient;
+    }
+    constexpr void divmod(const bitset& d, bitset& quotient, bitset& remainder) const {
+        _divmod(*this, d, quotient, remainder);
+    }
+
+    /* Divide this bitset by another in-place, returning the remainder.  This is
+    slightly more efficient than doing separate `/=` and `%` operations */
+    [[nodiscard]] constexpr bitset idivmod(const bitset& d) {
+        bitset remainder;
+        _divmod(*this, d, *this, remainder);
+        return remainder;
+    }
+    constexpr void idivmod(const bitset& d, bitset& remainder) {
+        _divmod(*this, d, *this, remainder);
+    }
+
+    /* Divide two bitsets of equal size. */
+    [[nodiscard]] friend constexpr bitset operator/(
+        const bitset& lhs,
+        const bitset& rhs
+    ) {
+        bitset quotient, remainder;
+        _divmod(lhs, rhs, quotient, remainder);
+        return quotient;
+    }
+    [[maybe_unused]] constexpr bitset& operator/=(const bitset& other) {
+        bitset remainder;
+        _divmod(*this, other, *this, remainder);
+        return *this;
+    }
+
+    /* Get the remainder after dividing two bitsets of equal size. */
+    [[nodiscard]] friend constexpr bitset operator%(
+        const bitset& lhs,
+        const bitset& rhs
+    ) {
+        bitset quotient, remainder;
+        _divmod(lhs, rhs, quotient, remainder);
+        return remainder;
+    }
+    [[maybe_unused]] constexpr bitset& operator%=(const bitset& other) {
+        bitset quotient;
+        _divmod(*this, other, quotient, *this);
+        return *this;
+    }
+
+    /* Increment the bitset by one. */
+    [[maybe_unused]] bitset& operator++() noexcept {
+        if constexpr (N) {
+            constexpr bool odd = N % word_size;
+            Word carry = m_data[0] == std::numeric_limits<Word>::max();
+            ++m_data[0];
+            for (size_t i = 1; carry && i < array_size - odd; ++i) {
+                carry = m_data[i] == std::numeric_limits<Word>::max();
+                ++m_data[i];
+            }
+            if constexpr (odd) {
+                constexpr Word mask = (Word(1) << (N % word_size)) - 1;
+                m_data[array_size - 1] = (m_data[array_size - 1] + carry) & mask;
+            }
+        }
+        return *this;
+    }
+    [[maybe_unused]] bitset operator++(int) noexcept {
+        bitset copy = *this;
+        ++*this;
+        return copy;
+    }
+
+    /* Decrement the bitset by one. */
+    [[maybe_unused]] bitset& operator--() noexcept {
+        if constexpr (N) {
+            constexpr bool odd = N % word_size;
+            Word borrow = m_data[0] == 0;
+            --m_data[0];
+            for (size_t i = 1; borrow && i < array_size - odd; ++i) {
+                borrow = m_data[i] == 0;
+                --m_data[i];
+            }
+            if constexpr (odd) {
+                constexpr Word mask = (Word(1) << (N % word_size)) - 1;
+                m_data[array_size - 1] = (m_data[array_size - 1] - borrow) & mask;
+            }
+        }
+        return *this;
+    }
+    [[maybe_unused]] bitset operator--(int) noexcept {
+        bitset copy = *this;
+        --*this;
+        return copy;
+    }
+
     /* Apply a binary NOT to the contents of the bitset. */
     [[nodiscard]] friend constexpr bitset operator~(const bitset& set) noexcept {
-        constexpr bool odd = N % bits_per_element;
+        constexpr bool odd = N % word_size;
         bitset result;
         for (size_t i = 0; i < array_size - odd; ++i) {
             result.m_data[i] = ~set.m_data[i];
         }
         if constexpr (odd) {
-            Word mask = (Word(1) << (N % bits_per_element)) - 1;
+            constexpr Word mask = (Word(1) << (N % word_size)) - 1;
             result.m_data[array_size - 1] = ~set.m_data[array_size - 1] & mask;
         }
         return result;
@@ -1820,30 +2541,38 @@ public:
     /* Apply a binary left shift to the contents of the bitset. */
     [[nodiscard]] constexpr bitset operator<<(size_t rhs) const noexcept {
         bitset result;
-        size_t shift = rhs / bits_per_element;
+        size_t shift = rhs / word_size;
         if (shift < array_size) {
-            size_t remainder = rhs % bits_per_element;
+            size_t remainder = rhs % word_size;
             for (size_t i = array_size; i-- > shift + 1;) {
                 size_t offset = i - shift;
                 result.m_data[i] = (m_data[offset] << remainder) |
-                    (m_data[offset - 1] >> (bits_per_element - remainder));
+                    (m_data[offset - 1] >> (word_size - remainder));
             }
             result.m_data[shift] = m_data[0] << remainder;
+            if constexpr (N % word_size) {
+                constexpr Word mask = (Word(1) << (N % word_size)) - 1;
+                result.m_data[array_size - 1] &= mask;
+            }
         }
         return result;
     }
     [[maybe_unused]] constexpr bitset& operator<<=(size_t rhs) noexcept {
-        size_t shift = rhs / bits_per_element;
+        size_t shift = rhs / word_size;
         if (shift < array_size) {
-            size_t remainder = rhs % bits_per_element;
+            size_t remainder = rhs % word_size;
             for (size_t i = array_size; i-- > shift + 1;) {
                 size_t offset = i - shift;
                 m_data[i] = (m_data[offset] << remainder) |
-                    (m_data[offset - 1] >> (bits_per_element - remainder));
+                    (m_data[offset - 1] >> (word_size - remainder));
             }
             m_data[shift] = m_data[0] << remainder;
             for (size_t i = shift; i-- > 0;) {
                 m_data[i] = 0;
+            }
+            if constexpr (N % word_size) {
+                constexpr Word mask = (Word(1) << (N % word_size)) - 1;
+                m_data[array_size - 1] &= mask;
             }
         } else {
             for (size_t i = 0; i < array_size; ++i) {
@@ -1856,28 +2585,28 @@ public:
     /* Apply a binary right shift to the contents of the bitset. */
     [[nodiscard]] constexpr bitset operator>>(size_t rhs) const noexcept {
         bitset result;
-        size_t shift = rhs / bits_per_element;
+        size_t shift = rhs / word_size;
         if (shift < array_size) {
             size_t end = array_size - shift - 1;
-            size_t remainder = rhs % bits_per_element;
+            size_t remainder = rhs % word_size;
             for (size_t i = 0; i < end; ++i) {
                 size_t offset = i + shift;
                 result.m_data[i] = (m_data[offset] >> remainder) |
-                    (m_data[offset + 1] << (bits_per_element - remainder));
+                    (m_data[offset + 1] << (word_size - remainder));
             }
             result.m_data[end] = m_data[array_size - 1] >> remainder;
         }
         return result;
     }
     [[maybe_unused]] constexpr bitset& operator>>=(size_t rhs) noexcept {
-        size_t shift = rhs / bits_per_element;
+        size_t shift = rhs / word_size;
         if (shift < array_size) {
             size_t end = array_size - shift - 1;
-            size_t remainder = rhs % bits_per_element;
+            size_t remainder = rhs % word_size;
             for (size_t i = 0; i < end; ++i) {
                 size_t offset = i + shift;
                 m_data[i] = (m_data[offset] >> remainder) |
-                    (m_data[offset + 1] << (bits_per_element - remainder));
+                    (m_data[offset + 1] << (word_size - remainder));
             }
             m_data[end] = m_data[array_size - 1] >> remainder;
             for (size_t i = array_size - shift; i < array_size; ++i) {
@@ -1926,7 +2655,6 @@ public:
         }
         return is;
     }
-
 };
 
 
@@ -1983,6 +2711,33 @@ namespace std {
 
 namespace bertrand {
 
+
+inline void test() {
+    // constexpr bitset<5> s = "11111";
+    // static_assert((((s << 1) >> 2) << 1).to_string() == "01110");
+
+    constexpr bitset<10> s = 5;
+    static_assert(s.to_string(10) == "0000");
+
+
+    // constexpr double log2[] = {
+    //     0.0, 0.0, 1.0, 1.5849625007211563, 2.0,
+    //     2.321928094887362, 2.584962500721156, 2.807354922057604,
+    //     3.0, 3.169925001442312, 3.321928094887362,
+    //     3.4594316186372973, 3.584962500721156, 3.700439718141092,
+    //     3.807354922057604, 3.9068905956085187, 4.0,
+    //     4.087462841250339, 4.169925001442312, 4.247927513443585,
+    //     4.321928094887363, 4.392317422778761, 4.459431618637297,
+    //     4.523561956057013, 4.584962500721156, 4.643856189774724,
+    //     4.700439718141092, 4.754887502163469, 4.807354922057604,
+    //     4.857980995127572, 4.906890595608518, 4.954196310386875,
+    //     5.0, 5.044394119358453, 5.087462841250339,
+    //     5.129283016944966, 5.169925001442312
+    // };
+    // constexpr double len = 10 / log2[4];
+    // constexpr size_t ceil = size_t(len) + (size_t(len) < len);
+    // static_assert(ceil == 15);
+}
 
 
 template <typename T>

@@ -804,6 +804,9 @@ public:
 
     /// TODO: figure out copy/move constructors/assignment operators
 
+    /// TODO: add a facility to compute total memory usage, so that overload tries
+    /// can report it as accurately as possible.
+
 
     /// TODO: this class will eventually need a bunch of really tight integrations
     /// with `py::Function`, so when I finally get to that, I'll have to revisit this.
@@ -7485,7 +7488,7 @@ public:
             }
 
             Iterator operator++(int) {
-                auto copy = *this;
+                Iterator copy = *this;
                 ++*this;
                 return copy;
             }
@@ -7509,7 +7512,7 @@ public:
             }
 
             Iterator operator--(int) {
-                auto copy = *this;
+                Iterator copy = *this;
                 --*this;
                 return copy;
             }
@@ -7886,40 +7889,60 @@ public:
 
     private:
         struct Metadata;
+        using Required = impl::bitset<MAX_ARGS>;  // maybe raised up to inspect()?
+        using IDs = impl::bitset<MAX_OVERLOADS>;
 
         template <typename T>
         static constexpr bool valid_check =
             std::same_as<T, instance> || std::same_as<T, subclass>;
 
-        static constexpr size_t max_size = 1024;
-
     public:
         struct Node;
 
         /* A single link between two nodes in the trie, which describes how to traverse
-        from one to the other.  Multiple edges may share the same target node if they
-        require the same type and have identical origins, kinds, and names.  A unique
-        edge will always be created for each parameter in a signature when it is first
-        inserted. */
+        from one to the other.  Multiple overloads can share the same edge if the
+        corresponding parameters have identical types, kinds, and names. */
         struct Edge {
-            const py::inspect::Param& param;
             std::shared_ptr<Node> target;
+            std::string name;
+            impl::ArgKind kind;
+
+            /* Identifies the unique overloads that include this edge.  The edge will
+            be deleted when this set becomes empty, and a series of bitwise AND
+            operations are performed against it during traversal for each of the
+            visited edges in order to determine the subset of candidate overloads. */
+            IDs matches;
+
+            /// TODO: perhaps terminal is not needed, and can be synthesized from
+            /// matches?  Every insertion would do an intersection of all the matches
+            /// along the inserted path, and if there are any potential conflicts, it
+            /// should assert that their required sets are not equal.
+
+            /* Marks this as a terminal edge for a particular path through the trie, in
+            order to identify ambiguities.  When an overload is inserted into the trie,
+            it will identify the last required edge on its path, and assign itself to
+            this field for that edge and all subsequent edges.  If this pointer is not
+            set to null for any of those edges, then the overload is ambiguous, and
+            the pointer leads to the conflicting overload for diagnostic purposes.  The
+            ID of this pointer will always be present in the `matches` set. */
+            Metadata* terminal = nullptr;
 
             /* When inserted into an associative container, Edge pointers will be
             sorted by kind, with positional < keyword < optional < variadic.  Ties are
             broken by name. */
             struct Less {
                 using is_transparent = void;
-                static bool operator()(const Edge* lhs, const Edge* rhs) {
-                    return
-                        lhs->param.kind < rhs->param.kind ||
-                        lhs->param.name < rhs->param.name;
+                static bool operator()(
+                    std::shared_ptr<Edge> lhs,
+                    std::shared_ptr<Edge> rhs
+                ) {
+                    return lhs->kind < rhs->kind || lhs->name < rhs->name;
                 }
-                static bool operator()(const Edge* lhs, size_t rhs) {
-                    return lhs->owner.signature.hash() < rhs;
+                static bool operator()(const void* lhs, std::shared_ptr<Edge> rhs) {
+                    return lhs < static_cast<const void*>(rhs.get());
                 }
-                static bool operator()(size_t lhs, const Edge* rhs) {
-                    return lhs < rhs->owner.signature.hash();
+                static bool operator()(std::shared_ptr<Edge> lhs, const void* rhs) {
+                    return static_cast<const void*>(lhs.get()) < rhs;
                 }
             };
         };
@@ -7937,64 +7960,98 @@ public:
             };
 
         public:
-            using Set = std::set<Edge*, typename Edge::Less>;
+            using Set = std::set<std::shared_ptr<Edge>, typename Edge::Less>;
             using Map = std::map<PyObject*, Set, TopoSort>;
 
-            /* Identifies the unique overloads that include this node.  The node will
-            be removed from the trie when this set becomes empty.  During a traversal,
-            a series of bitwise AND operations are performed against this set on each
-            of the visited nodes in order to determine the candidate overloads. */
-            std::bitset<max_size> matches;
-
-            /* Marks this as a terminal node for a particular path through the trie, in
-            order to identify ambiguities.  When an overload is inserted into the trie,
-            it will identify the last required node on its path, and assign itself to
-            this field for that node and all subsequent nodes.  If this pointer is not
-            null for any of those nodes, then the overload is ambiguous, and the
-            pointer leads to the conflicting overload, for diagnostic purposes.  The
-            value of this pointer will always be present in the `matches` set. */
-            Metadata* terminal = nullptr;
-
-            /* A map of outgoing edges emanating from this node, for traversal. */
+            Object type;
             Map edges;
 
-            Node(const Metadata* owner) : matches(owner->id) {}
-
             /* The number of outgoing edges emanating from this node. */
-            [[nodiscard]] auto size() const { return edges.size(); }
+            [[nodiscard]] size_t size() const noexcept {
+                size_t total = 0;
+                for (const auto& [key, value] : edges) {
+                    total += value.size();
+                }
+                return total;
+            }
 
             /* Indicates whether this node has any outgoing edges. */
-            [[nodiscard]] auto empty() const { return edges.empty(); }
+            [[nodiscard]] bool empty() const noexcept {
+                return edges.empty();
+            }
 
-            /* Insert an outgoing edge to a new node.  Returns true if the insertion
-            resulted in the creation of a new edge, or false if an existing edge was
-            reused. */
-            [[maybe_unused]] bool insert(Edge& edge) {
-                /// TODO: maybe I should also accept a Metadata* pointer, which would
-                /// be inserted into the matches.
+            /* Insert an outgoing edge to a new node.  Returns a pointer to the
+            inserted edge, which may differ from the input edge if an existing edge
+            with the same name and kind can be reused. */
+            [[maybe_unused]] std::shared_ptr<Edge> insert(
+                std::shared_ptr<Node> self,
+                const py::inspect::Param& param,
+                const IDs& id
+            ) {
                 auto [outer, new_type] = edges.try_emplace(
-                    ptr(edge.param.type),
+                    ptr(param.type),
                     Set{}
                 );
-                auto [inner, new_edge] = outer->second.emplace(&edge);
-                return new_edge;
+                auto existing = outer->second.find(param);
+                if (existing != outer->second.end()) {
+                    existing->matches |= id;
+                    return *existing;
+                }
+                auto [inner, new_edge] = outer->second.insert(std::make_shared<Edge>(
+                    self,
+                    param.name,
+                    param.kind,
+                    id
+                ));
+                return *inner;
             }
 
             /// TODO: not sure if this removal strategy is appropriate for the new,
             /// compressed trie structure.
 
-            /* Purge all outgoing edges that match a particular hash. */
-            void remove(size_t hash) {
+            /// TODO: this no longer works because edges might be shared and reused, so
+            /// there's no unique identifier with which to remove them.  Probably what
+            /// I need to do is provide the pointer value directly, that way I skip any
+            /// extra matching logic.  Unfortunately, that means removals would have
+            /// to be O(n^2), but that's probably not a massive deal, since the number
+            /// of arguments is usually small.
+
+            /// TODO: maybe I should use std::shared_pointers to store the edges in both
+            /// locations?
+
+            /// TODO: maybe the optimal memory model is to reuse nodes based on type,
+            /// and reuse edges based on name and kind.  It would be the edges that
+            /// hold the terminal function and the matches set.  Nodes would only hold
+            /// the type and outgoing edges.
+
+            /* Purge all outgoing edges that are associated with the identified
+            overloads. */
+            void remove(const IDs& id) {
+                /// TODO: iterate over the edges and remove any that include the id(s).
+                /// If any of the matches sets become empty, then remove the edge from
+                /// the map.  If the a set becomes empty, then remove the type from the
+                /// map.
                 auto it = edges.begin();
                 auto end = edges.end();
                 while (it != end) {
-                    it->second.erase(hash);
+                    it->second.erase(id);
                     if (it->second.empty()) {
                         it = edges.erase(it);
                     } else {
                         ++it;
                     }
                 }
+                matches -= id;
+            }
+
+            /* Return the total amount of memory used by this node, in bytes. */
+            size_t memory_usage() const {
+                size_t total = sizeof(Node);
+                for (const auto& [key, value] : edges) {
+                    total += sizeof(typename Map::value_type);
+                    total += sizeof(Edge*) * value.size();
+                }
+                return total;
             }
 
             /* A sorted iterator over the individual edges that match a particular
@@ -8096,7 +8153,7 @@ public:
                 return {value, edges.begin(), edges.end()};
             }
 
-            [[nodiscard]] impl::Sentinel end() const { return {}; }
+            [[nodiscard]] static impl::Sentinel end() noexcept { return {}; }
         };
 
     private:
@@ -8113,37 +8170,44 @@ public:
                 auto p = other.begin();
                 auto p_end = other.end();
                 while (s != s_end && p != p_end) {
-                    path.emplace_back(*this, *s, p->target);
+                    path.emplace_back(*s, p->target);
                     ++s;
                     ++p;
                 }
             }
 
         public:
-            std::bitset<max_size> id;
+            IDs id;
             py::inspect signature;
-            std::vector<Edge> path;
+            std::vector<std::shared_ptr<Edge>> path;
 
-            /// TODO: ownership is now per-node rather than per-edge, so the copy/move
-            /// logic can be simplified
-
-            Metadata(py::inspect&& signature) : signature(std::move(signature)) {
+            Metadata(IDs&& id, py::inspect&& signature) :
+                id(std::move(id)),
+                signature(std::move(signature))
+            {
                 path.reserve(this->signature.size());
                 for (const auto& param : this->signature) {
                     path.emplace_back(this, &param, nullptr);
                 }
             }
 
-            Metadata(const Metadata& other) : signature(other.signature) {
+            Metadata(const Metadata& other) :
+                id(other.id),
+                signature(other.signature)
+            {
                 copy_edges(other.path);
             }
 
-            Metadata(Metadata&& other) : signature(std::move(other.signature)) {
+            Metadata(Metadata&& other) :
+                id(std::move(other.id)),
+                signature(std::move(other.signature))
+            {
                 copy_edges(other.path);
             }
 
             Metadata& operator=(const Metadata& other) {
                 if (&other != this) {
+                    id = other.id;
                     signature = other.signature;
                     path.clear();
                     copy_edges(other.path);
@@ -8154,6 +8218,7 @@ public:
 
             Metadata& operator=(Metadata&& other) {
                 if (&other != this) {
+                    id = std::move(other.id);
                     signature = std::move(other.signature);
                     path.clear();
                     copy_edges(other.path);
@@ -8252,6 +8317,8 @@ public:
             /// TODO: removals of this form are incorrect if a removed edge is shared
             /// with another overload, since it will either orphan the other node or
             /// leave behind an edge with a dangling owner.
+            /// TODO: will it actually?  The shared pointer might be enough to keep
+            /// everything alive.
 
             /* Starting from the root node of the trie, remove all edges associated
             with the tracked overload and deallocate any orphaned nodes as needed. */
@@ -8269,6 +8336,16 @@ public:
                 }
             }
 
+            /* Calculate the total memory usage of the overload, including all edges and
+            nodes. */
+            size_t memory_usage() const noexcept {
+                return
+                    sizeof(bitset) +
+                    signature.memory_usage() +
+                    sizeof(std::vector<Edge>) +
+                    path.size() * sizeof(Edge);
+            }
+
             friend bool operator<(const Metadata& lhs, const Metadata& rhs) {
                 return lhs.signature < rhs.signature;
             }
@@ -8277,8 +8354,16 @@ public:
                 return lhs.signature.hash() < rhs;
             }
 
+            friend bool operator<(const Metadata& lhs, const bitset& rhs) {
+                return lhs.id < rhs;
+            }
+
             friend bool operator<(size_t lhs, const Metadata& rhs) {
                 return lhs < rhs.signature.hash();
+            }
+
+            friend bool operator<(const bitset& lhs, const Metadata& rhs) {
+                return lhs < rhs.id;
             }
 
             struct Less {
@@ -8287,24 +8372,32 @@ public:
                     return *lhs < *rhs;
                 }
                 static bool operator()(const Metadata* lhs, size_t rhs) {
-                    return lhs->id < rhs;
+                    return *lhs < rhs;
+                }
+                static bool operator()(const Metadata* lhs, const bitset& rhs) {
+                    return *lhs < rhs;
                 }
                 static bool operator()(size_t lhs, const Metadata* rhs) {
-                    return lhs < rhs->id;
+                    return lhs < *rhs;
+                }
+                static bool operator()(const bitset& lhs, const Metadata* rhs) {
+                    return lhs < *rhs;
                 }
             };
         };
 
         /* Metadata is stored in a topologically-sorted, associative set to ensure
-        address stability. */
+        address stability + topological sorting for removals, etc. */
         using Data = std::set<Metadata, std::less<>>;
         using Cache = std::unordered_map<size_t, PyObject*>;
 
-        size_t m_depth = 0;
-        Metadata* m_fallback = nullptr;
+        size_t m_edges = 0;  /// TODO: maybe synthesized on-demand?
+        size_t m_nodes = 0;  /// TODO: maybe synthesized on-demand?
+        size_t m_depth = 0;  /// TODO: needed for traversal, but can maybe encode in leading_param.hash?
+        Metadata* m_fallback = nullptr;  /// TODO: use the leading node
         py::inspect::Param m_leading_param = {
             .name = "",
-            .hash = 0,
+            .hash = 0,  /// TODO: no need to store this.  Only the signature has a coherent hash
             .type = reinterpret_steal<Object>(nullptr),
             .default_value = reinterpret_steal<Object>(nullptr),
             .partial = reinterpret_steal<Object>(nullptr),
@@ -8316,12 +8409,12 @@ public:
             .target = nullptr,  // root of the trie
         };
         Node m_leading_node = {
-            .data = nullptr,
+            .matches = {},  // replaces m_ids.
+            .terminal = nullptr,  // replaces m_fallback?
             .edges = {{nullptr, {&m_leading_edge}}}
         };
         Data m_data = {};
         mutable Cache m_cache = {};
-        std::bitset<max_size> m_ids = {};
 
     public:
         Overloads(std::string_view name, const Object& fallback) {
@@ -8360,6 +8453,9 @@ public:
             m_depth = m_fallback->size();
         }
 
+        /// TODO: rename fallback() to function() in order to mimic the `inspect`
+        /// class.
+
         /* Return a reference to the fallback function that will be chosen if no other
         overloads match a given (valid) argument set. */
         [[nodiscard]] const Object& fallback() const noexcept {
@@ -8382,13 +8478,41 @@ public:
             return m_data.size() - 1;
         }
 
-        /// TODO: remember to track this during insertions/removals
+        /* The total number of edges that have been allocated within the trie. */
+        [[nodiscard]] size_t total_edges() const noexcept {
+            /// TODO: keep track of this during insertions/removals
+        }
+
+        /* The total number of nodes that have been allocated within the trie. */
+        [[nodiscard]] size_t total_nodes() const noexcept {
+            /// TODO: keep track of this during insertions/removals
+        }
 
         /* The maximum depth of the trie, which is equivalent to the total number of
         arguments of the longest overload.  Variadic arguments take up a single
         position for the purposes of this calculation. */
-        [[nodiscard]] size_t depth() const noexcept {
+        [[nodiscard]] size_t max_depth() const noexcept {
+            /// TODO: remember to track this during insertions/removals
             return m_depth;
+        }
+
+        /* Return the total amount of memory consumed by the trie in bytes.  Note that
+        this does not count any additional memory being managed by Python (i.e. the
+        function objects themselves, or the `inspect.Signature` instances used to
+        back) */
+        [[nodiscard]] size_t memory_usage() const noexcept {
+            size_t total = sizeof(Overloads);
+            /// TODO: this accounting of nodes is incorrect.  I need a way to iterate
+            /// over all of the nodes in the trie.  Perhaps I can do that by iterating
+            /// over the metadata and counting any nodes that are not in an observed
+            /// set.  That's a quick and dirty way to do it, but performance isn't
+            /// critical here, so it should be fine.
+            total += sizeof(Node) * total_nodes();
+            for (const Metadata& metadata : m_data) {
+                total += metadata.memory_usage();
+            }
+            total += sizeof(typename Cache::value_type) * m_cache.size();
+            return total;
         }
 
         /* Return a reference to the root node of the overload trie.  This can be null
@@ -8444,28 +8568,36 @@ public:
             constexpr size_t indent = 4;
             constexpr std::string prefix(8, ' ');
 
-            auto data = std::make_unique<Metadata>(py::inspect(func));
+            bitset id = 1;
+            id <<= m_ids.first_zero();
+            m_ids |= id;
 
-            // inspect the function and ensure that it is a viable overload of the
-            // enclosing signature
-            if (data->signature >= this->inspect()) {
-                throw TypeError(
-                    "overload must not be more general than the fallback signature\n"
-                    "    fallback:\n" + this->inspect().to_string(
-                        keep_defaults,
-                        prefix,
-                        max_width,
-                        indent
-                    ) + "\n    overload:\n" + data->signature.to_string(
-                        keep_defaults,
-                        prefix,
-                        max_width,
-                        indent
-                    )
-                );
+            auto [it, inserted] = m_data.emplace(id, py::inspect(func));
+            if (!inserted) {
+                throw ValueError("overload already exists");
             }
+            Metadata& data = *it;
 
             try {
+                // inspect the function and ensure that it is a viable overload of the
+                // enclosing signature
+                if (data.signature >= this->inspect()) {
+                    throw TypeError(
+                        "overload must not be more general than the fallback "
+                        "signature\n    fallback:\n" + this->inspect().to_string(
+                            keep_defaults,
+                            prefix,
+                            max_width,
+                            indent
+                        ) + "\n    overload:\n" + data->signature.to_string(
+                            keep_defaults,
+                            prefix,
+                            max_width,
+                            indent
+                        )
+                    );
+                }
+
                 // construct root node and insert fallback if it doesn't already exist
                 if (m_leading_edge.target == nullptr) {
                     m_leading_edge.target = std::make_shared<Node>();
@@ -8503,6 +8635,8 @@ public:
                 }
 
             } catch (...) {
+                m_data.erase(id);
+                m_ids ^= id;
                 if (empty()) {
                     clear();
                 }
@@ -8579,28 +8713,28 @@ public:
             };
             std::vector<Argument> key;
 
-            /// TODO: if I want to avoid heap allocations during the intersection
-            /// calculation, I could use something like a `std::bitset<1024>` to
-            /// represent unique indices that are assigned to each overload in the
-            /// Metadata representation.  This would be initialized to zero when the
-            /// trie is constructed, and whenever a new overload is inserted, I would
-            /// assign it the next available index in the bitset.  Then, when I'm
-            /// computing intersections, I would store an equivalent bitset in each
-            /// frame and in each node, and then intersect them via bitwise AND.
-            /// Whenever an overload is removed, I would clear that bit in the set,
-            /// and on all nodes that are contained in the overload path.
-
             struct Frame {
                 size_t index;
                 const Edge* incoming;
                 Node::template Iterator<check> outgoing;
-                std::bitset<max_size> matches;
+                bitset matches;  // rolling intersection of possible overloads
             };
             std::vector<Frame> stack;
+
+            /// TODO: use bitset.components() to extract the individual ids.  That is
+            /// already optimized for this use case, and allows me to use a rolling
+            /// intersection, which is probably going to be faster, at the cost of
+            /// some extra memory during calls/searches.
+
+            /// TODO: I probably need to rename the bitset alias to IDs, in order to
+            /// distinguish it from Required, which is a separate bitset of required
+            /// arguments, whose length is set by MAX_ARGS
 
             /* Check whether an outgoing edge is already contained within the stack,
             indicating a cycle or a duplicate keyword from an overlapping key. */
             bool has_cycle(const Edge* edge) const {
+                /// TODO: I can filter out any edge that is not contained in the
+                /// matches set, since it's impossible for it to be a valid candidate.
                 for (Frame& frame : stack | std::views::reverse) {
                     if (frame.incoming == edge || (
                         frame.incoming->param->kind.kw() &&
@@ -8659,16 +8793,21 @@ public:
             /* Confirm whether a candidate overload matches the traversed edges, and
             that all required arguments are accounted for. */
             bool validate(const Metadata* data) const {
+                /// TODO: this should use the fancy new bitset class
                 uint64_t required = data->signature.required();
                 uint64_t mask = 0;
-                for (size_t i = 1; i < stack.size(); ++i) {
-                    const py::inspect::Param* lookup = data->signature.get(
-                        stack[i].outgoing->param.name
-                    );
-                    if (!lookup) {
-                        return false;
+                for (size_t i = 0; i < key.size(); ++i) {
+                    const Argument& arg = key[i];
+                    /// TODO: figure out what to do with variadic arguments
+                    if (arg.pos()) {
+                        mask |= 1ULL << i;
+                    } else if (arg.kw()) {
+                        const auto* lookup = data->signature.get(arg.name);
+                        if (!lookup) {
+                            return false;
+                        }
+                        mask |= lookup->mask;
                     }
-                    mask |= lookup->mask;
                 }
                 return (mask & required) == required;
             }

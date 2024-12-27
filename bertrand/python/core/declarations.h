@@ -66,6 +66,30 @@ using bertrand::demangle;
 #endif
 
 
+#ifdef BERTRAND_TEMPLATE_RECURSION_LIMIT
+    constexpr size_t TEMPLATE_RECURSION_LIMIT = BERTRAND_TEMPLATE_RECURSION_LIMIT;
+    static_assert(TEMPLATE_RECURSION_LIMIT > 0, "Template recursion limit must be positive.");
+#else
+    constexpr size_t TEMPLATE_RECURSION_LIMIT = 1024;
+#endif
+
+
+#ifdef BERTRAND_MAX_OVERLOADS
+    constexpr size_t MAX_OVERLOADS = BERTRAND_MAX_OVERLOADS;
+    static_assert(MAX_OVERLOADS > 0, "Maximum number of overloads must be positive.");
+#else
+    constexpr size_t MAX_OVERLOADS = 256;
+#endif
+
+
+#ifdef BERTRAND_MAX_ARGS
+    constexpr size_t MAX_ARGS = BERTRAND_MAX_ARGS;
+    static_assert(MAX_ARGS > 0, "Maximum number of arguments must be positive.");
+#else
+    constexpr size_t MAX_ARGS = sizeof(size_t) * 8;
+#endif
+
+
 namespace impl {
     using bertrand::Sentinel;
     using bertrand::index_of;
@@ -236,6 +260,14 @@ namespace impl {
     using bertrand::has_ixor;
     using bertrand::ixor_type;
     using bertrand::ixor_returns;
+    using bertrand::impl::bitset_tag;
+    using bertrand::is_bitset;
+    using bertrand::bitset;
+    using bertrand::impl::args_tag;
+    using bertrand::is_args;
+    using bertrand::impl::chain_tag;
+    using bertrand::chain;
+    using bertrand::is_arg;
     using bertrand::ArgPack;
     using bertrand::KwargPack;
     using bertrand::ArgKind;
@@ -244,11 +276,6 @@ namespace impl {
     using bertrand::variadic_kwargs_name;
     using bertrand::arg_pack;
     using bertrand::kwarg_pack;
-    using bertrand::is_arg;
-    using bertrand::impl::args_tag;
-    using bertrand::is_args;
-    using bertrand::impl::chain_tag;
-    using bertrand::chain;
 
     struct BertrandTag {};
     struct UnionTag : BertrandTag {};
