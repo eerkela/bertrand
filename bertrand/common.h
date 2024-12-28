@@ -1034,9 +1034,9 @@ concept is_bitset = impl::_is_bitset<std::remove_cvref_t<T>>;
 
 
 /* A simple bitset type that stores flags in a fixed-size array of machine words.
-Allows a wider range of operations than `std::bitset<N>`, including bigint-style
-arithmetic operators and lexicographic comparisons, which allow bitsets to serve as
-portable, unsigned integers of arbitrary width. */
+Allows a wider range of operations than `std::bitset<N>`, including full, bigint-style
+arithmetic, lexicographic comparisons, one-hot decomposition, and more, which allow
+bitsets to pull double duty as portable, unsigned integers of arbitrary width. */
 template <size_t N>
 struct bitset : impl::bitset_tag {
     using Word = size_t;
@@ -1159,7 +1159,6 @@ private:
         using Signed = std::make_signed_t<Word>;
         constexpr size_t chunk = word_size / 2;
         constexpr Word b = Word(1) << chunk;
-        constexpr Word mask = b - 1;
 
         if (!rhs) {
             throw std::domain_error("division by zero");
@@ -1253,10 +1252,9 @@ private:
                 borrow += prod.hi;
             }
 
-            // 6. Correct negative remainder
-            quotient.m_data[j] = qhat;
-            if (borrow) {
-                --quotient.m_data[j];
+            // 6. Correct for negative remainder
+            if (u[j + n] < borrow) {
+                --qhat;
                 borrow = 0;
                 for (size_t i = 0; i < n; ++i) {
                     Word temp = u[i + j] + borrow;
@@ -1267,6 +1265,7 @@ private:
                 }
                 u[j + n] += borrow;
             }
+            quotient.m_data[j] = qhat;
         }
 
         // 7. Unshift the remainder and quotient to get the final result
@@ -1774,6 +1773,100 @@ public:
         return (*this)[index];
     }
 
+    /* A range that decomposes a bitmask into its one-hot components. */
+    struct Components {
+    private:
+        friend bitset;
+        const bitset* self;
+        size_t first;
+        size_t last;
+
+        Components(const bitset* self, size_t first, size_t last) noexcept :
+            self(self), first(first), last(last)
+        {}
+
+    public:
+        struct Iterator {
+        private:
+            friend Components;
+
+            const bitset* self;
+            size_t index;
+            size_t last;
+            bitset curr;
+
+            Iterator(const bitset* self, size_t first, size_t last) noexcept :
+                self(self),
+                index(self->first_one(first, last)),
+                last(last),
+                curr{1}
+            {
+                curr <<= index;
+            }
+
+        public:
+            using iterator_category = std::forward_iterator_tag;
+            using difference_type = std::ptrdiff_t;
+            using value_type = bitset;
+            using pointer = const bitset*;
+            using reference = const bitset&;
+
+            constexpr reference operator*() const noexcept {
+                return curr;
+            }
+
+            constexpr pointer operator->() const noexcept {
+                return &curr;
+            }
+
+            constexpr Iterator& operator++() noexcept {
+                size_t new_index = self->first_one(index + 1);
+                curr <<= new_index - index;
+                index = new_index;
+                return *this;
+            }
+
+            constexpr Iterator operator++(int) noexcept {
+                Iterator copy = *this;
+                ++*this;
+                return copy;
+            }
+
+            friend constexpr bool operator==(const Iterator& self, Sentinel) noexcept {
+                return self.index >= self.last;
+            }
+
+            friend constexpr bool operator==(Sentinel, const Iterator& self) noexcept {
+                return self.index >= self.last;
+            }
+
+            friend constexpr bool operator!=(const Iterator& self, Sentinel) noexcept {
+                return self.index < self.last;
+            }
+
+            friend constexpr bool operator!=(Sentinel, const Iterator& self) noexcept {
+                return self.index < self.last;
+            }
+        };
+
+        Iterator begin() const noexcept {
+            return {self, first, last};
+        }
+
+        Sentinel end() const noexcept {
+            return {};
+        }
+    };
+
+    /* Return a view over the one-hot masks that make up the bitset within a given
+    range. */
+    [[nodiscard]] constexpr Components components(
+        size_t first = 0,
+        size_t last = N
+    ) const noexcept {
+        return {this, first, std::min(last, N)};
+    }
+
     /* An iterator over the individual bits within the set. */
     struct Iterator {
     private:
@@ -2064,132 +2157,6 @@ public:
             return lhs.index > rhs.index;
         }
     };
-
-    /* An iterator that decomposes a bitmask into its one-hot components. */
-    struct MaskIterator {
-    private:
-        friend bitset;
-
-        bitset* self;
-        size_t index;
-        size_t last;
-        bitset curr;
-
-        MaskIterator(bitset* self, size_t first, size_t last) noexcept :
-            self(self),
-            index(self->first_one(first, last)),
-            last(last),
-            curr{1}
-        {
-            curr <<= index;
-        }
-
-    public:
-        using iterator_category = std::forward_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using value_type = bitset;
-        using pointer = const bitset*;
-        using reference = const bitset&;
-
-        [[nodiscard]] constexpr reference operator*() const noexcept {
-            return curr;
-        }
-
-        [[nodiscard]] constexpr pointer operator->() const noexcept {
-            return &curr;
-        }
-
-        [[maybe_unused]] constexpr MaskIterator& operator++() noexcept {
-            size_t new_index = self->first_one(index + 1);
-            curr <<= new_index - index;
-            index = new_index;
-            return *this;
-        }
-
-        [[maybe_unused]] constexpr MaskIterator operator++(int) noexcept {
-            MaskIterator copy = *this;
-            ++*this;
-            return copy;
-        }
-
-        [[nodiscard]] friend constexpr bool operator==(
-            const MaskIterator& lhs,
-            const MaskIterator& rhs
-        ) noexcept {
-            return lhs.index == rhs.index;
-        }
-
-        [[nodiscard]] friend constexpr bool operator==(
-            const MaskIterator& lhs,
-            const Iterator& rhs
-        ) noexcept {
-            return lhs.index >= lhs.last;
-        }
-
-        [[nodiscard]] friend constexpr bool operator==(
-            const Iterator& lhs,
-            const MaskIterator& rhs
-        ) noexcept {
-            return rhs.index >= rhs.last;
-        }
-
-        [[nodiscard]] friend constexpr bool operator==(
-            const MaskIterator& lhs,
-            const ConstIterator& rhs
-        ) noexcept {
-            return lhs.index >= lhs.last;
-        }
-
-        [[nodiscard]] friend constexpr bool operator==(
-            const ConstIterator& lhs,
-            const MaskIterator& rhs
-        ) noexcept {
-            return rhs.index >= rhs.last;
-        }
-
-        [[nodiscard]] friend constexpr bool operator!=(
-            const MaskIterator& lhs,
-            const MaskIterator& rhs
-        ) noexcept {
-            return lhs.index != rhs.index;
-        }
-
-        [[nodiscard]] friend constexpr bool operator!=(
-            const MaskIterator& lhs,
-            const Iterator& rhs
-        ) noexcept {
-            return lhs.index < lhs.last;
-        }
-
-        [[nodiscard]] friend constexpr bool operator!=(
-            const Iterator& lhs,
-            const MaskIterator& rhs
-        ) noexcept {
-            return rhs.index < rhs.last;
-        }
-
-        [[nodiscard]] friend constexpr bool operator!=(
-            const MaskIterator& lhs,
-            const ConstIterator& rhs
-        ) noexcept {
-            return lhs.index < lhs.last;
-        }
-
-        [[nodiscard]] friend constexpr bool operator!=(
-            const ConstIterator& lhs,
-            const MaskIterator& rhs
-        ) noexcept {
-            return rhs.index < rhs.last;
-        }
-    };
-
-    /* Return an iterator over the one-hot masks that make up the bitset. */
-    [[nodiscard]] constexpr MaskIterator components(
-        size_t first = 0,
-        size_t last = N
-    ) const noexcept {
-        return {this, first, std::min(last, N)};
-    }
 
     /* Return a forward iterator over the individual flags within the set. */
     [[nodiscard]] constexpr Iterator begin() noexcept {

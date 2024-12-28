@@ -356,6 +356,37 @@ namespace impl {
         using Return = R;
     };
 
+    /* A simple helper type that represents the arguments used to initiate a search
+    over an overload trie.  This must be a separate type in order to allow keys from
+    one specialization of `Signature` to be used to search for overloads on a different
+    specialization of `Signature`.  Otherwise, they would all refer to separate types,
+    and would not be able to communicate. */
+    struct OverloadKey {
+        struct Argument;
+
+    private:
+        using Vec = std::vector<Argument>;
+
+    public:
+        struct Argument {
+            std::string name;
+            Object value;
+            impl::ArgKind kind;
+        };
+
+        Vec vec;
+        size_t hash = 0;
+        bool has_hash = false;
+
+        OverloadKey() = default;
+        explicit OverloadKey(size_t hash) : hash(hash), has_hash(true) {}
+
+        Vec& operator*() noexcept { return vec; }
+        const Vec& operator*() const noexcept { return vec; }
+        Vec* operator->() noexcept { return &vec; }
+        const Vec* operator->() const noexcept { return &vec; }
+    };
+
 }
 
 
@@ -707,11 +738,6 @@ private:
             // insert parsed parameter + update name map, hash, and required bitmask
             m_parameters.emplace_back(
                 std::string_view(name, size),
-                impl::parameter_hash(
-                    name,
-                    ptr(annotation),
-                    kind
-                ),
                 std::move(annotation),
                 std::move(default_value),
                 std::move(partial),
@@ -719,7 +745,7 @@ private:
                 kind
             );
             m_names.emplace(m_parameters.back().name, &m_parameters.back());
-            m_hash = impl::hash_combine(m_hash, m_parameters.back().hash);
+            m_hash = impl::hash_combine(m_hash, m_parameters.back().hash());
             m_required <<= 1;
             m_required |= !(kind.opt() | kind.variadic());
 
@@ -871,7 +897,6 @@ public:
     analogous to an `inspect.Parameter` instance in Python. */
     struct Param {
         std::string_view name;
-        size_t hash;
         Object type;
         Object default_value;
         Object partial;
@@ -888,7 +913,15 @@ public:
         [[nodiscard]] bool bound() const noexcept { return !partial.is(nullptr); }
         [[nodiscard]] bool variadic() const noexcept { return kind.variadic(); }
 
-        [[nodiscard]] size_t index() const {
+        [[nodiscard]] size_t hash() const noexcept {
+            return impl::parameter_hash(
+                name.data(),
+                ptr(type),
+                kind
+            );
+        }
+
+        [[nodiscard]] size_t index() const noexcept {
             size_t idx = 0;
             uint64_t mask = this->mask;
             while (mask >>= 1) {
@@ -3051,6 +3084,71 @@ public:
         template <StaticStr Name> requires (has<Name>)
         constexpr decltype(auto) get(this auto&& self) {
             return std::get<idx<Name>>(std::forward<decltype(self)>(self).values).get();
+        }
+
+    private:
+
+        template <size_t I, size_t K>
+        struct to_key {
+            static constexpr size_t size(size_t result) noexcept {
+                return result;
+            }
+
+            template <typename P>
+            static void operator()(P&&, impl::OverloadKey&) {}
+        };
+        template <size_t I, size_t K>
+            requires (I < Signature::n && (K < n && rfind<K> == I))
+        struct to_key<I, K> {
+            static constexpr size_t size(size_t result) noexcept {
+                using T = Signature::at<I>;
+                return to_key<I + !ArgTraits<T>::variadic(), K + 1>::size(
+                    result + 1
+                );
+            }
+
+            template <typename P>
+            static void operator()(P&& partial, impl::OverloadKey& key) {
+                using T = Signature::at<I>;
+                key->emplace_back(
+                    std::string(name<K>),
+                    py::to_python(std::forward<P>(partial).template get<K>()),
+                    ArgTraits<T>::kind
+                );
+                to_key<I + !ArgTraits<T>::variadic(), K + 1>{}(
+                    std::forward<P>(partial),
+                    key
+                );
+            }
+        };
+        template <size_t I, size_t K>
+            requires (I < Signature::n && !(K < n && rfind<K> == I))
+        struct to_key<I, K> {
+            static constexpr size_t size(size_t result) noexcept {
+                return to_key<I + 1, K>::size(result + 1);
+            }
+
+            template <typename P>
+            static void operator()(P&& partial, impl::OverloadKey& key) {
+                using T = Signature::at<I>;
+                key->emplace_back(
+                    std::string(ArgTraits<T>::name),
+                    reinterpret_steal<Object>(nullptr),
+                    ArgTraits<T>::kind
+                );
+                to_key<I + 1, K>{}(std::forward<P>(partial), key);
+            }
+        };
+
+    public:
+
+        /* Convert a partial tuple into a standardized key type that can be used to
+        initiate a search of an overload trie. */
+        [[nodiscard]] impl::OverloadKey key(this auto&& self) {
+            impl::OverloadKey key;
+            key->reserve(to_key<0, 0>::size(0));
+            to_key<0, 0>{}(std::forward<decltype(self)>(self), key);
+            return key;
         }
     };
 
@@ -7439,7 +7537,7 @@ public:
                     .kind = impl::ArgKind::POS
                 };
             }
-            if (i < nargs + kwcount) {
+            if (i < size()) {
                 return {
                     .name = arg_name(PyTuple_GET_ITEM(ptr(kwnames), i - nargs)),
                     .value = array[i + offset()],
@@ -7789,7 +7887,22 @@ public:
             }
         }
 
-        /// TODO: implement key()
+        /* Convert a normalized vectorcall array into a standardized key type that can
+        be used to initiate a search of an overload trie. */
+        [[nodiscard]] impl::OverloadKey key() const {
+            impl::OverloadKey key(hash);
+            key->reserve(size());
+            for (Param param : *this) {
+                key->emplace_back(
+                    param.name,
+                    reinterpret_borrow<Object>(param.value).
+                    param.kind
+                );
+            }
+            return key;
+        }
+
+        /// TODO: implement template_key()
 
         /* Convert a normalized vectorcall array into a template key that can be used
         to specialize the `bertrand.Function` type on the Python side.  This is used to
@@ -7797,7 +7910,7 @@ public:
         function with the given arguments already filled in.  That method is chainable,
         meaning that any existing partial arguments (inserted during normalization)
         will be carried over into the new partial function object. */
-        Object key() {
+        [[nodiscard]] Object template_key() {
             /// TODO: after producing this key, I would specialize `bertrand.Function[]`
             /// accordingly, and then pass the normalized vectorcall arguments to its
             /// standard Python constructor, and everything should work as expected.
@@ -7854,11 +7967,7 @@ public:
         P&& partial,
         A&&... args
     ) {
-        return {
-            out,
-            std::forward<P>(partial),
-            std::forward<A>(args)...
-        };
+        return {out, std::forward<P>(partial), std::forward<A>(args)...};
     }
 
     /* A trie-based data structure containing a set of topologically-sorted, dynamic
@@ -7889,7 +7998,7 @@ public:
 
     private:
         struct Metadata;
-        using Required = impl::bitset<MAX_ARGS>;  // maybe raised up to inspect()?
+        using Required = impl::bitset<MAX_ARGS>;  // TODO: maybe raised up to inspect()?
         using IDs = impl::bitset<MAX_OVERLOADS>;
 
         template <typename T>
@@ -7899,9 +8008,9 @@ public:
     public:
         struct Node;
 
-        /* A single link between two nodes in the trie, which describes how to traverse
-        from one to the other.  Multiple overloads can share the same edge if the
-        corresponding parameters have identical types, kinds, and names. */
+        /* A unidirectional link between two nodes in the trie, which describes how to
+        traverse from one to the other.  Multiple overloads can share the same edge if
+        the corresponding parameters have identical types, kinds, and names. */
         struct Edge {
             std::shared_ptr<Node> target;
             std::string name;
@@ -7917,6 +8026,17 @@ public:
             /// matches?  Every insertion would do an intersection of all the matches
             /// along the inserted path, and if there are any potential conflicts, it
             /// should assert that their required sets are not equal.
+            /// -> This would require a search over the trie during every insertion.
+            /// Basically, I would do a subclass{} search using the inspected
+            /// annotations before committing to inserting the function.  For each
+            /// match, I would assert that the new overload's required() mask is
+            /// different from the existing ones.
+            /// -> Maybe I should exclude any optional arguments, and search only the
+            /// required arguments?  Then, any matches are guaranteed to cover the
+            /// minimal required set of arguments.
+            /// -> Also, when I compare `required()` bitmasks, I need to fully
+            /// reconstruct the required bitmask for the current key in that overload's
+            /// domain, since the keyword arguments do not need to be given in order.
 
             /* Marks this as a terminal edge for a particular path through the trie, in
             order to identify ambiguities.  When an overload is inserted into the trie,
@@ -7931,18 +8051,11 @@ public:
             sorted by kind, with positional < keyword < optional < variadic.  Ties are
             broken by name. */
             struct Less {
-                using is_transparent = void;
                 static bool operator()(
                     std::shared_ptr<Edge> lhs,
                     std::shared_ptr<Edge> rhs
-                ) {
+                ) noexcept {
                     return lhs->kind < rhs->kind || lhs->name < rhs->name;
-                }
-                static bool operator()(const void* lhs, std::shared_ptr<Edge> rhs) {
-                    return lhs < static_cast<const void*>(rhs.get());
-                }
-                static bool operator()(std::shared_ptr<Edge> lhs, const void* rhs) {
-                    return static_cast<const void*>(lhs.get()) < rhs;
                 }
             };
         };
@@ -7963,6 +8076,7 @@ public:
             using Set = std::set<std::shared_ptr<Edge>, typename Edge::Less>;
             using Map = std::map<PyObject*, Set, TopoSort>;
 
+            /// TODO: these should be private?
             Object type;
             Map edges;
 
@@ -7985,7 +8099,7 @@ public:
             with the same name and kind can be reused. */
             [[maybe_unused]] std::shared_ptr<Edge> insert(
                 std::shared_ptr<Node> self,
-                const py::inspect::Param& param,
+                const inspect::Param& param,
                 const IDs& id
             ) {
                 auto [outer, new_type] = edges.try_emplace(
@@ -8027,10 +8141,9 @@ public:
             /* Purge all outgoing edges that are associated with the identified
             overloads. */
             void remove(const IDs& id) {
-                /// TODO: iterate over the edges and remove any that include the id(s).
+                /// TODO: iterate over the edges and clear any that include the id(s).
                 /// If any of the matches sets become empty, then remove the edge from
-                /// the map.  If the a set becomes empty, then remove the type from the
-                /// map.
+                /// the map.  If a set becomes empty, then remove the type from the map.
                 auto it = edges.begin();
                 auto end = edges.end();
                 while (it != end) {
@@ -8060,11 +8173,8 @@ public:
             mimicking the call frame in a recursive function. */
             template <typename check> requires (valid_check<check>)
             struct Iterator {
-                using iterator_category = std::input_iterator_tag;
-                using difference_type = std::ptrdiff_t;
-                using value_type = Edge;
-                using pointer = const Edge*;
-                using reference = const Edge&;
+            private:
+                friend Node;
 
                 PyObject* value;
 
@@ -8102,11 +8212,12 @@ public:
                     map(std::move(it), std::move(end))
                 {}
 
-                Iterator(PyObject* value, impl::Sentinel) :
-                    value(value),
-                    set(SetView::empty.begin(), SetView::empty.end()),
-                    map(MapView::empty.begin(), MapView::empty.end())
-                {}
+            public:
+                using iterator_category = std::input_iterator_tag;
+                using difference_type = std::ptrdiff_t;
+                using value_type = Edge;
+                using pointer = const Edge*;
+                using reference = const Edge&;
 
                 const Edge& operator*() const { return **set.begin; }
                 const Edge* operator->() const { return *set.begin; }
@@ -8162,72 +8273,22 @@ public:
         from which a canonical path of edges is generated, which are traversed when
         the function is removed from the trie. */
         struct Metadata {
-        private:
-            void copy_edges(const std::vector<Edge>& other) {
-                path.reserve(signature.size());
-                auto s = signature.begin();
-                auto s_end = signature.end();
-                auto p = other.begin();
-                auto p_end = other.end();
-                while (s != s_end && p != p_end) {
-                    path.emplace_back(*s, p->target);
-                    ++s;
-                    ++p;
-                }
-            }
-
-        public:
             IDs id;
-            py::inspect signature;
+            inspect signature;
             std::vector<std::shared_ptr<Edge>> path;
 
-            Metadata(IDs&& id, py::inspect&& signature) :
-                id(std::move(id)),
-                signature(std::move(signature))
-            {
-                path.reserve(this->signature.size());
-                for (const auto& param : this->signature) {
-                    path.emplace_back(this, &param, nullptr);
-                }
-            }
+            /// TODO: insert() will generate a path through the trie when called,
+            /// filling in the path member.  This is what would be called to
+            /// automatically insert the fallback function.  The public insert()
+            /// function will work by creating a Metadata struct and then calling
+            /// this method.  Super simple.
 
-            Metadata(const Metadata& other) :
-                id(other.id),
-                signature(other.signature)
-            {
-                copy_edges(other.path);
-            }
-
-            Metadata(Metadata&& other) :
-                id(std::move(other.id)),
-                signature(std::move(other.signature))
-            {
-                copy_edges(other.path);
-            }
-
-            Metadata& operator=(const Metadata& other) {
-                if (&other != this) {
-                    id = other.id;
-                    signature = other.signature;
-                    path.clear();
-                    copy_edges(other.path);
-                    path.shrink_to_fit();
-                }
-                return *this;
-            }
-
-            Metadata& operator=(Metadata&& other) {
-                if (&other != this) {
-                    id = std::move(other.id);
-                    signature = std::move(other.signature);
-                    path.clear();
-                    copy_edges(other.path);
-                    path.shrink_to_fit();
-                }
-                return *this;
-            }
-
-            /// TODO: insertions need to account for shared edges.
+            /// TODO: step one of insert() is to convert the `inspect()` object into
+            /// an overload key containing only the required arguments, and then
+            /// initiate a `subclass{}` search of the trie to identify ambiguities.
+            /// -> Perhaps I can avoid this by just inserting arguments as expected,
+            /// then on the second pass, I can gather the list of overloads that
+            /// include the same path somehow.
 
             /* Starting from the root node of the trie, insert all edges associated
             with the tracked overload and allocate new nodes as needed. */
@@ -8346,71 +8407,50 @@ public:
                     path.size() * sizeof(Edge);
             }
 
-            friend bool operator<(const Metadata& lhs, const Metadata& rhs) {
-                return lhs.signature < rhs.signature;
-            }
-
-            friend bool operator<(const Metadata& lhs, size_t rhs) {
-                return lhs.signature.hash() < rhs;
-            }
-
-            friend bool operator<(const Metadata& lhs, const bitset& rhs) {
-                return lhs.id < rhs;
-            }
-
-            friend bool operator<(size_t lhs, const Metadata& rhs) {
-                return lhs < rhs.signature.hash();
-            }
-
-            friend bool operator<(const bitset& lhs, const Metadata& rhs) {
-                return lhs < rhs.id;
-            }
-
-            struct Less {
+            struct Hash {
                 using is_transparent = void;
-                static bool operator()(const Metadata* lhs, const Metadata* rhs) {
-                    return *lhs < *rhs;
+                static size_t operator()(const Metadata& self) noexcept {
+                    return std::hash<IDs>{}(self.id);
                 }
-                static bool operator()(const Metadata* lhs, size_t rhs) {
-                    return *lhs < rhs;
+                static size_t operator()(const IDs& self) noexcept {
+                    return std::hash<IDs>{}(self);
                 }
-                static bool operator()(const Metadata* lhs, const bitset& rhs) {
-                    return *lhs < rhs;
+            };
+
+            struct Equal {
+                using is_transparent = void;
+                static bool operator()(const Metadata& lhs, const Metadata& rhs) noexcept {
+                    return lhs.id == rhs.id;
                 }
-                static bool operator()(size_t lhs, const Metadata* rhs) {
-                    return lhs < *rhs;
+                static bool operator()(const Metadata& lhs, const IDs& rhs) noexcept {
+                    return lhs.id == rhs;
                 }
-                static bool operator()(const bitset& lhs, const Metadata* rhs) {
-                    return lhs < *rhs;
+
+                static bool operator()(const IDs& lhs, const Metadata& rhs) noexcept {
+                    return lhs == rhs.id;
                 }
             };
         };
 
         /* Metadata is stored in a topologically-sorted, associative set to ensure
         address stability + topological sorting for removals, etc. */
-        using Data = std::set<Metadata, std::less<>>;
+        using Data = std::unordered_set<
+            Metadata,
+            typename Metadata::Hash,
+            typename Metadata::Equal
+        >;
         using Cache = std::unordered_map<size_t, PyObject*>;
 
-        size_t m_edges = 0;  /// TODO: maybe synthesized on-demand?
-        size_t m_nodes = 0;  /// TODO: maybe synthesized on-demand?
-        size_t m_depth = 0;  /// TODO: needed for traversal, but can maybe encode in leading_param.hash?
-        Metadata* m_fallback = nullptr;  /// TODO: use the leading node
-        py::inspect::Param m_leading_param = {
-            .name = "",
-            .hash = 0,  /// TODO: no need to store this.  Only the signature has a coherent hash
-            .type = reinterpret_steal<Object>(nullptr),
-            .default_value = reinterpret_steal<Object>(nullptr),
-            .partial = reinterpret_steal<Object>(nullptr),
-            .mask = 0,
-            .kind = 0
-        };
+        size_t m_depth = 0;
+        Metadata* m_fallback = nullptr;
         Edge m_leading_edge = {
-            .param = &m_leading_param,
             .target = nullptr,  // root of the trie
+            .name = "",
+            .kind = 0,
+            .matches = {}  // identifies all overloads
         };
         Node m_leading_node = {
-            .matches = {},  // replaces m_ids.
-            .terminal = nullptr,  // replaces m_fallback?
+            .type = reinterpret_steal<Object>(nullptr),
             .edges = {{nullptr, {&m_leading_edge}}}
         };
         Data m_data = {};
@@ -8418,16 +8458,13 @@ public:
 
     public:
         Overloads(std::string_view name, const Object& fallback) {
-            py::inspect signature(fallback, name);
+            inspect signature(fallback, name);
 
             /// TODO: if I receive an instance of `bertrand.Function`, then the
             /// signature check can be done just through some type checks rather than
             /// building a full signature object.  That would greatly increase the
             /// performance of conversions from Python -> C++ in the case where you're
             /// using bertrand types from the beginning.
-            /// TODO: do this check in the py::Function class, rather than here, so
-            /// that I can avoid comparison with the Signature template when this class
-            /// is lifted out of ::Signature<...>.
 
             if (signature != Signature{}) {
                 constexpr size_t max_width = 80;
@@ -8448,9 +8485,10 @@ public:
                 );
             };
 
-            m_data.emplace(std::move(signature));
+            m_data.emplace(1, std::move(signature));
             m_fallback = &*m_data.begin();
             m_depth = m_fallback->size();
+            m_leading_edge.matches |= m_fallback->id;
         }
 
         /// TODO: rename fallback() to function() in order to mimic the `inspect`
@@ -8463,7 +8501,7 @@ public:
         }
 
         /* Get the stored signature of the fallback function. */
-        [[nodiscard]] const py::inspect& inspect() const noexcept {
+        [[nodiscard]] const inspect& signature() const noexcept {
             return m_fallback->signature;
         }
 
@@ -8480,12 +8518,14 @@ public:
 
         /* The total number of edges that have been allocated within the trie. */
         [[nodiscard]] size_t total_edges() const noexcept {
-            /// TODO: keep track of this during insertions/removals
+            /// TODO: keep track of this during insertions/removals or generate it
+            /// on the fly by iterating over the trie or m_data
         }
 
         /* The total number of nodes that have been allocated within the trie. */
         [[nodiscard]] size_t total_nodes() const noexcept {
-            /// TODO: keep track of this during insertions/removals
+            /// TODO: keep track of this during insertions/removals or generate it
+            /// on the fly by iterating over the trie or m_data
         }
 
         /* The maximum depth of the trie, which is equivalent to the total number of
@@ -8572,7 +8612,7 @@ public:
             id <<= m_ids.first_zero();
             m_ids |= id;
 
-            auto [it, inserted] = m_data.emplace(id, py::inspect(func));
+            auto [it, inserted] = m_data.emplace(id, inspect(func));
             if (!inserted) {
                 throw ValueError("overload already exists");
             }
@@ -8581,7 +8621,7 @@ public:
             try {
                 // inspect the function and ensure that it is a viable overload of the
                 // enclosing signature
-                if (data.signature >= this->inspect()) {
+                if (data.signature >= signature()) {
                     throw TypeError(
                         "overload must not be more general than the fallback "
                         "signature\n    fallback:\n" + this->inspect().to_string(
@@ -8687,9 +8727,7 @@ public:
             auto it = m_data.begin();
             while (it != m_data.end()) {
                 if (&*it == m_fallback) {
-                    for (Edge& edge : it->path) {
-                        edge.target.reset();
-                    }
+                    m_fallback->path.clear();
                     ++it;
                 } else {
                     it = m_data.erase(it);
@@ -8706,110 +8744,50 @@ public:
         template <typename check> requires (valid_check<check>)
         struct Iterator {
         private:
-            struct Argument {
-                std::string name;
-                Object value;
-                impl::ArgKind kind;
-            };
-            std::vector<Argument> key;
+            friend Overloads;
+            using Argument = impl::OverloadKey::Argument;
 
             struct Frame {
+                // The index of the *next* argument to be matched from the key.
                 size_t index;
+
+                // The edge that was followed to get to this frame.  This is always
+                // equal to the outgoing edge of the previous frame, except for the
+                // leading frame, which sets this to a null pointer.
                 const Edge* incoming;
+
+                // An iterator over the outgoing edges of the current node, which will
+                // be filtered by the type check, mask interesections, and edge
+                // names/kinds.
                 Node::template Iterator<check> outgoing;
-                bitset matches;  // rolling intersection of possible overloads
+
+                // Rolling intersection of possible overloads along this path.  Set to
+                // all overloads for the leading frame, and then intersected with the
+                // matches of the incoming edge for each subsequent frame.  Outgoing
+                // edges will only be considered if at least one of their IDs are
+                // contained within this set.  The final space of candidate overloads
+                // can be found by intersecting with the IDs of the last outgoing edge
+                // and then decomposing into one-hot masks.
+                IDs matches = outgoing->matches;
             };
+
+            impl::OverloadKey key;
             std::vector<Frame> stack;
+            const Data* data;
+            IDs visited;
+            const Metadata* curr = nullptr;
 
-            /// TODO: use bitset.components() to extract the individual ids.  That is
-            /// already optimized for this use case, and allows me to use a rolling
-            /// intersection, which is probably going to be faster, at the cost of
-            /// some extra memory during calls/searches.
-
-            /// TODO: I probably need to rename the bitset alias to IDs, in order to
-            /// distinguish it from Required, which is a separate bitset of required
-            /// arguments, whose length is set by MAX_ARGS
-
-            /* Check whether an outgoing edge is already contained within the stack,
-            indicating a cycle or a duplicate keyword from an overlapping key. */
-            bool has_cycle(const Edge* edge) const {
-                /// TODO: I can filter out any edge that is not contained in the
-                /// matches set, since it's impossible for it to be a valid candidate.
-                for (Frame& frame : stack | std::views::reverse) {
-                    if (frame.incoming == edge || (
-                        frame.incoming->param->kind.kw() &&
-                        edge->param->kind.kw() &&
-                        frame.incoming->param->name == edge->param->name
-                    )) {
-                        return true;
+            /* Advance the last iterator in the stack.  If it reaches the end, pop it
+            from the stack and advance the previous iterator, recurring until either
+            the stack is exhausted or a new value is found. */
+            void advance() {
+                while (++stack.back().outgoing == impl::Sentinel{}) {
+                    stack.pop_back();
+                    if (stack.empty()) {
+                        return;
                     }
                 }
-                return false;
-            }
-
-            /* Grow the stack one level by retrieving the last node in the stack and
-            topologically searching for an outgoing edge that has not yet been
-            traversed and which matches the corresponding key parameter.  Returns the
-            next outgoing edge or null if no candidates are found. */
-            const Edge* grow(size_t index) {
-                const Argument& arg = key[index];
-                const Edge* edge = &(*stack.back().outgoing);
-                const Matches& matches = stack.back().matches;
-                stack.emplace_back(
-                    index,
-                    edge,
-                    edge->target->template begin<check>(ptr(arg.value)),
-                    Matches{}
-                );
-                while (stack.back().outgoing != impl::Sentinel{}) {
-                    edge = &(*stack.back().outgoing);
-                    if (!has_cycle(edge) && (
-                        (
-                            arg.kind.pos() && edge->kind.pos()
-                        ) || (
-                            arg.kind.kw() && edge->kind.kw() && edge->name == arg.name
-                        ) || (
-                            arg.kind.args() && edge->kind.pos()
-                        ) || (
-                            arg.kind.kwargs() && edge->kind.kw()
-                        ))
-                    ) {
-                        stack.back().matches.reserve(matches.size());
-                        for (const Metadata* data : edge->target->matches) {
-                            if (matches.contains(data)) {
-                                stack.back().matches.emplace(data);
-                            }
-                        }
-                        if (!stack.back().matches.empty()) {
-                            return edge;
-                        }
-                    }
-                    ++stack.back().outgoing;
-                }
-                stack.pop_back();
-                return nullptr;
-            }
-
-            /* Confirm whether a candidate overload matches the traversed edges, and
-            that all required arguments are accounted for. */
-            bool validate(const Metadata* data) const {
-                /// TODO: this should use the fancy new bitset class
-                uint64_t required = data->signature.required();
-                uint64_t mask = 0;
-                for (size_t i = 0; i < key.size(); ++i) {
-                    const Argument& arg = key[i];
-                    /// TODO: figure out what to do with variadic arguments
-                    if (arg.pos()) {
-                        mask |= 1ULL << i;
-                    } else if (arg.kw()) {
-                        const auto* lookup = data->signature.get(arg.name);
-                        if (!lookup) {
-                            return false;
-                        }
-                        mask |= lookup->mask;
-                    }
-                }
-                return (mask & required) == required;
+                explore();
             }
 
             /* Recursively grow the stack until a valid overload has been found.  The
@@ -8831,97 +8809,154 @@ public:
             candidate node, stopping when the stack is empty. */
             void explore() {
                 size_t index = stack.back().index;
-                while (index < key.size()) {
-                    const Argument& arg = key[index];
+                while (index < key->size()) {
+                    const Argument& arg = (*key)[index];
                     if (arg.kind.variadic() && arg.value.is(nullptr)) {
-                        while (grow(index));  // do nothing
-                    } else if (!grow(index)) {
+                        while (grow(arg, index));  // do nothing
+                    } else if (!grow(arg, index)) {
                         advance();
                         return;
                     }
                     ++index;
                 }
-
-                for (const Metadata* data : stack.back().matches) {
-                    if (validate(data)) {
-                        return;
+                IDs candidates = stack.back().matches & stack.back().outgoing->matches;
+                for (const IDs& id : candidates.components()) {
+                    if (!(visited & id)) {
+                        const Metadata& overload = data->at(id);
+                        if (validate(overload)) {
+                            visited |= id;
+                            curr = &overload;
+                            return;
+                        }
+                        visited |= id;
                     }
                 }
                 advance();
             }
 
-            /* Advance the last iterator in the stack.  If it reaches the end, pop it
-            from the stack and advance the previous iterator, recurring until either
-            the stack is exhausted or a new value is found. */
-            void advance() {
-                while (++stack.back().outgoing == impl::Sentinel{}) {
+            /* Grow the stack one level by retrieving the last node and topologically
+            searching for an outgoing edge that has not yet been traversed and matches
+            the corresponding key parameter.  Returns the next outgoing edge or null if
+            no candidates are found. */
+            const Edge* grow(const Argument& arg, size_t index) {
+                const Edge* edge = &(*stack.back().outgoing);
+                stack.emplace_back(
+                    index,
+                    edge,
+                    edge->target->template begin<check>(ptr(arg.value)),
+                    stack.back().matches & edge->matches
+                );
+                // if the intersection is empty or contains only visited overloads,
+                // then we can ignore this branch and backtrack
+                if ((visited & stack.back().matches) == stack.back().matches) {
                     stack.pop_back();
-                    if (stack.empty()) {
-                        return;
-                    }
+                    return nullptr;
                 }
-                explore();
+                while (stack.back().outgoing != impl::Sentinel{}) {
+                    edge = &(*stack.back().outgoing);
+                    if (!has_cycle(edge) && (
+                        (
+                            arg.kind.pos() && edge->kind.pos()
+                        ) || (
+                            arg.kind.kw() && edge->kind.kw() && edge->name == arg.name
+                        ) || (
+                            arg.kind.args() && edge->kind.pos()
+                        ) || (
+                            arg.kind.kwargs() && edge->kind.kw()
+                        ))
+                    ) {
+                        return edge;
+                    }
+                    ++stack.back().outgoing;
+                }
+                stack.pop_back();
+                return nullptr;
             }
 
-            template <size_t I, size_t K>
-            struct resolve_partial {
-                static constexpr size_t size(size_t result) noexcept {
-                    return result;
+            /* Check whether an outgoing edge is already contained within the stack,
+            indicating a cycle or a duplicate keyword from an overlapping key. */
+            bool has_cycle(const Edge* edge) const {
+                if (edge->kind.kw() || edge->kind.kwargs()) {
+                    for (Frame& frame : stack | std::views::reverse) {
+                        if (frame.incoming == edge || (
+                            (frame.incoming->kind.kw() || frame.incoming->kind.kwargs()) &&
+                            frame.incoming->name == edge->name
+                        )) {
+                            return true;
+                        }
+                    }
+                } else {
+                    for (Frame& frame : stack | std::views::reverse) {
+                        if (frame.incoming == edge) {
+                            return true;
+                        }
+                    }
                 }
+                return false;
+            }
 
-                template <typename P>
-                static void key(P&&, std::vector<Argument>&) {}
-            };
-            template <size_t I, size_t K>
-                requires (
-                    I < Signature::n &&
-                    (K < Partial::n && Partial::template rfind<K> == I)
-                )
-            struct resolve_partial<I, K> {
-                static constexpr size_t size(size_t result) noexcept {
-                    return resolve_partial<
-                        I + !ArgTraits<Signature::at<I>>::variadic(),
-                        K + 1
-                    >::size(result + 1);
-                }
+            /// TODO: the validation step must be based on the actual edges that were
+            /// traversed, otherwise it will ignore variadic parameters in a partial
+            /// traversal?
 
-                template <typename P>
-                static void key(P&& partial, std::vector<Argument>& key) {
-                    key.emplace_back(
-                        std::string(Partial::template name<K>),
-                        py::to_python(std::forward<P>(partial).template get<K>()),
-                        ArgTraits<Signature::at<I>>::kind
-                    );
-                    resolve_partial<
-                        I + !ArgTraits<Signature::at<I>>::variadic(),
-                        K + 1
-                    >::key(std::forward<P>(partial));
+            /* Reconstruct a bitmask representing the observed arguments and compare it
+            against the overload's `required` bitmask to check whether all necessary
+            arguments have been given for this path. */
+            bool validate(const Metadata& overload) const {
+                /// TODO: this should use the fancy new bitset class
+                uint64_t required = overload.signature.required();
+                uint64_t mask = 0;
+                for (size_t i = 0; i < key->size(); ++i) {
+                    const Argument& arg = (*key)[i];
+                    /// TODO: figure out what to do with variadic arguments
+                    if (arg.kind.pos()) {
+                        mask |= 1ULL << i;
+                    } else if (arg.kind.kw()) {
+                        const auto* lookup = overload.signature.get(arg.name);
+                        if (!lookup) {
+                            return false;
+                        }
+                        mask |= lookup->mask;
+                    }
                 }
-            };
-            template <size_t I, size_t K>
-                requires (
-                    I < Signature::n &&
-                    !(K < Partial::n && Partial::template rfind<K> == I)
-                )
-            struct resolve_partial<I, K> {
-                static constexpr size_t size(size_t result) noexcept {
-                    return resolve_partial<I + 1, K>::size(result + 1);
-                }
+                return (mask & required) == required;
+            }
 
-                template <typename P>
-                static void key(P&& partial, std::vector<Argument>& key) {
-                    using T = Signature::at<I>;
-                    key.emplace_back(
-                        std::string(ArgTraits<T>::name),
-                        reinterpret_steal<Object>(nullptr),
-                        ArgTraits<T>::kind
+            Iterator(
+                impl::OverloadKey&& key,
+                size_t max_depth,
+                const Data& data,
+                const Node& init,
+                Cache& cache
+            ) :
+                key(std::move(key)),
+                data(&data)
+            {
+                // vectorcall iterators are initialized with a hash, for caching purposes
+                if (key.has_hash) {
+                    stack.reserve(key->size() + 2);  // +1 for leading edge, +1 for overflow
+                    stack.emplace_back(
+                        0,
+                        nullptr,
+                        init->template begin<check>()  // dereferences to m_leading_edge
+                        // matches default-initialize to include all overloads
                     );
-                    resolve_partial<I + 1, K>::key(
-                        std::forward<P>(partial),
-                        key
+                    explore();
+                    if (!stack.empty()) {
+                        cache[key.hash] = ptr(**this);
+                    }
+
+                // partial iterators have no hash and no fixed length
+                } else {
+                    stack.reserve(max_depth + 2);
+                    stack.emplace_back(
+                        0,
+                        nullptr,
+                        init->template begin<check>()
                     );
+                    explore();
                 }
-            };
+            }
 
         public:
             using iterator_category = std::input_iterator_tag;
@@ -8930,71 +8965,21 @@ public:
             using pointer = const value_type*;
             using reference = const value_type&;
 
-            template <impl::inherits<Vectorcall> V>
-            Iterator(const Data& data, const Node& init, V&& args, Cache& cache) {
-                size_t size = args.size();
-                key.reserve(size);
-                for (const auto& param : args) {
-                    key.emplace_back(
-                        std::string(param.name),
-                        reinterpret_borrow<Object>(param.value),
-                        param.kind
-                    );
-                }
-                stack.reserve(size + 2);
-                stack.emplace_back(
-                    0,
-                    nullptr,
-                    init->template begin<check>(),
-                    Matches{}
-                );
-                stack.back().matches.reserve(data.size());
-                stack.back().matches.insert(data.begin(), data.end());
-                explore();
-                if (!stack.empty()) {
-                    cache[args.hash] = ptr(**this);
-                }
-            }
-
-            template <impl::inherits<Partial> P>
-            Iterator(const Data& data, const Node& init, P&& partial, size_t max_depth) {
-                key.reserve(resolve_partial<0, 0>::size(0));
-                resolve_partial<0, 0>::key(std::forward<P>(partial), key);
-                stack.reserve(max_depth + 2);
-                stack.emplace_back(
-                    0,
-                    nullptr,
-                    init->template begin<check>(),
-                    Matches{}
-                );
-                stack.back().matches.reserve(data.size());
-                stack.back().matches.insert(data.begin(), data.end());
-                explore();
-            }
+            /* Contextually convert the iterator to a bool in order to replicate Python
+            `if func[...]:` syntax. */
+            explicit operator bool() const { return stack.empty(); }
 
             /* The overall trie iterator dereferences only to those functions that are
             callable with the given key. */
-            const Object& operator*() const {
-                return stack.back().outgoing->owner->signature.function();
-            }
-            const Object* operator->() const {
-                return &(**this);
-            }
+            const Object& operator*() const { return curr->signature.function(); }
+            const Object* operator->() const { return &(**this); }
 
             /* Incrementing the iterator traverses the trie until the next full match
             is found.  As long as the args are valid, the iterator will always contain
             the function's base implementation as the final overload. */
             Iterator& operator++() {
-                if (!stack.empty()) {
-                    advance();
-                }
+                advance();
                 return *this;
-            }
-
-            /* Contextually convert the iterator to a bool in order to replicate Python
-            `if func[...]:` syntax. */
-            explicit operator bool() const {
-                return stack.empty();
             }
 
             friend bool operator==(const Iterator& self, impl::Sentinel) {
@@ -9014,23 +8999,24 @@ public:
             }
         };
 
+        /// TODO: begin() should have a 0-arg overload that just yields functions in
+        /// topological order.  It basically produces a fully-null key and just searches
+        /// that.  That replaces the need to topographically order the m_data set.
+        /// Removals would just generate one of these and traverse over it instead,
+        /// to ensure that the most specific matching overload is always chosen first.
+        /// the `contains()` method doesn't need to do this, and can just continue
+        /// iterating over m_data directly.
+
         /* Topologically search the trie with a given argument list, returning a sorted
         iterator over the matching overloads.  The first item is always the most
         specific matching overload, and the last item is always the function's base
         implementation.  An empty iterator can be returned if the arguments do not
-        conform to the enclosing signature. */
-        template <typename check = instance, impl::inherits<Vectorcall> V>
-            requires (valid_check<check>)
-        [[nodiscard]] Iterator<check> begin(V&& key) const {
-            return {m_leading_node, std::forward<V>(key), m_cache};
-        }
-
-        /* Return an iterator over a subset of the overloads contained that follow from
-        the given partial arguments, in topological order. */
-        template <typename check = instance, impl::inherits<Partial> P>
-            requires (valid_check<check>)
-        [[nodiscard]] Iterator<check> begin(P&& partial) const {
-            return {m_leading_node, std::forward<P>(partial), m_depth};
+        conform to the enclosing signature.  Keys are typically constructed through
+        either the `Vectorcall{}.key()` or `Partial{}.key()` methods, which may
+        originate from other specializations of `Signature<>`. */
+        template <typename check = instance> requires (valid_check<check>)
+        [[nodiscard]] Iterator<check> begin(impl::OverloadKey&& key) const {
+            return {std::move(key), m_depth, m_data, m_leading_node, &m_cache};
         }
 
         [[nodiscard]] impl::Sentinel end() const { return {}; }
@@ -9159,6 +9145,9 @@ public:
     /// overloads.fallback().is(self).  If true, then the function is implemented in
     /// C++, and we call the C++ overload with the internal std::function.  Otherwise,
     /// the function is implemented in Python, and we call the Python overload instead.
+
+    /// TODO: rather than passing vectorcall directly to the overload trie, I now need
+    /// to call .key()?
 
     /* Call a C++ function from C++ using Python-style arguments. */
     template <
