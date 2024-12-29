@@ -378,9 +378,6 @@ namespace impl {
         size_t hash = 0;
         bool has_hash = false;
 
-        OverloadKey() = default;
-        explicit OverloadKey(size_t hash) : hash(hash), has_hash(true) {}
-
         Vec& operator*() noexcept { return vec; }
         const Vec& operator*() const noexcept { return vec; }
         Vec* operator->() noexcept { return &vec; }
@@ -7890,7 +7887,11 @@ public:
         /* Convert a normalized vectorcall array into a standardized key type that can
         be used to initiate a search of an overload trie. */
         [[nodiscard]] impl::OverloadKey key() const {
-            impl::OverloadKey key(hash);
+            impl::OverloadKey key{
+                .vec = {},
+                .hash = hash,
+                .has_hash = true
+            };
             key->reserve(size());
             for (Param param : *this) {
                 key->emplace_back(
@@ -7970,6 +7971,9 @@ public:
         return {out, std::forward<P>(partial), std::forward<A>(args)...};
     }
 
+    /// TODO: It's really just down to insertions and ambiguity detection at this
+    /// point.
+
     /* A trie-based data structure containing a set of topologically-sorted, dynamic
     overloads for a Python function object, which are used to emulate C++-style
     function overloading.  Uses vectorcall arrays as search keys, meaning that only one
@@ -8012,15 +8016,14 @@ public:
         traverse from one to the other.  Multiple overloads can share the same edge if
         the corresponding parameters have identical types, kinds, and names. */
         struct Edge {
-            std::shared_ptr<Node> target;
-            std::string name;
-            impl::ArgKind kind;
-
             /* Identifies the unique overloads that include this edge.  The edge will
             be deleted when this set becomes empty, and a series of bitwise AND
             operations are performed against it during traversal for each of the
             visited edges in order to determine the subset of candidate overloads. */
             IDs matches;
+
+            std::shared_ptr<Node> target;
+            impl::ArgKind kind;
 
             /// TODO: perhaps terminal is not needed, and can be synthesized from
             /// matches?  Every insertion would do an intersection of all the matches
@@ -8038,6 +8041,35 @@ public:
             /// reconstruct the required bitmask for the current key in that overload's
             /// domain, since the keyword arguments do not need to be given in order.
 
+            /// TODO: rather than comparing required bitmasks, just iterate over the
+            /// edges in each path and build up an unordered set of the node pointers.
+            /// Only if these sets differ is there not an ambiguity.
+            /// -> Essentially, the matches intersection identifies all of the
+            /// overloads that share the exact same path.  That means all of the
+            /// required edges of the signature we're about to insert are also
+            /// fully contained by the other path.  If they are the same, then it
+            /// means that there is a minimal path through the trie that is shared
+            /// between them.  If the overloads conflict, then that is the most likely
+            /// path that would cause it.
+
+            /// TODO: perhaps this form of required set totally replaces the required
+            /// bitset?
+            /// -> That would require dynamic allocations in practice.  The lookup
+            /// approach is preferable for that case.
+            /// TODO: so, for insertions, what I would do is generate an unordered
+            /// set of required edges for the conflicting path, and then iterate over
+            /// the path we're about to insert, and remove the addresses of the required
+            /// edges from the set.  If a required edge in the inserted path is not
+            /// present in the comparison set, then there can be no conflict.
+            /// Similarly, if there are items left over in the set after the iteration,
+            /// then there can be no conflict.  During searches, I would continue with
+            /// the `required` bitset, since I have actual types/values to compare
+            /// against.
+
+            /// TODO: the matches set basically means that if any insertion results in
+            /// the creation of even a single new node, then the matches set will be
+            /// empty, and there can be no conflicts.
+
             /* Marks this as a terminal edge for a particular path through the trie, in
             order to identify ambiguities.  When an overload is inserted into the trie,
             it will identify the last required edge on its path, and assign itself to
@@ -8047,15 +8079,26 @@ public:
             ID of this pointer will always be present in the `matches` set. */
             Metadata* terminal = nullptr;
 
+            /* Calculate the approximate memory usage of this edge.  Doesn't count the
+            width of the string buffer, which often fits within small string
+            optimizations anyway. */
+            [[nodiscard]] constexpr size_t memory_usage() const noexcept {
+                return sizeof(Edge);
+            }
+
             /* When inserted into an associative container, Edge pointers will be
             sorted by kind, with positional < keyword < optional < variadic.  Ties are
             broken by name. */
             struct Less {
                 static bool operator()(
-                    std::shared_ptr<Edge> lhs,
-                    std::shared_ptr<Edge> rhs
+                    const Edge& lhs,
+                    const Edge& rhs
                 ) noexcept {
-                    return lhs->kind < rhs->kind || lhs->name < rhs->name;
+                    return lhs.kind < rhs.kind || (
+                        lhs.kind.kw() &&
+                        rhs.kind.kw() &&
+                        lhs.target.name < rhs.target.name
+                    );
                 }
             };
         };
@@ -8073,10 +8116,10 @@ public:
             };
 
         public:
-            using Set = std::set<std::shared_ptr<Edge>, typename Edge::Less>;
+            using Set = std::set<Edge, typename Edge::Less>;
             using Map = std::map<PyObject*, Set, TopoSort>;
 
-            /// TODO: these should be private?
+            std::string name;
             Object type;
             Map edges;
 
@@ -8093,6 +8136,17 @@ public:
             [[nodiscard]] bool empty() const noexcept {
                 return edges.empty();
             }
+
+            /// TODO: return either just a boolean, or a raw pointer, or something,
+            /// since there no longer is a canonidcal path that I need to store.
+            /// In fact, this might be recursive, just like remove().  Either that, or
+            /// I would need to somehow return a set of all the nodes for the next
+            /// iteration of the algorithm, which is a pain.  Instead, I'll just
+            /// supply a parameter list, current index, and a mutable set of visited
+            /// nodes (maybe only the ones that I inserted a keyword edge to?).  All
+            /// of those require the full keyword map as outgoing edges.  Any node I
+            /// inserted a keyword edge FROM would need to be updated an edge to all
+            /// of these nodes?
 
             /* Insert an outgoing edge to a new node.  Returns a pointer to the
             inserted edge, which may differ from the input edge if an existing edge
@@ -8120,42 +8174,38 @@ public:
                 return *inner;
             }
 
-            /// TODO: not sure if this removal strategy is appropriate for the new,
-            /// compressed trie structure.
-
-            /// TODO: this no longer works because edges might be shared and reused, so
-            /// there's no unique identifier with which to remove them.  Probably what
-            /// I need to do is provide the pointer value directly, that way I skip any
-            /// extra matching logic.  Unfortunately, that means removals would have
-            /// to be O(n^2), but that's probably not a massive deal, since the number
-            /// of arguments is usually small.
-
-            /// TODO: maybe I should use std::shared_pointers to store the edges in both
-            /// locations?
-
-            /// TODO: maybe the optimal memory model is to reuse nodes based on type,
-            /// and reuse edges based on name and kind.  It would be the edges that
-            /// hold the terminal function and the matches set.  Nodes would only hold
-            /// the type and outgoing edges.
-
-            /* Purge all outgoing edges that are associated with the identified
-            overloads. */
+            /* Recursively purge all outgoing edges that are associated with the
+            identified overloads. */
             void remove(const IDs& id) {
-                /// TODO: iterate over the edges and clear any that include the id(s).
-                /// If any of the matches sets become empty, then remove the edge from
-                /// the map.  If a set becomes empty, then remove the type from the map.
-                auto it = edges.begin();
-                auto end = edges.end();
-                while (it != end) {
-                    it->second.erase(id);
-                    if (it->second.empty()) {
-                        it = edges.erase(it);
+                auto outer = edges.begin();
+                auto outer_end = edges.end();
+                while (outer != outer_end) {
+                    auto inner = outer->begin();
+                    auto inner_end = outer->end();
+                    while (inner != inner_end) {
+                        if (inner->matches & id) {
+                            inner->target->remove(id);  // recur
+                            inner->matches &= ~id;
+                            if (!inner->matches) {
+                                inner = outer->erase(inner);
+                            } else {
+                                ++inner;
+                            }
+                        } else {
+                            ++inner;
+                        }
+                    }
+                    if (outer->empty()) {
+                        outer = edges.erase(outer);
                     } else {
-                        ++it;
+                        ++outer;
                     }
                 }
-                matches -= id;
             }
+
+            /// TODO: this may be a recursive function, which returns the entire size
+            /// of the trie?  It would use a hash set to track visited nodes, and would
+            /// count the size of the edges as well.
 
             /* Return the total amount of memory used by this node, in bytes. */
             size_t memory_usage() const {
@@ -8275,7 +8325,29 @@ public:
         struct Metadata {
             IDs id;
             inspect signature;
-            std::vector<std::shared_ptr<Edge>> path;
+
+            // /// TODO: because of positional-or-keyword arguments, the "canonical" path
+            // /// must consist of at least two different types of edges, one positional
+            // /// and one keyword.  Also, they may branch off in a complicated manner,
+            // /// so capturing that behavior becomes really challenging.  In fact, the
+            // /// whole concept of a canonical path might be flawed.  Perhaps I need to
+            // /// consider a more general approach, where you start out at the root node
+            // /// and then follow edges iff they contain the id in the matches set.
+            // /// That would exhaustively search the trie during removals.
+            // std::vector<std::shared_ptr<Edge>> path;
+
+            /// TODO: for insertions, I could similarly start at the root node, and
+            /// then either reuse existing edges or generate new edges + nodes where
+            /// needed.  I would keep track of every node that I visit during this
+            /// process, and then at the end, iterate over them and fill out the proper
+            /// keyword maps.  That also allows me to get the intersection of all of
+            /// the matches sets and assert that they do not conflict.
+
+            /// TODO: if I don't have a canonical path, then I might also not need to
+            /// store the edges on the heap, since they may never need shared
+            /// references
+
+
 
             /// TODO: insert() will generate a path through the trie when called,
             /// filling in the path member.  This is what would be called to
@@ -8286,13 +8358,13 @@ public:
             /// TODO: step one of insert() is to convert the `inspect()` object into
             /// an overload key containing only the required arguments, and then
             /// initiate a `subclass{}` search of the trie to identify ambiguities.
-            /// -> Perhaps I can avoid this by just inserting arguments as expected,
+            /// -> Perhaps I can avoid this by just inserting edges as expected,
             /// then on the second pass, I can gather the list of overloads that
-            /// include the same path somehow.
+            /// include the same path, and compare their required bitmasks somehow.
 
             /* Starting from the root node of the trie, insert all edges associated
             with the tracked overload and allocate new nodes as needed. */
-            void insert(std::shared_ptr<Node> root) {
+            void insert(std::shared_ptr<Node> root) const {
                 constexpr bool keep_defaults = false;
                 constexpr size_t max_width = 80;
                 constexpr size_t indent = 4;
@@ -8375,36 +8447,10 @@ public:
                 }
             }
 
-            /// TODO: removals of this form are incorrect if a removed edge is shared
-            /// with another overload, since it will either orphan the other node or
-            /// leave behind an edge with a dangling owner.
-            /// TODO: will it actually?  The shared pointer might be enough to keep
-            /// everything alive.
-
-            /* Starting from the root node of the trie, remove all edges associated
-            with the tracked overload and deallocate any orphaned nodes as needed. */
-            void remove(std::shared_ptr<Node> root) {
-                if (root->terminal == this) {
-                    root->terminal = nullptr;
-                }
-                for (Edge& edge : path) {
-                    root->remove(signature.hash());
-                    if (edge.target->terminal == this) {
-                        edge.target->terminal = nullptr;
-                    }
-                    root = edge.target;
-                    edge.target.reset();
-                }
-            }
-
             /* Calculate the total memory usage of the overload, including all edges and
             nodes. */
             size_t memory_usage() const noexcept {
-                return
-                    sizeof(bitset) +
-                    signature.memory_usage() +
-                    sizeof(std::vector<Edge>) +
-                    path.size() * sizeof(Edge);
+                return sizeof(IDs) + signature.memory_usage();
             }
 
             struct Hash {
@@ -8444,14 +8490,14 @@ public:
         size_t m_depth = 0;
         Metadata* m_fallback = nullptr;
         Edge m_leading_edge = {
+            .matches = {},  // identifies all overloads
             .target = nullptr,  // root of the trie
-            .name = "",
             .kind = 0,
-            .matches = {}  // identifies all overloads
         };
         Node m_leading_node = {
+            .name = "",
             .type = reinterpret_steal<Object>(nullptr),
-            .edges = {{nullptr, {&m_leading_edge}}}
+            .edges = {{nullptr, {&m_leading_edge}}},
         };
         Data m_data = {};
         mutable Cache m_cache = {};
@@ -8491,12 +8537,9 @@ public:
             m_leading_edge.matches |= m_fallback->id;
         }
 
-        /// TODO: rename fallback() to function() in order to mimic the `inspect`
-        /// class.
-
         /* Return a reference to the fallback function that will be chosen if no other
-        overloads match a given (valid) argument set. */
-        [[nodiscard]] const Object& fallback() const noexcept {
+        overloads match a valid argument list. */
+        [[nodiscard]] const Object& function() const noexcept {
             return m_fallback->signature.function();
         }
 
@@ -8516,65 +8559,79 @@ public:
             return m_data.size() - 1;
         }
 
-        /* The total number of edges that have been allocated within the trie. */
-        [[nodiscard]] size_t total_edges() const noexcept {
-            /// TODO: keep track of this during insertions/removals or generate it
-            /// on the fly by iterating over the trie or m_data
-        }
-
-        /* The total number of nodes that have been allocated within the trie. */
-        [[nodiscard]] size_t total_nodes() const noexcept {
-            /// TODO: keep track of this during insertions/removals or generate it
-            /// on the fly by iterating over the trie or m_data
-        }
-
         /* The maximum depth of the trie, which is equivalent to the total number of
         arguments of the longest overload.  Variadic arguments take up a single
         position for the purposes of this calculation. */
         [[nodiscard]] size_t max_depth() const noexcept {
-            /// TODO: remember to track this during insertions/removals
             return m_depth;
         }
 
-        /* Return the total amount of memory consumed by the trie in bytes.  Note that
-        this does not count any additional memory being managed by Python (i.e. the
-        function objects themselves, or the `inspect.Signature` instances used to
-        back) */
+        /// TODO: edge and node counts + memory usage can only be found by recursively
+        /// traversing the trie itself.
+
+        /* The total number of edges that have been allocated within the trie. */
+        [[nodiscard]] size_t total_edges() const noexcept {
+            size_t total = 0;
+            std::unordered_set<Edge*> observed;
+            for (const Metadata& metadata : m_data) {
+                for (const Edge& edge : metadata.path) {
+                    auto [it, inserted] = observed.insert(&edge);
+                    total += inserted;
+                }
+            }
+            return total;
+        }
+
+        /* The total number of nodes that have been allocated within the trie. */
+        [[nodiscard]] size_t total_nodes() const noexcept {
+            size_t total = 0;
+            std::unordered_set<std::shared_ptr<Node>> observed;
+            for (const Metadata& metadata : m_data) {
+                for (const Edge& edge : metadata.path) {
+                    auto [it, inserted] = observed.insert(edge.target);
+                    total += inserted;
+                }
+            }
+            return total;
+        }
+
+        /* Estimate the total amount of memory consumed by the trie in bytes.  Note
+        that this does not count any additional memory being managed by Python (i.e.
+        the function objects themselves or the `inspect.Signature` instances used to
+        back the trie's metadata). */
         [[nodiscard]] size_t memory_usage() const noexcept {
             size_t total = sizeof(Overloads);
-            /// TODO: this accounting of nodes is incorrect.  I need a way to iterate
-            /// over all of the nodes in the trie.  Perhaps I can do that by iterating
-            /// over the metadata and counting any nodes that are not in an observed
-            /// set.  That's a quick and dirty way to do it, but performance isn't
-            /// critical here, so it should be fine.
-            total += sizeof(Node) * total_nodes();
+            std::unordered_set<std::shared_ptr<Edge>> edges;
+            std::unordered_set<std::shared_ptr<Node>> nodes;
             for (const Metadata& metadata : m_data) {
+                for (const Edge& edge : metadata.path) {
+                    auto [edge_it, new_edge] = edges.insert(edge);
+                    if (new_edge) {
+                        total += edge.memory_usage();
+                    }
+                    auto [node_it, new_node] = nodes.insert(edge.target);
+                    if (new_node) {
+                        total += edge.target->memory_usage();
+                    }
+                }
                 total += metadata.memory_usage();
             }
             total += sizeof(typename Cache::value_type) * m_cache.size();
             return total;
         }
 
-        /* Return a reference to the root node of the overload trie.  This can be null
-        if the function has no overloads beyond the fallback implementation.  In that
-        case, the entire overload trie is deleted to save space, and will be rebuilt
-        the first time a new overload is registered. */
-        [[nodiscard]] std::shared_ptr<Node> root() const noexcept {
-            return m_leading_edge.target;
-        }
-
         /* Search against the function's overload cache to find a precomputed path
         through the trie.  Whenever `begin()` is called with a vectorcall array, the
         first result is always inserted here to optimize repeated calls with the same
         signature.  If no cached function is found, this method returns null, forcing a
-        full search of the trie.
+        full search of the trie.  Returns a borrowed reference otherwise.
 
         Note that all arguments must be properly normalized in order for cache searches
         to remain stable.  This means inserting any partial arguments and converting to
         proper Bertrand types before initiating a search.  If this is not done, then it
         is possible for several distinct signatures to resolve to a single overload,
-        since some Python types (e.g. generics) are opaque to the Python type system,
-        and will produce an ambiguous hash.  Normalizing to Bertrand types avoids this
+        since some Python types (e.g. generics) are opaque to Python's type system, and
+        will thus produce an ambiguous hash.  Normalizing to Bertrand types avoids this
         by narrowing such arguments sufficiently for cache searches to be effective. */
         [[nodiscard]] PyObject* cache_lookup(size_t hash) const noexcept {
             auto it = m_cache.find(hash);
@@ -8587,8 +8644,16 @@ public:
             m_cache.clear();
         }
 
+        /* Return a reference to the root node of the overload trie.  This can be null
+        if the function has no overloads beyond the fallback implementation.  In that
+        case, the entire overload trie is deleted to save space, and will be rebuilt
+        the first time a new overload is registered. */
+        [[nodiscard]] std::shared_ptr<Node> root() const noexcept {
+            return m_leading_edge.target;
+        }
+
         /* Returns true if a function is present in the trie, as indicated by a
-        linear search of `==` checks against each encoded function. */
+        linear search of `==` checks against each encoded function object. */
         [[nodiscard]] bool contains(const Object& func) const {
             for (const Metadata& metadata : m_data) {
                 if (metadata.signature.function() == func) {
@@ -8689,51 +8754,59 @@ public:
         }
 
         /* Remove a function from the overload trie.  Returns the function that was
-        removed or None if no matching function was found.  Raises a KeyError if an
-        attempt is made to delete the fallback function.
+        removed (which may not be exactly identical to the input) or None if no
+        matching function was found.  Raises a KeyError if an attempt is made to delete
+        the fallback function.
 
-        This works by iterating over the trie's encoded contents and performing an
-        equality check against the input key, which allows transparent comparisons if
-        the function and/or key overrides the `__eq__` method. */
+        This works by iterating over the trie's contents in topological order and
+        performing an equality check against the input key, which allows for
+        transparent comparisons if the function and/or key overrides the `__eq__`
+        method.  If multiple functions evaluate equal to the key, only the first (most
+        specific) match will be removed. */
         [[maybe_unused]] Object remove(const Object& key) {
-            for (const Metadata& metadata : m_data) {
-                if (metadata.signature.function() == key) {
-                    if (&metadata == m_fallback) {
+            auto it = this->begin();
+            auto end = this->end();
+            while (it != end) {
+                const Metadata& data = *it.curr;
+                if (data.signature.function() == key) {
+                    if (&data == m_fallback) {
                         throw KeyError("cannot remove the fallback implementation");
                     }
-                    Object result = metadata.signature.function();
-                    metadata.remove(root());
+                    Object result = data.signature.function();
+                    root()->remove(data.id);
                     if (m_data.size() <= 2) {
                         clear();
                     } else {
+                        m_leading_edge.matches &= ~data.id;
                         m_cache.clear();
-                        m_data.erase(metadata.signature.hash());
-                    }
-                    m_depth = 0;
-                    for (const Metadata& metadata : m_data) {
-                        if (metadata.size() > m_depth) {
-                            m_depth = metadata.size();
+                        m_data.erase(data);
+                        m_depth = m_fallback->signature.size();
+                        for (const Metadata& data : m_data) {
+                            if (data.signature.size() > m_depth) {
+                                m_depth = data.signature.size();
+                            }
                         }
+                        return result;
                     }
-                    return result;
                 }
+                ++it;
             }
             return reinterpret_borrow<Object>(Py_None);
         }
 
         /* Remove all overloads from the trie, resetting it to its default state. */
         void clear() noexcept {
+            m_leading_edge.matches = 1;  // reset IDs to only include fallback
             m_cache.clear();
+            m_leading_edge.target.reset();  // drop root node
             auto it = m_data.begin();
             while (it != m_data.end()) {
-                if (&*it == m_fallback) {
-                    m_fallback->path.clear();
+                if (&*it == m_fallback) {  // skip removing fallback
                     ++it;
                 } else {
                     it = m_data.erase(it);
                 }
             }
-            m_leading_edge.target.reset();
             m_depth = m_fallback->signature.size();
         }
 
@@ -8753,7 +8826,7 @@ public:
 
                 // The edge that was followed to get to this frame.  This is always
                 // equal to the outgoing edge of the previous frame, except for the
-                // leading frame, which sets this to a null pointer.
+                // leading frame, which sets this to null.
                 const Edge* incoming;
 
                 // An iterator over the outgoing edges of the current node, which will
@@ -8999,13 +9072,30 @@ public:
             }
         };
 
-        /// TODO: begin() should have a 0-arg overload that just yields functions in
-        /// topological order.  It basically produces a fully-null key and just searches
-        /// that.  That replaces the need to topographically order the m_data set.
-        /// Removals would just generate one of these and traverse over it instead,
-        /// to ensure that the most specific matching overload is always chosen first.
-        /// the `contains()` method doesn't need to do this, and can just continue
-        /// iterating over m_data directly.
+        /* Yield all overloads within the trie in topological order, without any
+        filtering. */
+        [[nodiscard]] Iterator<instance> begin() const {
+            return {
+                impl::OverloadKey{
+                    .vec = {
+                        {
+                            .name = "",
+                            .value = reinterpret_steal<Object>(nullptr),
+                            .kind = impl::ArgKind::POS | impl::ArgKind::VARIADIC
+                        },
+                        {
+                            .name = "",
+                            .value = reinterpret_steal<Object>(nullptr),
+                            .kind = impl::ArgKind::KW | impl::ArgKind::VARIADIC
+                        }
+                    }
+                },
+                m_depth,
+                m_data,
+                m_leading_node,
+                m_cache
+            };
+        }
 
         /* Topologically search the trie with a given argument list, returning a sorted
         iterator over the matching overloads.  The first item is always the most
@@ -9016,7 +9106,7 @@ public:
         originate from other specializations of `Signature<>`. */
         template <typename check = instance> requires (valid_check<check>)
         [[nodiscard]] Iterator<check> begin(impl::OverloadKey&& key) const {
-            return {std::move(key), m_depth, m_data, m_leading_node, &m_cache};
+            return {std::move(key), m_depth, m_data, m_leading_node, m_cache};
         }
 
         [[nodiscard]] impl::Sentinel end() const { return {}; }
@@ -9142,7 +9232,7 @@ public:
     }
 
     /// TODO: py::Function determines which overload to call by checking whether
-    /// overloads.fallback().is(self).  If true, then the function is implemented in
+    /// overloads.function().is(self).  If true, then the function is implemented in
     /// C++, and we call the C++ overload with the internal std::function.  Otherwise,
     /// the function is implemented in Python, and we call the Python overload instead.
 
@@ -9233,7 +9323,7 @@ public:
             /// validated at compile time and the overload trie is known not to be empty
             auto it = overloads.begin(vectorcall);
             const Object& overload = *it;
-            if (overload.is(overloads.fallback())) {
+            if (overload.is(overloads.function())) {
                 return Bind<A...>{}(
                     std::forward<P>(partial),
                     std::forward<D>(defaults),
@@ -9251,7 +9341,7 @@ public:
             /// validated at compile time and the overload trie is known not to be empty
             auto it = overloads.begin(vectorcall);
             const Object& overload = *it;
-            if (overload.is(overloads.fallback())) {
+            if (overload.is(overloads.function())) {
                 return Bind<A...>{}(
                     std::forward<P>(partial),
                     std::forward<D>(defaults),
@@ -9325,7 +9415,7 @@ public:
                 std::forward<A>(args)...
             };
             if (overloads.empty()) {
-                return vectorcall(ptr(overloads.fallback()));
+                return vectorcall(ptr(overloads.function()));
             }
             if (PyObject* cached = overloads.cache_lookup(vectorcall.hash)) {
                 return vectorcall(cached);
@@ -9339,7 +9429,7 @@ public:
                 std::forward<A>(args)...
             };
             if (overloads.empty()) {
-                return vectorcall(ptr(overloads.fallback()));
+                return vectorcall(ptr(overloads.function()));
             }
             if (PyObject* cached = overloads.cache_lookup(vectorcall.hash)) {
                 return vectorcall(cached);
@@ -9395,7 +9485,7 @@ public:
         }
         vectorcall.normalize(std::forward<P>(partial));
         if (PyObject* cached = overloads.cache_lookup(vectorcall.hash)) {
-            if (overloads.fallback().is(cached)) {
+            if (overloads.function().is(cached)) {
                 return vectorcall(
                     std::forward<D>(defaults),
                     std::forward<F>(func)
@@ -9409,7 +9499,7 @@ public:
             std::unreachable();
         }
         const Object& overload = *it;
-        if (overload.is(overloads.fallback())) {
+        if (overload.is(overloads.function())) {
             return vectorcall(
                 std::forward<D>(defaults),
                 std::forward<F>(func)
@@ -9446,7 +9536,7 @@ public:
         Vectorcall vectorcall{args, nargsf, kwnames};
         vectorcall.normalize(std::forward<P>(partial));
         if (overloads.empty()) {
-            return vectorcall(ptr(overloads.fallback()));
+            return vectorcall(ptr(overloads.function()));
         }
         if (PyObject* cached = overloads.cache_lookup(vectorcall.hash)) {
             return vectorcall(cached);
