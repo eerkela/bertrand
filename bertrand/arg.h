@@ -30,12 +30,12 @@ struct ArgKind {
         /// NOTE: the relative ordering of these flags is significant, as it
         /// dictates the order in which edges are stored within overload tries
         /// for the `py::Function` class.  The order should always be such that
-        /// POS < OPT POS < KW < OPT KW < VAR POS < VAR KW, to ensure a stable
+        /// POS < OPT POS < VAR POS < KW < OPT KW < VAR KW, to ensure a stable
         /// traversal order.
-        POS                 = 0b1,
-        KW                  = 0b10,
-        OPT                 = 0b100,
-        VARIADIC            = 0b1000,
+        OPT                 = 0b1,
+        VAR                 = 0b10,
+        POS                 = 0b100,
+        KW                  = 0b1000,
     } flags;
 
     [[nodiscard]] constexpr ArgKind(uint8_t flags = 0) noexcept :
@@ -51,11 +51,11 @@ struct ArgKind {
     }
 
     [[nodiscard]] constexpr bool pos() const noexcept {
-        return (flags & (POS | VARIADIC)) == POS;
+        return (flags & (VAR | POS)) == POS;
     }
 
     [[nodiscard]] constexpr bool args() const noexcept {
-        return flags == (POS | VARIADIC);
+        return flags == (VAR | POS);
     }
 
     [[nodiscard]] constexpr bool kwonly() const noexcept {
@@ -63,11 +63,11 @@ struct ArgKind {
     }
 
     [[nodiscard]] constexpr bool kw() const noexcept {
-        return (flags & (KW | VARIADIC)) == KW;
+        return (flags & (VAR | KW)) == KW;
     }
 
     [[nodiscard]] constexpr bool kwargs() const noexcept {
-        return flags == (KW | VARIADIC);
+        return flags == (VAR | KW);
     }
 
     [[nodiscard]] constexpr bool opt() const noexcept {
@@ -75,7 +75,7 @@ struct ArgKind {
     }
 
     [[nodiscard]] constexpr bool variadic() const noexcept {
-        return flags & VARIADIC;
+        return flags & VAR;
     }
 };
 
@@ -466,7 +466,7 @@ private:
 
 public:
     static constexpr StaticStr name = StaticStr<>::removeprefix<Name, "*">();
-    static constexpr ArgKind kind = ArgKind::POS | ArgKind::VARIADIC;
+    static constexpr ArgKind kind = ArgKind::VAR | ArgKind::POS;
     using type = T;
     using vec = std::vector<std::conditional_t<
         std::is_lvalue_reference_v<T>,
@@ -522,7 +522,7 @@ private:
 
 public:
     static constexpr StaticStr name = StaticStr<>::removeprefix<Name, "**">();
-    static constexpr ArgKind kind = ArgKind::KW | ArgKind::VARIADIC;
+    static constexpr ArgKind kind = ArgKind::VAR | ArgKind::KW;
     using type = T;
     using map = std::unordered_map<std::string, std::conditional_t<
         std::is_lvalue_reference_v<type>,
@@ -579,7 +579,7 @@ private:
 public:
     using type = iter_type<T>;
     static constexpr StaticStr name = "";
-    static constexpr ArgKind kind = ArgKind::POS | ArgKind::VARIADIC;
+    static constexpr ArgKind kind = ArgKind::VAR | ArgKind::POS;
 
     T value;
 
@@ -615,7 +615,7 @@ struct KwargPack {
     using mapped_type = std::remove_reference_t<T>::mapped_type;
     using type = mapped_type;
     static constexpr StaticStr name = "";
-    static constexpr ArgKind kind = ArgKind::KW | ArgKind::VARIADIC;
+    static constexpr ArgKind kind = ArgKind::VAR | ArgKind::KW;
 
     T value;
 

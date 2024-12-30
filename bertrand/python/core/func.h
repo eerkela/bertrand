@@ -8,6 +8,7 @@
 #include "access.h"
 #include "iter.h"
 #include <cstddef>
+#include <string_view>
 
 
 /// NOTE: Beware all ye who enter here, for this is the land of complexity.
@@ -617,7 +618,7 @@ private:
                 }
                 kind = default_value.is(empty) ?
                     impl::ArgKind::POS :
-                    impl::ArgKind::POS | impl::ArgKind::OPT;
+                    impl::ArgKind::OPT | impl::ArgKind::POS;
             } else if (py_kind.is(POSITIONAL_OR_KEYWORD)) {
                 if (!partials.is(None) && partial_idx < partial_size) {
                     PyObject* pair = PyTuple_GET_ITEM(ptr(partials), partial_idx);
@@ -650,7 +651,7 @@ private:
                 }
                 kind = default_value.is(empty) ?
                     impl::ArgKind::POS | impl::ArgKind::KW :
-                    impl::ArgKind::POS | impl::ArgKind::KW | impl::ArgKind::OPT;
+                    impl::ArgKind::OPT | impl::ArgKind::POS | impl::ArgKind::KW;
             } else if (py_kind.is(KEYWORD_ONLY)) {
                 if (!partials.is(None) && partial_idx < partial_size) {
                     PyObject* pair = PyTuple_GET_ITEM(ptr(partials), partial_idx);
@@ -671,7 +672,7 @@ private:
                 }
                 kind = default_value.is(empty) ?
                     impl::ArgKind::KW :
-                    impl::ArgKind::KW | impl::ArgKind::OPT;
+                    impl::ArgKind::OPT | impl::ArgKind::KW;
             } else if (py_kind.is(VAR_POSITIONAL)) {
                 if (!partials.is(None) && partial_idx < partial_size) {
                     Object out = reinterpret_steal<Object>(nullptr);
@@ -700,7 +701,7 @@ private:
                         );
                     }
                 }
-                kind = impl::ArgKind::POS | impl::ArgKind::VARIADIC;
+                kind = impl::ArgKind::VAR | impl::ArgKind::POS;
             } else if (py_kind.is(VAR_KEYWORD)) {
                 if (!partials.is(None) && partial_idx < partial_size) {
                     Object out = reinterpret_steal<Object>(nullptr);
@@ -727,7 +728,7 @@ private:
                         );
                     }
                 }
-                kind = impl::ArgKind::KW | impl::ArgKind::VARIADIC;
+                kind = impl::ArgKind::VAR | impl::ArgKind::KW;
             } else {
                 throw TypeError("unrecognized parameter kind: " + repr(kind));
             }
@@ -8022,8 +8023,13 @@ public:
             visited edges in order to determine the subset of candidate overloads. */
             IDs matches;
 
+            /* The next node after following the edge. */
             std::shared_ptr<Node> target;
+
+            /* The kind of edge, dictating positional/keyword, optional, and variadic
+            status. */
             impl::ArgKind kind;
+
 
             /// TODO: perhaps terminal is not needed, and can be synthesized from
             /// matches?  Every insertion would do an intersection of all the matches
@@ -8078,29 +8084,6 @@ public:
             the pointer leads to the conflicting overload for diagnostic purposes.  The
             ID of this pointer will always be present in the `matches` set. */
             Metadata* terminal = nullptr;
-
-            /* Calculate the approximate memory usage of this edge.  Doesn't count the
-            width of the string buffer, which often fits within small string
-            optimizations anyway. */
-            [[nodiscard]] constexpr size_t memory_usage() const noexcept {
-                return sizeof(Edge);
-            }
-
-            /* When inserted into an associative container, Edge pointers will be
-            sorted by kind, with positional < keyword < optional < variadic.  Ties are
-            broken by name. */
-            struct Less {
-                static bool operator()(
-                    const Edge& lhs,
-                    const Edge& rhs
-                ) noexcept {
-                    return lhs.kind < rhs.kind || (
-                        lhs.kind.kw() &&
-                        rhs.kind.kw() &&
-                        lhs.target.name < rhs.target.name
-                    );
-                }
-            };
         };
 
         /* A single node in the overload trie, which holds the topologically-sorted
@@ -8115,17 +8098,24 @@ public:
                 }
             };
 
-            /* Group optional arguments with required when traversing the trie. */
-            struct KindSort {
-                static bool operator()(impl::ArgKind lhs, impl::ArgKind rhs) {
-                    constexpr impl::ArgKind ignore = impl::ArgKind::OPT;
-                    return (lhs & ~ignore) < (rhs & ~ignore);
-                }
-            };
+            /// NOTE: all positional and variadic edges are registered under an empty
+            /// string to force only a single entry per type, which will be continually
+            /// reused.  Keyword edges, on the other hand, are registered under their
+            /// actual names, meaning they must match exactly in order to be reused,
+            /// and there may be more than one edge per candidate type.  When an
+            /// overload key is built and parsed, all positional arguments must have
+            /// empty names, and all keyword arguments must have non-empty names.  A
+            /// variadic `**kwargs` argument, if present, must have an empty name, in
+            /// order to match all outgoing keywords, similar to variadic `*args`.
 
-            using Names = std::unordered_map<std::string_view, Edge>;
-            using Types = std::map<PyObject*, Names, TopoSort>;
-            using Kinds = std::map<impl::ArgKind, Types, KindSort>;
+            /// TODO: perhaps it would be preferable to sort by type before kind, that
+            /// way I don't have to erase optional identifiers, and edges can freely
+            /// retain their kinds.  I'm not sure if that works for the way I expect
+            /// variadic args to be handled, though.
+
+            using Edges = std::unordered_map<std::string_view, Edge>;
+            using Kinds = std::map<impl::ArgKind, Edges>;
+            using Types = std::map<PyObject*, Kinds, TopoSort>;
 
         public:
             /* The name of the parameter that spawned this node.  This is not
@@ -8147,8 +8137,8 @@ public:
             /* The total number of outgoing edges originating from this node. */
             [[nodiscard]] size_t size() const noexcept {
                 size_t total = 0;
-                for (const auto& [kind, types] : m_edges) {
-                    for (const auto& [_, names] : types) {
+                for (const auto& [type, kinds] : edges) {
+                    for (const auto& [kind, names] : kinds) {
                         total += names.size();
                     }
                 }
@@ -8157,17 +8147,35 @@ public:
 
             /* Indicates whether this node has any outgoing edges. */
             [[nodiscard]] bool empty() const noexcept {
-                return m_edges.empty();
+                return edges.empty();
             }
 
             /* Estimate the total amount of memory used by this node and its outgoing
-            edges, in bytes. */
-            [[nodiscard]] size_t memory_usage() const noexcept {
-                size_t total = sizeof(Node) + sizeof(Kinds::value_type) * m_edges.size();
-                for (const auto& [kind, types] : m_edges) {
-                    total += sizeof(Types::value_type) * types.size();
-                    for (const auto& [_, names] : types) {
-                        total += sizeof(Names::value_type) * names.size();
+            edges, in bytes.  Uses a visited node set to avoid cycles and records the
+            total number of visited edges as an out parameter.  Does not count any
+            memory held by Python, or the string buffer, which often falls into small
+            string optimizations. */
+            [[nodiscard]] size_t memory_usage(
+                std::unordered_set<Node*>& visited,
+                size_t& total_edges
+            ) const noexcept {
+                size_t total = sizeof(Node) + sizeof(Types::value_type) * edges.size();
+                for (const auto& [type, kinds] : edges) {
+
+                    total += sizeof(Kinds::value_type) * kinds.size();
+                    for (const auto& [kind, names] : kinds) {
+
+                        total += sizeof(Edges::value_type) * names.size();
+                        for (const auto& [name, outgoing] : names) {
+                            if (!visited.contains(outgoing.target.get())) {
+                                visited.insert(outgoing.target.get());
+                                total += outgoing.target->memory_usage(
+                                    visited,
+                                    total_edges
+                                );
+                            }
+                        }
+                        total_edges += names.size();
                     }
                 }
                 return total;
@@ -8213,25 +8221,25 @@ public:
             /* Recursively purge all outgoing edges that are associated with the
             identified overloads. */
             void remove(const IDs& id) {
-                // kinds -> types
-                auto kinds = m_edges.begin();
-                auto kinds_end = m_edges.end();
-                while (kinds != kinds_end) {
+                // type -> kinds
+                auto types = edges.begin();
+                auto types_end = edges.end();
+                while (types != types_end) {
 
-                    // types -> names
-                    auto types = kinds->begin();
-                    auto types_end = kinds->end();
-                    while (types != types_end) {
+                    // kind -> names
+                    auto kinds = types->second.begin();
+                    auto kinds_end = types->second.end();
+                    while (kinds != kinds_end) {
 
-                        // names -> edge
-                        auto names = types->begin();
-                        auto names_end = types->end();
+                        // name -> edge
+                        auto names = kinds->second.begin();
+                        auto names_end = kinds->second.end();
                         while (names != names_end) {
-                            if (names->matches & id) {
-                                names->target->remove(id);  // recur
-                                names->matches &= ~id;
-                                if (!names->matches) {
-                                    names = types->erase(names);
+                            if (names->second.matches & id) {
+                                names->second.target->remove(id);  // recur
+                                names->second.matches &= ~id;
+                                if (!names->second.matches) {
+                                    names = kinds->second.erase(names);
                                 } else {
                                     ++names;
                                 }
@@ -8240,17 +8248,17 @@ public:
                             }
                         }
 
-                        if (types->empty()) {
-                            types = kinds->erase(types);
+                        if (kinds->second.empty()) {
+                            kinds = types->second.erase(kinds);
                         } else {
-                            ++types;
+                            ++kinds;
                         }
                     }
 
-                    if (kinds->empty()) {
-                        kinds = m_edges.erase(kinds);
+                    if (types->second.empty()) {
+                        types = edges.erase(types);
                     } else {
-                        ++kinds;
+                        ++types;
                     }
                 }
             }
@@ -8268,13 +8276,13 @@ public:
                 PyObject* value;
                 impl::ArgKind kind;
 
-                struct NameView {
-                    inline static const Names empty;
+                struct EdgeView {
+                    inline static const Edges empty;
                     Iterator* self;
-                    std::ranges::iterator_t<const Names> it = empty.begin();
-                    std::ranges::sentinel_t<const Names> sentinel = empty.end();
+                    std::ranges::iterator_t<const Edges> it = empty.begin();
+                    std::ranges::sentinel_t<const Edges> sentinel = empty.end();
 
-                    NameView& operator++() {
+                    EdgeView& operator++() {
                         if (it != sentinel) {
                             if (self->name.empty()) {
                                 ++it;
@@ -8285,97 +8293,58 @@ public:
                     }
                 };
 
-                struct TypeView {
+                struct KindView {
                 private:
 
-                    NameView advance() {
-                        if (!self->value) {  // null value => wildcard
-                            if (self->name.empty()) {  // empty name => wildcard
-                                while (it != sentinel) {
-                                    NameView result{
-                                        self,
-                                        it->second.begin(),
-                                        it->second.end()
-                                    };
-                                    if (result.it != result.sentinel) {
-                                        return result;
-                                    }
-                                    ++it;
-                                }
-                            } else {  // non-empty name => hash lookup
-                                while (it != sentinel) {
-                                    NameView result{
-                                        self,
+                    EdgeView advance() {
+                        while (it != sentinel) {
+                            if (!self->kind || (
+                                (self->kind & impl::ArgKind::POS) &&
+                                (it->first & impl::ArgKind::POS)
+                            ) || (
+                                (self->kind & impl::ArgKind::KW) &&
+                                (it->first & impl::ArgKind::KW)
+                            )) {
+                                EdgeView result{
+                                    self,
+                                    self->name.empty() || it->first.kwargs() ?
+                                        it->second.begin() :
                                         it->second.find(self->name),
-                                        it->second.end()
-                                    };
-                                    if (result.it != result.sentinel) {
-                                        return result;
-                                    }
-                                    ++it;
-                                }
-                            }
-                        } else {  // non-null value => topological sort
-                            if (self->name.empty()) {  // empty name => wildcard
-                                while (it != sentinel) {
-                                    if (check{}(self->value, it->first)) {
-                                        NameView result{
-                                            self,
-                                            it->second.begin(),
-                                            it->second.end()
-                                        };
-                                        if (result.it != result.sentinel) {
-                                            return result;
-                                        }
-                                    }
-                                    ++it;
-                                }
-                            } else {  // non-empty name => hash lookup
-                                while (it != sentinel) {
-                                    if (check{}(self->value, it->first)) {
-                                        NameView result{
-                                            self,
-                                            it->second.find(self->name),
-                                            it->second.end()
-                                        };
-                                        if (result.it != result.sentinel) {
-                                            return result;
-                                        }
-                                    }
-                                    ++it;
+                                    it->second.end()
+                                };
+                                if (result.it != result.sentinel) {
+                                    return result;
                                 }
                             }
                         }
-                        // if we get here, then it == sentinel
-                        return {self};  // empty names
+                        return {self};
                     }
 
                 public:
-                    inline static const Types empty;
                     Iterator* self;
-                    std::ranges::iterator_t<const Types> it = empty.begin();
-                    std::ranges::sentinel_t<const Types> sentinel = empty.end();
-                    NameView names = advance();
+                    std::ranges::iterator_t<const Kinds> it;
+                    std::ranges::sentinel_t<const Kinds> sentinel;
+                    EdgeView edges = advance();
 
-                    TypeView& operator++() {
-                        ++names;
-                        if (names.it == names.sentinel) {
+                    KindView& operator++() {
+                        ++edges;
+                        if (edges.it == edges.sentinel) {
                             if (++it == sentinel) {
                                 return *this;
                             }
-                            names = advance();
+                            edges = advance();
                         }
                         return *this;
                     }
                 };
 
-                struct KindView {
+                struct TypeView {
                 private:
 
-                    TypeView advance() {
-                        if (!self->kind) {  // zero kind => wildcard
-                            while (it != sentinel) {
-                                TypeView result{
+                    KindView advance() {
+                        while (it != sentinel) {
+                            if (!self->value || check{}(self->value, it->first)) {
+                                KindView result{
                                     self,
                                     it->second.begin(),
                                     it->second.end()
@@ -8384,67 +8353,37 @@ public:
                                     return result;
                                 }
                             }
-                        } else {  // non-zero kind => filter
-                            if (self->kind & impl::ArgKind::POS) {  // positional
-                                while (it != sentinel) {
-                                    if (it->first & impl::ArgKind::POS) {
-                                        TypeView result{
-                                            self,
-                                            it->second.begin(),
-                                            it->second.end()
-                                        };
-                                        if (result.it != result.sentinel) {
-                                            return result;
-                                        }
-                                    }
-                                }
-                            }
-                            if (self->kind & impl::ArgKind::KW) {  // keyword
-                                while (it != sentinel) {
-                                    if (it->first & impl::ArgKind::KW) {
-                                        TypeView result{
-                                            self,
-                                            it->second.begin(),
-                                            it->second.end()
-                                        };
-                                        if (result.it != result.sentinel) {
-                                            return result;
-                                        }
-                                    }
-                                }
-                            }
                         }
-                        // if we get here, then it == sentinel
-                        return {self};  // empty kinds
+                        return {self};
                     }
 
                 public:
+                    inline static const Types empty;
                     Iterator* self;
-                    std::ranges::iterator_t<const Kinds> it;
-                    std::ranges::sentinel_t<const Kinds> sentinel;
-                    TypeView types = advance();
+                    std::ranges::iterator_t<const Types> it = empty.begin();
+                    std::ranges::sentinel_t<const Types> sentinel = empty.end();
+                    KindView kinds = advance();
 
-                    KindView& operator++() {
-                        ++types;
-                        if (types.it == types.sentinel) {
+                    TypeView& operator++() {
+                        ++kinds;
+                        if (kinds.it == kinds.sentinel) {
                             if (++it == sentinel) {
                                 return *this;
                             }
-                            types = advance();
+                            kinds = advance();
                         }
                         return *this;
                     }
-                } kinds;
+                } types;
 
                 Iterator(
                     const impl::OverloadKey::Argument& arg,
                     std::ranges::iterator_t<const Kinds>&& it,
                     std::ranges::sentinel_t<const Kinds>&& sentinel
-                ) :
-                    name(arg.name),
+                ) : name(arg.name),
                     value(ptr(arg.value)),
                     kind(arg.kind),
-                    kinds(this, std::move(it), std::move(sentinel))
+                    types(this, std::move(it), std::move(sentinel))
                 {}
 
             public:
@@ -8454,28 +8393,28 @@ public:
                 using pointer = const Edge*;
                 using reference = const Edge&;
 
-                const Edge& operator*() const { return **kinds.types.names.it; }
+                const Edge& operator*() const { return types.kinds.edges.it->second; }
                 const Edge* operator->() const { return &**this; }
 
                 Iterator& operator++() {
-                    ++kinds;
+                    ++types;
                     return *this;
                 }
 
                 friend bool operator==(const Iterator& self, impl::Sentinel) {
-                    return self.kinds.it == self.kinds.sentinel;
+                    return self.types.it == self.types.sentinel;
                 }
 
                 friend bool operator==(impl::Sentinel, const Iterator& self) {
-                    return self.kinds.it == self.kinds.sentinel;
+                    return self.types.it == self.types.sentinel;
                 }
 
                 friend bool operator!=(const Iterator& self, impl::Sentinel) {
-                    return self.kinds.it != self.kinds.sentinel;
+                    return self.types.it != self.types.sentinel;
                 }
 
                 friend bool operator!=(impl::Sentinel, const Iterator& self) {
-                    return self.kinds.it != self.kinds.sentinel;
+                    return self.types.it != self.types.sentinel;
                 }
             };
 
@@ -8493,7 +8432,7 @@ public:
                     0
                 }
             ) const {
-                return {arg, m_edges.begin(), m_edges.end()};
+                return {arg, edges.begin(), edges.end()};
             }
 
             [[nodiscard]] static impl::Sentinel end() noexcept { return {}; }
@@ -8746,58 +8685,61 @@ public:
             return m_depth;
         }
 
-        /// TODO: edge and node counts + memory usage can only be found by recursively
-        /// traversing the trie itself.
-
-        /* The total number of edges that have been allocated within the trie. */
-        [[nodiscard]] size_t total_edges() const noexcept {
-            size_t total = 0;
-            std::unordered_set<Edge*> observed;
-            for (const Metadata& metadata : m_data) {
-                for (const Edge& edge : metadata.path) {
-                    auto [it, inserted] = observed.insert(&edge);
-                    total += inserted;
-                }
+        /* Estimate the total amount of memory consumed by the trie in bytes.  Note
+        that this does not count any additional memory being managed by Python (i.e.
+        the function objects themselves or the `inspect.Signature` instances used to
+        back the trie's metadata). */
+        [[nodiscard]] size_t memory_usage() const noexcept {
+            size_t total =
+                sizeof(Overloads) +
+                sizeof(typename Cache::value_type) * m_cache.size();
+            if (std::shared_ptr<Node> root = this->root()) {
+                size_t n_edges = 0;
+                std::unordered_set<Node*> visited = {root.get()};
+                return total + root->memory_usage(visited, n_edges);
             }
             return total;
         }
 
         /* The total number of nodes that have been allocated within the trie. */
         [[nodiscard]] size_t total_nodes() const noexcept {
-            size_t total = 0;
-            std::unordered_set<std::shared_ptr<Node>> observed;
-            for (const Metadata& metadata : m_data) {
-                for (const Edge& edge : metadata.path) {
-                    auto [it, inserted] = observed.insert(edge.target);
-                    total += inserted;
-                }
+            if (std::shared_ptr<Node> root = this->root()) {
+                size_t n_edges = 0;
+                std::unordered_set<Node*> visited = {root.get()};
+                root->memory_usage(visited, n_edges);
+                return visited.size();
             }
-            return total;
+            return 0;
         }
 
-        /* Estimate the total amount of memory consumed by the trie in bytes.  Note
-        that this does not count any additional memory being managed by Python (i.e.
-        the function objects themselves or the `inspect.Signature` instances used to
-        back the trie's metadata). */
-        [[nodiscard]] size_t memory_usage() const noexcept {
-            size_t total = sizeof(Overloads);
-            std::unordered_set<std::shared_ptr<Edge>> edges;
-            std::unordered_set<std::shared_ptr<Node>> nodes;
-            for (const Metadata& metadata : m_data) {
-                for (const Edge& edge : metadata.path) {
-                    auto [edge_it, new_edge] = edges.insert(edge);
-                    if (new_edge) {
-                        total += edge.memory_usage();
-                    }
-                    auto [node_it, new_node] = nodes.insert(edge.target);
-                    if (new_node) {
-                        total += edge.target->memory_usage();
-                    }
-                }
-                total += metadata.memory_usage();
+        /* The total number of edges that have been allocated within the trie. */
+        [[nodiscard]] size_t total_edges() const noexcept {
+            if (std::shared_ptr<Node> root = this->root()) {
+                size_t n_edges = 0;
+                std::unordered_set<Node*> visited = {root.get()};
+                root->total_edges(visited, n_edges);
+                return n_edges;
             }
-            total += sizeof(typename Cache::value_type) * m_cache.size();
-            return total;
+            return 0;
+        }
+
+        /* Estimate the current memory usage, total number of nodes, and total number
+        of edges at the same time.  This is significantly more efficient than using
+        separate calls. */
+        [[nodiscard]] std::array<size_t, 3> stats() const noexcept {
+            size_t total =
+                sizeof(Overloads) +
+                sizeof(typename Cache::value_type) * m_cache.size();
+            if (std::shared_ptr<Node> root = this->root()) {
+                size_t n_edges = 0;
+                std::unordered_set<Node*> visited = {root.get()};
+                return {
+                    total + root->memory_usage(visited, n_edges),
+                    visited.size(),
+                    n_edges
+                };
+            }
+            return {total, 0, 0};
         }
 
         /* Search against the function's overload cache to find a precomputed path
@@ -8824,10 +8766,10 @@ public:
             m_cache.clear();
         }
 
-        /* Return a reference to the root node of the overload trie.  This can be null
-        if the function has no overloads beyond the fallback implementation.  In that
-        case, the entire overload trie is deleted to save space, and will be rebuilt
-        the first time a new overload is registered. */
+        /* Return a reference to the root node of the trie.  This can be null if the
+        function has no overloads beyond the fallback implementation.  In that case,
+        the entire overload trie is deleted to save space, and will be rebuilt the
+        first time a new overload is registered. */
         [[nodiscard]] std::shared_ptr<Node> root() const noexcept {
             return m_leading_edge.target;
         }
@@ -9246,12 +9188,12 @@ public:
                         {
                             .name = "",
                             .value = reinterpret_steal<Object>(nullptr),
-                            .kind = impl::ArgKind::POS | impl::ArgKind::VARIADIC
+                            .kind = impl::ArgKind::VAR | impl::ArgKind::POS
                         },
                         {
                             .name = "",
                             .value = reinterpret_steal<Object>(nullptr),
-                            .kind = impl::ArgKind::KW | impl::ArgKind::VARIADIC
+                            .kind = impl::ArgKind::VAR | impl::ArgKind::KW
                         }
                     }
                 },
