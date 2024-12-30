@@ -8115,26 +8115,62 @@ public:
                 }
             };
 
+            /* Group optional arguments with required when traversing the trie. */
+            struct KindSort {
+                static bool operator()(impl::ArgKind lhs, impl::ArgKind rhs) {
+                    constexpr impl::ArgKind ignore = impl::ArgKind::OPT;
+                    return (lhs & ~ignore) < (rhs & ~ignore);
+                }
+            };
+
+            using Names = std::unordered_map<std::string_view, Edge>;
+            using Types = std::map<PyObject*, Names, TopoSort>;
+            using Kinds = std::map<impl::ArgKind, Types, KindSort>;
+
         public:
-            using Set = std::set<Edge, typename Edge::Less>;
-            using Map = std::map<PyObject*, Set, TopoSort>;
-
+            /* The name of the parameter that spawned this node.  This is not
+            considered when inserting positional edges into the trie, but keyword edges
+            can only be reused if their names are identical.  Each node owns the
+            underlying name buffer, meaning that edge maps can use string_view keys as
+            an optimization. */
             std::string name;
-            Object type;
-            Map edges;
 
-            /* The number of outgoing edges emanating from this node. */
+            /* The type of the parameter that spawned this node.  Outgoing edges are
+            topologically sorted by this type according to an `issubclass()`
+            comparison. */
+            Object type;
+
+            /* A multi-level map that sorts the outgoing edges first by kind, then by
+            type, and then by (hashed) name. */
+            Kinds edges;
+
+            /* The total number of outgoing edges originating from this node. */
             [[nodiscard]] size_t size() const noexcept {
                 size_t total = 0;
-                for (const auto& [key, value] : edges) {
-                    total += value.size();
+                for (const auto& [kind, types] : m_edges) {
+                    for (const auto& [_, names] : types) {
+                        total += names.size();
+                    }
                 }
                 return total;
             }
 
             /* Indicates whether this node has any outgoing edges. */
             [[nodiscard]] bool empty() const noexcept {
-                return edges.empty();
+                return m_edges.empty();
+            }
+
+            /* Estimate the total amount of memory used by this node and its outgoing
+            edges, in bytes. */
+            [[nodiscard]] size_t memory_usage() const noexcept {
+                size_t total = sizeof(Node) + sizeof(Kinds::value_type) * m_edges.size();
+                for (const auto& [kind, types] : m_edges) {
+                    total += sizeof(Types::value_type) * types.size();
+                    for (const auto& [_, names] : types) {
+                        total += sizeof(Names::value_type) * names.size();
+                    }
+                }
+                return total;
             }
 
             /// TODO: return either just a boolean, or a raw pointer, or something,
@@ -8177,44 +8213,46 @@ public:
             /* Recursively purge all outgoing edges that are associated with the
             identified overloads. */
             void remove(const IDs& id) {
-                auto outer = edges.begin();
-                auto outer_end = edges.end();
-                while (outer != outer_end) {
-                    auto inner = outer->begin();
-                    auto inner_end = outer->end();
-                    while (inner != inner_end) {
-                        if (inner->matches & id) {
-                            inner->target->remove(id);  // recur
-                            inner->matches &= ~id;
-                            if (!inner->matches) {
-                                inner = outer->erase(inner);
+                // kinds -> types
+                auto kinds = m_edges.begin();
+                auto kinds_end = m_edges.end();
+                while (kinds != kinds_end) {
+
+                    // types -> names
+                    auto types = kinds->begin();
+                    auto types_end = kinds->end();
+                    while (types != types_end) {
+
+                        // names -> edge
+                        auto names = types->begin();
+                        auto names_end = types->end();
+                        while (names != names_end) {
+                            if (names->matches & id) {
+                                names->target->remove(id);  // recur
+                                names->matches &= ~id;
+                                if (!names->matches) {
+                                    names = types->erase(names);
+                                } else {
+                                    ++names;
+                                }
                             } else {
-                                ++inner;
+                                ++names;
                             }
+                        }
+
+                        if (types->empty()) {
+                            types = kinds->erase(types);
                         } else {
-                            ++inner;
+                            ++types;
                         }
                     }
-                    if (outer->empty()) {
-                        outer = edges.erase(outer);
+
+                    if (kinds->empty()) {
+                        kinds = m_edges.erase(kinds);
                     } else {
-                        ++outer;
+                        ++kinds;
                     }
                 }
-            }
-
-            /// TODO: this may be a recursive function, which returns the entire size
-            /// of the trie?  It would use a hash set to track visited nodes, and would
-            /// count the size of the edges as well.
-
-            /* Return the total amount of memory used by this node, in bytes. */
-            size_t memory_usage() const {
-                size_t total = sizeof(Node);
-                for (const auto& [key, value] : edges) {
-                    total += sizeof(typename Map::value_type);
-                    total += sizeof(Edge*) * value.size();
-                }
-                return total;
             }
 
             /* A sorted iterator over the individual edges that match a particular
@@ -8226,40 +8264,187 @@ public:
             private:
                 friend Node;
 
+                std::string_view name;
                 PyObject* value;
+                impl::ArgKind kind;
 
-                struct SetView {
-                    inline static const Set empty;
-                    std::ranges::iterator_t<const Set> begin;
-                    std::ranges::sentinel_t<const Set> end;
-                } set;
+                struct NameView {
+                    inline static const Names empty;
+                    Iterator* self;
+                    std::ranges::iterator_t<const Names> it = empty.begin();
+                    std::ranges::sentinel_t<const Names> sentinel = empty.end();
 
-                struct MapView {
-                    inline static const Map empty;
-                    std::ranges::iterator_t<const Map> begin;
-                    std::ranges::sentinel_t<const Map> end;
-                } map;
+                    NameView& operator++() {
+                        if (it != sentinel) {
+                            if (self->name.empty()) {
+                                ++it;
+                            } else {
+                                it = sentinel;
+                            }
+                        }
+                    }
+                };
+
+                struct TypeView {
+                private:
+
+                    NameView advance() {
+                        if (!self->value) {  // null value => wildcard
+                            if (self->name.empty()) {  // empty name => wildcard
+                                while (it != sentinel) {
+                                    NameView result{
+                                        self,
+                                        it->second.begin(),
+                                        it->second.end()
+                                    };
+                                    if (result.it != result.sentinel) {
+                                        return result;
+                                    }
+                                    ++it;
+                                }
+                            } else {  // non-empty name => hash lookup
+                                while (it != sentinel) {
+                                    NameView result{
+                                        self,
+                                        it->second.find(self->name),
+                                        it->second.end()
+                                    };
+                                    if (result.it != result.sentinel) {
+                                        return result;
+                                    }
+                                    ++it;
+                                }
+                            }
+                        } else {  // non-null value => topological sort
+                            if (self->name.empty()) {  // empty name => wildcard
+                                while (it != sentinel) {
+                                    if (check{}(self->value, it->first)) {
+                                        NameView result{
+                                            self,
+                                            it->second.begin(),
+                                            it->second.end()
+                                        };
+                                        if (result.it != result.sentinel) {
+                                            return result;
+                                        }
+                                    }
+                                    ++it;
+                                }
+                            } else {  // non-empty name => hash lookup
+                                while (it != sentinel) {
+                                    if (check{}(self->value, it->first)) {
+                                        NameView result{
+                                            self,
+                                            it->second.find(self->name),
+                                            it->second.end()
+                                        };
+                                        if (result.it != result.sentinel) {
+                                            return result;
+                                        }
+                                    }
+                                    ++it;
+                                }
+                            }
+                        }
+                        // if we get here, then it == sentinel
+                        return {self};  // empty names
+                    }
+
+                public:
+                    inline static const Types empty;
+                    Iterator* self;
+                    std::ranges::iterator_t<const Types> it = empty.begin();
+                    std::ranges::sentinel_t<const Types> sentinel = empty.end();
+                    NameView names = advance();
+
+                    TypeView& operator++() {
+                        ++names;
+                        if (names.it == names.sentinel) {
+                            if (++it == sentinel) {
+                                return *this;
+                            }
+                            names = advance();
+                        }
+                        return *this;
+                    }
+                };
+
+                struct KindView {
+                private:
+
+                    TypeView advance() {
+                        if (!self->kind) {  // zero kind => wildcard
+                            while (it != sentinel) {
+                                TypeView result{
+                                    self,
+                                    it->second.begin(),
+                                    it->second.end()
+                                };
+                                if (result.it != result.sentinel) {
+                                    return result;
+                                }
+                            }
+                        } else {  // non-zero kind => filter
+                            if (self->kind & impl::ArgKind::POS) {  // positional
+                                while (it != sentinel) {
+                                    if (it->first & impl::ArgKind::POS) {
+                                        TypeView result{
+                                            self,
+                                            it->second.begin(),
+                                            it->second.end()
+                                        };
+                                        if (result.it != result.sentinel) {
+                                            return result;
+                                        }
+                                    }
+                                }
+                            }
+                            if (self->kind & impl::ArgKind::KW) {  // keyword
+                                while (it != sentinel) {
+                                    if (it->first & impl::ArgKind::KW) {
+                                        TypeView result{
+                                            self,
+                                            it->second.begin(),
+                                            it->second.end()
+                                        };
+                                        if (result.it != result.sentinel) {
+                                            return result;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // if we get here, then it == sentinel
+                        return {self};  // empty kinds
+                    }
+
+                public:
+                    Iterator* self;
+                    std::ranges::iterator_t<const Kinds> it;
+                    std::ranges::sentinel_t<const Kinds> sentinel;
+                    TypeView types = advance();
+
+                    KindView& operator++() {
+                        ++types;
+                        if (types.it == types.sentinel) {
+                            if (++it == sentinel) {
+                                return *this;
+                            }
+                            types = advance();
+                        }
+                        return *this;
+                    }
+                } kinds;
 
                 Iterator(
-                    PyObject* value,
-                    std::ranges::iterator_t<const Map>&& it,
-                    std::ranges::sentinel_t<const Map>&& end
+                    const impl::OverloadKey::Argument& arg,
+                    std::ranges::iterator_t<const Kinds>&& it,
+                    std::ranges::sentinel_t<const Kinds>&& sentinel
                 ) :
-                    value(value),
-                    set([](
-                        PyObject* value,
-                        auto& it,
-                        auto& end
-                    ) {
-                        while (it != end) {
-                            if (value == nullptr || check{}(value, it->first)) {
-                                return SetView{it->second.begin(), it->second.end()};
-                            }
-                            ++it;
-                        }
-                        return SetView{SetView::empty.begin(), SetView::empty.end()};
-                    }(this->value, it, end)),
-                    map(std::move(it), std::move(end))
+                    name(arg.name),
+                    value(ptr(arg.value)),
+                    kind(arg.kind),
+                    kinds(this, std::move(it), std::move(sentinel))
                 {}
 
             public:
@@ -8269,49 +8454,46 @@ public:
                 using pointer = const Edge*;
                 using reference = const Edge&;
 
-                const Edge& operator*() const { return **set.begin; }
-                const Edge* operator->() const { return *set.begin; }
+                const Edge& operator*() const { return **kinds.types.names.it; }
+                const Edge* operator->() const { return &**this; }
 
                 Iterator& operator++() {
-                    if (set.begin != set.end) {
-                        ++set.begin;
-                    }
-                    if (set.begin == set.end) {
-                        while (++map.begin != map.end) {
-                            if (value == nullptr || check{}(value, map.begin->first)) {
-                                set.begin = map.begin->second.begin();
-                                set.end = map.begin->second.end();
-                                break;
-                            }
-                        }
-                    }
+                    ++kinds;
                     return *this;
                 }
 
                 friend bool operator==(const Iterator& self, impl::Sentinel) {
-                    return self.map.begin == self.map.end;
+                    return self.kinds.it == self.kinds.sentinel;
                 }
 
                 friend bool operator==(impl::Sentinel, const Iterator& self) {
-                    return self.map.begin == self.map.end;
+                    return self.kinds.it == self.kinds.sentinel;
                 }
 
                 friend bool operator!=(const Iterator& self, impl::Sentinel) {
-                    return self.map.begin != self.map.end;
+                    return self.kinds.it != self.kinds.sentinel;
                 }
 
                 friend bool operator!=(impl::Sentinel, const Iterator& self) {
-                    return self.map.begin != self.map.end;
+                    return self.kinds.it != self.kinds.sentinel;
                 }
             };
 
             /* Return a shallow iterator over the subset of outgoing edges that match a
-            given value according to the templated type check.  Supplying a null
-            pointer (the default) for the value will bypass the type check, yielding
-            all matching edges regardless of type. */
+            given parameter.  An empty name will match all outgoing edges, regardless
+            of name.  A null value will do the same for types, yielding all matching
+            candidates in topological order and ignoring the templated type check.
+            Finally, a zero kind will match all kinds of edges, both positional and
+            keyword. */
             template <typename check = instance> requires (valid_check<check>)
-            [[nodiscard]] Iterator<check> begin(PyObject* value = nullptr) const {
-                return {value, edges.begin(), edges.end()};
+            [[nodiscard]] Iterator<check> begin(
+                const impl::OverloadKey::Argument& arg = {
+                    {},
+                    reinterpret_steal<Object>(nullptr),
+                    0
+                }
+            ) const {
+                return {arg, m_edges.begin(), m_edges.end()};
             }
 
             [[nodiscard]] static impl::Sentinel end() noexcept { return {}; }
@@ -8488,11 +8670,10 @@ public:
         using Cache = std::unordered_map<size_t, PyObject*>;
 
         size_t m_depth = 0;
-        Metadata* m_fallback = nullptr;
         Edge m_leading_edge = {
             .matches = {},  // identifies all overloads
             .target = nullptr,  // root of the trie
-            .kind = 0,
+            .kind = impl::ArgKind::POS,
         };
         Node m_leading_node = {
             .name = "",
@@ -8531,21 +8712,20 @@ public:
                 );
             };
 
+            m_depth = signature.size();
             m_data.emplace(1, std::move(signature));
-            m_fallback = &*m_data.begin();
-            m_depth = m_fallback->size();
-            m_leading_edge.matches |= m_fallback->id;
+            m_leading_edge.matches = 1;
         }
 
         /* Return a reference to the fallback function that will be chosen if no other
         overloads match a valid argument list. */
         [[nodiscard]] const Object& function() const noexcept {
-            return m_fallback->signature.function();
+            return m_data.at(1).signature.function();
         }
 
         /* Get the stored signature of the fallback function. */
         [[nodiscard]] const inspect& signature() const noexcept {
-            return m_fallback->signature;
+            return m_data.at(1).signature;
         }
 
         /* Indicates whether the trie contains any overloads. */
@@ -8769,7 +8949,7 @@ public:
             while (it != end) {
                 const Metadata& data = *it.curr;
                 if (data.signature.function() == key) {
-                    if (&data == m_fallback) {
+                    if (data.id == 1) {
                         throw KeyError("cannot remove the fallback implementation");
                     }
                     Object result = data.signature.function();
@@ -8780,7 +8960,7 @@ public:
                         m_leading_edge.matches &= ~data.id;
                         m_cache.clear();
                         m_data.erase(data);
-                        m_depth = m_fallback->signature.size();
+                        m_depth = m_data.at(1).signature.size();
                         for (const Metadata& data : m_data) {
                             if (data.signature.size() > m_depth) {
                                 m_depth = data.signature.size();
@@ -8801,13 +8981,13 @@ public:
             m_leading_edge.target.reset();  // drop root node
             auto it = m_data.begin();
             while (it != m_data.end()) {
-                if (&*it == m_fallback) {  // skip removing fallback
+                if (it->id == 1) {  // skip removing fallback
                     ++it;
                 } else {
                     it = m_data.erase(it);
                 }
             }
-            m_depth = m_fallback->signature.size();
+            m_depth = m_data.at(1).signature.size();
         }
 
         /* An iterator that traverses the trie in topological order, extracting the
@@ -8896,12 +9076,11 @@ public:
                 for (const IDs& id : candidates.components()) {
                     if (!(visited & id)) {
                         const Metadata& overload = data->at(id);
+                        visited |= id;
                         if (validate(overload)) {
-                            visited |= id;
                             curr = &overload;
                             return;
                         }
-                        visited |= id;
                     }
                 }
                 advance();
@@ -8913,31 +9092,19 @@ public:
             no candidates are found. */
             const Edge* grow(const Argument& arg, size_t index) {
                 const Edge* edge = &(*stack.back().outgoing);
+                IDs matches = stack.back().matches & edge->matches;
+                if ((visited & matches) == matches) {
+                    return nullptr;
+                }
                 stack.emplace_back(
                     index,
                     edge,
-                    edge->target->template begin<check>(ptr(arg.value)),
-                    stack.back().matches & edge->matches
+                    edge->target->template begin<check>(arg),
+                    matches
                 );
-                // if the intersection is empty or contains only visited overloads,
-                // then we can ignore this branch and backtrack
-                if ((visited & stack.back().matches) == stack.back().matches) {
-                    stack.pop_back();
-                    return nullptr;
-                }
                 while (stack.back().outgoing != impl::Sentinel{}) {
                     edge = &(*stack.back().outgoing);
-                    if (!has_cycle(edge) && (
-                        (
-                            arg.kind.pos() && edge->kind.pos()
-                        ) || (
-                            arg.kind.kw() && edge->kind.kw() && edge->name == arg.name
-                        ) || (
-                            arg.kind.args() && edge->kind.pos()
-                        ) || (
-                            arg.kind.kwargs() && edge->kind.kw()
-                        ))
-                    ) {
+                    if (!has_cycle(edge)) {
                         return edge;
                     }
                     ++stack.back().outgoing;
@@ -8949,28 +9116,24 @@ public:
             /* Check whether an outgoing edge is already contained within the stack,
             indicating a cycle or a duplicate keyword from an overlapping key. */
             bool has_cycle(const Edge* edge) const {
-                if (edge->kind.kw() || edge->kind.kwargs()) {
+                if (edge->kind.kw()) {
                     for (Frame& frame : stack | std::views::reverse) {
-                        if (frame.incoming == edge || (
-                            (frame.incoming->kind.kw() || frame.incoming->kind.kwargs()) &&
-                            frame.incoming->name == edge->name
+                        if (frame.incoming->target == edge->target || (
+                            frame.incoming->kind.kw() &&
+                            frame.incoming->target->name == edge->target->name
                         )) {
                             return true;
                         }
                     }
                 } else {
                     for (Frame& frame : stack | std::views::reverse) {
-                        if (frame.incoming == edge) {
+                        if (frame.incoming->target == edge->target) {
                             return true;
                         }
                     }
                 }
                 return false;
             }
-
-            /// TODO: the validation step must be based on the actual edges that were
-            /// traversed, otherwise it will ignore variadic parameters in a partial
-            /// traversal?
 
             /* Reconstruct a bitmask representing the observed arguments and compare it
             against the overload's `required` bitmask to check whether all necessary
@@ -8979,13 +9142,15 @@ public:
                 /// TODO: this should use the fancy new bitset class
                 uint64_t required = overload.signature.required();
                 uint64_t mask = 0;
-                for (size_t i = 0; i < key->size(); ++i) {
-                    const Argument& arg = (*key)[i];
-                    /// TODO: figure out what to do with variadic arguments
-                    if (arg.kind.pos()) {
+                for (size_t i = 1; i < stack.size(); ++i) {
+                    const Edge& edge = *stack[i].outgoing;
+                    if (edge.kind.pos()) {
                         mask |= 1ULL << i;
-                    } else if (arg.kind.kw()) {
-                        const auto* lookup = overload.signature.get(arg.name);
+                    } else if (edge.kind.kw()) {
+                        /// TODO: using get() for this is a bit clunky, since it
+                        /// conflicts with other classes that use std::get<>()-like
+                        /// semantics.
+                        const auto* lookup = overload.signature.get(edge.target->name);
                         if (!lookup) {
                             return false;
                         }

@@ -27,6 +27,11 @@ struct KwargPack;
 variadic) of an argument within a C++ parameter list. */
 struct ArgKind {
     enum Flags : uint8_t {
+        /// NOTE: the relative ordering of these flags is significant, as it
+        /// dictates the order in which edges are stored within overload tries
+        /// for the `py::Function` class.  The order should always be such that
+        /// POS < OPT POS < KW < OPT KW < VAR POS < VAR KW, to ensure a stable
+        /// traversal order.
         POS                 = 0b1,
         KW                  = 0b10,
         OPT                 = 0b100,
