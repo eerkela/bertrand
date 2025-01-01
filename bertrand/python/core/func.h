@@ -8006,6 +8006,13 @@ public:
         using Required = impl::bitset<MAX_ARGS>;  // TODO: maybe raised up to inspect()?
         using IDs = impl::bitset<MAX_OVERLOADS>;
 
+        using Data = std::unordered_set<
+            Metadata,
+            typename Metadata::Hash,
+            typename Metadata::Equal
+        >;
+        using Cache = std::unordered_map<size_t, PyObject*>;
+
         template <typename T>
         static constexpr bool valid_check =
             std::same_as<T, instance> || std::same_as<T, subclass>;
@@ -8015,81 +8022,17 @@ public:
 
         /* A unidirectional link between two nodes in the trie, which describes how to
         traverse from one to the other.  Multiple overloads can share the same edge if
-        the corresponding parameters have identical types, kinds, and names. */
+        the corresponding parameters have identical types, kinds, and names (if the
+        edge is a keyword). */
         struct Edge {
-            /* Identifies the unique overloads that include this edge.  The edge will
-            be deleted when this set becomes empty, and a series of bitwise AND
-            operations are performed against it during traversal for each of the
-            visited edges in order to determine the subset of candidate overloads. */
             IDs matches;
-
-            /* The next node after following the edge. */
             std::shared_ptr<Node> target;
-
-            /* The kind of edge, dictating positional/keyword, optional, and variadic
-            status. */
             impl::ArgKind kind;
-
-
-            /// TODO: perhaps terminal is not needed, and can be synthesized from
-            /// matches?  Every insertion would do an intersection of all the matches
-            /// along the inserted path, and if there are any potential conflicts, it
-            /// should assert that their required sets are not equal.
-            /// -> This would require a search over the trie during every insertion.
-            /// Basically, I would do a subclass{} search using the inspected
-            /// annotations before committing to inserting the function.  For each
-            /// match, I would assert that the new overload's required() mask is
-            /// different from the existing ones.
-            /// -> Maybe I should exclude any optional arguments, and search only the
-            /// required arguments?  Then, any matches are guaranteed to cover the
-            /// minimal required set of arguments.
-            /// -> Also, when I compare `required()` bitmasks, I need to fully
-            /// reconstruct the required bitmask for the current key in that overload's
-            /// domain, since the keyword arguments do not need to be given in order.
-
-            /// TODO: rather than comparing required bitmasks, just iterate over the
-            /// edges in each path and build up an unordered set of the node pointers.
-            /// Only if these sets differ is there not an ambiguity.
-            /// -> Essentially, the matches intersection identifies all of the
-            /// overloads that share the exact same path.  That means all of the
-            /// required edges of the signature we're about to insert are also
-            /// fully contained by the other path.  If they are the same, then it
-            /// means that there is a minimal path through the trie that is shared
-            /// between them.  If the overloads conflict, then that is the most likely
-            /// path that would cause it.
-
-            /// TODO: perhaps this form of required set totally replaces the required
-            /// bitset?
-            /// -> That would require dynamic allocations in practice.  The lookup
-            /// approach is preferable for that case.
-            /// TODO: so, for insertions, what I would do is generate an unordered
-            /// set of required edges for the conflicting path, and then iterate over
-            /// the path we're about to insert, and remove the addresses of the required
-            /// edges from the set.  If a required edge in the inserted path is not
-            /// present in the comparison set, then there can be no conflict.
-            /// Similarly, if there are items left over in the set after the iteration,
-            /// then there can be no conflict.  During searches, I would continue with
-            /// the `required` bitset, since I have actual types/values to compare
-            /// against.
-
-            /// TODO: the matches set basically means that if any insertion results in
-            /// the creation of even a single new node, then the matches set will be
-            /// empty, and there can be no conflicts.
-
-            /* Marks this as a terminal edge for a particular path through the trie, in
-            order to identify ambiguities.  When an overload is inserted into the trie,
-            it will identify the last required edge on its path, and assign itself to
-            this field for that edge and all subsequent edges.  If this pointer is not
-            set to null for any of those edges, then the overload is ambiguous, and
-            the pointer leads to the conflicting overload for diagnostic purposes.  The
-            ID of this pointer will always be present in the `matches` set. */
-            Metadata* terminal = nullptr;
         };
 
         /* A single node in the overload trie, which holds the topologically-sorted
-        edges necessary for traversal, insertion, and deletion of candidate functions,
-        as well as a marker to indicate that this the last required node in a given
-        argument list, which is used to detect ambiguous overloads. */
+        edge maps necessary for traversal, insertion, and deletion of candidate
+        functions. */
         struct Node {
         private:
             struct TopoSort {
@@ -8108,14 +8051,98 @@ public:
             /// variadic `**kwargs` argument, if present, must have an empty name, in
             /// order to match all outgoing keywords, similar to variadic `*args`.
 
-            /// TODO: perhaps it would be preferable to sort by type before kind, that
-            /// way I don't have to erase optional identifiers, and edges can freely
-            /// retain their kinds.  I'm not sure if that works for the way I expect
-            /// variadic args to be handled, though.
-
             using Edges = std::unordered_map<std::string_view, Edge>;
             using Kinds = std::map<impl::ArgKind, Edges>;
             using Types = std::map<PyObject*, Kinds, TopoSort>;
+
+            Node* insert_edge(
+                const inspect::Param& param,
+                impl::ArgKind kind,
+                std::string_view name,
+                const Metadata& data,
+                size_t index
+            ) {
+                auto kinds = edges.try_emplace(ptr(param.type), Kinds{}).first;
+                auto names = kinds->second.try_emplace(kind, Edges{}).first;
+                auto edge = names->second.try_emplace(
+                    name,
+                    Edge{
+                        .matches = data.id,
+                        .target = nullptr,
+                        .kind = param.kind
+                    }
+                ).first;
+                if (edge->second.target) {
+                    edge->second.matches |= data.id;
+                } else {
+                    edge->second.target = std::make_shared<Node>(
+                        param.name,
+                        param.type,
+                        Types{}
+                    );
+                }
+                return edge->second.target.get();
+            };
+
+            const Metadata* is_ambiguous(
+                const Data& data,
+                const IDs& candidates,
+                const IDs& id,
+                size_t n_opt,
+                std::unordered_set<Node*>& visited
+            ) const {
+                // trace out all the edges associated with the inserted function
+                bool terminal = true;
+                for (const Edge& edge : *this) {
+                    if (edge.matches & id) {
+                        const Metadata* result;
+                        if (edge.kind.opt()) {
+                            if (
+                                n_opt &&
+                                visited.insert(edge.target.get()).second &&
+                                (result = edge.target->is_ambiguous(
+                                    data,
+                                    candidates & edge.matches,
+                                    id,
+                                    n_opt - 1,
+                                    visited
+                                ))
+                            ) {
+                                return result;
+                            }
+                        } else if (
+                            visited.insert(edge.target.get()).second &&
+                            (result = edge.target->is_ambiguous(
+                                id,
+                                candidates & edge.matches,
+                                n_opt
+                            ))
+                        ) {
+                            return result;
+                        }
+                        terminal = false;
+                    }
+                }
+
+                // if there are no outgoing edges to follow, decompose the candidates
+                // and check for possible conflicts
+                if (terminal) {
+                    for (const IDs& id : candidates.components()) {
+                        bool conflict = true;
+                        const Metadata& overload = data.at(id);
+                        for (const Node* node : overload.required) {
+                            if (!visited.contains(node)) {
+                                conflict = false;
+                                break;
+                            }
+                        }
+                        if (conflict) {
+                            return &overload;
+                        }
+                    }
+                }
+                return nullptr;
+            }
 
         public:
             /* The name of the parameter that spawned this node.  This is not
@@ -8130,9 +8157,9 @@ public:
             comparison. */
             Object type;
 
-            /* A multi-level map that sorts the outgoing edges first by kind, then by
-            type, and then by (hashed) name. */
-            Kinds edges;
+            /* A multi-level map that sorts the outgoing edges first by type, then by
+            kind, and then by (hashed) name. */
+            Types edges;
 
             /* The total number of outgoing edges originating from this node. */
             [[nodiscard]] size_t size() const noexcept {
@@ -8182,40 +8209,77 @@ public:
             }
 
             /// TODO: return either just a boolean, or a raw pointer, or something,
-            /// since there no longer is a canonidcal path that I need to store.
+            /// since there no longer is a canonical path that I need to store.
             /// In fact, this might be recursive, just like remove().  Either that, or
             /// I would need to somehow return a set of all the nodes for the next
             /// iteration of the algorithm, which is a pain.  Instead, I'll just
             /// supply a parameter list, current index, and a mutable set of visited
             /// nodes (maybe only the ones that I inserted a keyword edge to?).  All
             /// of those require the full keyword map as outgoing edges.  Any node I
-            /// inserted a keyword edge FROM would need to be updated an edge to all
-            /// of these nodes?
+            /// inserted a keyword edge FROM would need to be updated with an edge to
+            /// all of these nodes?
 
             /* Insert an outgoing edge to a new node.  Returns a pointer to the
             inserted edge, which may differ from the input edge if an existing edge
             with the same name and kind can be reused. */
-            [[maybe_unused]] std::shared_ptr<Edge> insert(
-                std::shared_ptr<Node> self,
-                const inspect::Param& param,
-                const IDs& id
-            ) {
-                auto [outer, new_type] = edges.try_emplace(
-                    ptr(param.type),
-                    Set{}
-                );
-                auto existing = outer->second.find(param);
-                if (existing != outer->second.end()) {
-                    existing->matches |= id;
-                    return *existing;
+            void insert(Metadata& data, size_t index) {
+                if (index < data.signature.size()) {
+                    return;
                 }
-                auto [inner, new_edge] = outer->second.insert(std::make_shared<Edge>(
-                    self,
-                    param.name,
-                    param.kind,
-                    id
-                ));
-                return *inner;
+
+                const inspect::Param& param = data.signature[index];
+                if (param.kind.variadic()) {
+                    insert_edge(
+                        param,
+                        param.kind,
+                        {},
+                        data,
+                        index
+                    )->insert(data, ++index);
+                } else {
+                    if (param.kind.pos()) {
+                        if (param.kind.opt()) {
+                            insert_edge(
+                                param,
+                                impl::ArgKind::OPT | impl::ArgKind::POS,
+                                {},
+                                data,
+                                index
+                            )->insert(data, ++index);
+                        } else {
+                            Node* node = insert_edge(
+                                param,
+                                impl::ArgKind::POS,
+                                {},
+                                data,
+                                index
+                            );
+                            node->insert(data, ++index);
+                            data.required.insert(node);
+                        }
+                    }
+                    if (param.kind.kw()) {
+                        if (param.kind.opt()) {
+                            insert_edge(
+                                param,
+                                impl::ArgKind::OPT | impl::ArgKind::KW,
+                                param.name,
+                                data,
+                                index
+                            )->insert(data, ++index);
+                        } else {
+                            Node* node = insert_edge(
+                                param,
+                                impl::ArgKind::KW,
+                                param.name,
+                                data,
+                                index
+                            );
+                            node->insert(data, ++index);
+                            data.required.insert(node);
+                        }
+                    }
+                }
             }
 
             /* Recursively purge all outgoing edges that are associated with the
@@ -8441,11 +8505,14 @@ public:
     private:
         /* An encoded representation of a function that has been inserted into the
         overload trie.  The function itself is stored as an inspect.Signature object,
-        from which a canonical path of edges is generated, which are traversed when
-        the function is removed from the trie. */
+        under a unique ID that can be encoded into a bitset for fast intersections. */
         struct Metadata {
             IDs id;
             inspect signature;
+
+            /// TODO: store a set of required nodes for ambiguity detection
+
+
 
             // /// TODO: because of positional-or-keyword arguments, the "canonical" path
             // /// must consist of at least two different types of edges, one positional
@@ -8598,15 +8665,6 @@ public:
                 }
             };
         };
-
-        /* Metadata is stored in a topologically-sorted, associative set to ensure
-        address stability + topological sorting for removals, etc. */
-        using Data = std::unordered_set<
-            Metadata,
-            typename Metadata::Hash,
-            typename Metadata::Equal
-        >;
-        using Cache = std::unordered_map<size_t, PyObject*>;
 
         size_t m_depth = 0;
         Edge m_leading_edge = {
@@ -8785,6 +8843,20 @@ public:
             return false;
         }
 
+        /// TODO: insertions need to search for ambiguities by determining the perfect
+        /// overlaps for the inserted function's required arguments.  If there are
+        /// none, then we can short-circuit and avoid ambiguities.  If there are
+        /// potential conflicts, then I iterate over them and check that each one's
+        /// required bitset is not satisfied.  Then, I increase the default/variadic
+        /// count by 1 and repeat, taking the first optional/variadic argument that I
+        /// can and determining the candidate subset again.  If there are no conflicts,
+        /// then I can advance to the next default/variadic argument and retry.  If
+        /// there are conflicts, then I rebuild the required bitset for the conflicting
+        /// path and assert that it is not satisfied, and then recur with an increased
+        /// count to continue the search (DFS).  Doing this recursively until either
+        /// the count exceeds the number of optional/variadic args present in the
+        /// signature or all overlapping paths have been resolved.
+
         /* Insert a function into the trie.  Throws a TypeError if the function is not
         a viable overload of the enclosing signature (as determined by an
         `inspect.signature()` call), or a ValueError if it conflicts with an existing
@@ -8795,28 +8867,26 @@ public:
             constexpr size_t indent = 4;
             constexpr std::string prefix(8, ' ');
 
-            bitset id = 1;
-            id <<= m_ids.first_zero();
-            m_ids |= id;
-
+            IDs id = 1;
+            id <<= m_leading_edge.matches.first_zero();
+            m_leading_edge.matches |= id;
             auto [it, inserted] = m_data.emplace(id, inspect(func));
             if (!inserted) {
                 throw ValueError("overload already exists");
             }
-            Metadata& data = *it;
 
             try {
                 // inspect the function and ensure that it is a viable overload of the
                 // enclosing signature
-                if (data.signature >= signature()) {
+                if (it->signature >= signature()) {
                     throw TypeError(
-                        "overload must not be more general than the fallback "
-                        "signature\n    fallback:\n" + this->inspect().to_string(
+                        "overload must be more specific than the fallback signature\n"
+                        "    fallback:\n" + this->inspect().to_string(
                             keep_defaults,
                             prefix,
                             max_width,
                             indent
-                        ) + "\n    overload:\n" + data->signature.to_string(
+                        ) + "\n    new:\n" + it->signature.to_string(
                             keep_defaults,
                             prefix,
                             max_width,
@@ -8827,52 +8897,56 @@ public:
 
                 // construct root node and insert fallback if it doesn't already exist
                 if (m_leading_edge.target == nullptr) {
+                    Metadata& fallback = m_data.at(1);
                     m_leading_edge.target = std::make_shared<Node>();
-                    m_fallback->insert(m_leading_edge.target);
+                    m_leading_edge.target->insert(fallback, 0);  // modify required set as out param
+                    /// TODO: backfill keyword edges
                 }
 
-                // if the signature is empty, then the root node is the terminal node
-                if (data->signature.empty()) {
-                    if (!m_leading_edge.target->func.is(nullptr)) {
-                        for (const std::unique_ptr<Metadata>& existing : m_data) {
-                            if (!existing->signature.required()) {
-                                throw TypeError(
-                                    "ambiguous overload\n    existing:\n" +
-                                    existing->signature.to_string(
-                                        keep_defaults,
-                                        prefix,
-                                        max_width,
-                                        indent
-                                    ) + "\n    new:\n" +
-                                    data->signature.to_string(
-                                        keep_defaults,
-                                        prefix,
-                                        max_width,
-                                        indent
-                                    )
-                                );
-                            }
-                        }
+                // insert the function into the trie, allocating new nodes as needed
+                m_leading_edge.target->insert(*it, 0);
+
+                // check for ambiguities
+                size_t limit = it->signature.n_opt() + it->signature.n_var();
+                for (size_t i = 0; i < limit; ++i) {
+                    std::unordered_set<Node*> visited;
+                    if (const Metadata* conflict = m_leading_edge.target->is_ambiguous(
+                        m_data,
+                        m_leading_edge.matches,
+                        id,
+                        i,
+                        visited
+                    )) {
+                        throw ValueError(
+                            "overload conflicts with existing signature\n"
+                            "    existing:\n" + conflict->signature.to_string(
+                                keep_defaults,
+                                prefix,
+                                max_width,
+                                indent
+                            ) + "\n    new:\n" + it->signature.to_string(
+                                keep_defaults,
+                                prefix,
+                                max_width,
+                                indent
+                            )
+                        );
                     }
-                    m_leading_edge.target->func = data->signature.function();
-
-                // otherwise, insert edges linking each parameter in the trie
-                } else {
-                    data->insert(m_leading_edge.target);
                 }
+
+                /// TODO: backfill keyword edges.  
+
+                m_cache.clear();
 
             } catch (...) {
+                m_leading_edge.target->remove(id);
                 m_data.erase(id);
-                m_ids ^= id;
+                m_leading_edge.matches &= ~id;
                 if (empty()) {
                     clear();
                 }
                 throw;
             }
-
-            // track the function and path in the metadata set
-            m_data.emplace(std::move(data));
-            m_cache.clear();
         }
 
         /* Remove a function from the overload trie.  Returns the function that was
@@ -8921,6 +8995,7 @@ public:
             m_leading_edge.matches = 1;  // reset IDs to only include fallback
             m_cache.clear();
             m_leading_edge.target.reset();  // drop root node
+            m_depth = m_data.at(1).signature.size();
             auto it = m_data.begin();
             while (it != m_data.end()) {
                 if (it->id == 1) {  // skip removing fallback
@@ -8929,7 +9004,6 @@ public:
                     it = m_data.erase(it);
                 }
             }
-            m_depth = m_data.at(1).signature.size();
         }
 
         /* An iterator that traverses the trie in topological order, extracting the
