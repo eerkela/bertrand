@@ -432,6 +432,8 @@ For C++ functions where the signature is encoded at compile time, the `py::signa
 class should be used instead, which is much more detailed and eliminates runtime
 overhead. */
 struct inspect {
+    using Required = impl::bitset<MAX_ARGS>;  /// TODO: rewrite the bitset logic to use this
+
     struct Param;
     struct Callback;
 
@@ -8045,7 +8047,6 @@ public:
         struct Node;
 
     private:
-        using Required = impl::bitset<MAX_ARGS>;  // TODO: maybe raised up to inspect()?
         using IDs = impl::bitset<MAX_OVERLOADS>;
 
         template <typename T>
@@ -8058,6 +8059,10 @@ public:
         struct Metadata {
             IDs id;
             inspect signature;
+
+            size_t memory_usage() const noexcept {
+                return sizeof(IDs) + signature.memory_usage();
+            }
 
             struct Hash {
                 using is_transparent = void;
@@ -8092,20 +8097,7 @@ public:
         using Cache = std::unordered_map<size_t, PyObject*>;
 
         size_t m_depth = 0;
-        Node::Types m_leading_edge = {
-            reinterpret_steal<Object>(nullptr),
-            {
-                impl::ArgKind::POS,
-                {
-                    {   // root node
-                        .name = "",
-                        .terminal = 0,
-                        .matches = 1,  // identifies all overloads, initialized to fallback
-                        .outgoing = {},  // contents of trie
-                    }
-                }
-            }
-        };
+        Node::Types m_leading_edge;  // holds the root node if overloads are present
         Data m_data = {};  // always holds fallback function at ID 1
         mutable Cache m_cache = {};
 
@@ -8293,6 +8285,11 @@ public:
                 return total;
             }
 
+            /// TODO: there needs to be some robust cycle detection when backfilling
+            /// alternate paths for keyword edges.  Since this should only be possible
+            /// for keywords, I can probably just filter based on name, and use an
+            /// out parameter to track the ones I've visited.
+
             /* Recursively insert outgoing edges along the given path.  Returns true if
             the inserted edge is among the last required on its path, which causes the
             insertion algorithm to attempt to fill in the terminal ID. */
@@ -8435,8 +8432,8 @@ public:
                 friend Overloads;
                 friend Node;
 
-                std::string arg_name;
-                Object arg_value;
+                std::string_view arg_name;
+                PyObject* arg_value;
                 impl::ArgKind arg_kind;
 
                 struct EdgeView {
@@ -8502,8 +8499,8 @@ public:
 
                     KindView advance() {
                         while (it != sentinel) {
-                            if (self->arg_value.is(nullptr) || check{}(
-                                ptr(self->arg_value),
+                            if (!self->arg_value || check{}(
+                                self->arg_value,
                                 ptr(it->first)
                             )) {
                                 KindView result{
@@ -8535,12 +8532,12 @@ public:
                 } types;
 
                 Iterator(
-                    impl::OverloadKey::Argument&& arg,
+                    const impl::OverloadKey::Argument& arg,
                     std::ranges::iterator_t<const Types>&& it,
                     std::ranges::sentinel_t<const Types>&& sentinel
-                ) : arg_name(std::move(arg.name)),
-                    arg_value(std::move(arg.value)),
-                    arg_kind(std::move(arg.kind)),
+                ) : arg_name(arg.name),
+                    arg_value(ptr(arg.value)),
+                    arg_kind(arg.kind),
                     types(this, std::move(it), std::move(sentinel))
                 {}
 
@@ -8585,16 +8582,23 @@ public:
             of name.  A null value will do the same for types, yielding all matching
             candidates in topological order and ignoring the templated type check.
             Finally, a positional-or-keyword kind will match all edges, regardless of
-            kind. */
+            kind.
+
+            Note that in the interest of performance, the iterator will only own a view
+            into the underlying name buffer and a borrowed reference to the value,
+            both of which must remain valid for the lifetime of the iterator.  This
+            avoids any unnecessary allocations or reference counting overhead during
+            overload resolution.  Both of these conditions can be guaranteed by using
+            the outer `Overloads::begin()` method to iterate over the whole graph. */
             template <typename check = instance> requires (valid_check<check>)
             [[nodiscard]] Iterator<check> begin(
-                impl::OverloadKey::Argument&& arg = {
+                const impl::OverloadKey::Argument& arg = {
                     {},
                     reinterpret_steal<Object>(nullptr),
                     impl::ArgKind::POS | impl::ArgKind::KW
                 }
             ) const {
-                return {std::move(arg), outgoing.begin(), outgoing.end()};
+                return {arg, outgoing.begin(), outgoing.end()};
             }
 
             [[nodiscard]] static impl::Sentinel end() noexcept {
@@ -8634,6 +8638,29 @@ public:
             m_data.emplace(1, std::move(signature));
         }
 
+        /* Return a reference to the root node of the trie.  This can be null if the
+        function has no overloads beyond the fallback implementation.  In that case,
+        the entire overload graph is deleted to save space, and will be rebuilt the
+        first time a new overload is registered. */
+        [[nodiscard]] Node* root() noexcept {
+            if (m_leading_edge.empty()) {
+                return nullptr;
+            }
+            auto types = m_leading_edge.begin();
+            auto kinds = types->second.begin();
+            auto edges = kinds->second.begin();
+            return &*edges;
+        }
+        [[nodiscard]] const Node* root() const noexcept {
+            if (m_leading_edge.empty()) {
+                return nullptr;
+            }
+            auto types = m_leading_edge.begin();
+            auto kinds = types->second.begin();
+            auto edges = kinds->second.begin();
+            return &*edges;
+        }
+
         /* Return a reference to the fallback function that will be chosen if no other
         overloads match a valid argument list. */
         [[nodiscard]] const Object& function() const noexcept {
@@ -8670,28 +8697,36 @@ public:
         [[nodiscard]] size_t memory_usage() const noexcept {
             size_t total = sizeof(Overloads);
             total += sizeof(typename Cache::value_type) * m_cache.size();
-            total += sizeof(Metadata) * m_data.size();
             for (const Metadata& overload : m_data) {
-                total += overload.signature.memory_usage();
+                total += overload.memory_usage();
             }
+            const Node* root = nullptr;
             total += sizeof(typename Node::Types::value_type) * m_leading_edge.size();
             for (const auto& [type, kinds] : m_leading_edge) {
                 total += sizeof(typename Node::Kinds::value_type) * kinds.size();
                 for (const auto& [kind, edges] : kinds) {
                     total += sizeof(typename Node::Edges::value_type) * edges.size();
+                    for (const Node& node : edges) {
+                        root = &node;
+                    }
                 }
             }
-            std::unordered_set<Node*> visited;
-            return total + root().memory_usage(visited);
+            if (root) {
+                std::unordered_set<const Node*> visited = {root};
+                total += root->memory_usage(visited);
+            }
+            return total;
         }
 
         /* The total number of nodes that have been allocated within the trie,
         including the root node. */
         [[nodiscard]] size_t total_nodes() const noexcept {
-            Node& root = this->root();
-            std::unordered_set<Node*> visited = {&root};
-            root.memory_usage(visited);
-            return visited.size();
+            if (const Node* root = this->root()) {
+                std::unordered_set<const Node*> visited = {root};
+                root->memory_usage(visited);
+                return visited.size();
+            }
+            return 0;
         }
 
         /* Estimate the current memory usage and total number of nodes at the same
@@ -8699,21 +8734,26 @@ public:
         [[nodiscard]] std::pair<size_t, size_t> stats() const noexcept {
             size_t total = sizeof(Overloads);
             total += sizeof(typename Cache::value_type) * m_cache.size();
-            total += sizeof(Metadata) * m_data.size();
             for (const Metadata& overload : m_data) {
-                total += overload.signature.memory_usage();
+                total += overload.memory_usage();
             }
+            const Node* root = nullptr;
             total += sizeof(typename Node::Types::value_type) * m_leading_edge.size();
             for (const auto& [type, kinds] : m_leading_edge) {
                 total += sizeof(typename Node::Kinds::value_type) * kinds.size();
                 for (const auto& [kind, edges] : kinds) {
                     total += sizeof(typename Node::Edges::value_type) * edges.size();
+                    for (const Node& node : edges) {
+                        root = &node;
+                    }
                 }
             }
-            Node& root = this->root();
-            std::unordered_set<Node*> visited = {&root};
-            total += root.memory_usage(visited);
-            return {total, visited.size()};
+            if (root) {
+                std::unordered_set<const Node*> visited = {root};
+                total += root->memory_usage(visited);
+                return {total, visited.size()};
+            }
+            return {total, 0};
         }
 
         /* Search against the function's overload cache to find a precomputed path
@@ -8740,23 +8780,6 @@ public:
             m_cache.clear();
         }
 
-        /* Return a reference to the root node of the trie.  This can be null if the
-        function has no overloads beyond the fallback implementation.  In that case,
-        the entire overload trie is deleted to save space, and will be rebuilt the
-        first time a new overload is registered. */
-        [[nodiscard]] Node& root() noexcept {
-            auto types = m_leading_edge.begin();
-            auto kinds = types->second.begin();
-            auto edges = kinds->second.begin();
-            return *edges;
-        }
-        [[nodiscard]] const Node& root() const noexcept {
-            auto types = m_leading_edge.begin();
-            auto kinds = types->second.begin();
-            auto edges = kinds->second.begin();
-            return *edges;
-        }
-
         /* Returns true if a function is present in the trie, as indicated by a
         linear search of `==` checks against each encoded function object. */
         [[nodiscard]] bool contains(const Object& func) const {
@@ -8778,19 +8801,51 @@ public:
             constexpr size_t indent = 4;
             constexpr std::string prefix(8, ' ');
 
-            Node& root = this->root();
+            // construct root node if it doesn't already exist
             Metadata& fallback = m_data.at(1);
-
-            // inspect the function and insert it into the metadata map
-            IDs id = 1;
-            id <<= root.matches.first_zero();
-            auto [it, inserted] = m_data.emplace(id, inspect(func));
-            if (!inserted) {
-                throw ValueError("overload already exists");
+            Node* root = this->root();
+            if (!root) {
+                auto [types, inserted] = m_leading_edge.emplace(
+                    reinterpret_steal<Object>(nullptr),
+                    typename Node::Kinds{{
+                        impl::ArgKind::POS,
+                        {{   // root node
+                            .name = "",
+                            .terminal = 0,
+                            .matches = 1,  // identifies all overloads, initialized to fallback
+                            .outgoing = {},  // contents of trie
+                        }}
+                    }}
+                );
+                if (!inserted) {
+                    throw ValueError("root node already exists");
+                }
+                try {
+                    auto kinds = types->second.begin();
+                    auto edges = kinds->second.begin();
+                    root = &*edges;
+                    root->insert(
+                        m_data,
+                        fallback,
+                        0,
+                        true
+                    );
+                } catch (...) {
+                    m_leading_edge.clear();
+                    throw;
+                }
             }
-            root.matches |= id;
+
+            IDs id = 1;
+            id <<= root->matches.first_zero();
 
             try {
+                auto [it, inserted] = m_data.emplace(id, inspect(func));
+                if (!inserted) {
+                    throw ValueError("overload already exists");
+                }
+                root->matches |= id;
+
                 // ensure the function is a viable overload of the enclosing signature
                 if (it->signature >= Signature{}) {
                     throw TypeError(
@@ -8809,22 +8864,24 @@ public:
                     );
                 }
 
-                // construct root node and insert fallback if it doesn't already exist
-                if (root.empty()) {
-                    root.insert(m_data, fallback, 0);
+                // insert the function into the trie, allocating new nodes as needed.
+                // This will throw a TypeError if the function conflicts with an
+                // existing overload
+                root->insert(m_data, *it, 0);
+
+                // clear cache and update depth if necessary
+                m_cache.clear();
+                if (it->signature.size() > m_depth) {
+                    m_depth = it->signature.size();
                 }
 
-                // insert the function into the trie, allocating new nodes as needed
-                root.insert(m_data, *it, 0);
-                m_cache.clear();
-
             } catch (...) {
-                root.remove(id);
-                m_data.erase(id);
-                if (empty()) {
+                if (m_data.size() <= 2) {
                     clear();
                 } else {
-                    root.matches &= ~id;
+                    root->remove(id);
+                    m_data.erase(id);
+                    root->matches &= ~id;
                 }
                 throw;
             }
@@ -8841,7 +8898,7 @@ public:
         method.  If multiple functions evaluate equal to the key, only the first (most
         specific) match will be removed. */
         [[maybe_unused]] Object remove(const Object& key) {
-            Node& root = this->root();
+            Node* root = this->root();
             auto it = this->begin();
             auto end = this->end();
             while (it != end) {
@@ -8857,7 +8914,7 @@ public:
                     } else {
                         m_cache.clear();
                         m_data.erase(data);
-                        root.matches &= ~data.id;
+                        root->matches &= ~data.id;
                         m_depth = 0;
                         for (const Metadata& data : m_data) {
                             if (data.signature.size() > m_depth) {
@@ -8874,10 +8931,8 @@ public:
 
         /* Remove all overloads from the trie, resetting it to its default state. */
         void clear() noexcept {
-            Node& root = this->root();
+            m_leading_edge.clear();  // drop root node
             m_cache.clear();
-            root.outgoing.clear();  // drop all nodes
-            root.matches = 1;  // reset IDs to only include fallback
             auto it = m_data.begin();
             while (it != m_data.end()) {
                 if (it->id == 1) {  // skip removing fallback
@@ -8889,7 +8944,10 @@ public:
             }
         }
 
-        /// TODO: fix traversal to conform to new edgeless design
+        /// TODO: fix traversal logic to conform to new edgeless design.  Also, the
+        /// leading edge might be empty, so I need to check for that and just return
+        /// an empty iterator in that case, or one that only yields the fallback
+        /// function?
 
         /* An iterator that traverses the trie in topological order, extracting the
         subset of overloads that match a given key.  As long as the key is valid, the
