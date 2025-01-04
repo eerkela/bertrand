@@ -1106,7 +1106,7 @@ public:
         }
 
         [[nodiscard]] size_t index() const noexcept {
-            return mask.first_one() - 1;
+            return mask.first_one();
         }
     };
 
@@ -2725,7 +2725,7 @@ public:
         }
 
         [[nodiscard]] constexpr size_t index() noexcept {
-            return mask.first_one() - 1;
+            return mask.first_one();
         }
     };
 
@@ -8181,6 +8181,7 @@ public:
         struct Metadata {
             IDs id;
             inspect signature;
+            std::unordered_set<std::shared_ptr<Node>> required;
 
             size_t memory_usage() const noexcept {
                 return sizeof(IDs) + signature.memory_usage();
@@ -8233,9 +8234,6 @@ public:
 
             struct Hash {
                 using is_transparent = void;
-                static size_t operator()(const Node& node) noexcept {
-                    return std::hash<std::string_view>{}(node.name);
-                }
                 static size_t operator()(std::string_view name) noexcept {
                     return std::hash<std::string_view>{}(name);
                 }
@@ -8243,14 +8241,8 @@ public:
 
             struct Equal {
                 using is_transparent = void;
-                static bool operator()(const Node& lhs, const Node& rhs) noexcept {
-                    return lhs.name == rhs.name;
-                }
-                static bool operator()(const Node& lhs, std::string_view rhs) noexcept {
-                    return std::string_view(lhs.name) == rhs;
-                }
-                static bool operator()(std::string_view lhs, const Node& rhs) noexcept {
-                    return lhs == std::string_view(rhs.name);
+                static bool operator()(std::string_view lhs, std::string_view rhs) noexcept {
+                    return lhs == rhs;
                 }
             };
 
@@ -8275,85 +8267,105 @@ public:
             /// actual names, meaning they must match exactly in order to be reused,
             /// and there may be more than one edge per candidate type/kind.
 
-            using Edges = std::unordered_set<Node, Hash, Equal>;
+            using Edges = std::unordered_map<std::string, std::shared_ptr<Node>, Hash, Equal>;
             using Kinds = std::map<impl::ArgKind, Edges>;
             using Types = std::map<Object, Kinds, TopoSort>;
 
-            /* Reuse an existing edge in the outgoing map or create a new one for the
-            given parameter. */
-            Node* insert_edge(
+            using Visited = std::unordered_set<std::shared_ptr<Node>>;
+            using Keywords = std::unordered_map<std::string_view, std::shared_ptr<Node>>;
+
+            /// TODO: this is still incorrect when it comes to reusing keywords.  If
+            /// I reuse an existing keyword, then I will have to recur along that path
+            /// until all keywords have been added, and this currently doesn't do that.
+            /// -> Probably the requirement here is that I only fill in the keyword
+            /// edges along each path individually, so that each component is only
+            /// strongly connected along its own path, and allows for infinite reuse.
+
+            std::shared_ptr<Node> insert_edge(
                 impl::ArgKind kind,
                 const inspect::Param* param,
-                const Metadata& overload
+                const Metadata& overload,
+                Keywords& keywords
             ) {
                 auto kinds = outgoing.try_emplace(param->type, Kinds{}).first;
                 auto edges = kinds->second.try_emplace(kind, Edges{}).first;
                 auto edge = edges->try_emplace(
-                    kind.kw() ? std::string(param->name) : std::string(),
-                    0,
-                    IDs{},
-                    Types{}
+                    kind.kw() ? param->name : std::string_view{},
+                    nullptr
                 ).first;
-                edge->matches |= overload.id;
-                return &*edge;
+                if (!edge->second) {
+                    auto it = keywords.find(param->name);
+                    if (it != keywords.end()) {
+                        edge->second = it->second;
+                    } else {
+                        edge->second = std::make_shared<Node>(IDs{}, Types{});
+                    }
+                }
+                (edge->second)->matches |= overload.id;
+                return edge->second;
             }
 
-            /* Check to see if a new overload conflicts with an existing one and raise
-            a corresponding error. */
             static void check_for_ambiguity(
                 const Data& data,
                 Metadata& overload,
-                Node* node
+                size_t index,
+                IDs& candidates,
+                Visited& visited
             ) {
                 static constexpr bool keep_defaults = false;
                 static constexpr size_t max_width = 80;
                 static constexpr size_t indent = 4;
                 static constexpr std::string prefix(8, ' ');
-                if (node->terminal) {
-                    IDs id = 1;
-                    id <<= node->terminal;
-                    throw ValueError(
-                        "overload conflicts with existing signature\n"
-                        "    existing:\n" +
-                        data.at(id).signature.to_string(
-                            keep_defaults,
-                            prefix,
-                            max_width,
-                            indent
-                        ) + "\n    new:\n" +
-                        overload.signature.to_string(
-                            keep_defaults,
-                            prefix,
-                            max_width,
-                            indent
-                        )
-                    );
+
+                // check to see if there are any remaining keyword arguments after this
+                bool terminal = true;
+                for (size_t i = index + 1; i < overload.signature.size(); ++i) {
+                    const inspect::Param& param = overload.signature[i];
+                    if (!(param.opt() || param.variadic())) {
+                        terminal = false;
+                        break;
+                    }
                 }
-                node->terminal = overload.id.first_one();
+
+                // if there are no required arguments, decompose the candidates and
+                // assert that they have at least one required argument that has not
+                // yet been visited on this path
+                if (terminal) {
+                    for (const IDs& id : candidates.components()) {
+                        if (id == overload.id) {
+                            continue;
+                        }
+                        const Metadata& existing = data.at(id);
+                        bool conflict = true;
+                        for (const auto& node : existing.required) {
+                            if (!visited.contains(node.get())) {
+                                conflict = false;
+                                break;
+                            }
+                        }
+                        if (conflict) {
+                            throw ValueError(
+                                "overload conflicts with existing signature\n"
+                                "    existing:\n" +
+                                existing.signature.to_string(
+                                    keep_defaults,
+                                    prefix,
+                                    max_width,
+                                    indent
+                                ) + "\n    new:\n" +
+                                overload.signature.to_string(
+                                    keep_defaults,
+                                    prefix,
+                                    max_width,
+                                    indent
+                                )
+                            );
+                        }
+                    }
+                }
             }
 
         public:
-            /* The name of the parameter that spawned this node, if it is a keyword.
-            Always empty for positional or variadic parameters.  Searches will attempt
-            to look up keywords via a hash table keyed on this name, allowing O(1)
-            access.  Nodes will only be reused during insertion if their names are
-            identical. */
-            std::string name;
-
-            /* Determines whether this node is one of the last required nodes on its
-            respective path.  Whenever a new overload is inserted into the trie, it
-            will recursively insert nodes for each parameter in its signature, reusing
-            existing nodes if possible.  When it reaches the end, it will reverse
-            course and fill in this identifier for the last required node and all
-            subsequent nodes (which can represent optional or variadic arguments).  If
-            any of these identifiers are nonzero to begin with, then it indicates an
-            ambiguity within the trie, with the value (after converting to a one-hot
-            ID) identifying the conflict for debugging purposes.  Storing this as a
-            simple integer increases the performance of ambiguity checks and saves a
-            handful of bytes per node, which can quickly add up.  The converted value
-            will always be present within the `matches` bitset. */
-            size_t terminal;
-
             /* Identifies the subset of overloads that include this node at some point
             along their paths.  As the trie is traversed, the subset of candidate
             overloads is determined by a sequence of bitwise ANDs against this bitset,
@@ -8395,9 +8407,9 @@ public:
                     total += sizeof(Kinds::value_type) * kinds.size();
                     for (const auto& [kind, edges] : kinds) {
                         total += sizeof(Edges::value_type) * edges.size();
-                        for (const Node& target : edges) {
-                            if (visited.insert(&target).second) {
-                                total += target.memory_usage(visited);
+                        for (const auto& [name, node] : edges) {
+                            if (visited.insert(node.get()).second) {
+                                total += node->memory_usage(visited);
                             }
                         }
                     }
@@ -8408,63 +8420,83 @@ public:
             /* Recursively insert outgoing edges along the given path.  Returns true if
             the inserted edge is among the last required on its path, which causes the
             insertion algorithm to attempt to fill in the terminal ID. */
-            bool insert(
+            void insert(
                 const Data& data,
                 Metadata& overload,
                 size_t index,
+                const IDs& candidates,
                 bool allow_positional,
-                std::unordered_set<std::string_view>& visited
+                Keywords& keywords,
+                Visited& visited
             ) {
+                // throw an error if this is among the last required arguments on this
+                // path and any of the candidates are fully satisfied
+                check_for_ambiguity(
+                    data,
+                    overload,
+                    index,
+                    candidates,
+                    visited
+                );
                 if (index >= overload.signature.size()) {
-                    return true;
+                    return;
                 }
-
-                bool result = false;
                 const inspect::Param* param = &overload.signature[index];
+
+                /// TODO: this handling of keyword arguments is very close, but not
+                /// quite there yet.
 
                 // There can only be one outgoing positional edge along a singular path
                 if (allow_positional) {
                     if (param->pos()) {
-                        Node* node = insert_edge(
+                        std::shared_ptr<Node> node = insert_edge(
                             impl::ArgKind::POS,
                             param,
-                            overload
+                            overload,
+                            keywords
                         );
-                        // positional-or-keyword edges that are inserted as positional
-                        // will be ignored when filling in keyword edges.
-                        if (param->kw()) {
-                            visited.emplace(param->name);
+                        visited.emplace(node);
+                        if (!param->opt()) {
+                            overload.required.emplace(node);
                         }
-                        if (node->insert(
+                        if (param->kw()) {
+                            keywords.emplace(param->name, node);
+                        }
+                        node->insert(
                             data,
                             overload,
                             index + 1,
+                            candidates & node->matches,
                             true,
+                            keywords,
                             visited
-                        )) {
-                            check_for_ambiguity(data, overload, node);
-                            result = param->opt();
-                        }
-                        // reset keywords before moving on to another path
+                        );
+                        visited.erase(node);
                         if (param->kw()) {
-                            visited.erase(param->name);
+                            /// TODO: maybe what I need to do is skip the loop below
+                            /// and place it up here, before removing the parameter
+                            /// name from the map.  That way it gets reused for the
+                            /// keyword edges if possible
+                            keywords.erase(param->name);
                         }
                     } else if (param->args()) {
-                        Node* node = insert_edge(
+                        std::shared_ptr<Node> node = insert_edge(
                             param->kind,
                             param,
-                            overload
+                            overload,
+                            keywords
                         );
-                        if (node->insert(
+                        visited.emplace(node);
+                        node->insert(
                             data,
                             overload,
                             index + 1,
+                            candidates & node->matches,
                             true,
+                            keywords,
                             visited
-                        )) {
-                            check_for_ambiguity(data, overload, node);
-                            result = true;
-                        }
+                        );
+                        visited.erase(node);
                     }
                 }
 
@@ -8477,35 +8509,35 @@ public:
                         ++i
                     ) {
                         param = &overload.signature[i];
-                        std::string_view name = param->kwargs() ?
-                            std::string_view{} : param->name;
-                        // skip keywords that have already been processed on this path
-                        if (param->args() || !visited.emplace(name).second) {
+                        if (param->args()) {
                             continue;
                         }
-                        Node* node = insert_edge(
+                        std::shared_ptr<Node> node = insert_edge(
                             param->kwargs() ?
                                 param->kind :
                                 impl::ArgKind(impl::ArgKind::KW),
                             param,
-                            overload
+                            overload,
+                            keywords
                         );
-                        if (node->insert(
+                        visited.emplace(node);
+                        if (!(param->opt() || param->variadic())) {
+                            overload.required.emplace(node);
+                        }
+                        keywords.emplace(param->name, node);
+                        node->insert(
                             data,
                             overload,
                             index + 1,
+                            candidates & node->matches,
                             false,
+                            keywords,
                             visited
-                        )) {
-                            check_for_ambiguity(data, overload, node);
-                            result = true;
-                        }
-                        // reset keywords before moving on to another path
-                        visited.erase(name);
+                        );
+                        visited.erase(node);
+                        keywords.erase(param->name);
                     }
                 }
-
-                return result;
             }
 
             /* Recursively purge all outgoing edges that are associated with the
@@ -8525,10 +8557,10 @@ public:
                         auto edges = kinds->second.begin();
                         auto edges_end = kinds->second.end();
                         while (edges != edges_end) {
-                            if (edges->matches & id) {
-                                edges->remove(id);  // recur
-                                edges->matches &= ~id;
-                                if (!edges->matches) {
+                            if (edges->second->matches & id) {
+                                edges->second->remove(id);  // recur
+                                edges->second->matches &= ~id;
+                                if (!edges->second->matches) {
                                     edges = kinds->second.erase(edges);
                                 } else {
                                     ++edges;
@@ -8681,10 +8713,10 @@ public:
 
                 const Object& type() const noexcept { return types->first; }
                 impl::ArgKind kind() const noexcept { return types.kinds->first; }
-                const std::string& name() const noexcept { return types.kinds.edges.it->name; }
+                const std::string& name() const noexcept { return types.kinds.edges->first; }
 
-                const Node& operator*() const { return *types.kinds.edges.it; }
-                const Node* operator->() const { return &**this; }
+                const Node& operator*() const { return *types.kinds.edges->second; }
+                const Node* operator->() const { return types.kinds.edges->second.get(); }
 
                 Iterator& operator++() {
                     ++types;
@@ -8773,23 +8805,23 @@ public:
         function has no overloads beyond the fallback implementation.  In that case,
         the entire overload trie is deleted to save space, and will be rebuilt the
         first time a new overload is registered. */
-        [[nodiscard]] Node* root() noexcept {
+        [[nodiscard]] std::shared_ptr<Node> root() noexcept {
             if (m_leading_edge.empty()) {
                 return nullptr;
             }
             auto types = m_leading_edge.begin();
             auto kinds = types->second.begin();
             auto edges = kinds->second.begin();
-            return &*edges;
+            return edges->second;
         }
-        [[nodiscard]] const Node* root() const noexcept {
+        [[nodiscard]] const std::shared_ptr<Node> root() const noexcept {
             if (m_leading_edge.empty()) {
                 return nullptr;
             }
             auto types = m_leading_edge.begin();
             auto kinds = types->second.begin();
             auto edges = kinds->second.begin();
-            return &*edges;
+            return edges->second;
         }
 
         /* Return a reference to the fallback function that will be chosen if no other
@@ -8849,8 +8881,8 @@ public:
                 total += sizeof(typename Node::Kinds::value_type) * kinds.size();
                 for (const auto& [kind, edges] : kinds) {
                     total += sizeof(typename Node::Edges::value_type) * edges.size();
-                    for (const Node& node : edges) {
-                        root = &node;
+                    for (const auto& [name, node] : edges) {
+                        root = node.get();
                     }
                 }
             }
@@ -8917,8 +8949,6 @@ public:
                     typename Node::Kinds{{
                         impl::ArgKind::POS,
                         {{   // root node
-                            .name = "",
-                            .terminal = 0,
                             .matches = 1,  // identifies all overloads, initialized to fallback
                             .outgoing = {},  // contents of trie
                         }}
@@ -9059,6 +9089,7 @@ public:
             while (it != m_data.end()) {
                 if (it->id == 1) {  // skip removing fallback
                     m_depth = it->signature.size();
+                    it->required.clear();
                     ++it;
                 } else {
                     it = m_data.erase(it);
@@ -9186,6 +9217,10 @@ public:
                 stack.pop_back();
                 return nullptr;
             }
+
+            /// TODO: cycle detection needs to consider shared node structure.  Check
+            /// if any node in the stack has the same address, or any keyword edge has
+            /// the same name.  This will only be true if the name is not empty.
 
             /* Check whether an outgoing edge is already contained within the stack,
             indicating a cycle or a duplicate keyword from an overlapping key. */
