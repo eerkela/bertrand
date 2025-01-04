@@ -432,7 +432,7 @@ For C++ functions where the signature is encoded at compile time, the `py::signa
 class should be used instead, which is much more detailed and eliminates runtime
 overhead. */
 struct inspect {
-    using Required = impl::bitset<MAX_ARGS>;  /// TODO: rewrite the bitset logic to use this
+    using Required = impl::bitset<MAX_ARGS>;
 
     struct Param;
     struct Callback;
@@ -824,7 +824,7 @@ private:
     Object m_func;
     Object m_name = get_name();
     size_t m_hash = 0;
-    uint64_t m_required = 0;
+    Required m_required = 0;
     size_t m_first_keyword = std::numeric_limits<size_t>::max();
     std::vector<Param> m_parameters;
     std::unordered_set<const Param*, Hash, Equal> m_names;
@@ -864,11 +864,45 @@ public:
         }(name))
     {}
 
-    /// TODO: figure out copy/move constructors/assignment operators
+    inspect(const inspect& other) :
+        m_func(other.m_func),
+        m_name(other.m_name),
+        m_hash(other.m_hash),
+        m_required(other.m_required),
+        m_first_keyword(other.m_first_keyword),
+        m_parameters(other.m_parameters),
+        m_return_annotation(other.m_return_annotation),
+        m_signature(other.m_signature),
+        m_key(other.m_key)
+    {
+        m_names.reserve(other.m_names.size());
+        for (const Param& param : m_parameters) {
+            m_names.emplace(&param);
+        }
+    }
 
-    /// TODO: add a facility to compute total memory usage, so that overload tries
-    /// can report it as accurately as possible.
+    inspect& operator=(const inspect& other) {
+        if (this != &other) {
+            m_func = other.m_func;
+            m_name = other.m_name;
+            m_hash = other.m_hash;
+            m_required = other.m_required;
+            m_first_keyword = other.m_first_keyword;
+            m_parameters = other.m_parameters;
+            m_names.clear();
+            m_names.reserve(other.m_names.size());
+            for (const Param& param : m_parameters) {
+                m_names.emplace(&param);
+            }
+            m_return_annotation = other.m_return_annotation;
+            m_signature = other.m_signature;
+            m_key = other.m_key;
+        }
+        return *this;
+    }
 
+    inspect(inspect&& other) noexcept = default;
+    inspect& operator=(inspect&& other) = default;
 
     /// TODO: this class will eventually need a bunch of really tight integrations
     /// with `py::Function`, so when I finally get to that, I'll have to revisit this.
@@ -891,6 +925,16 @@ public:
             Exception::from_python();
         }
         return {data, static_cast<size_t>(size)};
+    }
+
+    /* Estimate the total memory consumption of the signature in bytes.  Note that this
+    does not include any memory held by Python, including for the `inspect.Signature`
+    instance that backs this object. */
+    [[nodiscard]] size_t memory_usage() const noexcept {
+        size_t total = sizeof(inspect);
+        total += m_parameters.size() * sizeof(Param);
+        total += m_names.size() * sizeof(const Param*);
+        return total;
     }
 
     /* Get a reference to the normalized `inspect.Signature` instance that was obtained
@@ -925,7 +969,7 @@ public:
 
     /* Return a bitmask encoding the positions of all of the required arguments within
     the signature, for easy comparison during overload resolution. */
-    [[nodiscard]] uint64_t required() const noexcept {
+    [[nodiscard]] const Required& required() const noexcept {
         return m_required;
     }
 
@@ -944,7 +988,7 @@ public:
         Object type;
         Object default_value;
         Object partial;
-        uint64_t mask;
+        Required mask;
         impl::ArgKind kind;
 
         [[nodiscard]] bool posonly() const noexcept { return kind.posonly(); }
@@ -966,12 +1010,7 @@ public:
         }
 
         [[nodiscard]] size_t index() const noexcept {
-            size_t idx = 0;
-            uint64_t mask = this->mask;
-            while (mask >>= 1) {
-                ++idx;
-            }
-            return idx;
+            return mask.first_one() - 1;
         }
     };
 
@@ -1979,14 +2018,12 @@ private:
         ArgTraits<T>::opt() ? 0 : _opt_idx<Ts...> + 1;
 
     template <size_t I>
-    static constexpr uint64_t _required = 0;
+    static constexpr inspect::Required _required = 0;
     template <size_t I> requires (I < sizeof...(Args))
-    static constexpr uint64_t _required<I> =
-        _required<I + 1> | (
-            ArgTraits<impl::unpack_type<I, Args...>>::opt() ||
-            ArgTraits<impl::unpack_type<I, Args...>>::variadic() ?
-                0ULL : 1ULL << I
-        );
+    static constexpr inspect::Required _required<I> = (_required<I + 1> << 1) | !(
+        ArgTraits<impl::unpack_type<I, Args...>>::opt() ||
+        ArgTraits<impl::unpack_type<I, Args...>>::variadic()
+    );
 
 public:
     static constexpr size_t n                   = sizeof...(Args);
@@ -2415,7 +2452,7 @@ public:
             _proper_argument_order<0>;
 
         static constexpr bool args_fit_within_bitset =
-            Source::n <= 64;
+            Source::n <= inspect::Required::size();
 
         static constexpr bool args_are_python =
             _args_are_python<0>;
@@ -2523,7 +2560,7 @@ public:
             return {
                 .name = std::string_view(ArgTraits<T>::name),
                 .kind = ArgTraits<T>::kind,
-                .mask = 1ULL << I,
+                .mask = typename inspect::Required(1) << I,
                 .type = []() -> Object {
                     using U = ArgTraits<T>::type;
                     if constexpr (impl::has_python<U>) {
@@ -2562,7 +2599,7 @@ public:
     public:
         std::string_view name;
         impl::ArgKind kind;
-        uint64_t mask;
+        inspect::Required mask;
         Object(*type)();
         bool(*isinstance)(const Object&);
         bool(*issubclass)(const Object&);
@@ -2592,12 +2629,7 @@ public:
         }
 
         [[nodiscard]] constexpr size_t index() noexcept {
-            size_t result = 0;
-            uint64_t mask = this->mask;
-            while (mask >>= 1) {
-                ++result;
-            }
-            return result;
+            return mask.first_one() - 1;
         }
     };
 
@@ -2615,7 +2647,7 @@ public:
     can accept to 64, which is reasonable for most functions.  The performance
     benefits justify the limitation, and if you need more than 64 arguments, you
     should probably be using a different design pattern anyways. */
-    static constexpr uint64_t required = _required<0>;
+    static constexpr inspect::Required required = _required<0>;
 
 private:
     static constexpr Callback return_callback {
@@ -2656,54 +2688,6 @@ private:
         },
     };
 
-    /* In order to avoid superfluous compile errors, the perfect keyword hash map
-    should not be created unless the signature is well-formed. */
-    template <bool valid>
-    struct get_keyword_table {
-        using KeywordTable = StaticMap<size_t>;
-        static constexpr KeywordTable table = {};
-    };
-    template <>
-    struct get_keyword_table<true> {
-        template <typename, size_t, typename...>
-        struct extract_keywords;
-        template <typename... out, size_t I, typename... Ts>
-        struct extract_keywords<args<out...>, I, Ts...> {
-            using type = StaticMap<size_t, ArgTraits<out>::name...>;
-            static constexpr type operator()(auto&&... indices) {
-                return {std::forward<decltype(indices)>(indices)...};
-            }
-        };
-        template <typename... out, size_t I, typename T, typename... Ts>
-        struct extract_keywords<args<out...>, I, T, Ts...> {
-            template <typename>
-            struct filter {
-                using type = args<out...>;
-                static constexpr auto operator()(auto&&... indices) noexcept {
-                    return extract_keywords<type, I + 1, Ts...>{}(
-                        std::forward<decltype(indices)>(indices)...
-                    );
-                }
-            };
-            template <typename U> requires (ArgTraits<U>::kw())
-            struct filter<U> {
-                using type = args<out..., U>;
-                static constexpr auto operator()(auto&&... indices) noexcept {
-                    return extract_keywords<type, I + 1, Ts...>{}(
-                        std::forward<decltype(indices)>(indices)...,
-                        I
-                    );
-                }
-            };
-            using type = extract_keywords<typename filter<T>::type, I + 1, Ts...>::type;
-            static constexpr auto operator()(auto&&... indices) noexcept {
-                return filter<T>{}(std::forward<decltype(indices)>(indices)...);
-            }
-        };
-        using KeywordTable = extract_keywords<args<>, 0, Args...>::type;
-        static constexpr KeywordTable table = extract_keywords<args<>, 0, Args...>{}();
-    };
-
     /* A flat array of callback objects whose indices are aligned to the enclosing
     parameter list. */
     using PositionalTable = std::array<Callback, n>;
@@ -2712,8 +2696,53 @@ private:
             return PositionalTable{Callback::template create<Is>()...};
         }(std::make_index_sequence<n>{});
 
-    /// TODO: maybe the keyword table can store pointers to the callbacks instead of
-    /// indices?  That might be slightly more efficient.
+    /* In order to avoid superfluous compile errors, the perfect keyword hash map
+    should not be created unless the signature is well-formed. */
+    template <bool valid>
+    struct get_keyword_table {
+        using KeywordTable = StaticMap<const Callback&>;
+        static constexpr KeywordTable table = {};
+    };
+    template <>
+    struct get_keyword_table<true> {
+        template <typename, size_t, typename...>
+        struct extract_keywords;
+        template <typename... out, size_t I, typename... Ts>
+        struct extract_keywords<args<out...>, I, Ts...> {
+            using type = StaticMap<const Callback&, ArgTraits<out>::name...>;
+            static constexpr type operator()(auto&&... pointers) {
+                return {std::forward<decltype(pointers)>(pointers)...};
+            }
+        };
+        template <typename... out, size_t I, typename T, typename... Ts>
+        struct extract_keywords<args<out...>, I, T, Ts...> {
+            template <typename>
+            struct filter {
+                using type = args<out...>;
+                static constexpr auto operator()(auto&&... pointers) noexcept {
+                    return extract_keywords<type, I + 1, Ts...>{}(
+                        std::forward<decltype(pointers)>(pointers)...
+                    );
+                }
+            };
+            template <typename U> requires (ArgTraits<U>::kw())
+            struct filter<U> {
+                using type = args<out..., U>;
+                static constexpr auto operator()(auto&&... pointers) noexcept {
+                    return extract_keywords<type, I + 1, Ts...>{}(
+                        std::forward<decltype(pointers)>(pointers)...,
+                        positional_table[I]
+                    );
+                }
+            };
+            using type = extract_keywords<typename filter<T>::type, I + 1, Ts...>::type;
+            static constexpr auto operator()(auto&&... pointers) noexcept {
+                return filter<T>{}(std::forward<decltype(pointers)>(pointers)...);
+            }
+        };
+        using KeywordTable = extract_keywords<args<>, 0, Args...>::type;
+        static constexpr KeywordTable table = extract_keywords<args<>, 0, Args...>{}();
+    };
 
     /* A perfect hash map of keyword names to their corresponding indices in the
     positional table. */
@@ -7783,7 +7812,7 @@ public:
         logic. */
         void validate() const {
             constexpr Signature sig;
-            uint64_t mask = 0;
+            inspect::Required mask = 0;
             size_t offset = this->offset();
             for (size_t i = 0; i < nargs; ++i) {
                 Object value = reinterpret_borrow<Object>(array[i + offset]);
@@ -7833,11 +7862,11 @@ public:
             }
             mask &= Signature::required;
             if (mask != Signature::required) {
-                uint64_t missing = Signature::required & ~mask;
+                inspect::Required missing = Signature::required & ~mask;
                 std::string msg = "missing required arguments: [";
                 size_t i = 0;
                 while (i < Signature::n) {
-                    if (missing & (1ULL << i)) {
+                    if (missing & (typename inspect::Required(1) << i)) {
                         const Callback& callback = positional_table[i];
                         if (callback.name.empty()) {
                             msg += "<parameter " + std::to_string(i) + ">";
@@ -7850,7 +7879,7 @@ public:
                     ++i;
                 }
                 while (i < Signature::n) {
-                    if (missing & (1ULL << i)) {
+                    if (missing & (typename inspect::Required(1) << i)) {
                         const Callback& callback = positional_table[i];
                         if (callback.name.empty()) {
                             msg += ", <parameter " + std::to_string(i) + ">";
@@ -8270,10 +8299,8 @@ public:
             ) const noexcept {
                 size_t total = sizeof(Node) + sizeof(Types::value_type) * outgoing.size();
                 for (const auto& [type, kinds] : outgoing) {
-
                     total += sizeof(Kinds::value_type) * kinds.size();
                     for (const auto& [kind, edges] : kinds) {
-
                         total += sizeof(Edges::value_type) * edges.size();
                         for (const Node& target : edges) {
                             if (visited.insert(&target).second) {
@@ -8285,11 +8312,6 @@ public:
                 return total;
             }
 
-            /// TODO: there needs to be some robust cycle detection when backfilling
-            /// alternate paths for keyword edges.  Since this should only be possible
-            /// for keywords, I can probably just filter based on name, and use an
-            /// out parameter to track the ones I've visited.
-
             /* Recursively insert outgoing edges along the given path.  Returns true if
             the inserted edge is among the last required on its path, which causes the
             insertion algorithm to attempt to fill in the terminal ID. */
@@ -8297,7 +8319,8 @@ public:
                 const Data& data,
                 Metadata& overload,
                 size_t index,
-                bool allow_positional
+                bool allow_positional,
+                std::unordered_set<std::string_view>& visited
             ) {
                 if (index >= overload.signature.size()) {
                     return true;
@@ -8314,14 +8337,24 @@ public:
                             param,
                             overload
                         );
+                        // positional-or-keyword edges that are inserted as positional
+                        // will be ignored when filling in keyword edges.
+                        if (param->kw()) {
+                            visited.emplace(param->name);
+                        }
                         if (node->insert(
                             data,
                             overload,
                             index + 1,
-                            true
+                            true,
+                            visited
                         )) {
                             check_for_ambiguity(data, overload, node);
                             result = param->opt();
+                        }
+                        // reset keywords before moving on to another path
+                        if (param->kw()) {
+                            visited.erase(param->name);
                         }
                     } else if (param->args()) {
                         Node* node = insert_edge(
@@ -8333,7 +8366,8 @@ public:
                             data,
                             overload,
                             index + 1,
-                            true
+                            true,
+                            visited
                         )) {
                             check_for_ambiguity(data, overload, node);
                             result = true;
@@ -8342,7 +8376,7 @@ public:
                 }
 
                 // Keyword edges must be inserted for all remaining keyword arguments
-                // within the same path.
+                // within the same path
                 if (param->kw() || param->opt() || param->variadic()) {
                     for (
                         size_t i = data.signature.first_keyword();
@@ -8350,9 +8384,10 @@ public:
                         ++i
                     ) {
                         param = &overload.signature[i];
-                        if ((param->pos() && i < index) || param->args()) {
-                            // skip positional-or-keyword parameters that have already
-                            // been inserted as positional parameters
+                        std::string_view name = param->kwargs() ?
+                            std::string_view{} : param->name;
+                        // skip keywords that have already been processed on this path
+                        if (param->args() || !visited.emplace(name).second) {
                             continue;
                         }
                         Node* node = insert_edge(
@@ -8366,11 +8401,14 @@ public:
                             data,
                             overload,
                             index + 1,
-                            false
+                            false,
+                            visited
                         )) {
                             check_for_ambiguity(data, overload, node);
                             result = true;
                         }
+                        // reset keywords before moving on to another path
+                        visited.erase(name);
                     }
                 }
 
@@ -8678,14 +8716,14 @@ public:
         }
 
         /* The total number of overloads stored within the trie, excluding the fallback
-        implementation. */
+        function. */
         [[nodiscard]] auto size() const noexcept {
             return m_data.size() - 1;
         }
 
         /* The maximum depth of the trie, which is equivalent to the total number of
-        arguments of the longest overload.  Variadic arguments take up a single
-        position for the purposes of this calculation. */
+        arguments of its longest overload.  Variadic arguments take up a single index
+        for the purposes of this calculation. */
         [[nodiscard]] size_t max_depth() const noexcept {
             return m_depth;
         }
@@ -8695,42 +8733,17 @@ public:
         the function objects themselves or the `inspect.Signature` instances used to
         back the trie's metadata). */
         [[nodiscard]] size_t memory_usage() const noexcept {
-            size_t total = sizeof(Overloads);
-            total += sizeof(typename Cache::value_type) * m_cache.size();
-            for (const Metadata& overload : m_data) {
-                total += overload.memory_usage();
-            }
-            const Node* root = nullptr;
-            total += sizeof(typename Node::Types::value_type) * m_leading_edge.size();
-            for (const auto& [type, kinds] : m_leading_edge) {
-                total += sizeof(typename Node::Kinds::value_type) * kinds.size();
-                for (const auto& [kind, edges] : kinds) {
-                    total += sizeof(typename Node::Edges::value_type) * edges.size();
-                    for (const Node& node : edges) {
-                        root = &node;
-                    }
-                }
-            }
-            if (root) {
-                std::unordered_set<const Node*> visited = {root};
-                total += root->memory_usage(visited);
-            }
-            return total;
+            return this->stats().first;
         }
 
         /* The total number of nodes that have been allocated within the trie,
         including the root node. */
         [[nodiscard]] size_t total_nodes() const noexcept {
-            if (const Node* root = this->root()) {
-                std::unordered_set<const Node*> visited = {root};
-                root->memory_usage(visited);
-                return visited.size();
-            }
-            return 0;
+            return stats().second;
         }
 
         /* Estimate the current memory usage and total number of nodes at the same
-        time.  This is more efficient than using separate calls. */
+        time.  This is more efficient than using separate calls if both are needed. */
         [[nodiscard]] std::pair<size_t, size_t> stats() const noexcept {
             size_t total = sizeof(Overloads);
             total += sizeof(typename Cache::value_type) * m_cache.size();
@@ -8760,7 +8773,8 @@ public:
         through the trie.  Whenever `begin()` is called with a vectorcall array, the
         first result is always inserted here to optimize repeated calls with the same
         signature.  If no cached function is found, this method returns null, forcing a
-        full search of the trie.  Returns a borrowed reference otherwise.
+        full search of the trie during overload resolution.  Returns a borrowed
+        reference otherwise.
 
         Note that all arguments must be properly normalized in order for cache searches
         to remain stable.  This means inserting any partial arguments and converting to
@@ -8865,9 +8879,17 @@ public:
                 }
 
                 // insert the function into the trie, allocating new nodes as needed.
-                // This will throw a TypeError if the function conflicts with an
+                // This will throw a ValueError if the function conflicts with an
                 // existing overload
-                root->insert(m_data, *it, 0);
+                std::unordered_set<std::string_view> visited;
+                visited.reserve(it->signature.size());
+                root->insert(
+                    m_data,
+                    *it,
+                    0,
+                    true,
+                    visited
+                );
 
                 // clear cache and update depth if necessary
                 m_cache.clear();
@@ -8893,28 +8915,35 @@ public:
         the fallback function.
 
         This works by iterating over the trie's contents in topological order and
-        performing an equality check against the input key, which allows for
-        transparent comparisons if the function and/or key overrides the `__eq__`
-        method.  If multiple functions evaluate equal to the key, only the first (most
-        specific) match will be removed. */
+        performing equality checks against the input key, allowing for transparent
+        comparisons if the function and/or key overrides the `__eq__` method.  If
+        multiple functions evaluate equal to the key, only the first (most specific)
+        match will be removed. */
         [[maybe_unused]] Object remove(const Object& key) {
             Node* root = this->root();
+            if (!root) {
+                if (key == this->function()) {
+                    throw KeyError("cannot remove the fallback implementation");
+                }
+                return reinterpret_borrow<Object>(Py_None);
+            }
+
             auto it = this->begin();
-            auto end = this->end();
-            while (it != end) {
+            auto sentinel = this->end();
+            while (it != sentinel) {
                 const Metadata& data = *it.curr;
                 if (data.signature.function() == key) {
                     if (data.id == 1) {
                         throw KeyError("cannot remove the fallback implementation");
                     }
                     Object result = data.signature.function();
-                    root->remove(data.id);
                     if (m_data.size() <= 2) {
                         clear();
                     } else {
+                        root->remove(data.id);
+                        root->matches &= ~data.id;
                         m_cache.clear();
                         m_data.erase(data);
-                        root->matches &= ~data.id;
                         m_depth = 0;
                         for (const Metadata& data : m_data) {
                             if (data.signature.size() > m_depth) {
@@ -8943,11 +8972,6 @@ public:
                 }
             }
         }
-
-        /// TODO: fix traversal logic to conform to new edgeless design.  Also, the
-        /// leading edge might be empty, so I need to check for that and just return
-        /// an empty iterator in that case, or one that only yields the fallback
-        /// function?
 
         /* An iterator that traverses the trie in topological order, extracting the
         subset of overloads that match a given key.  As long as the key is valid, the
@@ -9070,27 +9094,15 @@ public:
                 return nullptr;
             }
 
-            /// TODO: this style of cycle detection is going to be a bit hard, because
-            /// I can't just check node addresses?  Each node is always going to point
-            /// down the trie, never up, so the addresses will not be the same.
-
             /* Check whether an outgoing edge is already contained within the stack,
             indicating a cycle or a duplicate keyword from an overlapping key. */
             bool has_cycle(const Node::template Iterator<check>& it) const {
                 if (it.kind().kw()) {
                     for (size_t i = stack.size(); i-- > 1;) {
                         const Frame& frame = stack[i];
-                        if (&**frame.incoming == &*it || (
-                            frame.incoming->kind().kw() &&
+                        if (frame.incoming->kind().kw() &&
                             frame.incoming->name() == it->name
-                        )) {
-                            return true;
-                        }
-                    }
-                } else {
-                    for (size_t i = stack.size(); i-- > 1;) {
-                        const Frame& frame = stack[i];
-                        if (&**frame.incoming == &*it) {
+                        ) {
                             return true;
                         }
                     }
@@ -9102,24 +9114,20 @@ public:
             against the overload's `required` bitmask to check whether all necessary
             arguments have been given for this path. */
             bool validate(const Metadata& overload) const {
-                /// TODO: this should use the fancy new bitset class
-                uint64_t required = overload.signature.required();
-                uint64_t mask = 0;
+                inspect::Required mask = 0;
                 for (size_t i = 1; i < stack.size(); ++i) {
-                    const Edge& edge = *stack[i].outgoing;
-                    if (edge.kind.pos()) {
+                    const auto& it = stack[i].outgoing;
+                    if (it.kind().pos()) {
                         mask |= 1ULL << i;
-                    } else if (edge.kind.kw()) {
-                        /// TODO: using get() for this is a bit clunky, since it
-                        /// conflicts with other classes that use std::get<>()-like
-                        /// semantics.
-                        const auto* lookup = overload.signature.get(edge.target->name);
+                    } else if (it.kind().kw()) {
+                        const inspect::Param* lookup = overload.signature.get(it.name());
                         if (!lookup) {
                             return false;
                         }
                         mask |= lookup->mask;
                     }
                 }
+                inspect::Required required = overload.signature.required();
                 return (mask & required) == required;
             }
 
@@ -9132,6 +9140,13 @@ public:
             ) : key(std::move(key)),
                 data(&data)
             {
+                // if there is no root node, then we return an empty iterator.
+                // Alternatively, I could either insert the fallback function into the
+                // trie or return an iterator that only yields the fallback function.
+                if (leading_edge.empty()) {
+                    return;
+                }
+
                 // vectorcall iterators are initialized with a hash, for caching purposes
                 if (key.has_hash) {
                     stack.reserve(key->size() + 2);  // +1 for leading edge, +1 for overflow
@@ -9331,7 +9346,7 @@ public:
     template <StaticStr Key> requires (contains<Key>())
     [[nodiscard]] static constexpr const Callback& get() noexcept {
         if constexpr (KeywordTable::template contains<Key>()) {
-            return positional_table[std::get<Key>(keyword_table)];
+            return std::get<Key>(keyword_table);
         } else {
             return positional_table[kwargs_idx];
         }
@@ -13409,7 +13424,7 @@ struct Interface<Function<F>> : impl::FunctionTag {
     /* A bitmask of all the required arguments needed to call this function.  This is
     used during argument validation to quickly determine if the parameter list is
     satisfied when keyword are provided out of order, etc. */
-    static constexpr uint64_t required = impl::Signature<F>::required;
+    static constexpr inspect::Required required = impl::Signature<F>::required;
 
     /* An FNV-1a seed that was found to perfectly hash the function's keyword argument
     names. */
@@ -13700,7 +13715,7 @@ struct Interface<Type<Function<F>>> {
     /* A bitmask of all the required arguments needed to call this function.  This is
     used during argument validation to quickly determine if the parameter list is
     satisfied when keyword are provided out of order, etc. */
-    static constexpr uint64_t required = Interface<Function<F>>::required;
+    static constexpr inspect::Required required = Interface<Function<F>>::required;
 
     /* An FNV-1a seed that was found to perfectly hash the function's keyword argument
     names. */
