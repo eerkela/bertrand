@@ -8266,11 +8266,15 @@ public:
             /// actual names, meaning they must match exactly in order to be reused,
             /// and there may be more than one edge per candidate type/kind.
 
+            /// TODO: maybe the matches masks are stored in the edges and not on the
+            /// nodes?  That might reduce the set of candidate overloads and potentially
+            /// increase correctness
+
             using Edges = std::unordered_map<std::string, std::shared_ptr<Node>, Hash, Equal>;
             using Kinds = std::map<impl::ArgKind, Edges>;
             using Types = std::map<Object, Kinds, TopoSort>;
 
-            struct Edge {
+            struct Visited {
                 PyObject* type;
                 impl::ArgKind kind;
                 std::string_view name;
@@ -8295,7 +8299,7 @@ public:
                 const Object& type,
                 impl::ArgKind kind,
                 std::string_view name,
-                std::vector<Edge>& path
+                std::vector<Visited>& path
             ) {
                 auto a = outgoing.try_emplace(type, Kinds{}).first;
                 auto b = a->second.try_emplace(kind, Edges{}).first;
@@ -8315,7 +8319,7 @@ public:
             static void insert_cyclic_edge(
                 const Metadata& overload,
                 const inspect::Param& param,
-                const std::vector<Edge>& path,
+                const std::vector<Visited>& path,
                 std::vector<Node*>& origins
             ) {
                 if (param.kw() || param.kwargs()) {
@@ -8348,7 +8352,7 @@ public:
                 const Data& data,
                 const Metadata& overload,
                 const IDs& candidates,
-                std::vector<Edge>& path,
+                std::vector<Visited>& path,
                 bool allow_positional
             ) {
                 static constexpr bool keep_defaults = false;
@@ -8365,7 +8369,7 @@ public:
                 // visited on this path
                 inspect::Required mask;
                 for (size_t i = 0; i < path.size(); ++i) {
-                    const Edge& edge = path[i];
+                    const Visited& edge = path[i];
                     if (edge.kind.pos()) {
                         mask |= overload.signature[i].mask;
                     } else if (edge.kind.kw()) {
@@ -8384,7 +8388,7 @@ public:
                         const Metadata& existing = data.at(id);
                         mask = 0;
                         for (size_t i = 0; i < path.size(); ++i) {
-                            const Edge& edge = path[i];
+                            const Visited& edge = path[i];
                             if (edge.kind.pos()) {
                                 mask |= existing.signature[i].mask;
                             } else if (edge.kind.kw()) {
@@ -8423,7 +8427,7 @@ public:
                         for (const auto& [name, node] : edges) {
                             if (node->matches & overload.id) {
                                 bool has_cycle = false;
-                                for (const Edge& edge : path) {
+                                for (const Visited& edge : path) {
                                     if (
                                         edge.node == node ||
                                         (edge.kind.kw() && edge.name == name)
@@ -8512,7 +8516,7 @@ public:
             void insert(const Data& data, const Metadata& overload) {
                 // loop 1: insert edges along canonical path
                 Node* node = this;
-                std::vector<Edge> path;
+                std::vector<Visited> path;
                 path.reserve(overload.signature.size());
                 for (size_t i = 0; i < overload.signature.size(); ++i) {
                     const inspect::Param& param = &overload.signature[i];
@@ -9128,9 +9132,6 @@ public:
             }
         }
 
-        /// TODO: Iterators need to be updated to conform to new cycle detection and
-        /// node names.
-
         /* An iterator that traverses the trie in topological order, extracting the
         subset of overloads that match a given key.  As long as the key is valid, the
         final overload will always be the fallback implementation.  Otherwise, the
@@ -9147,13 +9148,13 @@ public:
                 names/kinds. */
                 Node::template Iterator<check> outgoing;
 
-                /* The index of the next argument to be matched from the key. */
-                size_t index = 0;
-
                 /* The edge that was followed to get to this frame.  This is always
                 equal to the outgoing edge of the previous frame, except for the
                 leading frame, which sets this to null. */
                 const Node::template Iterator<check>* incoming = nullptr;
+
+                /* The index of the next argument to be matched from the key. */
+                size_t index = 0;
 
                 /* Rolling intersection of possible overloads along this path.  Set to
                 all overloads for the leading frame, and then intersected with the
@@ -9206,7 +9207,7 @@ public:
                 while (index < key->size()) {
                     const Argument& arg = (*key)[index];
                     if (arg.kind.variadic() && arg.value.is(nullptr)) {
-                        while (grow(arg, index));  // do nothing
+                        while (grow(arg, index));
                     } else if (!grow(arg, index)) {
                         advance();
                         return;
@@ -9238,8 +9239,8 @@ public:
                 }
                 stack.emplace_back(
                     stack.back().outgoing->template begin<check>(arg),
-                    index,
                     &stack.back(),
+                    index,
                     matches
                 );
                 while (stack.back().outgoing != impl::Sentinel{}) {
@@ -9252,19 +9253,22 @@ public:
                 return nullptr;
             }
 
-            /// TODO: cycle detection needs to consider shared node structure.  Check
-            /// if any node in the stack has the same address, or any keyword edge has
-            /// the same name.  This will only be true if the name is not empty.
-
             /* Check whether an outgoing edge is already contained within the stack,
             indicating a cycle or a duplicate keyword from an overlapping key. */
             bool has_cycle(const Node::template Iterator<check>& it) const {
                 if (it.kind().kw()) {
                     for (size_t i = stack.size(); i-- > 1;) {
                         const Frame& frame = stack[i];
-                        if (frame.incoming->kind().kw() &&
+                        if (&**frame.incoming == &*it || (
+                            frame.incoming->kind().kw() &&
                             frame.incoming->name() == it->name
-                        ) {
+                        )) {
+                            return true;
+                        }
+                    }
+                } else {
+                    for (size_t i = stack.size(); i-- > 1;) {
+                        if (&**stack[i].incoming == &*it) {
                             return true;
                         }
                     }
@@ -9280,7 +9284,11 @@ public:
                 for (size_t i = 1; i < stack.size(); ++i) {
                     const auto& it = stack[i].outgoing;
                     if (it.kind().pos()) {
-                        mask |= 1ULL << i;
+                        const inspect::Param* lookup = overload.signature.get(i - 1);
+                        if (!lookup) {
+                            return false;
+                        }
+                        mask |= lookup->mask;
                     } else if (it.kind().kw()) {
                         const inspect::Param* lookup = overload.signature.get(it.name());
                         if (!lookup) {
@@ -9289,8 +9297,8 @@ public:
                         mask |= lookup->mask;
                     }
                 }
-                inspect::Required required = overload.signature.required();
-                return (mask & required) == required;
+                mask &= overload.signature.required();
+                return mask == overload.signature.required();
             }
 
             Iterator(
