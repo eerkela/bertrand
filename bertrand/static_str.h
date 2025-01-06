@@ -2204,16 +2204,47 @@ namespace impl {
                 return positions;
             }(std::make_index_sequence<significant_chars>{});
 
+        /* Hash a compile-time string according to the computed perfect hash algorithm. */
+        template <static_str Key>
+        static constexpr size_t hash(const Key& str) noexcept {
+            size_t out = 0;
+            for (size_t pos : positions) {
+                unsigned char c = pos < str.size() ? str[pos] : 0;
+                out += weights[c];
+            }
+            return out;
+        }
+
+        /* Hash a string literal according to the computed perfect hash algorithm. */
+        template <size_t N>
+        static constexpr size_t hash(const char(&str)[N]) noexcept {
+            constexpr size_t M = N - 1;
+            size_t out = 0;
+            for (size_t pos : positions) {
+                unsigned char c = pos < M ? str[pos] : 0;
+                out += weights[c];
+            }
+            return out;
+        }
+
+        /* Hash a string literal according to the computed perfect hash algorithm. */
+        template <size_t N>
+        static constexpr size_t hash(const char(&str)[N], size_t& len) noexcept {
+            constexpr size_t M = N - 1;
+            size_t out = 0;
+            for (size_t pos : positions) {
+                unsigned char c = pos < M ? str[pos] : 0;
+                out += weights[c];
+            }
+            len = M;
+            return out;
+        }
+
         /* Hash a character buffer according to the computed perfect hash algorithm. */
         template <std::convertible_to<const char*> T>
             requires (!static_str<T> && !string_literal<T>)
         static constexpr size_t hash(const T& str) noexcept {
             const char* start = str;
-            /// TODO: it might be possible to use an extended bitmask with length
-            /// equal to max_length, with 1s at the positions of the significant
-            /// characters, and 0s elsewhere.  I would then load up to 8 characters
-            /// at a time, and use the bitmask to extract the significant characters
-            /// and look up their associative values, rather than doing a linear scan.
             if constexpr (positions.empty()) {
                 return 0;
             }
@@ -2274,47 +2305,18 @@ namespace impl {
             return out;
         }
 
-        /* Hash a string literal according to the computed perfect hash algorithm. */
-        template <size_t N>
-        static constexpr size_t hash(const char(&str)[N]) noexcept {
-            constexpr size_t M = N - 1;
-            size_t out = 0;
-            for (size_t pos : positions) {
-                unsigned char c = pos < M ? str[pos] : 0;
-                out += weights[c];
-            }
-            return out;
-        }
-
-        /* Hash a string literal according to the computed perfect hash algorithm. */
-        template <size_t N>
-        static constexpr size_t hash(const char(&str)[N], size_t& len) noexcept {
-            constexpr size_t M = N - 1;
-            size_t out = 0;
-            for (size_t pos : positions) {
-                unsigned char c = pos < M ? str[pos] : 0;
-                out += weights[c];
-            }
-            len = M;
-            return out;
-        }
-
-        /* Hash a compile-time string according to the computed perfect hash algorithm. */
-        template <static_str Key>
-        static constexpr size_t hash(const Key& str) noexcept {
-            size_t out = 0;
-            for (size_t pos : positions) {
-                unsigned char c = pos < str.size() ? str[pos] : 0;
-                out += weights[c];
-            }
-            return out;
-        }
-
         /* Hash a string view according to the computed perfect hash algorithm. */
-        static constexpr size_t hash(std::string_view str) noexcept {
+        template <std::convertible_to<std::string_view> T>
+            requires (
+                !static_str<T> &&
+                !string_literal<T> &&
+                !std::convertible_to<T, const char*>
+            )
+        static constexpr size_t hash(const T& str) noexcept {
+            std::string_view s = str;
             size_t out = 0;
             for (size_t pos : positions) {
-                unsigned char c = pos < str.size() ? str[pos] : 0;
+                unsigned char c = pos < s.size() ? s[pos] : 0;
                 out += weights[c];
             }
             return out;

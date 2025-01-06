@@ -217,6 +217,11 @@ public:
     using type = T;
     using bound_to = bertrand::args<>;
     using unbind = Arg;
+    template <StaticStr N> requires (arg_name<N>)
+    using with_name = Arg<N, T>;
+    template <typename V> requires (!std::is_void_v<V>)
+    using with_type = Arg<Name, V>;
+
     type value;
 
     [[nodiscard]] constexpr type operator*() && { std::forward<type>(value); }
@@ -267,6 +272,11 @@ public:
         using type = T;
         using bound_to = bertrand::args<>;
         using unbind = opt;
+        template <StaticStr N> requires (arg_name<N>)
+        using with_name = Arg<N, T>::opt;
+        template <typename V> requires (!std::is_void_v<V>)
+        using with_type = Arg<Name, V>::opt;
+
         type value;
 
         [[nodiscard]] constexpr type operator*() && { std::forward<type>(value); }
@@ -304,6 +314,11 @@ public:
         using type = T;
         using bound_to = bertrand::args<>;
         using unbind = pos;
+        template <StaticStr N> requires (arg_name<N>)
+        using with_name = Arg<N, T>::pos;
+        template <typename V> requires (!std::is_void_v<V>)
+        using with_type = Arg<Name, V>::pos;
+
         type value;
 
         [[nodiscard]] constexpr type operator*() && { std::forward<type>(value); }
@@ -346,6 +361,11 @@ public:
             using type = T;
             using bound_to = bertrand::args<>;
             using unbind = opt;
+            template <StaticStr N> requires (arg_name<N>)
+            using with_name = Arg<N, T>::pos::opt;
+            template <typename V> requires (!std::is_void_v<V>)
+            using with_type = Arg<Name, V>::pos::opt;
+
             type value;
 
             [[nodiscard]] constexpr type operator*() && { std::forward<type>(value); }
@@ -385,6 +405,11 @@ public:
         using type = T;
         using bound_to = bertrand::args<>;
         using unbind = kw;
+        template <StaticStr N> requires (arg_name<N>)
+        using with_name = Arg<N, T>::kw;
+        template <typename V> requires (!std::is_void_v<V>)
+        using with_type = Arg<Name, V>::kw;
+
         type value;
 
         [[nodiscard]] constexpr type operator*() && { std::forward<type>(value); }
@@ -427,6 +452,11 @@ public:
             using type = T;
             using bound_to = bertrand::args<>;
             using unbind = opt;
+            template <StaticStr N> requires (arg_name<N>)
+            using with_name = Arg<N, T>::kw::opt;
+            template <typename V> requires (!std::is_void_v<V>)
+            using with_type = Arg<Name, V>::kw::opt;
+
             type value;
 
             [[nodiscard]] constexpr type operator*() && { std::forward<type>(value); }
@@ -475,6 +505,11 @@ public:
     >>;
     using bound_to = bertrand::args<>;
     using unbind = Arg;
+    template <StaticStr N> requires (arg_name<N>)
+    using with_name = Arg<N, T>;
+    template <typename V> requires (!std::is_void_v<V>)
+    using with_type = Arg<Name, V>;
+
     vec value;
 
     [[nodiscard]] constexpr vec& operator*() { return value; }
@@ -531,6 +566,11 @@ public:
     >>;
     using bound_to = bertrand::args<>;
     using unbind = Arg;
+    template <StaticStr N> requires (arg_name<N>)
+    using with_name = Arg<N, T>;
+    template <typename V> requires (!std::is_void_v<V>)
+    using with_type = Arg<Name, V>;
+
     map value;
 
     [[nodiscard]] constexpr map& operator*() { return value; }
@@ -833,6 +873,13 @@ constexpr impl::ArgFactory<name> arg {};
 positional-only arguments to maintain C++ style. */
 template <typename T>
 struct ArgTraits {
+private:
+    template <StaticStr N>
+    struct _with_name { using type = Arg<N, T>::pos; };
+    template <StaticStr N> requires (N.empty())
+    struct _with_name<N> { using type = T; };
+
+public:
     using type                                  = T;
     static constexpr StaticStr name             = "";
     static constexpr ArgKind kind               = ArgKind::POS;
@@ -859,6 +906,10 @@ struct ArgTraits {
     using bind                                  = impl::BoundArg<T, Vs...>;
     using bound_to                              = bertrand::args<>;
     using unbind                                = T;
+    template <StaticStr N> requires (arg_name<N> || N.empty())
+    using with_name                             = _with_name<N>::type;
+    template <typename V> requires (!std::is_void_v<V>)
+    using with_type                             = V;
 };
 
 
@@ -868,6 +919,11 @@ template <is_arg T>
 struct ArgTraits<T> {
 private:
     using T2 = std::remove_cvref_t<T>;
+
+    template <StaticStr N>
+    struct _with_name { using type = T2::template with_name<N>; };
+    template <StaticStr N> requires (N.empty())
+    struct _with_name<N> { using type = T2::type; };
 
 public:
     using type                                  = T2::type;
@@ -890,6 +946,10 @@ public:
     using bind                                  = T2::template bind<Vs...>;
     using unbind                                = T2::unbind;
     using bound_to                              = T2::bound_to;
+    template <StaticStr N> requires (arg_name<N> || N.empty())
+    using with_name                             = _with_name<N>::type;
+    template <typename V> requires (!std::is_void_v<V>)
+    using with_type                             = T2::template with_type<V>;
 };
 
 

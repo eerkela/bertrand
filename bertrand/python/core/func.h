@@ -2002,28 +2002,6 @@ namespace std {
 namespace py {
 
 
-/// TODO: also, Signature can potentially expose a helper type that converts
-/// the signature to a canonicalized Python form (assuming that's valid), which would
-/// be used whenever a `py::def` is converted into a `py::Function`.  That would mean
-/// the Python function would have a std::function that included only Python arguments,
-/// and that std::function would encapsulate a `py::def` that expects the C++ arguments.
-/// The Python function would then trigger an implicit conversion from the Python
-/// types to the C++ types, and then call the C++ function with the converted
-/// arguments, and then convert the return value back to a Python type.  This would
-/// all happen automatically, such that you could write the following in C++:
-
-/// export constexpr py::def add([](py::Arg<"a", int> a, py::Arg<"b", int> b) {
-///     return *a + *b;
-/// });
-
-/// constexpr int result = add(py::arg<"b"> = 1, py::arg<"a"> = 2);
-
-/// and in Python, you could equivalently write:
-
-/// >>> add(b = 1, a = 2)
-/// 3
-
-
 /* The canonical form of `py::Signature`, which encapsulates all of the internal call
 machinery, as much of which as possible is evaluated at compile time.  All other
 specializations should redirect to this form in order to avoid reimplementing the nuts
@@ -2159,6 +2137,14 @@ public:
 
     template <typename... As>
     using with_args = Signature<Return(As...)>;
+
+    using as_python = Signature<
+        impl::python_type<Return>(
+            typename ArgTraits<Args>::template with_type<
+                impl::python_type<Args>
+            >...
+        )
+    >;
 
     /* Holds a series of template constraints that can be used to validate function
     signatures according to Python calling conventions.  Individual constraints are
@@ -2651,7 +2637,7 @@ public:
         friend Signature;
 
         template <size_t I>
-        [[nodiscard]] static constexpr Callback create() {
+        static constexpr Callback create() {
             using T = impl::unpack_type<I, Args...>;
             return {
                 .name = std::string_view(ArgTraits<T>::name),
@@ -3572,18 +3558,11 @@ public:
         return typename Unbind::Partial{};
     }
 
-    /* Bind a C++ argument list to the enclosing signature, inserting default values
-    and partial arguments where necessary.  This enables and implements the signature's
-    pure C++ call operator as a 3-way, compile-time merge between the partial
-    arguments, default values, and given source arguments, provided they fulfill the
-    enclosing signature.  Additionally, bound arguments can be saved and encoded into a
-    partial signature in a chainable fashion, using the same infrastructure to simulate
-    a normal function call at every step.  Any existing partial arguments will be
-    folded into the resulting signature, facilitating higher-order function composition
-    (currying, etc.) that can be done entirely at compile time. */
+private:
+
     template <typename... Values>
-    struct Bind {
-    private:
+    struct _Bind {
+    protected:
         using Source = Signature<Return(Values...)>;
 
         template <size_t I, size_t J, size_t K>
@@ -4847,35 +4826,7 @@ public:
             }
         };
 
-        template <typename>
-        struct get_signature { using type = void; };
-        template <typename Source>
-            requires (
-                !Source::has_args &&
-                !Source::has_kwargs &&
-                Check<Source>::proper_argument_order &&
-                Check<Source>::no_qualified_arg_annotations &&
-                Check<Source>::no_duplicate_args &&
-                Check<Source>::no_extra_positional_args &&
-                Check<Source>::no_extra_keyword_args &&
-                Check<Source>::no_conflicting_values &&
-                Check<Source>::can_convert
-            )
-        struct get_signature<Source> {
-            using type = std::remove_cvref_t<decltype(call<0, 0, 0>::bind(
-                std::declval<Partial>(),
-                std::declval<Values...>()
-            ))>::type;
-        };
-
     public:
-        /// TODO: this signature type would conflict with a lowercased Signature<>
-        /// class, so it needs to be renamed somehow.  Also, it would be great if it
-        /// simply were not available if the conditions weren't met, rather than being
-        /// void.
-        using signature = get_signature<Source>::type;
-        static constexpr bool valid_partial = !std::is_void_v<signature>;
-
         static constexpr size_t n               = Source::n;
         static constexpr size_t n_pos           = Source::n_pos;
         static constexpr size_t n_kw            = Source::n_kw;
@@ -4984,6 +4935,41 @@ public:
         }
     };
 
+public:
+    /* Bind a C++ argument list to the enclosing signature, inserting default values
+    and partial arguments where necessary.  This enables and implements the signature's
+    pure C++ call operator as a 3-way, compile-time merge between the partial
+    arguments, default values, and given source arguments, provided they fulfill the
+    enclosing signature.  Additionally, bound arguments can be saved and encoded into a
+    partial signature in a chainable fashion, using the same infrastructure to simulate
+    a normal function call at every step.  Any existing partial arguments will be
+    folded into the resulting signature, facilitating higher-order function composition
+    (currying, etc.) that can be done entirely at compile time. */
+    template <typename... Values>
+    struct Bind : _Bind<Values...> {};
+    template <typename... Values>
+        requires (
+            !(impl::arg_pack<Values> || ...) &&
+            !(impl::kwarg_pack<Values> || ...) &&
+            Check<Signature<Return(Values...)>>::proper_argument_order &&
+            Check<Signature<Return(Values...)>>::no_qualified_arg_annotations &&
+            Check<Signature<Return(Values...)>>::no_duplicate_args &&
+            Check<Signature<Return(Values...)>>::no_extra_positional_args &&
+            Check<Signature<Return(Values...)>>::no_extra_keyword_args &&
+            Check<Signature<Return(Values...)>>::no_conflicting_values &&
+            Check<Signature<Return(Values...)>>::can_convert
+        )
+    struct Bind<Values...> : _Bind<Values...> {
+        /* `Bind<Args...>::partial` produces a partial signature with the bound
+        arguments filled in.  This is only available if the arguments are well-formed
+        and partially satisfy the enclosing signature. */
+        using partial =
+            std::remove_cvref_t<decltype(_Bind<Values...>::template call<0, 0, 0>::bind(
+                std::declval<Partial>(),
+                std::declval<Values...>()
+            ))>;
+    };
+
     /* Bind the given C++ arguments to produce a partial tuple in chainable fashion.
     Any existing partial arguments will be carried over whenever this method is
     called. */
@@ -4999,12 +4985,17 @@ public:
             Bind<A...>::no_conflicting_values &&
             Bind<A...>::can_convert
         )
-    [[nodiscard]] static constexpr auto bind(P&& partial, A&&... values) {
+    [[nodiscard]] static constexpr auto bind(P&& partial, A&&... args) {
         return Bind<A...>::bind(
             std::forward<P>(partial),
-            std::forward<A>(values)...
+            std::forward<A>(args)...
         );
     }
+
+    /// TODO: maybe constructing a vectorcall array is not possible unless the
+    /// arguments are convertible to python?  That way, you would call the vectorcall
+    /// constructor with C++ arguments, convert them to the target arguments, and then
+    /// convert those to Python.
 
     /* Adopt or produce a Python vectorcall array for the enclosing signature, allowing
     a matching C++ function to be invoked from Python, or a Python function to be
@@ -8002,10 +7993,10 @@ public:
     /* Adopt a vectorcall array from Python in denormalized form. */
     [[nodiscard]] static Vectorcall vectorcall(
         PyObject* const* args,
-        size_t nargs,
+        size_t nargsf,
         PyObject* kwnames
     ) {
-        return {args, nargs, kwnames};
+        return {args, nargsf, kwnames};
     }
 
     /* Construct a normalized vectorcall array from C++. */
@@ -8092,7 +8083,7 @@ public:
             inspect signature;
 
             size_t memory_usage() const noexcept {
-                return sizeof(IDs) + signature.memory_usage();
+                return sizeof(IDs) + this->signature.memory_usage();
             }
 
             struct Hash {
@@ -8724,8 +8715,11 @@ public:
             }
         };
 
-        Overloads(std::string_view name, const Object& fallback) {
-            inspect sig(fallback, name);
+        template <std::convertible_to<std::string_view> T>
+            requires (args_are_python && return_is_python)
+        Overloads(const T& name, const Object& fallback) {
+            std::string_view str = name;
+            inspect sig(fallback, str);
 
             /// TODO: if I receive an instance of `bertrand.Function`, then the
             /// signature check can be done just through some type checks rather than
@@ -8739,7 +8733,7 @@ public:
                 constexpr std::string prefix(8, ' ');
                 throw TypeError(
                     "signature mismatch\n    expected:\n" + Signature{}.to_string(
-                        name,
+                        str,
                         prefix,
                         max_width,
                         indent
@@ -9344,8 +9338,10 @@ public:
 
     /* Construct an overload trie with the given fallback function, which must be a
     Python function that is callable with the enclosing signature. */
-    [[nodiscard]] static Overloads overloads(std::string&& name, const Object& func) {
-        return {std::move(name), func};
+    template <std::convertible_to<std::string_view> T>
+        requires (args_are_python && return_is_python)
+    [[nodiscard]] static Overloads overloads(const T& name, const Object& func) {
+        return {name, func};
     }
 
     /* Dummy constructor for CTAD purposes. */
