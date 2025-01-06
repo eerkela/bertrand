@@ -1127,6 +1127,10 @@ public:
         return **it;
     }
 
+    /// TODO: all of the various get() accessors need to be standardized somehow.
+    /// Probably the pointer-based versions should be renamed to find(), and get()
+    /// should be reserved for `std::get<>()`-based accessors.
+
     /* Get the parameter at index i.  Allows Python-style negative indexing, which
     counts backwards from the tail of the parameter list, and returns a null pointer
     if the index is out of bounds. */
@@ -4865,6 +4869,10 @@ public:
         };
 
     public:
+        /// TODO: this signature type would conflict with a lowercased Signature<>
+        /// class, so it needs to be renamed somehow.  Also, it would be great if it
+        /// simply were not available if the conditions weren't met, rather than being
+        /// void.
         using signature = get_signature<Source>::type;
         static constexpr bool valid_partial = !std::is_void_v<signature>;
 
@@ -4935,8 +4943,6 @@ public:
             );
         }
 
-        /// TODO: use invoke_with_packs to simplify the C++ call operator
-
         /* Invoke a C++ function from C++ using Python-style arguments. */
         template <impl::inherits<Partial> P, impl::inherits<Defaults> D, typename F>
             requires (
@@ -4956,15 +4962,8 @@ public:
             F&& func,
             Values... args
         ) {
-            /// NOTE: source positional and keyword packs must be converted
-            /// into PositionalPack and KeywordPack helpers, which are
-            /// destructively iterated over within the call algorithm and
-            /// validated empty just before calling the target function,
-            /// wherein they are omitted.
-            if constexpr (Source::has_args && Source::has_kwargs) {
-                return []<size_t... Prev, size_t... Next>(
-                    std::index_sequence<Prev...>,
-                    std::index_sequence<Next...>,
+            return invoke_with_packs(
+                [](
                     auto&& parts,
                     auto&& defaults,
                     auto&& func,
@@ -4974,97 +4973,14 @@ public:
                         std::forward<decltype(parts)>(parts),
                         std::forward<decltype(defaults)>(defaults),
                         std::forward<decltype(func)>(func),
-                        impl::unpack_arg<Prev>(
-                            std::forward<decltype(args)>(args)...
-                        )...,
-                        PositionalPack(impl::unpack_arg<Source::args_idx>(
-                            std::forward<decltype(args)>(args)...
-                        )),
-                        impl::unpack_arg<Source::args_idx + 1 + Next>(
-                            std::forward<decltype(args)>(args)...
-                        )...,
-                        KeywordPack(impl::unpack_arg<Source::kwargs_idx>(
-                            std::forward<decltype(args)>(args)...
-                        ))
+                        std::forward<decltype(args)>(args)...
                     );
-                }(
-                    std::make_index_sequence<Source::args_idx>{},
-                    std::make_index_sequence<
-                        Source::kwargs_idx - (Source::args_idx + 1)
-                    >{},
-                    std::forward<P>(parts),
-                    std::forward<D>(defaults),
-                    std::forward<F>(func),
-                    std::forward<Values>(args)...
-                );
-
-            } else if constexpr (Source::has_args) {
-                return []<size_t... Prev, size_t... Next>(
-                    std::index_sequence<Prev...>,
-                    std::index_sequence<Next...>,
-                    auto&& parts,
-                    auto&& defaults,
-                    auto&& func,
-                    auto&&... args
-                ) {
-                    return call<0, 0, 0>::invoke(
-                        std::forward<decltype(parts)>(parts),
-                        std::forward<decltype(defaults)>(defaults),
-                        std::forward<decltype(func)>(func),
-                        impl::unpack_arg<Prev>(
-                            std::forward<decltype(args)>(args)...
-                        )...,
-                        PositionalPack(impl::unpack_arg<Source::args_idx>(
-                            std::forward<decltype(args)>(args)...
-                        )),
-                        impl::unpack_arg<Source::args_idx + 1 + Next>(
-                            std::forward<decltype(args)>(args)...
-                        )...
-                    );
-                }(
-                    std::make_index_sequence<Source::args_idx>{},
-                    std::make_index_sequence<Source::n - (Source::args_idx + 1)>{},
-                    std::forward<P>(parts),
-                    std::forward<D>(defaults),
-                    std::forward<F>(func),
-                    std::forward<Values>(args)...
-                );
-
-            } else if constexpr (Source::has_kwargs) {
-                return []<size_t... Prev>(
-                    std::index_sequence<Prev...>,
-                    auto&& parts,
-                    auto&& defaults,
-                    auto&& func,
-                    auto&&... args
-                ) {
-                    return call<0, 0, 0>::invoke(
-                        std::forward<decltype(parts)>(parts),
-                        std::forward<decltype(defaults)>(defaults),
-                        std::forward<decltype(func)>(func),
-                        impl::unpack_arg<Prev>(
-                            std::forward<decltype(args)>(args)...
-                        )...,
-                        KeywordPack(impl::unpack_arg<Source::kwargs_idx>(
-                            std::forward<decltype(args)>(args)...
-                        ))
-                    );
-                }(
-                    std::make_index_sequence<Source::kwargs_idx>{},
-                    std::forward<P>(parts),
-                    std::forward<D>(defaults),
-                    std::forward<F>(func),
-                    std::forward<Values>(args)...
-                );
-
-            } else {
-                return call<0, 0, 0>::invoke(
-                    std::forward<P>(parts),
-                    std::forward<D>(defaults),
-                    std::forward<F>(func),
-                    std::forward<Values>(args)...
-                );
-            }
+                },
+                std::forward<P>(parts),
+                std::forward<D>(defaults),
+                std::forward<F>(func),
+                std::forward<Values>(args)...
+            );
         }
     };
 
@@ -7433,7 +7349,7 @@ public:
                         size_t& hash,
                         auto&& parts,
                         auto&&... args
-                    ){
+                    ) {
                         call<0, 0, 0>::create(
                             array,
                             idx,
@@ -8259,10 +8175,6 @@ public:
             /// actual names, meaning they must match exactly in order to be reused,
             /// and there may be more than one edge per candidate type/kind.
 
-            /// TODO: maybe the matches masks are stored in the edges and not on the
-            /// nodes?  That might reduce the set of candidate overloads and potentially
-            /// increase correctness
-
             using Edges = std::unordered_map<std::string, std::shared_ptr<Node>, Hash, Equal>;
             using Kinds = std::map<impl::ArgKind, Edges>;
             using Types = std::map<Object, Kinds, TopoSort>;
@@ -8813,7 +8725,7 @@ public:
         };
 
         Overloads(std::string_view name, const Object& fallback) {
-            inspect signature(fallback, name);
+            inspect sig(fallback, name);
 
             /// TODO: if I receive an instance of `bertrand.Function`, then the
             /// signature check can be done just through some type checks rather than
@@ -8821,7 +8733,7 @@ public:
             /// performance of conversions from Python -> C++ in the case where you're
             /// using bertrand types from the beginning.
 
-            if (signature != Signature{}) {
+            if (sig != Signature{}) {
                 constexpr size_t max_width = 80;
                 constexpr size_t indent = 4;
                 constexpr std::string prefix(8, ' ');
@@ -8831,7 +8743,7 @@ public:
                         prefix,
                         max_width,
                         indent
-                    ) + "\n    received:\n" + signature.to_string(
+                    ) + "\n    received:\n" + sig.to_string(
                         false,
                         prefix,
                         max_width,
@@ -8840,8 +8752,8 @@ public:
                 );
             };
 
-            m_depth = signature.size();
-            m_data.emplace(1, std::move(signature));
+            m_depth = sig.size();
+            m_data.emplace(1, std::move(sig));
         }
 
         /* Return a reference to the root node of the trie.  This can be null if the

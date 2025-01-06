@@ -308,6 +308,9 @@ protected:
         }
     }
 
+    /// TODO: rather than def<>, use type<> or cls<> to disambiguate from py::def,
+    /// which is the function definition keyword.
+
     /* A CRTP base class that generates bindings for a new Python type that wraps an
     external C++ type.
 
