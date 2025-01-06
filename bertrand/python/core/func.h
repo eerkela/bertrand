@@ -840,7 +840,7 @@ private:
         m_names.reserve(sig.size);
 
         // parse each parameter
-        Py_ssize_t idx = 0;
+        size_t idx = 0;
         for (Object param : sig.parameters) {
             init_parameter parsed(ctx, parts, sig, idx, param);
             if (
@@ -856,7 +856,7 @@ private:
                 std::move(parsed.annotation),
                 std::move(parsed.default_value),
                 std::move(parsed.partial),
-                Required(1) << idx,
+                idx,
                 parsed.kind
             );
             m_names.emplace(&m_parameters.back());
@@ -1084,7 +1084,7 @@ public:
         Object type;
         Object default_value;
         Object partial;
-        Required mask;  /// TODO: just store the index rather than a mask - this saves about 24 bytes per argument
+        size_t index;
         impl::ArgKind kind;
 
         [[nodiscard]] bool posonly() const noexcept { return kind.posonly(); }
@@ -1103,10 +1103,6 @@ public:
                 ptr(type),
                 kind
             );
-        }
-
-        [[nodiscard]] size_t index() const noexcept {
-            return mask.first_one();
         }
     };
 
@@ -2656,7 +2652,7 @@ public:
             return {
                 .name = std::string_view(ArgTraits<T>::name),
                 .kind = ArgTraits<T>::kind,
-                .mask = typename inspect::Required(1) << I,
+                .index = I,
                 .type = []() -> Object {
                     using U = ArgTraits<T>::type;
                     if constexpr (impl::has_python<U>) {
@@ -2695,7 +2691,7 @@ public:
     public:
         std::string_view name;
         impl::ArgKind kind;
-        inspect::Required mask;
+        size_t index;
         Object(*type)();
         bool(*isinstance)(const Object&);
         bool(*issubclass)(const Object&);
@@ -2723,10 +2719,6 @@ public:
                 static_cast<size_t>(kind)
             );
         }
-
-        [[nodiscard]] constexpr size_t index() noexcept {
-            return mask.first_one();
-        }
     };
 
     /* A bitmask with a 1 in the position of all of the required arguments in the
@@ -2749,7 +2741,7 @@ private:
     static constexpr Callback return_callback {
         .name = "",
         .kind = 0,
-        .mask = 0,
+        .index = 0,
         .type = []() -> Object {
             using U = Return;
             if constexpr (impl::has_python<U>) {
@@ -7907,8 +7899,9 @@ public:
         diagnose the problem, without contributing any overhead to the rest of the call
         logic. */
         void validate() const {
+            using Required = inspect::Required;
             constexpr Signature sig;
-            inspect::Required mask = 0;
+            Required mask;
             size_t offset = this->offset();
             for (size_t i = 0; i < nargs; ++i) {
                 Object value = reinterpret_borrow<Object>(array[i + offset]);
@@ -7926,7 +7919,7 @@ public:
                         repr(callback->type()) + "', not: '" + repr(value) + "'"
                     );
                 }
-                mask |= callback->mask;
+                mask |= Required(1) << callback->index;
             }
             for (size_t i = 0, transition = offset + nargs; i < kwcount; ++i) {
                 Object name = reinterpret_borrow<Object>(
@@ -7954,11 +7947,11 @@ public:
                         "', not: '" + repr(value) + "'"
                     );
                 }
-                mask |= callback->mask;
+                mask |= Required(1) << callback->index;
             }
             mask &= Signature::required;
             if (mask != Signature::required) {
-                inspect::Required missing = Signature::required & ~mask;
+                Required missing = Signature::required & ~mask;
                 std::string msg = "missing required arguments: [";
                 size_t i = 0;
                 while (i < Signature::n) {
@@ -8355,6 +8348,7 @@ public:
                 std::vector<Visited>& path,
                 bool allow_positional
             ) {
+                using Required = inspect::Required;
                 static constexpr bool keep_defaults = false;
                 static constexpr size_t max_width = 80;
                 static constexpr size_t indent = 4;
@@ -8367,13 +8361,13 @@ public:
 
                 // generate a bitmask encoding the required arguments that have been
                 // visited on this path
-                inspect::Required mask;
+                Required mask;
                 for (size_t i = 0; i < path.size(); ++i) {
                     const Visited& edge = path[i];
                     if (edge.kind.pos()) {
-                        mask |= overload.signature[i].mask;
+                        mask |= Required(1) << overload.signature[i].index;
                     } else if (edge.kind.kw()) {
-                        mask |= overload.signature[edge.name].mask;
+                        mask |= Required(1) << overload.signature[edge.name].index;
                     }
                 }
 
@@ -8390,9 +8384,11 @@ public:
                         for (size_t i = 0; i < path.size(); ++i) {
                             const Visited& edge = path[i];
                             if (edge.kind.pos()) {
-                                mask |= existing.signature[i].mask;
+                                mask |= Required(1) <<
+                                    existing.signature[i].index;
                             } else if (edge.kind.kw()) {
-                                mask |= existing.signature[edge.name].mask;
+                                mask |= Required (1) <<
+                                    existing.signature[edge.name].index;
                             }
                         }
                         mask &= existing.signature.required();
@@ -9280,7 +9276,8 @@ public:
             against the overload's `required` bitmask to check whether all necessary
             arguments have been given for this path. */
             bool validate(const Metadata& overload) const {
-                inspect::Required mask = 0;
+                using Required = inspect::Required;
+                Required mask;
                 for (size_t i = 1; i < stack.size(); ++i) {
                     const auto& it = stack[i].outgoing;
                     if (it.kind().pos()) {
@@ -9288,13 +9285,13 @@ public:
                         if (!lookup) {
                             return false;
                         }
-                        mask |= lookup->mask;
+                        mask |= Required(1) << lookup->index;
                     } else if (it.kind().kw()) {
                         const inspect::Param* lookup = overload.signature.get(it.name());
                         if (!lookup) {
                             return false;
                         }
-                        mask |= lookup->mask;
+                        mask |= Required(1) << lookup->index;
                     }
                 }
                 mask &= overload.signature.required();
