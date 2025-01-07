@@ -37,21 +37,21 @@ template parameters, and for them to be manipulated entirely at compile-time usi
 the familiar Python string interface.  Furthermore, templates can be specialized based
 on these strings, allowing for full compile-time flexibility based on their values. */
 template <size_t N>
-struct StaticStr;
+struct static_str;
 
 
-/* CTAD guide allows StaticStr to be used as a template parameter accepting string
+/* CTAD guide allows static_str to be used as a template parameter accepting string
 literals with arbitrary length. */
 template <size_t N>
-StaticStr(const char(&)[N]) -> StaticStr<N - 1>;
+static_str(const char(&)[N]) -> static_str<N - 1>;
 
 
 template <size_t N = 0>
-struct StaticStr {
+struct static_str {
 private:
 
     template <size_t M>
-    friend class StaticStr;
+    friend class static_str;
 
     struct Iterator {
         const char* ptr;
@@ -328,7 +328,7 @@ private:
         return char_islower(c) ? c + ('A' - 'a') : c;
     }
 
-    template <bertrand::StaticStr self, bertrand::StaticStr chars>
+    template <bertrand::static_str self, bertrand::static_str chars>
     static consteval size_t first_non_stripped() {
         for (size_t i = 0; i < self.size(); ++i) {
             char c = self[i];
@@ -344,7 +344,7 @@ private:
         return missing;
     }
 
-    template <bertrand::StaticStr self, bertrand::StaticStr chars>
+    template <bertrand::static_str self, bertrand::static_str chars>
     static consteval size_t last_non_stripped() {
         for (size_t i = 0; i < self.size(); ++i) {
             size_t idx = self.size() - i - 1;
@@ -412,7 +412,7 @@ private:
         }
     }();
 
-    constexpr StaticStr() = default;
+    constexpr static_str() = default;
 
 public:
     /* A placeholder index returned when a substring is not present. */
@@ -420,7 +420,7 @@ public:
 
     char buffer[N + 1];  // +1 for null terminator
 
-    consteval StaticStr(const char* arr) : buffer{} {
+    consteval static_str(const char* arr) : buffer{} {
         for (size_t i = 0; i < N; ++i) {
             buffer[i] = arr[i];
         }
@@ -432,7 +432,7 @@ public:
     static constexpr auto from_int = [] {
         constexpr const char chars[] = "0123456789abcdefghijklmnopqrstuvwxyz";
         constexpr size_t len = int_length<num, base>;
-        StaticStr<len> result;
+        static_str<len> result;
 
         long long temp = num;
         size_t idx = len - 1;
@@ -457,7 +457,7 @@ public:
     template <double num, size_t precision = 6>
     static constexpr auto from_float = [] {
         constexpr size_t len = float_length<num, precision>;
-        StaticStr<len> result;
+        static_str<len> result;
 
         if constexpr (std::isnan(num)) {
             result.buffer[0] = 'n';
@@ -629,9 +629,9 @@ public:
     }
 
     /* Equivalent to Python `str.capitalize()`. */
-    template <bertrand::StaticStr self>
+    template <bertrand::static_str self>
     static consteval auto capitalize() {
-        StaticStr<self.size()> result;
+        static_str<self.size()> result;
         bool capitalized = false;
         for (size_t i = 0; i < self.size(); ++i) {
             char c = self[i];
@@ -651,12 +651,12 @@ public:
     }
 
     /* Equivalent to Python `str.center(width[, fillchar])`. */
-    template <bertrand::StaticStr self, size_t width, char fillchar = ' '>
+    template <bertrand::static_str self, size_t width, char fillchar = ' '>
     static consteval auto center() {
         if constexpr (width <= self.size()) {
             return self;
         } else {
-            StaticStr<width> result;
+            static_str<width> result;
             size_t left = (width - self.size()) / 2;
             size_t right = width - self.size() - left;
             std::fill_n(result.buffer, left, fillchar);
@@ -673,8 +673,8 @@ public:
 
     /* Equivalent to Python `str.count(sub[, start[, stop]])`. */
     template <
-        bertrand::StaticStr self,
-        bertrand::StaticStr sub,
+        bertrand::static_str self,
+        bertrand::static_str sub,
         ssize_t start = 0,
         ssize_t stop = self.size()
     >
@@ -697,7 +697,7 @@ public:
     }
 
     /* Equivalent to Python `str.endswith(suffix)`. */
-    template <bertrand::StaticStr self, bertrand::StaticStr suffix>
+    template <bertrand::static_str self, bertrand::static_str suffix>
     static consteval bool endswith() {
         return suffix.size() <= self.size() && std::equal(
             suffix.buffer,
@@ -707,10 +707,10 @@ public:
     }
 
     /* Equivalent to Python `str.expandtabs([tabsize])`. */
-    template <bertrand::StaticStr self, size_t tabsize = 8>
+    template <bertrand::static_str self, size_t tabsize = 8>
     static consteval auto expandtabs() {
         constexpr size_t n = count<self, "\t">();
-        StaticStr<self.size() - n + n * tabsize> result;
+        static_str<self.size() - n + n * tabsize> result;
         size_t offset = 0;
         for (size_t i = 0; i < self.size(); ++i) {
             char c = self[i];
@@ -726,10 +726,10 @@ public:
     }
 
     /* Equivalent to Python `str.find(sub[, start[, stop]])`.  Returns
-    StaticStr<>::missing if the substring is not found. */
+    static_str<>::missing if the substring is not found. */
     template <
-        bertrand::StaticStr self,
-        bertrand::StaticStr sub,
+        bertrand::static_str self,
+        bertrand::static_str sub,
         ssize_t start = 0,
         ssize_t stop = self.size()
     >
@@ -749,8 +749,8 @@ public:
     /* Equivalent to Python `str.index(sub[, start[, stop]])`.  Uses a template
     constraint to ensure that the substring is present. */
     template <
-        bertrand::StaticStr self,
-        bertrand::StaticStr sub,
+        bertrand::static_str self,
+        bertrand::static_str sub,
         ssize_t start = 0,
         ssize_t stop = self.size()
     > requires (find<self, sub, start, stop>() != missing)
@@ -759,7 +759,7 @@ public:
     }
 
     /* Equivalent to Python `str.isalpha()`. */
-    template <bertrand::StaticStr self>
+    template <bertrand::static_str self>
     static consteval bool isalpha() {
         for (size_t i = 0; i < self.size(); ++i) {
             if (!char_isalpha(self[i])) {
@@ -770,7 +770,7 @@ public:
     }
 
     /* Equivalent to Python `str.isalnum()`. */
-    template <bertrand::StaticStr self>
+    template <bertrand::static_str self>
     static consteval bool isalnum() {
         for (size_t i = 0; i < self.size(); ++i) {
             if (!char_isalnum(self[i])) {
@@ -781,7 +781,7 @@ public:
     }
 
     /* Equivalent to Python `str.isascii_()`. */
-    template <bertrand::StaticStr self>
+    template <bertrand::static_str self>
     static consteval bool isascii_() {
         for (size_t i = 0; i < self.size(); ++i) {
             if (!char_isascii(self[i])) {
@@ -792,7 +792,7 @@ public:
     }
 
     /* Equivalent to Python `str.isdigit()`. */
-    template <bertrand::StaticStr self>
+    template <bertrand::static_str self>
     static consteval bool isdigit() {
         for (size_t i = 0; i < self.size(); ++i) {
             if (!char_isdigit(self[i])) {
@@ -803,7 +803,7 @@ public:
     }
 
     /* Equivalent to Python `str.islower()`. */
-    template <bertrand::StaticStr self>
+    template <bertrand::static_str self>
     static consteval bool islower() {
         for (size_t i = 0; i < self.size(); ++i) {
             if (!char_islower(self[i])) {
@@ -814,7 +814,7 @@ public:
     }
 
     /* Equivalent to Python `str.isspace()`. */
-    template <bertrand::StaticStr self>
+    template <bertrand::static_str self>
     static consteval bool isspace() {
         for (size_t i = 0; i < self.size(); ++i) {
             if (!char_isspace(self[i])) {
@@ -825,7 +825,7 @@ public:
     }
 
     /* Equivalent to Python `str.istitle()`. */
-    template <bertrand::StaticStr self>
+    template <bertrand::static_str self>
     static consteval bool istitle() {
         bool last_was_delimeter = true;
         for (size_t i = 0; i < self.size(); ++i) {
@@ -839,7 +839,7 @@ public:
     }
 
     /* Equivalent to Python `str.isupper()`. */
-    template <bertrand::StaticStr self>
+    template <bertrand::static_str self>
     static consteval bool isupper() {
         for (size_t i = 0; i < self.size(); ++i) {
             if (!char_isupper(self[i])) {
@@ -851,12 +851,12 @@ public:
 
     /* Equivalent to Python `str.join(strings...)`. */
     template <
-        bertrand::StaticStr self,
-        bertrand::StaticStr first,
-        bertrand::StaticStr... rest
+        bertrand::static_str self,
+        bertrand::static_str first,
+        bertrand::static_str... rest
     >
     static consteval auto join() {
-        StaticStr<first.size() + (0 + ... + (self.size() + rest.size()))> result;
+        static_str<first.size() + (0 + ... + (self.size() + rest.size()))> result;
         std::copy_n(first.buffer, first.size(), result.buffer);
         size_t offset = first.size();
         (
@@ -881,12 +881,12 @@ public:
     }
 
     /* Equivalent to Python `str.ljust(width[, fillchar])`. */
-    template <bertrand::StaticStr self, size_t width, char fillchar = ' '>
+    template <bertrand::static_str self, size_t width, char fillchar = ' '>
     static consteval auto ljust() {
         if constexpr (width <= self.size()) {
             return self;
         } else {
-            StaticStr<width> result;
+            static_str<width> result;
             std::copy_n(self.buffer, self.size(), result.buffer);
             std::fill_n(
                 result.buffer + self.size(),
@@ -899,9 +899,9 @@ public:
     }
 
     /* Equivalent to Python `str.lower()`. */
-    template <bertrand::StaticStr self>
+    template <bertrand::static_str self>
     static consteval auto lower() {
-        StaticStr<self.size()> result;
+        static_str<self.size()> result;
         for (size_t i = 0; i < self.size(); ++i) {
             result.buffer[i] = char_tolower(self[i]);
         }
@@ -910,14 +910,14 @@ public:
     }
 
     /* Equivalent to Python `str.lstrip([chars])`. */
-    template <bertrand::StaticStr self, bertrand::StaticStr chars = " \t\n\r\f\v">
+    template <bertrand::static_str self, bertrand::static_str chars = " \t\n\r\f\v">
     static consteval auto lstrip() {
         constexpr size_t start = first_non_stripped<self, chars>();
         if constexpr (start == missing) {
-            return bertrand::StaticStr{""};
+            return bertrand::static_str{""};
         } else {
             constexpr size_t delta = self.size() - start;
-            StaticStr<delta> result;
+            static_str<delta> result;
             std::copy_n(self.buffer + start, delta, result.buffer);
             result.buffer[delta] = '\0';
             return result;
@@ -925,19 +925,19 @@ public:
     }
 
     /* Equivalent to Python `str.partition(sep)`. */
-    template <bertrand::StaticStr self, bertrand::StaticStr sep>
+    template <bertrand::static_str self, bertrand::static_str sep>
     static consteval auto partition() {
         constexpr size_t index = find<self, sep>();
         if constexpr (index == missing) {
             return std::make_tuple(
                 self,
-                bertrand::StaticStr{""},
-                bertrand::StaticStr{""}
+                bertrand::static_str{""},
+                bertrand::static_str{""}
             );
         } else {
             constexpr size_t remaining = self.size() - index - sep.size();
-            StaticStr<index> first;
-            StaticStr<remaining> third;
+            static_str<index> first;
+            static_str<remaining> third;
             std::copy_n(self.buffer, index, first.buffer);
             std::copy_n(
                 self.buffer + index + sep.size(),
@@ -952,15 +952,15 @@ public:
 
     /* Equivalent to Python `str.replace()`. */
     template <
-        bertrand::StaticStr self,
-        bertrand::StaticStr sub,
-        bertrand::StaticStr repl,
+        bertrand::static_str self,
+        bertrand::static_str sub,
+        bertrand::static_str repl,
         size_t max_count = missing
     >
     static consteval auto replace() {
         constexpr size_t freq = count<self, sub>();
         constexpr size_t n = freq < max_count ? freq : max_count;
-        StaticStr<self.size() - (n * sub.size()) + (n * repl.size())> result;
+        static_str<self.size() - (n * sub.size()) + (n * repl.size())> result;
         size_t offset = 0;
         size_t count = 0;
         for (size_t i = 0; i < self.size();) {
@@ -981,10 +981,10 @@ public:
     }
 
     /* Equivalent to Python `str.rfind(sub[, start[, stop]])`.  Returns
-    StaticStr<>::missing if the substring is not found. */
+    static_str<>::missing if the substring is not found. */
     template <
-        bertrand::StaticStr self,
-        bertrand::StaticStr sub,
+        bertrand::static_str self,
+        bertrand::static_str sub,
         ssize_t start = 0,
         ssize_t stop = self.size()
     >
@@ -1004,8 +1004,8 @@ public:
     /* Equivalent to Python `str.rindex(sub[, start[, stop]])`.  Uses a template
     constraint to ensure that the substring is present. */
     template <
-        bertrand::StaticStr self,
-        bertrand::StaticStr sub,
+        bertrand::static_str self,
+        bertrand::static_str sub,
         ssize_t start = 0,
         ssize_t stop = self.size()
     > requires (rfind<self, sub, start, stop>() != missing)
@@ -1014,12 +1014,12 @@ public:
     }
 
     /* Equivalent to Python `str.rjust(width[, fillchar])`. */
-    template <bertrand::StaticStr self, size_t width, char fillchar = ' '>
+    template <bertrand::static_str self, size_t width, char fillchar = ' '>
     static consteval auto rjust() {
         if constexpr (width <= self.size()) {
             return self;
         } else {
-            StaticStr<width> result;
+            static_str<width> result;
             std::fill_n(
                 result.buffer,
                 width - self.size(),
@@ -1036,19 +1036,19 @@ public:
     }
 
     /* Equivalent to Python `str.rpartition(sep)`. */
-    template <bertrand::StaticStr self, bertrand::StaticStr sep>
+    template <bertrand::static_str self, bertrand::static_str sep>
     static consteval auto rpartition() {
         constexpr size_t index = rfind<self, sep>();
         if constexpr (index == missing) {
             return std::make_tuple(
                 self,
-                bertrand::StaticStr{""},
-                bertrand::StaticStr{""}
+                bertrand::static_str{""},
+                bertrand::static_str{""}
             );
         } else {
             constexpr size_t remaining = self.size() - index - sep.size();
-            StaticStr<index> first;
-            StaticStr<remaining> third;
+            static_str<index> first;
+            static_str<remaining> third;
             std::copy_n(self.buffer, index, first.buffer);
             std::copy_n(
                 self.buffer + index + sep.size(),
@@ -1063,8 +1063,8 @@ public:
 
     /* Equivalent to Python `str.rsplit(sep[, maxsplit])`. */
     template <
-        bertrand::StaticStr self,
-        bertrand::StaticStr sep,
+        bertrand::static_str self,
+        bertrand::static_str sep,
         size_t maxsplit = missing
     > requires (sep.size() > 0)
     static consteval auto rsplit() {
@@ -1090,7 +1090,7 @@ public:
                     result[n - 1] = prev;
                     return result;
                 }();
-                std::tuple<StaticStr<std::get<Is>(strides)>...> result;
+                std::tuple<static_str<std::get<Is>(strides)>...> result;
                 size_t offset = self.size();
                 (
                     (
@@ -1111,14 +1111,14 @@ public:
     }
 
     /* Equivalent to Python `str.rstrip([chars])`. */
-    template <bertrand::StaticStr self, bertrand::StaticStr chars = " \t\n\r\f\v">
+    template <bertrand::static_str self, bertrand::static_str chars = " \t\n\r\f\v">
     static consteval auto rstrip() {
         constexpr size_t stop = last_non_stripped<self, chars>();
         if constexpr (stop == missing) {
-            return bertrand::StaticStr{""};
+            return bertrand::static_str{""};
         } else {
             constexpr size_t delta = stop + 1;
-            StaticStr<delta> result;
+            static_str<delta> result;
             std::copy_n(self.buffer, delta, result.buffer);
             result.buffer[delta] = '\0';
             return result;
@@ -1127,8 +1127,8 @@ public:
 
     /* Equivalent to Python `str.split(sep[, maxsplit])`. */
     template <
-        bertrand::StaticStr self,
-        bertrand::StaticStr sep,
+        bertrand::static_str self,
+        bertrand::static_str sep,
         size_t maxsplit = missing
     > requires (sep.size() > 0)
     static consteval auto split() {
@@ -1156,7 +1156,7 @@ public:
                     result[n - 1] = self.size() - prev;
                     return result;
                 }();
-                std::tuple<StaticStr<std::get<Is>(strides)>...> result;
+                std::tuple<static_str<std::get<Is>(strides)>...> result;
                 size_t offset = 0;
                 (
                     (
@@ -1176,7 +1176,7 @@ public:
     }
 
     /* Equivalent to Python `str.splitlines([keepends])`. */
-    template <bertrand::StaticStr self, bool keepends = false>
+    template <bertrand::static_str self, bool keepends = false>
     static consteval auto splitlines() {
         constexpr size_t n = [] {
             if constexpr (self.size() == 0) {
@@ -1231,7 +1231,7 @@ public:
                     result[n - 1] = self.size() - prev;
                     return result;
                 }();
-                std::tuple<StaticStr<std::get<Is>(strides)>...> result;
+                std::tuple<static_str<std::get<Is>(strides)>...> result;
                 size_t offset = 0;
                 (
                     (
@@ -1263,7 +1263,7 @@ public:
 
     /* Equivalent to Python `str.startswith(prefix)`, but evaluated statically at
     compile time. */
-    template <bertrand::StaticStr self, bertrand::StaticStr prefix>
+    template <bertrand::static_str self, bertrand::static_str prefix>
     static consteval bool startswith() {
         return (
             prefix.size() <= self.size() &&
@@ -1273,15 +1273,15 @@ public:
 
     /* Equivalent to Python `str.strip([chars])`, but evaluated statically at compile
     time. */
-    template <bertrand::StaticStr self, bertrand::StaticStr chars = " \t\n\r\f\v">
+    template <bertrand::static_str self, bertrand::static_str chars = " \t\n\r\f\v">
     static consteval auto strip() {
         constexpr size_t start = first_non_stripped<self, chars>();
         if constexpr (start == missing) {
-            return bertrand::StaticStr{""};
+            return bertrand::static_str{""};
         } else {
             constexpr size_t stop = last_non_stripped<self, chars>();
             constexpr size_t delta = stop - start + 1;  // +1 for half-open interval
-            StaticStr<delta> result;
+            static_str<delta> result;
             std::copy_n(self.buffer + start, delta, result.buffer);
             result.buffer[delta] = '\0';
             return result;
@@ -1290,9 +1290,9 @@ public:
 
     /* Equivalent to Python `str.swapcase()`, but evaluated statically at compile
     time. */
-    template <bertrand::StaticStr self>
+    template <bertrand::static_str self>
     static consteval auto swapcase() {
-        StaticStr<self.size()> result;
+        static_str<self.size()> result;
         for (size_t i = 0; i < self.size(); ++i) {
             char c = self[i];
             if (char_islower(c)) {
@@ -1308,9 +1308,9 @@ public:
     }
 
     /* Equivalent to Python `str.title()`, but evaluated statically at compile time. */
-    template <bertrand::StaticStr self>
+    template <bertrand::static_str self>
     static consteval auto title() {
-        StaticStr<self.size()> result;
+        static_str<self.size()> result;
         bool capitalize_next = true;
         for (size_t i = 0; i < self.size(); ++i) {
             char c = self[i];
@@ -1333,9 +1333,9 @@ public:
     }
 
     /* Equivalent to Python `str.upper()`, but evaluated statically at compile time. */
-    template <bertrand::StaticStr self>
+    template <bertrand::static_str self>
     static consteval auto upper() {
-        StaticStr<self.size()> result;
+        static_str<self.size()> result;
         for (size_t i = 0; i < self.size(); ++i) {
             result.buffer[i] = char_toupper(self[i]);
         }
@@ -1345,12 +1345,12 @@ public:
 
     /* Equivalent to Python `str.zfill(width)`, but evaluated statically at compile
     time. */
-    template <bertrand::StaticStr self, size_t width>
+    template <bertrand::static_str self, size_t width>
     static consteval auto zfill() {
         if constexpr (width <= self.size()) {
             return self;
         } else {
-            StaticStr<width> result;
+            static_str<width> result;
             size_t start = 0;
             if (self[0] == '+' || self[0] == '-') {
                 result.buffer[0] = self[0];
@@ -1373,10 +1373,10 @@ public:
 
     /* Equivalent to Python `str.removeprefix()`, but evaluated statically at compile
     time. */
-    template <bertrand::StaticStr self, bertrand::StaticStr prefix>
+    template <bertrand::static_str self, bertrand::static_str prefix>
     static consteval auto removeprefix() {
         if constexpr (startswith<self, prefix>()) {
-            StaticStr<self.size() - prefix.size()> result;
+            static_str<self.size() - prefix.size()> result;
             std::copy_n(
                 self.buffer + prefix.size(),
                 self.size() - prefix.size(),
@@ -1391,10 +1391,10 @@ public:
 
     /* Equivalent to Python `str.removesuffix()`, but evaluated statically at compile
     time. */
-    template <bertrand::StaticStr self, bertrand::StaticStr suffix>
+    template <bertrand::static_str self, bertrand::static_str suffix>
     static consteval auto removesuffix() {
         if constexpr (endswith<self, suffix>()) {
-            StaticStr<self.size() - suffix.size()> result;
+            static_str<self.size() - suffix.size()> result;
             std::copy_n(
                 self.buffer,
                 self.size() - suffix.size(),
@@ -1409,8 +1409,8 @@ public:
 
     template <size_t M>
     friend consteval bool operator<(
-        const StaticStr& self,
-        const StaticStr<M>& other
+        const static_str& self,
+        const static_str<M>& other
     ) {
         size_t i = 0;
         while (i < self.size() && i < other.size()) {
@@ -1427,7 +1427,7 @@ public:
     }
     template <size_t M>
     friend consteval bool operator<(
-        const StaticStr& self,
+        const static_str& self,
         const char(&other)[M]
     ) {
         size_t i = 0;
@@ -1446,7 +1446,7 @@ public:
     template <size_t M>
     friend consteval bool operator<(
         const char(&other)[M],
-        const StaticStr& self
+        const static_str& self
     ) {
         size_t i = 0;
         while (i < self.size() && i < (M - 1)) {
@@ -1464,8 +1464,8 @@ public:
 
     template <size_t M>
     friend consteval bool operator<=(
-        const StaticStr& self,
-        const StaticStr<M>& other
+        const static_str& self,
+        const static_str<M>& other
     ) {
         size_t i = 0;
         while (i < self.size() && i < other.size()) {
@@ -1482,7 +1482,7 @@ public:
     }
     template <size_t M>
     friend consteval bool operator<=(
-        const StaticStr& self,
+        const static_str& self,
         const char(&other)[M]
     ) {
         size_t i = 0;
@@ -1501,7 +1501,7 @@ public:
     template <size_t M>
     friend consteval bool operator<=(
         const char(&other)[M],
-        const StaticStr& self
+        const static_str& self
     ) {
         size_t i = 0;
         while (i < self.size() && i < (M - 1)) {
@@ -1519,8 +1519,8 @@ public:
 
     template <size_t M>
     friend consteval bool operator==(
-        const StaticStr& self,
-        const StaticStr<M>& other
+        const static_str& self,
+        const static_str<M>& other
     ) {
         if constexpr (N == M) {
             for (size_t i = 0; i < N; ++i) {
@@ -1534,7 +1534,7 @@ public:
     }
     template <size_t M>
     friend consteval bool operator==(
-        const StaticStr& self,
+        const static_str& self,
         const char(&other)[M]
     ) {
         if constexpr (N == (M - 1)) {
@@ -1550,7 +1550,7 @@ public:
     template <size_t M>
     friend consteval bool operator==(
         const char(&other)[M],
-        const StaticStr& self
+        const static_str& self
     ) {
         if constexpr (N == (M - 1)) {
             for (size_t i = 0; i < N; ++i) {
@@ -1564,8 +1564,8 @@ public:
 
     template <size_t M>
     friend consteval bool operator!=(
-        const StaticStr& self,
-        const StaticStr<M>& other
+        const static_str& self,
+        const static_str<M>& other
     ) {
         if constexpr (N == M) {
             for (size_t i = 0; i < N; ++i) {
@@ -1579,7 +1579,7 @@ public:
     }
     template <size_t M>
     friend consteval bool operator!=(
-        const StaticStr& self,
+        const static_str& self,
         const char(&other)[M]
     ) {
         if constexpr (N == (M - 1)) {
@@ -1595,7 +1595,7 @@ public:
     template <size_t M>
     friend consteval bool operator!=(
         const char(&other)[M],
-        const StaticStr& self
+        const static_str& self
     ) {
         if constexpr (N == (M - 1)) {
             for (size_t i = 0; i < N; ++i) {
@@ -1610,8 +1610,8 @@ public:
 
     template <size_t M>
     friend consteval bool operator>=(
-        const StaticStr& self,
-        const StaticStr<M>& other
+        const static_str& self,
+        const static_str<M>& other
     ) {
         size_t i = 0;
         while (i < self.size() && i < other.size()) {
@@ -1628,7 +1628,7 @@ public:
     }
     template <size_t M>
     friend consteval bool operator>=(
-        const StaticStr& self,
+        const static_str& self,
         const char(&other)[M]
     ) {
         size_t i = 0;
@@ -1647,7 +1647,7 @@ public:
     template <size_t M>
     friend consteval bool operator>=(
         const char(&other)[M],
-        const StaticStr& self
+        const static_str& self
     ) {
         size_t i = 0;
         while (i < self.size() && i < (M - 1)) {
@@ -1665,8 +1665,8 @@ public:
 
     template <size_t M>
     friend consteval bool operator>(
-        const StaticStr& self,
-        const StaticStr<M>& other
+        const static_str& self,
+        const static_str<M>& other
     ) {
         size_t i = 0;
         while (i < self.size() && i < other.size()) {
@@ -1683,7 +1683,7 @@ public:
     }
     template <size_t M>
     friend consteval bool operator>(
-        const StaticStr& self,
+        const static_str& self,
         const char(&other)[M]
     ) {
         size_t i = 0;
@@ -1702,7 +1702,7 @@ public:
     template <size_t M>
     friend consteval bool operator>(
         const char(&other)[M],
-        const StaticStr& self
+        const static_str& self
     ) {
         size_t i = 0;
         while (i < self.size() && i < (M - 1)) {
@@ -1719,33 +1719,33 @@ public:
     }
 
     template <size_t M>
-    friend consteval StaticStr<N + M> operator+(
-        const StaticStr<N>& self,
-        const StaticStr<M>& other
+    friend consteval static_str<N + M> operator+(
+        const static_str<N>& self,
+        const static_str<M>& other
     ) {
-        StaticStr<N + M> result;
+        static_str<N + M> result;
         std::copy_n(self.buffer, self.size(), result.buffer);
         std::copy_n(other.buffer, other.size(), result.buffer + self.size());
         result.buffer[N + M] = '\0';
         return result;
     }
     template <size_t M>
-    friend consteval StaticStr<N + M - 1> operator+(
-        const StaticStr<N>& self,
+    friend consteval static_str<N + M - 1> operator+(
+        const static_str<N>& self,
         const char(&other)[M]
     ) {
-        StaticStr<N + M - 1> result;
+        static_str<N + M - 1> result;
         std::copy_n(self.buffer, self.size(), result.buffer);
         std::copy_n(other, M - 1, result.buffer + self.size());
         result.buffer[N + M - 1] = '\0';
         return result;
     }
     template <size_t M>
-    friend consteval StaticStr<N + M - 1> operator+(
+    friend consteval static_str<N + M - 1> operator+(
         const char(&other)[M],
-        const StaticStr<N>& self
+        const static_str<N>& self
     ) {
-        StaticStr<N + M - 1> result;
+        static_str<N + M - 1> result;
         std::copy_n(other, M - 1, result.buffer);
         std::copy_n(self.buffer, self.size(), result.buffer + M - 1);
         result.buffer[N + M - 1] = '\0';
@@ -1753,12 +1753,12 @@ public:
     }
 
     /// NOTE: due to language limitations, the * operator cannot return another
-    /// StaticStr instance, so it returns a std::string instead.  This is not ideal,
+    /// static_str instance, so it returns a std::string instead.  This is not ideal,
     /// but there is currently no way to inform the compiler that the other operand
     /// must be a compile-time constant, and can therefore be used to determine the
     /// size of the resulting string.
 
-    friend constexpr std::string operator*(const StaticStr& self, size_t reps) {
+    friend constexpr std::string operator*(const static_str& self, size_t reps) {
         if (reps <= 0) {
             return {};
         } else {
@@ -1769,7 +1769,7 @@ public:
             return result;
         }
     }
-    friend constexpr std::string operator*(size_t reps, const StaticStr& self) {
+    friend constexpr std::string operator*(size_t reps, const static_str& self) {
         if (reps <= 0) {
             return {};
         } else {
@@ -1787,9 +1787,9 @@ public:
 namespace impl {
 
     template <typename>
-    constexpr bool _static_str = false;
+    constexpr bool _is_static_str = false;
     template <size_t N>
-    constexpr bool _static_str<bertrand::StaticStr<N>> = true;
+    constexpr bool _is_static_str<bertrand::static_str<N>> = true;
 
     template <typename T>
     constexpr auto type_name_impl() {
@@ -1815,14 +1815,14 @@ namespace impl {
 
         constexpr std::string_view name = function.substr(start, (end - start));
         constexpr size_t N = name.size();
-        return StaticStr<N>{name.data()};
+        return static_str<N>{name.data()};
     }
 
 }
 
 
 template <typename T>
-concept static_str = impl::_static_str<std::remove_cvref_t<T>>;
+concept is_static_str = impl::_is_static_str<std::remove_cvref_t<T>>;
 
 
 /* Gets a C++ type name as a fully-qualified, demangled string computed entirely
@@ -1865,28 +1865,28 @@ constexpr std::string demangle(const char* name) {
 
 namespace impl {
 
-    template <StaticStr...>
+    template <static_str...>
     constexpr bool _strings_are_unique = true;
-    template <StaticStr First, StaticStr... Rest>
+    template <static_str First, static_str... Rest>
     constexpr bool _strings_are_unique<First, Rest...> =
         ((First != Rest) && ...) && _strings_are_unique<Rest...>;
-    template <StaticStr... Strings>
+    template <static_str... Strings>
     concept strings_are_unique = _strings_are_unique<Strings...>;
 
-    template <size_t I, StaticStr... Strings>
+    template <size_t I, static_str... Strings>
     struct unpack_string;
-    template <StaticStr First, StaticStr... Rest>
+    template <static_str First, static_str... Rest>
     struct unpack_string<0, First, Rest...> {
-        static constexpr StaticStr value = First;
+        static constexpr static_str value = First;
     };
-    template <size_t I, StaticStr First, StaticStr... Rest>
+    template <size_t I, static_str First, static_str... Rest>
     struct unpack_string<I, First, Rest...> {
-        static constexpr StaticStr value = unpack_string<I - 1, Rest...>::value;
+        static constexpr static_str value = unpack_string<I - 1, Rest...>::value;
     };
 
     /* A helper struct that computes a perfect FNV-1a hash function over the given
     strings at compile time. */
-    template <StaticStr... Keys>
+    template <static_str... Keys>
     struct perfect_hash {
     private:
         using minmax_type = std::pair<size_t, size_t>;
@@ -1909,26 +1909,26 @@ namespace impl {
         static constexpr size_t max_length = minmax.second;
 
         template <size_t I> requires (I < sizeof...(Keys))
-        static constexpr StaticStr at = unpack_string<I, Keys...>::value;
+        static constexpr static_str at = unpack_string<I, Keys...>::value;
 
     private:
         /* Check to see if the candidate seed and prime produce any collisions for the
         target keyword arguments. */
-        template <StaticStr...>
+        template <static_str...>
         struct collisions {
             static constexpr bool operator()(size_t, size_t) {
                 return false;
             }
         };
-        template <StaticStr First, StaticStr... Rest>
+        template <static_str First, static_str... Rest>
         struct collisions<First, Rest...> {
-            template <StaticStr...>
+            template <static_str...>
             struct scan {
                 static constexpr bool operator()(size_t, size_t, size_t) {
                     return false;
                 }
             };
-            template <StaticStr F, StaticStr... Rs>
+            template <static_str F, static_str... Rs>
             struct scan<F, Rs...> {
                 static constexpr bool operator()(size_t idx, size_t seed, size_t prime) {
                     size_t hash = fnv1a(F, seed, prime);
@@ -1999,7 +1999,7 @@ namespace impl {
     the given strings at compile time.  Only the N most significant characters are
     considered, where N is minimized using an associative array containing relative
     weights for each character. */
-    template <StaticStr... Keys>
+    template <static_str... Keys>
     struct minimal_perfect_hash {
     private:
         using minmax_type = std::pair<size_t, size_t>;
@@ -2020,18 +2020,18 @@ namespace impl {
         static constexpr size_t max_length = minmax.second;
 
         template <size_t I> requires (I < sizeof...(Keys))
-        static constexpr StaticStr at = unpack_string<I, Keys...>::value;
+        static constexpr static_str at = unpack_string<I, Keys...>::value;
 
     private:
         using Weights = std::array<unsigned char, 256>;
 
-        template <StaticStr...>
+        template <static_str...>
         struct _counts {
             static constexpr size_t operator()(unsigned char, size_t) {
                 return 0;
             }
         };
-        template <StaticStr First, StaticStr... Rest>
+        template <static_str First, static_str... Rest>
         struct _counts<First, Rest...> {
             static constexpr size_t operator()(unsigned char c, size_t pos) {
                 return
@@ -2043,20 +2043,20 @@ namespace impl {
             return _counts<Keys...>{}(c, pos);
         }
 
-        template <size_t I, unsigned char C, StaticStr... Strings>
+        template <size_t I, unsigned char C, static_str... Strings>
         static constexpr size_t first_occurrence = 0;
-        template <size_t I, unsigned char C, StaticStr First, StaticStr... Rest>
+        template <size_t I, unsigned char C, static_str First, static_str... Rest>
         static constexpr size_t first_occurrence<I, C, First, Rest...> =
             (I < First.size() && First[I] == C) ?
                 0 : first_occurrence<I, C, Rest...> + 1;
 
-        template <size_t I, size_t J, StaticStr... Strings>
+        template <size_t I, size_t J, static_str... Strings>
         static constexpr size_t _variation = 0;
-        template <size_t I, size_t J, StaticStr First, StaticStr... Rest>
+        template <size_t I, size_t J, static_str First, static_str... Rest>
         static constexpr size_t _variation<I, J, First, Rest...> =
             (I < First.size() && J == first_occurrence<I, First[I], Keys...>) +
             _variation<I, J + 1, Rest...>;
-        template <size_t I, StaticStr... Strings>
+        template <size_t I, static_str... Strings>
         static constexpr size_t variation = _variation<I, 0, Strings...>;
 
         /* An array holding the number of unique characters across each index of the
@@ -2081,15 +2081,15 @@ namespace impl {
 
         /* Check to see if the candidate weights produce any collisions for a given
         number of significant characters. */
-        template <StaticStr...>
+        template <static_str...>
         struct collisions {
             static constexpr collision operator()(const Weights&, size_t) {
                 return {"", ""};
             }
         };
-        template <StaticStr First, StaticStr... Rest>
+        template <static_str First, static_str... Rest>
         struct collisions<First, Rest...> {
-            template <StaticStr...>
+            template <static_str...>
             struct scan {
                 static constexpr collision operator()(
                     std::string_view,
@@ -2100,7 +2100,7 @@ namespace impl {
                     return {"", ""};
                 }
             };
-            template <StaticStr F, StaticStr... Rs>
+            template <static_str F, static_str... Rs>
             struct scan<F, Rs...> {
                 static constexpr collision operator()(
                     std::string_view orig,
@@ -2205,7 +2205,7 @@ namespace impl {
             }(std::make_index_sequence<significant_chars>{});
 
         /* Hash a compile-time string according to the computed perfect hash algorithm. */
-        template <static_str Key>
+        template <is_static_str Key>
         static constexpr size_t hash(const Key& str) noexcept {
             size_t out = 0;
             for (size_t pos : positions) {
@@ -2242,7 +2242,7 @@ namespace impl {
 
         /* Hash a character buffer according to the computed perfect hash algorithm. */
         template <std::convertible_to<const char*> T>
-            requires (!static_str<T> && !string_literal<T>)
+            requires (!is_static_str<T> && !string_literal<T>)
         static constexpr size_t hash(const T& str) noexcept {
             const char* start = str;
             if constexpr (positions.empty()) {
@@ -2273,7 +2273,7 @@ namespace impl {
         /* Hash a character buffer according to the computed perfect hash algorithm and
         record its length as an out parameter. */
         template <std::convertible_to<const char*> T>
-            requires (!static_str<T> && !string_literal<T>)
+            requires (!is_static_str<T> && !string_literal<T>)
         static constexpr size_t hash(const T& str, size_t& len) noexcept {
             const char* start = str;
             const char* ptr = start;
@@ -2308,7 +2308,7 @@ namespace impl {
         /* Hash a string view according to the computed perfect hash algorithm. */
         template <std::convertible_to<std::string_view> T>
             requires (
-                !static_str<T> &&
+                !is_static_str<T> &&
                 !string_literal<T> &&
                 !std::convertible_to<T, const char*>
             )
@@ -2336,12 +2336,12 @@ perfect FNV-1a hash, a single array lookup, and a string comparison to validate.
 collision resolution is necessary, due to the perfect hash function.  If the search
 string is also known at compile time, then even these can be optimized out, skipping
 straight to the final value with no intermediate computation. */
-template <typename Value, StaticStr... Keys>
+template <typename Value, static_str... Keys>
     requires (
         impl::strings_are_unique<Keys...> &&
         impl::minimal_perfect_hash<Keys...>::exists
     )
-struct StaticMap : impl::minimal_perfect_hash<Keys...> {
+struct static_map : impl::minimal_perfect_hash<Keys...> {
 private:
     using Hash = impl::minimal_perfect_hash<Keys...>;
     using Bucket = std::pair<const std::string_view, Value>;
@@ -2378,7 +2378,7 @@ private:
         using reference = const Bucket&;
 
         Iterator(const Table& table) : m_table(&table), m_idx(0) {}
-        Iterator(const Table& table, Sentinel) :
+        Iterator(const Table& table, sentinel) :
             m_table(&table), m_idx(Hash::table_size)
         {}
 
@@ -2409,19 +2409,19 @@ private:
             return self.m_table != other.m_table || self.m_idx != other.m_idx;
         }
 
-        friend bool operator==(const Iterator& self, Sentinel) {
+        friend bool operator==(const Iterator& self, sentinel) {
             return self.m_idx == Hash::table_size;
         }
 
-        friend bool operator==(Sentinel, const Iterator& self) {
+        friend bool operator==(sentinel, const Iterator& self) {
             return self.m_idx == Hash::table_size;
         }
 
-        friend bool operator!=(const Iterator& self, Sentinel) {
+        friend bool operator!=(const Iterator& self, sentinel) {
             return self.m_idx != Hash::table_size;
         }
 
-        friend bool operator!=(Sentinel, const Iterator& self) {
+        friend bool operator!=(sentinel, const Iterator& self) {
             return self.m_idx != Hash::table_size;
         }
     };
@@ -2436,7 +2436,7 @@ public:
             sizeof...(Values) == sizeof...(Keys) &&
             (std::convertible_to<Values, Value> && ...)
         )
-    constexpr StaticMap(Values&&... values) :
+    constexpr static_map(Values&&... values) :
         table([]<size_t... Is>(std::index_sequence<Is...>, auto&&... values) {
             return Table{populate<Is, (Hash::hash(Keys) % Hash::table_size)...>(
                 std::forward<decltype(values)>(values)...
@@ -2454,7 +2454,7 @@ public:
     }
 
     /* Check whether the map contains an arbitrary key at compile time. */
-    template <StaticStr Key>
+    template <static_str Key>
     static constexpr bool contains() {
         return ((Key == Keys) || ...);
     }
@@ -2476,7 +2476,7 @@ public:
     }
 
     /* Check whether the map contains an arbitrary key. */
-    template <static_str Key>
+    template <is_static_str Key>
     constexpr bool contains(const Key& key) const {
         if constexpr ((key.size() < Hash::min_length) | (key.size() > Hash::max_length)) {
             return false;
@@ -2490,7 +2490,7 @@ public:
 
     /* Check whether the map contains an arbitrary key. */
     template <std::convertible_to<const char*> T>
-        requires (!string_literal<T> && !static_str<T>)
+        requires (!string_literal<T> && !is_static_str<T>)
     constexpr bool contains(const T& key) const {
         const char* str = key;
         size_t len;
@@ -2510,7 +2510,7 @@ public:
     template <std::convertible_to<std::string_view> T>
         requires (
             !string_literal<T> &&
-            !static_str<T> &&
+            !is_static_str<T> &&
             !std::convertible_to<T, const char*>
         )
     constexpr bool contains(const T& key) const {
@@ -2529,7 +2529,7 @@ public:
     template <std::convertible_to<size_t> T>
         requires (
             !string_literal<T> &&
-            !static_str<T> &&
+            !is_static_str<T> &&
             !std::convertible_to<T, const char*> &&
             !std::convertible_to<T, std::string_view>
         )
@@ -2553,7 +2553,7 @@ public:
 
     /* Get the value associated with a key at compile time, asserting that it is
     present in the map. */
-    template <StaticStr Key> requires (contains<Key>())
+    template <static_str Key> requires (contains<Key>())
     constexpr const Value& get() const {
         constexpr size_t idx = Hash::hash(Key) % Hash::table_size;
         return table[idx].second;
@@ -2561,7 +2561,7 @@ public:
 
     /* Get the value associated with a key at compile time, asserting that it is
     present in the map. */
-    template <StaticStr Key> requires (contains<Key>())
+    template <static_str Key> requires (contains<Key>())
     Value& get() {
         constexpr size_t idx = Hash::hash(Key) % Hash::table_size;
         return table[idx].second;
@@ -2586,7 +2586,7 @@ public:
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
-    template <static_str Key>
+    template <is_static_str Key>
     constexpr const std::remove_reference_t<Value>* operator[](const Key& key) const {
         if constexpr (
             (key.size() < Hash::min_length) | (key.size() > Hash::max_length)
@@ -2603,7 +2603,7 @@ public:
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
     template <std::convertible_to<const char*> T>
-        requires (!string_literal<T> && !static_str<T>)
+        requires (!string_literal<T> && !is_static_str<T>)
     constexpr const std::remove_reference_t<Value>* operator[](const T& key) const {
         const char* str = key;
         size_t len;
@@ -2624,7 +2624,7 @@ public:
     template <std::convertible_to<std::string_view> T>
         requires (
             !string_literal<T> &&
-            !static_str<T> &&
+            !is_static_str<T> &&
             !std::convertible_to<T, const char*>
         )
     constexpr const std::remove_reference_t<Value>* operator[](const T& key) const {
@@ -2644,7 +2644,7 @@ public:
     template <std::convertible_to<size_t> T>
         requires (
             !string_literal<T> &&
-            !static_str<T> &&
+            !is_static_str<T> &&
             !std::convertible_to<T, const char*> &&
             !std::convertible_to<T, std::string_view>
         )
@@ -2675,7 +2675,7 @@ public:
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
-    template <static_str Key>
+    template <is_static_str Key>
     std::remove_reference_t<Value>* operator[](const Key& key) {
         if constexpr (
             (key.size() < Hash::min_length) | (key.size() > Hash::max_length)
@@ -2692,7 +2692,7 @@ public:
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
     template <std::convertible_to<const char*> T>
-        requires (!string_literal<T> && !static_str<T>)
+        requires (!string_literal<T> && !is_static_str<T>)
     std::remove_reference_t<Value>* operator[](const T& key) {
         const char* str = key;
         size_t len;
@@ -2713,7 +2713,7 @@ public:
     template <std::convertible_to<std::string_view> T>
         requires (
             !string_literal<T> &&
-            !static_str<T> &&
+            !is_static_str<T> &&
             !std::convertible_to<T, const char*>
         )
     std::remove_reference_t<Value>* operator[](const T& key) {
@@ -2733,7 +2733,7 @@ public:
     template <std::convertible_to<size_t> T>
         requires (
             !string_literal<T> &&
-            !static_str<T> &&
+            !is_static_str<T> &&
             !std::convertible_to<T, const char*> &&
             !std::convertible_to<T, std::string_view>
         )
@@ -2749,21 +2749,21 @@ public:
     constexpr bool empty() const { return size() == 0; }
     Iterator begin() const { return {table}; }
     Iterator cbegin() const { return {table}; }
-    Sentinel end() const { return {}; }
-    Sentinel cend() const { return {}; }
+    sentinel end() const { return {}; }
+    sentinel cend() const { return {}; }
 };
 
 
-/* A specialization of StaticMap that does not hold any values.  Such a data structure
+/* A specialization of static_map that does not hold any values.  Such a data structure
 is equivalent to a perfectly-hashed set of compile-time strings, which can be
 efficiently searched at runtime.  Rather than dereferencing to a value, the buckets
 and iterators will dereference to `string_view`s of the templated key buffers. */
-template <StaticStr... Keys>
+template <static_str... Keys>
     requires (
         impl::strings_are_unique<Keys...> &&
         impl::minimal_perfect_hash<Keys...>::exists
     )
-struct StaticMap<void, Keys...> : impl::minimal_perfect_hash<Keys...> {
+struct static_map<void, Keys...> : impl::minimal_perfect_hash<Keys...> {
 private:
     using Hash = impl::minimal_perfect_hash<Keys...>;
     using Table = std::array<std::string_view, Hash::table_size>;
@@ -2796,7 +2796,7 @@ private:
         using reference = const std::string_view&;
 
         Iterator(const Table& table) : m_table(&table), m_idx(0) {}
-        Iterator(const Table& table, Sentinel) :
+        Iterator(const Table& table, sentinel) :
             m_table(&table), m_idx(Hash::table_size)
         {}
 
@@ -2827,19 +2827,19 @@ private:
             return self.m_table != other.m_table || self.m_idx != other.m_idx;
         }
 
-        friend bool operator==(const Iterator& self, Sentinel) {
+        friend bool operator==(const Iterator& self, sentinel) {
             return self.m_idx == Hash::table_size;
         }
 
-        friend bool operator==(Sentinel, const Iterator& self) {
+        friend bool operator==(sentinel, const Iterator& self) {
             return self.m_idx == Hash::table_size;
         }
 
-        friend bool operator!=(const Iterator& self, Sentinel) {
+        friend bool operator!=(const Iterator& self, sentinel) {
             return self.m_idx != Hash::table_size;
         }
 
-        friend bool operator!=(Sentinel, const Iterator& self) {
+        friend bool operator!=(sentinel, const Iterator& self) {
             return self.m_idx != Hash::table_size;
         }
     };
@@ -2847,7 +2847,7 @@ private:
 public:
     Table table;
 
-    constexpr StaticMap() :
+    constexpr static_map() :
         table([]<size_t... Is>(std::index_sequence<Is...>) {
             return Table{populate<Is, (Hash::hash(Keys) % Hash::table_size)...>()...};
         }(std::make_index_sequence<Hash::table_size>{}))
@@ -2860,7 +2860,7 @@ public:
     }
 
     /* Check whether the map contains an arbitrary key at compile time. */
-    template <StaticStr Key>
+    template <static_str Key>
     static constexpr bool contains() {
         return ((Key == Keys) || ...);
     }
@@ -2882,7 +2882,7 @@ public:
     }
 
     /* Check whether the map contains an arbitrary key. */
-    template <static_str Key>
+    template <is_static_str Key>
     constexpr bool contains(const Key& key) const {
         if constexpr (
             (key.size() < Hash::min_length) | (key.size() > Hash::max_length)
@@ -2898,7 +2898,7 @@ public:
 
     /* Check whether the map contains an arbitrary key. */
     template <std::convertible_to<const char*> T>
-        requires (!string_literal<T> && !static_str<T>)
+        requires (!string_literal<T> && !is_static_str<T>)
     constexpr bool contains(const T& key) const {
         const char* str = key;
         size_t len;
@@ -2918,7 +2918,7 @@ public:
     template <std::convertible_to<std::string_view> T>
         requires (
             !string_literal<T> &&
-            !static_str<T> &&
+            !is_static_str<T> &&
             !std::convertible_to<T, const char*>
         )
     constexpr bool contains(const T& key) const {
@@ -2937,7 +2937,7 @@ public:
     template <std::convertible_to<size_t> T>
         requires (
             !string_literal<T> &&
-            !static_str<T> &&
+            !is_static_str<T> &&
             !std::convertible_to<T, const char*> &&
             !std::convertible_to<T, std::string_view>
         )
@@ -2954,7 +2954,7 @@ public:
 
     /* Get the value associated with a key at compile time, asserting that it is
     present in the map. */
-    template <StaticStr Key> requires (contains<Key>())
+    template <static_str Key> requires (contains<Key>())
     constexpr const std::string_view& get() const {
         constexpr size_t idx = Hash::hash(Key) % Hash::table_size;
         return table[idx];
@@ -2979,7 +2979,7 @@ public:
 
     /* Look up a key, returning a pointer to the corresponding key or nullptr if it is
     not present. */
-    template <static_str Key>
+    template <is_static_str Key>
     constexpr const std::string_view* operator[](const Key& key) const {
         if constexpr (
             (key.size() < Hash::min_length) | (key.size() > Hash::max_length)
@@ -2996,7 +2996,7 @@ public:
     /* Look up a key, returning a pointer to the corresponding key or nullptr if it is
     not present. */
     template <std::convertible_to<const char*> T>
-        requires (!string_literal<T> && !static_str<T>)
+        requires (!string_literal<T> && !is_static_str<T>)
     constexpr const std::string_view* operator[](const T& key) const {
         const char* str = key;
         size_t len;
@@ -3017,7 +3017,7 @@ public:
     template <std::convertible_to<std::string_view> T>
         requires (
             !string_literal<T> &&
-            !static_str<T> &&
+            !is_static_str<T> &&
             !std::convertible_to<T, const char*>
         )
     constexpr const std::string_view* operator[](const T& key) const {
@@ -3037,7 +3037,7 @@ public:
     template <std::convertible_to<size_t> T>
         requires (
             !string_literal<T> &&
-            !static_str<T> &&
+            !is_static_str<T> &&
             !std::convertible_to<T, const char*> &&
             !std::convertible_to<T, std::string_view>
         )
@@ -3053,13 +3053,13 @@ public:
     constexpr bool empty() const { return size() == 0; }
     Iterator begin() const { return {table}; }
     Iterator cbegin() const { return {table}; }
-    Sentinel end() const { return {}; }
-    Sentinel cend() const { return {}; }
+    sentinel end() const { return {}; }
+    sentinel cend() const { return {}; }
 };
 
 
-template <StaticStr... Keys>
-using StaticSet = StaticMap<void, Keys...>;
+template <static_str... Keys>
+using static_set = static_map<void, Keys...>;
 
 
 }  // namespace bertrand
@@ -3067,7 +3067,7 @@ using StaticSet = StaticMap<void, Keys...>;
 
 namespace std {
 
-    template <bertrand::static_str T>
+    template <bertrand::is_static_str T>
     struct hash<T> {
         consteval static size_t operator()(const T& str) {
             return bertrand::fnv1a(
@@ -3079,15 +3079,15 @@ namespace std {
     };
 
     /* Specialize `std::tuple_size` to allow for structured bindings. */
-    template <typename Value, bertrand::StaticStr... Keys>
-    struct tuple_size<bertrand::StaticMap<Value, Keys...>> :
+    template <typename Value, bertrand::static_str... Keys>
+    struct tuple_size<bertrand::static_map<Value, Keys...>> :
         std::integral_constant<size_t, sizeof...(Keys)>
     {};
 
     /* Specialize `std::tuple_element` to allow for structured bindings. */
-    template <size_t I, typename Value, bertrand::StaticStr... Keys>
+    template <size_t I, typename Value, bertrand::static_str... Keys>
         requires (I < sizeof...(Keys))
-    struct tuple_element<I, bertrand::StaticMap<Value, Keys...>> {
+    struct tuple_element<I, bertrand::static_map<Value, Keys...>> {
         using type = std::conditional_t<
             std::is_void_v<Value>,
             std::string_view,
@@ -3095,36 +3095,36 @@ namespace std {
         >;
     };
 
-    /* `std::get<"name">(dict)` is a type-safe accessor for `bertrand::StaticMap`. */
-    template <size_t I, typename Value, bertrand::StaticStr... Keys>
+    /* `std::get<"name">(dict)` is a type-safe accessor for `bertrand::static_map`. */
+    template <size_t I, typename Value, bertrand::static_str... Keys>
         requires (I < sizeof...(Keys))
-    constexpr const auto& get(const bertrand::StaticMap<Value, Keys...>& map) {
+    constexpr const auto& get(const bertrand::static_map<Value, Keys...>& map) {
         return map.template get<I>();
     }
 
-    /* `std::get<"name">(dict)` is a type-safe accessor for `bertrand::StaticMap`. */
-    template <size_t I, typename Value, bertrand::StaticStr... Keys>
+    /* `std::get<"name">(dict)` is a type-safe accessor for `bertrand::static_map`. */
+    template <size_t I, typename Value, bertrand::static_str... Keys>
         requires (I < sizeof...(Keys) && !std::is_void_v<Value>)
-    auto& get(bertrand::StaticMap<Value, Keys...>& map) {
+    auto& get(bertrand::static_map<Value, Keys...>& map) {
         return map.template get<I>();
     }
 
-    /* `std::get<"name">(dict)` is a type-safe accessor for `bertrand::StaticMap`. */
-    template <bertrand::StaticStr Key, typename Value, bertrand::StaticStr... Keys>
+    /* `std::get<"name">(dict)` is a type-safe accessor for `bertrand::static_map`. */
+    template <bertrand::static_str Key, typename Value, bertrand::static_str... Keys>
         requires (
-            bertrand::StaticMap<Value, Keys...>::template contains<Key>()
+            bertrand::static_map<Value, Keys...>::template contains<Key>()
         )
-    constexpr const auto& get(const bertrand::StaticMap<Value, Keys...>& map) {
+    constexpr const auto& get(const bertrand::static_map<Value, Keys...>& map) {
         return map.template get<Key>();
     }
 
-    /* `std::get<"name">(dict)` is a type-safe accessor for `bertrand::StaticMap`. */
-    template <bertrand::StaticStr Key, typename Value, bertrand::StaticStr... Keys>
+    /* `std::get<"name">(dict)` is a type-safe accessor for `bertrand::static_map`. */
+    template <bertrand::static_str Key, typename Value, bertrand::static_str... Keys>
         requires (
-            bertrand::StaticMap<Value, Keys...>::template contains<Key>() &&
+            bertrand::static_map<Value, Keys...>::template contains<Key>() &&
             !std::is_void_v<Value>
         )
-    auto& get(bertrand::StaticMap<Value, Keys...>& map) {
+    auto& get(bertrand::static_map<Value, Keys...>& map) {
         return map.template get<Key>();
     }
 

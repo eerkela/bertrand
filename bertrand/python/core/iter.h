@@ -15,7 +15,7 @@ struct Iterator;
 
 
 template <typename Begin, typename End, typename Container>
-struct Interface<Iterator<Begin, End, Container>> : impl::IterTag {
+struct interface<Iterator<Begin, End, Container>> : impl::IterTag {
 private:
 
     template <typename B, typename E, typename C>
@@ -28,7 +28,7 @@ private:
     template <typename R>
     struct traits<R, void, void> {
         using begin_type = __iter__<Iterator<R>>;
-        using end_type = impl::Sentinel;
+        using end_type = sentinel;
         using container_type = void;
         using value_type = R;
     };
@@ -70,18 +70,18 @@ public:
 
 
 template <typename Begin, typename End, typename Container>
-struct Interface<Type<Iterator<Begin, End, Container>>> {
-    using begin_type = Interface<Iterator<Begin, End, Container>>::begin_type;
-    using end_type = Interface<Iterator<Begin, End, Container>>::end_type;
-    using container_type = Interface<Iterator<Begin, End, Container>>::container_type;
-    using value_type = Interface<Iterator<Begin, End, Container>>::value_type;
+struct interface<Type<Iterator<Begin, End, Container>>> {
+    using begin_type        = interface<Iterator<Begin, End, Container>>::begin_type;
+    using end_type          = interface<Iterator<Begin, End, Container>>::end_type;
+    using container_type    = interface<Iterator<Begin, End, Container>>::container_type;
+    using value_type        = interface<Iterator<Begin, End, Container>>::value_type;
 
-    template <impl::inherits<Interface<Iterator<Begin, End, Container>>> Self>
+    template <impl::inherits<interface<Iterator<Begin, End, Container>>> Self>
     static decltype(auto) __iter__(Self&& self) {
         return std::forward<Self>(self).__iter__();
     }
 
-    template <impl::inherits<Interface<Iterator<Begin, End, Container>>> Self>
+    template <impl::inherits<interface<Iterator<Begin, End, Container>>> Self>
     static decltype(auto) __next__(Self&& self) {
         return std::forward<Self>(self).__next__();
     }
@@ -100,11 +100,11 @@ type matches expectations.  As such, this class is one of the rare cases where t
 safety may be violated, and should therefore be used with caution.  It is mostly meant
 for internal use to back the default result of the `begin()` and `end()` operators when
 no specialized C++ iterator can be found.  In that case, its value type is set to the
-`T` in an `__iter__<Container> : Returns<T> {};` specialization.  If you want to use
+`T` in an `__iter__<Container> : returns<T> {};` specialization.  If you want to use
 this class and avoid type safety issues, leave the return type set to `Object` (the
 default), which will incur a runtime check on conversion. */
 template <impl::python Return>
-struct Iterator<Return, void, void> : Object, Interface<Iterator<Return, void, void>> {
+struct Iterator<Return, void, void> : Object, interface<Iterator<Return, void, void>> {
     struct __python__ : def<__python__, Iterator>, PyObject {
         static Type<Iterator> __import__() {
             Object collections = reinterpret_steal<Object>(PyImport_Import(
@@ -157,7 +157,7 @@ every combination of C++ iterators, forwarding to their respective `operator*()`
 `operator++()`, and `operator==()` methods. */
 template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
     requires (std::convertible_to<decltype(*std::declval<Begin>()), Object>)
-struct Iterator<Begin, End, void> : Object, Interface<Iterator<Begin, End, void>> {
+struct Iterator<Begin, End, void> : Object, interface<Iterator<Begin, End, void>> {
     struct __python__ : def<__python__, Iterator>, PyObject {
         inline static bool initialized = false;
         static PyTypeObject __type__;
@@ -272,7 +272,7 @@ template <
     impl::iterable Container
 >
     requires (std::convertible_to<decltype(*std::declval<Begin>()), Object>)
-struct Iterator<Begin, End, Container> : Object, Interface<Iterator<Begin, End, Container>> {
+struct Iterator<Begin, End, Container> : Object, interface<Iterator<Begin, End, Container>> {
     struct __python__ : def<__python__, Iterator>, PyObject {
         inline static bool initialized = false;
         static PyTypeObject __type__;
@@ -419,7 +419,7 @@ struct __init__<
         typename impl::IterTraits<Container>::container
     >,
     Container
-> : Returns<Iterator<
+> : returns<Iterator<
     typename impl::IterTraits<Container>::begin,
     typename impl::IterTraits<Container>::end,
     typename impl::IterTraits<Container>::container
@@ -437,7 +437,7 @@ struct __init__<
 /* Construct a Python iterator from a pair of C++ iterators. */
 template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
     requires (std::convertible_to<decltype(*std::declval<Begin>()), Object>)
-struct __init__<Iterator<Begin, End, void>, Begin, End> : Returns<Iterator<Begin, End, void>> {
+struct __init__<Iterator<Begin, End, void>, Begin, End> : returns<Iterator<Begin, End, void>> {
     static auto operator()(auto&& begin, auto&& end) {
         return impl::construct<Iterator<Begin, End, void>>(
             std::forward<decltype(begin)>(begin),
@@ -448,7 +448,7 @@ struct __init__<Iterator<Begin, End, void>, Begin, End> : Returns<Iterator<Begin
 
 
 template <impl::is<Object> Derived, typename Return>
-struct __isinstance__<Derived, Iterator<Return, void, void>> : Returns<bool> {
+struct __isinstance__<Derived, Iterator<Return, void, void>> : returns<bool> {
     static constexpr bool operator()(Derived obj) {
         return PyIter_Check(ptr(obj));
     }
@@ -456,7 +456,7 @@ struct __isinstance__<Derived, Iterator<Return, void, void>> : Returns<bool> {
 
 
 template <typename Derived, typename Return>
-struct __issubclass__<Derived, Iterator<Return, void, void>> : Returns<bool> {
+struct __issubclass__<Derived, Iterator<Return, void, void>> : returns<bool> {
     static constexpr bool operator()() {
         return
             impl::inherits<Derived, impl::IterTag> &&
@@ -481,7 +481,7 @@ struct __issubclass__<Derived, Iterator<Return, void, void>> : Returns<bool> {
 
 /* Traversing a Python iterator requires a customized C++ iterator type. */
 template <typename T>
-struct __iter__<Iterator<T, void, void>>                    : Returns<T> {
+struct __iter__<Iterator<T, void, void>>                    : returns<T> {
     using iterator_category = std::input_iterator_tag;
     using difference_type   = std::ptrdiff_t;
     using value_type        = T;
@@ -536,19 +536,19 @@ struct __iter__<Iterator<T, void, void>>                    : Returns<T> {
         return ++(*this);
     }
 
-    [[nodiscard]] friend bool operator==(const __iter__& self, py::impl::Sentinel) {
+    [[nodiscard]] friend bool operator==(const __iter__& self, sentinel) {
         return ptr(self.curr) == nullptr;
     }
 
-    [[nodiscard]] friend bool operator==(py::impl::Sentinel, const __iter__& self) {
+    [[nodiscard]] friend bool operator==(sentinel, const __iter__& self) {
         return ptr(self.curr) == nullptr;
     }
 
-    [[nodiscard]] friend bool operator!=(const __iter__& self, py::impl::Sentinel) {
+    [[nodiscard]] friend bool operator!=(const __iter__& self, sentinel) {
         return ptr(self.curr) != nullptr;
     }
 
-    [[nodiscard]] friend bool operator!=(py::impl::Sentinel, const __iter__& self) {
+    [[nodiscard]] friend bool operator!=(sentinel, const __iter__& self) {
         return ptr(self.curr) != nullptr;
     }
 
@@ -561,22 +561,22 @@ struct __iter__<Iterator<T, void, void>>                    : Returns<T> {
 extract the internal C++ iterators rather than creating yet another layer of
 indirection. */
 template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End, typename Container>
-struct __iter__<Iterator<Begin, End, Container>> : Returns<decltype(*std::declval<Begin>())> {};
+struct __iter__<Iterator<Begin, End, Container>> : returns<decltype(*std::declval<Begin>())> {};
 
 
 template <typename T, typename Begin, typename End, typename Container>
-struct __contains__<T, Iterator<Begin, End, Container>> : Returns<bool> {};
+struct __contains__<T, Iterator<Begin, End, Container>> : returns<bool> {};
 
 
 /// TODO: these attributes can only be defined after functions are defined
 
 
 // template <impl::inherits<impl::IterTag> Self>
-// struct __getattr__<Self, "__iter__"> : Returns<
+// struct __getattr__<Self, "__iter__"> : returns<
 //     Function<impl::qualify<Self(std::remove_cvref_t<Self>::*)(), Self>>
 // > {};
 // template <impl::inherits<impl::IterTag> Self>
-// struct __getattr__<Self, "__next__"> : Returns<
+// struct __getattr__<Self, "__next__"> : returns<
 //     Function<impl::qualify<
 //         std::conditional_t<
 //             std::is_void_v<typename std::remove_reference_t<Self>::end_type>,
@@ -591,11 +591,11 @@ struct __contains__<T, Iterator<Begin, End, Container>> : Returns<bool> {};
 //     >>
 // > {};
 // template <impl::inherits<impl::IterTag> Self>
-// struct __getattr__<Type<Self>, "__iter__"> : Returns<Function<
+// struct __getattr__<Type<Self>, "__iter__"> : returns<Function<
 //     Self(*)(Self)
 // >> {};
 // template <impl::inherits<impl::IterTag> Self>
-// struct __getattr__<Type<Self>, "__next__"> : Returns<Function<
+// struct __getattr__<Type<Self>, "__next__"> : returns<Function<
 //     std::conditional_t<
 //         std::is_void_v<typename std::remove_reference_t<Self>::end_type>,
 //         std::remove_reference_t<decltype(
@@ -679,7 +679,7 @@ template <impl::python Self>
     ))
 [[nodiscard]] auto end(const Self& self) {
     if constexpr (std::is_constructible_v<__iter__<Self>, Self>) {
-        return py::impl::Sentinel{};
+        return sentinel{};
 
     } else if constexpr (impl::has_cpp<Self>) {
         return std::ranges::end(from_python(std::forward<Self>(self)));
@@ -688,11 +688,11 @@ template <impl::python Self>
         if constexpr (!std::is_void_v<typename std::remove_reference_t<Self>::end_type>) {
             return reinterpret(self)->end;
         } else {
-            return py::impl::Sentinel{};
+            return sentinel{};
         }
 
     } else {
-        return py::impl::Sentinel{};
+        return sentinel{};
     }
 }
 
@@ -791,13 +791,13 @@ template <impl::python Self>
     ))
 [[nodiscard]] auto rend(const Self& self) {
     if constexpr (std::is_constructible_v<__reversed__<Self>, Self>) {
-        return py::impl::Sentinel{};
+        return sentinel{};
 
     } else if constexpr (impl::has_cpp<Self>) {
         return std::ranges::rend(from_python(std::forward<Self>(self)));
 
     } else {
-        return py::impl::Sentinel{};
+        return sentinel{};
     }
 }
 
@@ -896,19 +896,19 @@ namespace impl {
                 return *inner_begin;
             }
 
-            friend bool operator==(const Iterator& self, const Sentinel&) {
+            friend bool operator==(const Iterator& self, const sentinel&) {
                 return self.outer_begin == self.outer_end;
             }
 
-            friend bool operator==(const Sentinel&, const Iterator& self) {
+            friend bool operator==(const sentinel&, const Iterator& self) {
                 return self.outer_begin == self.outer_end;
             }
 
-            friend bool operator!=(const Iterator& self, const Sentinel&) {
+            friend bool operator!=(const Iterator& self, const sentinel&) {
                 return self.outer_begin != self.outer_end;
             }
 
-            friend bool operator!=(const Sentinel&, const Iterator& self) {
+            friend bool operator!=(const sentinel&, const Iterator& self) {
                 return self.outer_begin != self.outer_end;
             }
 
@@ -925,7 +925,7 @@ namespace impl {
             return Iterator(std::ranges::begin(m_view), std::ranges::end(m_view));
         }
 
-        Sentinel end() {
+        sentinel end() {
             return {};
         };
 

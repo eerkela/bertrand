@@ -186,7 +186,7 @@ namespace impl {
 
 
 /* A generic sentinel type to simplify iterator implementations. */
-struct Sentinel {};
+struct sentinel {};
 
 
 /* Get the index of a particular type within a parameter pack.  Returns the pack's size
@@ -1832,19 +1832,19 @@ public:
                 return copy;
             }
 
-            friend constexpr bool operator==(const Iterator& self, Sentinel) noexcept {
+            friend constexpr bool operator==(const Iterator& self, sentinel) noexcept {
                 return self.index >= self.last;
             }
 
-            friend constexpr bool operator==(Sentinel, const Iterator& self) noexcept {
+            friend constexpr bool operator==(sentinel, const Iterator& self) noexcept {
                 return self.index >= self.last;
             }
 
-            friend constexpr bool operator!=(const Iterator& self, Sentinel) noexcept {
+            friend constexpr bool operator!=(const Iterator& self, sentinel) noexcept {
                 return self.index < self.last;
             }
 
-            friend constexpr bool operator!=(Sentinel, const Iterator& self) noexcept {
+            friend constexpr bool operator!=(sentinel, const Iterator& self) noexcept {
                 return self.index < self.last;
             }
         };
@@ -1853,7 +1853,7 @@ public:
             return {self, first, last};
         }
 
-        Sentinel end() const noexcept {
+        sentinel end() const noexcept {
             return {};
         }
     };

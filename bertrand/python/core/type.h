@@ -31,7 +31,7 @@ types can always be implicitly converted to this type, but doing the opposite in
 runtime `issubclass()` check, and can potentially raise a `TypeError`, just like
 `py::Object`. */
 template <>
-struct Type<Object> : Object, Interface<Type<Object>> {
+struct Type<Object> : Object, interface<Type<Object>> {
     struct __python__ : def<__python__, Type>, PyTypeObject {   
         static Type __import__() {
             return reinterpret_borrow<Type>(
@@ -75,7 +75,7 @@ explicit Type(const T&) -> Type<typename __object__<T>::type>;
 
 /* All types are default-constructible by invoking the `__import__()` hook. */
 template <typename T>
-struct __init__<Type<T>> : Returns<Type<T>> {
+struct __init__<Type<T>> : returns<Type<T>> {
     static auto operator()() {
         return Type<T>::__python__::__import__();
     }
@@ -85,7 +85,7 @@ struct __init__<Type<T>> : Returns<Type<T>> {
 /* Metaclasses are represented as Types of Types, and are constructible by recursively
 calling `Py_TYPE(cls)` on the inner Type until we reach a concrete implementation. */
 template <typename T>
-struct __init__<Type<Type<T>>> : Returns<Type<Type<T>>> {
+struct __init__<Type<Type<T>>> : returns<Type<Type<T>>> {
     static auto operator()() {
         return reinterpret_borrow<Type<Type<T>>>(reinterpret_cast<PyObject*>(
             Py_TYPE(ptr(Type<T>()))
@@ -97,7 +97,7 @@ struct __init__<Type<Type<T>>> : Returns<Type<Type<T>>> {
 /* Implement the CTAD guide by default-initializing the corresponding Type. */
 template <typename T> requires (__object__<T>::enable)
 struct __explicit_init__<Type<typename __object__<T>::type>, T> :
-    Returns<Type<typename __object__<T>::type>>
+    returns<Type<typename __object__<T>::type>>
 {
     static auto operator()(const T& obj) {
         return Type<typename __object__<T>::type>();
@@ -110,7 +110,7 @@ struct __explicit_init__<Type<typename __object__<T>::type>, T> :
 
 /* Calling a Type is the same as invoking the inner type's constructor. */
 template <typename T, typename... Args> requires (std::constructible_from<T, Args...>)
-struct __call__<Type<T>, Args...> : Returns<T> {
+struct __call__<Type<T>, Args...> : returns<T> {
     static auto operator()(const Type<T>& self, Args&&... args) {
         return T(std::forward<Args>(args)...);
     }
@@ -120,7 +120,7 @@ struct __call__<Type<T>, Args...> : Returns<T> {
 /* `isinstance()` is already implemented for all `Type<T>` specializations by
 recurring on the templated type. */
 template <typename T, typename Cls>
-struct __isinstance__<T, Type<Cls>> : Returns<bool> {
+struct __isinstance__<T, Type<Cls>> : returns<bool> {
     static constexpr bool operator()(const T& obj) {
         if constexpr (impl::python_like<T>) {
             if (!PyType_Check(ptr(obj))) {
@@ -162,7 +162,7 @@ struct __isinstance__<T, Type<Cls>> : Returns<bool> {
 /* `issubclass()` is already implemented for all `Type<T>` specializations by
 recurring on the templated type. */
 template <typename T, typename Cls>
-struct __issubclass__<T, Type<Cls>> : Returns<bool> {
+struct __issubclass__<T, Type<Cls>> : returns<bool> {
     static constexpr bool operator()() { return issubclass<T, Cls>(); }
     static constexpr bool operator()(const T& obj) { return issubclass<Cls>(obj); }
     static constexpr bool operator()(const T& obj, const Type<Cls>& cls) {
@@ -186,11 +186,11 @@ struct __issubclass__<T, Type<Cls>> : Returns<bool> {
 equivalent C++ alias. */
 template <typename From, typename To> requires (
     std::derived_from<
-        Interface<typename __object__<From>::type>,
-        Interface<typename __object__<To>::type>
+        interface<typename __object__<From>::type>,
+        interface<typename __object__<To>::type>
     >
 )
-struct __cast__<Type<From>, Type<To>> : Returns<Type<To>> {
+struct __cast__<Type<From>, Type<To>> : returns<Type<To>> {
     static auto operator()(const Type<From>& from) {
         return reinterpret_borrow<Type<To>>(ptr(from));
     }
@@ -208,11 +208,11 @@ template <typename From, typename To> requires (
         typename __object__<From>::type
     > &&
     std::derived_from<
-        Interface<typename __object__<To>::type>,
-        Interface<typename __object__<From>::type>
+        interface<typename __object__<To>::type>,
+        interface<typename __object__<From>::type>
     >
 )
-struct __cast__<Type<From>, Type<To>> : Returns<Type<To>> {
+struct __cast__<Type<From>, Type<To>> : returns<Type<To>> {
     static auto operator()(const Type<From>& from) {
         if (issubclass<typename __object__<To>::type>(from)) {
             return reinterpret_borrow<Type<To>>(ptr(from));
@@ -246,7 +246,7 @@ struct Type<BertrandMeta>;
 
 
 template <>
-struct Interface<BertrandMeta> {};
+struct interface<BertrandMeta> {};
 
 
 /// TODO: metaclass and/or bindings should insert a default tp_repr slot for all types,
@@ -257,9 +257,9 @@ struct Interface<BertrandMeta> {};
 /* Bertrand's metaclass, which is used to expose C++ classes to Python and simplify the
 binding process.  Any type which includes an `__export__()` method will be exposed as
 an instance of this class. */
-struct BertrandMeta : Object, Interface<BertrandMeta> {
+struct BertrandMeta : Object, interface<BertrandMeta> {
     struct __python__ : def<__python__, BertrandMeta>, PyTypeObject {
-        static constexpr StaticStr __doc__ =
+        static constexpr static_str __doc__ =
 R"doc(A shared metaclass for all Bertrand extension types.
 
 Notes
@@ -1021,7 +1021,7 @@ Instances of this class cannot be created any other way.)doc";
 
         /* The metaclass can't use Bindings, since they depend on the metaclass to
         function.  The logic is fundamentally the same, however. */
-        template <StaticStr ModName>
+        template <static_str ModName>
         static Type<BertrandMeta> __export__(Module<ModName> module);
 
         /* Get a new reference to the metatype from the global `bertrand.python`
@@ -1034,7 +1034,7 @@ Instances of this class cannot be created any other way.)doc";
         for a C++ template hierarchy.  The interface type is not usable on its own
         except to provide access to its C++ instantiations, as well as efficient type
         checks against them and a central point for documentation. */
-        template <StaticStr Name, StaticStr ModName>
+        template <static_str Name, static_str ModName>
         static BertrandMeta stub_type(Module<ModName>& module, std::string&& doc);
 
         /* A candidate for the `_instancecheck` function pointer to be used for stub
@@ -1170,7 +1170,7 @@ Instances of this class cannot be created any other way.)doc";
             return {forward, i, kwnames};
         }
 
-        template <StaticStr Name>
+        template <static_str Name>
         static PyObject* search_mro(__python__* cls) {
             // search instance dictionary first
             PyObject* dict = PyType_GetDict(cls);
@@ -5109,14 +5109,14 @@ is deleted, the metaclass will reset the slot to its original value.)doc"
 
 
 template <>
-struct Interface<Type<BertrandMeta>> {};
+struct interface<Type<BertrandMeta>> {};
 
 
 /* The type object associated with Bertrand's metaclass.  This has to be separate
 specialization to prevent Bertrand's generic `Type<T>` implementation from attempting
 to make this an instance of itself, which would cause a circular dependency. */
 template <>
-struct Type<BertrandMeta> : Object, Interface<Type<BertrandMeta>>, impl::TypeTag {
+struct Type<BertrandMeta> : Object, interface<Type<BertrandMeta>>, impl::TypeTag {
     struct __python__ : def<__python__, Type>, PyTypeObject {
         static Type __import__();
     };
@@ -5140,7 +5140,7 @@ struct Type<BertrandMeta> : Object, Interface<Type<BertrandMeta>>, impl::TypeTag
 
 
 template <typename T>
-struct __isinstance__<T, BertrandMeta> : Returns<bool> {
+struct __isinstance__<T, BertrandMeta> : returns<bool> {
     static constexpr bool operator()(const T& obj) {
         if constexpr (impl::python_like<T>) {
             int result = PyObject_IsInstance(
@@ -5166,7 +5166,7 @@ struct __isinstance__<T, BertrandMeta> : Returns<bool> {
 
 
 template <typename T>
-struct __issubclass__<T, BertrandMeta> : Returns<bool> {
+struct __issubclass__<T, BertrandMeta> : returns<bool> {
     static constexpr bool operator()() {
         return impl::has_export<T>;
     }
@@ -5191,11 +5191,11 @@ struct __issubclass__<T, BertrandMeta> : Returns<bool> {
 
 
 template <>
-struct __len__<BertrandMeta>                                : Returns<size_t> {};
+struct __len__<BertrandMeta>                                : returns<size_t> {};
 template <>
-struct __iter__<BertrandMeta>                               : Returns<BertrandMeta> {};
+struct __iter__<BertrandMeta>                               : returns<BertrandMeta> {};
 template <typename... T>
-struct __getitem__<BertrandMeta, Type<T>...>                : Returns<BertrandMeta> {
+struct __getitem__<BertrandMeta, Type<T>...>                : returns<BertrandMeta> {
     static auto operator()(const BertrandMeta& cls, const Type<T>&... key) {
         if (ptr(cls)->templates == nullptr) {
             throw TypeError("class has no template instantiations");
@@ -5215,11 +5215,11 @@ struct __getitem__<BertrandMeta, Type<T>...>                : Returns<BertrandMe
 
 
 template <impl::has_export T>
-struct __len__<Type<T>>                                     : Returns<size_t> {};
+struct __len__<Type<T>>                                     : returns<size_t> {};
 template <impl::has_export T>
-struct __iter__<Type<T>>                                    : Returns<BertrandMeta> {};
+struct __iter__<Type<T>>                                    : returns<BertrandMeta> {};
 template <impl::has_export T, typename... U>
-struct __getitem__<Type<T>, Type<U>...>                     : Returns<BertrandMeta> {
+struct __getitem__<Type<T>, Type<U>...>                     : returns<BertrandMeta> {
     static auto operator()(const Type<T>& cls, const Type<U>&... key) {
         if (ptr(cls)->templates == nullptr) {
             throw TypeError("class has no template instantiations");
@@ -5246,7 +5246,7 @@ struct __getitem__<Type<T>, Type<U>...>                     : Returns<BertrandMe
 /* Implicitly convert an instance of the metaclass to a specific `Type<T>`
 specialization by applying a dynamic `issubclass()` check. */
 template <impl::has_export To>
-struct __cast__<BertrandMeta, Type<To>>                     : Returns<Type<To>> {
+struct __cast__<BertrandMeta, Type<To>>                     : returns<Type<To>> {
     static auto operator()(const BertrandMeta& from) {
         if (issubclass<typename __object__<To>::type>(from)) {
             return reinterpret_borrow<Type<To>>(ptr(from));
@@ -5275,7 +5275,7 @@ metaclass accordingly.  If the wrapper's `__python__` type implements `__export_
 then the metaclass will be set to `BertrandMeta::__python__`.  Otherwise, it defaults
 to `PyTypeObject`. */
 template <std::derived_from<Object> Wrapper>
-struct Type<Wrapper> : Object, Interface<Type<Wrapper>> {
+struct Type<Wrapper> : Object, interface<Type<Wrapper>> {
 private:
 
     template <typename T>
@@ -5464,7 +5464,7 @@ inline PyObject* BertrandMeta::__python__::class_doc(__python__* cls, void*) {
 }
 
 
-template <StaticStr ModName>
+template <static_str ModName>
 inline Type<BertrandMeta> BertrandMeta::__python__::__export__(Module<ModName> module) {
     static PyType_Slot slots[] = {
         {Py_tp_doc, const_cast<char*>(__doc__.buffer)},
@@ -5503,7 +5503,7 @@ inline Type<BertrandMeta> BertrandMeta::__python__::__export__(Module<ModName> m
 }
 
 
-template <StaticStr Name, StaticStr ModName>
+template <static_str Name, static_str ModName>
 inline BertrandMeta BertrandMeta::__python__::stub_type(
     Module<ModName>& module,
     std::string&& doc
@@ -6135,7 +6135,7 @@ inline PyObject* BertrandMeta::__python__::Slots::nb_matrix_multiply(PyObject* l
 ////////////////////////
 
 
-template <typename Cls, typename CRTP, typename Wrapper, StaticStr ModName>
+template <typename Cls, typename CRTP, typename Wrapper, static_str ModName>
 struct Object::Bindings {
 private:
     using Meta = BertrandMeta::__python__;
@@ -6300,7 +6300,7 @@ private:
             Args...
         >;
 
-        template <StaticStr Name>
+        template <static_str Name>
         struct check {
             template <typename T>
             static constexpr bool value = false;
@@ -7845,7 +7845,7 @@ private:
 
     /* A function pointer that can be added to the metaclass's `class_getters` field.
     The closure will be interpreted according to the templated Closure type. */
-    template <StaticStr Name, typename Closure>
+    template <static_str Name, typename Closure>
     static PyObject* static_getter(Meta* cls, void* closure) {
         static_assert(
             Closure::template Triats<Closure>::value,
@@ -7881,7 +7881,7 @@ private:
 
     /* A function pointer that can be added to the metaclass's `class_setters` field.
     The closure will be interpreted according to the templated Closure type. */
-    template <StaticStr Name, typename Closure>
+    template <static_str Name, typename Closure>
     static int static_setter(Meta* cls, PyObject* value, void* closure) {
         static_assert(
             Closure::template Traits<Closure>::value,
@@ -7942,7 +7942,7 @@ private:
 
     /* A function pointer that can be added to the metaclass's `class_getters` field.
     The closure will be interpreted according to the templated Closure type. */
-    template <StaticStr Name, typename Closure>
+    template <static_str Name, typename Closure>
     static PyObject* class_getter(Meta* cls, void* closure) {
         static_assert(
             Closure::template Traits<Closure>::value,
@@ -7979,7 +7979,7 @@ private:
 
     /* A function pointer that can be added to the metaclass' `class_setters` field.
     The closure will be interpreted according to the templated Closure type. */
-    template <StaticStr Name, typename Closure>
+    template <static_str Name, typename Closure>
     static int class_setter(Meta* cls, PyObject* value, void* closure) {
         static_assert(
             Closure::template Traits<Closure>::value,
@@ -8041,7 +8041,7 @@ private:
 
     /* A function pointer that can be placed in a `PyGetSetDef.get` slot.  The closure
     will be interpreted according to the templated closure type. */
-    template <StaticStr Name, typename Closure>
+    template <static_str Name, typename Closure>
     static PyObject* instance_getter(CRTP* self, void* closure) {
         static_assert(
             Closure::template Traits<Closure>::value,
@@ -8078,7 +8078,7 @@ private:
 
     /* A function pointer that can be placed in a `PyGetSetDef.set` slot.  The closure
     will be interpreted according to the templated Closure type. */
-    template <StaticStr Name, typename Closure>
+    template <static_str Name, typename Closure>
     static int instance_setter(CRTP* self, PyObject* value, void* closure) {
         static_assert(
             Closure::template Traits<Closure>::value,
@@ -8150,7 +8150,7 @@ public:
 
     /* Expose an immutable member variable to Python as a getset descriptor,
     which synchronizes its state. */
-    template <StaticStr Name, typename T> requires (__object__<T>::enable)
+    template <static_str Name, typename T> requires (__object__<T>::enable)
     void var(const T Cls::*value) {
         if (members.contains(Name)) {
             throw AttributeError(
@@ -8216,7 +8216,7 @@ public:
 
     /* Expose a mutable member variable to Python as a getset descriptor, which
     synchronizes its state. */
-    template <StaticStr Name, typename T> requires (__object__<T>::enable)
+    template <static_str Name, typename T> requires (__object__<T>::enable)
     void var(T Cls::*value) {
         if (members.contains(Name)) {
             throw AttributeError(
@@ -8327,7 +8327,7 @@ public:
 
     /* Expose an immutable static variable to Python using the `__getattr__()`
     slot of the metatype, which synchronizes its state. */
-    template <StaticStr Name, typename T> requires (__object__<T>::enable)
+    template <static_str Name, typename T> requires (__object__<T>::enable)
     void class_var(const T& value) {
         if (members.contains(Name)) {
             throw AttributeError(
@@ -8367,7 +8367,7 @@ public:
 
     /* Expose a mutable static variable to Python using the `__getattr__()` and
     `__setattr__()` slots of the metatype, which synchronizes its state.  */
-    template <StaticStr Name, typename T> requires (__object__<T>::enable)
+    template <static_str Name, typename T> requires (__object__<T>::enable)
     void class_var(T& value) {
         if (members.contains(Name)) {
             throw AttributeError(
@@ -8512,7 +8512,7 @@ public:
 
     /* Expose a non-member getter/setter pair to Python as a getset descriptor. */
     template <
-        StaticStr Name,
+        static_str Name,
         typename Getter = std::nullptr_t,
         typename Setter = std::nullptr_t,
         typename Deleter = std::nullptr_t
@@ -8635,7 +8635,7 @@ public:
     /* Expose a C++-style static getter to Python using the `__getattr__()`
     slot of the metatype. */
     template <
-        StaticStr Name,
+        static_str Name,
         typename Getter = std::nullptr_t,
         typename Setter = std::nullptr_t,
         typename Deleter = std::nullptr_t
@@ -8744,7 +8744,7 @@ public:
     /* Expose a C++-style static getter to Python using the `__getattr__()`
     slot of the metatype. */
     template <
-        StaticStr Name,
+        static_str Name,
         typename Getter = std::nullptr_t,
         typename Setter = std::nullptr_t,
         typename Deleter = std::nullptr_t
@@ -8855,7 +8855,7 @@ public:
 
     /* Expose a C++ instance method to Python as an instance method, which can
     be overloaded from either side of the language boundary.  */
-    template <StaticStr Name, typename Return, typename... Target>
+    template <static_str Name, typename Return, typename... Target>
         requires (
             __object__<std::remove_cvref_t<Return>>::enable &&
             (__object__<std::remove_cvref_t<Target>>::enable && ...)
@@ -8883,7 +8883,7 @@ public:
 
     /* Expose a C++ static method to Python as a static method, which can be
     overloaded from either side of the language boundary.  */
-    template <StaticStr Name, typename Return, typename... Target>
+    template <static_str Name, typename Return, typename... Target>
         requires (
             __object__<std::remove_cvref_t<Return>>::enable &&
             (__object__<std::remove_cvref_t<Target>>::enable && ...)
@@ -8894,7 +8894,7 @@ public:
 
     /* Expose a nested py::Object type to Python. */
     template <
-        StaticStr Name,
+        static_str Name,
         std::derived_from<Object> Class,
         std::derived_from<Object>... Bases
     > requires (
@@ -8941,7 +8941,7 @@ public:
 
     /* Expose a nested and templated py::Object type to Python. */
     template <
-        StaticStr Name,
+        static_str Name,
         template <typename...> typename Class
     >
     void type(std::string&& doc = "") {
@@ -8979,7 +8979,7 @@ public:
 
     /* Expose a template instantiation of a nested py::Object type to Python. */
     template <
-        StaticStr Name,
+        static_str Name,
         std::derived_from<Object> Class,
         std::derived_from<Object>... Bases
     > requires (
@@ -9184,7 +9184,7 @@ namespace impl {
 
     // template <typename CRTP, typename Wrapper, typename CppType>
     // struct TypeTag::def : BaseDef<CRTP, Wrapper, CppType> {
-    //     static constexpr StaticStr __doc__ = [] {
+    //     static constexpr static_str __doc__ = [] {
     //         return (
     //             "A Bertrand-generated Python wrapper for the '" +
     //             impl::demangle(typeid(CppType).name()) + "' C++ type."
@@ -9452,7 +9452,7 @@ namespace impl {
 
 
 template <typename T, impl::has_cpp Self>
-struct __isinstance__<T, Self>                              : Returns<bool> {
+struct __isinstance__<T, Self>                              : returns<bool> {
     /// TODO: is this default behavior?
     static bool operator()(const T& obj) {
         return PyType_IsSubtype(Py_TYPE(ptr(obj)), ptr(Type<Self>()));
@@ -9462,7 +9462,7 @@ struct __isinstance__<T, Self>                              : Returns<bool> {
 
 template <impl::has_cpp Self, typename T>
     requires (std::convertible_to<T, impl::cpp_type<Self>>)
-struct __init__<Self, T>                                    : Returns<Self> {
+struct __init__<Self, T>                                    : returns<Self> {
     static Self operator()(T&& value) {
         return impl::construct<Self>(std::forward<T>(value));
     }
@@ -9471,7 +9471,7 @@ struct __init__<Self, T>                                    : Returns<Self> {
 
 template <impl::has_cpp Self, typename... Args>
     requires (std::constructible_from<impl::cpp_type<Self>, Args...>)
-struct __explicit_init__<Self, Args...>                     : Returns<Self> {
+struct __explicit_init__<Self, Args...>                     : returns<Self> {
     static Self operator()(Args&&... args) {
         return impl::construct<Self>(std::forward<Args>(args)...);
     }
@@ -9480,7 +9480,7 @@ struct __explicit_init__<Self, Args...>                     : Returns<Self> {
 
 template <impl::has_cpp Self, typename T>
     requires (std::convertible_to<impl::cpp_type<Self>, T>)
-struct __cast__<Self, T>                                    : Returns<T> {
+struct __cast__<Self, T>                                    : returns<T> {
     static T operator()(const Self& self) {
         return unwrap(self);
     }
@@ -9489,7 +9489,7 @@ struct __cast__<Self, T>                                    : Returns<T> {
 
 template <impl::has_cpp Self, typename T>
     requires (impl::explicitly_convertible_to<impl::cpp_type<Self>, T>)
-struct __explicit_cast__<Self, T>                           : Returns<T> {
+struct __explicit_cast__<Self, T>                           : returns<T> {
     static T operator()(const Self& self) {
         return static_cast<T>(unwrap(self));
     }
@@ -9498,7 +9498,7 @@ struct __explicit_cast__<Self, T>                           : Returns<T> {
 
 template <impl::has_cpp Self, typename... Args>
     requires (std::is_invocable_v<impl::cpp_type<Self>, Args...>)
-struct __call__<Self, Args...> : Returns<std::invoke_result_t<impl::cpp_type<Self>, Args...>> {};
+struct __call__<Self, Args...> : returns<std::invoke_result_t<impl::cpp_type<Self>, Args...>> {};
 
 
 /// TODO: __getattr__/__setattr__/__delattr__ must be defined for each type, and cannot
@@ -9507,7 +9507,7 @@ struct __call__<Self, Args...> : Returns<std::invoke_result_t<impl::cpp_type<Sel
 
 template <impl::has_cpp Self, typename... Key>
     requires (impl::supports_lookup<impl::cpp_type<Self>, Key...>)
-struct __getitem__<Self, Key...> : Returns<impl::lookup_type<impl::cpp_type<Self>, Key...>> {
+struct __getitem__<Self, Key...> : returns<impl::lookup_type<impl::cpp_type<Self>, Key...>> {
     template <typename... Ks>
     static decltype(auto) operator()(const Self& self, Ks&&... key) {
         return unwrap(self)[std::forward<Ks>(key)...];
@@ -9517,57 +9517,57 @@ struct __getitem__<Self, Key...> : Returns<impl::lookup_type<impl::cpp_type<Self
 
 template <impl::has_cpp Self, typename Value, typename... Key>
     requires (impl::supports_item_assignment<impl::cpp_type<Self>, Value, Key...>)
-struct __setitem__<Self, Value, Key...> : Returns<void> {};
+struct __setitem__<Self, Value, Key...> : returns<void> {};
 
 
 template <impl::has_cpp Self>
     requires (impl::has_size<impl::cpp_type<Self>>)
-struct __len__<Self> : Returns<size_t> {};
+struct __len__<Self> : returns<size_t> {};
 
 
 template <impl::has_cpp Self>
     requires (impl::iterable<impl::cpp_type<Self>>)
-struct __iter__<Self> : Returns<impl::iter_type<impl::cpp_type<Self>>> {};
+struct __iter__<Self> : returns<impl::iter_type<impl::cpp_type<Self>>> {};
 
 
 template <impl::has_cpp Self>
     requires (impl::reverse_iterable<impl::cpp_type<Self>>)
-struct __reversed__<Self> : Returns<impl::reverse_iter_type<impl::cpp_type<Self>>> {};
+struct __reversed__<Self> : returns<impl::reverse_iter_type<impl::cpp_type<Self>>> {};
 
 
 template <impl::has_cpp Self, typename Key>
     requires (impl::has_contains<impl::cpp_type<Self>, Key>)
-struct __contains__<Self, Key> : Returns<bool> {};
+struct __contains__<Self, Key> : returns<bool> {};
 
 
 template <impl::has_cpp Self>
     requires (impl::hashable<impl::cpp_type<Self>>)
-struct __hash__<Self> : Returns<size_t> {};
+struct __hash__<Self> : returns<size_t> {};
 
 
 template <impl::has_cpp Self>
     requires (impl::has_abs<impl::cpp_type<Self>>)
-struct __abs__<Self> : Returns<impl::abs_type<impl::cpp_type<Self>>> {};
+struct __abs__<Self> : returns<impl::abs_type<impl::cpp_type<Self>>> {};
 
 
 template <impl::has_cpp Self>
     requires (impl::has_pos<impl::cpp_type<Self>>)
-struct __pos__<Self> : Returns<impl::pos_type<impl::cpp_type<Self>>> {};
+struct __pos__<Self> : returns<impl::pos_type<impl::cpp_type<Self>>> {};
 
 
 template <impl::has_cpp Self>
     requires (impl::has_neg<impl::cpp_type<Self>>)
-struct __neg__<Self> : Returns<impl::neg_type<impl::cpp_type<Self>>> {};
+struct __neg__<Self> : returns<impl::neg_type<impl::cpp_type<Self>>> {};
 
 
 template <impl::has_cpp Self>
     requires (impl::has_preincrement<impl::cpp_type<Self>>)
-struct __increment__<Self> : Returns<impl::preincrement_type<impl::cpp_type<Self>>> {};
+struct __increment__<Self> : returns<impl::preincrement_type<impl::cpp_type<Self>>> {};
 
 
 template <impl::has_cpp Self>
     requires (impl::has_predecrement<impl::cpp_type<Self>>)
-struct __decrement__<Self> : Returns<impl::predecrement_type<impl::cpp_type<Self>>> {};
+struct __decrement__<Self> : returns<impl::predecrement_type<impl::cpp_type<Self>>> {};
 
 
 template <typename L, typename R>
@@ -9575,7 +9575,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_lt<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __lt__<L, R> : Returns<impl::lt_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __lt__<L, R> : returns<impl::lt_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9583,7 +9583,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_le<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __le__<L, R> : Returns<impl::le_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __le__<L, R> : returns<impl::le_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9591,7 +9591,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_eq<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __eq__<L, R> : Returns<impl::eq_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __eq__<L, R> : returns<impl::eq_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9599,7 +9599,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_ne<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __ne__<L, R> : Returns<impl::ne_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __ne__<L, R> : returns<impl::ne_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9607,7 +9607,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_ge<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __ge__<L, R> : Returns<impl::ge_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __ge__<L, R> : returns<impl::ge_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9615,7 +9615,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_gt<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __gt__<L, R> : Returns<impl::gt_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __gt__<L, R> : returns<impl::gt_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9623,7 +9623,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_add<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __add__<L, R> : Returns<impl::add_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __add__<L, R> : returns<impl::add_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9631,7 +9631,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_iadd<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __iadd__<L, R> : Returns<impl::iadd_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __iadd__<L, R> : returns<impl::iadd_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9639,7 +9639,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_sub<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __sub__<L, R> : Returns<impl::sub_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __sub__<L, R> : returns<impl::sub_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9647,7 +9647,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_isub<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __isub__<L, R> : Returns<impl::isub_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __isub__<L, R> : returns<impl::isub_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9655,7 +9655,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_mul<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __mul__<L, R> : Returns<impl::mul_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __mul__<L, R> : returns<impl::mul_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9663,7 +9663,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_imul<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __imul__<L, R> : Returns<impl::imul_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __imul__<L, R> : returns<impl::imul_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9671,7 +9671,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_truediv<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __truediv__<L, R> : Returns<impl::truediv_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __truediv__<L, R> : returns<impl::truediv_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9679,7 +9679,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_itruediv<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __itruediv__<L, R> : Returns<impl::itruediv_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __itruediv__<L, R> : returns<impl::itruediv_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9687,7 +9687,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_mod<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __mod__<L, R> : Returns<impl::mod_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __mod__<L, R> : returns<impl::mod_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9695,7 +9695,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_imod<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __imod__<L, R> : Returns<impl::imod_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __imod__<L, R> : returns<impl::imod_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9703,7 +9703,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_pow<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __pow__<L, R> : Returns<impl::pow_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __pow__<L, R> : returns<impl::pow_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9711,7 +9711,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_lshift<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __lshift__<L, R> : Returns<impl::lshift_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __lshift__<L, R> : returns<impl::lshift_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9719,7 +9719,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_ilshift<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __ilshift__<L, R> : Returns<impl::ilshift_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __ilshift__<L, R> : returns<impl::ilshift_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9727,7 +9727,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_rshift<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __rshift__<L, R> : Returns<impl::rshift_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __rshift__<L, R> : returns<impl::rshift_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9735,7 +9735,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_irshift<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __irshift__<L, R> : Returns<impl::irshift_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __irshift__<L, R> : returns<impl::irshift_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9743,7 +9743,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_and<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __and__<L, R> : Returns<impl::and_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __and__<L, R> : returns<impl::and_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9751,7 +9751,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_iand<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __iand__<L, R> : Returns<impl::iand_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __iand__<L, R> : returns<impl::iand_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9759,7 +9759,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_or<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __or__<L, R> : Returns<impl::or_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __or__<L, R> : returns<impl::or_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9767,7 +9767,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_ior<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __ior__<L, R> : Returns<impl::ior_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __ior__<L, R> : returns<impl::ior_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9775,7 +9775,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_xor<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __xor__<L, R> : Returns<impl::xor_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __xor__<L, R> : returns<impl::xor_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 template <typename L, typename R>
@@ -9783,7 +9783,7 @@ template <typename L, typename R>
         (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_ixor<impl::cpp_type<L>, impl::cpp_type<R>>
     )
-struct __ixor__<L, R> : Returns<impl::ixor_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+struct __ixor__<L, R> : returns<impl::ixor_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 }  // namespace py

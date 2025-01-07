@@ -53,9 +53,10 @@ using bertrand::Arg;
 using bertrand::ArgTraits;
 using bertrand::arg;
 using bertrand::args;
-using bertrand::StaticStr;
-using bertrand::StaticMap;
-using bertrand::StaticSet;
+using bertrand::sentinel;
+using bertrand::static_str;
+using bertrand::static_map;
+using bertrand::static_set;
 using bertrand::type_name;
 using bertrand::demangle;
 
@@ -112,7 +113,8 @@ using bertrand::demangle;
 
 
 namespace impl {
-    using bertrand::Sentinel;
+    /// TODO: all of this can be reserved to the bertrand:: namespace, which can
+    /// replace many uses of impl::, and can possibly be publicly exported as well.
     using bertrand::index_of;
     using bertrand::unpack_type;
     using bertrand::unpack_arg;
@@ -137,7 +139,7 @@ namespace impl {
     using bertrand::is_ptr;
     using bertrand::types_are_unique;
     using bertrand::explicitly_convertible_to;
-    using bertrand::static_str;
+    using bertrand::is_static_str;
     using bertrand::string_literal;
     using bertrand::is_optional;
     using bertrand::optional_type;
@@ -373,14 +375,12 @@ struct Object;
 
 // template <typename Begin = Object, typename End = void, typename Container = void>
 // struct Iterator;
-// template <StaticStr Name, typename T>
-// struct Arg;
 // template <typename F> requires (impl::Signature<F>::enable)
 // struct Function;
 template <typename T = Object>
 struct Type;
 struct BertrandMeta;
-template <StaticStr Name>
+template <static_str Name>
 struct Module;
 struct NoneType;
 struct NotImplementedType;
@@ -432,21 +432,21 @@ PyObject* type if necessary to access internal fields of the Python representati
 
 This class must be specialized for all types that wish to support multiple inheritance.
 Doing so is rather tricky due to the circular dependency between the Object and its
-Interface, so here's a simple example to illustrate how it's done:
+interface, so here's a simple example to illustrate how it's done:
 
     // forward declare the Object wrapper
     struct Wrapper;
 
     // define the wrapper's interface, mixing in the interfaces of its base classes
     template <>
-    struct Interface<Wrapper> : Interface<Base1>, Interface<Base2>, ... {
+    struct interface<Wrapper> : interface<Base1>, interface<Base2>, ... {
         void foo();  // forward declarations for interface methods
         int bar() const;
         static std::string baz();
     };
 
     // define the wrapper, mixing the interface with Object
-    struct Wrapper : Object, Interface<Wrapper> {
+    struct Wrapper : Object, interface<Wrapper> {
         struct __python__ : def<__python__, Wrapper, SomeCppObj> {
             static Type __export__(Bindings bindings) {
                 // export a C++ object's interface to Python.  The base classes
@@ -495,7 +495,7 @@ Interface, so here's a simple example to illustrate how it's done:
 
     // define the type's interface so that it mimics Python's MRO
     template <>
-    struct Interface<Type<Wrapper>> : Interface<Type<Base1>>, Interface<Type<Base2>>, ... {
+    struct interface<Type<Wrapper>> : interface<Type<Base1>>, interface<Type<Base2>>, ... {
         static void foo(auto& self) {  // non-static methods gain an auto self parameter
             self.foo();
         }
@@ -509,36 +509,36 @@ Interface, so here's a simple example to illustrate how it's done:
 
     // specialize the necessary control structures
     template <>
-    struct __getattr__<Wrapper, "foo"> : Returns<Function<void()>> {};
+    struct __getattr__<Wrapper, "foo"> : returns<Function<void()>> {};
     template <>
-    struct __getattr__<Wrapper, "bar"> : Returns<Function<int()>> {};
+    struct __getattr__<Wrapper, "bar"> : returns<Function<int()>> {};
     template <>
-    struct __getattr__<Wrapper, "baz"> : Returns<Function<std::string()>> {};
+    struct __getattr__<Wrapper, "baz"> : returns<Function<std::string()>> {};
     template <>
-    struct __getattr__<Type<Wrapper>, "foo"> : Returns<Function<void(Wrapper&)>> {};
+    struct __getattr__<Type<Wrapper>, "foo"> : returns<Function<void(Wrapper&)>> {};
     template <>
-    struct __getattr__<Type<Wrapper>, "bar"> : Returns<Function<int(const Wrapper&)>> {};
+    struct __getattr__<Type<Wrapper>, "bar"> : returns<Function<int(const Wrapper&)>> {};
     template <>
-    struct __getattr__<Type<Wrapper>, "baz"> : Returns<Function<std::string()>> {};
+    struct __getattr__<Type<Wrapper>, "baz"> : returns<Function<std::string()>> {};
     // ... for all supported C++ operators
 
     // implement the interface methods
-    void Interface<Wrapper>::foo() {
+    void interface<Wrapper>::foo() {
         print("Hello, world!");
     }
-    int Interface<Wrapper>::bar() const {
+    int interface<Wrapper>::bar() const {
         return 42;
     }
-    std::string Interface<Wrapper>::baz() {
+    std::string interface<Wrapper>::baz() {
         return "static methods work too!";
     }
-    void Interface<Type<Wrapper>>::foo(auto& self) {
+    void interface<Type<Wrapper>>::foo(auto& self) {
         self.foo();
     }
-    int Interface<Type<Wrapper>>::bar(const auto& self) {
+    int interface<Type<Wrapper>>::bar(const auto& self) {
         return self.bar();
     }
-    std::string Interface<Type<Wrapper>>::baz() {
+    std::string interface<Type<Wrapper>>::baz() {
         return Wrapper::baz();
     }
 
@@ -554,7 +554,7 @@ accounting for multiple inheritance.  In fact, with a few `using` declarations t
 resolve conflicts, the Object and its Type can even model Python-style MRO, or expose
 multiple overloads at the same time. */
 template <typename T>
-struct Interface;
+struct interface;
 
 
 namespace impl {
@@ -572,7 +572,7 @@ namespace impl {
 
 
 /* Base class for disabled control structures. */
-struct Disable : impl::BertrandTag {
+struct disable : impl::BertrandTag {
     static constexpr bool enable = false;
 };
 
@@ -580,7 +580,7 @@ struct Disable : impl::BertrandTag {
 /* Base class for enabled control structures.  Encodes the return type as a template
 parameter. */
 template <typename T>
-struct Returns : impl::BertrandTag {
+struct returns : impl::BertrandTag {
     static constexpr bool enable = true;
     using type = T;
 };
@@ -607,7 +607,7 @@ the returned key is that each element must be hashable, enabling the use of non-
 template parameters, such as integers or strings, which will be modeled identically on
 the Python side. */
 template <typename Self>
-struct __template__                                         : Disable {};
+struct __template__                                         : disable {};
 
 
 /* Enables the `py::getattr<"name">()` helper for any `py::Object` subclass, and
@@ -615,8 +615,8 @@ assigns a corresponding return type.  Disabled by default unless this class is
 explicitly specialized for a given attribute name.  Specializations of this class may
 implement a custom call operator to replace the default behavior, which delegates to a
 normal dotted attribute lookup at the Python level.   */
-template <typename Self, StaticStr Name>
-struct __getattr__                                          : Disable {};
+template <typename Self, static_str Name>
+struct __getattr__                                          : disable {};
 
 
 /* Enables the `py::setattr<"name">()` helper for any `py::Object` subclass, which must
@@ -624,8 +624,8 @@ return void.  Disabled by default unless this class is explicitly specialized fo
 given attribute name.  Specializations of this class may implement a custom call
 operator to replace the default behavior, which delegates to a normal dotted attribute
 assignment at the Python level. */
-template <typename Self, StaticStr Name, typename Value>
-struct __setattr__                                          : Disable {};
+template <typename Self, static_str Name, typename Value>
+struct __setattr__                                          : disable {};
 
 
 /* Enables the `py::delattr<"name">()` helper for any `py::Object` subclass, which must
@@ -633,8 +633,8 @@ return void.  Disabled by default unless this class is explicitly specialized fo
 given attribute name.  Specializations of this class may implement a custom call
 operator to replace the default behavior, which delegates to a normal dotted attribute
 deletion at the Python level. */
-template <typename Self, StaticStr Name>
-struct __delattr__                                          : Disable {};
+template <typename Self, static_str Name>
+struct __delattr__                                          : disable {};
 
 
 /* Enables the C++ initializer list constructor for any `py::Object` subclass, which
@@ -650,7 +650,7 @@ implement a custom call operator to define the constructor logic, which should t
 class.  This is what allows direct initialization of Python container types, analogous
 to Python's built-in `[]`, `()`, and `{}` container syntax. */
 template <typename Self>
-struct __initializer__                                      : Disable {};
+struct __initializer__                                      : disable {};
 
 
 /* Enables implicit conversions between any `py::Object` subclass and an arbitrary
@@ -676,7 +676,7 @@ custom call operator which takes an instance of `From` and returns an instance o
     operator in this case.
  */
 template <typename From, typename To = void>
-struct __cast__                                             : Disable {};
+struct __cast__                                             : disable {};
 
 
 /// TODO: see if I can eliminate the __explicit_cast__ control struct.  It's
@@ -703,7 +703,7 @@ Note that normal `__cast__` specializations will always take precedence over exp
 casts, so this control struct is only used when no implicit conversion would match, and
 the user explicitly specifies the cast. */
 template <typename From, typename To>
-struct __explicit_cast__                                    : Disable {};
+struct __explicit_cast__                                    : disable {};
 
 
 /* Enables the explicit C++ constructor for any `py::Object` subclass.  The default
@@ -717,12 +717,12 @@ arguments.  Such constructors will be demoted to implicit constructors, rather t
 requiring an explicit call. */
 template <typename Self, typename... Args>
 struct __init__ {
-    template <StaticStr>
+    template <static_str>
     struct ctor {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    template <static_str name> requires (__getattr__<Self, name>::enable)
     struct ctor<name> {
         template <typename>
         struct inspect {
@@ -765,9 +765,9 @@ the operator will fall back to either C++ stream insertion via the `<<` operator
 `repr()` will return a string containing the demangled typeid. */
 template <typename Self>
 struct __repr__ {
-    template <StaticStr>
+    template <static_str>
     static constexpr bool _enable = false;
-    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    template <static_str name> requires (__getattr__<Self, name>::enable)
     static constexpr bool _enable<name> =
         std::is_invocable_r_v<std::string, typename __getattr__<Self, name>::type>;
     static constexpr bool enable = _enable<"__repr__">;
@@ -782,7 +782,7 @@ must return a boolean.  This operator has 3 forms:
     `std::derived_from<>` check to the given types by default.  Users can provide an
     `__issubclass__<Derived, Base>{}() -> bool` operator to customize this behavior,
     but the result should always be a compile-time constant, and should check against
-    `py::Interface<Base>` in order to account for multiple inheritance.
+    `py::interface<Base>` in order to account for multiple inheritance.
 2.  `py::issubclass<Base>(derived)`, which is only enabled if `derived` is a type-like
     object, and has no default behavior.  Users can provide an
     `__issubclass__<Derived, Base>{}(Derived&& obj) -> bool` operator to customize this
@@ -798,9 +798,9 @@ must return a boolean.  This operator has 3 forms:
  */
 template <typename Derived, typename Base>
 struct __issubclass__ {
-    template <StaticStr>
+    template <static_str>
     struct infer { static constexpr bool enable = false; };
-    template <StaticStr name> requires (__getattr__<Base, name>::enable)
+    template <static_str name> requires (__getattr__<Base, name>::enable)
     struct infer<name> {
         static constexpr bool enable =
             std::is_invocable_r_v<bool, typename __getattr__<Base, name>::type, Derived>;
@@ -832,9 +832,9 @@ must return a boolean.  This operator has 2 forms:
  */
 template <typename Derived, typename Base>
 struct __isinstance__ {
-    template <StaticStr>
+    template <static_str>
     struct infer { static constexpr bool enable = false; };
-    template <StaticStr name> requires (__getattr__<Base, name>::enable)
+    template <static_str name> requires (__getattr__<Base, name>::enable)
     struct infer<name> {
         static constexpr bool enable = 
             std::is_invocable_r_v<bool, typename __getattr__<Base, name>::type, Derived>;
@@ -853,12 +853,12 @@ possibly with Python-style argument annotations.  Specializations of this class 
 implement a custom call operator to replace the default behavior. */
 template <typename Self, typename... Args>
 struct __call__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    template <static_str name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -886,12 +886,12 @@ possibly with Python-style argument annotations.  Specializations of this class 
 implement a custom call operator to replace the default behavior. */
 template <typename Self, typename... Key>
 struct __getitem__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    template <static_str name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -919,12 +919,12 @@ Python-style argument annotations.  Specializations of this class may implement 
 custom call operator to replace the default behavior. */
 template <typename Self, typename Value, typename... Key>
 struct __setitem__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    template <static_str name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -952,12 +952,12 @@ Python-style argument annotations.  Specializations of this class may implement 
 custom call operator to replace the default behavior. */
 template <typename Self, typename... Key>
 struct __delitem__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    template <static_str name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -985,12 +985,12 @@ function, possibly with Python-style argument annotations.  Specializations of t
 class may implement a custom call operator to replace the default behavior. */
 template <typename Self>
 struct __len__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    template <static_str name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -1017,16 +1017,16 @@ which must return a member function, possibly with Python-style argument annotat
 Custom specializations of this struct are expected to implement the iteration protocol
 directly inline, as if they were implementing a C++ `begin` iterator class, which will
 always be initialized with the `Self` argument and nothing else.  The end iterator is
-always given as `py::impl::Sentinel`, which is an empty struct against which the
-`__iter__` specialization must be comparable. */
+always given as `py::sentinel`, which is an empty struct against which the `__iter__`
+specialization must be comparable. */
 template <typename Self>
 struct __iter__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    template <static_str name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -1059,12 +1059,12 @@ be returned from a member `begin()` and `end()` method within the `__iter__`
 specialization itself. */
 template <typename Self>
 struct __reversed__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    template <static_str name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -1093,9 +1093,9 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior.  */
 template <typename Self, typename Key>
 struct __contains__ {
-    template <StaticStr>
+    template <static_str>
     static constexpr bool _enable = false;
-    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    template <static_str name> requires (__getattr__<Self, name>::enable)
     static constexpr bool _enable<name> =
         std::is_invocable_r_v<bool, typename __getattr__<Self, name>::type, Key>;
     static constexpr bool enable = _enable<"__contains__">;
@@ -1110,9 +1110,9 @@ possibly with Python-style argument annotations.  Specializations of this class 
 implement a custom call operator to replace the default behavior. */
 template <typename Self>
 struct __hash__ {
-    template <StaticStr>
+    template <static_str>
     static constexpr bool _enable = false;
-    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    template <static_str name> requires (__getattr__<Self, name>::enable)
     static constexpr bool _enable<name> =
         std::is_invocable_r_v<size_t, typename __getattr__<Self, name>::type>;
     static constexpr bool enable = _enable<"__hash__">;
@@ -1126,12 +1126,12 @@ a member function, possibly with Python-style argument annotations.  Specializat
 this class may implement a custom call operator to replace the default behavior. */
 template <typename Self>
 struct __abs__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    template <static_str name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -1159,12 +1159,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename Self>
 struct __invert__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    template <static_str name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -1192,12 +1192,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename Self>
 struct __pos__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    template <static_str name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -1225,12 +1225,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename Self>
 struct __neg__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<Self, name>::enable)
+    template <static_str name> requires (__getattr__<Self, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -1258,12 +1258,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __lt__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -1291,12 +1291,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __le__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -1324,12 +1324,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __eq__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -1357,12 +1357,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __ne__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -1390,12 +1390,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __ge__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -1423,12 +1423,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __gt__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -1456,12 +1456,12 @@ functions, possibly with Python-style argument annotations.  Specializations of 
 class may implement a custom call operator to replace the default behavior. */
 template <typename L, typename R>
 struct __add__ {
-    template <StaticStr>
+    template <static_str>
     struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct forward<name> {
         template <typename>
         struct inspect {
@@ -1477,12 +1477,12 @@ struct __add__ {
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr>
+    template <static_str>
     struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    template <static_str name> requires (__getattr__<R, name>::enable)
     struct reverse<name> {
         template <typename>
         struct inspect {
@@ -1519,12 +1519,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __iadd__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -1575,12 +1575,12 @@ functions, possibly with Python-style argument annotations.  Specializations of 
 class may implement a custom call operator to replace the default behavior. */
 template <typename L, typename R>
 struct __sub__ {
-    template <StaticStr>
+    template <static_str>
     struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct forward<name> {
         template <typename>
         struct inspect {
@@ -1596,12 +1596,12 @@ struct __sub__ {
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr>
+    template <static_str>
     struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    template <static_str name> requires (__getattr__<R, name>::enable)
     struct reverse<name> {
         template <typename>
         struct inspect {
@@ -1638,12 +1638,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __isub__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -1695,12 +1695,12 @@ functions, possibly with Python-style argument annotations.  Specializations of 
 class may implement a custom call operator to replace the default behavior. */
 template <typename L, typename R>
 struct __mul__ {
-    template <StaticStr>
+    template <static_str>
     struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct forward<name> {
         template <typename>
         struct inspect {
@@ -1716,12 +1716,12 @@ struct __mul__ {
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr>
+    template <static_str>
     struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    template <static_str name> requires (__getattr__<R, name>::enable)
     struct reverse<name> {
         template <typename>
         struct inspect {
@@ -1758,12 +1758,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __imul__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -1792,12 +1792,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __truediv__ {
-    template <StaticStr>
+    template <static_str>
     struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct forward<name> {
         template <typename>
         struct inspect {
@@ -1813,12 +1813,12 @@ struct __truediv__ {
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr>
+    template <static_str>
     struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    template <static_str name> requires (__getattr__<R, name>::enable)
     struct reverse<name> {
         template <typename>
         struct inspect {
@@ -1855,12 +1855,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __itruediv__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -1893,12 +1893,12 @@ This is used internally to implement `py::div()`, `py::mod()`, `py::divmod()`, a
 based on this operator. */
 template <typename L, typename R>
 struct __floordiv__ {
-    template <StaticStr>
+    template <static_str>
     struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct forward<name> {
         template <typename>
         struct inspect {
@@ -1914,12 +1914,12 @@ struct __floordiv__ {
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr>
+    template <static_str>
     struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    template <static_str name> requires (__getattr__<R, name>::enable)
     struct reverse<name> {
         template <typename>
         struct inspect {
@@ -1960,12 +1960,12 @@ This is used internally to implement `py::div()`, `py::mod()`, `py::divmod()`, a
 based on this operator. */
 template <typename L, typename R>
 struct __ifloordiv__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -1993,12 +1993,12 @@ functions, possibly with Python-style argument annotations.  Specializations of 
 class may implement a custom call operator to replace the default behavior. */
 template <typename L, typename R>
 struct __mod__ {
-    template <StaticStr>
+    template <static_str>
     struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct forward<name> {
         template <typename>
         struct inspect {
@@ -2014,12 +2014,12 @@ struct __mod__ {
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr>
+    template <static_str>
     struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    template <static_str name> requires (__getattr__<R, name>::enable)
     struct reverse<name> {
         template <typename>
         struct inspect {
@@ -2056,12 +2056,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __imod__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -2092,12 +2092,12 @@ implement a custom call operator to replace the default behavior.
 This is used internally to implement `py::pow()`. */
 template <typename Base, typename Exp, typename Mod = void>
 struct __pow__ {
-    template <StaticStr>
+    template <static_str>
     struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<Base, name>::enable)
+    template <static_str name> requires (__getattr__<Base, name>::enable)
     struct forward<name> {
         template <typename>
         struct inspect {
@@ -2138,12 +2138,12 @@ class may implement a custom call operator to replace the default behavior.
 This is used internally to implement `py::ipow()`. */
 template <typename Base, typename Exp, typename Mod = void>
 struct __ipow__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<Base, name>::enable)
+    template <static_str name> requires (__getattr__<Base, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -2172,12 +2172,12 @@ functions, possibly with Python-style argument annotations.  Specializations of 
 class may implement a custom call operator to replace the default behavior. */
 template <typename L, typename R>
 struct __lshift__ {
-    template <StaticStr>
+    template <static_str>
     struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct forward<name> {
         template <typename>
         struct inspect {
@@ -2193,12 +2193,12 @@ struct __lshift__ {
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr>
+    template <static_str>
     struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    template <static_str name> requires (__getattr__<R, name>::enable)
     struct reverse<name> {
         template <typename>
         struct inspect {
@@ -2235,12 +2235,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __ilshift__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -2268,12 +2268,12 @@ functions, possibly with Python-style argument annotations.  Specializations of 
 class may implement a custom call operator to replace the default behavior. */
 template <typename L, typename R>
 struct __rshift__ {
-    template <StaticStr>
+    template <static_str>
     struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct forward<name> {
         template <typename>
         struct inspect {
@@ -2289,12 +2289,12 @@ struct __rshift__ {
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr>
+    template <static_str>
     struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    template <static_str name> requires (__getattr__<R, name>::enable)
     struct reverse<name> {
         template <typename>
         struct inspect {
@@ -2331,12 +2331,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __irshift__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -2364,12 +2364,12 @@ functions, possibly with Python-style argument annotations.  Specializations of 
 class may implement a custom call operator to replace the default behavior. */
 template <typename L, typename R>
 struct __and__ {
-    template <StaticStr>
+    template <static_str>
     struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct forward<name> {
         template <typename>
         struct inspect {
@@ -2385,12 +2385,12 @@ struct __and__ {
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr>
+    template <static_str>
     struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    template <static_str name> requires (__getattr__<R, name>::enable)
     struct reverse<name> {
         template <typename>
         struct inspect {
@@ -2427,12 +2427,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __iand__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -2460,12 +2460,12 @@ functions, possibly with Python-style argument annotations.  Specializations of 
 class may implement a custom call operator to replace the default behavior. */
 template <typename L, typename R>
 struct __or__ {
-    template <StaticStr>
+    template <static_str>
     struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct forward<name> {
         template <typename>
         struct inspect {
@@ -2481,12 +2481,12 @@ struct __or__ {
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr>
+    template <static_str>
     struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    template <static_str name> requires (__getattr__<R, name>::enable)
     struct reverse<name> {
         template <typename>
         struct inspect {
@@ -2523,12 +2523,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __ior__ {
-    template <StaticStr>
+    template <static_str>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
         template <typename>
         struct inspect {
@@ -2556,12 +2556,12 @@ functions, possibly with Python-style argument annotations.  Specializations of 
 class may implement a custom call operator to replace the default behavior. */
 template <typename L, typename R>
 struct __xor__ {
-    template <StaticStr>
+    template <static_str>
     struct forward {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct forward<name> {
         template <typename>
         struct inspect {
@@ -2577,12 +2577,12 @@ struct __xor__ {
             inspect<typename __getattr__<L, name>::type>::enable;
         using type = inspect<typename __getattr__<L, name>::type>::type;
     };
-    template <StaticStr>
+    template <static_str>
     struct reverse {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<R, name>::enable)
+    template <static_str name> requires (__getattr__<R, name>::enable)
     struct reverse<name> {
         template <typename>
         struct inspect {
@@ -2619,12 +2619,12 @@ Specializations of this class may implement a custom call operator to replace th
 default behavior. */
 template <typename L, typename R>
 struct __ixor__ {
-    template <StaticStr name>
+    template <static_str name>
     struct infer {
         static constexpr bool enable = false;
         using type = void;
     };
-    template <StaticStr name> requires (__getattr__<L, name>::enable)
+    template <static_str name> requires (__getattr__<L, name>::enable)
     struct infer<name> {
         template <typename T>
         struct inspect {
@@ -2650,7 +2650,7 @@ namespace impl {
     template <typename T, typename = void>
     constexpr bool has_interface_helper = false;
     template <typename T>
-    constexpr bool has_interface_helper<T, std::void_t<Interface<T>>> = true;
+    constexpr bool has_interface_helper<T, std::void_t<interface<T>>> = true;
     template <typename T>
     concept has_interface = has_interface_helper<std::remove_cvref_t<T>>;
 
@@ -2722,7 +2722,7 @@ namespace impl {
     template <typename T> requires (cpp_helper<T>::enable)
     using cpp_type = cpp_helper<T>::type;
 
-    template <typename Self, StaticStr Name>
+    template <typename Self, static_str Name>
         requires (
             __getattr__<Self, Name>::enable &&
             std::derived_from<typename __getattr__<Self, Name>::type, Object> && (
@@ -2737,7 +2737,7 @@ namespace impl {
     struct Attr;
     template <typename T>
     struct attr_helper { static constexpr bool enable = false; };
-    template <typename Self, StaticStr Name>
+    template <typename Self, static_str Name>
     struct attr_helper<Attr<Self, Name>> {
         static constexpr bool enable = true;
         using type = __getattr__<Self, Name>::type;
@@ -2747,7 +2747,7 @@ namespace impl {
     template <is_attr T>
     using attr_type = attr_helper<std::remove_cvref_t<T>>::type;
 
-    template <typename T, StaticStr Name, typename... Args>
+    template <typename T, static_str Name, typename... Args>
     concept attr_is_callable_with =
         __getattr__<T, Name>::enable &&
         std::is_invocable_v<typename __getattr__<T, Name>::type, Args...>;

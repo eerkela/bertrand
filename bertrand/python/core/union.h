@@ -536,9 +536,9 @@ namespace impl {
     /// NOTE: Attr<> operators cannot be generalized due to accepting a non-type
     /// template parameter (the attribute name).
 
-    template <typename, StaticStr>
+    template <typename, static_str>
     struct UnionGetAttr { static constexpr bool enable = false; };
-    template <py_union Self, StaticStr Name>
+    template <py_union Self, static_str Name>
     struct UnionGetAttr<Self, Name> {
         template <typename>
         struct traits {
@@ -571,9 +571,9 @@ namespace impl {
         using type = traits<std::remove_cvref_t<Self>>::type;
     };
 
-    template <typename, StaticStr, typename>
+    template <typename, static_str, typename>
     struct UnionSetAttr { static constexpr bool enable = false; };
-    template <py_union Self, StaticStr Name, typename Value>
+    template <py_union Self, static_str Name, typename Value>
     struct UnionSetAttr<Self, Name, Value> {
         template <typename>
         static constexpr bool match = false;
@@ -584,9 +584,9 @@ namespace impl {
         using type = void;
     };
 
-    template <typename, StaticStr>
+    template <typename, static_str>
     struct UnionDelAttr { static constexpr bool enable = false; };
-    template <py_union Self, StaticStr Name>
+    template <py_union Self, static_str Name>
     struct UnionDelAttr<Self, Name> {
         template <typename>
         static constexpr bool match = false;
@@ -642,7 +642,7 @@ namespace impl {
 
 
 template <typename... Types>
-struct Interface<Union<Types...>> : impl::UnionTag {
+struct interface<Union<Types...>> : impl::UnionTag {
     static constexpr size_t n = sizeof...(Types);
 
     template <size_t I> requires (I < n)
@@ -723,9 +723,9 @@ struct Interface<Union<Types...>> : impl::UnionTag {
 
 
 template <typename... Types>
-struct Interface<Type<Union<Types...>>> {
+struct interface<Type<Union<Types...>>> {
 private:
-    using type = Interface<Union<Types...>>;
+    using type = interface<Union<Types...>>;
 
 public:
     static constexpr size_t n = type::n;
@@ -788,9 +788,9 @@ template <typename... Types>
         (std::derived_from<Types, Object> && ...) &&
         impl::types_are_unique<Types...>
     )
-struct Union : Object, Interface<Union<Types...>> {
+struct Union : Object, interface<Union<Types...>> {
     struct __python__ : def<__python__, Union>, PyObject {
-        static constexpr StaticStr __doc__ =
+        static constexpr static_str __doc__ =
 R"doc(A simple union type in Python, similar to `std::variant` in C++.
 
 Notes
@@ -951,7 +951,7 @@ int main() {
 }
 ```)doc";
 
-        template <StaticStr ModName>
+        template <static_str ModName>
         static Type<Union> __export__(Module<ModName>& mod);
         static Type<Union> __import__();
     };
@@ -982,7 +982,7 @@ int main() {
 
 
 template <typename... Ts>
-struct __template__<Union<Ts...>>                           : Returns<Object> {
+struct __template__<Union<Ts...>>                           : returns<Object> {
     static Object operator()() {
         PyObject* result = PyTuple_Pack(
             sizeof...(Ts),
@@ -999,7 +999,7 @@ struct __template__<Union<Ts...>>                           : Returns<Object> {
 /* Initializer list constructor is only enabled for `Optional<T>`, and not for any
 other form of union, where such a call might be ambiguous. */
 template <typename T> requires (__initializer__<T>::enable)
-struct __initializer__<Optional<T>>                        : Returns<Optional<T>> {
+struct __initializer__<Optional<T>>                        : returns<Optional<T>> {
     using Element = __initializer__<T>::type;
     static Optional<T> operator()(const std::initializer_list<Element>& init) {
         Optional<T> result = reinterpret_steal<Optional<T>>(release(T(init)));
@@ -1013,7 +1013,7 @@ struct __initializer__<Optional<T>>                        : Returns<Optional<T>
 default constructible, in which case the first such type is initialized.  If NoneType
 is present in the union, it is preferred over any other type. */
 template <typename... Ts> requires (std::is_default_constructible_v<Ts> || ...)
-struct __init__<Union<Ts...>>                               : Returns<Union<Ts...>> {
+struct __init__<Union<Ts...>>                               : returns<Union<Ts...>> {
     template <size_t I, typename... Us>
     static constexpr size_t none_idx = 0;
     template <size_t I, typename U, typename... Us>
@@ -1048,7 +1048,7 @@ struct __init__<Union<Ts...>>                               : Returns<Union<Ts..
 other form of union, where such a call might be ambiguous. */
 template <typename T, typename... Args>
     requires (sizeof...(Args) > 0 && std::constructible_from<T, Args...>)
-struct __init__<Optional<T>, Args...>                : Returns<Optional<T>> {
+struct __init__<Optional<T>, Args...>                       : returns<Optional<T>> {
     static Optional<T> operator()(Args&&... args) {
         Optional<T> result = reinterpret_steal<Optional<T>>(
             release(T(std::forward<Args>(args)...))
@@ -1064,7 +1064,7 @@ the union.  Prefers exact matches (and therefore copy/move semantics) over secon
 conversions, and always converts to the first matching type within the union */
 template <typename From, typename... Ts>
     requires (!impl::py_union<From> && (std::convertible_to<From, Ts> || ...))
-struct __cast__<From, Union<Ts...>>                            : Returns<Union<Ts...>> {
+struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts...>> {
     template <size_t I, typename... Us>
     static constexpr size_t match_idx = 0;
     template <size_t I, typename U, typename... Us>
@@ -1104,7 +1104,7 @@ all types are accounted for, as well as to `std::optional` and pointer types whe
 `NoneType` is convertible to `std::nullopt` and `nullptr`, respectively. */
 template <impl::py_union From, typename To>
     requires (!impl::py_union<To> && impl::UnionToType<From>::template implicit<To>)
-struct __cast__<From, To>                                   : Returns<To> {
+struct __cast__<From, To>                                   : returns<To> {
     static To operator()(From from) {
         return std::forward<From>(from).visit([](auto&& value) -> To {
             return std::forward<decltype(value)>(value);
@@ -1118,7 +1118,7 @@ union are explicitly convertible.  This can potentially raise an error if the ac
 type contained within the union does not support the conversion. */
 template <impl::py_union From, typename To>
     requires (!impl::py_union<To> && impl::UnionToType<From>::template convert<To>)
-struct __explicit_cast__<From, To>                          : Returns<To> {
+struct __explicit_cast__<From, To>                          : returns<To> {
     static To operator()(From from) {
         return std::forward<From>(from).visit([](auto&& value) -> To {
             if constexpr (__explicit_cast__<decltype(value), To>::enable) {
@@ -1135,9 +1135,9 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 
 
 template <impl::is_variant T> requires (impl::VariantToUnion<T>::enable)
-struct __cast__<T> : Returns<typename impl::VariantToUnion<T>::type> {};
+struct __cast__<T> : returns<typename impl::VariantToUnion<T>::type> {};
 template <impl::is_optional T> requires (impl::has_python<impl::optional_type<T>>)
-struct __cast__<T> : Returns<
+struct __cast__<T> : returns<
     Optional<impl::python_type<std::remove_cv_t<impl::optional_type<T>>>>
 > {};
 template <impl::has_python T> requires (impl::python<T> || (
@@ -1146,22 +1146,22 @@ template <impl::has_python T> requires (impl::python<T> || (
         impl::cpp_type<impl::python_type<std::remove_cv_t<T>>>
     >
 ))
-struct __cast__<T*> : Returns<
+struct __cast__<T*> : returns<
     Optional<impl::python_type<std::remove_cv_t<T>>>
 > {};
 template <impl::is_shared_ptr T> requires (impl::has_python<impl::shared_ptr_type<T>>)
-struct __cast__<T> : Returns<
+struct __cast__<T> : returns<
     Optional<impl::python_type<std::remove_cv_t<impl::shared_ptr_type<T>>>>
 > {};
 template <impl::is_unique_ptr T> requires (impl::has_python<impl::unique_ptr_type<T>>)
-struct __cast__<T> : Returns<
+struct __cast__<T> : returns<
     Optional<impl::python_type<std::remove_cv_t<impl::unique_ptr_type<T>>>>
 > {};
 
 
 template <impl::is_variant From, std::derived_from<Object> To>
     requires (impl::VariantToUnion<From>::template convert<To>)
-struct __cast__<From, To>                                   : Returns<To> {
+struct __cast__<From, To>                                   : returns<To> {
     static To operator()(From value) {
         return std::visit(
             []<typename T>(T&& value) -> To {
@@ -1175,7 +1175,7 @@ struct __cast__<From, To>                                   : Returns<To> {
 
 template <impl::is_variant From, typename... Ts>
     requires (impl::VariantToUnion<From>::template convert<Ts...>)
-struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts...>> {
+struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts...>> {
     template <size_t I, typename... Us>
     static constexpr size_t match_idx = 0;
     template <size_t I, typename U, typename... Us>
@@ -1219,7 +1219,7 @@ template <impl::is_optional From, typename... Ts>
         (std::same_as<NoneType, Ts> || ...) &&
         (std::convertible_to<impl::optional_type<From>, Ts> || ...)
     )
-struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts...>> {
+struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts...>> {
     using T = impl::optional_type<From>;
 
     template <size_t I, typename... Us>
@@ -1266,7 +1266,7 @@ template <impl::is_ptr From, typename... Ts>
         (std::same_as<NoneType, Ts> || ...) &&
         (std::convertible_to<std::remove_pointer_t<From>, Ts> || ...)
     )
-struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts...>> {
+struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts...>> {
     template <size_t I, typename... Us>
     static constexpr size_t match_idx = 0;
     template <size_t I, typename U, typename... Us>
@@ -1312,7 +1312,7 @@ template <impl::is_shared_ptr From, typename... Ts>
         (std::same_as<NoneType, Ts> || ...) &&
         (std::convertible_to<impl::shared_ptr_type<From>, Ts> || ...)
     )
-struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts...>> {
+struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts...>> {
     template <size_t I, typename... Us>
     static constexpr size_t match_idx = 0;
     template <size_t I, typename U, typename... Us>
@@ -1358,7 +1358,7 @@ template <impl::is_unique_ptr From, typename... Ts>
         (std::same_as<NoneType, Ts> || ...) &&
         (std::convertible_to<impl::unique_ptr_type<From>, Ts> || ...)
     )
-struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts...>> {
+struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts...>> {
     template <size_t I, typename... Us>
     static constexpr size_t match_idx = 0;
     template <size_t I, typename U, typename... Us>
@@ -1406,7 +1406,7 @@ struct __cast__<From, Union<Ts...>>                         : Returns<Union<Ts..
 
 template <typename Derived, typename Base>
     requires (impl::py_union<Derived> || impl::py_union<Base>)
-struct __isinstance__<Derived, Base> : Returns<bool> {
+struct __isinstance__<Derived, Base> : returns<bool> {
     template <typename>
     struct unary;
     template <typename... Types>
@@ -1457,7 +1457,7 @@ struct __isinstance__<Derived, Base> : Returns<bool> {
 
 template <typename Derived, typename Base>
     requires (impl::py_union<Derived> || impl::py_union<Base>)
-struct __issubclass__<Derived, Base> : Returns<bool> {
+struct __issubclass__<Derived, Base> : returns<bool> {
     template <typename, typename>
     struct nullary;
     template <typename... Ds, typename... Bs>
@@ -1557,9 +1557,9 @@ struct __issubclass__<Derived, Base> : Returns<bool> {
 };
 
 
-template <impl::py_union Self, StaticStr Name>
+template <impl::py_union Self, static_str Name>
     requires (impl::UnionGetAttr<Self, Name>::enable)
-struct __getattr__<Self, Name> : Returns<typename impl::UnionGetAttr<Self, Name>::type> {
+struct __getattr__<Self, Name> : returns<typename impl::UnionGetAttr<Self, Name>::type> {
     using type = impl::UnionGetAttr<Self, Name>::type;
     static type operator()(Self self) {
         return std::forward<Self>(self).visit([]<typename T>(T&& value) -> type {
@@ -1575,9 +1575,9 @@ struct __getattr__<Self, Name> : Returns<typename impl::UnionGetAttr<Self, Name>
 };
 
 
-template <impl::py_union Self, StaticStr Name, typename Value>
+template <impl::py_union Self, static_str Name, typename Value>
     requires (impl::UnionSetAttr<Self, Name, Value>::enable)
-struct __setattr__<Self, Name, Value> : Returns<void> {
+struct __setattr__<Self, Name, Value> : returns<void> {
     static void operator()(Self self, Value value) {
         std::forward<Self>(self).visit([]<typename T>(T&& self, Value value) -> void {
             if constexpr (__setattr__<T, Name, Value>::enable) {
@@ -1596,9 +1596,9 @@ struct __setattr__<Self, Name, Value> : Returns<void> {
 };
 
 
-template <impl::py_union Self, StaticStr Name>
+template <impl::py_union Self, static_str Name>
     requires (impl::UnionDelAttr<Self, Name>::enable)
-struct __delattr__<Self, Name> : Returns<void> {
+struct __delattr__<Self, Name> : returns<void> {
     static void operator()(Self self) {
         std::forward<Self>(self).visit([]<typename T>(T&& self) -> void {
             if constexpr (__delattr__<T, Name>::enable) {
@@ -1615,7 +1615,7 @@ struct __delattr__<Self, Name> : Returns<void> {
 
 
 template <impl::py_union Self>
-struct __repr__<Self> : Returns<std::string> {
+struct __repr__<Self> : returns<std::string> {
     static std::string operator()(Self self) {
         return std::forward<Self>(self).visit([]<typename T>(T&& self) -> std::string {
             return repr(std::forward<T>(self));
@@ -1626,7 +1626,7 @@ struct __repr__<Self> : Returns<std::string> {
 
 template <impl::py_union Self, typename... Args>
     requires (impl::UnionCall<Self, Args...>::enable)
-struct __call__<Self, Args...> : Returns<typename impl::UnionCall<Self, Args...>::type> {
+struct __call__<Self, Args...> : returns<typename impl::UnionCall<Self, Args...>::type> {
     using type = impl::UnionCall<Self, Args...>::type;
     static type operator()(Self self, Args&&... args) {
         return visit(
@@ -1649,7 +1649,7 @@ struct __call__<Self, Args...> : Returns<typename impl::UnionCall<Self, Args...>
 
 template <impl::py_union Self, typename... Key>
     requires (impl::UnionGetItem<Self, Key...>::enable)
-struct __getitem__<Self, Key...> : Returns<typename impl::UnionGetItem<Self, Key...>::type> {
+struct __getitem__<Self, Key...> : returns<typename impl::UnionGetItem<Self, Key...>::type> {
     using type = impl::UnionGetItem<Self, Key...>::type;
     static type operator()(Self self, Key... key) {
         return visit(
@@ -1672,7 +1672,7 @@ struct __getitem__<Self, Key...> : Returns<typename impl::UnionGetItem<Self, Key
 
 template <impl::py_union Self, typename Value, typename... Key>
     requires (impl::UnionSetItem<Self, Value, Key...>::enable)
-struct __setitem__<Self, Value, Key...> : Returns<void> {
+struct __setitem__<Self, Value, Key...> : returns<void> {
     static void operator()(Self self, Value value, Key... key) {
         return visit(
             []<typename S, typename V, typename... K>(
@@ -1699,7 +1699,7 @@ struct __setitem__<Self, Value, Key...> : Returns<void> {
 
 template <impl::py_union Self, typename... Key>
     requires (impl::UnionDelItem<Self, Key...>::enable)
-struct __delitem__<Self, Key...> : Returns<void> {
+struct __delitem__<Self, Key...> : returns<void> {
     static void operator()(Self self, Key... key) {
         return visit(
             []<typename S, typename... K>(S&& self, K&&... key) -> void {
@@ -1724,7 +1724,7 @@ template <impl::py_union Self>
         impl::UnionHash<Self>::enable &&
         std::convertible_to<typename impl::UnionHash<Self>::type, size_t>
     )
-struct __hash__<Self> : Returns<size_t> {
+struct __hash__<Self> : returns<size_t> {
     static size_t operator()(Self self) {
         return visit(
             []<typename S>(S&& self) -> size_t {
@@ -1747,7 +1747,7 @@ template <impl::py_union Self>
         impl::UnionLen<Self>::enable &&
         std::convertible_to<typename impl::UnionLen<Self>::type, size_t>
     )
-struct __len__<Self> : Returns<size_t> {
+struct __len__<Self> : returns<size_t> {
     static size_t operator()(Self self) {
         return visit(
             []<typename S>(S&& self) -> size_t {
@@ -1770,7 +1770,7 @@ template <impl::py_union Self, typename Key>
         impl::UnionContains<Self, Key>::enable &&
         std::convertible_to<typename impl::UnionContains<Self, Key>::type, bool>
     )
-struct __contains__<Self, Key> : Returns<bool> {
+struct __contains__<Self, Key> : returns<bool> {
     static bool operator()(Self self, Key key) {
         return visit(
             []<typename S, typename K>(S&& self, K&& key) -> bool {
@@ -1791,7 +1791,7 @@ struct __contains__<Self, Key> : Returns<bool> {
 
 
 template <impl::py_union Self> requires (impl::UnionIter<Self>::enable)
-struct __iter__<Self> : Returns<typename impl::UnionIter<Self>::type> {
+struct __iter__<Self> : returns<typename impl::UnionIter<Self>::type> {
     /// NOTE: default implementation delegates to Python, which reinterprets each value
     /// as the given type(s).  That handles all cases appropriately, with a small
     /// performance hit for the extra interpreter overhead that isn't present for
@@ -1800,13 +1800,13 @@ struct __iter__<Self> : Returns<typename impl::UnionIter<Self>::type> {
 
 
 template <impl::py_union Self> requires (impl::UnionReversed<Self>::enable)
-struct __reversed__<Self> : Returns<typename impl::UnionReversed<Self>::type> {
+struct __reversed__<Self> : returns<typename impl::UnionReversed<Self>::type> {
     /// NOTE: same as `__iter__`, but returns a reverse iterator instead.
 };
 
 
 template <impl::py_union Self> requires (impl::UnionAbs<Self>::enable)
-struct __abs__<Self> : Returns<typename impl::UnionAbs<Self>::type> {
+struct __abs__<Self> : returns<typename impl::UnionAbs<Self>::type> {
     using type = impl::UnionAbs<Self>::type;
     static type operator()(Self self) {
         return visit(
@@ -1826,7 +1826,7 @@ struct __abs__<Self> : Returns<typename impl::UnionAbs<Self>::type> {
 
 
 template <impl::py_union Self> requires (impl::UnionInvert<Self>::enable)
-struct __invert__<Self> : Returns<typename impl::UnionInvert<Self>::type> {
+struct __invert__<Self> : returns<typename impl::UnionInvert<Self>::type> {
     using type = impl::UnionInvert<Self>::type;
     static type operator()(Self self) {
         return visit(
@@ -1846,7 +1846,7 @@ struct __invert__<Self> : Returns<typename impl::UnionInvert<Self>::type> {
 
 
 template <impl::py_union Self> requires (impl::UnionPos<Self>::enable)
-struct __pos__<Self> : Returns<typename impl::UnionPos<Self>::type> {
+struct __pos__<Self> : returns<typename impl::UnionPos<Self>::type> {
     using type = impl::UnionPos<Self>::type;
     static type operator()(Self self) {
         return visit(
@@ -1866,7 +1866,7 @@ struct __pos__<Self> : Returns<typename impl::UnionPos<Self>::type> {
 
 
 template <impl::py_union Self> requires (impl::UnionNeg<Self>::enable)
-struct __neg__<Self> : Returns<typename impl::UnionNeg<Self>::type> {
+struct __neg__<Self> : returns<typename impl::UnionNeg<Self>::type> {
     using type = impl::UnionNeg<Self>::type;
     static type operator()(Self self) {
         return visit(
@@ -1886,7 +1886,7 @@ struct __neg__<Self> : Returns<typename impl::UnionNeg<Self>::type> {
 
 
 template <impl::py_union Self> requires (impl::UnionIncrement<Self>::enable)
-struct __increment__<Self> : Returns<typename impl::UnionIncrement<Self>::type> {
+struct __increment__<Self> : returns<typename impl::UnionIncrement<Self>::type> {
     using type = impl::UnionIncrement<Self>::type;
     static type operator()(Self self) {
         return visit(
@@ -1906,7 +1906,7 @@ struct __increment__<Self> : Returns<typename impl::UnionIncrement<Self>::type> 
 
 
 template <impl::py_union Self> requires (impl::UnionDecrement<Self>::enable)
-struct __decrement__<Self> : Returns<typename impl::UnionDecrement<Self>::type> {
+struct __decrement__<Self> : returns<typename impl::UnionDecrement<Self>::type> {
     using type = impl::UnionDecrement<Self>::type;
     static type operator()(Self self) {
         return visit(
@@ -1926,7 +1926,7 @@ struct __decrement__<Self> : Returns<typename impl::UnionDecrement<Self>::type> 
 
 
 template <typename L, typename R> requires (impl::UnionLess<L, R>::enable)
-struct __lt__<L, R> : Returns<typename impl::UnionLess<L, R>::type> {
+struct __lt__<L, R> : returns<typename impl::UnionLess<L, R>::type> {
     using type = impl::UnionLess<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -1948,7 +1948,7 @@ struct __lt__<L, R> : Returns<typename impl::UnionLess<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionLessEqual<L, R>::enable)
-struct __le__<L, R> : Returns<typename impl::UnionLessEqual<L, R>::type> {
+struct __le__<L, R> : returns<typename impl::UnionLessEqual<L, R>::type> {
     using type = impl::UnionLessEqual<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -1970,7 +1970,7 @@ struct __le__<L, R> : Returns<typename impl::UnionLessEqual<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionEqual<L, R>::enable)
-struct __eq__<L, R> : Returns<typename impl::UnionEqual<L, R>::type> {
+struct __eq__<L, R> : returns<typename impl::UnionEqual<L, R>::type> {
     using type = impl::UnionEqual<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -1992,7 +1992,7 @@ struct __eq__<L, R> : Returns<typename impl::UnionEqual<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionNotEqual<L, R>::enable)
-struct __ne__<L, R> : Returns<typename impl::UnionNotEqual<L, R>::type> {
+struct __ne__<L, R> : returns<typename impl::UnionNotEqual<L, R>::type> {
     using type = impl::UnionNotEqual<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2014,7 +2014,7 @@ struct __ne__<L, R> : Returns<typename impl::UnionNotEqual<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionGreaterEqual<L, R>::enable)
-struct __ge__<L, R> : Returns<typename impl::UnionGreaterEqual<L, R>::type> {
+struct __ge__<L, R> : returns<typename impl::UnionGreaterEqual<L, R>::type> {
     using type = impl::UnionGreaterEqual<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2036,7 +2036,7 @@ struct __ge__<L, R> : Returns<typename impl::UnionGreaterEqual<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionGreater<L, R>::enable)
-struct __gt__<L, R> : Returns<typename impl::UnionGreater<L, R>::type> {
+struct __gt__<L, R> : returns<typename impl::UnionGreater<L, R>::type> {
     using type = impl::UnionGreater<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2058,7 +2058,7 @@ struct __gt__<L, R> : Returns<typename impl::UnionGreater<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionAdd<L, R>::enable)
-struct __add__<L, R> : Returns<typename impl::UnionAdd<L, R>::type> {
+struct __add__<L, R> : returns<typename impl::UnionAdd<L, R>::type> {
     using type = impl::UnionAdd<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2080,7 +2080,7 @@ struct __add__<L, R> : Returns<typename impl::UnionAdd<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionSub<L, R>::enable)
-struct __sub__<L, R> : Returns<typename impl::UnionSub<L, R>::type> {
+struct __sub__<L, R> : returns<typename impl::UnionSub<L, R>::type> {
     using type = impl::UnionSub<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2102,7 +2102,7 @@ struct __sub__<L, R> : Returns<typename impl::UnionSub<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionMul<L, R>::enable)
-struct __mul__<L, R> : Returns<typename impl::UnionMul<L, R>::type> {
+struct __mul__<L, R> : returns<typename impl::UnionMul<L, R>::type> {
     using type = impl::UnionMul<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2125,7 +2125,7 @@ struct __mul__<L, R> : Returns<typename impl::UnionMul<L, R>::type> {
 
 template <typename Base, typename Exp, typename Mod>
     requires (impl::UnionPow<Base, Exp, Mod>::enable)
-struct __pow__<Base, Exp, Mod> : Returns<typename impl::UnionPow<Base, Exp, Mod>::type> {
+struct __pow__<Base, Exp, Mod> : returns<typename impl::UnionPow<Base, Exp, Mod>::type> {
     using type = impl::UnionPow<Base, Exp, Mod>::type;
     static type operator()(Base base, Exp exp) {
         return visit(
@@ -2172,7 +2172,7 @@ struct __pow__<Base, Exp, Mod> : Returns<typename impl::UnionPow<Base, Exp, Mod>
 
 
 template <typename L, typename R> requires (impl::UnionTrueDiv<L, R>::enable)
-struct __truediv__<L, R> : Returns<typename impl::UnionTrueDiv<L, R>::type> {
+struct __truediv__<L, R> : returns<typename impl::UnionTrueDiv<L, R>::type> {
     using type = impl::UnionTrueDiv<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2194,7 +2194,7 @@ struct __truediv__<L, R> : Returns<typename impl::UnionTrueDiv<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionFloorDiv<L, R>::enable)
-struct __floordiv__<L, R> : Returns<typename impl::UnionFloorDiv<L, R>::type> {
+struct __floordiv__<L, R> : returns<typename impl::UnionFloorDiv<L, R>::type> {
     using type = impl::UnionFloorDiv<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2216,7 +2216,7 @@ struct __floordiv__<L, R> : Returns<typename impl::UnionFloorDiv<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionMod<L, R>::enable)
-struct __mod__<L, R> : Returns<typename impl::UnionMod<L, R>::type> {
+struct __mod__<L, R> : returns<typename impl::UnionMod<L, R>::type> {
     using type = impl::UnionMod<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2238,7 +2238,7 @@ struct __mod__<L, R> : Returns<typename impl::UnionMod<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionLShift<L, R>::enable)
-struct __lshift__<L, R> : Returns<typename impl::UnionLShift<L, R>::type> {
+struct __lshift__<L, R> : returns<typename impl::UnionLShift<L, R>::type> {
     using type = impl::UnionLShift<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2260,7 +2260,7 @@ struct __lshift__<L, R> : Returns<typename impl::UnionLShift<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionRShift<L, R>::enable)
-struct __rshift__<L, R> : Returns<typename impl::UnionRShift<L, R>::type> {
+struct __rshift__<L, R> : returns<typename impl::UnionRShift<L, R>::type> {
     using type = impl::UnionRShift<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2282,7 +2282,7 @@ struct __rshift__<L, R> : Returns<typename impl::UnionRShift<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionAnd<L, R>::enable)
-struct __and__<L, R> : Returns<typename impl::UnionAnd<L, R>::type> {
+struct __and__<L, R> : returns<typename impl::UnionAnd<L, R>::type> {
     using type = impl::UnionAnd<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2304,7 +2304,7 @@ struct __and__<L, R> : Returns<typename impl::UnionAnd<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionXor<L, R>::enable)
-struct __xor__<L, R> : Returns<typename impl::UnionXor<L, R>::type> {
+struct __xor__<L, R> : returns<typename impl::UnionXor<L, R>::type> {
     using type = impl::UnionXor<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2326,7 +2326,7 @@ struct __xor__<L, R> : Returns<typename impl::UnionXor<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionOr<L, R>::enable)
-struct __or__<L, R> : Returns<typename impl::UnionOr<L, R>::type> {
+struct __or__<L, R> : returns<typename impl::UnionOr<L, R>::type> {
     using type = impl::UnionOr<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2348,7 +2348,7 @@ struct __or__<L, R> : Returns<typename impl::UnionOr<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionInplaceAdd<L, R>::enable)
-struct __iadd__<L, R> : Returns<typename impl::UnionInplaceAdd<L, R>::type> {
+struct __iadd__<L, R> : returns<typename impl::UnionInplaceAdd<L, R>::type> {
     using type = impl::UnionInplaceAdd<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2370,7 +2370,7 @@ struct __iadd__<L, R> : Returns<typename impl::UnionInplaceAdd<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionInplaceSub<L, R>::enable)
-struct __isub__<L, R> : Returns<typename impl::UnionInplaceSub<L, R>::type> {
+struct __isub__<L, R> : returns<typename impl::UnionInplaceSub<L, R>::type> {
     using type = impl::UnionInplaceSub<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2392,7 +2392,7 @@ struct __isub__<L, R> : Returns<typename impl::UnionInplaceSub<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionInplaceMul<L, R>::enable)
-struct __imul__<L, R> : Returns<typename impl::UnionInplaceMul<L, R>::type> {
+struct __imul__<L, R> : returns<typename impl::UnionInplaceMul<L, R>::type> {
     using type = impl::UnionInplaceMul<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2415,7 +2415,7 @@ struct __imul__<L, R> : Returns<typename impl::UnionInplaceMul<L, R>::type> {
 
 template <typename Base, typename Exp, typename Mod>
     requires (impl::UnionInplacePow<Base, Exp, Mod>::enable)
-struct __ipow__<Base, Exp, Mod> : Returns<typename impl::UnionInplacePow<Base, Exp, Mod>::type> {
+struct __ipow__<Base, Exp, Mod> : returns<typename impl::UnionInplacePow<Base, Exp, Mod>::type> {
     using type = impl::UnionInplacePow<Base, Exp, Mod>::type;
     static type operator()(Base base, Exp exp) {
         return visit(
@@ -2462,7 +2462,7 @@ struct __ipow__<Base, Exp, Mod> : Returns<typename impl::UnionInplacePow<Base, E
 
 
 template <typename L, typename R> requires (impl::UnionInplaceTrueDiv<L, R>::enable)
-struct __itruediv__<L, R> : Returns<typename impl::UnionInplaceTrueDiv<L, R>::type> {
+struct __itruediv__<L, R> : returns<typename impl::UnionInplaceTrueDiv<L, R>::type> {
     using type = impl::UnionInplaceTrueDiv<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2484,7 +2484,7 @@ struct __itruediv__<L, R> : Returns<typename impl::UnionInplaceTrueDiv<L, R>::ty
 
 
 template <typename L, typename R> requires (impl::UnionInplaceFloorDiv<L, R>::enable)
-struct __ifloordiv__<L, R> : Returns<typename impl::UnionInplaceFloorDiv<L, R>::type> {
+struct __ifloordiv__<L, R> : returns<typename impl::UnionInplaceFloorDiv<L, R>::type> {
     using type = impl::UnionInplaceFloorDiv<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2506,7 +2506,7 @@ struct __ifloordiv__<L, R> : Returns<typename impl::UnionInplaceFloorDiv<L, R>::
 
 
 template <typename L, typename R> requires (impl::UnionInplaceMod<L, R>::enable)
-struct __imod__<L, R> : Returns<typename impl::UnionInplaceMod<L, R>::type> {
+struct __imod__<L, R> : returns<typename impl::UnionInplaceMod<L, R>::type> {
     using type = impl::UnionInplaceMod<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2528,7 +2528,7 @@ struct __imod__<L, R> : Returns<typename impl::UnionInplaceMod<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionInplaceLShift<L, R>::enable)
-struct __ilshift__<L, R> : Returns<typename impl::UnionInplaceLShift<L, R>::type> {
+struct __ilshift__<L, R> : returns<typename impl::UnionInplaceLShift<L, R>::type> {
     using type = impl::UnionInplaceLShift<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2550,7 +2550,7 @@ struct __ilshift__<L, R> : Returns<typename impl::UnionInplaceLShift<L, R>::type
 
 
 template <typename L, typename R> requires (impl::UnionInplaceRShift<L, R>::enable)
-struct __irshift__<L, R> : Returns<typename impl::UnionInplaceRShift<L, R>::type> {
+struct __irshift__<L, R> : returns<typename impl::UnionInplaceRShift<L, R>::type> {
     using type = impl::UnionInplaceRShift<L, R>::type;
     static L operator()(L lhs, R rhs) {
         return visit(
@@ -2572,7 +2572,7 @@ struct __irshift__<L, R> : Returns<typename impl::UnionInplaceRShift<L, R>::type
 
 
 template <typename L, typename R> requires (impl::UnionInplaceAnd<L, R>::enable)
-struct __iand__<L, R> : Returns<typename impl::UnionInplaceAnd<L, R>::type> {
+struct __iand__<L, R> : returns<typename impl::UnionInplaceAnd<L, R>::type> {
     using type = impl::UnionInplaceAnd<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2594,7 +2594,7 @@ struct __iand__<L, R> : Returns<typename impl::UnionInplaceAnd<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionInplaceXor<L, R>::enable)
-struct __ixor__<L, R> : Returns<typename impl::UnionInplaceXor<L, R>::type> {
+struct __ixor__<L, R> : returns<typename impl::UnionInplaceXor<L, R>::type> {
     using type = impl::UnionInplaceXor<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(
@@ -2616,7 +2616,7 @@ struct __ixor__<L, R> : Returns<typename impl::UnionInplaceXor<L, R>::type> {
 
 
 template <typename L, typename R> requires (impl::UnionInplaceOr<L, R>::enable)
-struct __ior__<L, R> : Returns<typename impl::UnionInplaceOr<L, R>::type> {
+struct __ior__<L, R> : returns<typename impl::UnionInplaceOr<L, R>::type> {
     using type = impl::UnionInplaceOr<L, R>::type;
     static type operator()(L lhs, R rhs) {
         return visit(

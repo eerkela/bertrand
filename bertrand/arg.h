@@ -93,26 +93,26 @@ namespace impl {
         return isalpha(c) || (c >= '0' && c <= '9');
     }
 
-    template <size_t, StaticStr>
+    template <size_t, static_str>
     constexpr bool validate_arg_name = true;
-    template <size_t I, StaticStr Name> requires (I < Name.size())
+    template <size_t I, static_str Name> requires (I < Name.size())
     constexpr bool validate_arg_name<I, Name> =
         (isalnum(Name[I]) || Name[I] == '_') && validate_arg_name<I + 1, Name>;
 
-    template <StaticStr Name>
+    template <static_str Name>
     constexpr bool _arg_name = !Name.empty() && (
         (isalpha(Name[0]) || Name[0] == '_') &&
         validate_arg_name<1, Name>
     );
 
-    template <StaticStr Name>
+    template <static_str Name>
     constexpr bool _variadic_args_name =
         Name.size() > 1 &&
         Name[0] == '*' &&
         (isalpha(Name[1]) || Name[1] == '_') &&
         validate_arg_name<2, Name>;
 
-    template <StaticStr Name>
+    template <static_str Name>
     constexpr bool _variadic_kwargs_name =
         Name.size() > 2 &&
         Name[0] == '*' &&
@@ -160,14 +160,14 @@ template <typename T>
 concept kwarg_pack = impl::_kwarg_pack<std::remove_cvref_t<T>>;
 
 
-template <StaticStr Name>
+template <static_str Name>
 concept arg_name =
     impl::_arg_name<Name> ||
     impl::_variadic_args_name<Name> ||
     impl::_variadic_kwargs_name<Name>;
 
 
-template <StaticStr Name>
+template <static_str Name>
 concept variadic_args_name =
     arg_name<Name> &&
     !impl::_arg_name<Name> &&
@@ -175,7 +175,7 @@ concept variadic_args_name =
     !impl::_variadic_kwargs_name<Name>;
 
 
-template <StaticStr Name>
+template <static_str Name>
 concept variadic_kwargs_name =
     arg_name<Name> &&
     !impl::_arg_name<Name> &&
@@ -196,7 +196,7 @@ reference types.  Such references are guaranteed to remain valid for their full,
 natural lifespan, as if they were declared without the enclosing `Arg<>` wrapper.  In
 particular, that allows `Arg<>` annotations to be freely declared as function
 arguments without interfering with existing C++ parameter passing semantics. */
-template <StaticStr Name, typename T> requires (arg_name<Name>)
+template <static_str Name, typename T> requires (arg_name<Name>)
 struct Arg {
 private:
     template <typename, typename>
@@ -212,12 +212,12 @@ private:
     /// aggregate initialization.
 
 public:
-    static constexpr StaticStr name = Name;
+    static constexpr static_str name = Name;
     static constexpr ArgKind kind = ArgKind::POS | ArgKind::KW;
     using type = T;
     using bound_to = bertrand::args<>;
     using unbind = Arg;
-    template <StaticStr N> requires (arg_name<N>)
+    template <static_str N> requires (arg_name<N>)
     using with_name = Arg<N, T>;
     template <typename V> requires (!std::is_void_v<V>)
     using with_type = Arg<Name, V>;
@@ -267,12 +267,12 @@ public:
         using _detect_arg = void;
 
     public:
-        static constexpr StaticStr name = Name;
+        static constexpr static_str name = Name;
         static constexpr ArgKind kind = Arg::kind | ArgKind::OPT;
         using type = T;
         using bound_to = bertrand::args<>;
         using unbind = opt;
-        template <StaticStr N> requires (arg_name<N>)
+        template <static_str N> requires (arg_name<N>)
         using with_name = Arg<N, T>::opt;
         template <typename V> requires (!std::is_void_v<V>)
         using with_type = Arg<Name, V>::opt;
@@ -309,12 +309,12 @@ public:
         using _detect_arg = void;
 
     public:
-        static constexpr StaticStr name = Name;
+        static constexpr static_str name = Name;
         static constexpr ArgKind kind = ArgKind::POS;
         using type = T;
         using bound_to = bertrand::args<>;
         using unbind = pos;
-        template <StaticStr N> requires (arg_name<N>)
+        template <static_str N> requires (arg_name<N>)
         using with_name = Arg<N, T>::pos;
         template <typename V> requires (!std::is_void_v<V>)
         using with_type = Arg<Name, V>::pos;
@@ -356,12 +356,12 @@ public:
             using _detect_arg = void;
 
         public:
-            static constexpr StaticStr name = Name;
+            static constexpr static_str name = Name;
             static constexpr ArgKind kind = pos::kind | ArgKind::OPT;
             using type = T;
             using bound_to = bertrand::args<>;
             using unbind = opt;
-            template <StaticStr N> requires (arg_name<N>)
+            template <static_str N> requires (arg_name<N>)
             using with_name = Arg<N, T>::pos::opt;
             template <typename V> requires (!std::is_void_v<V>)
             using with_type = Arg<Name, V>::pos::opt;
@@ -400,12 +400,12 @@ public:
         using _detect_arg = void;
 
     public:
-        static constexpr StaticStr name = Name;
+        static constexpr static_str name = Name;
         static constexpr ArgKind kind = ArgKind::KW;
         using type = T;
         using bound_to = bertrand::args<>;
         using unbind = kw;
-        template <StaticStr N> requires (arg_name<N>)
+        template <static_str N> requires (arg_name<N>)
         using with_name = Arg<N, T>::kw;
         template <typename V> requires (!std::is_void_v<V>)
         using with_type = Arg<Name, V>::kw;
@@ -447,12 +447,12 @@ public:
             using _detect_arg = void;
 
         public:
-            static constexpr StaticStr name = Name;
+            static constexpr static_str name = Name;
             static constexpr ArgKind kind = kw::kind | ArgKind::OPT;
             using type = T;
             using bound_to = bertrand::args<>;
             using unbind = opt;
-            template <StaticStr N> requires (arg_name<N>)
+            template <static_str N> requires (arg_name<N>)
             using with_name = Arg<N, T>::kw::opt;
             template <typename V> requires (!std::is_void_v<V>)
             using with_type = Arg<Name, V>::kw::opt;
@@ -487,7 +487,7 @@ public:
 
 /* Specialization for variadic positional args, whose names are prefixed by a leading
 asterisk. */
-template <StaticStr Name, typename T> requires (variadic_args_name<Name>)
+template <static_str Name, typename T> requires (variadic_args_name<Name>)
 struct Arg<Name, T> {
 private:
     template <typename, typename>
@@ -495,7 +495,7 @@ private:
     using _detect_arg = void;
 
 public:
-    static constexpr StaticStr name = StaticStr<>::removeprefix<Name, "*">();
+    static constexpr static_str name = static_str<>::removeprefix<Name, "*">();
     static constexpr ArgKind kind = ArgKind::VAR | ArgKind::POS;
     using type = T;
     using vec = std::vector<std::conditional_t<
@@ -505,7 +505,7 @@ public:
     >>;
     using bound_to = bertrand::args<>;
     using unbind = Arg;
-    template <StaticStr N> requires (arg_name<N>)
+    template <static_str N> requires (arg_name<N>)
     using with_name = Arg<N, T>;
     template <typename V> requires (!std::is_void_v<V>)
     using with_type = Arg<Name, V>;
@@ -548,7 +548,7 @@ public:
 
 /* Specialization for variadic keyword args, whose names are prefixed by 2 leading
 asterisks. */
-template <StaticStr Name, typename T> requires (variadic_kwargs_name<Name>)
+template <static_str Name, typename T> requires (variadic_kwargs_name<Name>)
 struct Arg<Name, T> {
 private:
     template <typename, typename>
@@ -556,7 +556,7 @@ private:
     using _detect_arg = void;
 
 public:
-    static constexpr StaticStr name = StaticStr<>::removeprefix<Name, "**">();
+    static constexpr static_str name = static_str<>::removeprefix<Name, "**">();
     static constexpr ArgKind kind = ArgKind::VAR | ArgKind::KW;
     using type = T;
     using map = std::unordered_map<std::string, std::conditional_t<
@@ -566,7 +566,7 @@ public:
     >>;
     using bound_to = bertrand::args<>;
     using unbind = Arg;
-    template <StaticStr N> requires (arg_name<N>)
+    template <static_str N> requires (arg_name<N>)
     using with_name = Arg<N, T>;
     template <typename V> requires (!std::is_void_v<V>)
     using with_type = Arg<Name, V>;
@@ -618,7 +618,7 @@ private:
 
 public:
     using type = iter_type<T>;
-    static constexpr StaticStr name = "";
+    static constexpr static_str name = "";
     static constexpr ArgKind kind = ArgKind::VAR | ArgKind::POS;
 
     T value;
@@ -654,7 +654,7 @@ struct KwargPack {
     using key_type = std::remove_reference_t<T>::key_type;
     using mapped_type = std::remove_reference_t<T>::mapped_type;
     using type = mapped_type;
-    static constexpr StaticStr name = "";
+    static constexpr static_str name = "";
     static constexpr ArgKind kind = ArgKind::VAR | ArgKind::KW;
 
     T value;
@@ -727,7 +727,7 @@ namespace impl {
         using Value = std::remove_reference_t<typename ArgTraits<Arg>::type>;
 
     public:
-        static constexpr StaticStr name = ArgTraits<Arg>::name;
+        static constexpr static_str name = ArgTraits<Arg>::name;
         static constexpr ArgKind kind = ArgTraits<Arg>::kind;
         using type = ArgTraits<Arg>::type;
         using bound_to = ArgTraits<Arg>::bound_to;
@@ -765,7 +765,7 @@ namespace impl {
         };
 
     public:
-        static constexpr StaticStr name = ArgTraits<Arg>::name;
+        static constexpr static_str name = ArgTraits<Arg>::name;
         static constexpr ArgKind kind = ArgTraits<Arg>::kind;
         using type = ArgTraits<Arg>::type;
         using vec = std::vector<std::conditional_t<
@@ -814,7 +814,7 @@ namespace impl {
         };
 
     public:
-        static constexpr StaticStr name = ArgTraits<Arg>::name;
+        static constexpr static_str name = ArgTraits<Arg>::name;
         static constexpr ArgKind kind = ArgTraits<Arg>::kind;
         using type = ArgTraits<Arg>::type;
         using map = std::unordered_map<std::string, std::conditional_t<
@@ -848,7 +848,7 @@ namespace impl {
 
     /* A singleton argument factory that allows arguments to be constructed via
     familiar assignment syntax, which extends the lifetime of temporaries. */
-    template <StaticStr Name> requires (!Name.empty())
+    template <static_str Name> requires (!Name.empty())
     struct ArgFactory {
         template <typename T>
         constexpr Arg<Name, T> operator=(T&& value) const {
@@ -865,7 +865,7 @@ instances of this class can be used to provide an even more Pythonic syntax:
     constexpr auto x = arg<"x">;
     my_func(x = 42);
 */
-template <StaticStr name>
+template <static_str name>
 constexpr impl::ArgFactory<name> arg {};
 
 
@@ -874,14 +874,14 @@ positional-only arguments to maintain C++ style. */
 template <typename T>
 struct ArgTraits {
 private:
-    template <StaticStr N>
+    template <static_str N>
     struct _with_name { using type = Arg<N, T>::pos; };
-    template <StaticStr N> requires (N.empty())
+    template <static_str N> requires (N.empty())
     struct _with_name<N> { using type = T; };
 
 public:
     using type                                  = T;
-    static constexpr StaticStr name             = "";
+    static constexpr static_str name             = "";
     static constexpr ArgKind kind               = ArgKind::POS;
     static constexpr bool posonly() noexcept    { return kind.posonly(); }
     static constexpr bool pos() noexcept        { return kind.pos(); }
@@ -906,7 +906,7 @@ public:
     using bind                                  = impl::BoundArg<T, Vs...>;
     using bound_to                              = bertrand::args<>;
     using unbind                                = T;
-    template <StaticStr N> requires (arg_name<N> || N.empty())
+    template <static_str N> requires (arg_name<N> || N.empty())
     using with_name                             = _with_name<N>::type;
     template <typename V> requires (!std::is_void_v<V>)
     using with_type                             = V;
@@ -920,14 +920,14 @@ struct ArgTraits<T> {
 private:
     using T2 = std::remove_cvref_t<T>;
 
-    template <StaticStr N>
+    template <static_str N>
     struct _with_name { using type = T2::template with_name<N>; };
-    template <StaticStr N> requires (N.empty())
+    template <static_str N> requires (N.empty())
     struct _with_name<N> { using type = T2::type; };
 
 public:
     using type                                  = T2::type;
-    static constexpr StaticStr name             = T2::name;
+    static constexpr static_str name             = T2::name;
     static constexpr ArgKind kind               = T2::kind;
     static constexpr bool posonly() noexcept    { return kind.posonly(); }
     static constexpr bool pos() noexcept        { return kind.pos(); }
@@ -946,7 +946,7 @@ public:
     using bind                                  = T2::template bind<Vs...>;
     using unbind                                = T2::unbind;
     using bound_to                              = T2::bound_to;
-    template <StaticStr N> requires (arg_name<N> || N.empty())
+    template <static_str N> requires (arg_name<N> || N.empty())
     using with_name                             = _with_name<N>::type;
     template <typename V> requires (!std::is_void_v<V>)
     using with_type                             = T2::template with_type<V>;

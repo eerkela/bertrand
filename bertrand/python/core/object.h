@@ -163,15 +163,15 @@ template <typename T>
 
 
 template <>
-struct Interface<Object> {};
+struct interface<Object> {};
 template <>
-struct Interface<Type<Object>> {};
+struct interface<Type<Object>> {};
 
 
 /* An owning reference to a dynamically-typed Python object.  More specialized types
 can always be implicitly converted to this type, but doing the opposite incurs a
 runtime `isinstance()` check, and raises a `TypeError` if the check fails. */
-struct Object : Interface<Object> {
+struct Object : interface<Object> {
 private:
 
     /* A convenience struct implementing the overload pattern for visiting a
@@ -188,7 +188,7 @@ private:
     either originate from that class or use a non-member method which takes the class
     as its first argument, unless the method/variable is static and unassociated with
     any instance. */
-    template <typename Cls, typename CRTP, typename Wrapper, StaticStr ModName>
+    template <typename Cls, typename CRTP, typename Wrapper, static_str ModName>
     struct Bindings;
 
 protected:
@@ -325,7 +325,7 @@ protected:
         template <typename... Ts>
         using Visitor = Visitor<Ts...>;
 
-        template <StaticStr ModName>
+        template <static_str ModName>
         using Bindings = Object::Bindings<CppType, CRTP, Derived, ModName>;
 
     public:
@@ -342,7 +342,7 @@ protected:
 
         This method must end with a call to `bind.finalize<Bases...>()`, which will
         instantiate a unique heap type for each module. */
-        template <StaticStr ModName>
+        template <static_str ModName>
         static Type<Derived> __export__(Bindings<ModName> bind);  // {
         //     // bind.var<"foo">(&CppType::foo);
         //     // bind.method<"bar">("an example method", &CppType::bar);
@@ -426,7 +426,7 @@ protected:
     struct def<CRTP, Derived, void> : impl::BertrandTag {
     protected:
 
-        template <StaticStr ModName>
+        template <static_str ModName>
         using Bindings = Object::Bindings<CRTP, CRTP, Derived, ModName>;
 
     public:
@@ -516,11 +516,11 @@ protected:
     in exactly the same way.  Such fields are guaranteed to be unique for each module,
     and are therefore safe to access from multiple threads, provided that the user
     ensures that the data they reference is thread-safe. */
-    template <typename CRTP, StaticStr Name>
+    template <typename CRTP, static_str Name>
     struct def<CRTP, Module<Name>, void> : impl::BertrandTag {
     protected:
 
-        template <StaticStr ModName>
+        template <static_str ModName>
         using Bindings = Object::Bindings<CRTP, CRTP, Module<ModName>, ModName>;
 
     public:
@@ -528,7 +528,7 @@ protected:
         using __cpp__ = void;
 
         /// TODO: docs
-        template <StaticStr ModName>
+        template <static_str ModName>
         static Module<Name> __export__(Bindings<ModName> bind);  // {
         //     return CRTP::__import__();
         // }
@@ -772,14 +772,14 @@ template <std::derived_from<Object> T>
 
 
 template <impl::inherits<Object> T>
-struct __cast__<T>                                          : Returns<T> {
+struct __cast__<T>                                          : returns<T> {
     static T operator()(T value) { return std::forward<T>(value); }
 };
 
 
 /* Default initialize py::Object to None. */
 template <>
-struct __init__<Object>                                     : Returns<Object> {
+struct __init__<Object>                                     : returns<Object> {
     static auto operator()() {
         return reinterpret_steal<Object>(Py_NewRef(Py_None));
     }
@@ -789,7 +789,7 @@ struct __init__<Object>                                     : Returns<Object> {
 /* Implicitly convert any C++ value into a py::Object by invoking the unary cast type,
 and then reinterpreting as a dynamic object. */
 template <impl::cpp T> requires (impl::has_python<T>)
-struct __cast__<T, Object>                                  : Returns<Object> {
+struct __cast__<T, Object>                                  : returns<Object> {
     static auto operator()(T value) {
         return reinterpret_steal<Object>(
             release(impl::python_type<T>(std::forward<T>(value)))
@@ -808,7 +808,7 @@ template <impl::is<Object> From, impl::cpp To>
         !std::is_volatile_v<To> &&
         __cast__<To>::enable
     )
-struct __cast__<From, To>                                   : Returns<To> {
+struct __cast__<From, To>                                   : returns<To> {
     static auto operator()(From self) {
         using Intermediate = __cast__<To>::type;
         return impl::implicit_cast<To>(
@@ -825,7 +825,7 @@ template <impl::inherits<Object> From, typename To>
         impl::has_cpp<From> &&
         std::same_as<impl::cpp_type<std::remove_cvref_t<From>>, std::remove_cv_t<To>>
     )
-struct __cast__<From, To&>                                  : Returns<To&> {
+struct __cast__<From, To&>                                  : returns<To&> {
     static To& operator()(From from) {
         return from_python(std::forward<From>(from));
     }
@@ -835,7 +835,7 @@ struct __cast__<From, To&>                                  : Returns<To&> {
 /* Implicitly convert a Python object that wraps around a C++ type into a pointer to
 that type, which directly references the internal data. */
 template <impl::inherits<Object> From, typename To> requires (std::convertible_to<From, To>)
-struct __cast__<From, std::optional<To>>                    : Returns<std::optional<To>> {
+struct __cast__<From, std::optional<To>>                    : returns<std::optional<To>> {
     static std::optional<To> operator()(From from) {
         return {impl::implicit_cast<To>(std::forward<From>(from))};
     }
@@ -849,7 +849,7 @@ template <impl::inherits<Object> From, typename To>
         impl::has_cpp<From> &&
         std::same_as<impl::cpp_type<std::remove_cvref_t<From>>, std::remove_cv_t<To>>
     )
-struct __cast__<From, To*>                                  : Returns<To*> {
+struct __cast__<From, To*>                                  : returns<To*> {
     static To* operator()(From from) {
         return &from_python(std::forward<From>(from));
     }
@@ -859,7 +859,7 @@ struct __cast__<From, To*>                                  : Returns<To*> {
 /* Implicitly convert a Python object into a shared pointer as long as the underlying
 types are convertible. */
 template <impl::inherits<Object> From, typename To> requires (std::convertible_to<From, To>)
-struct __cast__<From, std::shared_ptr<To>>                  : Returns<std::shared_ptr<To>> {
+struct __cast__<From, std::shared_ptr<To>>                  : returns<std::shared_ptr<To>> {
     static std::shared_ptr<To> operator()(From value) {
         return std::make_shared<To>(
             impl::implicit_cast<To>(std::forward<From>(value))
@@ -871,7 +871,7 @@ struct __cast__<From, std::shared_ptr<To>>                  : Returns<std::share
 /* Implicitly convert a Python object into a unique pointer as long as the underlying
 types are convertible. */
 template <impl::inherits<Object> From, typename To> requires (std::convertible_to<From, To>)
-struct __cast__<From, std::unique_ptr<To>>                  : Returns<std::unique_ptr<To>> {
+struct __cast__<From, std::unique_ptr<To>>                  : returns<std::unique_ptr<To>> {
     static std::unique_ptr<To> operator()(From value) {
         return std::make_unique<To>(
             impl::implicit_cast<To>(std::forward<From>(value))
@@ -890,7 +890,7 @@ template <impl::inherits<Object> From, impl::cpp To>
         !std::is_volatile_v<To> &&
         impl::has_python<To>
     )
-struct __explicit_cast__<From, To>                          : Returns<To> {
+struct __explicit_cast__<From, To>                          : returns<To> {
     static auto operator()(From from) {
         return static_cast<To>(
             static_cast<impl::python_type<To>>(std::forward<From>(from))
@@ -902,7 +902,7 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 /* Contextually convert an Object into a boolean value for use in if/else statements,
 with the same semantics as Python. */
 template <impl::inherits<Object> From>
-struct __explicit_cast__<From, bool>                         : Returns<bool> {
+struct __explicit_cast__<From, bool>                         : returns<bool> {
     static bool operator()(From&& from);
 };
 
@@ -911,7 +911,7 @@ struct __explicit_cast__<From, bool>                         : Returns<bool> {
 Python level. */
 template <impl::inherits<Object> From, impl::cpp To>
     requires (impl::has_python<To> && std::integral<To>)
-struct __explicit_cast__<From, To>                          : Returns<To> {
+struct __explicit_cast__<From, To>                          : returns<To> {
     static To operator()(From&& from);
 };
 
@@ -920,7 +920,7 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 `float(obj)` at the Python level. */
 template <impl::inherits<Object> From, impl::cpp To>
     requires (impl::has_python<To> && std::floating_point<To>)
-struct __explicit_cast__<From, To>                          : Returns<To> {
+struct __explicit_cast__<From, To>                          : returns<To> {
     static To operator()(From&& from);
 };
 
@@ -928,7 +928,7 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 /* Explicitly convert a Python object into a C++ complex number by calling
 `complex(obj)` at the Python level. */
 template <impl::inherits<Object> From, typename Float>
-struct __explicit_cast__<From, std::complex<Float>> : Returns<std::complex<Float>> {
+struct __explicit_cast__<From, std::complex<Float>> : returns<std::complex<Float>> {
     static auto operator()(From&& from);
 };
 
@@ -936,7 +936,7 @@ struct __explicit_cast__<From, std::complex<Float>> : Returns<std::complex<Float
 /* Explicitly convert a Python object into a C++ sd::string representation by calling
 `str(obj)` at the Python level. */
 template <impl::inherits<Object> From, typename Char>
-struct __explicit_cast__<From, std::basic_string<Char>> : Returns<std::basic_string<Char>> {
+struct __explicit_cast__<From, std::basic_string<Char>> : returns<std::basic_string<Char>> {
     static auto operator()(From&& from);
 };
 
@@ -949,26 +949,26 @@ struct __explicit_cast__<From, std::basic_string<Char>> : Returns<std::basic_str
 /// prevents template conflicts in downstream code, reducing the chance of ambiguity.
 
 
-template <impl::is<Object> Self, StaticStr Name>
-struct __getattr__<Self, Name>                              : Returns<Object> {};
-template <impl::is<Object> Self, StaticStr Name, std::convertible_to<Object> Value>
+template <impl::is<Object> Self, static_str Name>
+struct __getattr__<Self, Name>                              : returns<Object> {};
+template <impl::is<Object> Self, static_str Name, std::convertible_to<Object> Value>
     requires (!impl::is_const<Self>)
-struct __setattr__<Self, Name, Value>                       : Returns<void> {};
-template <impl::is<Object> Self, StaticStr Name> requires (!impl::is_const<Self>)
-struct __delattr__<Self, Name>                              : Returns<void> {};
+struct __setattr__<Self, Name, Value>                       : returns<void> {};
+template <impl::is<Object> Self, static_str Name> requires (!impl::is_const<Self>)
+struct __delattr__<Self, Name>                              : returns<void> {};
 template <impl::is<Object> Self, std::convertible_to<Object>... Args>
-struct __call__<Self, Args...>                              : Returns<Object> {
+struct __call__<Self, Args...>                              : returns<Object> {
     static Object operator()(Self, Args...);
 };
 template <impl::is<Object> Self>
-struct __iter__<Self>                                       : Returns<Object> {};
+struct __iter__<Self>                                       : returns<Object> {};
 template <impl::is<Object> Self>
-struct __reversed__<Self>                                   : Returns<Object> {};
+struct __reversed__<Self>                                   : returns<Object> {};
 
 
 /* Allow Objects to be used as left-hand arguments in `issubclass()` checks. */
 template <impl::is<Object> Derived, typename Base>
-struct __issubclass__<Derived, Base>                         : Returns<bool> {
+struct __issubclass__<Derived, Base>                         : returns<bool> {
     static bool operator()(Derived derived);
 };
 
@@ -976,7 +976,7 @@ struct __issubclass__<Derived, Base>                         : Returns<bool> {
 /* Inserting a Python object into an output stream corresponds to a `str()` call at the
 Python level. */
 template <std::derived_from<std::ostream> Stream, impl::inherits<Object> Self>
-struct __lshift__<Stream, Self>                             : Returns<Stream&> {
+struct __lshift__<Stream, Self>                             : returns<Stream&> {
     /// TODO: Str, Bytes, ByteArray should specialize this to write to the stream directly.
     static Stream& operator()(Stream& stream, Self self);
 };
@@ -991,13 +991,13 @@ struct NoneType;
 
 
 template <>
-struct Interface<NoneType> : impl::BertrandTag {};
+struct interface<NoneType> : impl::BertrandTag {};
 template <>
-struct Interface<Type<NoneType>> : impl::BertrandTag {};
+struct interface<Type<NoneType>> : impl::BertrandTag {};
 
 
 /* Represents the type of Python's `None` singleton in C++. */
-struct NoneType : Object, Interface<NoneType> {
+struct NoneType : Object, interface<NoneType> {
     struct __python__ : def<__python__, NoneType>, PyObject {
         static Type<NoneType> __import__();
     };
@@ -1026,7 +1026,7 @@ struct NoneType : Object, Interface<NoneType> {
 
 
 template <>
-struct __init__<NoneType>                                   : Returns<NoneType> {
+struct __init__<NoneType>                                   : returns<NoneType> {
     static auto operator()() {
         return reinterpret_borrow<NoneType>(Py_None);
     }
@@ -1034,7 +1034,7 @@ struct __init__<NoneType>                                   : Returns<NoneType> 
 
 
 template <impl::none_like From>
-struct __cast__<From, NoneType>                             : Returns<NoneType> {
+struct __cast__<From, NoneType>                             : returns<NoneType> {
     static NoneType operator()(const From& value) {
         return {};
     }
@@ -1042,7 +1042,7 @@ struct __cast__<From, NoneType>                             : Returns<NoneType> 
 
 
 template <impl::is<NoneType> From, impl::none_like To>
-struct __cast__<From, To>                                   : Returns<To> {
+struct __cast__<From, To>                                   : returns<To> {
     static To operator()(From value) {
         return {};
     }
@@ -1050,7 +1050,7 @@ struct __cast__<From, To>                                   : Returns<To> {
 
 
 template <impl::is<NoneType> From, typename To> requires (!std::convertible_to<From, To>)
-struct __cast__<From, std::optional<To>>                    : Returns<std::optional<To>> {
+struct __cast__<From, std::optional<To>>                    : returns<std::optional<To>> {
     static std::optional<To> operator()(From value) {
         return std::nullopt;
     }
@@ -1058,7 +1058,7 @@ struct __cast__<From, std::optional<To>>                    : Returns<std::optio
 
 
 template <impl::is<NoneType> From, typename To>
-struct __cast__<From, To*>                                  : Returns<To*> {
+struct __cast__<From, To*>                                  : returns<To*> {
     static To* operator()(From value) {
         return nullptr;
     }
@@ -1066,7 +1066,7 @@ struct __cast__<From, To*>                                  : Returns<To*> {
 
 
 template <impl::is<NoneType> From, typename To> requires (!std::convertible_to<From, To>)
-struct __cast__<From, std::shared_ptr<To>>                  : Returns<std::shared_ptr<To>> {
+struct __cast__<From, std::shared_ptr<To>>                  : returns<std::shared_ptr<To>> {
     static std::shared_ptr<To> operator()(From value) {
         return nullptr;
     }
@@ -1074,7 +1074,7 @@ struct __cast__<From, std::shared_ptr<To>>                  : Returns<std::share
 
 
 template <impl::is<NoneType> From, typename To> requires (!std::convertible_to<From, To>)
-struct __cast__<From, std::unique_ptr<To>>                  : Returns<std::unique_ptr<To>> {
+struct __cast__<From, std::unique_ptr<To>>                  : returns<std::unique_ptr<To>> {
     static std::unique_ptr<To> operator()(From value) {
         return nullptr;
     }
@@ -1082,7 +1082,7 @@ struct __cast__<From, std::unique_ptr<To>>                  : Returns<std::uniqu
 
 
 template <impl::is<NoneType> Self>
-struct __hash__<Self>                                       : Returns<size_t> {};
+struct __hash__<Self>                                       : returns<size_t> {};
 
 
 inline const NoneType None;
@@ -1097,13 +1097,13 @@ struct NotImplementedType;
 
 
 template <>
-struct Interface<NotImplementedType> : impl::BertrandTag {};
+struct interface<NotImplementedType> : impl::BertrandTag {};
 template <>
-struct Interface<Type<NotImplementedType>> : impl::BertrandTag {};
+struct interface<Type<NotImplementedType>> : impl::BertrandTag {};
 
 
 /* Represents the type of Python's `NotImplemented` singleton in C++. */
-struct NotImplementedType : Object, Interface<NotImplementedType> {
+struct NotImplementedType : Object, interface<NotImplementedType> {
     struct __python__ : def<__python__, NotImplementedType>, PyObject {
         static Type<NotImplementedType> __import__();
     };
@@ -1132,7 +1132,7 @@ struct NotImplementedType : Object, Interface<NotImplementedType> {
 
 
 template <>
-struct __init__<NotImplementedType>                         : Returns<NotImplementedType> {
+struct __init__<NotImplementedType>                         : returns<NotImplementedType> {
     static auto operator()() {
         return reinterpret_borrow<NotImplementedType>(Py_NotImplemented);
     }
@@ -1140,7 +1140,7 @@ struct __init__<NotImplementedType>                         : Returns<NotImpleme
 
 
 template <impl::notimplemented_like From>
-struct __cast__<From, NotImplementedType>                   : Returns<NotImplementedType> {
+struct __cast__<From, NotImplementedType>                   : returns<NotImplementedType> {
     static NotImplementedType operator()(const From& value) {
         return {};
     }
@@ -1148,7 +1148,7 @@ struct __cast__<From, NotImplementedType>                   : Returns<NotImpleme
 
 
 template <impl::is<NotImplementedType> From, impl::notimplemented_like To>
-struct __cast__<From, To>                                   : Returns<To> {
+struct __cast__<From, To>                                   : returns<To> {
     static To operator()(From value) {
         return {};
     }
@@ -1156,7 +1156,7 @@ struct __cast__<From, To>                                   : Returns<To> {
 
 
 template <impl::is<NotImplementedType> Self>
-struct __hash__<Self>                                       : Returns<size_t> {};
+struct __hash__<Self>                                       : returns<size_t> {};
 
 
 inline const NotImplementedType NotImplemented;
@@ -1171,13 +1171,13 @@ struct EllipsisType;
 
 
 template <>
-struct Interface<EllipsisType> : impl::BertrandTag {};
+struct interface<EllipsisType> : impl::BertrandTag {};
 template <>
-struct Interface<Type<EllipsisType>> : impl::BertrandTag {};
+struct interface<Type<EllipsisType>> : impl::BertrandTag {};
 
 
 /* Represents the type of Python's `Ellipsis` singleton in C++. */
-struct EllipsisType : Object, Interface<EllipsisType> {
+struct EllipsisType : Object, interface<EllipsisType> {
     struct __python__ : def<__python__, EllipsisType>, PyObject {
         static Type<EllipsisType> __import__();
     };
@@ -1206,7 +1206,7 @@ struct EllipsisType : Object, Interface<EllipsisType> {
 
 
 template <>
-struct __init__<EllipsisType>                               : Returns<EllipsisType> {
+struct __init__<EllipsisType>                               : returns<EllipsisType> {
     static auto operator()() {
         return reinterpret_borrow<EllipsisType>(Py_Ellipsis);
     }
@@ -1214,7 +1214,7 @@ struct __init__<EllipsisType>                               : Returns<EllipsisTy
 
 
 template <impl::ellipsis_like From>
-struct __cast__<From, EllipsisType>                         : Returns<EllipsisType> {
+struct __cast__<From, EllipsisType>                         : returns<EllipsisType> {
     static EllipsisType operator()(const From& value) {
         return {};
     }
@@ -1222,7 +1222,7 @@ struct __cast__<From, EllipsisType>                         : Returns<EllipsisTy
 
 
 template <impl::is<EllipsisType> From, impl::ellipsis_like To>
-struct __cast__<From, To>                                   : Returns<To> {
+struct __cast__<From, To>                                   : returns<To> {
     static To operator()(From value) {
         return {};
     }
@@ -1230,7 +1230,7 @@ struct __cast__<From, To>                                   : Returns<To> {
 
 
 template <impl::is<EllipsisType> Self>
-struct __hash__<Self>                                       : Returns<size_t> {};
+struct __hash__<Self>                                       : returns<size_t> {};
 
 
 inline const EllipsisType Ellipsis;

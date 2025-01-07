@@ -14,7 +14,7 @@ namespace py {
 ////////////////////////////////
 
 
-template <typename Self, StaticStr Name>
+template <typename Self, static_str Name>
     requires (
         __delattr__<Self, Name>::enable &&
         std::is_void_v<typename __delattr__<Self, Name>::type> && (
@@ -44,7 +44,7 @@ namespace impl {
     This is a simple extension of an Object type that intercepts `operator=` and
     assigns the new value back to the attribute using the appropriate API.  Mutating
     the object in any other way will also modify it in-place on the parent. */
-    template <typename Self, StaticStr Name>
+    template <typename Self, static_str Name>
         requires (
             __getattr__<Self, Name>::enable &&
             std::derived_from<typename __getattr__<Self, Name>::type, Object> && (
@@ -60,7 +60,7 @@ namespace impl {
     private:
         using Base = std::remove_cv_t<typename __getattr__<Self, Name>::type>;
 
-        template <typename S, StaticStr N>
+        template <typename S, static_str N>
             requires (
                 __delattr__<S, N>::enable &&
                 std::is_void_v<typename __delattr__<S, N>::type> && (
@@ -393,7 +393,7 @@ decltype(auto) Object::operator[](this Self&& self, Key&&... key) {
 usage of `del` to dereference naked Python objects is not supported - only those uses
 which would translate to a `PyObject_DelAttr()` or `PyObject_DelItem()` are considered
 valid. */
-template <typename Self, StaticStr Name>
+template <typename Self, static_str Name>
     requires (
         __delattr__<Self, Name>::enable &&
         std::is_void_v<typename __delattr__<Self, Name>::type> && (
@@ -481,11 +481,11 @@ template <impl::lazily_evaluated Derived, typename Base>
 struct __issubclass__<Derived, Base> : __issubclass__<impl::lazy_type<Derived>, Base> {};
 template <typename Derived, impl::lazily_evaluated Base>
 struct __issubclass__<Derived, Base> : __issubclass__<Derived, impl::lazy_type<Base>> {};
-template <impl::lazily_evaluated Base, StaticStr Name>
+template <impl::lazily_evaluated Base, static_str Name>
 struct __getattr__<Base, Name> : __getattr__<impl::lazy_type<Base>, Name> {};
-template <impl::lazily_evaluated Base, StaticStr Name, typename Value>
+template <impl::lazily_evaluated Base, static_str Name, typename Value>
 struct __setattr__<Base, Name, Value> : __setattr__<impl::lazy_type<Base>, Name, Value> {};
-template <impl::lazily_evaluated Base, StaticStr Name>
+template <impl::lazily_evaluated Base, static_str Name>
 struct __delattr__<Base, Name> : __delattr__<impl::lazy_type<Base>, Name> {};
 template <impl::lazily_evaluated Base, typename... Key>
 struct __getitem__<Base, Key...> : __getitem__<impl::lazy_type<Base>, Key...> {};
@@ -706,7 +706,7 @@ struct Slice;
 
 
 template <>
-struct Interface<Slice> {
+struct interface<Slice> {
 
     /* Get the start object of the slice.  Note that this might not be an integer. */
     __declspec(property(get = _get_start)) Object start;
@@ -767,21 +767,21 @@ struct Interface<Slice> {
 
 };
 template <>
-struct Interface<Type<Slice>> {
-    template <impl::inherits<Interface<Slice>> Self>
+struct interface<Type<Slice>> {
+    template <impl::inherits<interface<Slice>> Self>
     [[nodiscard]] static Object start(Self&& self) { return self.start; }
-    template <impl::inherits<Interface<Slice>> Self>
+    template <impl::inherits<interface<Slice>> Self>
     [[nodiscard]] static Object stop(Self&& self) { return self.stop; }
-    template <impl::inherits<Interface<Slice>> Self>
+    template <impl::inherits<interface<Slice>> Self>
     [[nodiscard]] static Object step(Self&& self) { return self.step; }
-    template <impl::inherits<Interface<Slice>> Self>
+    template <impl::inherits<interface<Slice>> Self>
     [[nodiscard]] static auto indices(Self&& self, size_t size) { return self.indices(size); }
 };
 
 
 /* Represents a statically-typed Python `slice` object in C++.  Note that the start,
 stop, and step values do not strictly need to be integers. */
-struct Slice : Object, Interface<Slice> {
+struct Slice : Object, interface<Slice> {
     struct __python__ : def<__python__, Slice>, PySliceObject {
         static Type<Slice> __import__();
     };
@@ -811,19 +811,19 @@ struct Slice : Object, Interface<Slice> {
 
 /// TODO: this must be declared in core.h
 // template <std::derived_from<Slice> Self>
-// struct __getattr__<Self, "indices"> : Returns<Function<
+// struct __getattr__<Self, "indices"> : returns<Function<
 //     Tuple<Int>(Arg<"length", const Int&>)
 // >> {};
 template <std::derived_from<Slice> Self>
-struct __getattr__<Self, "start">                           : Returns<Object> {};
+struct __getattr__<Self, "start">                           : returns<Object> {};
 template <std::derived_from<Slice> Self>
-struct __getattr__<Self, "stop">                            : Returns<Object> {};
+struct __getattr__<Self, "stop">                            : returns<Object> {};
 template <std::derived_from<Slice> Self>
-struct __getattr__<Self, "step">                            : Returns<Object> {};
+struct __getattr__<Self, "step">                            : returns<Object> {};
 
 
 template <impl::is<Object> Derived, impl::is<Slice> Base>
-struct __isinstance__<Derived, Base>                        : Returns<bool> {
+struct __isinstance__<Derived, Base>                        : returns<bool> {
     static constexpr bool operator()(Derived obj) {
         return PySlice_Check(ptr(obj));
     }
@@ -831,7 +831,7 @@ struct __isinstance__<Derived, Base>                        : Returns<bool> {
 
 
 template <>
-struct __init__<Slice>                                      : Returns<Slice> {
+struct __init__<Slice>                                      : returns<Slice> {
     static auto operator()() {
         PyObject* result = PySlice_New(nullptr, nullptr, nullptr);
         if (result == nullptr) {
@@ -847,7 +847,7 @@ template <
     std::convertible_to<Object> Stop,
     std::convertible_to<Object> Step
 >
-struct __init__<Slice, Start, Stop, Step>                   : Returns<Slice> {
+struct __init__<Slice, Start, Stop, Step>                   : returns<Slice> {
     static auto operator()(const Object& start, const Object& stop, const Object& step) {
         PyObject* result = PySlice_New(
             ptr(start),
@@ -866,7 +866,7 @@ template <
     std::convertible_to<Object> Start,
     std::convertible_to<Object> Stop
 >
-struct __init__<Slice, Start, Stop>                         : Returns<Slice> {
+struct __init__<Slice, Start, Stop>                         : returns<Slice> {
     static auto operator()(const Object& start, const Object& stop) {
         PyObject* result = PySlice_New(
             ptr(start),
@@ -882,7 +882,7 @@ struct __init__<Slice, Start, Stop>                         : Returns<Slice> {
 
 
 template <std::convertible_to<Object> Stop>
-struct __init__<Slice, Stop>                                : Returns<Slice> {
+struct __init__<Slice, Stop>                                : returns<Slice> {
     static auto operator()(const Object& stop) {
         PyObject* result = PySlice_New(
             nullptr,
@@ -898,17 +898,17 @@ struct __init__<Slice, Stop>                                : Returns<Slice> {
 
 
 template <impl::is<Slice> L, impl::is<Slice> R>
-struct __lt__<L, R>                                         : Returns<Bool> {};
+struct __lt__<L, R>                                         : returns<Bool> {};
 template <impl::is<Slice> L, impl::is<Slice> R>
-struct __le__<L, R>                                         : Returns<Bool> {};
+struct __le__<L, R>                                         : returns<Bool> {};
 template <impl::is<Slice> L, impl::is<Slice> R>
-struct __eq__<L, R>                                         : Returns<Bool> {};
+struct __eq__<L, R>                                         : returns<Bool> {};
 template <impl::is<Slice> L, impl::is<Slice> R>
-struct __ne__<L, R>                                         : Returns<Bool> {};
+struct __ne__<L, R>                                         : returns<Bool> {};
 template <impl::is<Slice> L, impl::is<Slice> R>
-struct __ge__<L, R>                                         : Returns<Bool> {};
+struct __ge__<L, R>                                         : returns<Bool> {};
 template <impl::is<Slice> L, impl::is<Slice> R>
-struct __gt__<L, R>                                         : Returns<Bool> {};
+struct __gt__<L, R>                                         : returns<Bool> {};
 
 
 }

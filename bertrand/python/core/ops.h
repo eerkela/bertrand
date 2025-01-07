@@ -42,7 +42,7 @@ namespace impl {
         return reinterpret_steal<Wrapper>(self);
     }
 
-    template <StaticStr name>
+    template <static_str name>
     Object template_string() {
         PyObject* result = PyUnicode_FromStringAndSize(name, name.size());
         if (result == nullptr) {
@@ -61,7 +61,7 @@ namespace impl {
 /* Does a compile-time check to see if the derived type inherits from the base type.
 Ordinarily, this is equivalent to a `std::derived_from<>` concept, except that custom
 logic is allowed by defining a zero-argument call operator in a specialization of
-`__issubclass__`, and `Interface<T>` specializations are used to handle Python objects
+`__issubclass__`, and `interface<T>` specializations are used to handle Python objects
 in a way that allows for multiple inheritance. */
 template <typename Derived, typename Base>
     requires (
@@ -81,7 +81,7 @@ template <typename Derived, typename Base>
     if constexpr (std::is_invocable_v<__issubclass__<Derived, Base>>) {
         return __issubclass__<Derived, Base>{}();
     } else if constexpr (impl::has_interface<Base>) {
-        return impl::inherits<Derived, Interface<Base>>;
+        return impl::inherits<Derived, interface<Base>>;
     } else {
         return impl::inherits<Derived, Base>;
     }
@@ -203,7 +203,7 @@ template <impl::inherits<Object> From, std::derived_from<Object> To>
         !impl::is<From, To> &&
         issubclass<std::remove_cvref_t<From>, To>()
     )
-struct __cast__<From, To>                                   : Returns<To> {
+struct __cast__<From, To>                                   : returns<To> {
     static To operator()(From from) {
         if constexpr (std::is_lvalue_reference_v<From>) {
             return reinterpret_borrow<To>(ptr(from));
@@ -221,7 +221,7 @@ template <impl::inherits<Object> From, std::derived_from<Object> To>
         !impl::is<From, To> &&
         issubclass<To, std::remove_cvref_t<From>>()
     )
-struct __cast__<From, To>                                   : Returns<To> {
+struct __cast__<From, To>                                   : returns<To> {
     template <size_t I>
     static size_t find_union_type(std::add_lvalue_reference_t<From> obj) {
         if constexpr (I < To::n) {
@@ -273,21 +273,21 @@ struct __cast__<From, To>                                   : Returns<To> {
 
 
 /* Equivalent to Python `hasattr(obj, name)` with a static attribute name. */
-template <impl::python Self, StaticStr Name>
+template <impl::python Self, static_str Name>
 [[nodiscard]] constexpr bool hasattr() {
     return __getattr__<Self, Name>::enable;
 }
 
 
 /* Equivalent to Python `hasattr(obj, name)` with a static attribute name. */
-template <StaticStr Name, impl::python Self>
+template <static_str Name, impl::python Self>
 [[nodiscard]] constexpr bool hasattr(Self&& obj) {
     return __getattr__<Self, Name>::enable;
 }
 
 
 /* Equivalent to Python `getattr(obj, name)` with a static attribute name. */
-template <StaticStr Name, impl::python Self>
+template <static_str Name, impl::python Self>
     requires (
         __getattr__<Self, Name>::enable &&
         std::derived_from<typename __getattr__<Self, Name>::type, Object> && (
@@ -329,7 +329,7 @@ template <StaticStr Name, impl::python Self>
 
 /* Equivalent to Python `getattr(obj, name, default)` with a static attribute name and
 default value. */
-template <StaticStr Name, impl::python Self>
+template <static_str Name, impl::python Self>
     requires (
         __getattr__<Self, Name>::enable &&
         std::derived_from<typename __getattr__<Self, Name>::type, Object> && (
@@ -379,7 +379,7 @@ template <StaticStr Name, impl::python Self>
 
 
 /* Equivalent to Python `setattr(obj, name, value)` with a static attribute name. */
-template <StaticStr Name, impl::python Self, typename Value>
+template <static_str Name, impl::python Self, typename Value>
     requires (
         __setattr__<Self, Name, Value>::enable &&
         std::is_void_v<typename __setattr__<Self, Name, Value>::type> && (
@@ -432,7 +432,7 @@ void setattr(Self&& self, Value&& value) {
 
 
 /* Equivalent to Python `delattr(obj, name)` with a static attribute name. */
-template <StaticStr Name, impl::python Self>
+template <static_str Name, impl::python Self>
     requires (
         __delattr__<Self, Name>::enable && 
         std::is_void_v<typename __delattr__<Self, Name>::type> && (

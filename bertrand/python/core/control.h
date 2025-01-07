@@ -2222,10 +2222,10 @@ struct __getattr__<Self, "index">                           : Returns<Function<
 // > {};
 template <std::derived_from<impl::TupleTag> Self>
     requires (std::derived_from<Self, impl::StructTag>)
-struct __getattr__<Self, "count">                           : Disable {};
+struct __getattr__<Self, "count">                           : disable {};
 template <std::derived_from<impl::TupleTag> Self>
     requires (std::derived_from<Self, impl::StructTag>)
-struct __getattr__<Self, "index">                           : Disable {};
+struct __getattr__<Self, "index">                           : disable {};
 
 
 template <std::derived_from<impl::ListTag> Self>

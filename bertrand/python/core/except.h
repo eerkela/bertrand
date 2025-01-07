@@ -64,14 +64,14 @@ struct Traceback;
 
 
 template <>
-struct Interface<Traceback> {
+struct interface<Traceback> {
     [[nodiscard]] std::string to_string(this const auto& self);
 };
 
 
 /* A cross-language traceback that records an accurate call stack of a mixed Python/C++
 application. */
-struct Traceback : Object, Interface<Traceback> {
+struct Traceback : Object, interface<Traceback> {
     struct __python__ : def<__python__, Traceback>, PyTracebackObject {
         static Type<Traceback> __import__();
     };
@@ -100,7 +100,7 @@ struct Traceback : Object, Interface<Traceback> {
 
 
 template <>
-struct Interface<Type<Traceback>> {
+struct interface<Type<Traceback>> {
     [[nodiscard]] static std::string to_string(const auto& self) {
         return self.to_string();
     }
@@ -108,13 +108,13 @@ struct Interface<Type<Traceback>> {
 
 
 template <impl::is<cpptrace::stacktrace> T>
-struct __cast__<T>                                          : Returns<Traceback> {};
+struct __cast__<T>                                          : returns<Traceback> {};
 
 
 /* Converting a `cpptrace::stacktrace_frame` into a Python frame object will synthesize
 an interpreter frame with an empty bytecode object. */
 template <impl::is<cpptrace::stacktrace> T>
-struct __cast__<T, Traceback>                               : Returns<Traceback> {
+struct __cast__<T, Traceback>                               : returns<Traceback> {
     static auto operator()(const cpptrace::stacktrace& trace) {
         // Traceback objects are stored in a singly-linked list, with the most recent
         // frame at the end of the list and the least frame at the beginning.  As a
@@ -155,7 +155,7 @@ struct __cast__<T, Traceback>                               : Returns<Traceback>
 /* Default initializing a Traceback object retrieves a trace to the current frame,
 inserting C++ frames where necessary. */
 template <>
-struct __init__<Traceback>                                  : Returns<Traceback> {
+struct __init__<Traceback>                                  : returns<Traceback> {
     [[clang::noinline]] static auto operator()() {
         return Traceback(cpptrace::generate_trace(1));
     }
@@ -167,7 +167,7 @@ recent frame (if positive or zero) or the most recent (if negative).  Positive i
 will produce a traceback with at most the given length, and negative integers will
 reduce the length by at most the given value. */
 template <std::convertible_to<int> T>
-struct __init__<Traceback, T>                      : Returns<Traceback> {
+struct __init__<Traceback, T>                               : returns<Traceback> {
     static auto operator()(int skip) {
         // if skip is zero, then the result will be empty by definition
         if (skip == 0) {
@@ -229,7 +229,7 @@ struct __init__<Traceback, T>                      : Returns<Traceback> {
 /* len(Traceback) yields the overall depth of the stack trace, including both C++ and
 Python frames. */
 template <impl::is<Traceback> Self>
-struct __len__<Self>                                        : Returns<size_t> {
+struct __len__<Self>                                        : returns<size_t> {
     static auto operator()(const Traceback& self) {
         PyTracebackObject* tb = reinterpret_cast<PyTracebackObject*>(ptr(self));
         size_t count = 0;
@@ -244,7 +244,7 @@ struct __len__<Self>                                        : Returns<size_t> {
 
 /* Iterating over the frames yields them in least recent -> most recent order. */
 template <impl::is<Traceback> Self>
-struct __iter__<Self>                                       : Returns<Frame> {
+struct __iter__<Self>                                       : returns<Frame> {
     using iterator_category = std::forward_iterator_tag;
     using difference_type = std::ptrdiff_t;
     using value_type = Frame;
@@ -301,19 +301,19 @@ struct __iter__<Self>                                       : Returns<Frame> {
         return copy;
     }
 
-    [[nodiscard]] friend bool operator==(const __iter__& self, impl::Sentinel) {
+    [[nodiscard]] friend bool operator==(const __iter__& self, sentinel) {
         return self.curr == nullptr;
     }
 
-    [[nodiscard]] friend bool operator==(impl::Sentinel, const __iter__& self) {
+    [[nodiscard]] friend bool operator==(sentinel, const __iter__& self) {
         return self.curr == nullptr;
     }
 
-    [[nodiscard]] friend bool operator!=(const __iter__& self, impl::Sentinel) {
+    [[nodiscard]] friend bool operator!=(const __iter__& self, sentinel) {
         return self.curr != nullptr;
     }
 
-    [[nodiscard]] friend bool operator!=(impl::Sentinel, const __iter__& self) {
+    [[nodiscard]] friend bool operator!=(sentinel, const __iter__& self) {
         return self.curr != nullptr;
     }
 };
@@ -321,7 +321,7 @@ struct __iter__<Self>                                       : Returns<Frame> {
 
 /* Reverse iterating over the frames yields them in most recent -> least recent order. */
 template <impl::is<Traceback> Self>
-struct __reversed__<Self>                                   : Returns<Traceback> {
+struct __reversed__<Self>                                   : returns<Traceback> {
     using iterator_category = std::forward_iterator_tag;
     using difference_type = std::ptrdiff_t;
     using value_type = Frame;
@@ -404,19 +404,19 @@ struct __reversed__<Self>                                   : Returns<Traceback>
         return copy;
     }
 
-    [[nodiscard]] friend bool operator==(const __reversed__& self, impl::Sentinel) {
+    [[nodiscard]] friend bool operator==(const __reversed__& self, sentinel) {
         return self.index == -1;
     }
 
-    [[nodiscard]] friend bool operator==(impl::Sentinel, const __reversed__& self) {
+    [[nodiscard]] friend bool operator==(sentinel, const __reversed__& self) {
         return self.index == -1;
     }
 
-    [[nodiscard]] friend bool operator!=(const __reversed__& self, impl::Sentinel) {
+    [[nodiscard]] friend bool operator!=(const __reversed__& self, sentinel) {
         return self.index != -1;
     }
 
-    [[nodiscard]] friend bool operator!=(impl::Sentinel, const __reversed__& self) {
+    [[nodiscard]] friend bool operator!=(sentinel, const __reversed__& self) {
         return self.index != -1;
     }
 };
@@ -439,7 +439,7 @@ struct Exception;
 
 
 template <>
-struct Interface<Exception> {
+struct interface<Exception> {
     [[noreturn, clang::noinline]] static void from_python();  // defined in __init__.h
     static void to_python();
 };
@@ -448,7 +448,7 @@ struct Interface<Exception> {
 /* The base of the exception hierarchy, from which all exceptions derive.  Exception
 types should inherit from this class instead of `py::Object` in order to register a
 new exception.  Otherwise, all the same semantics apply. */
-struct Exception : std::exception, Object, Interface<Exception> {
+struct Exception : std::exception, Object, interface<Exception> {
 protected:
     mutable std::optional<std::string> m_message;
     mutable std::optional<std::string> m_what;
@@ -553,7 +553,7 @@ public:
 
 
 template <>
-struct Interface<Type<Exception>> {
+struct interface<Type<Exception>> {
     [[noreturn, clang::noinline]] static void from_python();  // defined in __init__.h
     static void to_python() {
         Exception::to_python();
@@ -562,7 +562,7 @@ struct Interface<Type<Exception>> {
 
 
 template <std::derived_from<Exception> Exc, std::convertible_to<std::string> Msg>
-struct __init__<Exc, Msg>                                   : Returns<Exc> {
+struct __init__<Exc, Msg>                                   : returns<Exc> {
     [[clang::noinline]] static auto operator()(const std::string& msg) {
         PyObject* str = PyUnicode_FromStringAndSize(
             msg.c_str(),
@@ -607,8 +607,8 @@ struct __init__<Exc, Msg>                                   : Returns<Exc> {
 };
 
 
-template <std::derived_from<Exception> Exc, impl::static_str Msg>
-struct __init__<Exc, Msg>                                   : Returns<Exc> {
+template <std::derived_from<Exception> Exc, impl::is_static_str Msg>
+struct __init__<Exc, Msg>                                   : returns<Exc> {
     [[clang::noinline]] static auto operator()(const Msg& msg) {
         PyObject* str = PyUnicode_FromStringAndSize(
             msg.data(),
@@ -654,14 +654,14 @@ struct __init__<Exc, Msg>                                   : Returns<Exc> {
 
 
 template <std::derived_from<Exception> Exc>
-struct __init__<Exc> : Returns<Exc> {
+struct __init__<Exc> : returns<Exc> {
     static auto operator()() {
         return Exc("");
     }
 };
 
 
-inline void Interface<Exception>::to_python() {
+inline void interface<Exception>::to_python() {
     try {
         throw;
     } catch (Exception& err) {
@@ -698,11 +698,11 @@ inline void Interface<Exception>::to_python() {
     };                                                                                  \
                                                                                         \
     template <>                                                                         \
-    struct Interface<CLS> : Interface<BASE> {};                                         \
+    struct interface<CLS> : interface<BASE> {};                                         \
     template <>                                                                         \
-    struct Interface<Type<CLS>> : Interface<Type<BASE>> {};                             \
+    struct interface<Type<CLS>> : interface<Type<BASE>> {};                             \
                                                                                         \
-    struct CLS : Exception, Interface<CLS> {                                            \
+    struct CLS : Exception, interface<CLS> {                                            \
         struct __python__ : def<__python__, CLS>, PYOBJECT {                            \
             static Type<CLS> __import__();                                              \
         };                                                                              \
@@ -795,7 +795,7 @@ struct impl::builtin_exception_map<UnicodeDecodeError> {
 
 
 template <>
-struct Interface<UnicodeDecodeError> : Interface<UnicodeError> {
+struct interface<UnicodeDecodeError> : interface<UnicodeError> {
     __declspec(property(get=_encoding)) std::string encoding;
     [[nodiscard]] std::string _encoding(this const auto& self);
 
@@ -813,7 +813,7 @@ struct Interface<UnicodeDecodeError> : Interface<UnicodeError> {
 };
 
 
-struct UnicodeDecodeError : Exception, Interface<UnicodeDecodeError> {
+struct UnicodeDecodeError : Exception, interface<UnicodeDecodeError> {
     struct __python__ : def<__python__, UnicodeDecodeError>, PyUnicodeErrorObject {
         static Type<UnicodeDecodeError> __import__();
     };
@@ -884,7 +884,7 @@ struct UnicodeDecodeError : Exception, Interface<UnicodeDecodeError> {
 
 
 template <>
-struct Interface<Type<UnicodeDecodeError>> : Interface<Type<UnicodeError>> {
+struct interface<Type<UnicodeDecodeError>> : interface<Type<UnicodeError>> {
     [[nodiscard]] static std::string encoding(const auto& self) {
         return self.encoding;
     }
@@ -904,11 +904,11 @@ struct Interface<Type<UnicodeDecodeError>> : Interface<Type<UnicodeError>> {
 
 
 template <>
-struct __init__<UnicodeDecodeError>                         : Disable {};
+struct __init__<UnicodeDecodeError>                         : disable {};
 template <std::convertible_to<std::string> Msg>
-struct __init__<UnicodeDecodeError, Msg>                    : Disable {};
-template <impl::static_str Msg>
-struct __init__<UnicodeDecodeError, Msg>                    : Disable {};
+struct __init__<UnicodeDecodeError, Msg>                    : disable {};
+template <impl::is_static_str Msg>
+struct __init__<UnicodeDecodeError, Msg>                    : disable {};
 
 
 template <
@@ -919,7 +919,7 @@ template <
     std::convertible_to<std::string> Reason
 >
 struct __init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> :
-    Returns<UnicodeDecodeError>
+    returns<UnicodeDecodeError>
 {
     [[clang::noinline]] static auto operator()(
         const std::string& encoding,
@@ -960,7 +960,7 @@ struct __init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> :
 };
 
 
-[[nodiscard]] inline std::string Interface<UnicodeDecodeError>::_encoding(
+[[nodiscard]] inline std::string interface<UnicodeDecodeError>::_encoding(
     this const auto& self
 ) {
     PyObject* encoding = PyUnicodeDecodeError_GetEncoding(ptr(self));
@@ -979,7 +979,7 @@ struct __init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> :
 }
 
 
-[[nodiscard]] inline std::string Interface<UnicodeDecodeError>::_object(
+[[nodiscard]] inline std::string interface<UnicodeDecodeError>::_object(
     this const auto& self
 ) {
     PyObject* object = PyUnicodeDecodeError_GetObject(ptr(self));
@@ -998,7 +998,7 @@ struct __init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> :
 }
 
 
-[[nodiscard]] inline Py_ssize_t Interface<UnicodeDecodeError>::_start(
+[[nodiscard]] inline Py_ssize_t interface<UnicodeDecodeError>::_start(
     this const auto& self
 ) {
     Py_ssize_t start;
@@ -1009,7 +1009,7 @@ struct __init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> :
 }
 
 
-[[nodiscard]] inline Py_ssize_t Interface<UnicodeDecodeError>::_end(
+[[nodiscard]] inline Py_ssize_t interface<UnicodeDecodeError>::_end(
     this const auto& self
 ) {
     Py_ssize_t end;
@@ -1020,7 +1020,7 @@ struct __init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> :
 }
 
 
-[[nodiscard]] inline std::string Interface<UnicodeDecodeError>::_reason(
+[[nodiscard]] inline std::string interface<UnicodeDecodeError>::_reason(
     this const auto& self
 ) {
     PyObject* reason = PyUnicodeDecodeError_GetReason(ptr(self));
@@ -1051,7 +1051,7 @@ struct impl::builtin_exception_map<UnicodeEncodeError> {
 
 
 template <>
-struct Interface<UnicodeEncodeError> : Interface<UnicodeError> {
+struct interface<UnicodeEncodeError> : interface<UnicodeError> {
     __declspec(property(get=_encoding)) std::string encoding;
     [[nodiscard]] std::string _encoding(this const auto& self);
 
@@ -1069,7 +1069,7 @@ struct Interface<UnicodeEncodeError> : Interface<UnicodeError> {
 };
 
 
-struct UnicodeEncodeError : Exception, Interface<UnicodeEncodeError> {
+struct UnicodeEncodeError : Exception, interface<UnicodeEncodeError> {
     struct __python__ : def<__python__, UnicodeEncodeError>, PyUnicodeErrorObject {
         static Type<UnicodeEncodeError> __import__();
     };
@@ -1140,7 +1140,7 @@ struct UnicodeEncodeError : Exception, Interface<UnicodeEncodeError> {
 
 
 template <>
-struct Interface<Type<UnicodeEncodeError>> : Interface<Type<UnicodeError>> {
+struct interface<Type<UnicodeEncodeError>> : interface<Type<UnicodeError>> {
     [[nodiscard]] static std::string encoding(const auto& self) {
         return self.encoding;
     }
@@ -1160,11 +1160,11 @@ struct Interface<Type<UnicodeEncodeError>> : Interface<Type<UnicodeError>> {
 
 
 template <>
-struct __init__<UnicodeEncodeError>                         : Disable {};
+struct __init__<UnicodeEncodeError>                         : disable {};
 template <std::convertible_to<std::string> Msg>
-struct __init__<UnicodeEncodeError, Msg>                    : Disable {};
-template <impl::static_str Msg>
-struct __init__<UnicodeEncodeError, Msg>                    : Disable {};
+struct __init__<UnicodeEncodeError, Msg>                    : disable {};
+template <impl::is_static_str Msg>
+struct __init__<UnicodeEncodeError, Msg>                    : disable {};
 
 
 template <
@@ -1175,7 +1175,7 @@ template <
     std::convertible_to<std::string> Reason
 >
 struct __init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> :
-    Returns<UnicodeEncodeError>
+    returns<UnicodeEncodeError>
 {
     [[clang::noinline]] static auto operator()(
         const std::string& encoding,
@@ -1217,7 +1217,7 @@ struct __init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> :
 };
 
 
-[[nodiscard]] inline std::string Interface<UnicodeEncodeError>::_encoding(
+[[nodiscard]] inline std::string interface<UnicodeEncodeError>::_encoding(
     this const auto& self
 ) {
     PyObject* encoding = PyUnicodeEncodeError_GetEncoding(ptr(self));
@@ -1236,7 +1236,7 @@ struct __init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> :
 }
 
 
-[[nodiscard]] inline std::string Interface<UnicodeEncodeError>::_object(
+[[nodiscard]] inline std::string interface<UnicodeEncodeError>::_object(
     this const auto& self
 ) {
     PyObject* object = PyUnicodeEncodeError_GetObject(ptr(self));
@@ -1255,7 +1255,7 @@ struct __init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> :
 }
 
 
-[[nodiscard]] inline Py_ssize_t Interface<UnicodeEncodeError>::_start(
+[[nodiscard]] inline Py_ssize_t interface<UnicodeEncodeError>::_start(
     this const auto& self
 ) {
     Py_ssize_t start;
@@ -1266,7 +1266,7 @@ struct __init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> :
 }
 
 
-[[nodiscard]] inline Py_ssize_t Interface<UnicodeEncodeError>::_end(
+[[nodiscard]] inline Py_ssize_t interface<UnicodeEncodeError>::_end(
     this const auto& self
 ) {
     Py_ssize_t end;
@@ -1277,7 +1277,7 @@ struct __init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> :
 }
 
 
-[[nodiscard]] inline std::string Interface<UnicodeEncodeError>::_reason(
+[[nodiscard]] inline std::string interface<UnicodeEncodeError>::_reason(
     this const auto& self
 ) {
     PyObject* reason = PyUnicodeEncodeError_GetReason(ptr(self));
@@ -1308,7 +1308,7 @@ struct impl::builtin_exception_map<UnicodeTranslateError> {
 
 
 template <>
-struct Interface<UnicodeTranslateError> : Interface<UnicodeError> {
+struct interface<UnicodeTranslateError> : interface<UnicodeError> {
     __declspec(property(get=_object)) std::string object;
     [[nodiscard]] std::string _object(this const auto& self);
 
@@ -1323,7 +1323,7 @@ struct Interface<UnicodeTranslateError> : Interface<UnicodeError> {
 };
 
 
-struct UnicodeTranslateError : Exception, Interface<UnicodeTranslateError> {
+struct UnicodeTranslateError : Exception, interface<UnicodeTranslateError> {
     struct __python__ : def<__python__, UnicodeTranslateError>, PyUnicodeErrorObject {
         static Type<UnicodeTranslateError> __import__();
     };
@@ -1393,7 +1393,7 @@ struct UnicodeTranslateError : Exception, Interface<UnicodeTranslateError> {
 
 
 template <>
-struct Interface<Type<UnicodeTranslateError>> : Interface<Type<UnicodeError>> {
+struct interface<Type<UnicodeTranslateError>> : interface<Type<UnicodeError>> {
     [[nodiscard]] static std::string object(const auto& self) {
         return self.object;
     }
@@ -1410,11 +1410,11 @@ struct Interface<Type<UnicodeTranslateError>> : Interface<Type<UnicodeError>> {
 
 
 template <>
-struct __init__<UnicodeTranslateError>                      : Disable {};
+struct __init__<UnicodeTranslateError>                      : disable {};
 template <std::convertible_to<std::string> Msg>
-struct __init__<UnicodeTranslateError, Msg>                 : Disable {};
-template <impl::static_str Msg>
-struct __init__<UnicodeTranslateError, Msg>                 : Disable {};
+struct __init__<UnicodeTranslateError, Msg>                 : disable {};
+template <impl::is_static_str Msg>
+struct __init__<UnicodeTranslateError, Msg>                 : disable {};
 
 
 template <
@@ -1425,7 +1425,7 @@ template <
     std::convertible_to<std::string> Reason
 >
 struct __init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reason> :
-    Returns<UnicodeTranslateError>
+    returns<UnicodeTranslateError>
 {
     [[clang::noinline]] static auto operator()(
         const std::string& object,
@@ -1465,7 +1465,7 @@ struct __init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reason> :
 };
 
 
-[[nodiscard]] inline std::string Interface<UnicodeTranslateError>::_object(
+[[nodiscard]] inline std::string interface<UnicodeTranslateError>::_object(
     this const auto& self
 ) {
     PyObject* object = PyUnicodeTranslateError_GetObject(ptr(self));
@@ -1484,7 +1484,7 @@ struct __init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reason> :
 }
 
 
-[[nodiscard]] inline Py_ssize_t Interface<UnicodeTranslateError>::_start(
+[[nodiscard]] inline Py_ssize_t interface<UnicodeTranslateError>::_start(
     this const auto& self
 ) {
     Py_ssize_t start;
@@ -1495,7 +1495,7 @@ struct __init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reason> :
 }
 
 
-[[nodiscard]] inline Py_ssize_t Interface<UnicodeTranslateError>::_end(
+[[nodiscard]] inline Py_ssize_t interface<UnicodeTranslateError>::_end(
     this const auto& self
 ) {
     Py_ssize_t end;
@@ -1506,7 +1506,7 @@ struct __init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reason> :
 }
 
 
-[[nodiscard]] inline std::string Interface<UnicodeTranslateError>::_reason(
+[[nodiscard]] inline std::string interface<UnicodeTranslateError>::_reason(
     this const auto& self
 ) {
     PyObject* reason = PyUnicodeTranslateError_GetReason(ptr(self));

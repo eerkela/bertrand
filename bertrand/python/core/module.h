@@ -52,7 +52,7 @@ namespace impl {
 
     This helper is meant to be used by the default constructor for `py::Type<T>()` when
     the corresponding Type has been exposed to Python. */
-    template <std::derived_from<Object> T, StaticStr Name>
+    template <std::derived_from<Object> T, static_str Name>
     auto get_type(const Module<Name>& mod) {
         return reinterpret_cast<typename Module<Name>::__python__*>(
             ptr(mod)
@@ -97,7 +97,7 @@ namespace impl {
         Another good resource is the official Python HOWTO on this subject:
             https://docs.python.org/3/howto/isolating-extensions.html
         */
-        template <typename CRTP, StaticStr ModName>
+        template <typename CRTP, static_str ModName>
         struct def : BertrandTag {
         protected:
             /* A helper that is passed to Module<"name">::__python__::__export__() in
@@ -126,7 +126,7 @@ namespace impl {
 
                 /* Construct an importlib.machinery.ExtensionFileLoader for use when
                 defining submodules. */
-                template <StaticStr Name>
+                template <static_str Name>
                 static PyObject* get_loader() {
                     PyObject* importlib_machinery = PyImport_ImportModule("importlib.machinery");
                     if (importlib_machinery == nullptr) {
@@ -162,7 +162,7 @@ namespace impl {
                 }
 
                 /* Construct a PEP 451 ModuleSpec for use when defining submodules. */
-                template <StaticStr Name>
+                template <static_str Name>
                 static PyObject* get_spec() {
                     PyObject* importlib_util = PyImport_ImportModule("importlib.util");
                     if (importlib_util == nullptr) {
@@ -218,7 +218,7 @@ namespace impl {
 
                 /* Expose an immutable variable to Python in a way that shares memory and
                 state. */
-                template <StaticStr Name, typename T>
+                template <static_str Name, typename T>
                 void var(const T& value) {
                     if (context.contains(Name)) {
                         throw AttributeError(
@@ -267,7 +267,7 @@ namespace impl {
                 /* Expose an immutable variable held in per-module state.  This is very
                 similar to exposing a global variable, but ensures that the value is
                 unique to each interpreter, rather than being shared between them. */
-                template <StaticStr Name, typename T>
+                template <static_str Name, typename T>
                 void var(const T CRTP::*value) {
                     if (context.contains(Name)) {
                         throw AttributeError(
@@ -316,7 +316,7 @@ namespace impl {
 
                 /* Expose a mutable variable to Python in a way that shares memory and
                 state. */
-                template <StaticStr Name, typename T>
+                template <static_str Name, typename T>
                 void var(T& value) {
                     if (context.contains(Name)) {
                         throw AttributeError(
@@ -376,7 +376,7 @@ namespace impl {
                 /* Expose a mutable variable held in per-module state.  This is very
                 similar to exposing a global variable, but ensures that the value is
                 unique to each interpreter, rather than being shared between them. */
-                template <StaticStr Name, typename T>
+                template <static_str Name, typename T>
                 void var(T CRTP::*value) {
                     if (context.contains(Name)) {
                         throw AttributeError(
@@ -438,7 +438,7 @@ namespace impl {
 
                 /* Expose a concrete py::Object type to Python. */
                 template <
-                    StaticStr Name,
+                    static_str Name,
                     std::derived_from<Object> Cls,
                     std::derived_from<Object>... Bases
                 > requires (
@@ -484,7 +484,7 @@ namespace impl {
                 }
 
                 /* Expose a templated py::Object type to Python. */
-                template <StaticStr Name, template <typename...> typename Cls>
+                template <static_str Name, template <typename...> typename Cls>
                 void type() {
                     if (context.contains(Name)) {
                         throw AttributeError(
@@ -513,7 +513,7 @@ namespace impl {
 
                 /* Expose an instantiation of a templated py::Object type to Python. */
                 template <
-                    StaticStr Name,
+                    static_str Name,
                     std::derived_from<Object> Cls,
                     std::derived_from<Object>... Bases
                 > requires (
@@ -604,7 +604,7 @@ namespace impl {
 
                 /* Expose a py::Exception type to Python. */
                 template <
-                    StaticStr Name,
+                    static_str Name,
                     std::derived_from<Exception> Cls,
                     std::derived_from<Exception>... Bases
                 > requires (impl::has_type<Cls> && (impl::has_type<Bases> && ...))
@@ -661,7 +661,7 @@ namespace impl {
                 the C++ level.  Note that a `py::Module` specialization with the
                 corresponding name (appended to the current name) must exist.  Its module
                 initialization logic will be invoked in a recursive fashion. */
-                template <StaticStr Name>
+                template <static_str Name>
                 void submodule() {
                     if (context.contains(Name)) {
                         throw AttributeError(
@@ -673,7 +673,7 @@ namespace impl {
                     // TODO: revisit all of this when I try to implement namespaces
                     // properly.
 
-                    static constexpr StaticStr FullName = ModName + "." + Name;
+                    static constexpr static_str FullName = ModName + "." + Name;
                     using Mod = Module<FullName>;
                     if constexpr (!impl::is_module<Mod>) {
                         throw TypeError(
@@ -833,7 +833,7 @@ namespace impl {
             };
 
         public:
-            static constexpr StaticStr __doc__ =
+            static constexpr static_str __doc__ =
                 "A Python wrapper around the '" + ModName +
                 "' C++ module, generated by Bertrand.";
 
@@ -957,7 +957,7 @@ namespace impl {
             }
 
             /* Implements py::impl::get_type<T>(mod). */
-            template <std::derived_from<Object> T, StaticStr Name>
+            template <std::derived_from<Object> T, static_str Name>
             friend auto get_type(const Module<Name>& mod);
             template <std::derived_from<Object> T>
             auto _get_type() {
@@ -980,7 +980,7 @@ namespace impl {
 
 /* A Python module with a unique type, which supports the addition of descriptors for
 computed properties, overload sets, etc. */
-template <StaticStr Name>
+template <static_str Name>
 struct Module : Object {
 
     Module(PyObject* p, borrowed_t t) : Object(p, t) {}
@@ -1003,8 +1003,8 @@ struct Module : Object {
 
 /* Default-initializing a py::Module is functionally equivalent to an import
 statement. */
-template <StaticStr Name>
-struct __init__<Module<Name>>                               : Returns<Module<Name>> {
+template <static_str Name>
+struct __init__<Module<Name>>                               : returns<Module<Name>> {
     static auto operator()() {
         PyObject* mod = PyImport_Import(impl::TemplateString<Name>::ptr);
         if (mod == nullptr) {
@@ -1017,12 +1017,12 @@ struct __init__<Module<Name>>                               : Returns<Module<Nam
 
 /* Accessing an attribute of an unspecialized py::Module defaults to returning a
 dynamic object. */
-template <StaticStr Name, StaticStr Attr>
-struct __getattr__<Module<Name>, Attr>                       : Returns<Object> {};
-template <StaticStr Name, StaticStr Attr, typename Value> requires (__object__<Value>::enable)
-struct __setattr__<Module<Name>, Attr, Value>                : Returns<void> {};
-template <StaticStr Name, StaticStr Attr>
-struct __delattr__<Module<Name>, Attr>                       : Returns<void> {};
+template <static_str Name, static_str Attr>
+struct __getattr__<Module<Name>, Attr>                       : returns<Object> {};
+template <static_str Name, static_str Attr, typename Value> requires (__object__<Value>::enable)
+struct __setattr__<Module<Name>, Attr, Value>                : returns<void> {};
+template <static_str Name, static_str Attr>
+struct __delattr__<Module<Name>, Attr>                       : returns<void> {};
 
 
 ////////////////////
@@ -1030,7 +1030,7 @@ struct __delattr__<Module<Name>, Attr>                       : Returns<void> {};
 ////////////////////
 
 
-template <StaticStr Name>
+template <static_str Name>
 struct Type<Module<Name>> : Object {
 
     Type(PyObject* p, borrowed_t t) : Object(p, t) {}
@@ -1053,7 +1053,7 @@ struct Type<Module<Name>> : Object {
 
 /* Default-initializing a module type retrieves the unique type of the named module. */
 template <std::derived_from<impl::ModuleTag> Mod>
-struct __init__<Type<Mod>>                                  : Returns<Type<Mod>> {
+struct __init__<Type<Mod>>                                  : returns<Type<Mod>> {
     static auto operator()() {
         return reintepret_steal<Type<Mod>>(
             reinterpret_cast<PyObject*>(Py_TYPE(ptr(Mod())))
@@ -1079,13 +1079,13 @@ struct Type<Module<"bertrand.python">>;
 
 
 template <>
-struct Interface<Module<"bertrand.python">> {
+struct interface<Module<"bertrand.python">> {
 
 };
 
 
 template <>
-struct Interface<Type<Module<"bertrand.python">>> {
+struct interface<Type<Module<"bertrand.python">>> {
 
 };
 
@@ -1095,7 +1095,7 @@ Python/C++ bindings to Python. */
 template <>
 struct Module<"bertrand.python"> :
     Object,
-    Interface<Module<"bertrand.python">>,
+    interface<Module<"bertrand.python">>,
     impl::ModuleTag
 {
 
@@ -1106,7 +1106,7 @@ struct Module<"bertrand.python"> :
 template <>
 struct Type<Module<"bertrand.python">> :
     Object,
-    Interface<Type<Module<"bertrand.python">>>,
+    interface<Type<Module<"bertrand.python">>>,
     impl::TypeTag
 {
     struct __python__ : def<__python__, Module<"bertrand.python">>, PyModuleObject {

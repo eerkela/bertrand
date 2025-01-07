@@ -17,7 +17,7 @@ struct Code;
 
 
 template <>
-struct Interface<Code> {
+struct interface<Code> {
     [[nodiscard]] static Code compile(const std::string& source);
 
     __declspec(property(get = _get_line_number)) Py_ssize_t line_number;
@@ -200,7 +200,7 @@ data into or out of the context.
     script({{"x", "other"}});
     script({{"x", "side"}});
 */
-struct Code : Object, Interface<Code> {
+struct Code : Object, interface<Code> {
     struct __python__ : def<__python__, Code>, PyCodeObject {
         static Type<Code> __import__();
     };
@@ -229,64 +229,64 @@ struct Code : Object, Interface<Code> {
 
 
 template <>
-struct Interface<Type<Code>> {
+struct interface<Type<Code>> {
     [[nodiscard]] static Code compile(const std::string& source) {
         return Code::compile(source);
     }
 
-    template <impl::inherits<Interface<Code>> Self>
+    template <impl::inherits<interface<Code>> Self>
     [[nodiscard]] static Py_ssize_t line_number(Self&& self) noexcept {
         return std::forward<Self>(self).line_number;
     }
-    template <impl::inherits<Interface<Code>> Self>
+    template <impl::inherits<interface<Code>> Self>
     [[nodiscard]] static Py_ssize_t argcount(Self&& self) noexcept {
         return std::forward<Self>(self).argcount;
     }
-    template <impl::inherits<Interface<Code>> Self>
+    template <impl::inherits<interface<Code>> Self>
     [[nodiscard]] static Py_ssize_t posonlyargcount(Self&& self) noexcept {
         return std::forward<Self>(self).posonlyargcount;
     }
-    template <impl::inherits<Interface<Code>> Self>
+    template <impl::inherits<interface<Code>> Self>
     [[nodiscard]] static Py_ssize_t kwonlyargcount(Self&& self) noexcept {
         return std::forward<Self>(self).kwonlyargcount;
     }
-    template <impl::inherits<Interface<Code>> Self>
+    template <impl::inherits<interface<Code>> Self>
     [[nodiscard]] static Py_ssize_t nlocals(Self&& self) noexcept {
         return std::forward<Self>(self).nlocals;
     }
-    template <impl::inherits<Interface<Code>> Self>
+    template <impl::inherits<interface<Code>> Self>
     [[nodiscard]] static Py_ssize_t stacksize(Self&& self) noexcept {
         return std::forward<Self>(self).stacksize;
     }
-    template <impl::inherits<Interface<Code>> Self>
+    template <impl::inherits<interface<Code>> Self>
     [[nodiscard]] static int flags(Self&& self) noexcept {
         return std::forward<Self>(self).flags;
     }
 
     /// NOTE: these are defined in __init__.h
-    template <impl::inherits<Interface<Code>> Self>
+    template <impl::inherits<interface<Code>> Self>
     [[nodiscard]] static Str filename(Self&& self);
-    template <impl::inherits<Interface<Code>> Self>
+    template <impl::inherits<interface<Code>> Self>
     [[nodiscard]] static Str name(Self&& self);
-    template <impl::inherits<Interface<Code>> Self>
+    template <impl::inherits<interface<Code>> Self>
     [[nodiscard]] static Str qualname(Self&& self);
-    template <impl::inherits<Interface<Code>> Self>
+    template <impl::inherits<interface<Code>> Self>
     [[nodiscard]] static Tuple<Str> varnames(Self&& self);
-    template <impl::inherits<Interface<Code>> Self>
+    template <impl::inherits<interface<Code>> Self>
     [[nodiscard]] static Tuple<Str> cellvars(Self&& self);
-    template <impl::inherits<Interface<Code>> Self>
+    template <impl::inherits<interface<Code>> Self>
     [[nodiscard]] static Tuple<Str> freevars(Self&& self);
-    template <impl::inherits<Interface<Code>> Self>
+    template <impl::inherits<interface<Code>> Self>
     [[nodiscard]] static Bytes bytecode(Self&& self);
-    template <impl::inherits<Interface<Code>> Self>
+    template <impl::inherits<interface<Code>> Self>
     [[nodiscard]] static Tuple<Object> consts(Self&& self);
-    template <impl::inherits<Interface<Code>> Self>
+    template <impl::inherits<interface<Code>> Self>
     [[nodiscard]] static Tuple<Str> names(Self&& self);
 };
 
 
 template <impl::is<Object> Derived, impl::is<Code> Base>
-struct __isinstance__<Derived, Base>                        : Returns<bool> {
+struct __isinstance__<Derived, Base>                        : returns<bool> {
     static constexpr bool operator()(Derived obj) {
         return PyCode_Check(ptr(obj));
     }
@@ -295,14 +295,14 @@ struct __isinstance__<Derived, Base>                        : Returns<bool> {
 
 /* Implicitly convert a source string into a compiled code object. */
 template <std::convertible_to<std::string> Source>
-struct __cast__<Source, Code>                               : Returns<Code> {
+struct __cast__<Source, Code>                               : returns<Code> {
     static auto operator()(const std::string& path);
 };
 
 
 /* Execute the code object with an empty context. */
 template <impl::is<Code> Self>
-struct __call__<Self>                                       : Returns<Dict<Str, Object>> {
+struct __call__<Self>                                       : returns<Dict<Str, Object>> {
     static auto operator()(Self&& self);  // defined in __init__.h
 };
 
@@ -310,27 +310,27 @@ struct __call__<Self>                                       : Returns<Dict<Str, 
 /* Execute the code object with a given context, which can be either mutable or a
 temporary. */
 template <impl::is<Code> Self, std::convertible_to<Dict<Str, Object>> Context>
-struct __call__<Self, Context>                              : Returns<Dict<Str, Object>> {
+struct __call__<Self, Context>                              : returns<Dict<Str, Object>> {
     static auto operator()(Self&& self, Dict<Str, Object>& context);  // defined in __init__.h
     static auto operator()(Self&& self, Dict<Str, Object>&& context);  // defined in __init__.h
 };
 
 
 /* Get the first line number of the function. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_line_number(this auto&& self) noexcept {
+[[nodiscard]] inline Py_ssize_t interface<Code>::_get_line_number(this auto&& self) noexcept {
     return reinterpret(self)->co_firstlineno;
 }
 
 
 /* Get the number of positional arguments for the function. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_argcount(this auto&& self) noexcept {
+[[nodiscard]] inline Py_ssize_t interface<Code>::_get_argcount(this auto&& self) noexcept {
     return reinterpret(self)->co_argcount;
 }
 
 
 /* Get the number of positional-only arguments for the function, including those with
 default values.  Does not include variable positional or keyword arguments. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_posonlyargcount(this auto&& self) noexcept {
+[[nodiscard]] inline Py_ssize_t interface<Code>::_get_posonlyargcount(this auto&& self) noexcept {
     return reinterpret(self)->co_posonlyargcount;
 }
 
@@ -338,25 +338,25 @@ default values.  Does not include variable positional or keyword arguments. */
 /* Get the number of keyword-only arguments for the function, including those with
 default values.  Does not include positional-only or variable positional/keyword
 arguments. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_kwonlyargcount(this auto&& self) noexcept {
+[[nodiscard]] inline Py_ssize_t interface<Code>::_get_kwonlyargcount(this auto&& self) noexcept {
     return reinterpret(self)->co_kwonlyargcount;
 }
 
 
 /* Get the number of local variables used by the function (including all parameters). */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_nlocals(this auto&& self) noexcept {
+[[nodiscard]] inline Py_ssize_t interface<Code>::_get_nlocals(this auto&& self) noexcept {
     return reinterpret(self)->co_nlocals;
 }
 
 
 /* Get the required stack space for the code object. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_stacksize(this auto&& self) noexcept {
+[[nodiscard]] inline Py_ssize_t interface<Code>::_get_stacksize(this auto&& self) noexcept {
     return reinterpret(self)->co_stacksize;
 }
 
 
 /* Get an integer encoding flags for the Python interpreter. */
-[[nodiscard]] inline int Interface<Code>::_get_flags(this auto&& self) noexcept {
+[[nodiscard]] inline int interface<Code>::_get_flags(this auto&& self) noexcept {
     return reinterpret(self)->co_flags;
 }
 
@@ -377,13 +377,13 @@ namespace impl {
          *
          *      File ".../bertrand/python/core/ops.h",
          *      line 268, in py::impl::Attr<bertrand::py::Object,
-         *      bertrand::StaticStr<7ul>{char [8]{(char)95, (char)95, (char)103,
+         *      bertrand::static_str<7ul>{char [8]{(char)95, (char)95, (char)103,
          *      (char)101, (char)116, (char)95, (char)95}}>::get_attr() const
          *
-         * Our goal is to replace the `bertrand::StaticStr<7ul>{char [8]{...}}`
+         * Our goal is to replace the `bertrand::static_str<7ul>{char [8]{...}}`
          * bit with the text it represents, in this case the string `"__get__"`.
          */
-        size_t pos = name.find("bertrand::StaticStr<");
+        size_t pos = name.find("bertrand::static_str<");
         if (pos == std::string::npos) {
             return name;
         }
@@ -409,7 +409,7 @@ namespace impl {
             }
             result += '"';
             last = pos;
-            pos = name.find("bertrand::StaticStr<", pos);
+            pos = name.find("bertrand::static_str<", pos);
         }
         return result + name.substr(last);
     }
@@ -421,7 +421,7 @@ struct Frame;
 
 
 template <>
-struct Interface<Frame> {
+struct interface<Frame> {
     [[nodiscard]] std::string to_string(this const auto& self);
 
     __declspec(property(get = _get_code)) std::optional<Code> code;
@@ -448,7 +448,7 @@ struct Interface<Frame> {
 
 /* A CPython interpreter frame, which can be introspected or arranged into coherent
 cross-language tracebacks. */
-struct Frame : Object, Interface<Frame> {
+struct Frame : Object, interface<Frame> {
     struct __python__ : def<__python__, Frame>, PyFrameObject {
         static Type<Frame> __import__();
     };
@@ -477,46 +477,46 @@ struct Frame : Object, Interface<Frame> {
 
 
 template <>
-struct Interface<Type<Frame>> {
-    template <impl::inherits<Interface<Frame>> Self>
+struct interface<Type<Frame>> {
+    template <impl::inherits<interface<Frame>> Self>
     [[nodiscard]] static std::string to_string(Self&& self) {
         return std::forward<Self>(self).to_string();
     }
-    template <impl::inherits<Interface<Frame>> Self>
+    template <impl::inherits<interface<Frame>> Self>
     [[nodiscard]] static std::optional<Code> code(Self&& self) {
         return std::forward<Self>(self).code;
     }
-    template <impl::inherits<Interface<Frame>> Self>
+    template <impl::inherits<interface<Frame>> Self>
     [[nodiscard]] static std::optional<Frame> back(Self&& self) {
         return std::forward<Self>(self).back;
     }
-    template <impl::inherits<Interface<Frame>> Self>
+    template <impl::inherits<interface<Frame>> Self>
     [[nodiscard]] static size_t line_number(Self&& self) {
         return std::forward<Self>(self).line_number;
     }
-    template <impl::inherits<Interface<Frame>> Self>
+    template <impl::inherits<interface<Frame>> Self>
     [[nodiscard]] static size_t last_instruction(Self&& self) {
         return std::forward<Self>(self).last_instruction;
     }
-    template <impl::inherits<Interface<Frame>> Self>
+    template <impl::inherits<interface<Frame>> Self>
     [[nodiscard]] static std::optional<Object> generator(Self&& self) {
         return std::forward<Self>(self).generator;
     }
 
     /// NOTE: these are defined in __init__.h
-    template <impl::inherits<Interface<Frame>> Self>
+    template <impl::inherits<interface<Frame>> Self>
     [[nodiscard]] static Object get(Self&& self, const Str& name);
-    template <impl::inherits<Interface<Frame>> Self>
+    template <impl::inherits<interface<Frame>> Self>
     [[nodiscard]] static Dict<Str, Object> builtins(Self&& self);
-    template <impl::inherits<Interface<Frame>> Self>
+    template <impl::inherits<interface<Frame>> Self>
     [[nodiscard]] static Dict<Str, Object> globals(Self&& self);
-    template <impl::inherits<Interface<Frame>> Self>
+    template <impl::inherits<interface<Frame>> Self>
     [[nodiscard]] static Dict<Str, Object> locals(Self&& self);
 };
 
 
 template <impl::is<Object> Derived, impl::is<Frame> Base>
-struct __isinstance__<Derived, Base>                        : Returns<bool> {
+struct __isinstance__<Derived, Base>                        : returns<bool> {
     static constexpr bool operator()(Derived obj) {
         return PyFrame_Check(ptr(obj));
     }
@@ -527,7 +527,7 @@ struct __isinstance__<Derived, Base>                        : Returns<bool> {
 if one exists.  Note that this frame is guaranteed to have a valid Python bytecode
 object, unlike the C++ frames of a Traceback object. */
 template <>
-struct __init__<Frame>                                      : Returns<Frame> {
+struct __init__<Frame>                                      : returns<Frame> {
     static auto operator()();
 };
 
@@ -537,19 +537,19 @@ recent Python frame (if positive or zero) or the most recent (if negative).  Lik
 default constructor, this always retrieves a frame with a valid Python bytecode object,
 unlike the C++ frames of a Traceback object. */
 template <std::convertible_to<int> T>
-struct __init__<Frame, T>                                   : Returns<Frame> {
+struct __init__<Frame, T>                                   : returns<Frame> {
     static Frame operator()(int skip);
 };
 
 
 template <impl::is<cpptrace::stacktrace_frame> T>
-struct __cast__<T>                                          : Returns<Frame> {};
+struct __cast__<T>                                          : returns<Frame> {};
 
 
 /* Converting a `cpptrace::stacktrace_frame` into a Python frame object will synthesize
 an interpreter frame with an empty bytecode object. */
 template <impl::is<cpptrace::stacktrace_frame> T>
-struct __cast__<T, Frame>                                   : Returns<Frame> {
+struct __cast__<T, Frame>                                   : returns<Frame> {
     static auto operator()(const cpptrace::stacktrace_frame& frame) {
         PyObject* globals = PyDict_New();
         if (globals == nullptr) {
@@ -603,7 +603,7 @@ until it either terminates or encounters an error.  The return value is the resu
 the last evaluated expression, which can be the return value of a function, the yield
 value of a generator, etc. */
 template <impl::is<Frame> Self>
-struct __call__<Self>                                       : Returns<Object> {
+struct __call__<Self>                                       : returns<Object> {
     static auto operator()(Self&& frame);
 };
 
