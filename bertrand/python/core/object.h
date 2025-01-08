@@ -279,30 +279,22 @@ protected:
     };
 
     template <std::derived_from<Object> T, typename... Args>
+        requires (std::same_as<T, std::invoke_result_t<__init__<T, Args...>, Args...>>)
     explicit Object(implicit_ctor<T>, Args&&... args) : m_ptr(release((
         impl::Interpreter::init(),  // comma operator
         implicit_ctor<T>{}(std::forward<Args>(args)...)
     ))) {
-        using Return = std::invoke_result_t<__init__<T, Args...>, Args...>;
-        static_assert(
-            std::same_as<Return, T>,
-            "constructor must return a new instance of T."
-        );
         if constexpr (DEBUG) {
             assert_(m_ptr != nullptr, "Implicit constructor cannot return a null object.");
         }
     }
 
     template <std::derived_from<Object> T, typename... Args>
+        requires (std::same_as<T, std::invoke_result_t<__init__<T, Args...>, Args...>>)
     explicit Object(explicit_ctor<T>, Args&&... args) : m_ptr(release((
         impl::Interpreter::init(),  // comma operator
         explicit_ctor<T>{}(std::forward<Args>(args)...)
     ))) {
-        using Return = std::invoke_result_t<explicit_ctor<T>, Args...>;
-        static_assert(
-            std::same_as<Return, T>,
-            "constructor must return a new instance of T."
-        );
         if constexpr (DEBUG) {
             assert_(m_ptr != nullptr, "Explicit constructor cannot return a null object.");
         }

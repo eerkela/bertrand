@@ -49,6 +49,7 @@
 
 
 namespace py {
+
 using bertrand::Arg;
 using bertrand::ArgTraits;
 using bertrand::arg;
@@ -316,47 +317,76 @@ namespace impl {
     struct DictTag : BertrandTag {};
     struct MappingProxyTag : BertrandTag {};
 
+    /* Library constructor runs BEFORE a `main()` entry point and ensures the Python
+    interpreter is available for any static/global constructors, without explicit
+    initialization. */
+    __attribute__((constructor(101)))
+    static void initialize_python() {
+        if (!Py_IsInitialized()) {
+            Py_Initialize();
+        }
+    }
+
+    /* Library destructor runs AFTER a `main()` entry point and ensures that the Python
+    interpreter is available for any static/global destructors, without explicit
+    finalization. */
+    __attribute__((destructor(65535)))
+    static void finalize_python() {
+        if (Py_IsInitialized()) {
+            Py_Finalize();
+        }
+    }
+
     /* A static RAII guard that initializes the Python interpreter the first time a Python
     object is created and finalizes it when the program exits. */
     struct Interpreter : impl::BertrandTag {
-
         /* Ensure that the interpreter is active within the given context.  This is
-        called internally whenever a Python object is created from pure C++ inputs, and is
-        not called in any other context in order to avoid unnecessary overhead.  It must be
-        implemented as a function in order to avoid C++'s static initialization order
-        fiasco. */
-        static const Interpreter& init() {
-            static Interpreter instance{};
-            return instance;
+        called internally whenever a Python object is created from pure C++ inputs, and
+        is not called in any other context in order to avoid unnecessary overhead. */
+        [[gnu::always_inline]] static void init() noexcept {
+            /// TODO: at the moment, this does nothing, relying on the global
+            /// constructor above to initialize the interpreter.  This is as yet
+            /// untested, however, so if it doesn't work, I can uncomment this code.
+            // if (!Py_IsInitialized()) {
+            //     Py_Initialize();
+            // }
         }
 
         Interpreter(const Interpreter&) = delete;
         Interpreter(Interpreter&&) = delete;
 
     private:
+        static Interpreter self;
 
-        Interpreter() {
-            if (!Py_IsInitialized()) {
-                Py_Initialize();
-            }
-        }
-
-        ~Interpreter() {
-            if (Py_IsInitialized()) {
-                Py_Finalize();
-            }
+        Interpreter() = default;
+        ~Interpreter() noexcept {
+            /// TODO: similar to init(), this does nothing, relying on the global
+            /// destructor to finalize the interpreter.  If that doesn't work, I can
+            /// uncomment this code.
+            // if (Py_IsInitialized()) {
+            //     Py_Finalize();
+            // }
         }
     };
+
+    inline Interpreter Interpreter::self {};
 
 }
 
 
-/* A python-style `assert` statement in C++, which is optimized away if built with
-`-DNDEBUG` (i.e. release mode).  The only difference between this and the built-in
-`assert()` macro is that this raises a `py::AssertionError` with a coherent
-traceback for cross-language support. */
+/* A python-style `assert` statement in C++, which is optimized away if built without
+`-DBERTRAND_DEBUG` (i.e. in release mode).  The only difference between this and the
+built-in `assert()` macro is that this is a standard function and raises a Python
+`AssertionError` with a coherent traceback for cross-language support. */
 template <size_t N>
-[[gnu::always_inline]] void assert_(bool, const char(&)[N]);
+[[gnu::always_inline]] inline void assert_(bool, const char(&)[N]);
+
+template <impl::is_static_str T>
+[[gnu::always_inline]] inline void assert_(bool, const T&);
+
+template <std::convertible_to<std::string_view> T>
+    requires (!impl::string_literal<T> && !impl::is_static_str<T>)
+[[gnu::always_inline]] inline void assert_(bool, const T&);
 
 
 ///////////////////////////////

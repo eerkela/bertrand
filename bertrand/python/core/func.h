@@ -9,30 +9,29 @@
 #include "iter.h"
 
 
-/// NOTE: Beware all ye who enter here, for this is the land of complexity!
+/// NOTE: Beware all ye who enter here, for this is the point of no return!
 /// Functions require incredibly detailed compile-time and runtime logic over
 /// the cross product of possible C++ and Python paradigms, including (but not
 /// limited to):
 ///
 ///     Static vs dynamic typing
 ///     Compile-time vs runtime introspection + validation
-///     ABI limitations
 ///     Variadic + keyword arguments
 ///     Partial function application
-///     Function overloading
 ///     Function chaining
-///     Asynchronous execution
+///     Function overloading
+///     Inline caching
+///     Asynchronous execution (NYI)
 ///     Descriptor protocol
 ///     Structural typing
-///     Caching
-///     Performance + memory concerns
+///     Performance + memory optimizations
 ///     Extensability
 ///
 /// All of this serves as bedrock for the rest of Bertrand's core features, and
 /// must be defined very early in the dependency chain, before any conveniences
-/// that would simplify the logic.  They therefore require heavy use of the
-/// (unsafe) CPython API, which is both verbose and error-prone, as well as
-/// extreme amounts of template metaprogramming.  If any of this scares you
+/// that would simplify the logic.  It therefore requires heavy use of the
+/// (unsafe) CPython API, which is both highly verbose and error-prone, as well
+/// as extreme amounts of template metaprogramming.  If any of this scares you
 /// (as it should), then turn back now while you still can!
 
 
@@ -389,15 +388,15 @@ namespace impl {
 
 
 /// TODO: inspect.signature() intentionally leaves out partial arguments, so it might
-/// not be a bad idea to do the same on this end.  The problem is that I need the
-/// full signature to instantiate templates on both sides of the language divide,
-/// including partials, so there has to be some way to satisfy both requirements.
-/// Perhaps what I can do is encode the full signature into __partial__, and then
-/// synthesize them in some way here?  So `__signature__` would yield the signature
-/// without any partials, but if a `__partial__` attribute is present, then it would
-/// merge them together when constructing the final signature.  This should allow me
-/// to represent both raw Python objects and my custom partials at the same time,
-/// although the logic gets really squirrely really fast.
+/// not be a bad idea to do the same here.  The problem is that I need the full
+/// signature to instantiate templates on both sides of the language divide, including
+/// partials, so there has to be some way to satisfy both requirements.  Perhaps what
+/// I can do is encode the full signature into __partial__, and then synthesize them
+/// in some way here?  So `__signature__` would yield the signature without any
+/// partials, but if a `__partial__` attribute is present, then it would merge them
+/// together when constructing the final signature.  This should allow me to represent
+/// both raw Python objects and my custom partials at the same time, although the logic
+/// gets really squirrely really fast.
 
 
 /* Inspect a Python function object and extract its signature so that it can be
@@ -1558,7 +1557,7 @@ public:
     inspected and converted to a proper `bertrand.Function` type with a matching
     signature, possibly involving JIT compilation if the template type does not already
     exist. */
-    [[nodiscard]] const Object& key() const {
+    [[nodiscard]] const Object& template_key() const {
         if (!m_key.is(nullptr)) {
             return m_key;
         }
@@ -3273,9 +3272,6 @@ public:
         using Tuple = collect<std::tuple<>, 0, Args...>::type;
         Tuple values;
 
-        /// TODO: build() might be able to be replaced by a non-index sequence version
-        /// that uses recursive lambdas instead.
-
         template <size_t K, typename... As>
         static constexpr decltype(auto) build(As&&... args) {
             using T = std::tuple_element_t<K, Tuple>;
@@ -3375,20 +3371,17 @@ public:
     private:
 
         template <size_t I, size_t K>
-        struct to_key {
-            static constexpr size_t size(size_t result) noexcept {
-                return result;
-            }
-
+        struct to_overload_key {
+            static constexpr size_t size(size_t result) noexcept { return result; }
             template <typename P>
             static void operator()(P&&, impl::OverloadKey&) {}
         };
         template <size_t I, size_t K>
             requires (I < signature::n && (K < n && rfind<K> == I))
-        struct to_key<I, K> {
+        struct to_overload_key<I, K> {
             static constexpr size_t size(size_t result) noexcept {
                 using T = signature::at<I>;
-                return to_key<I + !ArgTraits<T>::variadic(), K + 1>::size(
+                return to_overload_key<I + !ArgTraits<T>::variadic(), K + 1>::size(
                     result + 1
                 );
             }
@@ -3401,7 +3394,7 @@ public:
                     py::to_python(std::forward<P>(partial).template get<K>()),
                     ArgTraits<T>::kind
                 );
-                to_key<I + !ArgTraits<T>::variadic(), K + 1>{}(
+                to_overload_key<I + !ArgTraits<T>::variadic(), K + 1>{}(
                     std::forward<P>(partial),
                     key
                 );
@@ -3409,9 +3402,9 @@ public:
         };
         template <size_t I, size_t K>
             requires (I < signature::n && !(K < n && rfind<K> == I))
-        struct to_key<I, K> {
+        struct to_overload_key<I, K> {
             static constexpr size_t size(size_t result) noexcept {
-                return to_key<I + 1, K>::size(result + 1);
+                return to_overload_key<I + 1, K>::size(result + 1);
             }
 
             template <typename P>
@@ -3422,7 +3415,7 @@ public:
                     reinterpret_steal<Object>(nullptr),
                     ArgTraits<T>::kind
                 );
-                to_key<I + 1, K>{}(std::forward<P>(partial), key);
+                to_overload_key<I + 1, K>{}(std::forward<P>(partial), key);
             }
         };
 
@@ -3430,10 +3423,10 @@ public:
 
         /* Convert a partial tuple into a standardized key type that can be used to
         initiate a search of an overload trie. */
-        [[nodiscard]] impl::OverloadKey key(this auto&& self) {
+        [[nodiscard]] impl::OverloadKey overload_key(this auto&& self) {
             impl::OverloadKey key;
-            key->reserve(to_key<0, 0>::size(0));
-            to_key<0, 0>{}(std::forward<decltype(self)>(self), key);
+            key->reserve(to_overload_key<0, 0>::size(0));
+            to_overload_key<0, 0>{}(std::forward<decltype(self)>(self), key);
             return key;
         }
     };
@@ -5126,11 +5119,6 @@ public:
             std::forward<A>(args)...
         );
     }
-
-    /// TODO: maybe constructing a vectorcall array is not possible unless the
-    /// arguments are convertible to python?  That way, you would call the vectorcall
-    /// constructor with C++ arguments, convert them to the target arguments, and then
-    /// convert those to Python.
 
     /* Adopt or produce a Python vectorcall array for the enclosing signature, allowing
     a matching C++ function to be invoked from Python, or a Python function to be
@@ -7413,6 +7401,8 @@ public:
         compile time. */
         template <impl::inherits<Partial> P, typename... A>
             requires (
+                signature::args_are_convertible_to_python &&
+                signature::return_is_convertible_to_python &&
                 Bind<A...>::proper_argument_order &&
                 Bind<A...>::no_qualified_arg_annotations &&
                 Bind<A...>::no_duplicate_args &&
@@ -7515,6 +7505,8 @@ public:
             requires (
                 !(impl::arg_pack<A> || ...) &&
                 !(impl::kwarg_pack<A> || ...) &&
+                signature::args_are_convertible_to_python &&
+                signature::return_is_convertible_to_python &&
                 Bind<A...>::proper_argument_order &&
                 Bind<A...>::no_qualified_arg_annotations &&
                 Bind<A...>::no_duplicate_args &&
@@ -7875,6 +7867,10 @@ public:
         directly invoke a Python function via the vectorcall protocol.  Any existing
         iterators will be invalidated when this method is called. */
         template <impl::inherits<Partial> P>
+            requires (
+                signature::args_are_convertible_to_python &&
+                signature::return_is_convertible_to_python
+            )
         [[maybe_unused]] Vectorcall& normalize(P&& parts) {
             if (normalized()) {
                 return *this;
@@ -8093,7 +8089,13 @@ public:
 
         /* Convert a normalized vectorcall array into a standardized key type that can
         be used to initiate a search of an overload trie. */
-        [[nodiscard]] impl::OverloadKey key() const {
+        [[nodiscard]] impl::OverloadKey overload_key() const {
+            if (!normalized()) {
+                throw AssertionError(
+                    "vectorcall arguments must be normalized before generating an "
+                    "overload key"
+                );
+            }
             impl::OverloadKey key{
                 .vec = {},
                 .hash = hash,
@@ -8110,8 +8112,6 @@ public:
             return key;
         }
 
-        /// TODO: implement template_key()
-
         /* Convert a normalized vectorcall array into a template key that can be used
         to specialize the `bertrand.Function` type on the Python side.  This is used to
         implement the `Function.bind()` method in Python, which produces a partial
@@ -8119,6 +8119,29 @@ public:
         meaning that any existing partial arguments (inserted during normalization)
         will be carried over into the new partial function object. */
         [[nodiscard]] Object template_key() {
+            if (!normalized()) {
+                throw AssertionError(
+                    "vectorcall arguments must be normalized before generating a "
+                    "template key"
+                );
+            }
+            Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+                ptr(impl::template_string<"bertrand">())
+            ));
+
+            /// TODO: generate a tuple suitable for specializing the Function[] template
+            /// in Python.  The vectorcall args are already normalized, so I should be
+            /// able to just directly generate the tuple.
+
+            Object result = reinterpret_steal<Object>(PyTuple_New(size() + 1));
+            if (result.is(nullptr)) {
+                Exception::from_python();
+            }
+
+            for (Param param : *this) {
+
+            }
+
             /// TODO: after producing this key, I would specialize `bertrand.Function[]`
             /// accordingly, and then pass the normalized vectorcall arguments to its
             /// standard Python constructor, and everything should work as expected.
@@ -8137,6 +8160,8 @@ public:
     /* Construct a normalized vectorcall array from C++. */
     template <impl::inherits<Partial> P, typename... A>
         requires (
+            args_are_convertible_to_python &&
+            return_is_convertible_to_python &&
             Bind<A...>::proper_argument_order &&
             Bind<A...>::no_qualified_arg_annotations &&
             Bind<A...>::no_duplicate_args &&
@@ -8161,6 +8186,8 @@ public:
         requires (
             !(impl::arg_pack<A> || ...) &&
             !(impl::kwarg_pack<A> || ...) &&
+            args_are_convertible_to_python &&
+            return_is_convertible_to_python &&
             Bind<A...>::proper_argument_order &&
             Bind<A...>::no_qualified_arg_annotations &&
             Bind<A...>::no_duplicate_args &&
@@ -9485,9 +9512,6 @@ public:
     /// C++, and we call the C++ overload with the internal std::function.  Otherwise,
     /// the function is implemented in Python, and we call the Python overload instead.
 
-    /// TODO: rather than passing vectorcall directly to the overload trie, I now need
-    /// to call .key()
-
     /* Call a C++ function from C++ using Python-style arguments. */
     template <
         impl::inherits<Partial> P,
@@ -9570,8 +9594,7 @@ public:
             }
             /// NOTE: it is impossible for the search to fail, since the arguments are
             /// validated at compile time and the overload trie is known not to be empty
-            auto it = overloads.begin(vectorcall);
-            const Object& overload = *it;
+            const Object& overload = *overloads.begin(vectorcall.overload_key());
             if (overload.is(overloads.function())) {
                 return Bind<A...>{}(
                     std::forward<P>(partial),
@@ -9588,8 +9611,7 @@ public:
             }
             /// NOTE: it is impossible for the search to fail, since the arguments are
             /// validated at compile time and the overload trie is known not to be empty
-            auto it = overloads.begin(vectorcall);
-            const Object& overload = *it;
+            const Object& overload = *overloads.begin(vectorcall.overload_key());
             if (overload.is(overloads.function())) {
                 return Bind<A...>{}(
                     std::forward<P>(partial),
@@ -9671,7 +9693,7 @@ public:
             }
             /// NOTE: it is impossible for the search to fail, since the arguments are
             /// validated at compile time and the overload trie is known not to be empty
-            return vectorcall(ptr(*overloads.begin(vectorcall)));
+            return vectorcall(ptr(*overloads.begin(vectorcall.overload_key())));
         } else {
             Vectorcall vectorcall{
                 std::forward<P>(partial),
@@ -9685,7 +9707,7 @@ public:
             }
             /// NOTE: it is impossible for the search to fail, since the arguments are
             /// validated at compile time and the overload trie is known not to be empty
-            return vectorcall(ptr(*overloads.begin(vectorcall)));
+            return vectorcall(ptr(*overloads.begin(vectorcall.overload_key())));
         }
     }
 
@@ -9742,7 +9764,7 @@ public:
             }
             return vectorcall(cached);
         }
-        auto it = overloads.begin(vectorcall);
+        auto it = overloads.begin(vectorcall.overload_key());
         if (it == overloads.end()) {
             vectorcall.validate();  // noreturn in this case
             std::unreachable();
@@ -9790,7 +9812,7 @@ public:
         if (PyObject* cached = overloads.cache_lookup(vectorcall.hash)) {
             return vectorcall(cached);
         }
-        auto it = overloads.begin(vectorcall);
+        auto it = overloads.begin(vectorcall.overload_key());
         if (it == overloads.end()) {
             vectorcall.validate();  // noreturn in this case
             std::unreachable();
@@ -10259,15 +10281,15 @@ template <typename T> requires (signature<T>::enable)
 signature(const T&) -> signature<typename signature<T>::type>;
 
 
-/// NOTE: py::signature<> contains all of the logic necessary to introspect and
-/// invoke functions from both languages with the same consistent call semantics.
-/// By default, it is enabled for all trivially-introspectable function types,
-/// meaning that the underlying function does not accept template parameters or
-/// participate in an overload set.  However, it is still possible to support these
-/// cases by specializing py::signature<> for the desired function types, and then
-/// redirecting to a canonical signature via inheritance.  Doing so will allow the
-/// non-trivial function to be used as the initializer for a `py::def` statement, and
-/// possibly also `py::Function` if the normalized signature meets the requirements.
+/// NOTE: py::signature<> contains all of the logic necessary to introspect and invoke
+/// functions from both languages with the same consistent call semantics.  By default,
+/// it is enabled for all trivially-introspectable function types, meaning that the
+/// underlying function does not accept template parameters or participate in an
+/// overload set.  However, it is still possible to support these cases by specializing
+/// py::signature<> for the desired function types, and then redirecting to a canonical
+/// signature via inheritance.  Doing so will allow a non-trivial function to be used
+/// as the initializer for a `py::def` statement, and possibly also `py::Function` if
+/// the normalized signature can be converted to Python.
 template <typename R, typename... A>
 struct signature<R(A...) noexcept> : signature<R(A...)> {};
 template <typename R, typename... A>
@@ -10308,8 +10330,8 @@ template <typename R, typename C, typename... A>
 struct signature<R(C::*)(A...) const volatile & noexcept> : signature<R(A...)> {};
 template <impl::has_call_operator T>
 struct signature<T> : signature<decltype(&std::remove_reference_t<T>::operator())> {};
-
-/// TODO: specialization for subclasses of DefTag?
+template <impl::inherits<impl::DefTag> T>
+struct signature<T> : std::remove_reference_t<T>::signature {};
 
 
 template <typename F>
@@ -11010,55 +11032,6 @@ template <typename F, typename... A>
         signature<F>::Partial::n == 0
     )
 explicit def(const typename signature<F>::Defaults&, F, A&&...) -> def<F, A...>;
-
-
-template <impl::inherits<impl::DefTag> T>
-struct signature<T> : std::remove_reference_t<T>::signature {};
-
-
-// template <typename Self, typename... Args>
-//     requires (
-//         __call__<Self, Args...>::enable &&
-//         std::convertible_to<typename __call__<Self, Args...>::type, Object> && (
-//             std::is_invocable_r_v<
-//                 typename __call__<Self, Args...>::type,
-//                 __call__<Self, Args...>,
-//                 Self,
-//                 Args...
-//             > || (
-//                 !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
-//                 impl::has_cpp<Self> &&
-//                 std::is_invocable_r_v<
-//                     typename __call__<Self, Args...>::type,
-//                     impl::cpp_type<Self>,
-//                     Args...
-//                 >
-//             ) || (
-//                 !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
-//                 !impl::has_cpp<Self> &&
-//                 std::derived_from<typename __call__<Self, Args...>::type, Object> &&
-//                 __getattr__<Self, "__call__">::enable &&
-//                 impl::inherits<typename __getattr__<Self, "__call__">::type, impl::FunctionTag>
-//             )
-//         )
-//     )
-// decltype(auto) Object::operator()(this Self&& self, Args&&... args) {
-//     if constexpr (std::is_invocable_v<__call__<Self, Args...>, Self, Args...>) {
-//         return __call__<Self, Args...>{}(
-//             std::forward<Self>(self),
-//             std::forward<Args>(args)...
-//         );
-
-//     } else if constexpr (impl::has_cpp<Self>) {
-//         return from_python(std::forward<Self>(self))(
-//             std::forward<Args>(args)...
-//         );
-//     } else {
-//         return getattr<"__call__">(std::forward<Self>(self))(
-//             std::forward<Args>(args)...
-//         );
-//     }
-// }
 
 
 ////////////////////////
