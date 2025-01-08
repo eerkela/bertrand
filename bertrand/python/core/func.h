@@ -349,6 +349,11 @@ namespace impl {
         std::same_as<std::remove_cvref_t<F>, typename signature<F>::type>;
 
     struct SignatureTag : BertrandTag {};
+    struct SignaturePartialTag : BertrandTag {};
+    struct SignatureDefaultsTag : BertrandTag {};
+    struct SignatureBindTag : BertrandTag {};
+    struct SignatureVectorcallTag : BertrandTag {};
+    struct SignatureOverloadsTag : BertrandTag {};
     struct DefTag {};
 
     template <typename R>
@@ -999,7 +1004,10 @@ public:
     Otherwise, returns an empty string. */
     [[nodiscard]] std::string_view name() const {
         Py_ssize_t size;
-        const char* data = PyUnicode_AsUTF8AndSize(ptr(m_name), &size);
+        const char* data = PyUnicode_AsUTF8AndSize(
+            ptr(m_name),
+            &size
+        );
         if (data == nullptr) {
             Exception::from_python();
         }
@@ -1089,44 +1097,44 @@ public:
         }
     };
 
-    /* Get the parameter at index i.  Allows Python-style negative indexing, which
-    counts backwards from the tail of the parameter list, and raises an IndexError
-    if the index is out of bounds. */
-    [[nodiscard]] const Param& operator[](int i) const {
-        i += m_parameters.size() * (i < 0);
-        if (i < 0 || i >= m_parameters.size()) {
-            throw IndexError("index out of range");
-        }
-        return m_parameters[i];
+    /* Get a pointer to the parameter at index i.  Returns a null pointer if the index
+    is out of range. */
+    [[nodiscard]] const Param* operator[](size_t i) const {
+        return i < m_parameters.size() ? &m_parameters[i] : nullptr;
     }
 
-    /* Look up a specific parameter by name.  Raises a KeyError if the named
-    parameter is not present. */
-    [[nodiscard]] const Param& operator[](std::string_view name) const {
+    /* Get a pointer to the named parameter.  Returns a null pointer if the parameter
+    is not present. */
+    [[nodiscard]] const Param* operator[](std::string_view name) const {
         auto it = m_names.find(name);
-        if (it == m_names.end()) {
-            throw KeyError(std::string(name));
-        }
-        return **it;
+        return it != m_names.end() ? *it : nullptr;
     }
 
-    /// TODO: all of the various get() accessors need to be standardized somehow.
-    /// Probably the pointer-based versions should be renamed to find(), and get()
-    /// should be reserved for `std::get<>()`-based accessors.
-
-    /* Get the parameter at index i.  Allows Python-style negative indexing, which
-    counts backwards from the tail of the parameter list, and returns a null pointer
-    if the index is out of bounds. */
-    [[nodiscard]] const Param* get(int i) const {
-        i += m_parameters.size() * (i < 0);
-        return i < 0 || i >= m_parameters.size() ? nullptr : &m_parameters[i];
+    /* Get a pointer to the parameter at index i.  Raises an IndexError if the index
+    is out of range. */
+    [[nodiscard]] const Param& get(size_t i) const {
+        if (i < m_parameters.size()) {
+            return m_parameters[i];
+        } else {
+            throw IndexError("parameter index out of range: " + std::to_string(i));
+        }
     }
 
     /* Look up a specific parameter by name.  Returns a null pointer if the named
     parameter is not present. */
-    [[nodiscard]] const Param* get(std::string_view name) const {
+    [[nodiscard]] const Param& get(std::string_view name) const {
         auto it = m_names.find(name);
-        return it == m_names.end() ? nullptr : *it;
+        if (it != m_names.end()) {
+            return **it;
+        } else {
+            throw KeyError("parameter not found: " + std::string(name));
+        }
+    }
+
+    /* Check whether the given index is within range of the signature's parameter
+    list. */
+    [[nodiscard]] bool contains(size_t i) const {
+        return i < m_parameters.size();
     }
 
     /* Check whether a given parameter name is present in the signature. */
@@ -1823,7 +1831,10 @@ identical. */
                 ++l;
             }
             if (l != l_end && l->args()) {
-                if (!issubclass(ptr(l->type), ptr(r->type))) {
+                if (l->name != r->name || !issubclass(
+                    ptr(l->type),
+                    ptr(r->type)
+                )) {
                     return false;
                 }
                 if (equal) {
@@ -1840,7 +1851,10 @@ identical. */
                 ++l;
             }
             if (l != l_end && l->kwargs()) {
-                if (!issubclass(ptr(l->type), ptr(r->type))) {
+                if (l->name != r->name || !issubclass(
+                    ptr(l->type),
+                    ptr(r->type)
+                )) {
                     return false;
                 }
                 if (equal) {
@@ -1889,18 +1903,36 @@ identical. */
     auto l = lhs.begin();
     auto l_end = lhs.end();
     auto r = rhs.begin();
-    auto r_end = lhs.end();
+    auto r_end = rhs.end();
     while (r != r_end) {
         if (r->args()) {
-            while (l != l_end && (l->pos() || l->args())) {
+            while (l != l_end && l->pos()) {
                 if (!issubclass(ptr(l->type), ptr(r->type))) {
                     return false;
                 }
                 ++l;
             }
+            if (l != l_end && l->args()) {
+                if (l->name != r->name || !issubclass(
+                    ptr(l->type),
+                    ptr(r->type)
+                )) {
+                    return false;
+                }
+                ++l;
+            }
         } else if (r->kwargs()) {
-            while (l != l_end && (l->kwonly() || l->kwargs())) {
+            while (l != l_end && l->kwonly()) {
                 if (!issubclass(ptr(l->type), ptr(r->type))) {
+                    return false;
+                }
+                ++l;
+            }
+            if (l != l_end && l->kwargs()) {
+                if (l->name != r->name || !issubclass(
+                    ptr(l->type),
+                    ptr(r->type)
+                )) {
                     return false;
                 }
                 ++l;
@@ -2097,6 +2129,8 @@ public:
     /// TODO: has<> may need to restrict itself to keyword arguments only, not
     /// named positional-only arguments.  Either that or I just need to be
     /// really careful when validating functions
+    /// -> Maybe I replace it entirely with ::contains<Name>() for less duplication?
+    /// Same with ::n and ::size()?
 
     template <static_str Name>
     static constexpr bool has                   = n > _idx<Name, Args...>;
@@ -2765,59 +2799,58 @@ private:
     /* In order to avoid superfluous compile errors, the perfect keyword hash map
     should not be created unless the signature is well-formed. */
     template <bool valid>
-    struct get_keyword_table {
-        using KeywordTable = static_map<const Callback&>;
-        static constexpr KeywordTable table = {};
+    struct get_name_table {
+        using type = static_map<const Callback&>;
+        static constexpr type table = {};
     };
     template <>
-    struct get_keyword_table<true> {
+    struct get_name_table<true> {
         template <typename, size_t, typename...>
-        struct extract_keywords;
+        struct extract_names;
         template <typename... out, size_t I, typename... Ts>
-        struct extract_keywords<args<out...>, I, Ts...> {
+        struct extract_names<args<out...>, I, Ts...> {
             using type = static_map<const Callback&, ArgTraits<out>::name...>;
             static constexpr type operator()(auto&&... pointers) {
                 return {std::forward<decltype(pointers)>(pointers)...};
             }
         };
         template <typename... out, size_t I, typename T, typename... Ts>
-        struct extract_keywords<args<out...>, I, T, Ts...> {
+        struct extract_names<args<out...>, I, T, Ts...> {
             template <typename>
             struct filter {
                 using type = args<out...>;
                 static constexpr auto operator()(auto&&... pointers) noexcept {
-                    return extract_keywords<type, I + 1, Ts...>{}(
+                    return extract_names<type, I + 1, Ts...>{}(
                         std::forward<decltype(pointers)>(pointers)...
                     );
                 }
             };
-            template <typename U> requires (ArgTraits<U>::kw())
+            template <typename U> requires (!ArgTraits<U>::name.empty())
             struct filter<U> {
                 using type = args<out..., U>;
                 static constexpr auto operator()(auto&&... pointers) noexcept {
-                    return extract_keywords<type, I + 1, Ts...>{}(
+                    return extract_names<type, I + 1, Ts...>{}(
                         std::forward<decltype(pointers)>(pointers)...,
                         positional_table[I]
                     );
                 }
             };
-            using type = extract_keywords<typename filter<T>::type, I + 1, Ts...>::type;
+            using type = extract_names<typename filter<T>::type, I + 1, Ts...>::type;
             static constexpr auto operator()(auto&&... pointers) noexcept {
                 return filter<T>{}(std::forward<decltype(pointers)>(pointers)...);
             }
         };
-        using KeywordTable = extract_keywords<args<>, 0, Args...>::type;
-        static constexpr KeywordTable table = extract_keywords<args<>, 0, Args...>{}();
+        using type = extract_names<args<>, 0, Args...>::type;
+        static constexpr type table = extract_names<args<>, 0, Args...>{}();
     };
 
-    /* A perfect hash map of keyword names to their corresponding indices in the
-    positional table. */
-    using KeywordTable = get_keyword_table<
+    /* A perfect hash map of keyword names to their corresponding callbacks. */
+    using NameTable = get_name_table<
         args_fit_within_bitset &&
         proper_argument_order &&
         no_duplicate_args
-    >::KeywordTable;
-    static constexpr KeywordTable keyword_table = get_keyword_table<
+    >::type;
+    static constexpr NameTable name_table = get_name_table<
         args_fit_within_bitset &&
         proper_argument_order &&
         no_duplicate_args
@@ -3062,138 +3095,94 @@ public:
     [[nodiscard]] static auto crend() noexcept { return positional_table.crend(); }
 
     /* Get a callback that validates the function's return type.  Such a callback has
-    no name, kind, or mask and does not contribute to the function's hash, but does
-    have `type()`, `isinstance()`, and `issubclass()` helpers that can check against
-    the expected type. */
+    no name, kind, or index, but does have `type()`, `isinstance()`, and `issubclass()`
+    helpers that can check against the expected type. */
     [[nodiscard]] static constexpr const Callback& returns() noexcept {
         return return_callback;
     }
 
     /* Check whether a given positional index is within the bounds of the enclosing
-    signature.  Always returns true if the function accepts variadic positional args. */
+    signature. */
     template <size_t I>
     [[nodiscard]] static constexpr bool contains() noexcept {
-        constexpr size_t cutoff = std::min(
-            {args_idx, kwonly_idx, kwargs_idx}
-        );
-        return has_args || I < cutoff;
+        return I < size();
     }
-
-    /* Check whether a given positional index is within the bounds of the enclosing
-    signature.  Always returns true if the function accepts variadic positional args. */
     [[nodiscard]] static constexpr bool contains(size_t i) noexcept {
-        constexpr size_t cutoff = std::min(
-            {args_idx, kwonly_idx, kwargs_idx}
-        );
-        return has_args || i < cutoff;
+        return i < size();
     }
 
-    /* Check whether a given keyword name is within the bounds of the enclosing
-    signature.  Always returns true if the function accepts variadic keyword args. */
+    /* Check whether a given argument name is present within the enclosing signature. */
     template <static_str Key>
     [[nodiscard]] static constexpr bool contains() noexcept {
-        return has_kwargs || KeywordTable::template contains<Key>();
+        return NameTable::template contains<Key>();
     }
-
-    /* Check whether a given keyword name is within the bounds of the enclosing
-    signature.  Always returns true if the function accepts variadic keyword args. */
-    template <typename T> requires (KeywordTable::template hashable<T>)
+    template <typename T> requires (NameTable::template hashable<T>)
     [[nodiscard]] static constexpr bool contains(T&& key) noexcept {
-        return has_kwargs || keyword_table.contains(std::forward<T>(key));
+        return name_table.contains(std::forward<T>(key));
     }
 
-    /// TODO: can specialize std::get<>() for signature<F> to forward to this method.
-
-    /* Look up the callback object associated with the positional argument at index I,
-    or the variadic positional callback if the enclosing signature accepts them and
-    the index is beyond the positional range of the enclosing signature.  Fails to
-    compile otherwise. */
-    template <size_t I> requires (contains<I>())
+    /* Look up the callback object associated with the argument at index I if it is
+    within range.  Fails to compile otherwise. */
+    template <size_t I> requires (I < size())
     [[nodiscard]] static constexpr const Callback& get() noexcept {
-        constexpr size_t cutoff = std::min(
-            {args_idx, kwonly_idx, kwargs_idx}
-        );
-        if constexpr (I < cutoff) {
-            return positional_table[I];
-        } else {
-            return positional_table[args_idx];
-        }
+        return positional_table[I];
     }
 
-    /* Look up the callback object associated with the positional argument at index I,
-    or the variadic positional callback if the enclosing signature accepts them and
-    the index is beyond the positional range of the enclosing signature.  Throws an
-    IndexError otherwise. */
+    /* Look up the callback object associated with the argument at index I if it is
+    within range.  Throws an IndexError otherwise. */
     [[nodiscard]] static constexpr const Callback& get(size_t i) {
-        if constexpr (has_args) {
-            return i < args_idx ? positional_table[i] : positional_table[args_idx];
+        if (i < size()) {
+            return positional_table[i];
         } else {
-            constexpr size_t cutoff = std::min(kwonly_idx, kwargs_idx);
-            if (i < cutoff) {
-                return positional_table[i];
-            } else {
-                throw IndexError("positional index out of range");
-            }
+            throw IndexError("positional index out of range");
         }
     }
 
-    /* Look up the callback object associated with the named keyword argument, or the
-    variadic keyword callback if the enclosing signature accepts them and the keyword
-    name is not recognized.  Fails to compile otherwise. */
+    /* Look up the callback object associated with the named argument if it is present
+    within the signature.  Fails to compile otherwise. */
     template <static_str Key> requires (contains<Key>())
     [[nodiscard]] static constexpr const Callback& get() noexcept {
-        if constexpr (KeywordTable::template contains<Key>()) {
-            return std::get<Key>(keyword_table);
-        } else {
-            return positional_table[kwargs_idx];
-        }
+        return std::get<Key>(name_table);
     }
 
-    /* Look up the callback object associated with the named keyword argument, or the
-    variadic keyword callback if the enclosing signature accepts them and the keyword
-    name is not recognized.  Throws a KeyError otherwise. */
-    template <typename T> requires (KeywordTable::template hashable<T>)
+    /* Look up the callback object associated with the named argument if it is present
+    within the signature.  Throws a KeyError otherwise. */
+    template <typename T> requires (NameTable::template hashable<T>)
     [[nodiscard]] static constexpr const Callback& get(T&& key) {
-        const Callback* result = keyword_table[std::forward<T>(key)];
-        if (result) {
-            return result;
+        if (const Callback* result = name_table[std::forward<T>(key)]) {
+            return *result;
         } else {
-            if constexpr (has_kwargs) {
-                return &positional_table[kwargs_idx];
-            } else {
-                throw KeyError("keyword not recognized");
-            }
+            throw KeyError("keyword not recognized");
         }
     }
 
-    /* Get a pointer to the callback object for a given positional index.  Returns
-    nullptr if the index lies beyond the positional range of the enclosing signature,
-    or a pointer to the variadic positional callback if the enclosing signature accepts
-    them. */
+    /* Get a pointer to the callback object for a given argument.  Returns nullptr if
+    the index is out of range. */
     [[nodiscard]] static constexpr const Callback* operator[](size_t i) noexcept {
-        if constexpr (has_args) {
-            return i < args_idx ? &positional_table[i] : &positional_table[args_idx];
-        } else {
-            constexpr size_t cutoff = std::min(kwonly_idx, kwargs_idx);
-            return i < cutoff ? &positional_table[i] : nullptr;
-        }
+        return i < size() ? &positional_table[i] : nullptr;
     }
 
-    /* Get a pointer to the callback object for the named keyword argument.  Returns
-    nullptr if the keyword name is not recognized, or a pointer to the variadic keyword
-    callback if the enclosing signature accepts them. */
-    template <typename T> requires (KeywordTable::template hashable<T>)
+    /* Get a pointer to the callback object for the named argument.  Returns nullptr if
+    the name is not recognized. */
+    template <typename T> requires (NameTable::template hashable<T>)
     [[nodiscard]] static constexpr const Callback* operator[](T&& key) noexcept {
-        const Callback* result = keyword_table[std::forward<T>(key)];
-        if (result) {
-            return result;
-        } else {
-            if constexpr (has_kwargs) {
-                return &positional_table[kwargs_idx];
-            } else {
-                return nullptr;
+        return name_table[std::forward<T>(key)];
+    }
+
+    /* Capture a C++ function and generate a new function object that matches the
+    enclosing signature, without any partial arguments.  A function of this form is
+    generated whenever a C++ function object is converted into a `py::Function` type,
+    allowing it to model functions with pure C++ arguments, as long as those arguments
+    are implicitly convertible from the enclosing signature. */
+    template <typename F> requires (invocable<F>)
+    [[nodiscard]] static constexpr auto capture(F&& func) {
+        struct Func {
+            std::remove_cvref_t<F> func;
+            constexpr Return operator()(typename ArgTraits<Args>::unbind... args) const {
+                return func(std::forward<typename ArgTraits<Args>::unbind>(args)...);
             }
-        }
+        };
+        return Func{std::forward<F>(func)};
     }
 
     /* A tuple holding a partial value for every bound argument in the enclosing
@@ -3203,7 +3192,7 @@ public:
     keyword-only parameters for clarity.  The result may be empty if there are no
     bound arguments in the enclosing signature, in which case the constructor will
     be optimized out. */
-    struct Partial {
+    struct Partial : impl::SignaturePartialTag {
     private:
         /// TODO: count/index helpers just like Defaults?
 
@@ -3347,13 +3336,26 @@ public:
             }(std::index_sequence_for<As...>{}, std::forward<As>(args)...)
         ) {}
 
+        /* Get the total number of partial arguments. */
+        [[nodiscard]] static constexpr size_t size() noexcept { return n; }
+        [[nodiscard]] static constexpr bool empty() noexcept { return !n; }
+
+        /* Check whether a given positional index is within bounds of the partial
+        signature. */
+        template <size_t K>
+        [[nodiscard]] static constexpr bool contains() noexcept { return K < size(); }
+
+        /* Check whether a given keyword name is present in the partial signature. */
+        template <static_str Name>
+        [[nodiscard]] static constexpr bool contains() noexcept { return has<Name>; }
+
         /* Get the bound value at index K of the tuple.  If the partials are
         forwarded as an lvalue, then this will either directly reference the
         internal value if the corresponding argument expects an lvalue, or a copy
         if it expects an unqualified or rvalue type.  If the partials are given as
         an rvalue instead, then the copy will instead be optimized to a move. */
-        template <size_t K> requires (K < n)
-        constexpr decltype(auto) get(this auto&& self) {
+        template <size_t K> requires (K < size())
+        [[nodiscard]] constexpr decltype(auto) get(this auto&& self) {
             return std::get<K>(std::forward<decltype(self)>(self).values).get();
         }
 
@@ -3363,8 +3365,8 @@ public:
         argument expects an lvalue, or a copy if it expects an unqualified or rvalue
         type.  If the partials are given as an rvalue instead, then the copy will be
         optimized to a move. */
-        template <static_str Name> requires (has<Name>)
-        constexpr decltype(auto) get(this auto&& self) {
+        template <static_str Name> requires (contains<Name>())
+        [[nodiscard]] constexpr decltype(auto) get(this auto&& self) {
             return std::get<idx<Name>>(std::forward<decltype(self)>(self).values).get();
         }
 
@@ -3456,7 +3458,7 @@ public:
     keyword-only parameters for clarity.  The result may be empty if there are no
     optional arguments in the enclosing signature, in which case the constructor
     will be optimized out. */
-    struct Defaults {
+    struct Defaults : impl::SignatureDefaultsTag {
     private:
         template <typename...>
         static constexpr size_t _n_posonly = 0;
@@ -3636,13 +3638,26 @@ public:
             }(std::index_sequence_for<As...>{}, std::forward<As>(args)...)
         ) {}
 
+        /* Get the total number of default values. */
+        [[nodiscard]] static constexpr size_t size() noexcept { return n; }
+        [[nodiscard]] static constexpr bool empty() noexcept { return !n; }
+
+        /* Check whether a given positional index is within bounds of the default
+        arguments. */
+        template <size_t K>
+        [[nodiscard]] static constexpr bool contains() noexcept { return K < size(); }
+
+        /* Check whether a given keyword name is present in the default arguments. */
+        template <static_str Name>
+        [[nodiscard]] static constexpr bool contains() noexcept { return has<Name>; }
+
         /* Get the default value at index I of the tuple.  Use find<> to correlate
         an index from the enclosing signature if needed.  If the defaults container
         is used as an lvalue, then this will either directly reference the internal
         value if the corresponding argument expects an lvalue, or a copy if it
         expects an unqualified or rvalue type.  If the defaults container is given
         as an rvalue instead, then the copy will be optimized to a move. */
-        template <size_t J> requires (J < n)
+        template <size_t J> requires (J < size())
         constexpr decltype(auto) get(this auto&& self) {
             return std::get<J>(std::forward<decltype(self)>(self).values).get();
         }
@@ -3653,7 +3668,7 @@ public:
         argument expects an lvalue, or a copy if it expects an unqualified or
         rvalue type.  If the defaults container is given as an rvalue instead, then
         the copy will be optimized to a move. */
-        template <static_str Name> requires (has<Name>)
+        template <static_str Name> requires (contains<Name>())
         constexpr decltype(auto) get(this auto&& self) {
             return std::get<idx<Name>>(std::forward<decltype(self)>(self).values).get();
         }
@@ -3689,7 +3704,7 @@ public:
 private:
 
     template <typename... Values>
-    struct _Bind {
+    struct _Bind : impl::SignatureBindTag {
     protected:
         using Source = signature<Return(Values...)>;
 
@@ -5160,7 +5175,7 @@ public:
     container is large.  This can be avoided by using Bertrand types as inputs to the
     function, in which case the check is always O(1) in time, due to the 1:1
     equivalence between Bertrand wrappers and their C++ counterparts. */
-    struct Vectorcall {
+    struct Vectorcall : impl::SignatureVectorcallTag {
     private:
         static std::string_view arg_name(PyObject* name) {
             Py_ssize_t len;
@@ -7941,24 +7956,40 @@ public:
             constexpr signature sig;
             Required mask;
             size_t offset = this->offset();
+
+            // validate positional arguments
             for (size_t i = 0; i < nargs; ++i) {
+                constexpr size_t cutoff = std::min({
+                    signature::args_idx,
+                    signature::kwonly_idx,
+                    signature::kwargs_idx
+                });
                 Object value = reinterpret_borrow<Object>(array[i + offset]);
-                const Callback* callback = sig[i];
-                if (!callback) {
-                    throw TypeError(
-                        "received unexpected positional argument at index " +
-                        std::to_string(i)
-                    );
+                const Callback* callback;
+                if (i < cutoff) {
+                    callback = &positional_table[i];
+                    mask |= Required(1) << callback->index;
+                } else {
+                    if constexpr (signature::has_args) {
+                        callback = &positional_table[signature::args_idx];
+                    } else {
+                        throw TypeError(
+                            "received unexpected positional argument at index " +
+                            std::to_string(i)
+                        );
+                    }
                 }
                 if (!callback->isinstance(value)) {
                     throw TypeError(
                         "expected positional argument at index " +
                         std::to_string(i) + " to be a subclass of '" +
-                        repr(callback->type()) + "', not: '" + repr(value) + "'"
+                        repr(callback->type()) + "', not: '" +
+                        repr(value) + "'"
                     );
                 }
-                mask |= Required(1) << callback->index;
             }
+
+            // validate keyword arguments
             for (size_t i = 0, transition = offset + nargs; i < kwcount; ++i) {
                 Object name = reinterpret_borrow<Object>(
                     PyTuple_GET_ITEM(ptr(kwnames), i)
@@ -7966,17 +7997,30 @@ public:
                 Object value = reinterpret_borrow<Object>(
                     array[transition + i]
                 );
-                const Callback* callback = sig[arg_name(ptr(name))];
+                const Callback* callback = name_table[arg_name(ptr(name))];
                 if (!callback) {
+                    if constexpr (signature::has_kwargs) {
+                        callback = &positional_table[signature::kwargs_idx];
+                    } else {
+                        throw TypeError(
+                            "received unexpected keyword argument '" +
+                            repr(name) + "'"
+                        );
+                    }
+                } else if (!callback->kw()) {
                     throw TypeError(
                         "received unexpected keyword argument '" +
                         repr(name) + "'"
                     );
-                }
-                if (mask & callback->mask && !callback->variadic()) {
-                    throw TypeError(
-                        "received multiple values for argument '" + repr(name) + "'"
-                    );
+                } else {
+                    Required temp = Required(1) << callback->index;
+                    if ((mask & temp)) {
+                        throw TypeError(
+                            "received multiple values for argument '" +
+                            repr(name) + "'"
+                        );
+                    }
+                    mask |= temp;
                 }
                 if (!callback->isinstance(array[i + nargs])) {
                     throw TypeError(
@@ -7985,15 +8029,16 @@ public:
                         "', not: '" + repr(value) + "'"
                     );
                 }
-                mask |= Required(1) << callback->index;
             }
+
+            // check for missing required arguments
             mask &= signature::required;
             if (mask != signature::required) {
                 Required missing = signature::required & ~mask;
                 std::string msg = "missing required arguments: [";
                 size_t i = 0;
                 while (i < signature::n) {
-                    if (missing & (typename inspect::Required(1) << i)) {
+                    if (missing & (Required(1) << i)) {
                         const Callback& callback = positional_table[i];
                         if (callback.name.empty()) {
                             msg += "<parameter " + std::to_string(i) + ">";
@@ -8006,7 +8051,7 @@ public:
                     ++i;
                 }
                 while (i < signature::n) {
-                    if (missing & (typename inspect::Required(1) << i)) {
+                    if (missing & (Required(1) << i)) {
                         const Callback& callback = positional_table[i];
                         if (callback.name.empty()) {
                             msg += ", <parameter " + std::to_string(i) + ">";
@@ -8118,7 +8163,7 @@ public:
         function with the given arguments already filled in.  That method is chainable,
         meaning that any existing partial arguments (inserted during normalization)
         will be carried over into the new partial function object. */
-        [[nodiscard]] Object template_key() {
+        [[nodiscard]] Object template_key() const {
             if (!normalized()) {
                 throw AssertionError(
                     "vectorcall arguments must be normalized before generating a "
@@ -8133,18 +8178,129 @@ public:
             /// in Python.  The vectorcall args are already normalized, so I should be
             /// able to just directly generate the tuple.
 
-            Object result = reinterpret_steal<Object>(PyTuple_New(size() + 1));
-            if (result.is(nullptr)) {
+            Object tuple = reinterpret_steal<Object>(
+                PyTuple_New(signature::size() + 1)
+            );
+            if (tuple.is(nullptr)) {
                 Exception::from_python();
             }
-
-            for (Param param : *this) {
-
-            }
+            PyTuple_SET_ITEM(ptr(tuple), 0, release(Type<Return>()));
 
             /// TODO: after producing this key, I would specialize `bertrand.Function[]`
             /// accordingly, and then pass the normalized vectorcall arguments to its
             /// standard Python constructor, and everything should work as expected.
+
+            []<size_t I = 0>(
+                this auto&& recur,
+                const Vectorcall& self,
+                const Object& Arg,
+                PyObject* tuple,
+                size_t idx,
+                size_t nargs,
+                size_t kwcount  /// TODO: probably needs to be passed as a Kwargs& dict
+            ) {
+                if constexpr (I < signature::n) {
+                    using T = signature::at<I>;
+
+                    /// TODO: if any of the existing parameters are already bound,
+                    /// forward them appropriately.
+
+                    if constexpr (ArgTraits<T>::posonly()) {
+                        if constexpr (ArgTraits<T>::name.empty()) {
+                            if (idx < nargs) {
+                                /// TODO: this is where I'd need a bertrand.BoundArg type
+                                /// separate from Arg[].bind[].  Alternatively, I could
+                                /// canonicalize to _1, _2, etc. for the unnamed
+                                /// args.
+                                Param param = self[idx++];
+                                PyTuple_SET_ITEM(tuple, idx + 1, Py_NewRef(
+                                    reinterpret_cast<PyObject*>(Py_TYPE(param.value))
+                                ));
+                            } else {
+                                PyTuple_SET_ITEM(tuple, idx + 1, release(
+                                    Type<typename ArgTraits<T>::type>()
+                                ));
+                            }
+                        } else {
+                            Object annotation = getatt<"pos">(bertrand_arg<I>(Arg));
+                            if constexpr (ArgTraits<T>::opt()) {
+                                annotation = getattr<"opt">(annotation);
+                            }
+                            if (idx < nargs) {
+                                Param param = self[idx++];
+                                PyTuple_SET_ITEM(
+                                    tuple,
+                                    idx + 1,
+                                    release(getattr<"bind">(annotation)[
+                                        reinterpret_steal<Object>(
+                                            reinterpret_cast<PyObject*>(
+                                                Py_TYPE(param.value)
+                                            )
+                                        )
+                                    ])
+                                );
+                            } else {
+                                PyTuple_SET_ITEM(
+                                    tuple,
+                                    idx,
+                                    release(getattr<"bind">(annotation)[
+                                        Type<typename ArgTraits<T>::type>()
+                                    ])
+                                );
+                            }
+                        }
+
+                    } else if constexpr (ArgTraits<T>::pos()) {
+
+                    } else if constexpr (ArgTraits<T>::kw()) {
+
+                    } else if constexpr (ArgTraits<T>::args()) {
+                        /// TODO: remember to append leading "*" to name
+
+                    } else if constexpr (ArgTraits<T>::kwargs()) {
+                        /// TODO: remember to append leading "**" to name
+
+                    } else {
+                        static_assert(false, "invalid parameter kind");
+                        std::unreachable();
+                    }
+
+                    std::forward<decltype(recur)>(recur).template operator()<I + 1>(
+                        self,
+                        Arg,
+                        tuple,
+                        idx,
+                        nargs,
+                        kwcount
+                    );
+                }
+            }(
+                *this,
+                getattr<"Arg">(bertrand),
+                ptr(tuple),
+                0,
+                nargs,
+                kwcount
+            );
+
+            return tuple;
+        }
+
+    private:
+
+        template <size_t I>
+        static Object bertrand_arg(const Object& Arg) {
+            using T = signature::at<I>;
+
+            Object pair = reinterpret_steal<Object>(PyTuple_Pack(
+                2,
+                ptr(impl::template_string<ArgTraits<T>::name>()),
+                ptr(Type<typename ArgTraits<T>::type>())
+            ));
+            if (pair.is(nullptr)) {
+                Exception::from_python();
+            }
+            return Arg[pair];
         }
     };
 
@@ -8210,7 +8366,7 @@ public:
     function overloading.  Uses vectorcall arrays as search keys, meaning that only one
     conversion per argument is needed to both search the trie and invoke a matching
     overload, with a stable hash for efficient caching. */
-    struct Overloads {
+    struct Overloads : impl::SignatureOverloadsTag {
         struct instance {
             static bool operator()(PyObject* obj, PyObject* cls) {
                 int rc = PyObject_IsInstance(obj, cls);
@@ -8430,7 +8586,7 @@ public:
                 for (size_t i = 0; i < path.size(); ++i) {
                     const Visited& edge = path[i];
                     if (edge.kind.pos()) {
-                        mask |= Required(1) << overload.signature[i].index;
+                        mask |= Required(1) << i;
                     } else if (edge.kind.kw()) {
                         mask |= Required(1) << overload.signature[edge.name].index;
                     }
@@ -8449,8 +8605,7 @@ public:
                         for (size_t i = 0; i < path.size(); ++i) {
                             const Visited& edge = path[i];
                             if (edge.kind.pos()) {
-                                mask |= Required(1) <<
-                                    existing.signature[i].index;
+                                mask |= Required(1) << i;
                             } else if (edge.kind.kw()) {
                                 mask |= Required (1) <<
                                     existing.signature[edge.name].index;
@@ -9350,13 +9505,9 @@ public:
                 for (size_t i = 1; i < stack.size(); ++i) {
                     const auto& it = stack[i].outgoing;
                     if (it.kind().pos()) {
-                        const inspect::Param* lookup = overload.signature.get(i - 1);
-                        if (!lookup) {
-                            return false;
-                        }
-                        mask |= Required(1) << lookup->index;
+                        mask |= Required(1) << (i - 1);
                     } else if (it.kind().kw()) {
-                        const inspect::Param* lookup = overload.signature.get(it.name());
+                        const inspect::Param* lookup = overload.signature[it.name()];
                         if (!lookup) {
                             return false;
                         }
@@ -9820,22 +9971,6 @@ public:
         return vectorcall(ptr(*it));
     }
 
-    /* Capture a C++ function and generate a new function object that matches the
-    enclosing signature, without any partial arguments.  A function of this form is
-    generated whenever a C++ function object is converted into a `py::Function` type,
-    allowing it to model functions with pure C++ arguments, as long as those arguments
-    are implicitly convertible from the enclosing signature. */
-    template <typename F> requires (invocable<F>)
-    [[nodiscard]] static constexpr auto capture(F&& func) {
-        struct Func {
-            std::remove_cvref_t<F> func;
-            constexpr Return operator()(typename ArgTraits<Args>::unbind... args) const {
-                return func(std::forward<typename ArgTraits<Args>::unbind>(args)...);
-            }
-        };
-        return Func{std::forward<F>(func)};
-    }
-
     /* Produce a string representation of this signature for debugging purposes.  The
     provided `prefix` will be prepended to each output line, and if `max_width` is
     provided, then the algorithm will attempt to wrap the output to that width, with
@@ -10159,15 +10294,9 @@ public:
         );
     }
 
-    /// TODO: maybe I need some extra facilities to convert Python arguments into a
-    /// Partial/Defaults object, for use in the Python-level constructor for
-    /// py::Function?
-    /// -> defaults are inferred from the signature, so they don't need to be
-    /// considered.
-
     /* Convert a C++ signature into a template key that can be used to specialize the
     `bertrand.Function` type on the Python side. */
-    [[nodiscard]] static Object key() {
+    [[nodiscard]] static Object template_key() {
         Object bertrand = reinterpret_steal<Object>(PyImport_Import(
             ptr(impl::template_string<"bertrand">())
         ));
@@ -10356,21 +10485,15 @@ template <typename F>
     };
 
     Object type = rhs.returns().type();
-    if (!issubclass(
-        ptr(lhs.return_annotation()),
-        ptr(type)
-    )) {
+    if (!issubclass(ptr(lhs.return_annotation()), ptr(type))) {
         return false;
     }
-    bool equal = isequal(
-        ptr(lhs.return_annotation()),
-        ptr(type)
-    );
+    bool equal = isequal(ptr(lhs.return_annotation()), ptr(type));
 
     auto l = lhs.begin();
     auto l_end = lhs.end();
     auto r = rhs.begin();
-    auto r_end = lhs.end();
+    auto r_end = rhs.end();
     while (r != r_end) {
         type = r->type();
         if (r->args()) {
@@ -10382,7 +10505,10 @@ template <typename F>
                 ++l;
             }
             if (l != l_end && l->args()) {
-                if (!issubclass(ptr(l->type), ptr(type))) {
+                if (l->name != r->name || !issubclass(
+                    ptr(l->type),
+                    ptr(type)
+                )) {
                     return false;
                 }
                 if (equal) {
@@ -10399,7 +10525,10 @@ template <typename F>
                 ++l;
             }
             if (l != l_end && l->kwargs()) {
-                if (!issubclass(ptr(l->type), ptr(type))) {
+                if (l->name != r->name || !issubclass(
+                    ptr(l->type),
+                    ptr(type)
+                )) {
                     return false;
                 }
                 if (equal) {
@@ -10445,34 +10574,30 @@ template <typename F>
     };
 
     Object type = lhs.returns().type();
-    if (!issubclass(
-        ptr(type),
-        ptr(rhs.return_annotation())
-    )) {
+    if (!issubclass(ptr(type), ptr(rhs.return_annotation()))) {
         return false;
     }
-    bool equal = isequal(
-        ptr(type),
-        ptr(rhs.return_annotation())
-    );
+    bool equal = isequal(ptr(type), ptr(rhs.return_annotation()));
 
     auto l = lhs.begin();
     auto l_end = lhs.end();
     auto r = rhs.begin();
-    auto r_end = lhs.end();
+    auto r_end = rhs.end();
     while (r != r_end) {
         if (r->args()) {
             while (l != l_end && l->pos()) {
-                type = l->type();
                 equal = false;
-                if (!issubclass(ptr(type), ptr(r->type))) {
+                if (!issubclass(ptr(l->type()), ptr(r->type))) {
                     return false;
                 }
                 ++l;
             }
             if (l != l_end && l->args()) {
                 type = l->type();
-                if (!issubclass(ptr(type), ptr(r->type))) {
+                if (l->name != r->name || !issubclass(
+                    ptr(type),
+                    ptr(r->type)
+                )) {
                     return false;
                 }
                 if (equal) {
@@ -10483,13 +10608,17 @@ template <typename F>
         } else if (r->kwargs()) {
             while (l != l_end && l->kwonly()) {
                 equal = false;
-                if (!issubclass(ptr(type), ptr(r->type))) {
+                if (!issubclass(ptr(l->type()), ptr(r->type))) {
                     return false;
                 }
                 ++l;
             }
             if (l != l_end && l->kwargs()) {
-                if (!issubclass(ptr(type), ptr(r->type))) {
+                type = l->type();
+                if (l->name != r->name || !issubclass(
+                    ptr(type),
+                    ptr(r->type)
+                )) {
                     return false;
                 }
                 if (equal) {
@@ -10499,7 +10628,7 @@ template <typename F>
             }
         } else {
             if (l == l_end || l->name != r->name || l->kind != r->kind || !issubclass(
-                ptr(type),
+                ptr(l->type()),
                 ptr(r->type)
             )) {
                 return false;
@@ -10515,11 +10644,127 @@ template <typename F>
 }
 template <typename L, typename R>
 [[nodiscard]] constexpr bool operator<(const signature<L>& lhs, const signature<R>& rhs) {
-    if constexpr (lhs.size() < rhs.size()) {
+    using LHS = signature<L>;
+    using RHS = signature<R>;
+
+    if constexpr (
+        LHS::size() < RHS::size() ||
+        !issubclass<typename LHS::Return, typename RHS::Return>()
+    ) {
         return false;
     }
-    /// TODO: this one can be computed entirely at compile time and used as a template
-    /// constraint.
+
+    return []<size_t I = 0, size_t J = 0>(this auto&& self, bool equal) {
+        // recursive case
+        if constexpr (J < RHS::size()) {
+            using right = RHS::template at<J>;
+
+            // variadic positional
+            if constexpr (ArgTraits<right>::args()) {
+                if constexpr (I < LHS::size()) {
+                    using left = LHS::template at<I>;
+                    if constexpr (ArgTraits<left>::pos()) {
+                        if constexpr (!issubclass<
+                            typename ArgTraits<left>::type,
+                            typename ArgTraits<right>::type
+                        >()) {
+                            return false;
+                        }
+                        return std::forward<decltype(self)>(self).template operator()<
+                            I + 1,
+                            J
+                        >(false);
+                    } else if constexpr (ArgTraits<left>::args()) {
+                        if constexpr (
+                            ArgTraits<left>::name != ArgTraits<right>::name ||
+                            !issubclass<
+                                typename ArgTraits<left>::type,
+                                typename ArgTraits<right>::type
+                            >()
+                        ) {
+                            return false;
+                        }
+                        return std::forward<decltype(self)>(self).template operator()<
+                            I + 1,
+                            J
+                        >(equal && std::same_as<left, right>);
+                    } else {
+                        return std::forward<decltype(self)>(self).template operator()<
+                            I,
+                            J + 1
+                        >(equal);
+                    }
+                } else {
+                    return false;
+                }
+
+            // variadic keywords
+            } else if constexpr (ArgTraits<right>::kwargs()) {
+                if constexpr (I < LHS::size()) {
+                    using left = LHS::template at<I>;
+                    if constexpr (ArgTraits<left>::kwonly()) {
+                        if constexpr (!issubclass<
+                            typename ArgTraits<left>::type,
+                            typename ArgTraits<right>::type
+                        >()) {
+                            return false;
+                        }
+                        return std::forward<decltype(self)>(self).template operator()<
+                            I + 1,
+                            J
+                        >(false);
+                    } else if constexpr (ArgTraits<left>::kwargs()) {
+                        if constexpr (
+                            ArgTraits<left>::name != ArgTraits<right>::name ||
+                            !issubclass<
+                                typename ArgTraits<left>::type,
+                                typename ArgTraits<right>::type
+                            >()
+                        ) {
+                            return false;
+                        }
+                        return std::forward<decltype(self)>(self).template operator()<
+                            I + 1,
+                            J
+                        >(equal && std::same_as<left, right>);
+                    } else {
+                        return std::forward<decltype(self)>(self).template operator()<
+                            I,
+                            J + 1
+                        >(equal);
+                    }
+                } else {
+                    return false;
+                }
+
+            // single arg
+            } else {
+                if constexpr (I < LHS::size()) {
+                    using left = LHS::template at<I>;
+                    if constexpr (
+                        ArgTraits<left>::name != ArgTraits<right>::name ||
+                        ArgTraits<left>::kind != ArgTraits<right>::kind ||
+                        !issubclass<
+                            typename ArgTraits<left>::type,
+                            typename ArgTraits<right>::type
+                        >()
+                    ) {
+                        return false;
+                    }
+                    return std::forward<decltype(self)>(self).template operator()<
+                        I + 1,
+                        J + 1
+                    >(equal && std::same_as<left, right>);
+                } else {
+                    return false;
+                }
+            }
+
+        // base case
+        } else {
+            return !equal;
+        }
+    }(std::same_as<typename LHS::Return, typename RHS::Return>);
 }
 
 
@@ -10538,29 +10783,44 @@ template <typename F>
     };
 
     Object type = rhs.returns().type();
-    if (!issubclass(
-        ptr(lhs.return_annotation()),
-        ptr(type)
-    )) {
+    if (!issubclass(ptr(lhs.return_annotation()), ptr(type))) {
         return false;
     }
 
     auto l = lhs.begin();
     auto l_end = lhs.end();
     auto r = rhs.begin();
-    auto r_end = lhs.end();
+    auto r_end = rhs.end();
     while (r != r_end) {
         type = r->type();
         if (r->args()) {
-            while (l != l_end && (l->pos() || l->args())) {
+            while (l != l_end && l->pos()) {
                 if (!issubclass(ptr(l->type), ptr(type))) {
                     return false;
                 }
                 ++l;
             }
+            if (l != l_end && l->args()) {
+                if (l->name != r->name || !issubclass(
+                    ptr(l->type),
+                    ptr(type)
+                )) {
+                    return false;
+                }
+                ++l;
+            }
         } else if (r->kwargs()) {
-            while (l != l_end && (l->kwonly() || l->kwargs())) {
+            while (l != l_end && l->kwonly()) {
                 if (!issubclass(ptr(l->type), ptr(type))) {
+                    return false;
+                }
+                ++l;
+            }
+            if (l != l_end && l->kwargs()) {
+                if (l->name != r->name || !issubclass(
+                    ptr(l->type),
+                    ptr(type)
+                )) {
                     return false;
                 }
                 ++l;
@@ -10593,37 +10853,50 @@ template <typename F>
     };
 
     Object type = lhs.returns().type();
-    if (!issubclass(
-        ptr(type),
-        ptr(lhs.return_annotation())
-    )) {
+    if (!issubclass(ptr(type), ptr(lhs.return_annotation()))) {
         return false;
     }
 
     auto l = lhs.begin();
     auto l_end = lhs.end();
     auto r = rhs.begin();
-    auto r_end = lhs.end();
+    auto r_end = rhs.end();
     while (r != r_end) {
         if (r->args()) {
-            while (l != l_end && (l->pos() || l->args())) {
-                type = l->type();
-                if (!issubclass(ptr(type), ptr(r->type))) {
+            while (l != l_end && l->pos()) {
+                if (!issubclass(ptr(l->type()), ptr(r->type))) {
+                    return false;
+                }
+                ++l;
+            }
+            if (l != l_end && l->args()) {
+                if (l->name != r->name || !issubclass(
+                    ptr(l->type()),
+                    ptr(r->type)
+                )) {
                     return false;
                 }
                 ++l;
             }
         } else if (r->kwargs()) {
-            while (l != l_end && (l->kwonly() || l->kwargs())) {
-                type = l->type();
-                if (!issubclass(ptr(type), ptr(r->type))) {
+            while (l != l_end && l->kwonly()) {
+                if (!issubclass(ptr(l->type()), ptr(r->type))) {
+                    return false;
+                }
+                ++l;
+            }
+            if (l != l_end && l->kwargs()) {
+                if (l->name != r->name || !issubclass(
+                    ptr(l->type()),
+                    ptr(r->type)
+                )) {
                     return false;
                 }
                 ++l;
             }
         } else {
             if (l == l_end || l->name != r->name || l->kind != r->kind || !issubclass(
-                ptr(type),
+                ptr(l->type()),
                 ptr(r->type)
             )) {
                 return false;
@@ -10636,11 +10909,127 @@ template <typename F>
 }
 template <typename L, typename R>
 [[nodiscard]] constexpr bool operator<=(const signature<L>& lhs, const signature<R>& rhs) {
-    if constexpr (lhs.size() < rhs.size()) {
+    using LHS = signature<L>;
+    using RHS = signature<R>;
+
+    if constexpr (
+        LHS::size() < RHS::size() ||
+        !issubclass<typename LHS::Return, typename RHS::Return>()
+    ) {
         return false;
     }
-    /// TODO: this one can be computed entirely at compile time and used as a template
-    /// constraint.
+
+    return []<size_t I = 0, size_t J = 0>(this auto&& self) {
+        // recursive case
+        if constexpr (J < RHS::size()) {
+            using right = RHS::template at<J>;
+
+            // variadic positional
+            if constexpr (ArgTraits<right>::args()) {
+                if constexpr (I < LHS::size()) {
+                    using left = LHS::template at<I>;
+                    if constexpr (ArgTraits<left>::pos()) {
+                        if constexpr (!issubclass<
+                            typename ArgTraits<left>::type,
+                            typename ArgTraits<right>::type
+                        >()) {
+                            return false;
+                        }
+                        return std::forward<decltype(self)>(self).template operator()<
+                            I + 1,
+                            J
+                        >();
+                    } else if constexpr (ArgTraits<left>::args()) {
+                        if constexpr (
+                            ArgTraits<left>::name != ArgTraits<right>::name ||
+                            !issubclass<
+                                typename ArgTraits<left>::type,
+                                typename ArgTraits<right>::type
+                            >()
+                        ) {
+                            return false;
+                        }
+                        return std::forward<decltype(self)>(self).template operator()<
+                            I + 1,
+                            J
+                        >();
+                    } else {
+                        return std::forward<decltype(self)>(self).template operator()<
+                            I,
+                            J + 1
+                        >();
+                    }
+                } else {
+                    return false;
+                }
+
+            // variadic keywords
+            } else if constexpr (ArgTraits<right>::kwargs()) {
+                if constexpr (I < LHS::size()) {
+                    using left = LHS::template at<I>;
+                    if constexpr (ArgTraits<left>::kwonly()) {
+                        if constexpr (!issubclass<
+                            typename ArgTraits<left>::type,
+                            typename ArgTraits<right>::type
+                        >()) {
+                            return false;
+                        }
+                        return std::forward<decltype(self)>(self).template operator()<
+                            I + 1,
+                            J
+                        >();
+                    } else if constexpr (ArgTraits<left>::kwargs()) {
+                        if constexpr (
+                            ArgTraits<left>::name != ArgTraits<right>::name ||
+                            !issubclass<
+                                typename ArgTraits<left>::type,
+                                typename ArgTraits<right>::type
+                            >()
+                        ) {
+                            return false;
+                        }
+                        return std::forward<decltype(self)>(self).template operator()<
+                            I + 1,
+                            J
+                        >();
+                    } else {
+                        return std::forward<decltype(self)>(self).template operator()<
+                            I,
+                            J + 1
+                        >();
+                    }
+                } else {
+                    return false;
+                }
+
+            // single arg
+            } else {
+                if constexpr (I < LHS::size()) {
+                    using left = LHS::template at<I>;
+                    if constexpr (
+                        ArgTraits<left>::name != ArgTraits<right>::name ||
+                        ArgTraits<left>::kind != ArgTraits<right>::kind ||
+                        !issubclass<
+                            typename ArgTraits<left>::type,
+                            typename ArgTraits<right>::type
+                        >()
+                    ) {
+                        return false;
+                    }
+                    return std::forward<decltype(self)>(self).template operator()<
+                        I + 1,
+                        J + 1
+                    >();
+                } else {
+                    return false;
+                }
+            }
+
+        // base case
+        } else {
+            return true;
+        }
+    }();
 }
 
 
@@ -10649,7 +11038,6 @@ template <typename F>
     if (lhs.size() != rhs.size()) {
         return false;
     }
-    /// TODO: compare hashes?
 
     constexpr auto isequal = [](PyObject* lhs, PyObject* rhs) {
         int rc = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
@@ -10683,7 +11071,6 @@ template <typename F>
     if (lhs.size() != rhs.size()) {
         return false;
     }
-    /// TODO: compare hashes?
 
     constexpr auto isequal = [](PyObject* lhs, PyObject* rhs) {
         int rc = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
@@ -10714,11 +11101,27 @@ template <typename F>
 }
 template <typename L, typename R>
 [[nodiscard]] constexpr bool operator==(const signature<L>& lhs, const signature<R>& rhs) {
-    if constexpr (lhs.size() != rhs.size()) {
+    using LHS = signature<L>;
+    using RHS = signature<R>;
+
+    if constexpr (
+        LHS::size() != RHS::size() ||
+        !std::same_as<typename LHS::Return, typename RHS::Return>
+    ) {
         return false;
     }
-    /// TODO: this one can be computed entirely at compile time and used as a template
-    /// constraint.
+
+    return []<size_t I = 0>(this auto&& self) {
+        if constexpr (I < RHS::size()) {
+            using left = LHS::template at<I>;
+            using right = RHS::template at<I>;
+            return
+                std::same_as<left, right> &&
+                std::forward<decltype(self)>(self).template operator()<I + 1>();
+        } else {
+            return true;
+        }
+    }();
 }
 
 
@@ -10762,6 +11165,109 @@ template <typename L, typename R>
 [[nodiscard]] constexpr bool operator>(const signature<L>& lhs, const signature<R>& rhs) {
     return rhs < lhs;
 }
+
+
+}  // namespace py
+
+
+namespace std {
+
+    /* Specializing `std::tuple_size` allows `signature` objects to be decomposed into
+    individual callbacks using structured bindings. */
+    template <py::impl::inherits<py::impl::SignatureTag> T>
+    struct tuple_size<T> :
+        std::integral_constant<size_t, std::remove_cvref_t<T>::size()>
+    {};
+
+    /* Specializing `std::tuple_size` allows `signature::Partial` objects to be
+    decomposed using structured bindings. */
+    template <py::impl::inherits<py::impl::SignaturePartialTag> T>
+    struct tuple_size<T> :
+        std::integral_constant<size_t, std::remove_cvref_t<T>::size()>
+    {};
+
+    /* Specializing `std::tuple_size` allows `signature::Defaults` objects to be
+    decomposed using structured bindings. */
+    template <py::impl::inherits<py::impl::SignatureDefaultsTag> T>
+    struct tuple_size<T> :
+        std::integral_constant<size_t, std::remove_cvref_t<T>::size()>
+    {};
+
+    /* Specializing `std::tuple_element` allows `signature` objects to be decomposed
+    into individual callbacks using structured bindings. */
+    template <size_t I, py::impl::inherits<py::impl::SignatureTag> T>
+        requires (I < std::remove_cvref_t<T>::size())
+    struct tuple_element<I, T> {
+        using type = decltype(std::declval<T>().template get<I>());
+    };
+
+    /* Specializing `std::tuple_element` allows `signature::Partial` objects to be
+    decomposed using structured bindings. */
+    template <size_t I, py::impl::inherits<py::impl::SignaturePartialTag> T>
+        requires (I < std::remove_cvref_t<T>::size())
+    struct tuple_element<I, T> {
+        using type = decltype(std::declval<T>().template get<I>());
+    };
+
+    /* Specializing `std::tuple_element` allows `signature::Defaults` objects to be
+    decomposed using structured bindings. */
+    template <size_t I, py::impl::inherits<py::impl::SignatureDefaultsTag> T>
+        requires (I < std::remove_cvref_t<T>::size())
+    struct tuple_element<I, T> {
+        using type = decltype(std::declval<T>().template get<I>());
+    };
+
+    /* `std::get<I>(signature)` extracts the I-th callback from the signature. */
+    template <size_t I, py::impl::inherits<py::impl::SignatureTag> T>
+        requires (I < std::remove_cvref_t<T>::size())
+    [[nodiscard]] constexpr decltype(auto) get(T&& signature) noexcept {
+        return std::forward<T>(signature).template get<I>();
+    }
+
+    /* `std::get<"name">(signature)` extracts the callback associated with a given
+    named argument. */
+    template <py::static_str name, py::impl::inherits<py::impl::SignatureTag> T>
+        requires (std::remove_cvref_t<T>::template contains<name>())
+    [[nodiscard]] constexpr decltype(auto) get(T&& signature) noexcept {
+        return std::forward<T>(signature).template get<name>();
+    }
+
+    /* `std::get<I>(partial)` extracts the I-th partial argument from a
+    `signature::Partial` tuple. */
+    template <size_t I, py::impl::inherits<py::impl::SignaturePartialTag> T>
+        requires (I < std::remove_cvref_t<T>::size())
+    [[nodiscard]] constexpr decltype(auto) get(T&& partial) noexcept {
+        return std::forward<T>(partial).template get<I>();
+    }
+
+    /* `std::get<"name">(partial)` extracts the partial value associated with a given
+    named argument. */
+    template <py::static_str name, py::impl::inherits<py::impl::SignaturePartialTag> T>
+        requires (std::remove_cvref_t<T>::template contains<name>())
+    [[nodiscard]] constexpr decltype(auto) get(T&& signature) noexcept {
+        return std::forward<T>(signature).template get<name>();
+    }
+
+    /* `std::get<I>(defaults)` extracts the I-th default argument from a
+    `signature::Defaults` tuple. */
+    template <size_t I, py::impl::inherits<py::impl::SignatureDefaultsTag> T>
+        requires (I < std::remove_cvref_t<T>::size())
+    [[nodiscard]] constexpr decltype(auto) get(T&& defaults) noexcept {
+        return std::forward<T>(defaults).template get<I>();
+    }
+
+    /* `std::get<"name">(defaults)` extracts the default value associated with a given
+    named argument. */
+    template <py::static_str name, py::impl::inherits<py::impl::SignatureDefaultsTag> T>
+        requires (std::remove_cvref_t<T>::template contains<name>())
+    [[nodiscard]] constexpr decltype(auto) get(T&& signature) noexcept {
+        return std::forward<T>(signature).template get<name>();
+    }
+
+}
+
+
+namespace py {
 
 
 /* A template constraint that controls whether the `py::call()` operator is enabled

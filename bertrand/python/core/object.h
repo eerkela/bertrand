@@ -279,24 +279,38 @@ protected:
     };
 
     template <std::derived_from<Object> T, typename... Args>
-        requires (std::same_as<T, std::invoke_result_t<__init__<T, Args...>, Args...>>)
     explicit Object(implicit_ctor<T>, Args&&... args) : m_ptr(release((
         impl::Interpreter::init(),  // comma operator
         implicit_ctor<T>{}(std::forward<Args>(args)...)
     ))) {
+        using Return = std::invoke_result_t<__init__<T, Args...>, Args...>;
+        static_assert(
+            std::is_same_v<Return, T>,
+            "Implicit constructor must return a new instance of type T."
+        );
         if constexpr (DEBUG) {
-            assert_(m_ptr != nullptr, "Implicit constructor cannot return a null object.");
+            assert_(
+                m_ptr != nullptr,
+                "Implicit constructor cannot return a null object."
+            );
         }
     }
 
     template <std::derived_from<Object> T, typename... Args>
-        requires (std::same_as<T, std::invoke_result_t<__init__<T, Args...>, Args...>>)
     explicit Object(explicit_ctor<T>, Args&&... args) : m_ptr(release((
         impl::Interpreter::init(),  // comma operator
         explicit_ctor<T>{}(std::forward<Args>(args)...)
     ))) {
+        using Return = std::invoke_result_t<__init__<T, Args...>, Args...>;
+        static_assert(
+            std::is_same_v<Return, T>,
+            "Explicit constructor must return a new instance of type T."
+        );
         if constexpr (DEBUG) {
-            assert_(m_ptr != nullptr, "Explicit constructor cannot return a null object.");
+            assert_(
+                m_ptr != nullptr,
+                "Explicit constructor cannot return a null object."
+            );
         }
     }
 
@@ -603,6 +617,22 @@ public:
 
     /* Destructor.  Allows any object to be stored with static duration. */
     ~Object() noexcept {
+        /// NOTE: interpreter initialization check is necessary for the case where an
+        /// extension module with global objects is imported into an active Python
+        /// interpreter.  Due to Python's finalization logic, global destructors will
+        /// be run *after* the interpreter has been finalized, meaning that any attempt
+        /// to decrement a reference count will result in a segfault.  This check
+        /// simply avoids the decrement in that case, which technically leaks a
+        /// reference at shutdown, but is otherwise safe.  Either Python or the OS
+        /// should clean up memory normally after the process exits, so this is not a
+        /// huge concern, but is technically undefined behavior.  A real solution would
+        /// call dlclose() on each extension module before the interpreter is
+        /// invalidated, but that is not currently possible, and would likely
+        /// necessitate changes to Python itself.  Note that due to the
+        /// `impl::initialize_python()` and `impl::finalize_python()` functions, this
+        /// is not a concern for dedicated C++ programs that are run under their own
+        /// `main()` entry points, since the interpreter is guaranteed to outlive any
+        /// global objects.
         if (m_ptr && Py_IsInitialized()) {
             Py_DECREF(m_ptr);
         }
@@ -956,6 +986,9 @@ template <impl::is<Object> Self>
 struct __iter__<Self>                                       : returns<Object> {};
 template <impl::is<Object> Self>
 struct __reversed__<Self>                                   : returns<Object> {};
+
+
+/// TODO: issubclass(obj, obj) doesn't work? 
 
 
 /* Allow Objects to be used as left-hand arguments in `issubclass()` checks. */

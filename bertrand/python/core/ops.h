@@ -42,6 +42,22 @@ namespace impl {
         return reinterpret_steal<Wrapper>(self);
     }
 
+    /// TODO: it may be possible to avoid any extra allocations while still maintaining
+    /// proper per-interpreter state by using a static map keyed on the interpreter ID,
+    /// and then on the const char* of the name buffer (which uses pointer identity for
+    /// equality checks), with PyObject* values that hold the converted Python strings.
+    /// These would be new references that are deleted when the bertrand module is
+    /// destroyed, which would look up the current interpreter ID and drop it from the
+    /// map.  In fact, a system such as this could be used to allow arbitrary Python
+    /// objects to be stored globally with per-interpreter state, and I could
+    /// potentially write that into the AST parser to allow the `static` keyword to
+    /// fill that role.  In essence, the static python object would be replaced with
+    /// a static C++ value that is either implicitly convertible to the requested
+    /// object type (which performs the global lookup) or the AST parser is extended
+    /// to capture every access to the object and replace it with the result of the
+    /// global lookup.  Also, this would not necessarily be fixed to the `static`
+    /// keyword, it could potentially 
+
     template <static_str name>
     Object template_string() {
         PyObject* result = PyUnicode_FromStringAndSize(name, name.size());
