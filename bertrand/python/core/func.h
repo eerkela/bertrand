@@ -2126,12 +2126,6 @@ public:
     static constexpr size_t n_kw                = _n_kw<Args...>;
     static constexpr size_t n_kwonly            = _n_kwonly<Args...>;
 
-    /// TODO: has<> may need to restrict itself to keyword arguments only, not
-    /// named positional-only arguments.  Either that or I just need to be
-    /// really careful when validating functions
-    /// -> Maybe I replace it entirely with ::contains<Name>() for less duplication?
-    /// Same with ::n and ::size()?
-
     template <static_str Name>
     static constexpr bool has                   = n > _idx<Name, Args...>;
     static constexpr bool has_posonly           = n_posonly > 0;
@@ -3194,7 +3188,69 @@ public:
     be optimized out. */
     struct Partial : impl::SignaturePartialTag {
     private:
-        /// TODO: count/index helpers just like Defaults?
+        template <typename...>
+        static constexpr size_t _n_posonly = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t _n_posonly<T, Ts...> =
+            _n_posonly<Ts...> + (ArgTraits<T>::posonly() && ArgTraits<T>::bound());
+
+        template <typename...>
+        static constexpr size_t _n_pos = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t _n_pos<T, Ts...> =
+            _n_pos<Ts...> + (ArgTraits<T>::pos() && ArgTraits<T>::bound());
+
+        template <bool>
+        static constexpr size_t _n_args = 0;
+        template <>
+        static constexpr size_t _n_args<true> = 
+            ArgTraits<signature::at<signature::args_idx>>::bound_to::n;
+
+        template <typename...>
+        static constexpr size_t _n_kw = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t _n_kw<T, Ts...> =
+            _n_kw<Ts...> + (ArgTraits<T>::kw() && ArgTraits<T>::bound());
+
+        template <typename...>
+        static constexpr size_t _n_kwonly = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t _n_kwonly<T, Ts...> =
+            _n_kwonly<Ts...> + (ArgTraits<T>::kwonly() && ArgTraits<T>::bound());
+
+        template <bool>
+        static constexpr size_t _n_kwargs = 0;
+        template <>
+        static constexpr size_t _n_kwargs<true> =
+            ArgTraits<signature::at<signature::kwargs_idx>>::bound_to::n;
+
+        template <typename...>
+        static constexpr size_t _posonly_idx = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t _posonly_idx<T, Ts...> =
+            ArgTraits<T>::posonly() && ArgTraits<T>::bound() ?
+                0 : 1 + _posonly_idx<Ts...>;
+
+        template <typename...>
+        static constexpr size_t _pos_idx = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t _pos_idx<T, Ts...> =
+            ArgTraits<T>::pos() && ArgTraits<T>::bound() ?
+                0 : 1 + _pos_idx<Ts...>;
+
+        template <typename...>
+        static constexpr size_t _kw_idx = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t _kw_idx<T, Ts...> =
+            ArgTraits<T>::kw() && ArgTraits<T>::bound() ?
+                0 : 1 + _kw_idx<Ts...>;
+
+        template <typename...>
+        static constexpr size_t _kwonly_idx = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t _kwonly_idx<T, Ts...> =
+            ArgTraits<T>::kwonly() && ArgTraits<T>::bound() ?
+                0 : 1 + _kwonly_idx<Ts...>;
 
         /* Build a sub-signature holding only the bound arguments from the enclosing
         signature. */
@@ -3248,7 +3304,9 @@ public:
                         out...,
                         Element<
                             I,
-                            ArgTraits<Ps>::name,
+                            ArgTraits<A>::variadic() ?
+                                ArgTraits<Ps>::name :
+                                ArgTraits<A>::name,
                             typename ArgTraits<Ps>::type
                         >...
                     >;
@@ -3260,6 +3318,36 @@ public:
 
         using Tuple = collect<std::tuple<>, 0, Args...>::type;
         Tuple values;
+
+        template <static_str Name, size_t I>
+        static constexpr size_t tuple_idx = I;
+        template <static_str Name, size_t I> requires (I < std::tuple_size_v<Tuple>)
+        static constexpr size_t tuple_idx<Name, I> =
+            std::tuple_element_t<I, Tuple>::name == Name ? I : tuple_idx<Name, I + 1>;
+
+        template <size_t K>
+        struct _at {
+            using type = signature::at<std::tuple_element_t<K, Tuple>::index>;
+        };
+        template <size_t K>
+            requires (
+                signature::has_args &&
+                std::tuple_element_t<K, Tuple>::index == signature::args_idx
+            )
+        struct _at<K> {
+            using type = Inner::template at<K>;
+        };
+        template <size_t K>
+            requires (
+                signature::has_kwargs &&
+                std::tuple_element_t<K, Tuple>::index == signature::kwargs_idx
+            )
+        struct _at<K> {
+            using type = Arg<
+                std::tuple_element_t<K, Tuple>::name,
+                typename std::tuple_element_t<K, Tuple>::type
+            >::kw;
+        };
 
         template <size_t K, typename... As>
         static constexpr decltype(auto) build(As&&... args) {
@@ -3276,27 +3364,30 @@ public:
         using type = signature;
 
         static constexpr size_t n               = Inner::n;
-        static constexpr size_t n_posonly       = Inner::n_posonly;
-        static constexpr size_t n_pos           = Inner::n_pos;
-        static constexpr size_t n_kw            = Inner::n_kw;
-        static constexpr size_t n_kwonly        = Inner::n_kwonly;
+        static constexpr size_t n_posonly       = _n_posonly<Args...>;
+        static constexpr size_t n_pos           = _n_pos<Args...>;
+        static constexpr size_t n_args          = _n_args<signature::has_args>;
+        static constexpr size_t n_kw            = _n_kw<Args...>;
+        static constexpr size_t n_kwonly        = _n_kwonly<Args...>;
+        static constexpr size_t n_kwargs        = _n_kwargs<signature::has_kwargs>;
 
         template <static_str Name>
-        static constexpr bool has               = Inner::template has<Name>;
-        static constexpr bool has_posonly       = Inner::has_posonly;
-        static constexpr bool has_pos           = Inner::has_pos;
-        static constexpr bool has_kw            = Inner::has_kw;
-        static constexpr bool has_kwonly        = Inner::has_kwonly;
+        static constexpr bool has               = tuple_idx<Name, 0> < n;
+        static constexpr bool has_posonly       = n_posonly > 0;
+        static constexpr bool has_pos           = n_pos > 0;
+        static constexpr bool has_args          = n_args > 0;
+        static constexpr bool has_kw            = n_kw > 0;
+        static constexpr bool has_kwonly        = n_kwargs > 0;
+        static constexpr bool has_kwargs        = n_kwargs > 0;
 
         template <static_str Name> requires (has<Name>)
-        static constexpr size_t idx             = Inner::template idx<Name>;
-        static constexpr size_t posonly_idx     = Inner::posonly_idx;
-        static constexpr size_t pos_idx         = Inner::pos_idx;
-        static constexpr size_t kw_idx          = Inner::kw_idx;
-        static constexpr size_t kwonly_idx      = Inner::kwonly_idx;
-
-        template <size_t K> requires (K < n)
-        using at = Inner::template at<K>;
+        static constexpr size_t idx             = tuple_idx<Name, 0>;
+        static constexpr size_t posonly_idx     = _posonly_idx<Args...>;
+        static constexpr size_t pos_idx         = _pos_idx<Args...>;
+        static constexpr size_t args_idx        = signature::args_idx * has_args;
+        static constexpr size_t kw_idx          = _kw_idx<Args...>;
+        static constexpr size_t kwonly_idx      = _kwonly_idx<Args...>;
+        static constexpr size_t kwargs_idx      = signature::kwargs_idx * has_kwargs;
 
         /* Get the recorded name of the bound argument at index K of the partial
         tuple. */
@@ -3307,6 +3398,9 @@ public:
         the enclosing parameter list. */
         template <size_t K> requires (K < n)
         static constexpr size_t rfind = std::tuple_element_t<K, Tuple>::index;
+
+        template <size_t K> requires (K < n)
+        using at = _at<K>::type;
 
         /* Provides access to the template constraints for the constructor
         sub-signature. */
@@ -3597,9 +3691,6 @@ public:
         static constexpr size_t kw_idx          = _kw_idx<Args...>;
         static constexpr size_t kwonly_idx      = _kwonly_idx<Args...>;
 
-        template <size_t I> requires (I < n)
-        using at = Inner::template at<I>;
-
         /* Given an index into the enclosing signature, find the corresponding index
         in the defaults tuple if that index is marked as optional. */
         template <size_t I> requires (ArgTraits<typename signature::at<I>>::opt())
@@ -3609,6 +3700,9 @@ public:
         the enclosing parameter list. */
         template <size_t J> requires (J < n)
         static constexpr size_t rfind = std::tuple_element<J, Tuple>::type::index;
+
+        template <size_t J> requires (J < n)
+        using at = signature::at<rfind<J>>;
 
         /* Provides access to the template constraints for the constructor
         sub-signature. */
