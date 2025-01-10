@@ -1974,13 +1974,16 @@ identical. */
 
     auto l = lhs.begin();
     auto r = rhs.begin();
-    for (size_t i = 0, end = lhs.size(); i < end; ++i, ++l, ++r) {
+    auto end = rhs.end();
+    while (r != end) {
         if (l->name != r->name || l->kind != r->kind || !isequal(
             ptr(l->type),
             ptr(r->type)
         )) {
             return false;
         }
+        ++l;
+        ++r;
     }
     return true;
 }
@@ -2018,7 +2021,7 @@ namespace py {
 
 
 /* The canonical form of `py::signature`, which encapsulates all of the internal call
-machinery, as much of which as possible is evaluated at compile time.  All other
+machinery, as much as possible of which is evaluated at compile time.  All other
 specializations should redirect to this form in order to avoid reimplementing the nuts
 and bolts of the function ecosystem. */
 template <typename Return, typename... Args>
@@ -8481,9 +8484,8 @@ public:
             }
         };
 
-        struct Node;
-
     private:
+        struct Node;
         using IDs = impl::bitset<MAX_OVERLOADS>;
 
         template <typename T>
@@ -8530,21 +8532,22 @@ public:
         >;
         using Cache = std::unordered_map<size_t, PyObject*>;
 
-        size_t m_depth = 0;
-        Node::Types m_leading_edge;  // holds the root node if overloads are present
-        Data m_data = {};  // always holds fallback function at ID 1
-        mutable Cache m_cache = {};
+        struct Edge {
+            std::string name;
+            std::shared_ptr<Node> node;
 
-    public:
-        /* A single node in the overload trie, which holds the topologically-sorted
-        edge maps necessary for traversal, insertion, and deletion of candidate
-        functions. */
-        struct Node {
-        private:
-            friend Overloads;
+            /* Identifies the subset of overloads that include this node at some point
+            along their paths.  As the trie is traversed, the subset of candidate
+            overloads is determined by a sequence of bitwise ANDs against this bitset,
+            such that by the end, we are left with the space of overloads that
+            reference each node that was traversed. */
+            IDs matches;
 
             struct Hash {
                 using is_transparent = void;
+                static size_t operator()(const Edge& edge) noexcept {
+                    return std::hash<std::string_view>{}(edge.name);
+                }
                 static size_t operator()(std::string_view name) noexcept {
                     return std::hash<std::string_view>{}(name);
                 }
@@ -8552,10 +8555,21 @@ public:
 
             struct Equal {
                 using is_transparent = void;
-                static bool operator()(std::string_view lhs, std::string_view rhs) noexcept {
-                    return lhs == rhs;
+                static bool operator()(const Edge& lhs, const Edge& rhs) noexcept {
+                    return lhs.name == rhs.name;
+                }
+                static bool operator()(const Edge& lhs, std::string_view rhs) noexcept {
+                    return std::string_view(lhs.name) == rhs;
+                }
+                static bool operator()(std::string_view lhs, const Edge& rhs) noexcept {
+                    return lhs == std::string_view(rhs.name);
                 }
             };
+        };
+
+        struct Node {
+        private:
+            friend Overloads;
 
             struct TopoSort {
                 using is_transparent = void;
@@ -8578,7 +8592,11 @@ public:
             /// actual names, meaning they must match exactly in order to be reused,
             /// and there may be more than one edge per candidate type/kind.
 
-            using Edges = std::unordered_map<std::string, std::shared_ptr<Node>, Hash, Equal>;
+            using Edges = std::unordered_set<
+                Edge,
+                typename Edge::Hash,
+                typename Edge::Equal
+            >;
             using Kinds = std::map<impl::ArgKind, Edges>;
             using Types = std::map<Object, Kinds, TopoSort>;
 
@@ -8589,21 +8607,22 @@ public:
                 std::shared_ptr<Node> node;
             };
 
-            auto insert_edge(
+            Edge& insert_edge(
                 const Object& type,
                 impl::ArgKind kind,
                 std::string_view name
             ) {
                 auto a = outgoing.try_emplace(type, Kinds{}).first;
                 auto b = a->second.try_emplace(kind, Edges{}).first;
-                auto c = b->second->try_emplace(
+                auto c = b->emplace(
                     kind.kw() ? name : std::string_view{},
-                    nullptr
+                    nullptr,
+                    IDs{}
                 ).first;
-                return c;
+                return *c;
             }
 
-            auto insert_edge(
+            Edge& insert_edge(
                 const Object& type,
                 impl::ArgKind kind,
                 std::string_view name,
@@ -8611,17 +8630,18 @@ public:
             ) {
                 auto a = outgoing.try_emplace(type, Kinds{}).first;
                 auto b = a->second.try_emplace(kind, Edges{}).first;
-                auto c = b->second->try_emplace(
+                auto c = b->emplace(
                     kind.kw() ? name : std::string_view{},
-                    nullptr
+                    nullptr,
+                    IDs{}
                 ).first;
                 path.emplace_back(
                     ptr(a->first),
                     b->first,
-                    c->first,
-                    c->second
+                    c->name,
+                    c->node
                 );
-                return c;
+                return *c;
             }
 
             static void insert_cyclic_edge(
@@ -8632,25 +8652,26 @@ public:
             ) {
                 if (param.kw() || param.kwargs()) {
                     for (size_t i = 0, n = origins.size(); i < n; ++i) {
-                        auto it = origins[i]->insert_edge(
+                        Edge& edge = origins[i]->insert_edge(
                             param.type,
                             param.kwargs() ? param.kind : impl::ArgKind::KW,
                             param.name
                         );
-                        if (!it->second) {
+                        if (!edge.node) {
                             for (size_t j = path.size(); j-- > 0;) {
                                 const inspect::Param& curr = overload.signature[j];
                                 if (
-                                    (curr.kw() && curr.name == curr.name) ||
-                                    (curr.kwargs() && curr.kwargs())
+                                    (param.kw() && param.name == curr.name) ||
+                                    (param.kwargs() && curr.kwargs())
                                 ) {
-                                    it->second = path[j].node;
+                                    edge.matches |= overload.id;
+                                    edge.node = path[j].node;  // circular reference
                                     break;  // guaranteed to find a match
                                 }
                             }
-                        } else if (!(it->second->matches & overload.id)) {
-                            it->second->matches |= overload.id;
-                            origins.push_back(it->second.get());
+                        } else if (!(edge.matches & overload.id)) {
+                            edge.matches |= overload.id;  // color a reused edge
+                            origins.push_back(edge.node.get());  // DAG continues from reused node
                         }
                     }
                 }
@@ -8678,11 +8699,12 @@ public:
                 // visited on this path
                 Required mask;
                 for (size_t i = 0; i < path.size(); ++i) {
-                    const Visited& edge = path[i];
-                    if (edge.kind.pos()) {
+                    const Visited& followed = path[i];
+                    if (followed.kind.pos()) {
                         mask |= Required(1) << i;
-                    } else if (edge.kind.kw()) {
-                        mask |= Required(1) << overload.signature[edge.name].index;
+                    } else if (followed.kind.kw()) {
+                        mask |= Required(1) <<
+                            overload.signature[followed.name].index;
                     }
                 }
 
@@ -8697,12 +8719,12 @@ public:
                         const Metadata& existing = data.at(id);
                         mask = 0;
                         for (size_t i = 0; i < path.size(); ++i) {
-                            const Visited& edge = path[i];
-                            if (edge.kind.pos()) {
+                            const Visited& followed = path[i];
+                            if (followed.kind.pos()) {
                                 mask |= Required(1) << i;
-                            } else if (edge.kind.kw()) {
+                            } else if (followed.kind.kw()) {
                                 mask |= Required (1) <<
-                                    existing.signature[edge.name].index;
+                                    existing.signature[followed.name].index;
                             }
                         }
                         mask &= existing.signature.required();
@@ -8728,20 +8750,20 @@ public:
                 }
 
                 // recur for all outgoing edges associated with this overload that do
-                // not form a cycle with the current path
+                // not form a cycle with respect to the current path
                 for (const auto& [type, kinds] : outgoing) {
                     for (const auto& [kind, edges] : kinds) {
                         if ((kind.pos() || kind.args()) && !allow_positional) {
                             continue;
                         }
-                        for (const auto& [name, node] : edges) {
-                            if (node->matches & overload.id) {
+                        for (const Edge& edge : edges) {
+                            if (edge.matches & overload.id) {
                                 bool has_cycle = false;
-                                for (const Visited& edge : path) {
-                                    if (
-                                        edge.node == node ||
-                                        (edge.kind.kw() && edge.name == name)
-                                    ) {
+                                for (const Visited& followed : path) {
+                                    if (followed.node == edge.node || (
+                                        followed.kind.kw() &&
+                                        followed.name == edge.name
+                                    )) {
                                         has_cycle = true;
                                         break;
                                     }
@@ -8750,13 +8772,13 @@ public:
                                     path.emplace_back(
                                         ptr(type),
                                         kind,
-                                        name,
-                                        node
+                                        edge.name,
+                                        edge.node
                                     );
-                                    node->check_for_ambiguity(
+                                    edge.node->check_for_ambiguity(
                                         data,
                                         overload,
-                                        candidates & node->matches,
+                                        candidates & edge.matches,
                                         path,
                                         kind.pos() || kind.args()
                                     );
@@ -8769,13 +8791,6 @@ public:
             }
 
         public:
-            /* Identifies the subset of overloads that include this node at some point
-            along their paths.  As the trie is traversed, the subset of candidate
-            overloads is determined by a sequence of bitwise ANDs against this bitset,
-            such that by the end, we are left with the space of overloads that
-            reference each node that was traversed. */
-            IDs matches;
-
             /* A sorted, multi-level map that sorts the outgoing edges first by type,
             then by kind, and then by name.  Node iterators greatly simplify searches
             over these maps. */
@@ -8810,9 +8825,9 @@ public:
                     total += sizeof(Kinds::value_type) * kinds.size();
                     for (const auto& [kind, edges] : kinds) {
                         total += sizeof(Edges::value_type) * edges.size();
-                        for (const auto& [name, node] : edges) {
-                            if (visited.insert(node.get()).second) {
-                                total += node->memory_usage(visited);
+                        for (const Edge& edge : edges) {
+                            if (visited.insert(edge.node.get()).second) {
+                                total += edge.node->memory_usage(visited);
                             }
                         }
                     }
@@ -8823,14 +8838,18 @@ public:
             /* Recursively insert outgoing edges along the given path.  Existing edges
             will be reused if possible, and cycles may be created to represent
             arbitrary keyword order. */
-            void insert(const Data& data, const Metadata& overload) {
+            void insert(
+                const Data& data,
+                const Metadata& overload,
+                const IDs& candidates
+            ) {
                 // loop 1: insert edges along canonical path
                 Node* node = this;
                 std::vector<Visited> path;
                 path.reserve(overload.signature.size());
                 for (size_t i = 0; i < overload.signature.size(); ++i) {
                     const inspect::Param& param = &overload.signature[i];
-                    auto it = node->insert_edge(
+                    Edge& edge = node->insert_edge(
                         param.type,
                         param.pos() ?
                             impl::ArgKind::POS :
@@ -8838,11 +8857,11 @@ public:
                         param.name,
                         path
                     );
-                    if (!it->second) {
-                        it->second = std::make_shared<Node>(IDs{}, Types{});
+                    if (!edge.node) {
+                        edge.node = std::make_shared<Node>(Types{});
                     }
-                    it->second->matches |= overload.id;
-                    node = it->second.get();
+                    edge.matches |= overload.id;
+                    node = edge.node.get();
                 }
 
                 // loop 2 (reverse): backfill cyclic keywords
@@ -8884,12 +8903,12 @@ public:
                     origins.clear();
                 }
 
-                // loop 3: recursively search for ambiguities
+                // loop 3: recursively search for ambiguities along any path
                 path.clear();
                 check_for_ambiguity(
                     data,
                     overload,
-                    this->matches,
+                    candidates,
                     path,
                     true
                 );
@@ -8912,12 +8931,12 @@ public:
                         auto edges = kinds->second.begin();
                         auto edges_end = kinds->second.end();
                         while (edges != edges_end) {
-                            if (edges->second->matches & id) {
-                                if (visited.insert(edges->second.get()).second) {
-                                    edges->second->remove(id);  // recur
+                            if (edges->matches & id) {
+                                if (visited.insert(edges->node.get()).second) {
+                                    edges->node->remove(id);  // recur
                                 }
-                                edges->second->matches &= ~id;
-                                if (!edges->second->matches) {
+                                edges->matches &= ~id;
+                                if (!edges->matches) {
                                     edges = kinds->second.erase(edges);
                                 } else {
                                     ++edges;
@@ -8975,7 +8994,6 @@ public:
 
                 struct KindView {
                 private:
-
                     EdgeView advance() {
                         while (it != end) {
                             if ((
@@ -9016,7 +9034,6 @@ public:
 
                 struct TypeView {
                 private:
-
                     KindView advance() {
                         while (it != end) {
                             if (!self->arg_value || check{}(
@@ -9070,10 +9087,10 @@ public:
 
                 const Object& type() const noexcept { return types->first; }
                 impl::ArgKind kind() const noexcept { return types.kinds->first; }
-                const std::string& name() const noexcept { return types.kinds.edges->first; }
+                const std::string& name() const noexcept { return types.kinds.edges->name; }
 
-                const Node& operator*() const { return *types.kinds.edges->second; }
-                const Node* operator->() const { return types.kinds.edges->second.get(); }
+                const Edge& operator*() const { return *types.kinds.edges; }
+                const Edge* operator->() const { return &*types.kinds.edges; }
 
                 Iterator& operator++() {
                     ++types;
@@ -9126,6 +9143,35 @@ public:
             }
         };
 
+        size_t m_depth = 0;
+        Node::Types m_leading_edge;  // holds the root node if overloads are present
+        Data m_data = {};  // always holds fallback function at ID 1
+        mutable Cache m_cache = {};
+
+        /* Return a reference to the root node of the trie.  This can be null if the
+        function has no overloads beyond the fallback implementation.  In that case,
+        the entire overload trie is deleted to save space, and will be rebuilt the
+        first time a new overload is registered. */
+        [[nodiscard]] Edge* root() noexcept {
+            if (m_leading_edge.empty()) {
+                return nullptr;
+            }
+            auto types = m_leading_edge.begin();
+            auto kinds = types->second.begin();
+            auto edges = kinds->second.begin();
+            return &*edges;
+        }
+        [[nodiscard]] const Edge* root() const noexcept {
+            if (m_leading_edge.empty()) {
+                return nullptr;
+            }
+            auto types = m_leading_edge.begin();
+            auto kinds = types->second.begin();
+            auto edges = kinds->second.begin();
+            return &*edges;
+        }
+
+    public:
         template <std::convertible_to<std::string_view> T>
             requires (args_are_python && return_is_python)
         Overloads(const T& name, const Object& fallback) {
@@ -9162,29 +9208,6 @@ public:
             m_data.emplace(1, std::move(sig));
         }
 
-        /* Return a reference to the root node of the trie.  This can be null if the
-        function has no overloads beyond the fallback implementation.  In that case,
-        the entire overload trie is deleted to save space, and will be rebuilt the
-        first time a new overload is registered. */
-        [[nodiscard]] std::shared_ptr<Node> root() noexcept {
-            if (m_leading_edge.empty()) {
-                return nullptr;
-            }
-            auto types = m_leading_edge.begin();
-            auto kinds = types->second.begin();
-            auto edges = kinds->second.begin();
-            return edges->second;
-        }
-        [[nodiscard]] const std::shared_ptr<Node> root() const noexcept {
-            if (m_leading_edge.empty()) {
-                return nullptr;
-            }
-            auto types = m_leading_edge.begin();
-            auto kinds = types->second.begin();
-            auto edges = kinds->second.begin();
-            return edges->second;
-        }
-
         /* Return a reference to the fallback function that will be chosen if no other
         overloads match a valid argument list. */
         [[nodiscard]] const Object& function() const noexcept {
@@ -9219,13 +9242,13 @@ public:
         the function objects themselves or the `inspect.Signature` instances used to
         back the trie's metadata). */
         [[nodiscard]] size_t memory_usage() const noexcept {
-            return this->stats().first;
+            return std::get<0>(stats());
         }
 
         /* The total number of nodes that have been allocated within the trie,
         including the root node. */
         [[nodiscard]] size_t total_nodes() const noexcept {
-            return stats().second;
+            return std::get<1>(stats());
         }
 
         /* Estimate the current memory usage and total number of nodes at the same
@@ -9242,8 +9265,8 @@ public:
                 total += sizeof(typename Node::Kinds::value_type) * kinds.size();
                 for (const auto& [kind, edges] : kinds) {
                     total += sizeof(typename Node::Edges::value_type) * edges.size();
-                    for (const auto& [name, node] : edges) {
-                        root = node.get();
+                    for (const Edge& edge : edges) {
+                        root = edge.node.get();
                     }
                 }
             }
@@ -9303,18 +9326,16 @@ public:
 
             // construct root node if it doesn't already exist
             Metadata& fallback = m_data.at(1);
-            std::shared_ptr<Node> root = this->root();
+            Edge* root = this->root();
             if (!root) {
                 auto [types, inserted] = m_leading_edge.emplace(
                     reinterpret_steal<Object>(nullptr),
                     typename Node::Kinds{{
                         impl::ArgKind::POS,
-                        {{   
-                            "",
-                            Node{  // root node
-                                .matches = 1,  // identifies all overloads, 1 = fallback
-                                .outgoing = {},  // contents of trie
-                            }
+                        {Edge{   
+                            .name = "",
+                            .matches = 1,  // identifies all overloads, 1 = fallback
+                            .node = std::make_shared<Node>()  // root node
                         }}
                     }}
                 );
@@ -9324,8 +9345,8 @@ public:
                 try {
                     auto kinds = types->second.begin();
                     auto edges = kinds->second.begin();
-                    root = edges->second;
-                    root->insert(m_data, fallback);
+                    root = &*edges;
+                    root->node->insert(m_data, fallback, root->matches);
                 } catch (...) {
                     m_leading_edge.clear();
                     throw;
@@ -9360,7 +9381,7 @@ public:
                     );
                 }
 
-                root->insert(m_data, *overload);
+                root->node->insert(m_data, *overload, root->matches);
                 m_cache.clear();
                 if (overload->signature.size() > m_depth) {
                     m_depth = overload->signature.size();
@@ -9370,7 +9391,7 @@ public:
                 if (m_data.size() <= 2) {
                     clear();
                 } else {
-                    root->remove(id);
+                    root->node->remove(id);
                     m_data.erase(id);
                     root->matches &= ~id;
                 }
@@ -9389,7 +9410,7 @@ public:
         multiple functions evaluate equal to the key, only the first (most specific)
         match will be removed. */
         [[maybe_unused]] Object remove(const Object& key) {
-            std::shared_ptr<Node> root = this->root();
+            Edge* root = this->root();
             if (!root) {
                 if (key == this->function()) {
                     throw KeyError("cannot remove the fallback implementation");
@@ -9411,8 +9432,8 @@ public:
                     } else {
                         std::unordered_set<const Node*> visited;
                         visited.reserve(data.signature.size());
-                        visited.emplace(root.get());
-                        root->remove(data.id, visited);
+                        visited.emplace(root->node.get());
+                        root->node->remove(data.id, visited);
                         root->matches &= ~data.id;
                         m_cache.clear();
                         m_data.erase(data);
@@ -9546,20 +9567,20 @@ public:
             searching for an outgoing edge that has not yet been traversed and matches
             the corresponding key parameter.  Returns the next outgoing edge or null if
             no candidates are found. */
-            const Node* grow(const Argument& arg, size_t index) {
+            const Edge* grow(const Argument& arg, size_t index) {
                 IDs matches = stack.back().matches & stack.back().outgoing->matches;
                 if ((visited & matches) == matches) {
-                    return nullptr;
+                    return nullptr;  // all candidates have been explored
                 }
                 stack.emplace_back(
-                    stack.back().outgoing->template begin<check>(arg),
+                    stack.back().outgoing->node->template begin<check>(arg),
                     &stack.back(),
                     index,
                     matches
                 );
                 while (stack.back().outgoing != sentinel{}) {
                     if (!has_cycle(stack.back().outgoing)) {
-                        return &(*stack.back().outgoing);
+                        return &*stack.back().outgoing;
                     }
                     ++stack.back().outgoing;
                 }
@@ -9573,7 +9594,7 @@ public:
                 if (it.kind().kw()) {
                     for (size_t i = stack.size(); i-- > 1;) {
                         const Frame& frame = stack[i];
-                        if (&**frame.incoming == &*it || (
+                        if ((*frame.incoming)->node == it->node || (
                             frame.incoming->kind().kw() &&
                             frame.incoming->name() == it->name
                         )) {
@@ -9582,7 +9603,7 @@ public:
                     }
                 } else {
                     for (size_t i = stack.size(); i-- > 1;) {
-                        if (&**stack[i].incoming == &*it) {
+                        if ((*stack[i].incoming)->node == it->node) {
                             return true;
                         }
                     }
@@ -9621,14 +9642,12 @@ public:
             ) : key(std::move(key)),
                 data(&data)
             {
-                // if there is no root node, then we return an empty iterator.
-                // Alternatively, I could either insert the fallback function into the
-                // trie or return an iterator that only yields the fallback function.
+                // if there is no root node, then we return an empty iterator
                 if (leading_edge.empty()) {
                     return;
                 }
 
-                // vectorcall iterators are initialized with a hash, for caching purposes
+                // the first result for vectorcall iterators is cached
                 if (key.has_hash) {
                     stack.reserve(key->size() + 2);  // +1 for leading edge, +1 for overflow
                     stack.emplace_back(typename Node::template Iterator<check>{
@@ -9645,7 +9664,7 @@ public:
                         cache[key.hash] = ptr(**this);
                     }
 
-                // partial iterators have no hash and no fixed length
+                // partial iterators are not cached and have no fixed length
                 } else {
                     stack.reserve(max_depth + 2);
                     stack.emplace_back(typename Node::template Iterator<check>{
@@ -9675,7 +9694,7 @@ public:
             /* The overall trie iterator dereferences only to those functions that are
             callable with the given key. */
             const Object& operator*() const { return curr->signature.function(); }
-            const Object* operator->() const { return &(**this); }
+            const Object* operator->() const { return &curr->signature.function(); }
 
             /* Incrementing the iterator traverses the trie until the next full match
             is found.  As long as the args are valid, the iterator will always contain
@@ -11150,13 +11169,16 @@ template <typename F>
 
     auto l = lhs.begin();
     auto r = rhs.begin();
-    for (size_t i = 0, end = rhs.size(); i < end; ++i, ++l, ++r) {
+    auto end = rhs.end();
+    while (r != end) {
         if (l->name != r->name || l->kind != r->kind || !isequal(
             ptr(l->type),
             ptr(r->type())
         )) {
             return false;
         }
+        ++l;
+        ++r;
     }
     return true;
 }
@@ -11183,13 +11205,16 @@ template <typename F>
 
     auto l = lhs.begin();
     auto r = rhs.begin();
-    for (size_t i = 0, end = lhs.size(); i < end; ++i, ++l, ++r) {
+    auto end = rhs.end();
+    while (r != end) {
         if (l->name != r->name || l->kind != r->kind || !isequal(
             ptr(l->type()),
             ptr(r->type)
         )) {
             return false;
         }
+        ++l;
+        ++r;
     }
     return true;
 }
