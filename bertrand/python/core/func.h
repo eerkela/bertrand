@@ -2020,6 +2020,12 @@ namespace std {
 namespace py {
 
 
+/// TODO: when you actually call a function, keyword arguments are always transmitted
+/// as keyword-only Arg<> annotations, so that kind comparisons are more
+/// straightforward.  A proofreading pass is necessary to ensure that this is observed
+/// in the C++ and Python call operators (Bind<>, Vectorcall, and Overloads)
+
+
 /* The canonical form of `py::signature`, which encapsulates all of the internal call
 machinery, as much as possible of which is evaluated at compile time.  All other
 specializations should redirect to this form in order to avoid reimplementing the nuts
@@ -3080,8 +3086,8 @@ private:
     };
 
 public:
-    [[nodiscard]] static constexpr bool empty() noexcept { return !n; }
     [[nodiscard]] static constexpr size_t size() noexcept { return n; }
+    [[nodiscard]] static constexpr bool empty() noexcept { return !n; }
     [[nodiscard]] static auto begin() noexcept { return positional_table.begin(); }
     [[nodiscard]] static auto cbegin() noexcept { return positional_table.cbegin(); }
     [[nodiscard]] static auto rbegin() noexcept { return positional_table.rbegin(); }
@@ -5304,9 +5310,41 @@ public:
         If any arguments remain by the time the underlying function is called, then
         they are considered extras. */
         struct Kwargs {
-            using Value = std::pair<PyObject*, PyObject*>;
-            using Map = std::unordered_map<std::string_view, Value>;
-            Map map;
+            struct Value {
+                std::string_view name;
+                PyObject* unicode;
+                PyObject* value;
+
+                struct Hash {
+                    using is_transparent = void;
+                    static size_t operator()(const Value& value) {
+                        return std::hash<std::string_view>{}(value.name);
+                    }
+                    static size_t operator()(std::string_view name) {
+                        return std::hash<std::string_view>{}(name);
+                    }
+                };
+
+                struct Equal {
+                    using is_transparent = void;
+                    static bool operator()(const Value& lhs, const Value& rhs) {
+                        return lhs.name == rhs.name;
+                    }
+                    static bool operator()(const Value& lhs, std::string_view rhs) {
+                        return lhs.name == rhs;
+                    }
+                    static bool operator()(std::string_view lhs, const Value& rhs) {
+                        return lhs == rhs.name;
+                    }
+                };
+            };
+
+            using Set = std::unordered_set<
+                Value,
+                typename Value::Hash,
+                typename Value::Equal
+            >;
+            Set set;
 
             Kwargs(
                 PyObject* const* array,
@@ -5314,35 +5352,35 @@ public:
                 PyObject* kwnames,
                 size_t kwcount
             ) :
-                map([](
+                set([](
                     PyObject* const* array,
                     size_t nargs,
                     PyObject* kwnames,
                     size_t kwcount
                 ) {
-                    Map map;
-                    map.reserve(kwcount);
+                    Set set;
+                    set.reserve(kwcount);
                     for (size_t i = 0; i < kwcount; ++i) {
                         PyObject* kwname = PyTuple_GET_ITEM(kwnames, i);
-                        map.emplace(
+                        set.emplace(
                             arg_name(kwname),
-                            Value{kwname, array[nargs + i]}
+                            kwname,
+                            array[nargs + i]
                         );
                     }
-                    return map;
+                    return set;
                 }(array, nargs, kwnames, kwcount))
             {}
 
             void validate() {
                 if constexpr (!signature::has_kwargs) {
-                    if (!map.empty()) {
-                        auto it = map.begin();
-                        auto end = map.end();
+                    if (!set.empty()) {
+                        auto it = set.begin();
+                        auto end = set.end();
                         std::string message =
-                            "unexpected keyword arguments: ['" +
-                            std::string(it->first);
+                            "unexpected keyword arguments: ['" + std::string(it->name);
                         while (++it != end) {
-                            message += "', '" + std::string(it->first);
+                            message += "', '" + std::string(it->name);
                         }
                         message += "']";
                         throw TypeError(message);
@@ -5350,11 +5388,11 @@ public:
                 }
             }
 
-            auto size() const { return map.size(); }
+            auto size() const { return set.size(); }
             template <typename T>
-            auto extract(T&& key) { return map.extract(std::forward<T>(key)); }
-            auto begin() { return map.begin(); }
-            auto end() { return map.end(); }
+            auto extract(T&& key) { return set.extract(std::forward<T>(key)); }
+            auto begin() { return set.begin(); }
+            auto end() { return set.end(); }
         };
 
         /* Invoking a C++ function from Python involves translating a vectorcall array
@@ -5986,10 +6024,10 @@ public:
                 );
 
                 // consume vectorcall kwargs
-                for (auto& [key, value] : kwargs) {
+                for (auto& keyword : kwargs) {
                     out.emplace(
-                        key,
-                        reinterpret_borrow<Object>(value)
+                        keyword.name,
+                        reinterpret_borrow<Object>(keyword.value)
                     );
                 }
                 return out;
@@ -7076,7 +7114,7 @@ public:
                             kwargs,
                             std::forward<A>(args)...,
                             to_arg<I>(reinterpret_borrow<Object>(
-                                node.mapped()
+                                node.value().value
                             ))
                         );
                     }
@@ -7114,7 +7152,7 @@ public:
                             kwargs,
                             std::forward<A>(args)...,
                             to_arg<I>(reinterpret_borrow<Object>(
-                                node.mapped()
+                                node.value().value
                             ))
                         );
                     }
@@ -7278,18 +7316,18 @@ public:
                     auto node = old_kwargs.extract(std::string_view(name));
                     if (node) {
                         PyObject* value = release(impl::implicit_cast<pytype>(
-                            reinterpret_borrow<Object>(node.mapped())
+                            reinterpret_borrow<Object>(node.value().value)
                         ));
                         array[idx++] = value;
                         PyTuple_SET_ITEM(
                             kwnames,
                             kw_idx++,
-                            Py_NewRef(node.mapped().first)
+                            Py_NewRef(node.value().unicode)
                         );
                         hash = impl::hash_combine(
                             hash,
                             arg_hash(
-                                node.key().data(),
+                                node.value().name.data(),
                                 value,
                                 impl::ArgKind::KW
                             )
@@ -7335,18 +7373,18 @@ public:
                 auto node = old_kwargs.extract(std::string_view(name));
                 if (node) {
                     PyObject* value = release(impl::implicit_cast<pytype>(
-                        reinterpret_borrow<Object>(node.mapped())
+                        reinterpret_borrow<Object>(node.value().value)
                     ));
                     array[idx++] = value;
                     PyTuple_SET_ITEM(
                         kwnames,
                         kw_idx++,
-                        Py_NewRef(node.mapped().first)
+                        Py_NewRef(node.value().unicode)
                     );
                     hash = impl::hash_combine(
                         hash,
                         arg_hash(
-                            node.key().data(),
+                            node.value().name.data(),
                             value,
                             impl::ArgKind::KW
                         )
@@ -7399,18 +7437,18 @@ public:
                     // postfix ++ required to increment before invalidation
                     auto node = old_kwargs.extract(it++);
                     PyObject* value = release(impl::implicit_cast<pytype>(
-                        reinterpret_borrow<Object>(node.mapped())
+                        reinterpret_borrow<Object>(node.value().value)
                     ));
                     array[idx++] = value;
                     PyTuple_SET_ITEM(
                         kwnames,
                         kw_idx++,
-                        Py_NewRef(node.mapped().first)
+                        Py_NewRef(node.value().unicode)
                     );
                     hash = impl::hash_combine(
                         hash,
                         arg_hash(
-                            node.key().data(),
+                            node.value().name.data(),
                             value,
                             impl::ArgKind::KW
                         )
@@ -7457,8 +7495,8 @@ public:
                     // postfix ++ required to increment before invalidation
                     auto node = kwargs.extract(it++);
                     out.emplace_back(
-                        node.key(),
-                        reinterpret_borrow<Object>(node.mapped())
+                        node.value().name,
+                        reinterpret_borrow<Object>(node.value().value)
                     );
                 }
                 return out;
@@ -8254,6 +8292,10 @@ public:
             return key;
         }
 
+        /// TODO: after producing this key, I would specialize `bertrand.Function[]`
+        /// accordingly, and then pass the normalized vectorcall arguments to its
+        /// standard Python constructor, and everything should work as expected.
+
         /* Convert a normalized vectorcall array into a template key that can be used
         to specialize the `bertrand.Function` type on the Python side.  This is used to
         implement the `Function.bind()` method in Python, which produces a partial
@@ -8270,134 +8312,221 @@ public:
             Object bertrand = reinterpret_steal<Object>(PyImport_Import(
                 ptr(impl::template_string<"bertrand">())
             ));
-
-            /// TODO: generate a tuple suitable for specializing the Function[] template
-            /// in Python.  The vectorcall args are already normalized, so I should be
-            /// able to just directly generate the tuple.
-
-            Object tuple = reinterpret_steal<Object>(
-                PyTuple_New(signature::size() + 1)
-            );
-            if (tuple.is(nullptr)) {
+            if (bertrand.is(nullptr)) {
                 Exception::from_python();
             }
-            PyTuple_SET_ITEM(ptr(tuple), 0, release(Type<Return>()));
+            Object result = reinterpret_steal<Object>(
+                PyTuple_New(signature::size() + 1)
+            );
+            if (result.is(nullptr)) {
+                Exception::from_python();
+            }
 
-            /// TODO: after producing this key, I would specialize `bertrand.Function[]`
-            /// accordingly, and then pass the normalized vectorcall arguments to its
-            /// standard Python constructor, and everything should work as expected.
+            // first element describes the return type
+            if constexpr (std::is_void_v<Return>) {
+                PyTuple_SET_ITEM(ptr(result), 0, Py_NewRef(Py_None));
+            } else {
+                PyTuple_SET_ITEM(ptr(result), 0, release(Type<Return>()));
+            }
 
+            // remaining are parameters, expressed as specializations of `bertrand.Arg`
+            Kwargs kwargs{array, nargs, kwnames, kwcount};
             []<size_t I = 0>(
                 this auto&& recur,
                 const Vectorcall& self,
                 const Object& Arg,
-                PyObject* tuple,
-                size_t idx,
+                const Object& BoundArg,
+                PyObject* result,
+                size_t tuple_idx,
+                size_t pos_idx,
                 size_t nargs,
-                size_t kwcount  /// TODO: probably needs to be passed as a Kwargs& dict
+                Kwargs& kwargs
             ) {
                 if constexpr (I < signature::n) {
                     using T = signature::at<I>;
 
-                    /// TODO: if any of the existing parameters are already bound,
-                    /// forward them appropriately.
-
-                    if constexpr (ArgTraits<T>::posonly()) {
-                        if constexpr (ArgTraits<T>::name.empty()) {
-                            if (idx < nargs) {
-                                /// TODO: this is where I'd need a bertrand.BoundArg type
-                                /// separate from Arg[].bind[].  Alternatively, I could
-                                /// canonicalize to _1, _2, etc. for the unnamed
-                                /// args.
-                                Param param = self[idx++];
-                                PyTuple_SET_ITEM(tuple, idx + 1, Py_NewRef(
-                                    reinterpret_cast<PyObject*>(Py_TYPE(param.value))
-                                ));
-                            } else {
-                                PyTuple_SET_ITEM(tuple, idx + 1, release(
-                                    Type<typename ArgTraits<T>::type>()
-                                ));
-                            }
+                    // positional-only arguments may be anonymous
+                    if constexpr (ArgTraits<T>::name.empty()) {
+                        if (pos_idx < nargs) {
+                            Param param = self[pos_idx++];
+                            PyTuple_SET_ITEM(result, tuple_idx++, release(BoundArg[
+                                Type<typename ArgTraits<T>::type>(),
+                                reinterpret_steal<Object>(
+                                    PyObject_Type(param.value)
+                                )
+                            ]));
                         } else {
-                            Object annotation = getatt<"pos">(bertrand_arg<I>(Arg));
-                            if constexpr (ArgTraits<T>::opt()) {
-                                annotation = getattr<"opt">(annotation);
-                            }
-                            if (idx < nargs) {
-                                Param param = self[idx++];
-                                PyTuple_SET_ITEM(
-                                    tuple,
-                                    idx + 1,
-                                    release(getattr<"bind">(annotation)[
-                                        reinterpret_steal<Object>(
-                                            reinterpret_cast<PyObject*>(
-                                                Py_TYPE(param.value)
-                                            )
-                                        )
-                                    ])
-                                );
-                            } else {
-                                PyTuple_SET_ITEM(
-                                    tuple,
-                                    idx,
-                                    release(getattr<"bind">(annotation)[
-                                        Type<typename ArgTraits<T>::type>()
-                                    ])
-                                );
-                            }
+                            PyTuple_SET_ITEM(result, tuple_idx++, release(
+                                Type<typename ArgTraits<T>::type>()
+                            ));
                         }
 
-                    } else if constexpr (ArgTraits<T>::pos()) {
-
-                    } else if constexpr (ArgTraits<T>::kw()) {
-
-                    } else if constexpr (ArgTraits<T>::args()) {
-                        /// TODO: remember to append leading "*" to name
-
-                    } else if constexpr (ArgTraits<T>::kwargs()) {
-                        /// TODO: remember to append leading "**" to name
-
+                    // everything else is converted to a specialization of `bertrand.Arg`
                     } else {
-                        static_assert(false, "invalid parameter kind");
-                        std::unreachable();
+                        Object specialization = reinterpret_steal<Object>(nullptr);
+
+                        if constexpr (ArgTraits<T>::posonly()) {
+                            specialization = getattr<"pos">(Arg[
+                                impl::template_string<ArgTraits<T>::name>(),
+                                Type<typename ArgTraits<T>::type>()
+                            ]);
+                            if constexpr (ArgTraits<T>::opt()) {
+                                specialization = getattr<"opt">(specialization);
+                            }
+                            if (pos_idx < nargs) {
+                                Param param = self[pos_idx++];
+                                specialization = BoundArg[
+                                    specialization,
+                                    reinterpret_steal<Object>(
+                                        PyObject_Type(param.value)
+                                    )
+                                ];
+                            }
+
+                        } else if constexpr (ArgTraits<T>::pos()) {
+                            specialization = Arg[
+                                impl::template_string<ArgTraits<T>::name>(),
+                                Type<typename ArgTraits<T>::type>()
+                            ];
+                            if constexpr (ArgTraits<T>::opt()) {
+                                specialization = getattr<"opt">(specialization);
+                            }
+                            if (pos_idx < nargs) {
+                                Param param = self[pos_idx++];
+                                specialization = BoundArg[
+                                    specialization,
+                                    reinterpret_steal<Object>(
+                                        PyObject_Type(param.value)
+                                    )
+                                ];
+                            } else if (auto node = kwargs.extract(
+                                std::string_view(ArgTraits<T>::name)
+                            )) {
+                                specialization = BoundArg[
+                                    specialization,
+                                    reinterpret_steal<Object>(
+                                        PyObject_Type(node.value().value)
+                                    )
+                                ];
+                            }
+
+                        } else if constexpr (ArgTraits<T>::kw()) {
+                            specialization = getattr<"kw">(Arg[
+                                impl::template_string<ArgTraits<T>::name>(),
+                                Type<typename ArgTraits<T>::type>()
+                            ]);
+                            if constexpr (ArgTraits<T>::opt()) {
+                                specialization = getattr<"opt">(specialization);
+                            }
+                            if (auto node = kwargs.extract(
+                                std::string_view(ArgTraits<T>::name)
+                            )) {
+                                specialization = BoundArg[
+                                    specialization,
+                                    reinterpret_steal<Object>(
+                                        PyObject_Type(node.value().value)
+                                    )
+                                ];
+                            }
+
+                        } else if constexpr (ArgTraits<T>::args()) {
+                            specialization = Arg[
+                                impl::template_string<"*" + ArgTraits<T>::name>(),
+                                Type<typename ArgTraits<T>::type>()
+                            ];
+                            if (pos_idx < nargs) {
+                                Object tuple = reinterpret_steal<Object>(
+                                    PyTuple_New(nargs - pos_idx + 1)
+                                );
+                                if (tuple.is(nullptr)) {
+                                    Exception::from_python();
+                                }
+                                PyTuple_SET_ITEM(
+                                    ptr(tuple),
+                                    0,
+                                    release(specialization)
+                                );
+                                size_t start = pos_idx;
+                                while (pos_idx < nargs) {
+                                    Param param = self[pos_idx++];
+                                    PyTuple_SET_ITEM(
+                                        ptr(tuple),
+                                        pos_idx - start,
+                                        PyObject_Type(param.value)
+                                    );
+                                }
+                                specialization = BoundArg[tuple];
+                            }
+
+                        } else if constexpr (ArgTraits<T>::kwargs()) {
+                            specialization = Arg[
+                                impl::template_string<"**" + ArgTraits<T>::name>(),
+                                Type<typename ArgTraits<T>::type>()
+                            ];
+                            auto it = kwargs.begin();
+                            auto end = kwargs.end();
+                            if (it != end) {
+                                Object tuple = reinterpret_steal<Object>(
+                                    PyTuple_New(kwargs.size() + 1)
+                                );
+                                if (tuple.is(nullptr)) {
+                                    Exception::from_python();
+                                }
+                                size_t i = 0;
+                                PyTuple_SET_ITEM(
+                                    ptr(tuple),
+                                    i++,
+                                    release(specialization)
+                                );
+                                while (it != end) {
+                                    auto node = kwargs.extract(it++);
+                                    PyTuple_SET_ITEM(
+                                        ptr(tuple),
+                                        i++,
+                                        release(getattr<"kw">(Arg[
+                                            reinterpret_borrow<Object>(
+                                                node.value().unicode
+                                            ),
+                                            reinterpret_steal<Object>(
+                                                node.value().value
+                                            )
+                                        ]))
+                                    );
+                                }
+                                specialization = BoundArg[tuple];
+                            }
+
+                        } else {
+                            static_assert(false, "invalid parameter kind");
+                            std::unreachable();
+                        }
+
+                        PyTuple_SET_ITEM(result, tuple_idx++, release(specialization));
                     }
 
                     std::forward<decltype(recur)>(recur).template operator()<I + 1>(
                         self,
                         Arg,
-                        tuple,
-                        idx,
+                        BoundArg,
+                        result,
+                        tuple_idx,
+                        pos_idx,
                         nargs,
-                        kwcount
+                        kwargs
                     );
                 }
             }(
                 *this,
                 getattr<"Arg">(bertrand),
-                ptr(tuple),
+                getattr<"BoundArg">(bertrand),
+                ptr(result),
+                1,
                 0,
                 nargs,
-                kwcount
+                kwargs
             );
 
-            return tuple;
-        }
-
-    private:
-
-        template <size_t I>
-        static Object bertrand_arg(const Object& Arg) {
-            using T = signature::at<I>;
-
-            Object pair = reinterpret_steal<Object>(PyTuple_Pack(
-                2,
-                ptr(impl::template_string<ArgTraits<T>::name>()),
-                ptr(Type<typename ArgTraits<T>::type>())
-            ));
-            if (pair.is(nullptr)) {
-                Exception::from_python();
-            }
-            return Arg[pair];
+            return result;
         }
     };
 
@@ -9148,10 +9277,6 @@ public:
         Data m_data = {};  // always holds fallback function at ID 1
         mutable Cache m_cache = {};
 
-        /* Return a reference to the root node of the trie.  This can be null if the
-        function has no overloads beyond the fallback implementation.  In that case,
-        the entire overload trie is deleted to save space, and will be rebuilt the
-        first time a new overload is registered. */
         [[nodiscard]] Edge* root() noexcept {
             if (m_leading_edge.empty()) {
                 return nullptr;
@@ -9161,6 +9286,7 @@ public:
             auto edges = kinds->second.begin();
             return &*edges;
         }
+
         [[nodiscard]] const Edge* root() const noexcept {
             if (m_leading_edge.empty()) {
                 return nullptr;
@@ -9819,6 +9945,8 @@ public:
     >
         requires (
             invocable<F> &&
+            args_are_convertible_to_python &&
+            return_is_convertible_to_python &&
             Bind<A...>::proper_argument_order &&
             Bind<A...>::no_qualified_arg_annotations &&
             Bind<A...>::no_duplicate_args &&
@@ -9828,7 +9956,7 @@ public:
             Bind<A...>::satisfies_required_args &&
             Bind<A...>::can_convert
         )
-    static constexpr Return operator()(
+    static Return operator()(
         P&& partial,
         D&& defaults,
         O&& overloads,
@@ -9891,6 +10019,8 @@ public:
     /* Call a Python function from C++ using Python-style arguments. */
     template <impl::inherits<Partial> P, typename... A>
         requires (
+            args_are_convertible_to_python &&
+            return_is_convertible_to_python &&
             Bind<A...>::proper_argument_order &&
             Bind<A...>::no_qualified_arg_annotations &&
             Bind<A...>::no_duplicate_args &&
@@ -9900,7 +10030,7 @@ public:
             Bind<A...>::satisfies_required_args &&
             Bind<A...>::can_convert
         )
-    static constexpr Return operator()(
+    static Return operator()(
         P&& partial,
         PyObject* func,
         A&&... args
@@ -9926,6 +10056,8 @@ public:
     overloads. */
     template <impl::inherits<Partial> P, impl::inherits<Overloads> O, typename... A>
         requires (
+            args_are_convertible_to_python &&
+            return_is_convertible_to_python &&
             Bind<A...>::proper_argument_order &&
             Bind<A...>::no_qualified_arg_annotations &&
             Bind<A...>::no_duplicate_args &&
@@ -9935,7 +10067,7 @@ public:
             Bind<A...>::satisfies_required_args &&
             Bind<A...>::can_convert
         )
-    static constexpr Return operator()(
+    static Return operator()(
         P&& partial,
         O&& overloads,
         A&&... args
@@ -9977,8 +10109,12 @@ public:
 
     /* Call a C++ function from Python. */
     template <impl::inherits<Partial> P, impl::inherits<Defaults> D, typename F>
-        requires (invocable<F>)
-    static constexpr Return operator()(
+        requires (
+            invocable<F> &&
+            args_are_convertible_to_python &&
+            return_is_convertible_to_python
+        )
+    static Return operator()(
         P&& partial,
         D&& defaults,
         PyObject* const* args,
@@ -10000,8 +10136,12 @@ public:
         impl::inherits<Overloads> O,
         typename F
     >
-        requires (invocable<F>)
-    static constexpr Return operator()(
+        requires (
+            invocable<F> &&
+            args_are_convertible_to_python &&
+            return_is_convertible_to_python
+        )
+    static Return operator()(
         P&& partial,
         D&& defaults,
         PyObject* const* args,
@@ -10045,8 +10185,12 @@ public:
 
     /* Call a Python function from Python. */
     template <impl::inherits<Partial> P, typename F>
-        requires (invocable<F>)
-    static constexpr Return operator()(
+        requires (
+            invocable<F> &&
+            args_are_python &&
+            return_is_python
+        )
+    static Return operator()(
         P&& partial,
         PyObject* const* args,
         size_t nargsf,
@@ -10060,8 +10204,12 @@ public:
 
     /* Call a Python function from Python with possible overloads. */
     template <impl::inherits<Partial> P, impl::inherits<Overloads> O, typename F>
-        requires (invocable<F> )
-    static constexpr Return operator()(
+        requires (
+            invocable<F> &&
+            args_are_python &&
+            return_is_python
+        )
+    static Return operator()(
         P&& partial,
         PyObject* const* args,
         size_t nargsf,
@@ -10241,11 +10389,15 @@ public:
     }
 
     /// TODO: perhaps I implement two versions of to_python(), one that includes
-    /// partial arguments and one that doesn't.
+    /// partial arguments and one that doesn't?
 
     /* Produce a Python `inspect.Signature` object that matches this signature,
     allowing a corresponding function to be seamlessly introspected from Python. */
     template <impl::inherits<Defaults> D>
+        requires (
+            args_are_convertible_to_python &&
+            return_is_convertible_to_python
+        )
     [[nodiscard]] static Object to_python(D&& defaults) {
         Object inspect = reinterpret_steal<Object>(PyImport_Import(
             ptr(impl::template_string<"inspect">())
@@ -10409,11 +10561,18 @@ public:
 
     /* Convert a C++ signature into a template key that can be used to specialize the
     `bertrand.Function` type on the Python side. */
+    template <typename sig = signature>
+        requires (
+            sig::args_are_python &&
+            sig::return_is_python
+        )
     [[nodiscard]] static Object template_key() {
         Object bertrand = reinterpret_steal<Object>(PyImport_Import(
             ptr(impl::template_string<"bertrand">())
         ));
-        Object Arg = getattr<"Arg">(bertrand);
+        if (bertrand.is(nullptr)) {
+            Exception::from_python();
+        }
         Object result = reinterpret_steal<Object>(
             PyTuple_New(signature::n + 1)
         );
@@ -10429,72 +10588,100 @@ public:
         }
 
         // remaining are parameters, expressed as specializations of `bertrand.Arg`
-        []<size_t I = 0>(this auto&& self, PyObject* Arg, PyObject* result) {
+        []<size_t I = 0>(
+            this auto&& self,
+            const Object& Arg,
+            const Object& BoundArg,
+            PyObject* result
+        ) {
             if constexpr (I < n) {
                 using T = at<I>;
 
-                // parametrize Arg with proper name and type
-                Object str = reinterpret_steal<Object>(
-                    PyUnicode_FromStringAndSize(
-                        ArgTraits<T>::name.data(),
-                        ArgTraits<T>::name.size()
-                    )
-                );
-                if (str.is(nullptr)) {
-                    Exception::from_python();
-                }
-                Object key = reinterpret_steal<Object>(PyTuple_Pack(
-                    2,
-                    ptr(str),
-                    ptr(Type<typename ArgTraits<T>::type>())
-                ));
-                if (key.is(nullptr)) {
-                    Exception::from_python();
-                }
-                Object specialization = reinterpret_steal<Object>(PyObject_GetItem(
-                    Arg,
-                    ptr(key)
-                ));
-
-                // apply positional/keyword/optional flags
-                if constexpr (ArgTraits<T>::posonly()) {
-                    if constexpr (ArgTraits<T>::opt()) {
-                        specialization = getattr<"opt">(
-                            getattr<"pos">(specialization)
-                        );
+                // positional-only arguments may be anonymous
+                if constexpr (ArgTraits<T>::name.empty()) {
+                    if constexpr (ArgTraits<T>::bound()) {
+                        PyTuple_SET_ITEM(result, I + 1, release(
+                            BoundArg[
+                                Type<typename ArgTraits<T>::type>(),
+                                Type<typename ArgTraits<T>::bound_to::template at<0>>()
+                            ]
+                        ));
                     } else {
+                        PyTuple_SET_ITEM(result, I + 1, release(
+                            Type<typename ArgTraits<T>::type>()
+                        ));
+                    }
+
+                // everything else is converted to a specialization of `bertrand.Arg`
+                } else {
+                    Object str = reinterpret_steal<Object>(
+                        PyUnicode_FromStringAndSize(
+                            ArgTraits<T>::name.data(),
+                            ArgTraits<T>::name.size()
+                        )
+                    );
+                    if (str.is(nullptr)) {
+                        Exception::from_python();
+                    }
+                    Object specialization = Arg[
+                        str,
+                        Type<typename ArgTraits<T>::type>()
+                    ];
+
+                    // apply positional/keyword/optional flags
+                    if constexpr (ArgTraits<T>::posonly()) {
                         specialization = getattr<"pos">(specialization);
-                    }
-                } else if constexpr (ArgTraits<T>::pos()) {
-                    if constexpr (ArgTraits<T>::opt()) {
-                        specialization = getattr<"opt">(specialization);
-                    }
-                } else if constexpr (ArgTraits<T>::kw()) {
-                    if constexpr (ArgTraits<T>::opt()) {
-                        specialization = getattr<"opt">(
-                            getattr<"kw">(specialization)
-                        );
-                    } else {
+                        if constexpr (ArgTraits<T>::opt()) {
+                            specialization = getattr<"opt">(specialization);
+                        }
+                    } else if constexpr (ArgTraits<T>::pos()) {
+                        if constexpr (ArgTraits<T>::opt()) {
+                            specialization = getattr<"opt">(specialization);
+                        }
+                    } else if constexpr (ArgTraits<T>::kw()) {
                         specialization = getattr<"kw">(specialization);
+                        if constexpr (ArgTraits<T>::opt()) {
+                            specialization = getattr<"opt">(specialization);
+                        }
+                    } else if constexpr (!(ArgTraits<T>::args() || ArgTraits<T>::kwargs())) {
+                        static_assert(false, "invalid argument kind");
+                        std::unreachable();
                     }
-                } else if constexpr (!(ArgTraits<T>::args() || ArgTraits<T>::kwargs())) {
-                    static_assert(false, "invalid argument kind");
-                    std::unreachable();
-                }
 
-                // append bound partial value(s) if present
-                if constexpr (ArgTraits<T>::bound()) {
-                    /// TODO: implement this similar to what is done in inspect()
+                    // append bound partial value(s) if present
+                    if constexpr (ArgTraits<T>::bound()) {
+                        specialization = []<size_t... Js>(
+                            std::index_sequence<Js...>,
+                            Object& specialization,
+                            const Object& BoundArg
+                        ) {
+                            return BoundArg[
+                                specialization,
+                                Type<
+                                    typename ArgTraits<T>::bound_to::template at<Js>
+                                >()...
+                            ];
+                        }(
+                            std::make_index_sequence<ArgTraits<T>::bound_to::size()>{},
+                            specialization,
+                            BoundArg
+                        );
+                    }
+
+                    PyTuple_SET_ITEM(result, I + 1, release(specialization));
                 }
 
                 // recur until all parameters are processed
-                PyTuple_SET_ITEM(result, I + 1, release(specialization));
                 std::forward<decltype(self)>(self).template operator()<I + 1>(
                     Arg,
                     result
                 );
             }
-        }(ptr(Arg), ptr(result));
+        }(
+            getattr<"Arg">(bertrand),
+            getattr<"BoundArg">(bertrand),
+            ptr(result)
+        );
 
         return result;
     }

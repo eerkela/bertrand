@@ -748,7 +748,8 @@ namespace impl {
         using bind = ArgTraits<Arg>::template bind<Vs...>;
     };
 
-    template <typename Arg, typename... Ts> requires (ArgTraits<Arg>::args())
+    template <typename Arg, typename... Ts>
+        requires (ArgTraits<Arg>::args() && sizeof...(Ts) > 0)
     struct BoundArg<Arg, Ts...> {
     private:
         template <typename, typename>
@@ -797,7 +798,8 @@ namespace impl {
         using bind = rebind<bound_to, Vs...>::type;
     };
 
-    template <typename Arg, typename... Ts> requires (ArgTraits<Arg>::kwargs())
+    template <typename Arg, typename... Ts>
+        requires (ArgTraits<Arg>::kwargs() && sizeof...(Ts) > 0)
     struct BoundArg<Arg, Ts...> {
     private:
         template <typename, typename>
@@ -846,12 +848,12 @@ namespace impl {
         using bind = rebind<bound_to, Vs...>::type;
     };
 
-    /* A singleton argument factory that allows arguments to be constructed via
+    /* A singleton argument factory that allows keyword arguments to be constructed via
     familiar assignment syntax, which extends the lifetime of temporaries. */
-    template <static_str Name> requires (!Name.empty())
+    template <static_str Name> requires (impl::_arg_name<Name>)
     struct ArgFactory {
         template <typename T>
-        constexpr Arg<Name, T> operator=(T&& value) const {
+        constexpr Arg<Name, T>::kw operator=(T&& value) const {
             return {std::forward<T>(value)};
         }
     };

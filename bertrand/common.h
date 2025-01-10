@@ -2902,6 +2902,9 @@ public:
     [[nodiscard]] static constexpr size_t size() noexcept {
         return sizeof...(Ts);
     }
+    [[nodiscard]] static constexpr bool empty() noexcept {
+        return sizeof...(Ts) == 0;
+    }
 
     /// TODO: eventually, delete ::n in favor of ::size().
 
