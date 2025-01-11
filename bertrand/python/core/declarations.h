@@ -45,11 +45,16 @@
 
 #include <bertrand/common.h>
 #include <bertrand/static_str.h>
-#include <bertrand/arg.h>
+#include <bertrand/func.h>
 
 
 namespace py {
 
+using bertrand::DEBUG;
+using bertrand::MAX_ARGS;
+using bertrand::MAX_OVERLOADS;
+using bertrand::OVERLOAD_CACHE_SIZE;
+using bertrand::TEMPLATE_RECURSION_LIMIT;
 using bertrand::Arg;
 using bertrand::ArgTraits;
 using bertrand::arg;
@@ -60,57 +65,6 @@ using bertrand::static_map;
 using bertrand::static_set;
 using bertrand::type_name;
 using bertrand::demangle;
-
-
-#ifdef BERTRAND_DEBUG
-    constexpr bool DEBUG = true;
-#else
-    constexpr bool DEBUG = false;
-#endif
-
-
-#ifdef BERTRAND_MAX_ARGS
-    static_assert(
-        BERTRAND_MAX_ARGS > 0,
-        "Maximum number of arguments must be positive."
-    );
-    constexpr size_t MAX_ARGS = BERTRAND_MAX_ARGS;
-#else
-    constexpr size_t MAX_ARGS = sizeof(size_t) * 8;
-#endif
-
-
-#ifdef BERTRAND_MAX_OVERLOADS
-    static_assert(
-        BERTRAND_MAX_OVERLOADS > 0,
-        "Maximum number of overloads must be positive."
-    );
-    constexpr size_t MAX_OVERLOADS = BERTRAND_MAX_OVERLOADS;
-#else
-    constexpr size_t MAX_OVERLOADS = 256;
-#endif
-
-
-#ifdef BERTRAND_OVERLOAD_CACHE_SIZE
-    static_assert(
-        BERTRAND_OVERLOAD_CACHE_SIZE > 0,
-        "Overload cache size must be positive."
-    );
-    constexpr size_t OVERLOAD_CACHE_SIZE = BERTRAND_OVERLOAD_CACHE_SIZE;
-#else
-    constexpr size_t OVERLOAD_CACHE_SIZE = 128;
-#endif
-
-
-#ifdef BERTRAND_TEMPLATE_RECURSION_LIMIT
-    static_assert(
-        BERTRAND_TEMPLATE_RECURSION_LIMIT > 0,
-        "Template recursion limit must be positive."
-    );
-    constexpr size_t TEMPLATE_RECURSION_LIMIT = BERTRAND_TEMPLATE_RECURSION_LIMIT;
-#else
-    constexpr size_t TEMPLATE_RECURSION_LIMIT = 1024;
-#endif
 
 
 namespace impl {
