@@ -2163,19 +2163,23 @@ public:
     template <typename... As>
     using with_args = signature<Return(As...)>;
 
-    using as_python = signature<
-        impl::python_type<Return>(
-            typename ArgTraits<Args>::template with_type<
-                impl::python_type<Args>
-            >...
-        )
-    >;
+    // using as_python = signature<
+    //     impl::python_type<Return>(
+    //         typename ArgTraits<Args>::template with_type<
+    //             impl::python_type<Args>
+    //         >...
+    //     )
+    // >;
 
     /* Holds a series of template constraints that can be used to validate function
     signatures according to Python calling conventions.  Individual constraints are
     broken up into the smallest possible components, in order to improve the
     specificity of error messages. */
-    template <impl::inherits<impl::SignatureTag> _Source>
+    template <typename _Source>
+        requires (
+            std::same_as<_Source, signature> ||
+            impl::inherits<_Source, impl::SignatureTag>
+        )
     struct Check {
     private:
         using Source = std::remove_cvref_t<_Source>;
@@ -2983,18 +2987,18 @@ private:
     KeywordPack(const Pack&) -> KeywordPack<Pack>;
 
     template <typename... A>
-    static constexpr bool pos_pack_idx = 0;
+    static constexpr size_t pos_pack_idx = 0;
     template <typename T, typename... As>
-    static constexpr bool pos_pack_idx<PositionalPack<T>, As...> = 0;
+    static constexpr size_t pos_pack_idx<PositionalPack<T>, As...> = 0;
     template <typename A, typename... As>
-    static constexpr bool pos_pack_idx<A, As...> = pos_pack_idx<As...> + 1;
+    static constexpr size_t pos_pack_idx<A, As...> = pos_pack_idx<As...> + 1;
 
     template <typename... A>
-    static constexpr bool kw_pack_idx = 0;
+    static constexpr size_t kw_pack_idx = 0;
     template <typename T, typename... As>
-    static constexpr bool kw_pack_idx<KeywordPack<T>, As...> = 0;
+    static constexpr size_t kw_pack_idx<KeywordPack<T>, As...> = 0;
     template <typename A, typename... As>
-    static constexpr bool kw_pack_idx<A, As...> = kw_pack_idx<As...> + 1;
+    static constexpr size_t kw_pack_idx<A, As...> = kw_pack_idx<As...> + 1;
 
     template <typename F, typename... A>
     static constexpr decltype(auto) invoke_with_packs(F&& func, A&&... args) {
@@ -3197,6 +3201,8 @@ public:
     be optimized out. */
     struct Partial : impl::SignaturePartialTag {
     private:
+        friend signature;
+
         template <typename...>
         static constexpr size_t _n_posonly = 0;
         template <typename T, typename... Ts>
@@ -3266,9 +3272,9 @@ public:
         template <typename out, typename...>
         struct extract { using type = out; };
         template <typename... out, typename A, typename... As>
-        struct extract<signature<Partial(out...)>, A, As...> {
+        struct extract<signature<void(out...)>, A, As...> {
             template <typename>
-            struct sub_signature { using type = signature<Partial(out...)>; };
+            struct sub_signature { using type = signature<void(out...)>; };
             template <typename T> requires (ArgTraits<T>::bound())
             struct sub_signature<T> {
                 template <typename>
@@ -3284,7 +3290,7 @@ public:
                             typename ArgTraits<P>::type
                         >::kw;
                     };
-                    using type = signature<Partial(out..., typename to_partial<Ps>::type...)>;
+                    using type = signature<void(out..., typename to_partial<Ps>::type...)>;
                 };
                 using type = extend<typename ArgTraits<T>::bound_to>::type;
             };
@@ -3293,7 +3299,7 @@ public:
                 As...
             >::type;
         };
-        using Inner = extract<signature<Partial()>, Args...>::type;
+        using Inner = extract<signature<void()>, Args...>::type;
 
         /* Build a std::tuple of Elements that hold the bound values in a way that can
         be cross-referenced with the target signature. */
@@ -3305,20 +3311,19 @@ public:
             struct tuple { using type = std::tuple<out...>; };
             template <typename T> requires (ArgTraits<T>::bound())
             struct tuple<T> {
+                template <typename P>
+                struct to_element {
+                    using type = Element<I, ArgTraits<A>::name, typename ArgTraits<P>::type>;
+                };
+                template <typename P> requires (ArgTraits<A>::variadic())
+                struct to_element<P> {
+                    using type = Element<I, ArgTraits<P>::name, typename ArgTraits<P>::type>;
+                };
                 template <typename>
                 struct extend;
                 template <typename... Ps>
                 struct extend<args<Ps...>> {
-                    using type = std::tuple<
-                        out...,
-                        Element<
-                            I,
-                            ArgTraits<A>::variadic() ?
-                                ArgTraits<Ps>::name :
-                                ArgTraits<A>::name,
-                            typename ArgTraits<Ps>::type
-                        >...
-                    >;
+                    using type = std::tuple<out..., typename to_element<Ps>::type...>;
                 };
                 using type = extend<typename ArgTraits<T>::bound_to>::type;
             };
@@ -3360,11 +3365,12 @@ public:
 
         template <size_t K, typename... As>
         static constexpr decltype(auto) build(As&&... args) {
+            using sig = signature<void(As...)>;
             using T = std::tuple_element_t<K, Tuple>;
-            if constexpr (T::name.empty()) {
+            if constexpr (T::name.empty() || !sig::template has<T::name>) {
                 return impl::unpack_arg<K>(std::forward<As>(args)...);
             } else {
-                constexpr size_t idx = signature<void(As...)>::template idx<T::name>;
+                constexpr size_t idx = sig::template idx<T::name>;
                 return impl::unpack_arg<idx>(std::forward<As>(args)...);
             }
         }
@@ -3563,6 +3569,8 @@ public:
     will be optimized out. */
     struct Defaults : impl::SignatureDefaultsTag {
     private:
+        friend signature;
+
         template <typename...>
         static constexpr size_t _n_posonly = 0;
         template <typename T, typename... Ts>
@@ -3626,9 +3634,9 @@ public:
         template <typename out, typename...>
         struct extract { using type = out; };
         template <typename... out, typename A, typename... As>
-        struct extract<signature<Defaults(out...)>, A, As...> {
+        struct extract<signature<void(out...)>, A, As...> {
             template <typename>
-            struct sub_signature { using type = signature<Defaults(out...)>; };
+            struct sub_signature { using type = signature<void(out...)>; };
             template <typename T> requires (ArgTraits<T>::opt())
             struct sub_signature<T> {
                 template <typename D>
@@ -3640,11 +3648,11 @@ public:
                         typename ArgTraits<D>::type
                     >::kw;
                 };
-                using type = signature<Defaults(out..., typename to_default<T>::type)>;
+                using type = signature<void(out..., typename to_default<T>::type)>;
             };
             using type = extract<typename sub_signature<A>::type, As...>::type;
         };
-        using Inner = extract<signature<Defaults()>, Args...>::type;
+        using Inner = extract<signature<void()>, Args...>::type;
 
         /* Build a std::tuple of Elements to hold the default values themselves. */
         template <typename out, size_t, typename...>
@@ -3811,6 +3819,11 @@ private:
     protected:
         using Source = signature<Return(Values...)>;
 
+        template <size_t I, size_t K>
+        static constexpr bool use_partial = false;
+        template <size_t I, size_t K> requires (K < Partial::n)
+        static constexpr bool use_partial<I, K> = Partial::template rfind<K> == I;
+
         template <size_t I, size_t J, size_t K>
         struct call {  // terminal case
             /* Convert a terminal argument list into an equivalent partial signature,
@@ -3839,8 +3852,8 @@ private:
                         // Otherwise, bind the partial and advance
                         template <size_t J3> requires (J3 < Source::kw_idx)
                         struct append<J3> {
-                            using S = Source::template at<J>;
-                            using B = ArgTraits<T>::template bind<S>::type;
+                            using S = Source::template at<J3>;
+                            using B = ArgTraits<T>::template bind<S>;
                             using type = advance<Return(out..., B), I2 + 1, J3 + 1>::type;
                         };
                         using type = append<J2>::type;
@@ -3856,8 +3869,8 @@ private:
                         // If a partial positional arg exists, bind it and advance
                         template <size_t J3> requires (J3 < Source::kw_idx)
                         struct append<J3> {
-                            using S = Source::template at<J>;
-                            using B = ArgTraits<T>::template bind<S>::type;
+                            using S = Source::template at<J3>;
+                            using B = ArgTraits<T>::template bind<S>;
                             using type = advance<Return(out..., B), I2 + 1, J3 + 1>::type;
                         };
                         // If a partial keyword arg exists, bind it and advance
@@ -3869,7 +3882,7 @@ private:
                             static constexpr static_str name = ArgTraits<T>::name;
                             static constexpr size_t idx = Source::template idx<name>;
                             using S = Source::template at<idx>;
-                            using B = ArgTraits<T>::template bind<S>::type;
+                            using B = ArgTraits<T>::template bind<S>;
                             using type = advance<Return(out..., B), I2 + 1, J3>::type;
                         };
                         using type = append<J2>::type;
@@ -3889,7 +3902,7 @@ private:
                             static constexpr static_str name = ArgTraits<T>::name;
                             static constexpr size_t idx = Source::template idx<name>;
                             using S = Source::template at<idx>;
-                            using B = ArgTraits<T>::template bind<S>::type;
+                            using B = ArgTraits<T>::template bind<S>;
                             using type = advance<Return(out..., B), I2 + 1, J3>::type;
                         };
                         using type = append<J2>::type;
@@ -3910,7 +3923,7 @@ private:
                             // Otherwise, bind the collected partials and advance
                             template <typename r2, typename... r2s>
                             struct collect<args<r2, r2s...>> {
-                                using B = ArgTraits<T>::template bind<r2, r2s...>::type;
+                                using B = ArgTraits<T>::template bind<r2, r2s...>;
                                 using type = advance<Return(out..., B), I2 + 1, J3>::type;
                             };
                             using type = collect<result>::type;
@@ -3941,7 +3954,7 @@ private:
                             // Otherwise, bind the collected partials without advancing
                             template <typename r2, typename... r2s>
                             struct collect<args<r2, r2s...>> {
-                                using B = ArgTraits<T>::template bind<r2, r2s...>::type;
+                                using B = ArgTraits<T>::template bind<r2, r2s...>;
                                 using type = advance<Return(out..., B), I2 + 1, J3>::type;
                             };
                             using type = collect<result>::type;
@@ -3976,7 +3989,7 @@ private:
 
                 // Start with an empty signature, which will be built up into an
                 // equivalent of the enclosing signature through elementwise binding
-                using type = signature<typename advance<Return(), I, J>::type>;
+                using type = signature<typename advance<Return(), 0, 0>::type>;
             };
 
             /* Produce a partial argument tuple for the enclosing signature using the
@@ -4014,7 +4027,7 @@ private:
                         auto&& func,
                         auto&&... args
                     ) {
-                        auto& pack = impl::unpack_arg<idx>(
+                        auto&& pack = impl::unpack_arg<idx>(
                             std::forward<decltype(args)>(args)...
                         );
                         pack.validate();
@@ -4049,7 +4062,7 @@ private:
                         auto&& func,
                         auto&&... args
                     ) {
-                        auto& pack = impl::unpack_arg<idx>(
+                        auto&& pack = impl::unpack_arg<idx>(
                             std::forward<decltype(args)>(args)...
                         );
                         pack.validate();
@@ -4075,15 +4088,24 @@ private:
 
                 // call the function with the final argument list
                 } else {
-                    return std::forward<F>(func)(std::forward<A>(args)...);
+                    return []<size_t... Is>(
+                        std::index_sequence<Is...>,
+                        auto&& func,
+                        auto&&... args
+                    ) {
+                        return std::forward<decltype(func)>(func)(
+                            to_arg<Is>(std::forward<decltype(args)>(args))...
+                        );
+                    }(
+                        std::index_sequence_for<A...>{},
+                        std::forward<F>(func),
+                        std::forward<A>(args)...
+                    );
                 }
             }
         };
         template <size_t I, size_t J, size_t K>
-            requires (
-                I < signature::n &&
-                (K < Partial::n && Partial::template rfind<K> == I)
-            )
+            requires (I < signature::n && use_partial<I, K>)
         struct call<I, J, K> {  // insert partial argument(s)
             template <size_t K2>
             static constexpr size_t consecutive = 0;
@@ -4365,7 +4387,7 @@ private:
                 []<size_t J2 = J>(this auto&& self, vec& out, auto&&... args) {
                     if constexpr (J2 < transition) {
                         if constexpr (J2 == pos_pack_idx<A...>) {
-                            auto& pack = impl::unpack_arg<J2>(
+                            auto&& pack = impl::unpack_arg<J2>(
                                 std::forward<decltype(args)>(args)...
                             );
                             out.insert(out.end(), pack.begin, pack.end);
@@ -4429,7 +4451,7 @@ private:
                 []<size_t J2 = J>(this auto&& self, map& out, auto&&... args) {
                     if constexpr (J2 < sizeof...(A)) {
                         if constexpr (J2 == kw_pack_idx<A...>) {
-                            auto& pack = impl::unpack_arg<J2>(
+                            auto&& pack = impl::unpack_arg<J2>(
                                 std::forward<decltype(args)>(args)...
                             );
                             auto it = pack.begin();
@@ -4464,10 +4486,7 @@ private:
             }
         };
         template <size_t I, size_t J, size_t K>
-            requires (
-                I < signature::n &&
-                !(K < Partial::n && Partial::template rfind<K> == I)
-            )
+            requires (I < signature::n && !use_partial<I, K>)
         struct call<I, J, K> {  // forward source argument(s) or default value
             template <typename P, typename... A>
             static constexpr auto bind(P&& parts, A&&... args) {
@@ -4507,6 +4526,8 @@ private:
                     kw_pack_idx<A...>
                 });
 
+                /// TODO: has to call to_arg<> to initialize the argument
+
                 // positional-only
                 if constexpr (ArgTraits<T>::posonly()) {
                     assert_no_keyword_conflict(std::forward<A>(args)...);
@@ -4519,7 +4540,7 @@ private:
                         );
                     }
                     if constexpr (J == pos_pack_idx<A...>) {
-                        auto& pack = impl::unpack_arg<J>(std::forward<A>(args)...);
+                        auto&& pack = impl::unpack_arg<J>(std::forward<A>(args)...);
                         if (pack.has_value()) {
                             return insert_from_pos_pack(
                                 std::forward<P>(parts),
@@ -4568,7 +4589,7 @@ private:
                         );
                     }
                     if constexpr (J == pos_pack_idx<A...>) {
-                        auto& pack = impl::unpack_arg<J>(std::forward<A>(args)...);
+                        auto&& pack = impl::unpack_arg<J>(std::forward<A>(args)...);
                         if (pack.has_value()) {
                             assert_no_keyword_conflict(std::forward<A>(args)...);
                             return insert_from_pos_pack(
@@ -4596,7 +4617,7 @@ private:
                         );
                     }
                     if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
-                        auto& pack = impl::unpack_arg<kw_pack_idx<A...>>(
+                        auto&& pack = impl::unpack_arg<kw_pack_idx<A...>>(
                             std::forward<A>(args)...
                         );
                         auto node = pack.extract(name);
@@ -4635,7 +4656,7 @@ private:
                         );
                     }
                     if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
-                        auto& pack = impl::unpack_arg<kw_pack_idx<A...>>(
+                        auto&& pack = impl::unpack_arg<kw_pack_idx<A...>>(
                             std::forward<A>(args)...
                         );
                         auto node = pack.extract(name);
@@ -4740,7 +4761,7 @@ private:
             static constexpr void assert_no_keyword_conflict(A&&... args) {
                 constexpr static_str name = ArgTraits<signature::at<I>>::name;
                 if constexpr (!name.empty() && kw_pack_idx<A...> < sizeof...(A)) {
-                    auto& pack = impl::unpack_arg<kw_pack_idx<A...>>(
+                    auto&& pack = impl::unpack_arg<kw_pack_idx<A...>>(
                         std::forward<A>(args)...
                     );
                     auto node = pack.extract(name);
@@ -4853,7 +4874,7 @@ private:
                     auto&& func,
                     auto&&... args
                 ) {
-                    auto& pack = impl::unpack_arg<pos_pack_idx<A...>>(
+                    auto&& pack = impl::unpack_arg<pos_pack_idx<A...>>(
                         std::forward<A>(args)...
                     );
                     return call<I + 1, J + 1, K>::invoke(
@@ -4992,7 +5013,7 @@ private:
                 []<size_t J2 = J>(this auto&& self, vec& out, auto&&... args) {
                     if constexpr (J2 < transition) {
                         if constexpr (J2 == pos_pack_idx<A...>) {
-                            auto& pack = impl::unpack_arg<J2>(
+                            auto&& pack = impl::unpack_arg<J2>(
                                 std::forward<decltype(args)>(args)...
                             );
                             out.insert(out.end(), pack.begin, pack.end);
@@ -5037,7 +5058,7 @@ private:
                 []<size_t J2 = J>(this auto&& self, map& out, auto&&... args) {
                     if constexpr (J2 < sizeof...(A)) {
                         if constexpr (J2 == kw_pack_idx<A...>) {
-                            auto& pack = impl::unpack_arg<J2>(
+                            auto&& pack = impl::unpack_arg<J2>(
                                 std::forward<decltype(args)>(args)...
                             );
                             auto it = pack.begin();
@@ -5212,7 +5233,7 @@ public:
         using partial =
             std::remove_cvref_t<decltype(_Bind<Values...>::template call<0, 0, 0>::bind(
                 std::declval<Partial>(),
-                std::declval<Values...>()
+                std::declval<Values>()...
             ))>;
     };
 
@@ -5420,13 +5441,13 @@ public:
                 A&&... args
             ) {
                 if constexpr (pos_pack_idx<A...> < sizeof...(A)) {
-                    auto& pack = impl::unpack_arg<pos_pack_idx<A...>>(
+                    auto&& pack = impl::unpack_arg<pos_pack_idx<A...>>(
                         std::forward<A>(args)...
                     );
                     pack.validate();
                 }
                 if constexpr (kw_pack_idx<A...> < sizeof...(A)) {
-                    auto& pack = impl::unpack_arg<kw_pack_idx<A...>>(
+                    auto&& pack = impl::unpack_arg<kw_pack_idx<A...>>(
                         std::forward<A>(args)...
                     );
                     pack.validate();
@@ -6102,7 +6123,7 @@ public:
 
                 static constexpr auto assert_no_kwarg_conflict = [](auto&&... args) {
                     if constexpr (!name.empty() && kw_pack_idx<A...> < sizeof...(A)) {
-                        auto& pack = impl::unpack_arg<kw_pack_idx<A...>>(
+                        auto&& pack = impl::unpack_arg<kw_pack_idx<A...>>(
                             std::forward<decltype(args)>(args)...
                         );
                         auto node = pack.extract(name);
@@ -6155,7 +6176,7 @@ public:
                     auto&& parts,
                     auto&&... args
                 ) {
-                    auto& pack = impl::unpack_arg<J>(
+                    auto&& pack = impl::unpack_arg<J>(
                         std::forward<decltype(args)>(args)...
                     );
                     if (pack.has_value()) {
@@ -6300,7 +6321,7 @@ public:
                     auto&& parts,
                     auto&&... args
                 ) {
-                    auto& pack = impl::unpack_arg<kw_pack_idx<A...>>(
+                    auto&& pack = impl::unpack_arg<kw_pack_idx<A...>>(
                         std::forward<decltype(args)>(args)...
                     );
                     if (auto node = pack.extract(name)) {
@@ -6363,7 +6384,7 @@ public:
                         );
                     }
                     if constexpr (J2 < sizeof...(A) && J2 == pos_pack_idx<A...>) {
-                        auto& pack = impl::unpack_arg<J2>(
+                        auto&& pack = impl::unpack_arg<J2>(
                             std::forward<decltype(args)>(args)...
                         );
                         while (pack.has_value()) {
@@ -6465,7 +6486,7 @@ public:
                         );
                     }
                     if constexpr (J2 < sizeof...(A) && J2 == kw_pack_idx<A...>) {
-                        auto& pack = impl::unpack_arg<J2>(
+                        auto&& pack = impl::unpack_arg<J2>(
                             std::forward<decltype(args)>(args)...
                         );
                         auto it = pack.begin();
@@ -10720,43 +10741,43 @@ signature(const T&) -> signature<typename signature<T>::type>;
 /// as the initializer for a `py::def` statement, and possibly also `py::Function` if
 /// the normalized signature can be converted to Python.
 template <typename R, typename... A>
-struct signature<R(A...) noexcept> : signature<R(A...)> {};
+struct signature<R(A...) noexcept>                          : signature<R(A...)> {};
 template <typename R, typename... A>
-struct signature<R(*)(A...)> : signature<R(A...)> {};
+struct signature<R(*)(A...)>                                : signature<R(A...)> {};
 template <typename R, typename... A>
-struct signature<R(*)(A...) noexcept> : signature<R(A...)> {};
+struct signature<R(*)(A...) noexcept>                       : signature<R(A...)> {};
 template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...)> : signature<R(A...)> {};
+struct signature<R(C::*)(A...)>                             : signature<R(A...)> {};
 template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) &> : signature<R(A...)> {};
+struct signature<R(C::*)(A...) &>                           : signature<R(A...)> {};
 template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) noexcept> : signature<R(A...)> {};
+struct signature<R(C::*)(A...) noexcept>                    : signature<R(A...)> {};
 template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) & noexcept> : signature<R(A...)> {};
+struct signature<R(C::*)(A...) & noexcept>                  : signature<R(A...)> {};
 template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) const> : signature<R(A...)> {};
+struct signature<R(C::*)(A...) const>                       : signature<R(A...)> {};
 template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) const &> : signature<R(A...)> {};
+struct signature<R(C::*)(A...) const &>                     : signature<R(A...)> {};
 template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) const noexcept> : signature<R(A...)> {};
+struct signature<R(C::*)(A...) const noexcept>              : signature<R(A...)> {};
 template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) const & noexcept> : signature<R(A...)> {};
+struct signature<R(C::*)(A...) const & noexcept>            : signature<R(A...)> {};
 template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) volatile> : signature<R(A...)> {};
+struct signature<R(C::*)(A...) volatile>                    : signature<R(A...)> {};
 template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) volatile &> : signature<R(A...)> {};
+struct signature<R(C::*)(A...) volatile &>                  : signature<R(A...)> {};
 template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) volatile noexcept> : signature<R(A...)> {};
+struct signature<R(C::*)(A...) volatile noexcept>           : signature<R(A...)> {};
 template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) volatile & noexcept> : signature<R(A...)> {};
+struct signature<R(C::*)(A...) volatile & noexcept>         : signature<R(A...)> {};
 template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) const volatile> : signature<R(A...)> {};
+struct signature<R(C::*)(A...) const volatile>              : signature<R(A...)> {};
 template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) const volatile &> : signature<R(A...)> {};
+struct signature<R(C::*)(A...) const volatile &>            : signature<R(A...)> {};
 template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) const volatile noexcept> : signature<R(A...)> {};
+struct signature<R(C::*)(A...) const volatile noexcept>     : signature<R(A...)> {};
 template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) const volatile & noexcept> : signature<R(A...)> {};
+struct signature<R(C::*)(A...) const volatile & noexcept>   : signature<R(A...)> {};
 template <impl::has_call_operator T>
 struct signature<T> : signature<decltype(&std::remove_reference_t<T>::operator())> {};
 template <impl::inherits<impl::DefTag> T>
@@ -11628,6 +11649,7 @@ template <typename F, typename... Args>
     )
 constexpr decltype(auto) call(F&& func, Args&&... args) {
     return typename signature<F>::template Bind<Args...>{}(
+        typename signature<F>::Partial{},
         typename signature<F>::Defaults{},
         std::forward<F>(func),
         std::forward<Args>(args)...
@@ -11651,6 +11673,7 @@ constexpr decltype(auto) call(
     Args&&... args
 ) {
     return typename signature<F>::template Bind<Args...>{}(
+        typename signature<F>::Partial{},
         defaults,
         std::forward<F>(func),
         std::forward<Args>(args)...
@@ -11674,6 +11697,7 @@ constexpr decltype(auto) call(
     Args&&... args
 ) {
     return typename signature<F>::template Bind<Args...>{}(
+        typename signature<F>::Partial{},
         std::move(defaults),
         std::forward<F>(func),
         std::forward<Args>(args)...

@@ -718,6 +718,9 @@ public:
 
 namespace impl {
 
+    /// TODO: name changes can swap an argument from positional to keyword, which
+    /// messes with bound arguments pretty significantly
+
     template <typename Arg, typename T> requires (!ArgTraits<Arg>::variadic())
     struct BoundArg<Arg, T> {
     private:
@@ -730,8 +733,23 @@ namespace impl {
         static constexpr static_str name = ArgTraits<Arg>::name;
         static constexpr ArgKind kind = ArgTraits<Arg>::kind;
         using type = ArgTraits<Arg>::type;
-        using bound_to = ArgTraits<Arg>::bound_to;
+        using bound_to = bertrand::args<T>;
         using unbind = Arg;
+        template <static_str N> requires (arg_name<N>)
+        using with_name = BoundArg<
+            typename ArgTraits<Arg>::template with_name<N>,
+            T
+        >;
+        template <typename V>
+            requires (
+                !std::is_void_v<V> &&
+                std::convertible_to<typename ArgTraits<T>::type, V>
+            )
+        using with_type = BoundArg<
+            typename ArgTraits<Arg>::template with_type<V>,
+            T
+        >;
+
         type value;
 
         [[nodiscard]] constexpr Value& operator*() { return value; }
@@ -776,6 +794,21 @@ namespace impl {
         >>;
         using bound_to = bertrand::args<Ts...>;
         using unbind = Arg;
+        template <static_str N> requires (arg_name<N> && !variadic_kwargs_name<N>)
+        using with_name = BoundArg<
+            typename ArgTraits<Arg>::template with_name<N>,
+            Ts...
+        >;
+        template <typename V>
+            requires (
+                !std::is_void_v<V> &&
+                (std::convertible_to<typename ArgTraits<Ts>::type, V> && ...)
+            )
+        using with_type = BoundArg<
+            typename ArgTraits<Arg>::template with_type<V>,
+            Ts...
+        >;
+
         vec value;
 
         [[nodiscard]] constexpr vec& operator*() { return value; }
@@ -826,6 +859,21 @@ namespace impl {
         >>;
         using bound_to = bertrand::args<Ts...>;
         using unbind = Arg;
+        template <static_str N> requires (arg_name<N> && !variadic_args_name<N>)
+        using with_name = BoundArg<
+            typename ArgTraits<Arg>::template with_name<N>,
+            Ts...
+        >;
+        template <typename V>
+            requires (
+                !std::is_void_v<V> &&
+                (std::convertible_to<typename ArgTraits<Ts>::type, V> && ...)
+            )
+        using with_type = BoundArg<
+            typename ArgTraits<Arg>::template with_type<V>,
+            Ts...
+        >;
+
         map value;
 
         [[nodiscard]] constexpr map& operator*() { return value; }
@@ -868,6 +916,11 @@ instances of this class can be used to provide an even more Pythonic syntax:
     my_func(x = 42);
 */
 template <static_str name>
+    requires (
+        arg_name<name> &&
+        !variadic_args_name<name> &&
+        !variadic_kwargs_name<name>
+    )
 constexpr impl::ArgFactory<name> arg {};
 
 

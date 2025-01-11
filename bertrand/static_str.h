@@ -528,9 +528,9 @@ public:
     }();
 
     constexpr operator const char*() const { return buffer; }
-    constexpr explicit operator bool() const { return !empty(); }
-    constexpr explicit operator std::string() const { return {buffer, N}; }
-    constexpr explicit operator std::string_view() const { return {buffer, N}; }
+    explicit constexpr operator bool() const { return !empty(); }
+    explicit constexpr operator std::string() const { return {buffer, N}; }
+    explicit constexpr operator std::string_view() const { return {buffer, N}; }
 
     constexpr const char* data() const { return buffer; }
     constexpr size_t size() const { return N; }
@@ -2147,6 +2147,7 @@ namespace impl {
         /* Finds an associative value array that produces perfect hashes over the input
         keywords. */
         static constexpr auto find_hash = [] -> std::tuple<size_t, Weights, bool> {
+            /// TODO: max_iterations should be replaced with bertrand::TEMPLATE_RECURSION_LIMIT
             constexpr size_t max_iterations = 1000;
             Weights weights;
 
