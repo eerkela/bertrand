@@ -623,64 +623,6 @@ template <typename Prev, is_chain Self>
 }
 
 
-}  // namespace bertrand
-
-
-namespace std {
-
-    /* Specializing `std::tuple_size` allows args packs to be decomposed using
-    structured bindings. */
-    template <bertrand::is_args T>
-    struct tuple_size<T> :
-        std::integral_constant<size_t, std::remove_cvref_t<T>::size()>
-    {};
-
-    /* Specializing `std::tuple_size` allows function chains to be decomposed using
-    structured bindings. */
-    template <bertrand::is_chain T>
-    struct tuple_size<T> :
-        std::integral_constant<size_t, std::remove_cvref_t<T>::size()>
-    {};
-
-    /* Specializing `std::tuple_element` allows args packs to be decomposed using
-    structured bindings. */
-    template <size_t I, bertrand::is_args T>
-        requires (I < std::remove_cvref_t<T>::size())
-    struct tuple_element<I, T> {
-        using type = std::remove_cvref_t<T>::template at<I>;
-    };
-
-    /* Specializing `std::tuple_element` allows function chains to be decomposed using
-    structured bindings. */
-    template <size_t I, bertrand::is_chain T>
-        requires (I < std::remove_cvref_t<T>::size())
-    struct tuple_element<I, T> {
-        using type = decltype(std::declval<T>().template get<I>());
-    };
-
-    /* `std::get<I>(args)` extracts the I-th argument from the pack. */
-    template <size_t I, bertrand::is_args T>
-        requires (
-            !std::is_lvalue_reference_v<T> &&
-            I < std::remove_cvref_t<T>::size()
-        )
-    [[nodiscard]] constexpr decltype(auto) get(T&& args) noexcept {
-        return std::forward<T>(args).template get<I>();
-    }
-
-    /* `std::get<I>(chain)` extracts the I-th function in the chain. */
-    template <size_t I, bertrand::is_chain T>
-        requires (I < std::remove_cvref_t<T>::size())
-    [[nodiscard]] constexpr decltype(auto) get(T&& chain) {
-        return std::forward<T>(chain).template get<I>();
-    }
-
-}
-
-
-namespace bertrand {
-
-
 /* A family of compile-time argument annotations that represent positional and/or
 keyword arguments to a Python-style function.  Modifiers can be added to an argument
 to indicate its kind, such as positional-only, keyword-only, optional, bound to a
@@ -715,7 +657,7 @@ public:
     using type = T;
     using bound_to = bertrand::args<>;
     using unbind = Arg;
-    template <static_str N> requires (arg_name<N>)
+    template <static_str N> requires (arg_name<N> && !static_str<>::startswith<N, "*">())
     using with_name = Arg<N, T>;
     template <typename V> requires (!std::is_void_v<V>)
     using with_type = Arg<Name, V>;
@@ -739,6 +681,13 @@ public:
     template <typename U> requires (std::convertible_to<type, U>)
     [[nodiscard]] constexpr operator U() && { return std::forward<type>(value); }
 
+    /* Argument rvalues are also convertible to other annotated argument types, in
+    order to ease the metaprogramming requirements.  This effectively means that all
+    trailing annotation types are mutually interconvertible. */
+    struct opt;
+    struct pos;
+    struct kw;
+
     template <typename... Vs>
     static constexpr bool can_bind = false;
     template <std::convertible_to<type> V>
@@ -757,6 +706,41 @@ public:
         )
     using bind = impl::BoundArg<Arg, Vs...>;
 
+    template <typename U>
+    [[nodiscard]] constexpr operator bind<U>() && {
+        return {std::forward<type>(value)};
+    }
+
+    [[nodiscard]] constexpr operator opt() && { return {std::forward<type>(value)}; }
+    template <typename U>
+    [[nodiscard]] constexpr operator typename opt::template bind<U>() && {
+        return {std::forward<type>(value)};
+    }
+
+    [[nodiscard]] constexpr operator pos() && { return {std::forward<type>(value)}; }
+    template <typename U>
+    [[nodiscard]] constexpr operator typename pos::template bind<U>() && {
+        return {std::forward<type>(value)};
+    }
+
+    [[nodiscard]] constexpr operator typename pos::opt() && { return {std::forward<type>(value)}; }
+    template <typename U>
+    [[nodiscard]] constexpr operator typename pos::opt::template bind<U>() && {
+        return {std::forward<type>(value)};
+    }
+
+    [[nodiscard]] constexpr operator kw() && { return {std::forward<type>(value)}; }
+    template <typename U>
+    [[nodiscard]] constexpr operator typename kw::template bind<U>() && {
+        return {std::forward<type>(value)};
+    }
+
+    [[nodiscard]] constexpr operator typename kw::opt() && { return {std::forward<type>(value)}; }
+    template <typename U>
+    [[nodiscard]] constexpr operator typename kw::opt::template bind<U>() && {
+        return {std::forward<type>(value)};
+    }
+
     /* Marks the argument as optional. */
     struct opt {
     private:
@@ -770,7 +754,7 @@ public:
         using type = T;
         using bound_to = bertrand::args<>;
         using unbind = opt;
-        template <static_str N> requires (arg_name<N>)
+        template <static_str N> requires (arg_name<N> && !static_str<>::startswith<N, "*">())
         using with_name = Arg<N, T>::opt;
         template <typename V> requires (!std::is_void_v<V>)
         using with_type = Arg<Name, V>::opt;
@@ -779,12 +763,11 @@ public:
 
         [[nodiscard]] constexpr type operator*() && { std::forward<type>(value); }
         [[nodiscard]] constexpr Value& operator*() & { return value; }
-        [[nodiscard]] constexpr const Value& operator*() const { return value; }
         [[nodiscard]] constexpr Value* operator->() { return &value; }
+        [[nodiscard]] constexpr const Value& operator*() const & { return value; }
         [[nodiscard]] constexpr const Value* operator->() const { return &value; }
-        [[nodiscard]] constexpr operator type() && { return std::forward<type>(value); }
-        template <typename U> requires (std::convertible_to<type, U>)
-        [[nodiscard]] constexpr operator U() && { return std::forward<type>(value); }
+        template <typename U> requires (std::convertible_to<Arg, U>)
+        [[nodiscard]] constexpr operator U() && { return Arg{std::forward<type>(value)}; }
 
         template <typename... Vs>
         static constexpr bool can_bind = Arg::can_bind<Vs...>;
@@ -812,7 +795,7 @@ public:
         using type = T;
         using bound_to = bertrand::args<>;
         using unbind = pos;
-        template <static_str N> requires (arg_name<N>)
+        template <static_str N> requires (arg_name<N> && !static_str<>::startswith<N, "*">())
         using with_name = Arg<N, T>::pos;
         template <typename V> requires (!std::is_void_v<V>)
         using with_type = Arg<Name, V>::pos;
@@ -821,12 +804,11 @@ public:
 
         [[nodiscard]] constexpr type operator*() && { std::forward<type>(value); }
         [[nodiscard]] constexpr Value& operator*() & { return value; }
-        [[nodiscard]] constexpr const Value& operator*() const { return value; }
         [[nodiscard]] constexpr Value* operator->() { return &value; }
+        [[nodiscard]] constexpr const Value& operator*() const & { return value; }
         [[nodiscard]] constexpr const Value* operator->() const { return &value; }
-        [[nodiscard]] constexpr operator type() && { return std::forward<type>(value); }
-        template <typename U> requires (std::convertible_to<type, U>)
-        [[nodiscard]] constexpr operator U() && { return std::forward<type>(value); }
+        template <typename U> requires (std::convertible_to<Arg, U>)
+        [[nodiscard]] constexpr operator U() && { return Arg{std::forward<type>(value)}; }
 
         template <typename... Vs>
         static constexpr bool can_bind = false;
@@ -859,7 +841,7 @@ public:
             using type = T;
             using bound_to = bertrand::args<>;
             using unbind = opt;
-            template <static_str N> requires (arg_name<N>)
+            template <static_str N> requires (arg_name<N> && !static_str<>::startswith<N, "*">())
             using with_name = Arg<N, T>::pos::opt;
             template <typename V> requires (!std::is_void_v<V>)
             using with_type = Arg<Name, V>::pos::opt;
@@ -868,12 +850,11 @@ public:
 
             [[nodiscard]] constexpr type operator*() && { std::forward<type>(value); }
             [[nodiscard]] constexpr Value& operator*() & { return value; }
-            [[nodiscard]] constexpr const Value& operator*() const { return value; }
             [[nodiscard]] constexpr Value* operator->() { return &value; }
+            [[nodiscard]] constexpr const Value& operator*() const & { return value; }
             [[nodiscard]] constexpr const Value* operator->() const { return &value; }
-            [[nodiscard]] constexpr operator type() && { return std::forward<type>(value); }
-            template <typename U> requires (std::convertible_to<type, U>)
-            [[nodiscard]] constexpr operator U() && { return std::forward<type>(value); }
+            template <typename U> requires (std::convertible_to<Arg, U>)
+            [[nodiscard]] constexpr operator U() && { return Arg{std::forward<type>(value)}; }
 
             template <typename... Vs>
             static constexpr bool can_bind = pos::can_bind<Vs...>;
@@ -903,7 +884,7 @@ public:
         using type = T;
         using bound_to = bertrand::args<>;
         using unbind = kw;
-        template <static_str N> requires (arg_name<N>)
+        template <static_str N> requires (arg_name<N> && !static_str<>::startswith<N, "*">())
         using with_name = Arg<N, T>::kw;
         template <typename V> requires (!std::is_void_v<V>)
         using with_type = Arg<Name, V>::kw;
@@ -912,12 +893,11 @@ public:
 
         [[nodiscard]] constexpr type operator*() && { std::forward<type>(value); }
         [[nodiscard]] constexpr Value& operator*() & { return value; }
-        [[nodiscard]] constexpr const Value& operator*() const { return value; }
         [[nodiscard]] constexpr Value* operator->() { return &value; }
+        [[nodiscard]] constexpr const Value& operator*() const & { return value; }
         [[nodiscard]] constexpr const Value* operator->() const { return &value; }
-        [[nodiscard]] constexpr operator type() && { return std::forward<type>(value); }
-        template <typename U> requires (std::convertible_to<type, U>)
-        [[nodiscard]] constexpr operator U() && { return std::forward<type>(value); }
+        template <typename U> requires (std::convertible_to<Arg, U>)
+        [[nodiscard]] constexpr operator U() && { return Arg{std::forward<type>(value)}; }
 
         template <typename... Vs>
         static constexpr bool can_bind = false;
@@ -950,7 +930,7 @@ public:
             using type = T;
             using bound_to = bertrand::args<>;
             using unbind = opt;
-            template <static_str N> requires (arg_name<N>)
+            template <static_str N> requires (arg_name<N> && !static_str<>::startswith<N, "*">())
             using with_name = Arg<N, T>::kw::opt;
             template <typename V> requires (!std::is_void_v<V>)
             using with_type = Arg<Name, V>::kw::opt;
@@ -959,12 +939,11 @@ public:
 
             [[nodiscard]] constexpr type operator*() && { std::forward<type>(value); }
             [[nodiscard]] constexpr Value& operator*() & { return value; }
-            [[nodiscard]] constexpr const Value& operator*() const { return value; }
             [[nodiscard]] constexpr Value* operator->() { return &value; }
+            [[nodiscard]] constexpr const Value& operator*() const & { return value; }
             [[nodiscard]] constexpr const Value* operator->() const { return &value; }
-            [[nodiscard]] constexpr operator type() && { return std::forward<type>(value); }
-            template <typename U> requires (std::convertible_to<type, U>)
-            [[nodiscard]] constexpr operator U() && { return std::forward<type>(value); }
+            template <typename U> requires (std::convertible_to<Arg, U>)
+            [[nodiscard]] constexpr operator U() && { return Arg{std::forward<type>(value)}; }
 
             template <typename... Vs>
             static constexpr bool can_bind = kw::can_bind<Vs...>;
@@ -1003,8 +982,8 @@ public:
     >>;
     using bound_to = bertrand::args<>;
     using unbind = Arg;
-    template <static_str N> requires (arg_name<N>)
-    using with_name = Arg<N, T>;
+    template <static_str N> requires (arg_name<N> && !static_str<>::startswith<N, "*">())
+    using with_name = Arg<"*" + N, T>;
     template <typename V> requires (!std::is_void_v<V>)
     using with_type = Arg<Name, V>;
 
@@ -1014,15 +993,6 @@ public:
     [[nodiscard]] constexpr const vec& operator*() const { return value; }
     [[nodiscard]] constexpr vec* operator->() { return &value; }
     [[nodiscard]] constexpr const vec* operator->() const { return &value; }
-    [[nodiscard]] constexpr operator vec() && { return std::move(value); }
-    template <typename U> requires (std::convertible_to<vec, U>)
-    [[nodiscard]] constexpr operator U() && { return std::move(value); }
-    [[nodiscard]] constexpr decltype(auto) operator[](vec::size_type i) {
-        return value[i];
-    }
-    [[nodiscard]] constexpr decltype(auto) operator[](vec::size_type i) const {
-        return value[i];
-    }
 
     template <typename... Vs>
     static constexpr bool can_bind = false;
@@ -1041,6 +1011,21 @@ public:
             impl::names_are_unique<Vs...>
         )
     using bind = impl::BoundArg<Arg, Vs...>;
+
+    [[nodiscard]] constexpr operator vec() && { return std::move(value); }
+    template <typename U> requires (std::convertible_to<vec, U>)
+    [[nodiscard]] constexpr operator U() && { return std::move(value); }
+    template <typename... Us>
+    [[nodiscard]] constexpr operator bind<Us...>() && {
+        return {std::forward<type>(value)};
+    }
+
+    [[nodiscard]] constexpr decltype(auto) operator[](vec::size_type i) {
+        return value[i];
+    }
+    [[nodiscard]] constexpr decltype(auto) operator[](vec::size_type i) const {
+        return value[i];
+    }
 };
 
 
@@ -1064,8 +1049,8 @@ public:
     >>;
     using bound_to = bertrand::args<>;
     using unbind = Arg;
-    template <static_str N> requires (arg_name<N>)
-    using with_name = Arg<N, T>;
+    template <static_str N> requires (arg_name<N> && !static_str<>::startswith<N, "*">())
+    using with_name = Arg<"**" + N, T>;
     template <typename V> requires (!std::is_void_v<V>)
     using with_type = Arg<Name, V>;
 
@@ -1075,15 +1060,6 @@ public:
     [[nodiscard]] constexpr const map& operator*() const { return value; }
     [[nodiscard]] constexpr map* operator->() { return &value; }
     [[nodiscard]] constexpr const map* operator->() const { return &value; }
-    [[nodiscard]] constexpr operator map() && { return std::move(value); }
-    template <typename U> requires (std::convertible_to<map, U>)
-    [[nodiscard]] constexpr operator U() && { return std::move(value); }
-    [[nodiscard]] constexpr decltype(auto) operator[](const std::string& key) {
-        return value.at(key);
-    }
-    [[nodiscard]] constexpr decltype(auto) operator[](std::string&& key) {
-        return value.at(std::move(key));
-    }
 
     template <typename... Vs>
     static constexpr bool can_bind = false;
@@ -1102,6 +1078,22 @@ public:
             impl::names_are_unique<Vs...>
         )
     using bind = impl::BoundArg<Arg, Vs...>;
+
+    [[nodiscard]] constexpr operator map() && { return std::move(value); }
+    template <typename U> requires (std::convertible_to<map, U>)
+    [[nodiscard]] constexpr operator U() && { return std::move(value); }
+    template <typename... Us>
+    [[nodiscard]] constexpr operator bind<Us...>() && {
+        return {std::forward<type>(value)};
+    }
+
+    [[nodiscard]] constexpr decltype(auto) operator[](const std::string& key) {
+        return value.at(key);
+    }
+    [[nodiscard]] constexpr decltype(auto) operator[](std::string&& key) {
+        return value.at(std::move(key));
+    }
+
 };
 
 
@@ -1216,9 +1208,6 @@ public:
 
 namespace impl {
 
-    /// TODO: name changes can swap an argument from positional to keyword, which
-    /// messes with bound arguments pretty significantly
-
     template <typename Arg, typename T> requires (!ArgTraits<Arg>::variadic())
     struct BoundArg<Arg, T> {
     private:
@@ -1233,7 +1222,7 @@ namespace impl {
         using type = ArgTraits<Arg>::type;
         using bound_to = bertrand::args<T>;
         using unbind = Arg;
-        template <static_str N> requires (arg_name<N>)
+        template <static_str N> requires (arg_name<N> && !static_str<>::startswith<N, "*">())
         using with_name = BoundArg<
             typename ArgTraits<Arg>::template with_name<N>,
             T
@@ -1254,12 +1243,14 @@ namespace impl {
         [[nodiscard]] constexpr const Value& operator*() const { return value; }
         [[nodiscard]] constexpr Value* operator->() { return &value; }
         [[nodiscard]] constexpr const Value* operator->() const { return &value; }
-        [[nodiscard]] constexpr operator type() && { return std::forward<type>(value); }
-        template <typename U> requires (std::convertible_to<type, U>)
-        [[nodiscard]] constexpr operator U() && { return std::forward<type>(value); }
-        template <is_rvalue Self> requires (is_arg<unbind>)
-        [[nodiscard]] constexpr operator unbind(this Self&& self) {
-            return {implicit_cast<type>(std::forward<Self>(self))};
+
+        template <typename U> requires (std::convertible_to<unbind, U>)
+        [[nodiscard]] constexpr operator U() && {
+            if constexpr (is_arg<unbind>) {
+                return unbind{std::forward<type>(value)};
+            } else {
+                return std::forward<type>(value);
+            }
         }
 
         template <typename... Vs>
@@ -1296,7 +1287,7 @@ namespace impl {
         >>;
         using bound_to = bertrand::args<Ts...>;
         using unbind = Arg;
-        template <static_str N> requires (arg_name<N> && !variadic_kwargs_name<N>)
+        template <static_str N> requires (arg_name<N> && !static_str<>::startswith<N, "*">())
         using with_name = BoundArg<
             typename ArgTraits<Arg>::template with_name<N>,
             Ts...
@@ -1317,10 +1308,10 @@ namespace impl {
         [[nodiscard]] constexpr const vec& operator*() const { return value; }
         [[nodiscard]] constexpr vec* operator->() { return &value; }
         [[nodiscard]] constexpr const vec* operator->() const { return &value; }
-        [[nodiscard]] constexpr operator vec() && { return std::move(value); }
-        template <typename U> requires (std::convertible_to<vec, U>)
-        [[nodiscard]] constexpr operator U() && { return std::move(value); }
-        [[nodiscard]] constexpr operator unbind() && { return {std::move(value)}; }
+        template <typename U> requires (std::convertible_to<unbind, U>)
+        [[nodiscard]] constexpr operator U() && {
+            return unbind{std::forward<type>(value)};
+        }
 
         [[nodiscard]] constexpr decltype(auto) operator[](vec::size_type i) {
             return value[i];
@@ -1363,7 +1354,7 @@ namespace impl {
         >>;
         using bound_to = bertrand::args<Ts...>;
         using unbind = Arg;
-        template <static_str N> requires (arg_name<N> && !variadic_args_name<N>)
+        template <static_str N> requires (arg_name<N> && !static_str<>::startswith<N, "*">())
         using with_name = BoundArg<
             typename ArgTraits<Arg>::template with_name<N>,
             Ts...
@@ -1384,10 +1375,10 @@ namespace impl {
         [[nodiscard]] constexpr const map& operator*() const { return value; }
         [[nodiscard]] constexpr map* operator->() { return &value; }
         [[nodiscard]] constexpr const map* operator->() const { return &value; }
-        [[nodiscard]] constexpr operator map() && { return std::move(value); }
-        template <typename U> requires (std::convertible_to<map, U>)
-        [[nodiscard]] constexpr operator U() && { return std::move(value); }
-        [[nodiscard]] constexpr operator unbind() && { return {std::move(value)}; }
+        template <typename U> requires (std::convertible_to<unbind, U>)
+        [[nodiscard]] constexpr operator U() && {
+            return unbind{std::forward<type>(value)};
+        }
 
         [[nodiscard]] constexpr decltype(auto) operator[](const std::string& key) {
             return value[key];
@@ -1404,7 +1395,7 @@ namespace impl {
 
     /* A singleton argument factory that allows keyword arguments to be constructed via
     familiar assignment syntax, which extends the lifetime of temporaries. */
-    template <static_str Name> requires (impl::_arg_name<Name>)
+    template <static_str Name>
     struct ArgFactory {
         template <typename T>
         constexpr Arg<Name, T>::kw operator=(T&& value) const {
@@ -1412,119 +1403,6 @@ namespace impl {
         }
     };
 
-}
-
-
-/* A compile-time factory for binding keyword arguments with Python syntax.  constexpr
-instances of this class can be used to provide an even more Pythonic syntax:
-
-    constexpr auto x = arg<"x">;
-    my_func(x = 42);
-*/
-template <static_str name>
-    requires (
-        arg_name<name> &&
-        !variadic_args_name<name> &&
-        !variadic_kwargs_name<name>
-    )
-constexpr impl::ArgFactory<name> arg {};
-
-
-/* Inspect a C++ argument at compile time.  Normalizes unannotated types to
-positional-only arguments to maintain C++ style. */
-template <typename T>
-struct ArgTraits {
-private:
-    template <static_str N>
-    struct _with_name { using type = Arg<N, T>::pos; };
-    template <static_str N> requires (N.empty())
-    struct _with_name<N> { using type = T; };
-
-public:
-    using type                                  = T;
-    static constexpr static_str name             = "";
-    static constexpr ArgKind kind               = ArgKind::POS;
-    static constexpr bool posonly() noexcept    { return kind.posonly(); }
-    static constexpr bool pos() noexcept        { return kind.pos(); }
-    static constexpr bool args() noexcept       { return kind.args(); }
-    static constexpr bool kwonly() noexcept     { return kind.kwonly(); }
-    static constexpr bool kw() noexcept         { return kind.kw(); }
-    static constexpr bool kwargs() noexcept     { return kind.kwargs(); }
-    static constexpr bool bound() noexcept      { return bound_to::n > 0; }
-    static constexpr bool opt() noexcept        { return kind.opt(); }
-    static constexpr bool variadic() noexcept   { return kind.variadic(); }
-
-    template <typename... Vs>
-    static constexpr bool can_bind = false;
-    template <std::convertible_to<type> V>
-    static constexpr bool can_bind<V> =
-        ArgTraits<V>::posonly() &&
-        !ArgTraits<V>::opt() &&
-        !ArgTraits<V>::variadic() &&
-        (ArgTraits<V>::name.empty() || ArgTraits<V>::name == name);
-
-    template <typename... Vs> requires (can_bind<Vs...>)
-    using bind                                  = impl::BoundArg<T, Vs...>;
-    using bound_to                              = bertrand::args<>;
-    using unbind                                = T;
-    template <static_str N> requires (arg_name<N> || N.empty())
-    using with_name                             = _with_name<N>::type;
-    template <typename V> requires (!std::is_void_v<V>)
-    using with_type                             = V;
-};
-
-
-/* Inspect a C++ argument at compile time.  Forwards to the annotated type's
-interface where possible. */
-template <is_arg T>
-struct ArgTraits<T> {
-private:
-    using T2 = std::remove_cvref_t<T>;
-
-    template <static_str N>
-    struct _with_name { using type = T2::template with_name<N>; };
-    template <static_str N> requires (N.empty())
-    struct _with_name<N> { using type = T2::type; };
-
-public:
-    using type                                  = T2::type;
-    static constexpr static_str name             = T2::name;
-    static constexpr ArgKind kind               = T2::kind;
-    static constexpr bool posonly() noexcept    { return kind.posonly(); }
-    static constexpr bool pos() noexcept        { return kind.pos(); }
-    static constexpr bool args() noexcept       { return kind.args(); }
-    static constexpr bool kwonly() noexcept     { return kind.kwonly(); }
-    static constexpr bool kw() noexcept         { return kind.kw(); }
-    static constexpr bool kwargs() noexcept     { return kind.kwargs(); }
-    static constexpr bool bound() noexcept      { return bound_to::n > 0; }
-    static constexpr bool opt() noexcept        { return kind.opt(); }
-    static constexpr bool variadic() noexcept   { return kind.variadic(); }
-
-    template <typename... Vs>
-    static constexpr bool can_bind = T2::template can_bind<Vs...>;
-
-    template <typename... Vs> requires (can_bind<Vs...>)
-    using bind                                  = T2::template bind<Vs...>;
-    using unbind                                = T2::unbind;
-    using bound_to                              = T2::bound_to;
-    template <static_str N> requires (arg_name<N> || N.empty())
-    using with_name                             = _with_name<N>::type;
-    template <typename V> requires (!std::is_void_v<V>)
-    using with_type                             = T2::template with_type<V>;
-};
-
-
-/* Introspect an annotated C++ function signature to extract compile-time type
-information about its parameters and allow matching functions to be called safely from
-both languages with a consistent syntax.  Also defines supporting data structures to
-allow for dynamic function overloading and partial function application. */
-template <typename T>
-struct signature {
-    static constexpr bool enable = false;
-};
-
-
-namespace impl {
     struct signature_tag {};
     struct signature_partial_tag {};
     struct signature_defaults_tag {};
@@ -1693,9 +1571,119 @@ namespace impl {
 }
 
 
+/* A compile-time factory for binding keyword arguments with Python syntax.  constexpr
+instances of this class can be used to provide an even more Pythonic syntax:
+
+    constexpr auto x = arg<"x">;
+    my_func(x = 42);
+*/
+template <static_str name>
+    requires (
+        arg_name<name> &&
+        !variadic_args_name<name> &&
+        !variadic_kwargs_name<name>
+    )
+constexpr impl::ArgFactory<name> arg {};
+
+
+/* Manipulate a C++ argument annotation at compile time.  Unannotated types are
+treated as anonymous, positional-only, and required in order to preserve C++ style. */
+template <typename T>
+struct ArgTraits {
+private:
+    template <static_str N>
+    struct _with_name { using type = Arg<N, T>::pos; };
+    template <static_str N> requires (N.empty())
+    struct _with_name<N> { using type = T; };
+
+public:
+    using type                                  = T;
+    static constexpr static_str name             = "";
+    static constexpr ArgKind kind               = ArgKind::POS;
+    static constexpr bool posonly() noexcept    { return kind.posonly(); }
+    static constexpr bool pos() noexcept        { return kind.pos(); }
+    static constexpr bool args() noexcept       { return kind.args(); }
+    static constexpr bool kwonly() noexcept     { return kind.kwonly(); }
+    static constexpr bool kw() noexcept         { return kind.kw(); }
+    static constexpr bool kwargs() noexcept     { return kind.kwargs(); }
+    static constexpr bool bound() noexcept      { return bound_to::n > 0; }
+    static constexpr bool opt() noexcept        { return kind.opt(); }
+    static constexpr bool variadic() noexcept   { return kind.variadic(); }
+
+    template <typename... Vs>
+    static constexpr bool can_bind = false;
+    template <std::convertible_to<type> V>
+    static constexpr bool can_bind<V> =
+        ArgTraits<V>::posonly() &&
+        !ArgTraits<V>::opt() &&
+        !ArgTraits<V>::variadic() &&
+        (ArgTraits<V>::name.empty() || ArgTraits<V>::name == name);
+
+    template <typename... Vs> requires (can_bind<Vs...>)
+    using bind                                  = impl::BoundArg<T, Vs...>;
+    using bound_to                              = bertrand::args<>;
+    using unbind                                = T;
+    template <static_str N>
+        requires (N.empty() || arg_name<N> && !static_str<>::startswith<N, "*">())
+    using with_name                             = _with_name<N>::type;
+    template <typename V> requires (!std::is_void_v<V>)
+    using with_type                             = V;
+};
+
+
+/* Manipulate a C++ argument annotation at compile time.  Forwards to the annotated
+type's interface where possible. */
+template <is_arg T>
+struct ArgTraits<T> {
+private:
+    using T2 = std::remove_cvref_t<T>;
+
+    template <static_str N>
+    struct _with_name { using type = T2::template with_name<N>; };
+    template <static_str N> requires (N.empty())
+    struct _with_name<N> { using type = T2::type; };
+
+public:
+    using type                                  = T2::type;
+    static constexpr static_str name             = T2::name;
+    static constexpr ArgKind kind               = T2::kind;
+    static constexpr bool posonly() noexcept    { return kind.posonly(); }
+    static constexpr bool pos() noexcept        { return kind.pos(); }
+    static constexpr bool args() noexcept       { return kind.args(); }
+    static constexpr bool kwonly() noexcept     { return kind.kwonly(); }
+    static constexpr bool kw() noexcept         { return kind.kw(); }
+    static constexpr bool kwargs() noexcept     { return kind.kwargs(); }
+    static constexpr bool bound() noexcept      { return bound_to::n > 0; }
+    static constexpr bool opt() noexcept        { return kind.opt(); }
+    static constexpr bool variadic() noexcept   { return kind.variadic(); }
+
+    template <typename... Vs>
+    static constexpr bool can_bind = T2::template can_bind<Vs...>;
+
+    template <typename... Vs> requires (can_bind<Vs...>)
+    using bind                                  = T2::template bind<Vs...>;
+    using unbind                                = T2::unbind;
+    using bound_to                              = T2::bound_to;
+    template <static_str N>
+        requires (N.empty() || arg_name<N> && !static_str<>::startswith<N, "*">())
+    using with_name                             = _with_name<N>::type;
+    template <typename V> requires (!std::is_void_v<V>)
+    using with_type                             = T2::template with_type<V>;
+};
+
+
+/* Introspect an annotated C++ function signature to extract compile-time type
+information about its parameters and allow matching functions to be called safely from
+both languages with a consistent syntax.  Also defines supporting data structures to
+allow for dynamic function overloading and partial function application. */
+template <typename T>
+struct signature {
+    static constexpr bool enable = false;
+};
+
+
 /* CTAD guide to simplify signature introspection.  Uses a dummy constructor, meaning
-no work is done at runtime.  Introspecting a function signature is a purely
-compile-time operation in C++. */
+no work is done at runtime. */
 template <typename T> requires (signature<T>::enable)
 signature(const T&) -> signature<typename signature<T>::type>;
 
@@ -4663,6 +4651,9 @@ struct signature<T> : signature<decltype(&std::remove_reference_t<T>::operator()
 template <inherits<impl::def_tag> T>
 struct signature<T> : std::remove_reference_t<T>::Signature {};
 
+/// TODO: overload for chains as well, which will require some extra data on the chain
+/// itself.
+
 
 /* A template constraint that controls whether the `py::call()` operator is enabled
 for a given C++ function and argument list. */
@@ -5023,96 +5014,111 @@ inline void test() {
 }
 
 
+/* Specializing `std::tuple_size`, `std::tuple_element`, and `std::get` allows
+argument packs, function chains, `def` objects, and signature tuples to be decomposed
+using structured bindings. */
 namespace std {
 
-    /// TODO: tuple decomposition for def<> tags, similar to partial tuples
-
-    /* Specializing `std::tuple_size` allows `signature` objects to be decomposed into
-    individual callbacks using structured bindings. */
-    template <bertrand::inherits<bertrand::impl::signature_tag> T>
+    template <bertrand::is_args T>
     struct tuple_size<T> :
         std::integral_constant<size_t, std::remove_cvref_t<T>::size()>
     {};
 
-    /* Specializing `std::tuple_size` allows `signature::Partial` objects to be
-    decomposed using structured bindings. */
+    template <bertrand::is_chain T>
+    struct tuple_size<T> :
+        std::integral_constant<size_t, std::remove_cvref_t<T>::size()>
+    {};
+
+    template <bertrand::inherits<bertrand::impl::def_tag> T>
+    struct tuple_size<T> :
+        std::integral_constant<size_t, bertrand::signature<T>::n>
+    {};
+
     template <bertrand::inherits<bertrand::impl::signature_partial_tag> T>
     struct tuple_size<T> :
-        std::integral_constant<size_t, std::remove_cvref_t<T>::size()>
+        std::integral_constant<size_t, std::remove_cvref_t<T>::n>
     {};
 
-    /* Specializing `std::tuple_size` allows `signature::Defaults` objects to be
-    decomposed using structured bindings. */
     template <bertrand::inherits<bertrand::impl::signature_defaults_tag> T>
     struct tuple_size<T> :
-        std::integral_constant<size_t, std::remove_cvref_t<T>::size()>
+        std::integral_constant<size_t, std::remove_cvref_t<T>::n>
     {};
 
-    /* Specializing `std::tuple_element` allows `signature` objects to be decomposed
-    into individual callbacks using structured bindings. */
-    template <size_t I, bertrand::inherits<bertrand::impl::signature_tag> T>
-        requires (I < std::remove_cvref_t<T>::n)
+    template <size_t I, bertrand::is_args T>
+        requires (I < std::remove_cvref_t<T>::size())
+    struct tuple_element<I, T> {
+        using type = std::remove_cvref_t<T>::template at<I>;
+    };
+
+    template <size_t I, bertrand::is_chain T>
+        requires (I < std::remove_cvref_t<T>::size())
     struct tuple_element<I, T> {
         using type = decltype(std::declval<T>().template get<I>());
     };
 
-    /* Specializing `std::tuple_element` allows `signature::Partial` objects to be
-    decomposed using structured bindings. */
+    template <size_t I, bertrand::inherits<bertrand::impl::def_tag> T>
+        requires (I < bertrand::signature<T>::n)
+    struct tuple_element<I, T> {
+        using type = decltype(std::declval<T>().template get<I>());
+    };
+
     template <size_t I, bertrand::inherits<bertrand::impl::signature_partial_tag> T>
         requires (I < std::remove_cvref_t<T>::n)
     struct tuple_element<I, T> {
         using type = decltype(std::declval<T>().template get<I>());
     };
 
-    /* Specializing `std::tuple_element` allows `signature::Defaults` objects to be
-    decomposed using structured bindings. */
     template <size_t I, bertrand::inherits<bertrand::impl::signature_defaults_tag> T>
         requires (I < std::remove_cvref_t<T>::n)
     struct tuple_element<I, T> {
         using type = decltype(std::declval<T>().template get<I>());
     };
 
-    /* `std::get<I>(signature)` extracts the I-th callback from the signature. */
-    template <size_t I, bertrand::inherits<bertrand::impl::signature_tag> T>
-        requires (I < std::remove_cvref_t<T>::n)
-    [[nodiscard]] constexpr decltype(auto) get(T&& signature) noexcept {
-        return std::forward<T>(signature).template get<I>();
+    template <size_t I, bertrand::is_args T>
+        requires (
+            !std::is_lvalue_reference_v<T> &&
+            I < std::remove_cvref_t<T>::size()
+        )
+    [[nodiscard]] constexpr decltype(auto) get(T&& args) noexcept {
+        return std::forward<T>(args).template get<I>();
     }
 
-    /* `std::get<"name">(signature)` extracts the callback associated with a given
-    named argument. */
-    template <bertrand::static_str name, bertrand::inherits<bertrand::impl::signature_tag> T>
-        requires (std::remove_cvref_t<T>::template has<name>)
-    [[nodiscard]] constexpr decltype(auto) get(T&& signature) noexcept {
-        return std::forward<T>(signature).template get<name>();
+    template <size_t I, bertrand::is_chain T>
+        requires (I < std::remove_cvref_t<T>::size())
+    [[nodiscard]] constexpr decltype(auto) get(T&& chain) {
+        return std::forward<T>(chain).template get<I>();
     }
 
-    /* `std::get<I>(partial)` extracts the I-th partial argument from a
-    `signature::Partial` tuple. */
+    template <size_t I, bertrand::inherits<bertrand::impl::def_tag> T>
+        requires (I < bertrand::signature<T>::n)
+    [[nodiscard]] constexpr decltype(auto) get(T&& def) noexcept {
+        return std::forward<T>(def).template get<I>();
+    }
+
     template <size_t I, bertrand::inherits<bertrand::impl::signature_partial_tag> T>
         requires (I < std::remove_cvref_t<T>::n)
     [[nodiscard]] constexpr decltype(auto) get(T&& partial) noexcept {
         return std::forward<T>(partial).template get<I>();
     }
 
-    /* `std::get<"name">(partial)` extracts the partial value associated with a given
-    named argument. */
-    template <bertrand::static_str name, bertrand::inherits<bertrand::impl::signature_partial_tag> T>
-        requires (std::remove_cvref_t<T>::template has<name>)
-    [[nodiscard]] constexpr decltype(auto) get(T&& signature) noexcept {
-        return std::forward<T>(signature).template get<name>();
-    }
-
-    /* `std::get<I>(defaults)` extracts the I-th default argument from a
-    `signature::Defaults` tuple. */
     template <size_t I, bertrand::inherits<bertrand::impl::signature_defaults_tag> T>
         requires (I < std::remove_cvref_t<T>::n)
     [[nodiscard]] constexpr decltype(auto) get(T&& defaults) noexcept {
         return std::forward<T>(defaults).template get<I>();
     }
 
-    /* `std::get<"name">(defaults)` extracts the default value associated with a given
-    named argument. */
+    template <bertrand::static_str name, bertrand::inherits<bertrand::impl::def_tag> T>
+        requires (bertrand::signature<T>::template has<name>)
+    [[nodiscard]] constexpr decltype(auto) get(T&& def) noexcept {
+        return std::forward<T>(def).template get<name>();
+    }
+
+    template <bertrand::static_str name, bertrand::inherits<bertrand::impl::signature_partial_tag> T>
+        requires (std::remove_cvref_t<T>::template has<name>)
+    [[nodiscard]] constexpr decltype(auto) get(T&& signature) noexcept {
+        return std::forward<T>(signature).template get<name>();
+    }
+
     template <bertrand::static_str name, bertrand::inherits<bertrand::impl::signature_defaults_tag> T>
         requires (std::remove_cvref_t<T>::template has<name>)
     [[nodiscard]] constexpr decltype(auto) get(T&& signature) noexcept {
