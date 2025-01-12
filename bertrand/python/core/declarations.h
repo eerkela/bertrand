@@ -44,7 +44,9 @@
 #include <cpptrace/cpptrace.hpp>
 
 #include <bertrand/common.h>
+#include <bertrand/bitset.h>
 #include <bertrand/static_str.h>
+#include <bertrand/static_map.h>
 #include <bertrand/func.h>
 
 
