@@ -248,7 +248,7 @@ namespace impl {
             if constexpr (py_union<Curr>) {
                 constexpr auto vtable = []<size_t... Is>(std::index_sequence<Is...>) {
                     return std::array{VTable<Is, Visitor>::python()...};
-                }(std::make_index_sequence<std::remove_cvref_t<Curr>::n>{});
+                }(std::make_index_sequence<std::remove_cvref_t<Curr>::size()>{});
 
                 return vtable[curr.m_index](
                     std::forward<Visitor>(visitor),
@@ -427,7 +427,7 @@ namespace impl {
 
             /* 4. Enable the operation if and only if at least one permutation
             satisfies the control structure, and thus has a valid return type. */
-            static constexpr bool enable = returns::n > 0;
+            static constexpr bool enable = returns::size() > 0;
 
             /* 5. If there is only one valid return type, return it directly, otherwise
             construct a new union and convert all of the results to Python. */
@@ -643,9 +643,9 @@ namespace impl {
 
 template <typename... Types>
 struct interface<Union<Types...>> : impl::UnionTag {
-    static constexpr size_t n = sizeof...(Types);
+    static constexpr size_t size() noexcept { return sizeof...(Types); }
 
-    template <size_t I> requires (I < n)
+    template <size_t I> requires (I < size())
     using at = impl::unpack_type<I, Types...>;
 
     template <typename T> requires (std::same_as<T, Types> || ...)
@@ -667,7 +667,7 @@ struct interface<Union<Types...>> : impl::UnionTag {
         }
     }
 
-    template <size_t I> requires (I < n)
+    template <size_t I> requires (I < size())
     [[nodiscard]] auto get(this auto&& self) -> at<I> {
         using ref = impl::qualify_lvalue<at<I>, decltype(self)>;
         if (self.m_index != I) {
@@ -694,7 +694,7 @@ struct interface<Union<Types...>> : impl::UnionTag {
         }
     }
 
-    template <size_t I> requires (I < n)
+    template <size_t I> requires (I < size())
     [[nodiscard]] auto get_if(this auto&& self) -> Optional<at<I>> {
         if (self.m_index != I) {
             return None;
@@ -728,9 +728,9 @@ private:
     using type = interface<Union<Types...>>;
 
 public:
-    static constexpr size_t n = type::n;
+    static constexpr size_t size() noexcept { return type::size(); }
 
-    template <size_t I> requires (I < n)
+    template <size_t I> requires (I < size())
     using at = type::template at<I>;
 
     template <typename T, impl::inherits<type> Self>
@@ -746,7 +746,7 @@ public:
     }
 
     template <size_t I, impl::inherits<type> Self>
-        requires (I < n)
+        requires (I < size())
     [[nodiscard]] static auto get(Self&& self) -> at<I> {
         return std::forward<Self>(self).template get<I>();
     }
@@ -758,7 +758,7 @@ public:
     }
 
     template <size_t I, impl::inherits<type> Self>
-        requires (I < n)
+        requires (I < size())
     [[nodiscard]] static auto get_if(Self&& self) -> Optional<at<I>> {
         return std::forward<Self>(self).template get_if<I>();
     }

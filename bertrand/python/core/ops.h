@@ -240,20 +240,20 @@ template <impl::inherits<Object> From, std::derived_from<Object> To>
 struct __cast__<From, To>                                   : returns<To> {
     template <size_t I>
     static size_t find_union_type(std::add_lvalue_reference_t<From> obj) {
-        if constexpr (I < To::n) {
+        if constexpr (I < To::size()) {
             if (isinstance<To::template at<I>>(obj)) {
                 return I;
             }
             return find_union_type<I + 1>(obj);
         } else {
-            return To::n;
+            return To::size();
         }
     }
 
     static auto operator()(From from) {
         if constexpr (impl::inherits<To, impl::UnionTag>) {
             size_t index = find_union_type<0>(from);
-            if (index == To::n) {
+            if (index == To::size()) {
                 throw TypeError(
                     "cannot convert Python object from type '" +
                     repr(Type<From>()) + "' to type '" +

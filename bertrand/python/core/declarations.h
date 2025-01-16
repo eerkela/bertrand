@@ -57,16 +57,20 @@ using bertrand::MAX_ARGS;
 using bertrand::MAX_OVERLOADS;
 using bertrand::OVERLOAD_CACHE_SIZE;
 using bertrand::TEMPLATE_RECURSION_LIMIT;
+using bertrand::sentinel;
+using bertrand::static_str;
+using bertrand::type_name;
+using bertrand::demangle;
+using bertrand::static_map;
+using bertrand::static_set;
 using bertrand::Arg;
 using bertrand::ArgTraits;
 using bertrand::arg;
 using bertrand::args;
-using bertrand::sentinel;
-using bertrand::static_str;
-using bertrand::static_map;
-using bertrand::static_set;
-using bertrand::type_name;
-using bertrand::demangle;
+using bertrand::call;
+using bertrand::def;
+using bertrand::callable;
+using bertrand::partially_callable;
 
 
 namespace impl {

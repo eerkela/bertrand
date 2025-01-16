@@ -46,6 +46,12 @@ template <size_t N>
 static_str(const char(&)[N]) -> static_str<N - 1>;
 
 
+template <static_str... Strings>
+struct static_strings {
+    /// TODO: some kind of helper that serves as a container for a bunch of strings
+};
+
+
 template <size_t N = 0>
 struct static_str {
 private:

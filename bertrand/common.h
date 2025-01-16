@@ -443,11 +443,15 @@ concept is_lvalue = std::is_lvalue_reference_v<T>;
 
 
 template <typename T>
-concept is_rvalue = !std::is_reference_v<T> || std::is_rvalue_reference_v<T>;
+concept is_rvalue = !is_lvalue<T>;
 
 
 template <typename T>
 concept is_ptr = std::is_pointer_v<std::remove_reference_t<T>>;
+
+
+template <typename T>
+concept is_qualified = std::is_reference_v<T> || is_const<T> || is_volatile<T>;
 
 
 template <typename... Ts>

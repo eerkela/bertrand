@@ -292,13 +292,11 @@ namespace impl {
         /* Finds an associative value array that produces perfect hashes over the input
         keywords. */
         static constexpr auto find_hash = [] -> std::tuple<size_t, Weights, bool> {
-            /// TODO: max_iterations should be replaced with bertrand::TEMPLATE_RECURSION_LIMIT
-            constexpr size_t max_iterations = 1000;
             Weights weights;
 
             for (size_t i = 0; i <= max_length; ++i) {
                 weights.fill(1);
-                for (size_t j = 0; j < max_iterations; ++j) {
+                for (size_t j = 0; j < TEMPLATE_RECURSION_LIMIT; ++j) {
                     collision result = collisions<Keys...>{}(weights, i);
                     if (result.first == result.second) {
                         return {i, weights, true};

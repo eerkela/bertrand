@@ -35,6 +35,9 @@
 /// (as it should), then turn back now while you still can!
 
 
+/// TODO: (?<!\w)n(?!(_|\w))
+
+
 namespace py {
 
 
@@ -2026,14 +2029,504 @@ namespace py {
 /// in the C++ and Python call operators (Bind<>, Vectorcall, and Overloads)
 
 
+/// TODO: what would probably be best is if I just write this class as a specialization
+/// of `bertrand::signature` rather than subclassing it, since that really
+/// fucks up the implementation and makes references very hard to follow.  That also
+/// means that the compile-time table will never be duplicated, but the overall class
+/// will need to be duplicated.
+
+
+
+template <impl::has_python Return, impl::has_python... Args>
+struct signature<Return(Args...)> : bertrand::signature<Return(Args...)> {
+private:
+    using base = bertrand::signature<Return(Args...)>;
+
+    template <typename... A>
+    static constexpr inspect::Required _required = 0;
+    template <typename A, typename... As>
+    static constexpr inspect::Required _required<A, As...> =
+        (_required<As...> << 1) | !(ArgTraits<A>::opt() || ArgTraits<A>::variadic());
+
+public:
+    /* True if the return type is a Python object. */
+    static constexpr bool return_is_python = impl::python<Return>;
+
+    /* True if the return type is convertible to a Python object. */
+    static constexpr bool return_is_convertible_to_python = true;
+
+    /* True if all argument types are Python objects. */
+    static constexpr bool args_are_python = (impl::python<Args> && ...);
+
+    /* True if all argument types are convertible to Python objects. */
+    static constexpr bool args_are_convertible_to_python = true;
+
+    /* True if the arguments fit within the width of the bitset necessary to validate
+    them during overload resolution (64). */
+    static constexpr bool args_fit_within_bitset =
+        base::n <= inspect::Required::size();
+
+    template <typename R>
+    using with_return = signature<R(Args...)>;
+
+    template <typename... As>
+    using with_args = signature<Return(As...)>;
+
+    using as_python = signature<impl::python_type<Return>(
+        typename ArgTraits<Args>::template with_type<impl::python_type<Args>>...
+    )>;
+
+    /* Dummy constructor for CTAD purposes. */
+    template <typename T> requires (signature<T>::enable)
+    constexpr signature(const T&) noexcept {}
+    constexpr signature() noexcept = default;
+
+    /* A single entry in a callback table, storing the argument name (which may be
+    empty), a bitmask specifying its kind (positional-only, optional, variadic, etc.),
+    a one-hot encoded bitmask specifying its position within the enclosing parameter
+    list, and a set of function pointers that can be used to validate the argument at
+    runtime.  Such callbacks are typically returned by the index operator and
+    associated accessors. */
+    struct Callback {
+    private:
+        friend signature;
+
+        template <size_t I>
+        static constexpr Callback create() {
+            using T = impl::unpack_type<I, Args...>;
+            return {
+                .name = std::string_view(ArgTraits<T>::name),
+                .kind = ArgTraits<T>::kind,
+                .index = I,
+                .type = []() -> Object {
+                    using U = ArgTraits<T>::type;
+                    if constexpr (impl::has_python<U>) {
+                        return Type<std::remove_cvref_t<impl::python_type<U>>>();
+                    } else {
+                        throw TypeError(
+                            "C++ type has no Python equivalent: " + type_name<U>
+                        );
+                    }
+                },
+                .isinstance = [](const Object& value) -> bool {
+                    using U = ArgTraits<T>::type;
+                    if constexpr (impl::has_python<U>) {
+                        using V = std::remove_cvref_t<impl::python_type<U>>;
+                        return py::isinstance<V>(value);
+                    } else {
+                        throw TypeError(
+                            "C++ type has no Python equivalent: " + type_name<U>
+                        );
+                    }
+                },
+                .issubclass = [](const Object& type) -> bool {
+                    using U = ArgTraits<T>::type;
+                    if constexpr (impl::has_python<U>) {
+                        using V = std::remove_cvref_t<impl::python_type<U>>;
+                        return py::issubclass<V>(type);
+                    } else {
+                        throw TypeError(
+                            "C++ type has no Python equivalent: " + type_name<U>
+                        );
+                    }
+                },
+            };
+        }
+
+    public:
+        std::string_view name;
+        impl::ArgKind kind;
+        size_t index;
+        Object(*type)();
+        bool(*isinstance)(const Object&);
+        bool(*issubclass)(const Object&);
+
+        [[nodiscard]] constexpr bool posonly() const noexcept { return kind.posonly(); }
+        [[nodiscard]] constexpr bool pos() const noexcept { return kind.pos(); }
+        [[nodiscard]] constexpr bool args() const noexcept { return kind.args(); }
+        [[nodiscard]] constexpr bool kw() const noexcept { return kind.kw(); }
+        [[nodiscard]] constexpr bool kwonly() const noexcept { return kind.kwonly(); }
+        [[nodiscard]] constexpr bool kwargs() const noexcept { return kind.kwargs(); }
+        [[nodiscard]] constexpr bool opt() const noexcept { return kind.opt(); }
+        [[nodiscard]] constexpr bool variadic() const noexcept { return kind.variadic(); }
+
+        [[nodiscard]] size_t hash() const noexcept {
+            Object type = this->type();
+            return impl::hash_combine(
+                impl::fnv1a(
+                    name.data(),
+                    impl::fnv1a_seed,
+                    impl::fnv1a_prime
+                ),
+                PyType_Check(ptr(type)) ?
+                    reinterpret_cast<size_t>(ptr(type)) :
+                    reinterpret_cast<size_t>(Py_TYPE(ptr(type))),
+                static_cast<size_t>(kind)
+            );
+        }
+    };
+
+    /* A bitmask with a 1 in the position of all of the required arguments in the
+    parameter list.
+
+    Each callback stores a one-hot encoded mask that is progressively joined into a
+    single observed bitmask as each argument is processed.  The result can then be
+    compared to this constant to quickly determine if all required arguments have been
+    accounted for.  If that comparison fails, then further bitwise inspection can be
+    done to determine exactly which arguments are missing, as well as their names for
+    a comprehensive error message.
+
+    Note that this mask effectively limits the number of arguments that a function
+    can accept to 64, which is reasonable for most functions.  The performance
+    benefits justify the limitation, and if you need more than 64 arguments, you
+    should probably be using a different design pattern anyways. */
+    static constexpr inspect::Required required = _required<Args...>;
+
+private:
+    static constexpr Callback return_callback {
+        .name = "",
+        .kind = 0,
+        .index = 0,
+        .type = []() -> Object {
+            using U = Return;
+            if constexpr (impl::has_python<U>) {
+                return Type<std::remove_cvref_t<impl::python_type<U>>>();
+            } else {
+                throw TypeError(
+                    "C++ type has no Python equivalent: " + type_name<U>
+                );
+            }
+        },
+        .isinstance = [](const Object& value) -> bool {
+            using U = Return;
+            if constexpr (impl::has_python<U>) {
+                using V = std::remove_cvref_t<impl::python_type<U>>;
+                return py::isinstance<V>(value);
+            } else {
+                throw TypeError(
+                    "C++ type has no Python equivalent: " + type_name<U>
+                );
+            }
+        },
+        .issubclass = [](const Object& type) -> bool {
+            using U = Return;
+            if constexpr (impl::has_python<U>) {
+                using V = std::remove_cvref_t<impl::python_type<U>>;
+                return py::issubclass<V>(type);
+            } else {
+                throw TypeError(
+                    "C++ type has no Python equivalent: " + type_name<U>
+                );
+            }
+        },
+    };
+
+    /* A flat array of callback objects whose indices are aligned to the enclosing
+    parameter list. */
+    using PositionalTable = std::array<Callback, sizeof...(Args)>;
+    static constexpr auto positional_table =
+        []<size_t... Is>(std::index_sequence<Is...>) {
+            return PositionalTable{Callback::template create<Is>()...};
+        }(std::index_sequence_for<Args...>{});
+
+    /* In order to avoid superfluous compile errors, the perfect keyword hash map
+    should not be created unless the signature is well-formed. */
+    template <bool valid>
+    struct get_name_table {
+        using type = static_map<const Callback&>;
+        static constexpr type table = {};
+    };
+    template <>
+    struct get_name_table<true> {
+        template <typename, size_t, typename...>
+        struct extract_names;
+        template <typename... out, size_t I, typename... Ts>
+        struct extract_names<args<out...>, I, Ts...> {
+            using type = static_map<const Callback&, ArgTraits<out>::name...>;
+            static constexpr type operator()(auto&&... pointers) {
+                return {std::forward<decltype(pointers)>(pointers)...};
+            }
+        };
+        template <typename... out, size_t I, typename T, typename... Ts>
+        struct extract_names<args<out...>, I, T, Ts...> {
+            template <typename>
+            struct filter {
+                using type = args<out...>;
+                static constexpr auto operator()(auto&&... pointers) noexcept {
+                    return extract_names<type, I + 1, Ts...>{}(
+                        std::forward<decltype(pointers)>(pointers)...
+                    );
+                }
+            };
+            template <typename U> requires (!ArgTraits<U>::name.empty())
+            struct filter<U> {
+                using type = args<out..., U>;
+                static constexpr auto operator()(auto&&... pointers) noexcept {
+                    return extract_names<type, I + 1, Ts...>{}(
+                        std::forward<decltype(pointers)>(pointers)...,
+                        positional_table[I]
+                    );
+                }
+            };
+            using type = extract_names<typename filter<T>::type, I + 1, Ts...>::type;
+            static constexpr auto operator()(auto&&... pointers) noexcept {
+                return filter<T>{}(std::forward<decltype(pointers)>(pointers)...);
+            }
+        };
+        using type = extract_names<args<>, 0, Args...>::type;
+        static constexpr type table = extract_names<args<>, 0, Args...>{}();
+    };
+
+    /* A perfect hash map of keyword names to their corresponding callbacks. */
+    using NameTable = get_name_table<
+        args_fit_within_bitset &&
+        base::proper_argument_order &&
+        base::no_duplicate_args
+    >::type;
+    static constexpr NameTable name_table = get_name_table<
+        args_fit_within_bitset &&
+        base::proper_argument_order &&
+        base::no_duplicate_args
+    >::table;
+
+    template <typename out, typename...>
+    struct _unbind { using type = out; };
+    template <typename R, typename... out, typename A, typename... As>
+    struct _unbind<signature<R(out...)>, A, As...> {
+        using type = _unbind<
+            signature<R(out..., typename ArgTraits<A>::unbind)>,
+            As...
+        >::type;
+    };
+
+public:
+    [[nodiscard]] static constexpr size_t size() noexcept { return sizeof...(Args); }
+    [[nodiscard]] static constexpr bool empty() noexcept { return !sizeof...(Args); }
+    [[nodiscard]] static auto begin() noexcept { return positional_table.begin(); }
+    [[nodiscard]] static auto cbegin() noexcept { return positional_table.cbegin(); }
+    [[nodiscard]] static auto rbegin() noexcept { return positional_table.rbegin(); }
+    [[nodiscard]] static auto crbegin() noexcept { return positional_table.crbegin(); }
+    [[nodiscard]] static auto end() noexcept { return positional_table.end(); }
+    [[nodiscard]] static auto cend() noexcept { return positional_table.cend(); }
+    [[nodiscard]] static auto rend() noexcept { return positional_table.rend(); }
+    [[nodiscard]] static auto crend() noexcept { return positional_table.crend(); }
+
+    /* Get a callback that validates the function's return type.  Such a callback has
+    no name, kind, or index, but does have `type()`, `isinstance()`, and `issubclass()`
+    helpers that can check against the expected type. */
+    [[nodiscard]] static constexpr const Callback& returns() noexcept {
+        return return_callback;
+    }
+
+    /* Check whether a given positional index is within the bounds of the enclosing
+    signature. */
+    template <size_t I>
+    [[nodiscard]] static constexpr bool contains() noexcept {
+        return I < size();
+    }
+    [[nodiscard]] static constexpr bool contains(size_t i) noexcept {
+        return i < size();
+    }
+
+    /* Check whether a given argument name is present within the enclosing signature. */
+    template <static_str Key>
+    [[nodiscard]] static constexpr bool contains() noexcept {
+        return NameTable::template contains<Key>();
+    }
+    template <typename T> requires (NameTable::template hashable<T>)
+    [[nodiscard]] static constexpr bool contains(T&& key) noexcept {
+        return name_table.contains(std::forward<T>(key));
+    }
+
+    /* Look up the callback object associated with the argument at index I if it is
+    within range.  Fails to compile otherwise. */
+    template <size_t I> requires (I < size())
+    [[nodiscard]] static constexpr const Callback& get() noexcept {
+        return positional_table[I];
+    }
+
+    /* Look up the callback object associated with the argument at index I if it is
+    within range.  Throws an IndexError otherwise. */
+    [[nodiscard]] static constexpr const Callback& get(size_t i) {
+        if (i < size()) {
+            return positional_table[i];
+        } else {
+            throw IndexError("positional index out of range");
+        }
+    }
+
+    /* Look up the callback object associated with the named argument if it is present
+    within the signature.  Fails to compile otherwise. */
+    template <static_str Key> requires (contains<Key>())
+    [[nodiscard]] static constexpr const Callback& get() noexcept {
+        return std::get<Key>(name_table);
+    }
+
+    /* Look up the callback object associated with the named argument if it is present
+    within the signature.  Throws a KeyError otherwise. */
+    template <typename T> requires (NameTable::template hashable<T>)
+    [[nodiscard]] static constexpr const Callback& get(T&& key) {
+        if (const Callback* result = name_table[std::forward<T>(key)]) {
+            return *result;
+        } else {
+            throw KeyError("keyword not recognized");
+        }
+    }
+
+    /* Get a pointer to the callback object for a given argument.  Returns nullptr if
+    the index is out of range. */
+    [[nodiscard]] static constexpr const Callback* operator[](size_t i) noexcept {
+        return i < size() ? &positional_table[i] : nullptr;
+    }
+
+    /* Get a pointer to the callback object for the named argument.  Returns nullptr if
+    the name is not recognized. */
+    template <typename T> requires (NameTable::template hashable<T>)
+    [[nodiscard]] static constexpr const Callback* operator[](T&& key) noexcept {
+        return name_table[std::forward<T>(key)];
+    }
+
+    /* A tuple holding a default value for every argument in the enclosing
+    parameter list that is marked as optional.  One of these must be provided
+    whenever a C++ function is invoked, and constructing one requires that the
+    initializers match a sub-signature consisting only of the optional args as
+    keyword-only parameters for clarity.  The result may be empty if there are no
+    optional arguments in the enclosing signature, in which case the constructor
+    will be optimized out. */
+    struct Defaults : base::Defaults {
+        using type = signature;
+        using base::Defaults::Defaults;
+    };
+
+    /* Instance-level constructor for a `::Defaults` tuple. */
+    template <typename... A>
+        requires (
+            !(impl::arg_pack<A> || ...) &&
+            !(impl::kwarg_pack<A> || ...) &&
+            Defaults::template Bind<A...>::proper_argument_order &&
+            Defaults::template Bind<A...>::no_qualified_arg_annotations &&
+            Defaults::template Bind<A...>::no_duplicate_args &&
+            Defaults::template Bind<A...>::no_conflicting_values &&
+            Defaults::template Bind<A...>::no_extra_positional_args &&
+            Defaults::template Bind<A...>::no_extra_keyword_args &&
+            Defaults::template Bind<A...>::satisfies_required_args &&
+            Defaults::template Bind<A...>::can_convert
+        )
+    [[nodiscard]] static constexpr Defaults defaults(A&&... args) {
+        return Defaults(std::forward<A>(args)...);
+    }
+
+    /* A tuple holding a partial value for every bound argument in the enclosing
+    parameter list.  One of these must be provided whenever a C++ function is
+    invoked, and constructing one requires that the initializers match a
+    sub-signature consisting only of the bound args as positional-only and
+    keyword-only parameters for clarity.  The result may be empty if there are no
+    bound arguments in the enclosing signature, in which case the constructor will
+    be optimized out. */
+    struct Partial : base::Partial {
+    private:
+        template <size_t I, size_t K>
+        struct to_overload_key {
+            static constexpr size_t size(size_t result) noexcept { return result; }
+            template <typename P>
+            static void operator()(P&&, impl::OverloadKey&) {}
+        };
+        template <size_t I, size_t K>
+            requires (
+                I < base::n &&
+                (K < base::Partial::n && base::Partial::template rfind<K> == I)
+            )
+        struct to_overload_key<I, K> {
+            static constexpr size_t size(size_t result) noexcept {
+                using T = base::template at<I>;
+                return to_overload_key<I + !ArgTraits<T>::variadic(), K + 1>::size(
+                    result + 1
+                );
+            }
+
+            template <typename P>
+            static void operator()(P&& partial, impl::OverloadKey& key) {
+                using T = base::template at<I>;
+                key->emplace_back(
+                    std::string(base::Partial::template name<K>),
+                    py::to_python(std::forward<P>(partial).template get<K>()),
+                    ArgTraits<T>::kind
+                );
+                to_overload_key<I + !ArgTraits<T>::variadic(), K + 1>{}(
+                    std::forward<P>(partial),
+                    key
+                );
+            }
+        };
+        template <size_t I, size_t K>
+            requires (
+                I < base::n &&
+                !(K < base::Partial::n && base::Partial::template rfind<K> == I)
+            )
+        struct to_overload_key<I, K> {
+            static constexpr size_t size(size_t result) noexcept {
+                return to_overload_key<I + 1, K>::size(result + 1);
+            }
+
+            template <typename P>
+            static void operator()(P&& partial, impl::OverloadKey& key) {
+                using T = base::template at<I>;
+                key->emplace_back(
+                    std::string(ArgTraits<T>::name),
+                    reinterpret_steal<Object>(nullptr),
+                    ArgTraits<T>::kind
+                );
+                to_overload_key<I + 1, K>{}(std::forward<P>(partial), key);
+            }
+        };
+
+    public:
+        using type = signature;
+        using base::Partial::Partial;
+
+        /* Convert a partial tuple into a standardized key type that can be used to
+        initiate a search of an overload trie. */
+        [[nodiscard]] impl::OverloadKey overload_key(this auto&& self) {
+            impl::OverloadKey key;
+            key->reserve(to_overload_key<0, 0>::size(0));
+            to_overload_key<0, 0>{}(std::forward<decltype(self)>(self), key);
+            return key;
+        }
+    };
+
+    /* Instance-level constructor for a `::Partial` tuple. */
+    template <typename... A>
+        requires (
+            !(impl::arg_pack<A> || ...) &&
+            !(impl::kwarg_pack<A> || ...) &&
+            Partial::template Bind<A...>::proper_argument_order &&
+            Partial::template Bind<A...>::no_qualified_arg_annotations &&
+            Partial::template Bind<A...>::no_duplicate_args &&
+            Partial::template Bind<A...>::no_conflicting_values &&
+            Partial::template Bind<A...>::no_extra_positional_args &&
+            Partial::template Bind<A...>::no_extra_keyword_args &&
+            Partial::template Bind<A...>::satisfies_required_args &&
+            Partial::template Bind<A...>::can_convert
+        )
+    [[nodiscard]] static constexpr Partial partial(A&&... args) {
+        return Partial(std::forward<A>(args)...);
+    }
+
+};
+
+
 /* The canonical form of `py::signature`, which encapsulates all of the internal call
 machinery, as much as possible of which is evaluated at compile time.  All other
 specializations should redirect to this form in order to avoid reimplementing the nuts
 and bolts of the function ecosystem. */
 template <typename Return, typename... Args>
-struct signature<Return(Args...)> : impl::SignatureBase<Return> {
-    static constexpr bool enable = true;
-    using type = Return(Args...);
+struct signature<Return(Args...)> : bertrand::signature<Return(Args...)> {
+private:
+    using base = bertrand::signature<Return(Args...)>;
+
+public:
+    // static constexpr bool enable = true;
+    // using type = Return(Args...);
 
     struct Partial;
     struct Defaults;
@@ -2042,12 +2535,19 @@ struct signature<Return(Args...)> : impl::SignatureBase<Return> {
     struct Vectorcall;
     struct Overloads;
 
+    template <typename R>
+    using with_return = signature<R(Args...)>;
+
+    template <typename... As>
+    using with_args = signature<Return(As...)>;
+
     /* Dummy constructor for CTAD purposes. */
     template <typename T> requires (signature<T>::enable)
     constexpr signature(const T&) noexcept {}
     constexpr signature() noexcept = default;
 
 private:
+
     template <typename...>
     static constexpr size_t _n_posonly = 0;
     template <typename T, typename... Ts>
@@ -2128,40 +2628,63 @@ private:
         ArgTraits<impl::unpack_type<I, Args...>>::variadic()
     );
 
+    template <size_t>
+    static constexpr bool _args_are_python = true;
+    template <size_t I> requires (I < base::n)
+    static constexpr bool _args_are_python<I> = [] {
+        return impl::python<
+            typename ArgTraits<typename base::template at<I>>::type
+        > && _args_are_python<I + 1>;
+    }();
+
+    template <size_t>
+    static constexpr bool _args_are_convertible_to_python = true;
+    template <size_t I> requires (I < base::n)
+    static constexpr bool _args_are_convertible_to_python<I> = [] {
+        return impl::has_python<
+            typename ArgTraits<typename base::template at<I>>::type
+        > && _args_are_convertible_to_python<I + 1>;
+    }();
+
+    /// TODO: _viable_overload<T>, where T is a function type for which
+    /// signature<T>::enable is true.  This asserts that the corresponding signature
+    /// is a possible overload of this signature.  That might be covered already
+    /// by the `<` operator, in which case we can toss it.
+
 public:
-    static constexpr size_t n                   = sizeof...(Args);
-    static constexpr size_t n_posonly           = _n_posonly<Args...>;
-    static constexpr size_t n_pos               = _n_pos<Args...>;
-    static constexpr size_t n_kw                = _n_kw<Args...>;
-    static constexpr size_t n_kwonly            = _n_kwonly<Args...>;
+    // static constexpr size_t n                   = sizeof...(Args);
+    // static constexpr size_t n_posonly           = _n_posonly<Args...>;
+    // static constexpr size_t n_pos               = _n_pos<Args...>;
+    // static constexpr size_t n_kw                = _n_kw<Args...>;
+    // static constexpr size_t n_kwonly            = _n_kwonly<Args...>;
 
-    template <static_str Name>
-    static constexpr bool has                   = n > _idx<Name, Args...>;
-    static constexpr bool has_posonly           = n_posonly > 0;
-    static constexpr bool has_pos               = n_pos > 0;
-    static constexpr bool has_kw                = n_kw > 0;
-    static constexpr bool has_kwonly            = n_kwonly > 0;
-    static constexpr bool has_args              = n > _args_idx<Args...>;
-    static constexpr bool has_kwargs            = n > _kwargs_idx<Args...>;
+    // template <static_str Name>
+    // static constexpr bool has                   = n > _idx<Name, Args...>;
+    // static constexpr bool has_posonly           = n_posonly > 0;
+    // static constexpr bool has_pos               = n_pos > 0;
+    // static constexpr bool has_kw                = n_kw > 0;
+    // static constexpr bool has_kwonly            = n_kwonly > 0;
+    // static constexpr bool has_args              = n > _args_idx<Args...>;
+    // static constexpr bool has_kwargs            = n > _kwargs_idx<Args...>;
 
-    template <static_str Name> requires (has<Name>)
-    static constexpr size_t idx                 = _idx<Name, Args...>;
-    static constexpr size_t posonly_idx         = _posonly_idx<Args...>;
-    static constexpr size_t pos_idx             = _pos_idx<Args...>;
-    static constexpr size_t kw_idx              = _kw_idx<Args...>;
-    static constexpr size_t kwonly_idx          = _kwonly_idx<Args...>;
-    static constexpr size_t args_idx            = _args_idx<Args...>;
-    static constexpr size_t kwargs_idx          = _kwargs_idx<Args...>;
-    static constexpr size_t opt_idx             = _opt_idx<Args...>;
+    // template <static_str Name> requires (has<Name>)
+    // static constexpr size_t idx                 = _idx<Name, Args...>;
+    // static constexpr size_t posonly_idx         = _posonly_idx<Args...>;
+    // static constexpr size_t pos_idx             = _pos_idx<Args...>;
+    // static constexpr size_t kw_idx              = _kw_idx<Args...>;
+    // static constexpr size_t kwonly_idx          = _kwonly_idx<Args...>;
+    // static constexpr size_t args_idx            = _args_idx<Args...>;
+    // static constexpr size_t kwargs_idx          = _kwargs_idx<Args...>;
+    // static constexpr size_t opt_idx             = _opt_idx<Args...>;
 
-    template <size_t I> requires (I < n)
-    using at = impl::unpack_type<I, Args...>;
+    // template <size_t I> requires (I < n)
+    // using at = impl::unpack_type<I, Args...>;
 
-    template <typename R>
-    using with_return = signature<R(Args...)>;
+    // template <typename R>
+    // using with_return = signature<R(Args...)>;
 
-    template <typename... As>
-    using with_args = signature<Return(As...)>;
+    // template <typename... As>
+    // using with_args = signature<Return(As...)>;
 
     // using as_python = signature<
     //     impl::python_type<Return>(
@@ -2606,54 +3129,54 @@ public:
             _viable_overload<0, 0>;
     };
 
-    /* True if a given function can be called with this signature's arguments and
-    returns a compatible type, after accounting for implicit conversions. */
-    template <typename Func>
-    static constexpr bool invocable =
-        std::is_invocable_r_v<Return, Func, Args...>;
+    // /* True if a given function can be called with this signature's arguments and
+    // returns a compatible type, after accounting for implicit conversions. */
+    // template <typename Func>
+    // static constexpr bool invocable =
+    //     std::is_invocable_r_v<Return, Func, Args...>;
 
     /* True if the return type is a Python object. */
     static constexpr bool return_is_python =
-        Check<signature>::return_is_python;
+        impl::python<Return>;
 
     /* True if the return type is convertible to a Python object. */
     static constexpr bool return_is_convertible_to_python =
-        Check<signature>::return_is_convertible_to_python;
+        impl::has_python<Return>;
 
-    /* True if the arguments are given in the proper order (no positional after keyword,
-    no required after optional, etc.). */
-    static constexpr bool proper_argument_order =
-        Check<signature>::proper_argument_order;
+    // /* True if the arguments are given in the proper order (no positional after keyword,
+    // no required after optional, etc.). */
+    // static constexpr bool proper_argument_order =
+    //     Check<signature>::proper_argument_order;
 
     /* True if the arguments fit within the width of the bitset necessary to validate
     them during overload resolution (64). */
     static constexpr bool args_fit_within_bitset =
-        Check<signature>::args_fit_within_bitset;
+        base::n <= inspect::Required::size();
 
     /* True if all argument types are Python objects. */
     static constexpr bool args_are_python =
-        Check<signature>::args_are_python;
+        _args_are_python<0>;
 
     /* True if all argument types are convertible to Python objects. */
     static constexpr bool args_are_convertible_to_python =
-        Check<signature>::args_are_convertible_to_python;
+        _args_are_convertible_to_python<0>;
 
-    /* True if the return type lacks cvref qualifications. */
-    static constexpr bool no_qualified_return =
-        Check<signature>::no_qualified_return;
+    // /* True if the return type lacks cvref qualifications. */
+    // static constexpr bool no_qualified_return =
+    //     Check<signature>::no_qualified_return;
 
-    /* True if the return types lack cvref qualifications. */
-    static constexpr bool no_qualified_args =
-        Check<signature>::no_qualified_args;
+    // /* True if the return types lack cvref qualifications. */
+    // static constexpr bool no_qualified_args =
+    //     Check<signature>::no_qualified_args;
 
-    /* True if none of the `Arg<>` annotations are themselves cvref-qualified. */
-    static constexpr bool no_qualified_arg_annotations =
-        Check<signature>::no_qualified_arg_annotations;
+    // /* True if none of the `Arg<>` annotations are themselves cvref-qualified. */
+    // static constexpr bool no_qualified_arg_annotations =
+    //     Check<signature>::no_qualified_arg_annotations;
 
-    /* True if there are no duplicate parameter names and at most one variadic
-    positional/keyword argument, respectively. */
-    static constexpr bool no_duplicate_args =
-        Check<signature>::no_duplicate_args;
+    // /* True if there are no duplicate parameter names and at most one variadic
+    // positional/keyword argument, respectively. */
+    // static constexpr bool no_duplicate_args =
+    //     Check<signature>::no_duplicate_args;
 
     /* A single entry in a callback table, storing the argument name (which may be
     empty), a bitmask specifying its kind (positional-only, optional, variadic, etc.),
@@ -10740,48 +11263,50 @@ signature(const T&) -> signature<typename signature<T>::type>;
 /// signature via inheritance.  Doing so will allow a non-trivial function to be used
 /// as the initializer for a `py::def` statement, and possibly also `py::Function` if
 /// the normalized signature can be converted to Python.
-template <typename R, typename... A>
-struct signature<R(A...) noexcept>                          : signature<R(A...)> {};
-template <typename R, typename... A>
-struct signature<R(*)(A...)>                                : signature<R(A...)> {};
-template <typename R, typename... A>
-struct signature<R(*)(A...) noexcept>                       : signature<R(A...)> {};
-template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...)>                             : signature<R(A...)> {};
-template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) &>                           : signature<R(A...)> {};
-template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) noexcept>                    : signature<R(A...)> {};
-template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) & noexcept>                  : signature<R(A...)> {};
-template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) const>                       : signature<R(A...)> {};
-template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) const &>                     : signature<R(A...)> {};
-template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) const noexcept>              : signature<R(A...)> {};
-template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) const & noexcept>            : signature<R(A...)> {};
-template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) volatile>                    : signature<R(A...)> {};
-template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) volatile &>                  : signature<R(A...)> {};
-template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) volatile noexcept>           : signature<R(A...)> {};
-template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) volatile & noexcept>         : signature<R(A...)> {};
-template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) const volatile>              : signature<R(A...)> {};
-template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) const volatile &>            : signature<R(A...)> {};
-template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) const volatile noexcept>     : signature<R(A...)> {};
-template <typename R, typename C, typename... A>
-struct signature<R(C::*)(A...) const volatile & noexcept>   : signature<R(A...)> {};
-template <impl::has_call_operator T>
-struct signature<T> : signature<decltype(&std::remove_reference_t<T>::operator())> {};
-template <impl::inherits<impl::DefTag> T>
-struct signature<T> : std::remove_reference_t<T>::signature {};
+template <typename T> requires (bertrand::signature<T>::enable)
+struct signature<T> : signature<typename bertrand::signature<T>::type> {};
+// template <typename R, typename... A>
+// struct signature<R(A...) noexcept>                          : signature<R(A...)> {};
+// template <typename R, typename... A>
+// struct signature<R(*)(A...)>                                : signature<R(A...)> {};
+// template <typename R, typename... A>
+// struct signature<R(*)(A...) noexcept>                       : signature<R(A...)> {};
+// template <typename R, typename C, typename... A>
+// struct signature<R(C::*)(A...)>                             : signature<R(A...)> {};
+// template <typename R, typename C, typename... A>
+// struct signature<R(C::*)(A...) &>                           : signature<R(A...)> {};
+// template <typename R, typename C, typename... A>
+// struct signature<R(C::*)(A...) noexcept>                    : signature<R(A...)> {};
+// template <typename R, typename C, typename... A>
+// struct signature<R(C::*)(A...) & noexcept>                  : signature<R(A...)> {};
+// template <typename R, typename C, typename... A>
+// struct signature<R(C::*)(A...) const>                       : signature<R(A...)> {};
+// template <typename R, typename C, typename... A>
+// struct signature<R(C::*)(A...) const &>                     : signature<R(A...)> {};
+// template <typename R, typename C, typename... A>
+// struct signature<R(C::*)(A...) const noexcept>              : signature<R(A...)> {};
+// template <typename R, typename C, typename... A>
+// struct signature<R(C::*)(A...) const & noexcept>            : signature<R(A...)> {};
+// template <typename R, typename C, typename... A>
+// struct signature<R(C::*)(A...) volatile>                    : signature<R(A...)> {};
+// template <typename R, typename C, typename... A>
+// struct signature<R(C::*)(A...) volatile &>                  : signature<R(A...)> {};
+// template <typename R, typename C, typename... A>
+// struct signature<R(C::*)(A...) volatile noexcept>           : signature<R(A...)> {};
+// template <typename R, typename C, typename... A>
+// struct signature<R(C::*)(A...) volatile & noexcept>         : signature<R(A...)> {};
+// template <typename R, typename C, typename... A>
+// struct signature<R(C::*)(A...) const volatile>              : signature<R(A...)> {};
+// template <typename R, typename C, typename... A>
+// struct signature<R(C::*)(A...) const volatile &>            : signature<R(A...)> {};
+// template <typename R, typename C, typename... A>
+// struct signature<R(C::*)(A...) const volatile noexcept>     : signature<R(A...)> {};
+// template <typename R, typename C, typename... A>
+// struct signature<R(C::*)(A...) const volatile & noexcept>   : signature<R(A...)> {};
+// template <impl::has_call_operator T>
+// struct signature<T> : signature<decltype(&std::remove_reference_t<T>::operator())> {};
+// template <impl::inherits<impl::DefTag> T>
+// struct signature<T> : std::remove_reference_t<T>::signature {};
 
 
 template <typename F>
