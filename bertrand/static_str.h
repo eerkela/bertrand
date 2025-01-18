@@ -40,20 +40,191 @@ template <size_t N>
 struct static_str;
 
 
+namespace impl {
+    struct static_str_tag {};
+
+    static constexpr bool char_islower(char c) {
+        return c >= 'a' && c <= 'z';
+    }
+
+    static constexpr bool char_isupper(char c) {
+        return c >= 'A' && c <= 'Z';
+    }
+
+    static constexpr bool char_isalpha(char c) {
+        return char_islower(c) || char_isupper(c);
+    }
+
+    static constexpr bool char_isdigit(char c) {
+        return c >= '0' && c <= '9';
+    }
+
+    static constexpr bool char_isalnum(char c) {
+        return char_isalpha(c) || char_isdigit(c);
+    }
+
+    static constexpr bool char_isascii(char c) {
+        return c >= 0 && c <= 127;
+    }
+
+    static constexpr bool char_isspace(char c) {
+        return c == ' ' || (c >= '\t' && c <= '\r');
+    }
+
+    static constexpr bool char_isdelimeter(char c) {
+        switch (c) {
+            case ' ':
+            case '\t':
+            case '\n':
+            case '\r':
+            case '\f':
+            case '\v':
+            case '.':
+            case '!':
+            case '?':
+            case ',':
+            case ';':
+            case ':':
+            case '#':
+            case '&':
+            case '+':
+            case '-':
+            case '*':
+            case '/':
+            case '|':
+            case '\\':
+            case '(':
+            case ')':
+            case '[':
+            case ']':
+            case '{':
+            case '}':
+            case '<':
+            case '>':
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    static constexpr bool char_islinebreak(char c) {
+        switch (c) {
+            case '\n':
+            case '\r':
+            case '\v':
+            case '\f':
+            case '\x1c':
+            case '\x1d':
+            case '\x1e':
+            case '\x85':
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    static constexpr char char_tolower(char c) {
+        return char_isupper(c) ? c + ('a' - 'A') : c;
+    }
+
+    static constexpr char char_toupper(char c) {
+        return char_islower(c) ? c + ('A' - 'a') : c;
+    }
+
+    template <typename T>
+    constexpr auto type_name_impl() {
+        #if defined(__clang__)
+            constexpr std::string_view prefix {"[T = "};
+            constexpr std::string_view suffix {"]"};
+            constexpr std::string_view function {__PRETTY_FUNCTION__};
+        #elif defined(__GNUC__)
+            constexpr std::string_view prefix {"with T = "};
+            constexpr std::string_view suffix {"]"};
+            constexpr std::string_view function {__PRETTY_FUNCTION__};
+        #elif defined(_MSC_VER)
+            constexpr std::string_view prefix {"type_name_impl<"};
+            constexpr std::string_view suffix {">(void)"};
+            constexpr std::string_view function {__FUNCSIG__};
+        #else
+            #error Unsupported compiler
+        #endif
+
+        constexpr size_t start = function.find(prefix) + prefix.size();
+        constexpr size_t end = function.rfind(suffix);
+        static_assert(start < end);
+
+        constexpr std::string_view name = function.substr(start, (end - start));
+        constexpr size_t N = name.size();
+        return static_str<N>{name.data()};
+    }
+
+}
+
+
+namespace meta {
+
+    namespace detail {
+
+        template <size_t I, static_str... Strs>
+        struct _unpack_string;
+        template <size_t I, static_str Str, static_str... Strs>
+        struct _unpack_string<I, Str, Strs...> {
+            static constexpr static_str value = _unpack_string<I - 1, Strs...>::value;
+        };
+        template <static_str Str, static_str... Strs>
+        struct _unpack_string<0, Str, Strs...> {
+            static constexpr static_str value = Str;
+        };
+
+        template <static_str...>
+        constexpr bool strings_are_unique = true;
+        template <static_str First, static_str... Rest>
+        constexpr bool strings_are_unique<First, Rest...> =
+            ((First != Rest) && ...) && strings_are_unique<Rest...>;
+
+    }
+
+    template <size_t I, static_str... Strs>
+    constexpr static_str unpack_string = detail::_unpack_string<I, Strs...>::value;
+
+    template <static_str... Strings>
+    constexpr bool strings_are_unique = detail::strings_are_unique<Strings...>;
+
+    template <typename T>
+    concept static_str = inherits<T, impl::static_str_tag>;
+
+}
+
+
+
 /* CTAD guide allows static_str to be used as a template parameter accepting string
 literals with arbitrary length. */
 template <size_t N>
 static_str(const char(&)[N]) -> static_str<N - 1>;
 
 
-template <static_str... Strings>
+template <static_str... strings>
 struct static_strings {
-    /// TODO: some kind of helper that serves as a container for a bunch of strings
+    static constexpr bool unique = meta::strings_are_unique<strings...>;
+
+    template <size_t I> requires (I < sizeof...(strings))
+    static constexpr static_str at = meta::unpack_string<I, strings...>;
+
+    /// TODO: some kind of helper that serves as a list-like container for a bunch of
+    /// strings.  More methods could be added to this class to make it more useful
+    /// over time.  Eventually, I should rework the static_str methods that currently
+    /// return tuples of strings (e.g. `split()`) to return instantiations of this
+    /// template instead, and the methods that take in lists of strings (e.g. `join()`)
+    /// could accept them as template parameters as well.  That way you could do
+    /// something like:
+
+    /// static_str<>::join<" ", static_str<>::split<".", "a.b.c.d.e">>()
+    /// -> "a b c d e"
 };
 
 
 template <size_t N = 0>
-struct static_str {
+struct static_str : impl::static_str_tag {
 private:
 
     template <size_t M>
@@ -246,92 +417,12 @@ private:
 
     static constexpr ssize_t normalize_index(ssize_t i) { return i + N * (i < 0); };
 
-    static constexpr bool char_islower(char c) {
-        return c >= 'a' && c <= 'z';
-    }
-
-    static constexpr bool char_isupper(char c) {
-        return c >= 'A' && c <= 'Z';
-    }
-
-    static constexpr bool char_isalpha(char c) {
-        return char_islower(c) || char_isupper(c);
-    }
-
-    static constexpr bool char_isdigit(char c) {
-        return c >= '0' && c <= '9';
-    }
-
-    static constexpr bool char_isalnum(char c) {
-        return char_isalpha(c) || char_isdigit(c);
-    }
-
-    static constexpr bool char_isascii(char c) {
-        return c >= 0 && c <= 127;
-    }
-
-    static constexpr bool char_isspace(char c) {
-        return c == ' ' || (c >= '\t' && c <= '\r');
-    }
-
-    static constexpr bool char_isdelimeter(char c) {
-        switch (c) {
-            case ' ':
-            case '\t':
-            case '\n':
-            case '\r':
-            case '\f':
-            case '\v':
-            case '.':
-            case '!':
-            case '?':
-            case ',':
-            case ';':
-            case ':':
-            case '#':
-            case '&':
-            case '+':
-            case '-':
-            case '*':
-            case '/':
-            case '|':
-            case '\\':
-            case '(':
-            case ')':
-            case '[':
-            case ']':
-            case '{':
-            case '}':
-            case '<':
-            case '>':
-                return true;
-            default:
-                return false;
-        }
-    }
-
-    static constexpr bool char_islinebreak(char c) {
-        switch (c) {
-            case '\n':
-            case '\r':
-            case '\v':
-            case '\f':
-            case '\x1c':
-            case '\x1d':
-            case '\x1e':
-            case '\x85':
-                return true;
-            default:
-                return false;
-        }
-    }
-
     static constexpr char char_tolower(char c) {
-        return char_isupper(c) ? c + ('a' - 'A') : c;
+        return impl::char_isupper(c) ? c + ('a' - 'A') : c;
     }
 
     static constexpr char char_toupper(char c) {
-        return char_islower(c) ? c + ('A' - 'a') : c;
+        return impl::char_islower(c) ? c + ('A' - 'a') : c;
     }
 
     template <bertrand::static_str self, bertrand::static_str chars>
@@ -550,37 +641,6 @@ public:
     ReverseIterator rend() const { return {nullptr, -1}; }
     ReverseIterator crend() const { return rend(); }
 
-    /* Demangle a string using the compiler's intrinsics. */
-    constexpr std::string demangle() const {
-        #if defined(__GNUC__) || defined(__clang__)
-            int status = 0;
-            std::unique_ptr<char, void(*)(void*)> res {
-                abi::__cxa_demangle(
-                    buffer,
-                    nullptr,
-                    nullptr,
-                    &status
-                ),
-                std::free
-            };
-            return (status == 0) ? res.get() : std::string(buffer);
-        #elif defined(_MSC_VER)
-            char undecorated_name[1024];
-            if (UnDecorateSymbolName(
-                buffer,
-                undecorated_name,
-                sizeof(undecorated_name),
-                UNDNAME_COMPLETE
-            )) {
-                return std::string(undecorated_name);
-            } else {
-                return std::string{buffer, N};
-            }
-        #else
-            return std::string{buffer, N}; // fallback: no demangling
-        #endif
-    }
-
     /* Access a character within the underlying buffer. */
     constexpr const char operator[](ssize_t i) const {
         ssize_t norm = normalize_index(i);
@@ -641,11 +701,11 @@ public:
         bool capitalized = false;
         for (size_t i = 0; i < self.size(); ++i) {
             char c = self[i];
-            if (char_isalpha(c)) {
+            if (impl::char_isalpha(c)) {
                 if (capitalized) {
-                    result.buffer[i] = char_tolower(c);
+                    result.buffer[i] = impl::char_tolower(c);
                 } else {
-                    result.buffer[i] = char_toupper(c);
+                    result.buffer[i] = impl::char_toupper(c);
                     capitalized = true;
                 }
             } else {
@@ -768,7 +828,7 @@ public:
     template <bertrand::static_str self>
     static consteval bool isalpha() {
         for (size_t i = 0; i < self.size(); ++i) {
-            if (!char_isalpha(self[i])) {
+            if (!impl::char_isalpha(self[i])) {
                 return false;
             }
         }
@@ -779,7 +839,7 @@ public:
     template <bertrand::static_str self>
     static consteval bool isalnum() {
         for (size_t i = 0; i < self.size(); ++i) {
-            if (!char_isalnum(self[i])) {
+            if (!impl::char_isalnum(self[i])) {
                 return false;
             }
         }
@@ -790,7 +850,7 @@ public:
     template <bertrand::static_str self>
     static consteval bool isascii_() {
         for (size_t i = 0; i < self.size(); ++i) {
-            if (!char_isascii(self[i])) {
+            if (!impl::char_isascii(self[i])) {
                 return false;
             }
         }
@@ -801,7 +861,7 @@ public:
     template <bertrand::static_str self>
     static consteval bool isdigit() {
         for (size_t i = 0; i < self.size(); ++i) {
-            if (!char_isdigit(self[i])) {
+            if (!impl::char_isdigit(self[i])) {
                 return false;
             }
         }
@@ -812,7 +872,7 @@ public:
     template <bertrand::static_str self>
     static consteval bool islower() {
         for (size_t i = 0; i < self.size(); ++i) {
-            if (!char_islower(self[i])) {
+            if (!impl::char_islower(self[i])) {
                 return false;
             }
         }
@@ -823,7 +883,7 @@ public:
     template <bertrand::static_str self>
     static consteval bool isspace() {
         for (size_t i = 0; i < self.size(); ++i) {
-            if (!char_isspace(self[i])) {
+            if (!impl::char_isspace(self[i])) {
                 return false;
             }
         }
@@ -836,10 +896,10 @@ public:
         bool last_was_delimeter = true;
         for (size_t i = 0; i < self.size(); ++i) {
             char c = self[i];
-            if (last_was_delimeter && char_islower(c)) {
+            if (last_was_delimeter && impl::char_islower(c)) {
                 return false;
             }
-            last_was_delimeter = char_isdelimeter(c);
+            last_was_delimeter = impl::char_isdelimeter(c);
         }
         return self.size() > 0;
     }
@@ -848,7 +908,7 @@ public:
     template <bertrand::static_str self>
     static consteval bool isupper() {
         for (size_t i = 0; i < self.size(); ++i) {
-            if (!char_isupper(self[i])) {
+            if (!impl::char_isupper(self[i])) {
                 return false;
             }
         }
@@ -909,7 +969,7 @@ public:
     static consteval auto lower() {
         static_str<self.size()> result;
         for (size_t i = 0; i < self.size(); ++i) {
-            result.buffer[i] = char_tolower(self[i]);
+            result.buffer[i] = impl::char_tolower(self[i]);
         }
         result.buffer[self.size()] = '\0';
         return result;
@@ -1196,7 +1256,7 @@ public:
                         if (self[i + 1] == '\n') {
                             ++i;  // skip newline character
                         }
-                    } else if (char_islinebreak(c)) {
+                    } else if (impl::char_islinebreak(c)) {
                         ++total;
                     }
                 }
@@ -1221,7 +1281,7 @@ public:
                                 i += 2;
                             }
                             prev = i;
-                        } else if (char_islinebreak(c)) {
+                        } else if (impl::char_islinebreak(c)) {
                             if constexpr (keepends) {
                                 ++i;
                                 result[j++] = i - prev;
@@ -1301,10 +1361,10 @@ public:
         static_str<self.size()> result;
         for (size_t i = 0; i < self.size(); ++i) {
             char c = self[i];
-            if (char_islower(c)) {
-                result.buffer[i] = char_toupper(c);
-            } else if (char_isupper(c)) {
-                result.buffer[i] = char_tolower(c);
+            if (impl::char_islower(c)) {
+                result.buffer[i] = impl::char_toupper(c);
+            } else if (impl::char_isupper(c)) {
+                result.buffer[i] = impl::char_tolower(c);
             } else {
                 result.buffer[i] = c;
             }
@@ -1320,15 +1380,15 @@ public:
         bool capitalize_next = true;
         for (size_t i = 0; i < self.size(); ++i) {
             char c = self[i];
-            if (char_isalpha(c)) {
+            if (impl::char_isalpha(c)) {
                 if (capitalize_next) {
-                    result.buffer[i] = char_toupper(c);
+                    result.buffer[i] = impl::char_toupper(c);
                     capitalize_next = false;
                 } else {
-                    result.buffer[i] = char_tolower(c);
+                    result.buffer[i] = impl::char_tolower(c);
                 }
             } else {
-                if (char_isdelimeter(c)) {
+                if (impl::char_isdelimeter(c)) {
                     capitalize_next = true;
                 }
                 result.buffer[i] = c;
@@ -1343,7 +1403,7 @@ public:
     static consteval auto upper() {
         static_str<self.size()> result;
         for (size_t i = 0; i < self.size(); ++i) {
-            result.buffer[i] = char_toupper(self[i]);
+            result.buffer[i] = impl::char_toupper(self[i]);
         }
         result.buffer[self.size()] = '\0';
         return result;
@@ -1790,47 +1850,6 @@ public:
 };
 
 
-namespace impl {
-
-    template <typename>
-    constexpr bool _is_static_str = false;
-    template <size_t N>
-    constexpr bool _is_static_str<bertrand::static_str<N>> = true;
-
-    template <typename T>
-    constexpr auto type_name_impl() {
-        #if defined(__clang__)
-            constexpr std::string_view prefix {"[T = "};
-            constexpr std::string_view suffix {"]"};
-            constexpr std::string_view function {__PRETTY_FUNCTION__};
-        #elif defined(__GNUC__)
-            constexpr std::string_view prefix {"with T = "};
-            constexpr std::string_view suffix {"]"};
-            constexpr std::string_view function {__PRETTY_FUNCTION__};
-        #elif defined(_MSC_VER)
-            constexpr std::string_view prefix {"type_name_impl<"};
-            constexpr std::string_view suffix {">(void)"};
-            constexpr std::string_view function {__FUNCSIG__};
-        #else
-            #error Unsupported compiler
-        #endif
-
-        constexpr size_t start = function.find(prefix) + prefix.size();
-        constexpr size_t end = function.rfind(suffix);
-        static_assert(start < end);
-
-        constexpr std::string_view name = function.substr(start, (end - start));
-        constexpr size_t N = name.size();
-        return static_str<N>{name.data()};
-    }
-
-}
-
-
-template <typename T>
-concept is_static_str = impl::_is_static_str<std::remove_cvref_t<T>>;
-
-
 /* Gets a C++ type name as a fully-qualified, demangled string computed entirely
 at compile time.  The underlying buffer is baked directly into the final binary. */
 template <typename T>
@@ -1868,18 +1887,19 @@ constexpr std::string demangle(const char* name) {
     #endif
 }
 
+
 }  // namespace bertrand
 
 
 namespace std {
 
-    template <bertrand::is_static_str T>
+    template <bertrand::meta::static_str T>
     struct hash<T> {
         consteval static size_t operator()(const T& str) {
-            return bertrand::fnv1a(
+            return bertrand::impl::fnv1a(
                 str,
-                bertrand::fnv1a_seed,
-                bertrand::fnv1a_prime
+                bertrand::impl::fnv1a_seed,
+                bertrand::impl::fnv1a_prime
             );
         }
     };

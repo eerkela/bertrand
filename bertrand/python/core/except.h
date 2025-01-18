@@ -6,7 +6,7 @@
 #include "code.h"
 
 
-namespace py {
+namespace bertrand {
 
 
 ///////////////////////////
@@ -25,7 +25,7 @@ namespace impl {
         for (auto&& frame : trace) {
             // stop the traceback if we encounter a C++ frame in which a nested Python
             // script was executed.
-            if (frame.symbol.find("py::Code::operator()") != std::string::npos) {
+            if (frame.symbol.find("bertrand::Code::operator()") != std::string::npos) {
                 break;
 
             // ignore frames that are not part of the user's code
@@ -72,7 +72,7 @@ struct interface<Traceback> {
 /* A cross-language traceback that records an accurate call stack of a mixed Python/C++
 application. */
 struct Traceback : Object, interface<Traceback> {
-    struct __python__ : def<__python__, Traceback>, PyTracebackObject {
+    struct __python__ : cls<__python__, Traceback>, PyTracebackObject {
         static Type<Traceback> __import__();
     };
 
@@ -107,13 +107,13 @@ struct interface<Type<Traceback>> {
 };
 
 
-template <impl::is<cpptrace::stacktrace> T>
+template <meta::is<cpptrace::stacktrace> T>
 struct __cast__<T>                                          : returns<Traceback> {};
 
 
 /* Converting a `cpptrace::stacktrace_frame` into a Python frame object will synthesize
 an interpreter frame with an empty bytecode object. */
-template <impl::is<cpptrace::stacktrace> T>
+template <meta::is<cpptrace::stacktrace> T>
 struct __cast__<T, Traceback>                               : returns<Traceback> {
     static auto operator()(const cpptrace::stacktrace& trace) {
         // Traceback objects are stored in a singly-linked list, with the most recent
@@ -228,7 +228,7 @@ struct __init__<Traceback, T>                               : returns<Traceback>
 
 /* len(Traceback) yields the overall depth of the stack trace, including both C++ and
 Python frames. */
-template <impl::is<Traceback> Self>
+template <meta::is<Traceback> Self>
 struct __len__<Self>                                        : returns<size_t> {
     static auto operator()(const Traceback& self) {
         PyTracebackObject* tb = reinterpret_cast<PyTracebackObject*>(ptr(self));
@@ -243,7 +243,7 @@ struct __len__<Self>                                        : returns<size_t> {
 
 
 /* Iterating over the frames yields them in least recent -> most recent order. */
-template <impl::is<Traceback> Self>
+template <meta::is<Traceback> Self>
 struct __iter__<Self>                                       : returns<Frame> {
     using iterator_category = std::forward_iterator_tag;
     using difference_type = std::ptrdiff_t;
@@ -320,7 +320,7 @@ struct __iter__<Self>                                       : returns<Frame> {
 
 
 /* Reverse iterating over the frames yields them in most recent -> least recent order. */
-template <impl::is<Traceback> Self>
+template <meta::is<Traceback> Self>
 struct __reversed__<Self>                                   : returns<Traceback> {
     using iterator_category = std::forward_iterator_tag;
     using difference_type = std::ptrdiff_t;
@@ -446,7 +446,7 @@ struct interface<Exception> {
 
 
 /* The base of the exception hierarchy, from which all exceptions derive.  Exception
-types should inherit from this class instead of `py::Object` in order to register a
+types should inherit from this class instead of `bertrand::Object` in order to register a
 new exception.  Otherwise, all the same semantics apply. */
 struct Exception : std::exception, Object, interface<Exception> {
 protected:
@@ -464,7 +464,7 @@ protected:
     ) {}
 
 public:
-    struct __python__ : def<__python__, Exception>, PyBaseExceptionObject {
+    struct __python__ : cls<__python__, Exception>, PyBaseExceptionObject {
         static Type<Exception> __import__();
     };
 
@@ -562,7 +562,7 @@ struct interface<Type<Exception>> {
 
 
 template <std::derived_from<Exception> Exc, typename Msg>
-    requires (std::convertible_to<Msg, std::string_view> || impl::is_static_str<Msg>)
+    requires (std::convertible_to<Msg, std::string_view> || meta::static_str<Msg>)
 struct __init__<Exc, Msg>                                   : returns<Exc> {
     static Object unicode(const char* msg, size_t len) noexcept {
         return reinterpret_steal<Object>(
@@ -610,7 +610,7 @@ struct __init__<Exc, Msg>                                   : returns<Exc> {
         return result;
     }
 
-    template <impl::is_static_str T>
+    template <meta::static_str T>
     [[clang::noinline]] static auto operator()(const T& msg) {
         Object str = unicode(msg.data(), msg.size());
         if (str.is(nullptr)) {
@@ -637,7 +637,7 @@ struct __init__<Exc, Msg>                                   : returns<Exc> {
     }
 
     template <std::convertible_to<std::string_view> T>
-        requires (!impl::string_literal<T> && !impl::is_static_str<T>)
+        requires (!meta::string_literal<T> && !meta::static_str<T>)
     [[clang::noinline]] static auto operator()(const T& msg) {
         std::string_view view = msg;
         Object str = unicode(view.data(), view.size());
@@ -717,7 +717,7 @@ inline void interface<Exception>::to_python() {
     struct interface<Type<CLS>> : interface<Type<BASE>> {};                             \
                                                                                         \
     struct CLS : Exception, interface<CLS> {                                            \
-        struct __python__ : def<__python__, CLS>, PYOBJECT {                            \
+        struct __python__ : cls<__python__, CLS>, PYOBJECT {                            \
             static Type<CLS> __import__();                                              \
         };                                                                              \
                                                                                         \
@@ -828,7 +828,7 @@ struct interface<UnicodeDecodeError> : interface<UnicodeError> {
 
 
 struct UnicodeDecodeError : Exception, interface<UnicodeDecodeError> {
-    struct __python__ : def<__python__, UnicodeDecodeError>, PyUnicodeErrorObject {
+    struct __python__ : cls<__python__, UnicodeDecodeError>, PyUnicodeErrorObject {
         static Type<UnicodeDecodeError> __import__();
     };
 
@@ -920,7 +920,7 @@ struct interface<Type<UnicodeDecodeError>> : interface<Type<UnicodeError>> {
 template <>
 struct __init__<UnicodeDecodeError>                         : disable {};
 template <typename Msg>
-    requires (std::convertible_to<Msg, std::string_view> || impl::is_static_str<Msg>)
+    requires (std::convertible_to<Msg, std::string_view> || meta::static_str<Msg>)
 struct __init__<UnicodeDecodeError, Msg>                    : disable {};
 
 
@@ -1083,7 +1083,7 @@ struct interface<UnicodeEncodeError> : interface<UnicodeError> {
 
 
 struct UnicodeEncodeError : Exception, interface<UnicodeEncodeError> {
-    struct __python__ : def<__python__, UnicodeEncodeError>, PyUnicodeErrorObject {
+    struct __python__ : cls<__python__, UnicodeEncodeError>, PyUnicodeErrorObject {
         static Type<UnicodeEncodeError> __import__();
     };
 
@@ -1175,7 +1175,7 @@ struct interface<Type<UnicodeEncodeError>> : interface<Type<UnicodeError>> {
 template <>
 struct __init__<UnicodeEncodeError>                         : disable {};
 template <typename Msg>
-    requires (std::convertible_to<Msg, std::string_view> || impl::is_static_str<Msg>)
+    requires (std::convertible_to<Msg, std::string_view> || meta::static_str<Msg>)
 struct __init__<UnicodeEncodeError, Msg>                    : disable {};
 
 
@@ -1336,7 +1336,7 @@ struct interface<UnicodeTranslateError> : interface<UnicodeError> {
 
 
 struct UnicodeTranslateError : Exception, interface<UnicodeTranslateError> {
-    struct __python__ : def<__python__, UnicodeTranslateError>, PyUnicodeErrorObject {
+    struct __python__ : cls<__python__, UnicodeTranslateError>, PyUnicodeErrorObject {
         static Type<UnicodeTranslateError> __import__();
     };
 
@@ -1424,7 +1424,7 @@ struct interface<Type<UnicodeTranslateError>> : interface<Type<UnicodeError>> {
 template <>
 struct __init__<UnicodeTranslateError>                      : disable {};
 template <typename Msg>
-    requires (std::convertible_to<Msg, std::string_view> || impl::is_static_str<Msg>)
+    requires (std::convertible_to<Msg, std::string_view> || meta::static_str<Msg>)
 struct __init__<UnicodeTranslateError, Msg>                 : disable {};
 
 
@@ -1551,7 +1551,7 @@ template <size_t N>
 }
 
 
-template <impl::is_static_str T>
+template <meta::static_str T>
 [[gnu::always_inline]] inline void assert_(bool condition, const T& message) {
     if constexpr (DEBUG) {
         if (!condition) {
@@ -1562,7 +1562,7 @@ template <impl::is_static_str T>
 
 
 template <std::convertible_to<std::string_view> T>
-    requires (!impl::string_literal<T> && !impl::is_static_str<T>)
+    requires (!meta::string_literal<T> && !meta::static_str<T>)
 [[gnu::always_inline]] inline void assert_(bool condition, const T& message) {
     if constexpr (DEBUG) {
         if (!condition) {

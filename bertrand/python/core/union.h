@@ -8,7 +8,13 @@
 #include "access.h"
 
 
-namespace py {
+namespace bertrand {
+
+
+/* A simple convenience struct implementing the overload pattern for the
+`bertrand::visit()` operator and any similar use cases. */
+template <typename... Funcs>
+struct Visitor : Funcs... { using Funcs::operator()...; };
 
 
 template <typename... Types>
@@ -18,7 +24,7 @@ template <typename... Types>
         (!std::is_const_v<Types> && ...) &&
         (!std::is_volatile_v<Types> && ...) &&
         (std::derived_from<Types, Object> && ...) &&
-        impl::types_are_unique<Types...>
+        meta::types_are_unique<Types...>
     )
 struct Union;
 
@@ -27,65 +33,79 @@ template <std::derived_from<Object> T> requires (!std::same_as<T, NoneType>)
 using Optional = Union<T, NoneType>;
 
 
-template <impl::has_python T> requires (!std::same_as<T, NoneType>)
+template <meta::has_python T> requires (!std::same_as<T, NoneType>)
 Union(T) -> Union<obj<T>, NoneType>;
 
 
-namespace impl {
+namespace meta {
 
+    namespace detail {
+
+        template <typename>
+        constexpr bool args_are_convertible_to_python = false;
+        template <typename... Ts>
+        constexpr bool args_are_convertible_to_python<bertrand::args<Ts...>> = 
+            (meta::has_python<Ts> && ...);
+
+        template <typename>
+        struct to_union;
+        template <typename... Matches>
+        struct to_union<bertrand::args<Matches...>> {
+            template <typename>
+            struct unique;
+            template <typename M>
+            struct unique<bertrand::args<M>> { using type = M; };  // single C++ type
+            template <typename... Ms>
+            struct unique<bertrand::args<Ms...>> {
+                template <typename>
+                struct to_python;
+                template <typename T>
+                struct to_python<bertrand::args<T>> { using type = T; };  // single Python type
+                template <typename... Ts>
+                struct to_python<bertrand::args<Ts...>> {
+                    using type = Union<std::remove_cvref_t<Ts>...>;  // multiple Python types
+                };
+                using type = to_python<
+                    typename bertrand::args<meta::python_type<Matches>...>::to_value
+                >::type;
+            };
+            using type = unique<typename bertrand::args<Matches...>::to_value>::type;
+        };
+
+    }  // namespace detail
+
+    /// TODO: rename to Union in order to match the actual type name?
     template <typename T>
-    constexpr bool _py_union = false;
-    template <typename... Types>
-    constexpr bool _py_union<Union<Types...>> = true;
-    template <typename T>
-    concept py_union = _py_union<std::remove_cvref_t<T>>;
+    concept py_union = inherits<T, impl::UnionTag>;
 
     /* Converting a pack to a union involves converting all C++ types to their Python
     equivalents, then deduplicating the results.  If the final pack contains only a
     single type, then that type is returned directly, rather than instantiating a new
     Union. */
-    template <typename>
-    struct to_union;
-    template <typename... Matches>
-    struct to_union<args<Matches...>> {
-        template <typename>
-        struct convert {
-            template <typename T>
-            struct ToPython { using type = python_type<T>; };
-            template <>
-            struct ToPython<void> { using type = NoneType; };
-            template <typename>
-            struct helper;
-            template <typename... Unique>
-            struct helper<args<Unique...>> {
-                using type = Union<std::remove_cvref_t<Unique>...>;
-            };
-            using type = helper<
-                typename args<typename ToPython<Matches>::type...>::to_value
-            >::type;
-        };
-        template <typename Match>
-        struct convert<args<Match>> { using type = Match; };
-        using type = convert<typename args<Matches...>::to_value>::type;
-    };
+    template <args T> requires (detail::args_are_convertible_to_python<T>)
+    using to_union = detail::to_union<T>::type;
+
+}  // namespace meta
+
+
+namespace impl {
 
     /* Raw types are converted to a pack of length 1. */
     template <typename T>
-    struct UnionTraits {
+    struct union_traits {
         using type = T;
         using pack = args<T>;
     };
 
     /* Unions are converted into a pack of the same length. */
-    template <py_union T>
-    struct UnionTraits<T> {
+    template <meta::py_union T>
+    struct union_traits<T> {
     private:
-
         template <typename>
         struct _pack;
         template <typename... Types>
         struct _pack<Union<Types...>> {
-            using type = args<qualify<Types, T>...>;
+            using type = args<meta::qualify<Types, T>...>;
         };
 
     public:
@@ -93,16 +113,15 @@ namespace impl {
         using pack = _pack<std::remove_cvref_t<T>>::type;
     };
 
-    /* Variants are treated like unions. */
-    template <is_variant T>
-    struct UnionTraits<T> {
+    /* `std::variant`s are treated like unions. */
+    template <meta::is_variant T>
+    struct union_traits<T> {
     private:
-
         template <typename>
         struct _pack;
         template <typename... Types>
         struct _pack<std::variant<Types...>> {
-            using type = args<qualify<Types, T>...>;
+            using type = args<meta::qualify<Types, T>...>;
         };
 
     public:
@@ -110,59 +129,94 @@ namespace impl {
         using pack = _pack<std::remove_cvref_t<T>>::type;
     };
 
-    template <typename...>
-    struct _exhaustive { static constexpr bool enable = false; };
-    template <typename Func, typename... Args> requires (py_union<Args> || ...)
-    struct _exhaustive<Func, Args...> {
-        template <typename>
-        struct permute;
-        template <typename... Permutations>
-        struct permute<args<Permutations...>> {
-            template <typename>
-            struct _enable { static constexpr bool enable = false; };
-            template <typename... Actual> requires (std::is_invocable_v<Func, Actual...>)
-            struct _enable<args<Actual...>> {
-                static constexpr bool enable = true;
-                using type = std::invoke_result_t<Func, Actual...>;
-            };
-            template <typename...>
-            static constexpr bool returns_are_identical = false;
-            template <typename First, typename... Rest>
-                requires (_enable<Permutations>::enable && ...)
-            static constexpr bool returns_are_identical<First, Rest...> = (std::same_as<
-                typename _enable<First>::type,
-                typename _enable<Rest>::type
-            > && ...);
-            static constexpr bool enable = returns_are_identical<Permutations...>;
+}
 
+
+namespace meta {
+
+    namespace detail {
+
+        template <typename Func, typename... Args>
+        struct exhaustive {
             template <bool>
-            struct _type { using type = void; };
+            struct deduce { using type = void; };
             template <>
-            struct _type<true> {
-                using type = std::common_type_t<typename _enable<Permutations>::type...>;
+            struct deduce<true> { using type = std::invoke_result_t<Func, Args...>; };
+
+            static constexpr bool enable = std::is_invocable_v<Func, Args...>;
+            using type = deduce<enable>::type;
+        };
+        template <typename Func, typename... Args> requires (meta::py_union<Args> || ...)
+        struct exhaustive<Func, Args...> {
+            // 1. Convert arguments to a 2D pack of packs representing all possible
+            //    permutations of the argument types.
+            template <typename...>
+            struct permute { using type = bertrand::args<>; };
+            template <typename First, typename... Rest>
+            struct permute<First, Rest...> {
+                using type = impl::union_traits<First>::pack::template product<
+                    typename impl::union_traits<Rest>::pack...
+                >;
             };
-            using type = _type<enable>::type;
+            using permutations = permute<Args...>::type;
+
+            // 2. Analyze each permutation and assert that the function is invocable
+            //    with the given arguments, and returns a common type for each case.
+            template <typename>
+            struct check;
+            template <typename... permutations>
+            struct check<bertrand::args<permutations...>> {
+
+                // 2a. Determine if the function is invocable with the permuted
+                //     arguments and get its return type if so.
+                template <typename>
+                struct invoke { static constexpr bool enable = false; };
+                template <typename... A> requires (std::is_invocable_v<Func, A...>)
+                struct invoke<bertrand::args<A...>> {
+                    static constexpr bool enable = true;
+                    using type = std::invoke_result_t<Func, A...>;
+                };
+
+                // 2b. Apply (2a) to all permutations and ensure a common return type
+                //     exists.
+                template <typename...>
+                static constexpr bool common_return = false;
+                template <typename... Ps> requires (invoke<Ps>::enable && ...)
+                static constexpr bool common_return<Ps...> =
+                    meta::has_common_type<typename invoke<Ps>::type...>;
+
+                // 2c. Determine the common return type for all permutations.
+                template <bool>
+                struct deduce { using type = void; };
+                template <>
+                struct deduce<true> { using type =
+                    meta::common_type<typename invoke<permutations>::type...>;
+                };
+
+                static constexpr bool enable = common_return<permutations...>;
+                using type = deduce<enable>::type;
+            };
+
+            static constexpr bool enable = check<permutations>::enable;
+            using type = check<permutations>::type;
         };
 
-        template <typename...>
-        struct _permutations { using type = args<>; };
-        template <typename First, typename... Rest>
-        struct _permutations<First, Rest...> {
-            using type = UnionTraits<First>::pack::template product<
-                typename UnionTraits<Rest>::pack...
-            >;
-        };
-        using permutations = _permutations<Args...>::type;
+    }
 
-        static constexpr bool enable = permute<permutations>::enable;
-        using type = permute<permutations>::type;
-    };
-
+    /* A visitor function can only be applied to a set of unions if it is invocable
+    with all possible permutations of the component argument types. */
     template <typename Func, typename... Args>
-    static constexpr bool exhaustive = _exhaustive<Func, Args...>::enable;
+    static constexpr bool exhaustive = detail::exhaustive<Func, Args...>::enable;
 
+    /* A visitor function returns the common type to which all permutation results
+    are mutually convertible. */
     template <typename Func, typename... Args> requires (exhaustive<Func, Args...>)
-    using visit_type = _exhaustive<Func, Args...>::type;
+    using visit_returns = detail::exhaustive<Func, Args...>::type;
+
+}
+
+
+namespace impl {
 
     template <typename, typename...>
     struct visit_helper;
@@ -176,9 +230,9 @@ namespace impl {
     template <typename... Prev, typename Curr, typename... Next>
     struct visit_helper<args<Prev...>, Curr, Next...> {
         template <size_t I, typename Visitor>
-            requires (exhaustive<Visitor, Prev..., Curr, Next...>)
+            requires (meta::exhaustive<Visitor, Prev..., Curr, Next...>)
         struct VTable {
-            using Return = visit_type<Visitor, Prev..., Curr, Next...>;
+            using Return = meta::visit_returns<Visitor, Prev..., Curr, Next...>;
             static constexpr auto python() -> Return(*)(Visitor, Prev..., Curr, Next...) {
                 constexpr auto callback = [](
                     Visitor visitor,
@@ -187,7 +241,7 @@ namespace impl {
                     Next... next
                 ) -> Return {
                     using T = std::remove_cvref_t<Curr>::template at<I>;
-                    using Q = qualify<T, Curr>;
+                    using Q = meta::qualify<T, Curr>;
                     if constexpr (std::is_lvalue_reference_v<Curr>) {
                         return visit_helper<args<Prev..., Q>, Next...>{}(
                             std::forward<Visitor>(visitor),
@@ -214,7 +268,7 @@ namespace impl {
                     Next... next
                 ) -> Return {
                     using T = std::variant_alternative_t<I, std::remove_cvref_t<Curr>>;
-                    using Q = qualify<T, Curr>;
+                    using Q = meta::qualify<T, Curr>;
                     if constexpr (
                         std::is_lvalue_reference_v<Curr> ||
                         std::is_const_v<std::remove_reference_t<Curr>>
@@ -245,7 +299,7 @@ namespace impl {
             Curr curr,
             Next... next
         ) {
-            if constexpr (py_union<Curr>) {
+            if constexpr (meta::py_union<Curr>) {
                 constexpr auto vtable = []<size_t... Is>(std::index_sequence<Is...>) {
                     return std::array{VTable<Is, Visitor>::python()...};
                 }(std::make_index_sequence<std::remove_cvref_t<Curr>::size()>{});
@@ -257,7 +311,7 @@ namespace impl {
                     std::forward<Next>(next)...
                 );
 
-            } else if constexpr (is_variant<Curr>) {
+            } else if constexpr (meta::is_variant<Curr>) {
                 constexpr auto vtable = []<size_t... Is>(std::index_sequence<Is...>) {
                     return std::array{VTable<Is, Visitor>::variant()...};
                 }(std::make_index_sequence<std::variant_size_v<std::remove_cvref_t<Curr>>>{});
@@ -283,17 +337,6 @@ namespace impl {
 }  // namespace impl
 
 
-/// NOTE: what would be ideal is if a simple initializer list could be supplied to
-/// visit(), but that doesn't work because CTAD isn't triggered on templated function
-/// arguments.  The Visitor{} type must be explicitly named, which is a bit of a pain.
-
-
-/* A simple convenience struct implementing the overload pattern for the `py::visit()`
-function (and any other similar cases). */
-template <typename... Funcs>
-struct Visitor : Funcs... { using Funcs::operator()...; };
-
-
 /* Non-member `py::visit(visitor, args...)` operator, similar to `std::visit()`.  A
 member version of this operator is implemented for `Union` objects, which allows for
 chaining.
@@ -306,9 +349,9 @@ unions in `args`, and the return type must be consistent across each one.  The
 arguments will be perfectly forwarded in the same order as they are given, with each
 union unwrapped to its actual type.  The order of the unions is irrelevant, and
 non-union arguments can be interspersed freely between them. */
-template <typename Func, typename... Args> requires (impl::exhaustive<Func, Args...>)
+template <typename Func, typename... Args> requires (meta::exhaustive<Func, Args...>)
 decltype(auto) visit(Func&& visitor, Args&&... args) {
-    return impl::visit_helper<py::args<>, Args...>{}(
+    return impl::visit_helper<bertrand::args<>, Args...>{}(
         std::forward<Func>(visitor),
         std::forward<Args>(args)...
     );
@@ -319,7 +362,7 @@ namespace impl {
 
     /* Allow implicit conversion from the union type if and only if all of its
     qualified members are convertible to that type. */
-    template <py_union U>
+    template <meta::py_union U>
     struct UnionToType {
         template <typename>
         struct convertible;
@@ -327,10 +370,10 @@ namespace impl {
         struct convertible<Union<Types...>> {
             template <typename Out>
             static constexpr bool implicit =
-                (std::convertible_to<qualify<Types, U>, Out> && ...);
+                (std::convertible_to<meta::qualify<Types, U>, Out> && ...);
             template <typename Out>
             static constexpr bool convert =
-                (impl::explicitly_convertible_to<qualify<Types, U>, Out> || ...);
+                (meta::explicitly_convertible_to<meta::qualify<Types, U>, Out> || ...);
         };
         template <typename Out>
         static constexpr bool implicit =
@@ -343,7 +386,7 @@ namespace impl {
     /* Allow implicit conversion from a std::variant if and only if all members have
     equivalent Python types, and those types are convertible to the expected members of
     the union. */
-    template <is_variant V>
+    template <meta::is_variant V>
     struct VariantToUnion {
         template <typename>
         struct convertible {
@@ -352,15 +395,17 @@ namespace impl {
             template <typename...>
             static constexpr bool convert = false;
         };
-        template <has_python... Types>
+        template <meta::has_python... Types>
         struct convertible<std::variant<Types...>> {
             static constexpr bool enable = true;
-            using type = to_union<args<python_type<Types>...>>::type;
+            /// TODO: not sure if converting to Python here is the right move.  The
+            /// to_union logic should do this automatically, no?
+            using type = meta::to_union<args<meta::python_type<Types>...>>;
             template <typename, typename... Ts>
             static constexpr bool _convert = true;
             template <typename... To, typename T, typename... Ts>
             static constexpr bool _convert<args<To...>, T, Ts...> =
-                (std::convertible_to<qualify<T, V>, To> || ...) &&
+                (std::convertible_to<meta::qualify<T, V>, To> || ...) &&
                 _convert<args<To...>, Ts...>;
             template <typename... Ts>
             static constexpr bool convert = _convert<args<Types...>, Ts...>;
@@ -383,7 +428,7 @@ namespace impl {
         template <typename...>
         struct op { static constexpr bool enable = false; };
         template <typename... Args>
-            requires (sizeof...(Args) > 0 && (py_union<Args> || ...))
+            requires (sizeof...(Args) > 0 && (meta::py_union<Args> || ...))
         struct op<Args...> {
         private:
 
@@ -396,7 +441,7 @@ namespace impl {
             struct _product<args<First, Rest...>> {
                 using type = First::template product<Rest...>;
             };
-            using product = _product<args<typename UnionTraits<Args>::pack...>>::type;
+            using product = _product<args<typename union_traits<Args>::pack...>>::type;
 
             /* 2. Produce an output pack containing all of the valid return types for
             each permutation that satisfies the control structure. */
@@ -431,7 +476,7 @@ namespace impl {
 
             /* 5. If there is only one valid return type, return it directly, otherwise
             construct a new union and convert all of the results to Python. */
-            using type = to_union<returns>::type;
+            using type = meta::to_union<returns>;
         };
     };
 
@@ -538,7 +583,7 @@ namespace impl {
 
     template <typename, static_str>
     struct UnionGetAttr { static constexpr bool enable = false; };
-    template <py_union Self, static_str Name>
+    template <meta::py_union Self, static_str Name>
     struct UnionGetAttr<Self, Name> {
         template <typename>
         struct traits {
@@ -546,7 +591,7 @@ namespace impl {
             using type = void;
         };
         template <typename... Types>
-            requires (__getattr__<qualify_lvalue<Types, Self>, Name>::enable || ...)
+            requires (__getattr__<meta::qualify_lvalue<Types, Self>, Name>::enable || ...)
         struct traits<Union<Types...>> {
             template <typename result, typename... Ts>
             struct unary { using type = result; };
@@ -555,17 +600,17 @@ namespace impl {
                 template <typename>
                 struct conditional { using type = args<Matches...>; };
                 template <typename T2>
-                    requires (__getattr__<qualify_lvalue<T2, Self>, Name>::enable)
+                    requires (__getattr__<meta::qualify_lvalue<T2, Self>, Name>::enable)
                 struct conditional<T2> {
                     using type = args<
                         Matches...,
-                        typename __getattr__<qualify_lvalue<T2, Self>, Name>::type
+                        typename __getattr__<meta::qualify_lvalue<T2, Self>, Name>::type
                     >;
                 };
                 using type = unary<typename conditional<T>::type, Ts...>::type;
             };
             static constexpr bool enable = true;
-            using type = to_union<typename unary<args<>, Types...>::type>::type;
+            using type = meta::to_union<typename unary<args<>, Types...>::type>;
         };
         static constexpr bool enable = traits<std::remove_cvref_t<Self>>::enable;
         using type = traits<std::remove_cvref_t<Self>>::type;
@@ -573,12 +618,12 @@ namespace impl {
 
     template <typename, static_str, typename>
     struct UnionSetAttr { static constexpr bool enable = false; };
-    template <py_union Self, static_str Name, typename Value>
+    template <meta::py_union Self, static_str Name, typename Value>
     struct UnionSetAttr<Self, Name, Value> {
         template <typename>
         static constexpr bool match = false;
         template <typename... Types>
-            requires (__setattr__<qualify_lvalue<Types, Self>, Name, Value>::enable || ...)
+            requires (__setattr__<meta::qualify_lvalue<Types, Self>, Name, Value>::enable || ...)
         static constexpr bool match<Union<Types...>> = true;
         static constexpr bool enable = match<std::remove_cvref_t<Self>>;
         using type = void;
@@ -586,12 +631,12 @@ namespace impl {
 
     template <typename, static_str>
     struct UnionDelAttr { static constexpr bool enable = false; };
-    template <py_union Self, static_str Name>
+    template <meta::py_union Self, static_str Name>
     struct UnionDelAttr<Self, Name> {
         template <typename>
         static constexpr bool match = false;
         template <typename... Types>
-            requires (__delattr__<qualify_lvalue<Types, Self>, Name>::enable || ...)
+            requires (__delattr__<meta::qualify_lvalue<Types, Self>, Name>::enable || ...)
         static constexpr bool match<Union<Types...>> = true;
         static constexpr bool enable = match<std::remove_cvref_t<Self>>;
         using type = void;
@@ -646,16 +691,16 @@ struct interface<Union<Types...>> : impl::UnionTag {
     static constexpr size_t size() noexcept { return sizeof...(Types); }
 
     template <size_t I> requires (I < size())
-    using at = impl::unpack_type<I, Types...>;
+    using at = meta::unpack_type<I, Types...>;
 
     template <typename T> requires (std::same_as<T, Types> || ...)
     [[nodiscard]] bool holds_alternative(this auto&& self) {
-        return self.m_index == impl::index_of<T, Types...>;
+        return self.m_index == meta::index_of<T, Types...>;
     }
 
     template <typename T> requires (std::same_as<T, Types> || ...)
     [[nodiscard]] auto get(this auto&& self) -> T {
-        if (self.m_index != impl::index_of<T, Types...>) {
+        if (self.m_index != meta::index_of<T, Types...>) {
             throw TypeError(
                 "bad union access: '" + type_name<T> + "' is not the active type"
             );
@@ -669,7 +714,7 @@ struct interface<Union<Types...>> : impl::UnionTag {
 
     template <size_t I> requires (I < size())
     [[nodiscard]] auto get(this auto&& self) -> at<I> {
-        using ref = impl::qualify_lvalue<at<I>, decltype(self)>;
+        using ref = meta::qualify_lvalue<at<I>, decltype(self)>;
         if (self.m_index != I) {
             throw TypeError(
                 "bad union access: '" + type_name<at<I>> + "' is not the active type"
@@ -684,7 +729,7 @@ struct interface<Union<Types...>> : impl::UnionTag {
 
     template <typename T> requires (std::same_as<T, Types> || ...)
     [[nodiscard]] auto get_if(this auto&& self) -> Optional<T> {
-        if (self.m_index != impl::index_of<T, Types...>) {
+        if (self.m_index != meta::index_of<T, Types...>) {
             return None;
         }
         if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
@@ -707,13 +752,13 @@ struct interface<Union<Types...>> : impl::UnionTag {
     }
 
     template <typename Self, typename Func, typename... Args>
-        requires (impl::exhaustive<Func, Self, Args...>)
+        requires (meta::exhaustive<Func, Self, Args...>)
     decltype(auto) visit(
         this Self&& self,
         Func&& visitor,
         Args&&... args
     ) {
-        return py::visit(
+        return bertrand::visit(
             std::forward<Func>(visitor),
             std::forward<Self>(self),
             std::forward<Args>(args)...
@@ -733,44 +778,44 @@ public:
     template <size_t I> requires (I < size())
     using at = type::template at<I>;
 
-    template <typename T, impl::inherits<type> Self>
+    template <typename T, meta::inherits<type> Self>
         requires (std::same_as<T, Types> || ...)
     [[nodiscard]] bool holds_alternative(Self&& self) {
         return std::forward<Self>(self).template holds_alternative<T>();
     }
 
-    template <typename T, impl::inherits<type> Self>
+    template <typename T, meta::inherits<type> Self>
         requires (std::same_as<T, Types> || ...)
     [[nodiscard]] static auto get(Self&& self) -> T {
         return std::forward<Self>(self).template get<T>();
     }
 
-    template <size_t I, impl::inherits<type> Self>
+    template <size_t I, meta::inherits<type> Self>
         requires (I < size())
     [[nodiscard]] static auto get(Self&& self) -> at<I> {
         return std::forward<Self>(self).template get<I>();
     }
 
-    template <typename T, impl::inherits<type> Self>
+    template <typename T, meta::inherits<type> Self>
         requires (std::same_as<T, Types> || ...)
     [[nodiscard]] static auto get_if(Self&& self) -> Optional<T> {
         return std::forward<Self>(self).template get_if<T>();
     }
 
-    template <size_t I, impl::inherits<type> Self>
+    template <size_t I, meta::inherits<type> Self>
         requires (I < size())
     [[nodiscard]] static auto get_if(Self&& self) -> Optional<at<I>> {
         return std::forward<Self>(self).template get_if<I>();
     }
 
-    template <impl::inherits<type> Self, typename Func, typename... Args>
-        requires (impl::exhaustive<Func, Self, Args...>)
+    template <meta::inherits<type> Self, typename Func, typename... Args>
+        requires (meta::exhaustive<Func, Self, Args...>)
     static decltype(auto) visit(
         Self&& self,
         Func&& visitor,
         Args&&... args
     ) {
-        return py::visit(
+        return bertrand::visit(
             std::forward<Func>(visitor),
             std::forward<Self>(self),
             std::forward<Args>(args)...
@@ -786,7 +831,7 @@ template <typename... Types>
         (!std::is_const_v<Types> && ...) &&
         (!std::is_volatile_v<Types> && ...) &&
         (std::derived_from<Types, Object> && ...) &&
-        impl::types_are_unique<Types...>
+        meta::types_are_unique<Types...>
     )
 struct Union : Object, interface<Union<Types...>> {
     struct __python__ : def<__python__, Union>, PyObject {
@@ -1035,7 +1080,7 @@ struct __init__<Union<Ts...>>                               : returns<Union<Ts..
         } else {
             constexpr size_t index = idx<0, Ts...>;
             Union<Ts...> result = reinterpret_steal<Union<Ts...>>(
-                release(impl::unpack_type<index>())
+                release(meta::unpack_type<index>())
             );
             result.m_index = index;
             return result;
@@ -1063,7 +1108,7 @@ struct __init__<Optional<T>, Args...>                       : returns<Optional<T
 the union.  Prefers exact matches (and therefore copy/move semantics) over secondary
 conversions, and always converts to the first matching type within the union */
 template <typename From, typename... Ts>
-    requires (!impl::py_union<From> && (std::convertible_to<From, Ts> || ...))
+    requires (!meta::py_union<From> && (std::convertible_to<From, Ts> || ...))
 struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts...>> {
     template <size_t I, typename... Us>
     static constexpr size_t match_idx = 0;
@@ -1102,8 +1147,8 @@ struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts..
 union are implicitly convertible.  This covers conversions to `std::variant` provided
 all types are accounted for, as well as to `std::optional` and pointer types whereby
 `NoneType` is convertible to `std::nullopt` and `nullptr`, respectively. */
-template <impl::py_union From, typename To>
-    requires (!impl::py_union<To> && impl::UnionToType<From>::template implicit<To>)
+template <meta::py_union From, typename To>
+    requires (!meta::py_union<To> && impl::UnionToType<From>::template implicit<To>)
 struct __cast__<From, To>                                   : returns<To> {
     static To operator()(From from) {
         return std::forward<From>(from).visit([](auto&& value) -> To {
@@ -1116,8 +1161,8 @@ struct __cast__<From, To>                                   : returns<To> {
 /* Unversal explicit conversion from a union to any type for which ANY elements of the
 union are explicitly convertible.  This can potentially raise an error if the actual
 type contained within the union does not support the conversion. */
-template <impl::py_union From, typename To>
-    requires (!impl::py_union<To> && impl::UnionToType<From>::template convert<To>)
+template <meta::py_union From, typename To>
+    requires (!meta::py_union<To> && impl::UnionToType<From>::template convert<To>)
 struct __explicit_cast__<From, To>                          : returns<To> {
     static To operator()(From from) {
         return std::forward<From>(from).visit([](auto&& value) -> To {
@@ -1405,7 +1450,7 @@ struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts..
 
 
 template <typename Derived, typename Base>
-    requires (impl::py_union<Derived> || impl::py_union<Base>)
+    requires (meta::py_union<Derived> || meta::py_union<Base>)
 struct __isinstance__<Derived, Base> : returns<bool> {
     template <typename>
     struct unary;
@@ -1417,10 +1462,10 @@ struct __isinstance__<Derived, Base> : returns<bool> {
     };
 
     static constexpr bool operator()(Derived obj) {
-        if constexpr (impl::py_union<Derived>) {
+        if constexpr (meta::py_union<Derived>) {
             return visit(
                 []<typename T>(T&& value) -> bool {
-                    if constexpr (impl::py_union<Base>) {
+                    if constexpr (meta::py_union<Base>) {
                         return unary<std::remove_cvref_t<Base>>{}(std::forward<T>(value));
                     } else {
                         return isinstance<Base>(std::forward<T>(value));
@@ -1456,7 +1501,7 @@ struct __isinstance__<Derived, Base> : returns<bool> {
 
 
 template <typename Derived, typename Base>
-    requires (impl::py_union<Derived> || impl::py_union<Base>)
+    requires (meta::py_union<Derived> || meta::py_union<Base>)
 struct __issubclass__<Derived, Base> : returns<bool> {
     template <typename, typename>
     struct nullary;
@@ -1507,10 +1552,10 @@ struct __issubclass__<Derived, Base> : returns<bool> {
 
     template <typename D> requires (impl::UnaryUnionIsSubclass<D, Base>::enable)
     static constexpr bool operator()(D&& obj) {
-        if constexpr (impl::py_union<D>) {
+        if constexpr (meta::py_union<D>) {
             return visit(
                 []<typename T>(T&& value) -> bool {
-                    if constexpr (impl::py_union<Base>) {
+                    if constexpr (meta::py_union<Base>) {
                         return unary<std::remove_cvref_t<Base>>{}(std::forward<T>(value));
                     } else {
                         if constexpr (std::is_invocable_r_v<
@@ -1557,7 +1602,7 @@ struct __issubclass__<Derived, Base> : returns<bool> {
 };
 
 
-template <impl::py_union Self, static_str Name>
+template <meta::py_union Self, static_str Name>
     requires (impl::UnionGetAttr<Self, Name>::enable)
 struct __getattr__<Self, Name> : returns<typename impl::UnionGetAttr<Self, Name>::type> {
     using type = impl::UnionGetAttr<Self, Name>::type;
@@ -1575,7 +1620,7 @@ struct __getattr__<Self, Name> : returns<typename impl::UnionGetAttr<Self, Name>
 };
 
 
-template <impl::py_union Self, static_str Name, typename Value>
+template <meta::py_union Self, static_str Name, typename Value>
     requires (impl::UnionSetAttr<Self, Name, Value>::enable)
 struct __setattr__<Self, Name, Value> : returns<void> {
     static void operator()(Self self, Value value) {
@@ -1596,7 +1641,7 @@ struct __setattr__<Self, Name, Value> : returns<void> {
 };
 
 
-template <impl::py_union Self, static_str Name>
+template <meta::py_union Self, static_str Name>
     requires (impl::UnionDelAttr<Self, Name>::enable)
 struct __delattr__<Self, Name> : returns<void> {
     static void operator()(Self self) {
@@ -1614,7 +1659,7 @@ struct __delattr__<Self, Name> : returns<void> {
 };
 
 
-template <impl::py_union Self>
+template <meta::py_union Self>
 struct __repr__<Self> : returns<std::string> {
     static std::string operator()(Self self) {
         return std::forward<Self>(self).visit([]<typename T>(T&& self) -> std::string {
@@ -1624,7 +1669,7 @@ struct __repr__<Self> : returns<std::string> {
 };
 
 
-template <impl::py_union Self, typename... Args>
+template <meta::py_union Self, typename... Args>
     requires (impl::UnionCall<Self, Args...>::enable)
 struct __call__<Self, Args...> : returns<typename impl::UnionCall<Self, Args...>::type> {
     using type = impl::UnionCall<Self, Args...>::type;
@@ -1647,7 +1692,7 @@ struct __call__<Self, Args...> : returns<typename impl::UnionCall<Self, Args...>
 };
 
 
-template <impl::py_union Self, typename... Key>
+template <meta::py_union Self, typename... Key>
     requires (impl::UnionGetItem<Self, Key...>::enable)
 struct __getitem__<Self, Key...> : returns<typename impl::UnionGetItem<Self, Key...>::type> {
     using type = impl::UnionGetItem<Self, Key...>::type;
@@ -1670,7 +1715,7 @@ struct __getitem__<Self, Key...> : returns<typename impl::UnionGetItem<Self, Key
 };
 
 
-template <impl::py_union Self, typename Value, typename... Key>
+template <meta::py_union Self, typename Value, typename... Key>
     requires (impl::UnionSetItem<Self, Value, Key...>::enable)
 struct __setitem__<Self, Value, Key...> : returns<void> {
     static void operator()(Self self, Value value, Key... key) {
@@ -1697,7 +1742,7 @@ struct __setitem__<Self, Value, Key...> : returns<void> {
 };
 
 
-template <impl::py_union Self, typename... Key>
+template <meta::py_union Self, typename... Key>
     requires (impl::UnionDelItem<Self, Key...>::enable)
 struct __delitem__<Self, Key...> : returns<void> {
     static void operator()(Self self, Key... key) {
@@ -1719,7 +1764,7 @@ struct __delitem__<Self, Key...> : returns<void> {
 };
 
 
-template <impl::py_union Self>
+template <meta::py_union Self>
     requires (
         impl::UnionHash<Self>::enable &&
         std::convertible_to<typename impl::UnionHash<Self>::type, size_t>
@@ -1742,7 +1787,7 @@ struct __hash__<Self> : returns<size_t> {
 };
 
 
-template <impl::py_union Self>
+template <meta::py_union Self>
     requires (
         impl::UnionLen<Self>::enable &&
         std::convertible_to<typename impl::UnionLen<Self>::type, size_t>
@@ -1765,7 +1810,7 @@ struct __len__<Self> : returns<size_t> {
 };
 
 
-template <impl::py_union Self, typename Key>
+template <meta::py_union Self, typename Key>
     requires (
         impl::UnionContains<Self, Key>::enable &&
         std::convertible_to<typename impl::UnionContains<Self, Key>::type, bool>
@@ -1790,7 +1835,7 @@ struct __contains__<Self, Key> : returns<bool> {
 };
 
 
-template <impl::py_union Self> requires (impl::UnionIter<Self>::enable)
+template <meta::py_union Self> requires (impl::UnionIter<Self>::enable)
 struct __iter__<Self> : returns<typename impl::UnionIter<Self>::type> {
     /// NOTE: default implementation delegates to Python, which reinterprets each value
     /// as the given type(s).  That handles all cases appropriately, with a small
@@ -1799,13 +1844,13 @@ struct __iter__<Self> : returns<typename impl::UnionIter<Self>::type> {
 };
 
 
-template <impl::py_union Self> requires (impl::UnionReversed<Self>::enable)
+template <meta::py_union Self> requires (impl::UnionReversed<Self>::enable)
 struct __reversed__<Self> : returns<typename impl::UnionReversed<Self>::type> {
     /// NOTE: same as `__iter__`, but returns a reverse iterator instead.
 };
 
 
-template <impl::py_union Self> requires (impl::UnionAbs<Self>::enable)
+template <meta::py_union Self> requires (impl::UnionAbs<Self>::enable)
 struct __abs__<Self> : returns<typename impl::UnionAbs<Self>::type> {
     using type = impl::UnionAbs<Self>::type;
     static type operator()(Self self) {
@@ -1825,7 +1870,7 @@ struct __abs__<Self> : returns<typename impl::UnionAbs<Self>::type> {
 };
 
 
-template <impl::py_union Self> requires (impl::UnionInvert<Self>::enable)
+template <meta::py_union Self> requires (impl::UnionInvert<Self>::enable)
 struct __invert__<Self> : returns<typename impl::UnionInvert<Self>::type> {
     using type = impl::UnionInvert<Self>::type;
     static type operator()(Self self) {
@@ -1845,7 +1890,7 @@ struct __invert__<Self> : returns<typename impl::UnionInvert<Self>::type> {
 };
 
 
-template <impl::py_union Self> requires (impl::UnionPos<Self>::enable)
+template <meta::py_union Self> requires (impl::UnionPos<Self>::enable)
 struct __pos__<Self> : returns<typename impl::UnionPos<Self>::type> {
     using type = impl::UnionPos<Self>::type;
     static type operator()(Self self) {
@@ -1865,7 +1910,7 @@ struct __pos__<Self> : returns<typename impl::UnionPos<Self>::type> {
 };
 
 
-template <impl::py_union Self> requires (impl::UnionNeg<Self>::enable)
+template <meta::py_union Self> requires (impl::UnionNeg<Self>::enable)
 struct __neg__<Self> : returns<typename impl::UnionNeg<Self>::type> {
     using type = impl::UnionNeg<Self>::type;
     static type operator()(Self self) {
@@ -1885,7 +1930,7 @@ struct __neg__<Self> : returns<typename impl::UnionNeg<Self>::type> {
 };
 
 
-template <impl::py_union Self> requires (impl::UnionIncrement<Self>::enable)
+template <meta::py_union Self> requires (impl::UnionIncrement<Self>::enable)
 struct __increment__<Self> : returns<typename impl::UnionIncrement<Self>::type> {
     using type = impl::UnionIncrement<Self>::type;
     static type operator()(Self self) {
@@ -1905,7 +1950,7 @@ struct __increment__<Self> : returns<typename impl::UnionIncrement<Self>::type> 
 };
 
 
-template <impl::py_union Self> requires (impl::UnionDecrement<Self>::enable)
+template <meta::py_union Self> requires (impl::UnionDecrement<Self>::enable)
 struct __decrement__<Self> : returns<typename impl::UnionDecrement<Self>::type> {
     using type = impl::UnionDecrement<Self>::type;
     static type operator()(Self self) {

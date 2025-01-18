@@ -5,7 +5,7 @@
 #include "object.h"
 
 
-namespace py {
+namespace bertrand {
 
 
 ///////////////////
@@ -14,6 +14,10 @@ namespace py {
 
 
 struct Code;
+
+
+/// TODO: the code interface (along with most other object interfaces) probably needs
+/// to be defined super late into the standard library creation.
 
 
 template <>
@@ -68,7 +72,7 @@ This class is best explained by example:
 
     // main.cpp
     int main() {
-        static const py::Code script = py::Code::compile("source.py");
+        static const auto script = bertrand::Code::compile("source.py");
         script();  // prints [0 1 2 3 4 5 6 7 8 9]
     }
 
@@ -84,15 +88,15 @@ Here, the script is stateless, and can be executed without context.  Most of the
 this won't be the case, and data will need to be passed into the script to populate its
 namespace.  For instance:
 
-    static const py::Code script = R"(
+    static const bertrand::Code script = R"(
         print("Hello, " + name + "!")  # name is not defined in this context
     )";
 
 .. note::
 
-    Note the implicit conversion from string to `py::Code`.  This will compile the
-    string verbatim, with the only preprocessing being dedentation to align the code
-    with the left margin, ignoring blank lines and comments.
+    Note the implicit conversion from string to `bertrand::Code`.  This will compile
+    the string verbatim, with the only preprocessing being dedentation to align the
+    code with the left margin, ignoring blank lines and comments.
 
 If we try to execute this script without a context, we'll get a ``NameError`` just
 like normal Python:
@@ -104,18 +108,18 @@ its global namespace.
 
     script({{"name", "World"}});  // prints Hello, World!
 
-This uses the ordinary py::Dict constructors, which can take arbitrary C++ objects and
-pass them seamlessly to Python.  If we want to do the opposite and extract data from
-the script back to C++, then we can inspect its return value, which is another
-dictionary containing the context after execution.  For instance:
+This uses the ordinary bertrand::Dict constructors, which can take arbitrary C++
+objects and pass them seamlessly to Python.  If we want to do the opposite and extract
+data from the script back to C++, then we can inspect its return value, which is
+another dictionary containing the context after execution.  For instance:
 
-    py::Dict context = py::Code{R"(
+    bertrand::Dict context = bertrand::Code{R"(
         x = 1
         y = 2
         z = 3
     )"}();
 
-    py::print(context);  // prints {"x": 1, "y": 2, "z": 3}
+    bertrand::print(context);  // prints {"x": 1, "y": 2, "z": 3}
 
 .. note::
 
@@ -126,14 +130,14 @@ dictionary containing the context after execution.  For instance:
 Combining these features allows us to create a two-way data pipeline between C++ and
 Python:
 
-    py::Int z = py::Code{R"(
+    bertrand::Int z = bertrand::Code{R"(
         def func(x, y):
             return x + y
 
         z = func(a, b)
     )"}({{"a", 1}, {"b", 2}})["z"];
 
-    py::print(z);  // prints 3
+    bertrand::print(z);  // prints 3
 
 In this example, data originates in C++, passes through python for processing, and then
 returns smoothly to C++ with automatic error propagation, reference counting, and type
@@ -145,33 +149,33 @@ possible to pass a mutable reference to an external dictionary, which will be up
 in-place as the script executes.  This allows multiple scripts to be chained using a
 shared context, without ever leaving the Python interpreter.  For instance:
 
-    static const py::Code script1 = R"(
+    static const bertrand::Code script1 = R"(
         x = 1
         y = 2
     )";
 
-    static const py::Code script2 = R"(
+    static const bertrand::Code script2 = R"(
         z = x + y
         del x, y
     )";
 
-    py::Dict context;
+    bertrand::Dict context;
     script1(context);
     script2(context);
-    py::print(context);  // prints {"z": 3}
+    bertrand::print(context);  // prints {"z": 3}
 
 Users can, of course, inspect or modify the context between scripts, either to extract
 results or pass new data into the next script in the chain.  This makes it possible to
 create arbitrarily complex, mixed-language workflows with minimal fuss.
 
-    py::Dict context = py::Code{R"(
+    bertrand::Dict context = bertrand::Code{R"(
         spam = 0
         eggs = 1
     )"}();
 
     context["ham"] = std::vector<int>{1, 1, 2, 3, 5, 8, 13, 21, 34, 55};
 
-    std::vector<int> fibonacci = py::Code{R"(
+    std::vector<int> fibonacci = bertrand::Code{R"(
         result = []
         for x in ham:
             spam, eggs = (spam + eggs, spam)
@@ -179,7 +183,7 @@ create arbitrarily complex, mixed-language workflows with minimal fuss.
             result.append(eggs)
     )"}(context)["result"];
 
-    py::print(fibonacci);  // prints [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
+    bertrand::print(fibonacci);  // prints [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
 
 This means that Python can be easily included as an inline scripting language in any
 C++ application, with minimal overhead and full compatibility in both directions.  Each
@@ -190,7 +194,7 @@ libraries, client code, and more.  Similarly, it is executed just like normal Py
 bytecode, and should not suffer any significant performance penalties beyond copying
 data into or out of the context.
 
-    static const py::Code script = R"(
+    static const bertrand::Code script = R"(
         print(x)
     )";
 
@@ -201,7 +205,7 @@ data into or out of the context.
     script({{"x", "side"}});
 */
 struct Code : Object, interface<Code> {
-    struct __python__ : def<__python__, Code>, PyCodeObject {
+    struct __python__ : cls<__python__, Code>, PyCodeObject {
         static Type<Code> __import__();
     };
 
@@ -234,58 +238,58 @@ struct interface<Type<Code>> {
         return Code::compile(source);
     }
 
-    template <impl::inherits<interface<Code>> Self>
+    template <meta::inherits<interface<Code>> Self>
     [[nodiscard]] static Py_ssize_t line_number(Self&& self) noexcept {
         return std::forward<Self>(self).line_number;
     }
-    template <impl::inherits<interface<Code>> Self>
+    template <meta::inherits<interface<Code>> Self>
     [[nodiscard]] static Py_ssize_t argcount(Self&& self) noexcept {
         return std::forward<Self>(self).argcount;
     }
-    template <impl::inherits<interface<Code>> Self>
+    template <meta::inherits<interface<Code>> Self>
     [[nodiscard]] static Py_ssize_t posonlyargcount(Self&& self) noexcept {
         return std::forward<Self>(self).posonlyargcount;
     }
-    template <impl::inherits<interface<Code>> Self>
+    template <meta::inherits<interface<Code>> Self>
     [[nodiscard]] static Py_ssize_t kwonlyargcount(Self&& self) noexcept {
         return std::forward<Self>(self).kwonlyargcount;
     }
-    template <impl::inherits<interface<Code>> Self>
+    template <meta::inherits<interface<Code>> Self>
     [[nodiscard]] static Py_ssize_t nlocals(Self&& self) noexcept {
         return std::forward<Self>(self).nlocals;
     }
-    template <impl::inherits<interface<Code>> Self>
+    template <meta::inherits<interface<Code>> Self>
     [[nodiscard]] static Py_ssize_t stacksize(Self&& self) noexcept {
         return std::forward<Self>(self).stacksize;
     }
-    template <impl::inherits<interface<Code>> Self>
+    template <meta::inherits<interface<Code>> Self>
     [[nodiscard]] static int flags(Self&& self) noexcept {
         return std::forward<Self>(self).flags;
     }
 
     /// NOTE: these are defined in __init__.h
-    template <impl::inherits<interface<Code>> Self>
+    template <meta::inherits<interface<Code>> Self>
     [[nodiscard]] static Str filename(Self&& self);
-    template <impl::inherits<interface<Code>> Self>
+    template <meta::inherits<interface<Code>> Self>
     [[nodiscard]] static Str name(Self&& self);
-    template <impl::inherits<interface<Code>> Self>
+    template <meta::inherits<interface<Code>> Self>
     [[nodiscard]] static Str qualname(Self&& self);
-    template <impl::inherits<interface<Code>> Self>
+    template <meta::inherits<interface<Code>> Self>
     [[nodiscard]] static Tuple<Str> varnames(Self&& self);
-    template <impl::inherits<interface<Code>> Self>
+    template <meta::inherits<interface<Code>> Self>
     [[nodiscard]] static Tuple<Str> cellvars(Self&& self);
-    template <impl::inherits<interface<Code>> Self>
+    template <meta::inherits<interface<Code>> Self>
     [[nodiscard]] static Tuple<Str> freevars(Self&& self);
-    template <impl::inherits<interface<Code>> Self>
+    template <meta::inherits<interface<Code>> Self>
     [[nodiscard]] static Bytes bytecode(Self&& self);
-    template <impl::inherits<interface<Code>> Self>
+    template <meta::inherits<interface<Code>> Self>
     [[nodiscard]] static Tuple<Object> consts(Self&& self);
-    template <impl::inherits<interface<Code>> Self>
+    template <meta::inherits<interface<Code>> Self>
     [[nodiscard]] static Tuple<Str> names(Self&& self);
 };
 
 
-template <impl::is<Object> Derived, impl::is<Code> Base>
+template <meta::is<Object> Derived, meta::is<Code> Base>
 struct __isinstance__<Derived, Base>                        : returns<bool> {
     static constexpr bool operator()(Derived obj) {
         return PyCode_Check(ptr(obj));
@@ -301,7 +305,7 @@ struct __cast__<Source, Code>                               : returns<Code> {
 
 
 /* Execute the code object with an empty context. */
-template <impl::is<Code> Self>
+template <meta::is<Code> Self>
 struct __call__<Self>                                       : returns<Dict<Str, Object>> {
     static auto operator()(Self&& self);  // defined in __init__.h
 };
@@ -309,7 +313,7 @@ struct __call__<Self>                                       : returns<Dict<Str, 
 
 /* Execute the code object with a given context, which can be either mutable or a
 temporary. */
-template <impl::is<Code> Self, std::convertible_to<Dict<Str, Object>> Context>
+template <meta::is<Code> Self, std::convertible_to<Dict<Str, Object>> Context>
 struct __call__<Self, Context>                              : returns<Dict<Str, Object>> {
     static auto operator()(Self&& self, Dict<Str, Object>& context);  // defined in __init__.h
     static auto operator()(Self&& self, Dict<Str, Object>&& context);  // defined in __init__.h
@@ -373,10 +377,10 @@ namespace impl {
          * arguments are decomposed into numeric character arrays in the symbol name,
          * which need to be reconstructed here.  Here's an example:
          *
-         *      // TODO: find a new example, probably using py::getattr<"append">(list)
+         *      // TODO: find a new example, probably using bertrand::getattr<"append">(list)
          *
          *      File ".../bertrand/python/core/ops.h",
-         *      line 268, in py::impl::Attr<bertrand::py::Object,
+         *      line 268, in bertrand::impl::Attr<bertrand::Object,
          *      bertrand::static_str<7ul>{char [8]{(char)95, (char)95, (char)103,
          *      (char)101, (char)116, (char)95, (char)95}}>::get_attr() const
          *
@@ -449,7 +453,7 @@ struct interface<Frame> {
 /* A CPython interpreter frame, which can be introspected or arranged into coherent
 cross-language tracebacks. */
 struct Frame : Object, interface<Frame> {
-    struct __python__ : def<__python__, Frame>, PyFrameObject {
+    struct __python__ : cls<__python__, Frame>, PyFrameObject {
         static Type<Frame> __import__();
     };
 
@@ -478,44 +482,44 @@ struct Frame : Object, interface<Frame> {
 
 template <>
 struct interface<Type<Frame>> {
-    template <impl::inherits<interface<Frame>> Self>
+    template <meta::inherits<interface<Frame>> Self>
     [[nodiscard]] static std::string to_string(Self&& self) {
         return std::forward<Self>(self).to_string();
     }
-    template <impl::inherits<interface<Frame>> Self>
+    template <meta::inherits<interface<Frame>> Self>
     [[nodiscard]] static std::optional<Code> code(Self&& self) {
         return std::forward<Self>(self).code;
     }
-    template <impl::inherits<interface<Frame>> Self>
+    template <meta::inherits<interface<Frame>> Self>
     [[nodiscard]] static std::optional<Frame> back(Self&& self) {
         return std::forward<Self>(self).back;
     }
-    template <impl::inherits<interface<Frame>> Self>
+    template <meta::inherits<interface<Frame>> Self>
     [[nodiscard]] static size_t line_number(Self&& self) {
         return std::forward<Self>(self).line_number;
     }
-    template <impl::inherits<interface<Frame>> Self>
+    template <meta::inherits<interface<Frame>> Self>
     [[nodiscard]] static size_t last_instruction(Self&& self) {
         return std::forward<Self>(self).last_instruction;
     }
-    template <impl::inherits<interface<Frame>> Self>
+    template <meta::inherits<interface<Frame>> Self>
     [[nodiscard]] static std::optional<Object> generator(Self&& self) {
         return std::forward<Self>(self).generator;
     }
 
     /// NOTE: these are defined in __init__.h
-    template <impl::inherits<interface<Frame>> Self>
+    template <meta::inherits<interface<Frame>> Self>
     [[nodiscard]] static Object get(Self&& self, const Str& name);
-    template <impl::inherits<interface<Frame>> Self>
+    template <meta::inherits<interface<Frame>> Self>
     [[nodiscard]] static Dict<Str, Object> builtins(Self&& self);
-    template <impl::inherits<interface<Frame>> Self>
+    template <meta::inherits<interface<Frame>> Self>
     [[nodiscard]] static Dict<Str, Object> globals(Self&& self);
-    template <impl::inherits<interface<Frame>> Self>
+    template <meta::inherits<interface<Frame>> Self>
     [[nodiscard]] static Dict<Str, Object> locals(Self&& self);
 };
 
 
-template <impl::is<Object> Derived, impl::is<Frame> Base>
+template <meta::is<Object> Derived, meta::is<Frame> Base>
 struct __isinstance__<Derived, Base>                        : returns<bool> {
     static constexpr bool operator()(Derived obj) {
         return PyFrame_Check(ptr(obj));
@@ -542,13 +546,13 @@ struct __init__<Frame, T>                                   : returns<Frame> {
 };
 
 
-template <impl::is<cpptrace::stacktrace_frame> T>
+template <meta::is<cpptrace::stacktrace_frame> T>
 struct __cast__<T>                                          : returns<Frame> {};
 
 
 /* Converting a `cpptrace::stacktrace_frame` into a Python frame object will synthesize
 an interpreter frame with an empty bytecode object. */
-template <impl::is<cpptrace::stacktrace_frame> T>
+template <meta::is<cpptrace::stacktrace_frame> T>
 struct __cast__<T, Frame>                                   : returns<Frame> {
     static auto operator()(const cpptrace::stacktrace_frame& frame) {
         PyObject* globals = PyDict_New();
@@ -602,7 +606,7 @@ This is the main entry point for the Python interpreter, and causes the program 
 until it either terminates or encounters an error.  The return value is the result of
 the last evaluated expression, which can be the return value of a function, the yield
 value of a generator, etc. */
-template <impl::is<Frame> Self>
+template <meta::is<Frame> Self>
 struct __call__<Self>                                       : returns<Object> {
     static auto operator()(Self&& frame);
 };

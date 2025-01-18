@@ -10,25 +10,6 @@ namespace bertrand {
 
 namespace impl {
 
-    template <static_str...>
-    constexpr bool _strings_are_unique = true;
-    template <static_str First, static_str... Rest>
-    constexpr bool _strings_are_unique<First, Rest...> =
-        ((First != Rest) && ...) && _strings_are_unique<Rest...>;
-    template <static_str... Strings>
-    concept strings_are_unique = _strings_are_unique<Strings...>;
-
-    template <size_t I, static_str... Strings>
-    struct unpack_string;
-    template <static_str First, static_str... Rest>
-    struct unpack_string<0, First, Rest...> {
-        static constexpr static_str value = First;
-    };
-    template <size_t I, static_str First, static_str... Rest>
-    struct unpack_string<I, First, Rest...> {
-        static constexpr static_str value = unpack_string<I - 1, Rest...>::value;
-    };
-
     /* A helper struct that computes a perfect FNV-1a hash function over the given
     strings at compile time. */
     template <static_str... Keys>
@@ -54,7 +35,7 @@ namespace impl {
         static constexpr size_t max_length = minmax.second;
 
         template <size_t I> requires (I < sizeof...(Keys))
-        static constexpr static_str at = unpack_string<I, Keys...>::value;
+        static constexpr static_str at = meta::unpack_string<I, Keys...>;
 
     private:
         /* Check to see if the candidate seed and prime produce any collisions for the
@@ -141,7 +122,7 @@ namespace impl {
     };
 
     /* A helper struct that computes a gperf-style minimal perfect hash function over
-    the given strings at compile time.  Only the N most significant characters are
+    the given strings at compile time.  Only the N most variable characters are
     considered, where N is minimized using an associative array containing relative
     weights for each character. */
     template <static_str... Keys>
@@ -165,7 +146,7 @@ namespace impl {
         static constexpr size_t max_length = minmax.second;
 
         template <size_t I> requires (I < sizeof...(Keys))
-        static constexpr static_str at = unpack_string<I, Keys...>::value;
+        static constexpr static_str at = meta::unpack_string<I, Keys...>;
 
     private:
         using Weights = std::array<unsigned char, 256>;
@@ -349,7 +330,7 @@ namespace impl {
             }(std::make_index_sequence<significant_chars>{});
 
         /* Hash a compile-time string according to the computed perfect hash algorithm. */
-        template <is_static_str Key>
+        template <meta::static_str Key>
         static constexpr size_t hash(const Key& str) noexcept {
             size_t out = 0;
             for (size_t pos : positions) {
@@ -386,7 +367,7 @@ namespace impl {
 
         /* Hash a character buffer according to the computed perfect hash algorithm. */
         template <std::convertible_to<const char*> T>
-            requires (!is_static_str<T> && !string_literal<T>)
+            requires (!meta::static_str<T> && !meta::string_literal<T>)
         static constexpr size_t hash(const T& str) noexcept {
             const char* start = str;
             if constexpr (positions.empty()) {
@@ -417,7 +398,7 @@ namespace impl {
         /* Hash a character buffer according to the computed perfect hash algorithm and
         record its length as an out parameter. */
         template <std::convertible_to<const char*> T>
-            requires (!is_static_str<T> && !string_literal<T>)
+            requires (!meta::static_str<T> && !meta::string_literal<T>)
         static constexpr size_t hash(const T& str, size_t& len) noexcept {
             const char* start = str;
             const char* ptr = start;
@@ -452,8 +433,8 @@ namespace impl {
         /* Hash a string view according to the computed perfect hash algorithm. */
         template <std::convertible_to<std::string_view> T>
             requires (
-                !is_static_str<T> &&
-                !string_literal<T> &&
+                !meta::static_str<T> &&
+                !meta::string_literal<T> &&
                 !std::convertible_to<T, const char*>
             )
         static constexpr size_t hash(const T& str) noexcept {
@@ -482,7 +463,7 @@ string is also known at compile time, then even these can be optimized out, skip
 straight to the final value with no intermediate computation. */
 template <typename Value, static_str... Keys>
     requires (
-        impl::strings_are_unique<Keys...> &&
+        meta::strings_are_unique<Keys...> &&
         impl::minimal_perfect_hash<Keys...>::exists
     )
 struct static_map : impl::minimal_perfect_hash<Keys...> {
@@ -504,8 +485,8 @@ private:
     static constexpr Bucket populate(Values&&... values) {
         constexpr size_t idx = pack_idx<I, occupied...>;
         return {
-            std::string_view(impl::unpack_string<idx, Keys...>::value),
-            unpack_arg<idx>(std::forward<Values>(values)...)
+            std::string_view(meta::unpack_string<idx, Keys...>),
+            meta::unpack_arg<idx>(std::forward<Values>(values)...)
         };
     }
 
@@ -620,7 +601,7 @@ public:
     }
 
     /* Check whether the map contains an arbitrary key. */
-    template <is_static_str Key>
+    template <meta::static_str Key>
     constexpr bool contains(const Key& key) const {
         if constexpr ((key.size() < Hash::min_length) | (key.size() > Hash::max_length)) {
             return false;
@@ -634,7 +615,7 @@ public:
 
     /* Check whether the map contains an arbitrary key. */
     template <std::convertible_to<const char*> T>
-        requires (!string_literal<T> && !is_static_str<T>)
+        requires (!meta::string_literal<T> && !meta::static_str<T>)
     constexpr bool contains(const T& key) const {
         const char* str = key;
         size_t len;
@@ -653,8 +634,8 @@ public:
     /* Check whether the map contains an arbitrary key. */
     template <std::convertible_to<std::string_view> T>
         requires (
-            !string_literal<T> &&
-            !is_static_str<T> &&
+            !meta::string_literal<T> &&
+            !meta::static_str<T> &&
             !std::convertible_to<T, const char*>
         )
     constexpr bool contains(const T& key) const {
@@ -672,8 +653,8 @@ public:
     /* Check whether the given index is in bounds for the table. */
     template <std::convertible_to<size_t> T>
         requires (
-            !string_literal<T> &&
-            !is_static_str<T> &&
+            !meta::string_literal<T> &&
+            !meta::static_str<T> &&
             !std::convertible_to<T, const char*> &&
             !std::convertible_to<T, std::string_view>
         )
@@ -730,7 +711,7 @@ public:
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
-    template <is_static_str Key>
+    template <meta::static_str Key>
     constexpr const std::remove_reference_t<Value>* operator[](const Key& key) const {
         if constexpr (
             (key.size() < Hash::min_length) | (key.size() > Hash::max_length)
@@ -747,7 +728,7 @@ public:
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
     template <std::convertible_to<const char*> T>
-        requires (!string_literal<T> && !is_static_str<T>)
+        requires (!meta::string_literal<T> && !meta::static_str<T>)
     constexpr const std::remove_reference_t<Value>* operator[](const T& key) const {
         const char* str = key;
         size_t len;
@@ -767,8 +748,8 @@ public:
     is not present. */
     template <std::convertible_to<std::string_view> T>
         requires (
-            !string_literal<T> &&
-            !is_static_str<T> &&
+            !meta::string_literal<T> &&
+            !meta::static_str<T> &&
             !std::convertible_to<T, const char*>
         )
     constexpr const std::remove_reference_t<Value>* operator[](const T& key) const {
@@ -787,8 +768,8 @@ public:
     key at that index or nullptr if the index is out of bounds. */
     template <std::convertible_to<size_t> T>
         requires (
-            !string_literal<T> &&
-            !is_static_str<T> &&
+            !meta::string_literal<T> &&
+            !meta::static_str<T> &&
             !std::convertible_to<T, const char*> &&
             !std::convertible_to<T, std::string_view>
         )
@@ -819,7 +800,7 @@ public:
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
-    template <is_static_str Key>
+    template <meta::static_str Key>
     std::remove_reference_t<Value>* operator[](const Key& key) {
         if constexpr (
             (key.size() < Hash::min_length) | (key.size() > Hash::max_length)
@@ -836,7 +817,7 @@ public:
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
     template <std::convertible_to<const char*> T>
-        requires (!string_literal<T> && !is_static_str<T>)
+        requires (!meta::string_literal<T> && !meta::static_str<T>)
     std::remove_reference_t<Value>* operator[](const T& key) {
         const char* str = key;
         size_t len;
@@ -856,8 +837,8 @@ public:
     is not present. */
     template <std::convertible_to<std::string_view> T>
         requires (
-            !string_literal<T> &&
-            !is_static_str<T> &&
+            !meta::string_literal<T> &&
+            !meta::static_str<T> &&
             !std::convertible_to<T, const char*>
         )
     std::remove_reference_t<Value>* operator[](const T& key) {
@@ -876,8 +857,8 @@ public:
     key at that index or nullptr if the index is out of bounds. */
     template <std::convertible_to<size_t> T>
         requires (
-            !string_literal<T> &&
-            !is_static_str<T> &&
+            !meta::string_literal<T> &&
+            !meta::static_str<T> &&
             !std::convertible_to<T, const char*> &&
             !std::convertible_to<T, std::string_view>
         )
@@ -901,10 +882,10 @@ public:
 /* A specialization of static_map that does not hold any values.  Such a data structure
 is equivalent to a perfectly-hashed set of compile-time strings, which can be
 efficiently searched at runtime.  Rather than dereferencing to a value, the buckets
-and iterators will dereference to `string_view`s of the templated key buffers. */
+and iterators will dereference to `string_view`s of the template key buffers. */
 template <static_str... Keys>
     requires (
-        impl::strings_are_unique<Keys...> &&
+        meta::strings_are_unique<Keys...> &&
         impl::minimal_perfect_hash<Keys...>::exists
     )
 struct static_map<void, Keys...> : impl::minimal_perfect_hash<Keys...> {
@@ -924,7 +905,7 @@ private:
     template <size_t I, size_t... occupied>
     static constexpr std::string_view populate() {
         constexpr size_t idx = pack_idx<I, occupied...>;
-        return std::string_view(impl::unpack_string<idx, Keys...>::value);
+        return std::string_view(meta::unpack_string<idx, Keys...>);
     }
 
     struct Iterator {
@@ -1026,7 +1007,7 @@ public:
     }
 
     /* Check whether the map contains an arbitrary key. */
-    template <is_static_str Key>
+    template <meta::static_str Key>
     constexpr bool contains(const Key& key) const {
         if constexpr (
             (key.size() < Hash::min_length) | (key.size() > Hash::max_length)
@@ -1042,7 +1023,7 @@ public:
 
     /* Check whether the map contains an arbitrary key. */
     template <std::convertible_to<const char*> T>
-        requires (!string_literal<T> && !is_static_str<T>)
+        requires (!meta::string_literal<T> && !meta::static_str<T>)
     constexpr bool contains(const T& key) const {
         const char* str = key;
         size_t len;
@@ -1061,8 +1042,8 @@ public:
     /* Check whether the map contains an arbitrary key. */
     template <std::convertible_to<std::string_view> T>
         requires (
-            !string_literal<T> &&
-            !is_static_str<T> &&
+            !meta::string_literal<T> &&
+            !meta::static_str<T> &&
             !std::convertible_to<T, const char*>
         )
     constexpr bool contains(const T& key) const {
@@ -1080,8 +1061,8 @@ public:
     /* Check whether the given index is in bounds for the table. */
     template <std::convertible_to<size_t> T>
         requires (
-            !string_literal<T> &&
-            !is_static_str<T> &&
+            !meta::string_literal<T> &&
+            !meta::static_str<T> &&
             !std::convertible_to<T, const char*> &&
             !std::convertible_to<T, std::string_view>
         )
@@ -1123,7 +1104,7 @@ public:
 
     /* Look up a key, returning a pointer to the corresponding key or nullptr if it is
     not present. */
-    template <is_static_str Key>
+    template <meta::static_str Key>
     constexpr const std::string_view* operator[](const Key& key) const {
         if constexpr (
             (key.size() < Hash::min_length) | (key.size() > Hash::max_length)
@@ -1140,7 +1121,7 @@ public:
     /* Look up a key, returning a pointer to the corresponding key or nullptr if it is
     not present. */
     template <std::convertible_to<const char*> T>
-        requires (!string_literal<T> && !is_static_str<T>)
+        requires (!meta::string_literal<T> && !meta::static_str<T>)
     constexpr const std::string_view* operator[](const T& key) const {
         const char* str = key;
         size_t len;
@@ -1160,8 +1141,8 @@ public:
     not present. */
     template <std::convertible_to<std::string_view> T>
         requires (
-            !string_literal<T> &&
-            !is_static_str<T> &&
+            !meta::string_literal<T> &&
+            !meta::static_str<T> &&
             !std::convertible_to<T, const char*>
         )
     constexpr const std::string_view* operator[](const T& key) const {
@@ -1180,8 +1161,8 @@ public:
     key at that index or nullptr if the index is out of bounds. */
     template <std::convertible_to<size_t> T>
         requires (
-            !string_literal<T> &&
-            !is_static_str<T> &&
+            !meta::string_literal<T> &&
+            !meta::static_str<T> &&
             !std::convertible_to<T, const char*> &&
             !std::convertible_to<T, std::string_view>
         )

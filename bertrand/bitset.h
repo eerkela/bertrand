@@ -1,8 +1,6 @@
 #ifndef BERTRAND_BITSET_H
 #define BERTRAND_BITSET_H
 
-#include <vector>
-#include <unordered_map>
 
 #include "bertrand/common.h"
 
@@ -10,28 +8,21 @@
 namespace bertrand {
 
 
+namespace impl {
+    struct bitset_tag {};
+}
+
+
+namespace meta {
+    template <typename T>
+    concept bitset = inherits<T, impl::bitset_tag>;
+}
+
+
 /* A simple bitset type that stores flags in a fixed-size array of machine words.
 Allows a wider range of operations than `std::bitset<N>`, including full, bigint-style
 arithmetic, lexicographic comparisons, one-hot decomposition, and more, which allow
 bitsets to pull double duty as portable, unsigned integers of arbitrary width. */
-template <size_t N>
-struct bitset;
-
-
-namespace impl {
-    struct bitset_tag {};
-
-    template <typename T>
-    constexpr bool _is_bitset = false;
-    template <size_t N>
-    constexpr bool _is_bitset<bitset<N>> = true;
-}
-
-
-template <typename T>
-concept is_bitset = impl::_is_bitset<std::remove_cvref_t<T>>;
-
-
 template <size_t N>
 struct bitset : impl::bitset_tag {
     using Word = size_t;
@@ -325,7 +316,7 @@ public:
     /* Convert the bitset to an integer representation if it fits within the platform's
     word size. */
     template <typename T>
-        requires (N <= sizeof(Word) * 8 && explicitly_convertible_to<Word, T>)
+        requires (N <= sizeof(Word) * 8 && meta::explicitly_convertible_to<Word, T>)
     [[nodiscard]] explicit constexpr operator T() const noexcept {
         if constexpr (array_size == 0) {
             return static_cast<T>(Word(0));
@@ -1716,12 +1707,12 @@ bitset(const char(&)[N]) -> bitset<N - 1>;
 namespace std {
 
     /* Specializing `std::hash` allows bitsets to be stored in hash tables. */
-    template <bertrand::is_bitset T>
+    template <bertrand::meta::bitset T>
     struct hash<T> {
         [[nodiscard]] static size_t operator()(const T& bitset) noexcept {
             size_t result = 0;
             for (size_t i = 0; i < std::remove_cvref_t<T>::size(); ++i) {
-                result ^= bertrand::hash_combine(
+                result ^= bertrand::impl::hash_combine(
                     result,
                     bitset.data()[i]
                 );
@@ -1732,21 +1723,21 @@ namespace std {
 
     /* Specializing `std::tuple_size` allows bitsets to be decomposed using
     structured bindings. */
-    template <bertrand::is_bitset T>
+    template <bertrand::meta::bitset T>
     struct tuple_size<T> :
         std::integral_constant<size_t, std::remove_cvref_t<T>::size()>
     {};
 
     /* Specializing `std::tuple_element` allows bitsets to be decomposed using
     structured bindings. */
-    template <size_t I, bertrand::is_bitset T>
+    template <size_t I, bertrand::meta::bitset T>
         requires (I < std::remove_cvref_t<T>::size())
     struct tuple_element<I, T> {
         using type = bool;
     };
 
     /* `std::get<I>(chain)` extracts the I-th flag from the bitset. */
-    template <size_t I, bertrand::is_bitset T>
+    template <size_t I, bertrand::meta::bitset T>
         requires (I < std::remove_cvref_t<T>::size())
     [[nodiscard]] constexpr bool get(T&& bitset) noexcept {
         return std::forward<T>(bitset).template get<I>();
