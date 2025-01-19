@@ -109,10 +109,6 @@ namespace impl {
         Interpreter(const Interpreter&) = delete;
         Interpreter(Interpreter&&) = delete;
 
-    private:
-        static Interpreter self;
-
-        Interpreter() = default;
         ~Interpreter() noexcept {
             /// TODO: similar to init(), this does nothing, relying on the global
             /// destructor to finalize the interpreter.  If that doesn't work, I can
@@ -121,6 +117,11 @@ namespace impl {
             //     Py_Finalize();
             // }
         }
+
+    private:
+        static Interpreter self;
+
+        Interpreter() = default;
     };
 
     inline Interpreter Interpreter::self {};
@@ -153,6 +154,15 @@ struct Int;
 
 
 namespace meta {
+
+    namespace detail {
+
+        /// TODO: figure out this and/or defined<T> for the general case, and grep all
+        /// instances to ensure consistent behavior
+        template <typename T>
+        constexpr bool builtin_type = false;
+
+    }
 
     template <typename T>
     concept bertrand = std::derived_from<std::remove_cvref_t<T>, impl::BertrandTag>;
@@ -2483,6 +2493,20 @@ struct MappingProxy;
 namespace meta {
 
     namespace detail {
+
+        /// TODO: this works, but I'll need to whitelist all of the built-in types
+        /// to prevent template errors.  Perhaps what I ought to do is force the
+        /// operators to only accept defined types?  Since the operators will never be
+        /// used at class scope (only within the body of a method), that should avoid
+        /// any issues, right?
+
+        template <typename T>
+        static constexpr bool builtin_type<Tuple<T>> = true;
+        template <>
+        static constexpr bool builtin_type<Str> = true;
+
+
+
 
         template <typename T, typename = void>
         constexpr bool has_interface = false;

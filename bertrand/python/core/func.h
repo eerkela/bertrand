@@ -1850,7 +1850,7 @@ identical. */
 }
 
 
-}  // namespace py
+}  // namespace bertrand
 
 
 namespace std {
@@ -8123,10 +8123,9 @@ template <typename L, typename R>
 }
 
 
-}  // namespace bertrand
-
-
-namespace py {
+////////////////////////
+////    FUNCTION    ////
+////////////////////////
 
 
 template <typename F = Object(Arg<"*args", Object>, Arg<"**kwargs", Object>)>
@@ -15124,7 +15123,7 @@ STD_MEM_FN(R(C::*const volatile&&)(A...) const volatile & noexcept, R(C::*)(A...
 #undef STD_MEM_FN
 
 
-}  // namespace py
+}  // namespace bertrand
 
 
 #endif

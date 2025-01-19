@@ -261,16 +261,6 @@ namespace meta {
         template <typename T, typename... Ts>
         struct unpack_type<0, T, Ts...> { using type = T; };
 
-        template <typename T, typename = void>
-        constexpr bool defined = std::is_void_v<T>;
-        template <typename T>
-        constexpr bool defined<T, std::void_t<decltype(std::declval<T&>().~T())>> = true;
-
-        template <typename T, typename F>
-        struct if_defined { using type = F; };
-        template <typename T, typename F> requires (defined<T>)
-        struct if_defined<T, F> { using type = T; };
-
         template <typename T, typename Self>
         struct qualify { using type = T; };
         template <typename T, typename Self>
@@ -419,12 +409,6 @@ namespace meta {
     constexpr decltype(auto) implicit_cast(U&& value) {
         return std::forward<U>(value);
     }
-
-    template <typename T>
-    concept defined = detail::defined<T>;
-
-    template <typename T, typename F>
-    using if_defined = detail::if_defined<T, F>::type;
 
     template <typename L, typename R>
     concept is = std::same_as<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;
