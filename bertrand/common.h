@@ -4,6 +4,7 @@
 #include <cmath>
 #include <concepts>
 #include <cstddef>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -71,6 +72,41 @@ struct sentinel {};
 
 
 namespace impl {
+
+    struct virtualenv;
+    static virtualenv get_virtual_environment() noexcept;
+
+    struct virtualenv {
+    private:
+        friend virtualenv get_virtual_environment() noexcept;
+
+        virtualenv() = default;
+
+    public:
+        std::filesystem::path path = [] {
+            if (const char* path = std::getenv("BERTRAND_HOME")) {
+                return std::filesystem::path(path);
+            }
+            return std::filesystem::path();
+        }();
+        std::filesystem::path bin = *this ? path / "bin" : std::filesystem::path();
+        std::filesystem::path lib = *this ? path / "lib" : std::filesystem::path();
+        std::filesystem::path include = *this ? path / "include" : std::filesystem::path(); 
+        std::filesystem::path modules = *this ? path / "modules" : std::filesystem::path();
+
+        virtualenv(const virtualenv&) = delete;
+        virtualenv(virtualenv&&) = delete;
+        virtualenv& operator=(const virtualenv&) = delete;
+        virtualenv& operator=(virtualenv&&) = delete;
+
+        explicit operator bool() const noexcept {
+            return !path.empty();
+        }
+    };
+
+    static virtualenv get_virtual_environment() noexcept {
+        return virtualenv();
+    }
 
     /* Modular integer multiplication. */
     template <std::integral T>
@@ -242,6 +278,11 @@ namespace impl {
     }
 
 }
+
+
+/* A simple struct holding paths to the bertrand environment's directories, if such an
+environment is currently active. */
+inline const impl::virtualenv VIRTUAL_ENV = impl::get_virtual_environment();
 
 
 namespace meta {

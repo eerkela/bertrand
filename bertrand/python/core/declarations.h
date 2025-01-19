@@ -156,19 +156,16 @@ struct Int;
 namespace meta {
 
     namespace detail {
-
-        /// TODO: figure out this and/or defined<T> for the general case, and grep all
-        /// instances to ensure consistent behavior
         template <typename T>
         constexpr bool builtin_type = false;
-
     }
 
     template <typename T>
     concept bertrand = std::derived_from<std::remove_cvref_t<T>, impl::BertrandTag>;
 
     template <typename T>
-    concept python = !defined<T> || std::derived_from<std::remove_cvref_t<T>, Object>;
+    concept python =
+        detail::builtin_type<T> || std::derived_from<std::remove_cvref_t<T>, Object>;
 
     template <typename T>
     concept cpp = !python<T>;
