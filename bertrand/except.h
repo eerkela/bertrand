@@ -6,7 +6,6 @@
 #include <string>
 #include <typeindex>
 #include <unordered_map>
-#include <variant>
 
 #include <cpptrace/cpptrace.hpp>
 
@@ -43,13 +42,31 @@ will be disabled. */
 struct Exception : public std::exception {
 protected:
     std::string m_message;
-    size_t m_skip = 0;
+    mutable size_t m_skip = 0;
     mutable std::string m_what;
-    mutable std::variant<cpptrace::raw_trace, cpptrace::stacktrace> m_trace;
+    union {
+        mutable cpptrace::raw_trace m_raw_trace;
+        mutable cpptrace::stacktrace m_stacktrace;
+    };
+    mutable enum : uint8_t {
+        NO_TRACE,
+        RAW_TRACE,
+        STACK_TRACE
+    } m_trace_type = NO_TRACE;
+
+    struct get_trace {
+        size_t skip = 1;
+        constexpr get_trace operator++(int) const noexcept { return {skip + 1}; }
+    };
+
+    /// NOTE: cpptrace always stores the most recent frame first.
+
+    /// TODO: these frame filters might not be necessary if the trim_after() approach
+    /// works as intended.
 
     /* Returns true if the frame originates from an internal context, i.e. from an
     internal C++ library or the Python interpreter. */
-    static bool internal_frame(const cpptrace::stacktrace_frame& frame) noexcept {
+    static constexpr bool internal_frame(const cpptrace::stacktrace_frame& frame) noexcept {
         return (
             frame.symbol.starts_with("__") || (
                 VIRTUAL_ENV && (
@@ -61,57 +78,290 @@ protected:
 
     /* Returns true if the frame indicates the invocation of a Python script from a
     C++ context. */
-    static bool script_frame(const cpptrace::stacktrace_frame& frame) noexcept {
+    static constexpr bool script_frame(const cpptrace::stacktrace_frame& frame) noexcept {
         return frame.symbol.find("bertrand::Code::operator()") != std::string::npos;
+    }
+
+    template <typename Msg> requires (std::constructible_from<std::string, Msg>)
+    explicit constexpr Exception(Msg&& msg, get_trace trace) :
+        m_message(std::forward<Msg>(msg)),
+        m_skip(trace.skip + 1)  // skip this constructor
+    {
+        if !consteval {
+            new (&m_raw_trace) cpptrace::raw_trace(cpptrace::generate_raw_trace());
+        }
     }
 
 public:
 
     template <typename Msg = const char*>
         requires (std::constructible_from<std::string, Msg>)
-    [[gnu::noinline]] Exception(Msg&& msg = "") :
+    explicit constexpr Exception(Msg&& msg = "") :
         m_message(std::forward<Msg>(msg)),
-        m_trace(cpptrace::generate_raw_trace(1))
-    {}
+        m_skip(1)  // skip this constructor
+    {
+        if !consteval {
+            new (&m_raw_trace) cpptrace::raw_trace(cpptrace::generate_raw_trace());
+        }
+    }
 
     template <typename Msg> requires (std::constructible_from<std::string, Msg>)
-    Exception(Msg&& msg, cpptrace::raw_trace&& trace) :
+    explicit Exception(Msg&& msg, cpptrace::raw_trace&& trace) :
         m_message(std::forward<Msg>(msg)),
-        m_trace(std::move(trace))
-    {}
+        m_trace_type(RAW_TRACE)
+    {
+        new (&m_raw_trace) cpptrace::raw_trace(std::move(trace));
+    }
 
     template <typename Msg> requires (std::constructible_from<std::string, Msg>)
-    Exception(Msg&& msg, cpptrace::stacktrace&& trace) :
+    explicit Exception(Msg&& msg, cpptrace::stacktrace&& trace) :
         m_message(std::forward<Msg>(msg)),
-        m_trace(std::move(trace))
-    {}
+        m_trace_type(STACK_TRACE)
+    {
+        new (&m_stacktrace) cpptrace::stacktrace(std::move(trace));
+    }
 
-    /* Skip this frame when reporting the final traceback.  Forwards the exception
-    itself for simplified chaining (e.g. `throw exc.skip(2)`). */
-    template <typename Self> requires (!meta::is_const<Self>)
-    decltype(auto) skip(this Self&& self, size_t count = 1) noexcept {
-        self.m_skip += count;
+    Exception(const Exception& other) :
+        m_message(other.m_message),
+        m_skip(other.m_skip),
+        m_what(other.m_what),
+        m_trace_type(other.m_trace_type)
+    {
+        if !consteval {
+            switch (m_trace_type) {
+                case RAW_TRACE:
+                    new (&m_raw_trace) cpptrace::raw_trace(other.m_raw_trace);
+                    break;
+                case STACK_TRACE:
+                    new (&m_stacktrace) cpptrace::stacktrace(other.m_stacktrace);
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+    Exception(Exception&& other) :
+        m_message(std::move(other.m_message)),
+        m_skip(other.m_skip),
+        m_what(std::move(other.m_what)),
+        m_trace_type(other.m_trace_type)
+    {
+        if !consteval {
+            switch (m_trace_type) {
+                case RAW_TRACE:
+                    new (&m_raw_trace) cpptrace::raw_trace(std::move(other.m_raw_trace));
+                    break;
+                case STACK_TRACE:
+                    new (&m_stacktrace) cpptrace::stacktrace(std::move(other.m_stacktrace));
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+    Exception& operator=(const Exception& other) {
+        if (&other != this) {
+            m_message = other.m_message;
+            m_skip = other.m_skip;
+            m_what = other.m_what;
+            m_trace_type = other.m_trace_type;
+            if !consteval {
+                switch (m_trace_type) {
+                    case RAW_TRACE:
+                        new (&m_raw_trace) cpptrace::raw_trace(other.m_raw_trace);
+                        break;
+                    case STACK_TRACE:
+                        new (&m_stacktrace) cpptrace::stacktrace(other.m_stacktrace);
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+        return *this;
+    }
+
+    Exception& operator=(Exception&& other) {
+        if (&other != this) {
+            m_message = std::move(other.m_message);
+            m_skip = other.m_skip;
+            m_what = std::move(other.m_what);
+            m_trace_type = other.m_trace_type;
+            if !consteval {
+                switch (m_trace_type) {
+                    case RAW_TRACE:
+                        new (&m_raw_trace) cpptrace::raw_trace(std::move(other.m_raw_trace));
+                        break;
+                    case STACK_TRACE:
+                        new (&m_stacktrace) cpptrace::stacktrace(std::move(other.m_stacktrace));
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+        return *this;
+    }
+
+    ~Exception() noexcept {
+        if !consteval {
+            switch (m_trace_type) {
+                case RAW_TRACE:
+                    m_raw_trace.~raw_trace();
+                    break;
+                case STACK_TRACE:
+                    m_stacktrace.~stacktrace();
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+    /* Skip the `n` most recent frames in the stack trace.  Note that this works by
+    incrementing an internal counter, so no extra traces are resolved at runtime, and
+    it is not guaranteed that the first skipped frame is the current one, unless all
+    earlier frames have been already been skipped in a similar fashion.  Forwards the
+    exception itself for simplified chaining (e.g. `throw exc.skip(2)`). */
+    template <typename Self>
+    constexpr decltype(auto) skip(this Self&& self, size_t n = 0) noexcept {
+        if !consteval {
+            ++n;  // always skip this method
+            if (self.m_trace_type == STACK_TRACE) {
+                if (n >= self.m_stacktrace.frames.size()) {
+                    self.m_stacktrace.frames.clear();
+                } else {
+                    self.m_stacktrace.frames.erase(
+                        self.m_stacktrace.frames.begin(),
+                        self.m_stacktrace.frames.begin() + n
+                    );
+                }
+            }
+            self.m_skip += n;
+        }
         return std::forward<Self>(self);
     }
 
-    /* Get the current skip depth of the exception traceback. */
-    size_t skip_count() const noexcept {
-        return m_skip;
+    /* Discard any frames that are more recent than the frame in which this method was
+    invoked, or an earlier frame if an offset is supplied.  Forwards the exception
+    itself for simplified chaining (e.g. `throw exc.trim_before()`), and also resets
+    the `skip()` counter to start counting from the current frame. */
+    template <typename Self>
+    constexpr decltype(auto) trim_before(this Self&& self, size_t offset = 0) noexcept {
+        if !consteval {
+            ++offset;  // always skip this method
+            cpptrace::raw_trace curr = cpptrace::generate_raw_trace();
+            if (offset > curr.frames.size()) {
+                return std::forward<Self>(self);  // no frames to cut
+            }
+            cpptrace::frame_ptr pivot = curr.frames[curr.frames.size() - offset];
+            switch (self.m_trace_type) {
+                case RAW_TRACE:
+                    for (size_t i = self.m_raw_trace.frames.size(); i-- > self.m_skip;) {
+                        if (self.m_raw_trace.frames[i] == pivot) {
+                            self.m_raw_trace.frames.erase(
+                                self.m_raw_trace.frames.begin(),
+                                self.m_raw_trace.frames.begin() + i
+                            );
+                            self.m_skip = 0;
+                            return std::forward<Self>(self);
+                        }
+                    }
+                    break;
+                case STACK_TRACE:
+                    for (size_t i = self.m_stacktrace.frames.size(); i-- > self.m_skip;) {
+                        if (self.m_stacktrace.frames[i].raw_address == pivot) {
+                            self.m_stacktrace.frames.erase(
+                                self.m_stacktrace.frames.begin(),
+                                self.m_stacktrace.frames.begin() + i
+                            );
+                            self.m_skip = 0;
+                            return std::forward<Self>(self);
+                        }
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+        return std::forward<Self>(self);
+    }
+
+    /* Discard any frames that are less recent than the frame in which this method was
+    invoked, or a later frame if an offset is supplied.  Forwards the exception
+    itself for simplified chaining (e.g. `throw exc.trim_after()`) */
+    template <typename Self>
+    constexpr decltype(auto) trim_after(this Self&& self, size_t offset = 0) noexcept {
+        if !consteval {
+            ++offset;  // always skip this method
+            cpptrace::raw_trace curr = cpptrace::generate_raw_trace();
+            if (offset > curr.frames.size()) {
+                return std::forward<Self>(self);  // no frames to cut
+            }
+            cpptrace::frame_ptr pivot = curr.frames[offset];
+            switch (self.m_trace_type) {
+                case RAW_TRACE:
+                    for (size_t i = self.m_skip; i < self.m_raw_trace.frames.size(); ++i) {
+                        if (self.m_raw_trace.frames[i] == pivot) {
+                            self.m_raw_trace.frames.resize(i + 1);
+                            return std::forward<Self>(self);
+                        }
+                    }
+                    break;
+                case STACK_TRACE:
+                    for (size_t i = self.m_skip; i < self.m_stacktrace.frames.size(); ++i) {
+                        if (self.m_stacktrace.frames[i].raw_address == pivot) {
+                            self.m_stacktrace.frames.resize(i + 1);
+                            return std::forward<Self>(self);
+                        }
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+        return std::forward<Self>(self);
     }
 
     /* The raw text of the exception message, sans exception type and traceback. */
-    const char* message() const noexcept {
+    constexpr const char* message() const noexcept {
         return m_message.data();
     }
 
-    /* A resolved trace to the source location where the error occurred.  The trace is
-    lazily loaded directly from the program counter when first accessed (typically only
-    when an unhandled exception is displayed via the `what()` method). */
-    const cpptrace::stacktrace& trace() const noexcept {
-        if (cpptrace::raw_trace* trace = std::get_if<cpptrace::raw_trace>(&m_trace)) {
-            m_trace.template emplace<cpptrace::stacktrace>(trace->resolve());
+    /* A resolved trace to the source location where the error occurred, with internal
+    C++/Python frames removed.  The trace is lazily loaded directly from the program
+    counter when first accessed (typically only when an unhandled exception is
+    displayed via the `what()` method).  This may return a null pointer if the
+    exception has no traceback to report, which only occurs when an exception is thrown
+    in a constexpr context (C++26 and later). */
+    constexpr const cpptrace::stacktrace* trace() const noexcept {
+        if !consteval {
+            if (m_trace_type == STACK_TRACE) {
+                return &m_stacktrace;
+            } else if (m_trace_type == RAW_TRACE) {
+                cpptrace::stacktrace trace = m_raw_trace.resolve();
+                cpptrace::stacktrace filtered;
+                if (m_skip < trace.frames.size()) {
+                    filtered.frames.reserve(trace.frames.size() - m_skip);
+                }
+                for (size_t i = m_skip; i < trace.frames.size(); ++i) {
+                    cpptrace::stacktrace_frame& frame = trace.frames[i];
+                    if constexpr (!DEBUG) {
+                        if (frame.symbol.starts_with("__")) {
+                            continue;  // filter out C++ internals in release mode
+                        }
+                    }
+                    filtered.frames.emplace_back(std::move(frame));
+                }
+                m_raw_trace.~raw_trace();
+                new (&m_stacktrace) cpptrace::stacktrace(std::move(filtered));
+                m_trace_type = STACK_TRACE;
+                return &m_stacktrace;
+            }
         }
-        return std::get<cpptrace::stacktrace>(m_trace);
+        return nullptr;
     }
 
     /* A type index for this exception, which can be searched in the global to_python()
@@ -122,7 +372,7 @@ public:
 
     /* The plaintext name of the exception type, displayed immediately before the
     error message. */
-    virtual const char* name() const noexcept {
+    constexpr virtual const char* name() const noexcept {
         return "Exception";
     }
 
@@ -131,26 +381,22 @@ public:
 
     /* The full exception diagnostic, including a coherent, Python-style traceback and
     error text. */
-    virtual const char* what() const noexcept override {
+    constexpr virtual const char* what() const noexcept override {
         if (m_what.empty()) {
-            m_what = "Traceback (most recent call last):\n";
-            const cpptrace::stacktrace& trace = this->trace();
-
-            for (size_t i = trace.frames.size(); i-- > m_skip;) {
-                const cpptrace::stacktrace_frame& frame = trace.frames[i];
-                if (internal_frame(frame)) {
-                    continue;
+            if (const cpptrace::stacktrace* trace = this->trace()) {
+                m_what = "Traceback (most recent call last):\n";
+                for (const cpptrace::stacktrace_frame& frame : trace->frames) {
+                    m_what += "    File \"" + frame.filename + "\", line ";
+                    if (frame.line.has_value()) {
+                        m_what += std::to_string(frame.line.value()) + ", in ";
+                    } else {
+                        m_what += "<unknown>, in ";
+                    }
+                    if (frame.is_inline) {
+                        m_what += "[inline] ";
+                    }
+                    m_what += frame.symbol + "\n";
                 }
-                m_what += "    File \"" + frame.filename + "\", line ";
-                if (frame.line.has_value()) {
-                    m_what += std::to_string(frame.line.value()) + ", in ";
-                } else {
-                    m_what += "<unknown>, in ";
-                }
-                if (frame.is_inline) {
-                    m_what += "[inline] ";
-                }
-                m_what += frame.symbol + "\n";
             }
             m_what += name();
             m_what += ": ";
@@ -159,7 +405,7 @@ public:
         return m_what.data();
     }
 
-    /* Clear the exception's what() cache, forcing them to be recomputed the next time
+    /* Clear the exception's what() cache, forcing it to be recomputed the next time
     it is requested. */
     void flush() noexcept {
         m_what.clear();
@@ -173,47 +419,81 @@ public:
     /// -> Actually the bertrand::Code::operator() filtering only needs to be done
     /// if I'm catching a C++ exception from Python?
 
-    /* Throw the exception as a corresponding Python error, pushing it onto the
-    active interpreter.  If no callback could be found for this exception (for instance
-    if Python isn't loaded), then this will throw a `std::domain_error` in C++
-    instead. */
-    void to_python() const {
-        auto it = impl::exception_to_python.find(type());
-        if (it == impl::exception_to_python.end()) {
-            throw std::domain_error(
-                "no to_python() handler for exception of type '" +
-                std::string(name()) + "'"
-            );
+    /* Throw the most recent C++ exception as a corresponding Python error, pushing it
+    onto the active interpreter.  If there is no unhandled exception for this thread or
+    no callback could be found (for instance if Python isn't loaded), then this will
+    terminate the program instead. */
+    static void to_python() noexcept {
+        try {
+            throw;
+
+        } catch (const Exception& exc) {
+            auto it = impl::exception_to_python.find(exc.type());
+            if (it == impl::exception_to_python.end()) {
+                std::cerr <<
+                    "no to_python() handler for exception of type '" +
+                    std::string(exc.name()) + "'";
+                std::exit(1);
+            }
+            it->second(exc.trim_after(1));  // terminate at caller
+
+        } catch (const std::exception& e) {
+            Exception exc(e.what());
+            auto it = impl::exception_to_python.find(exc.type());
+            if (it == impl::exception_to_python.end()) {
+                std::cerr <<
+                    "no to_python() handler for exception of type '" << exc.name() << "'";
+                std::exit(1);
+            }
+            it->second(exc.trim_after(1));  // terminate at caller
+
+        } catch (...) {
+            Exception exc("unknown C++ exception");
+            auto it = impl::exception_to_python.find(exc.type());
+            if (it == impl::exception_to_python.end()) {
+                std::cerr <<
+                    "no to_python() handler for exception of type '" << exc.name() << "'";
+                std::exit(1);
+            }
+            it->second(exc.trim_after(1));  // terminate at caller
         }
-        it->second(*this);
     }
 
     /* Catch an exception from Python, re-throwing it as an equivalent C++ error. */
-    [[noreturn, clang::noinline]] static void from_python();
+    [[noreturn]] static void from_python();
 
 };
 
 
 #define BERTRAND_EXCEPTION(CLS, BASE)                                                   \
     struct CLS : BASE {                                                                 \
+    protected:                                                                          \
+                                                                                        \
+        template <typename Msg> requires (std::constructible_from<std::string, Msg>)    \
+        explicit constexpr CLS(Msg&& msg, get_trace trace) : BASE(                      \
+            std::forward<Msg>(msg),                                                     \
+            trace++                                                                     \
+        ) {}                                                                            \
+                                                                                        \
+    public:                                                                             \
         virtual std::type_index type() const noexcept override { return typeid(CLS); }  \
-        virtual const char* name() const noexcept override { return #CLS; }             \
+        constexpr virtual const char* name() const noexcept override { return #CLS; }   \
                                                                                         \
         template <typename Msg = const char*>                                           \
             requires (std::constructible_from<std::string, Msg>)                        \
-        [[gnu::noinline]] CLS(Msg&& msg = "") : BASE(                                   \
+        explicit constexpr CLS(Msg&& msg = "") : BASE(                                  \
             std::forward<Msg>(msg),                                                     \
-            cpptrace::generate_raw_trace(1)                                             \
+            get_trace{}                                                                 \
         ) {}                                                                            \
                                                                                         \
         template <typename Msg> requires (std::constructible_from<std::string, Msg>)    \
-        CLS(Msg&& msg, cpptrace::raw_trace&& trace) : BASE(                             \
+        explicit CLS(Msg&& msg, cpptrace::raw_trace&& trace) : BASE(                    \
             std::forward<Msg>(msg),                                                     \
             std::move(trace)                                                            \
         ) {}                                                                            \
                                                                                         \
         template <typename Msg> requires (std::constructible_from<std::string, Msg>)    \
-        CLS(Msg&& msg, cpptrace::stacktrace&& trace) : BASE(                            \
+        explicit CLS(Msg&& msg, cpptrace::stacktrace&& trace) : BASE(                   \
             std::forward<Msg>(msg),                                                     \
             std::move(trace)                                                            \
         ) {}                                                                            \

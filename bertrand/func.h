@@ -6,15 +6,12 @@
 
 #include "bertrand/common.h"
 #include "bertrand/bitset.h"
+#include "bertrand/except.h"
 #include "bertrand/static_str.h"
 #include "bertrand/static_map.h"
 
 
 namespace bertrand {
-
-struct TypeError;
-struct IndexError;
-struct KeyError;
 
 
 template <typename T>
@@ -2026,7 +2023,7 @@ namespace impl {
                     message += "', '" + repr(*begin);
                 }
                 message += "']";
-                throw meta::if_defined<TypeError, std::invalid_argument>(message);
+                throw TypeError(message);
             }
         }
     };
@@ -2088,7 +2085,7 @@ namespace impl {
                         std::forward<decltype(value)>(value)
                     );
                     if (!inserted) {
-                        throw meta::if_defined<TypeError, std::invalid_argument>(
+                        throw TypeError(
                             "duplicate keyword argument: '" + it->first + "'"
                         );
                     }
@@ -2117,7 +2114,7 @@ namespace impl {
                     message += "', '" + it->first;
                 }
                 message += "']";
-                throw meta::if_defined<TypeError, std::invalid_argument>(message);
+                throw TypeError(message);
             }
         }
     };
@@ -2515,14 +2512,12 @@ namespace impl {
         }
 
         /* Look up the callback object associated with the argument at index I if it is
-        within range.  Throws a `std::out_of_range` error otherwise. */
+        within range.  Throws an `IndexError` otherwise. */
         [[nodiscard]] static constexpr const Param& get(size_t i) {
             if (i < size()) {
                 return positional_table[i];
             } else {
-                throw meta::if_defined<IndexError, std::out_of_range>(
-                    "positional index out of range"
-                );
+                throw IndexError(std::to_string(i));
             }
         }
 
@@ -2534,15 +2529,13 @@ namespace impl {
         }
 
         /* Look up the callback object associated with the named argument if it is present
-        within the signature.  Throws a `std::out_of_range` error otherwise. */
+        within the signature.  Throws a `KeyError` otherwise. */
         template <typename T> requires (NameTable::template hashable<T>)
         [[nodiscard]] static constexpr const Param& get(T&& key) {
             if (const Param* result = name_table[std::forward<T>(key)]) {
                 return *result;
             } else {
-                throw meta::if_defined<KeyError, std::out_of_range>(
-                    "keyword not recognized"
-                );
+                throw KeyError(key);
             }
         }
 
@@ -3271,7 +3264,7 @@ namespace impl {
                             std::forward<A>(args)...
                         );
                         if (auto node = pack.extract(name)) {
-                            throw meta::if_defined<TypeError, std::invalid_argument>(
+                            throw TypeError(
                                 "conflicting value for parameter '" + name +
                                 "' at index " + static_str<>::from_int<I>
                             );
@@ -3581,7 +3574,7 @@ namespace impl {
                                     auto node = pack.extract(it++);
                                     auto rc = out.insert(node);
                                     if (!rc.inserted) {
-                                        throw meta::if_defined<TypeError, std::invalid_argument>(
+                                        throw TypeError(
                                             "duplicate value for parameter '" +
                                             node.key() + "'"
                                         );
@@ -3804,12 +3797,12 @@ namespace impl {
                                 std::forward<A>(args)...
                             );
                         } else if constexpr (name.empty()) {
-                            throw meta::if_defined<TypeError, std::invalid_argument>(
+                            throw TypeError(
                                 "no match for positional-only parameter at index " +
                                 static_str<>::from_int<I>
                             );
                         } else {
-                            throw meta::if_defined<TypeError, std::invalid_argument>(
+                            throw TypeError(
                                 "no match for positional-only parameter '" + name +
                                 "' at index " + static_str<>::from_int<I>
                             );
@@ -3895,7 +3888,7 @@ namespace impl {
                                         std::forward<A>(args)...
                                     );
                                 } else {
-                                    throw meta::if_defined<TypeError, std::invalid_argument>(
+                                    throw TypeError(
                                         "no match for parameter '" + name +
                                         "' at index " + static_str<>::from_int<I>
                                     );
@@ -3912,7 +3905,7 @@ namespace impl {
                                 std::forward<A>(args)...
                             );
                         } else {
-                            throw meta::if_defined<TypeError, std::invalid_argument>(
+                            throw TypeError(
                                 "no match for parameter '" + name +
                                 "' at index " + static_str<>::from_int<I>
                             );
@@ -3966,7 +3959,7 @@ namespace impl {
                                         std::forward<A>(args)...
                                     );
                                 } else {
-                                    throw meta::if_defined<TypeError, std::invalid_argument>(
+                                    throw TypeError(
                                         "no match for parameter '" + name +
                                         "' at index " + static_str<>::from_int<I>
                                     );
@@ -3983,7 +3976,7 @@ namespace impl {
                                 std::forward<A>(args)...
                             );
                         } else {
-                            throw meta::if_defined<TypeError, std::invalid_argument>(
+                            throw TypeError(
                                 "no match for keyword-only parameter '" + name +
                                 "' at index " + static_str<>::from_int<I>
                             );
