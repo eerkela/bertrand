@@ -34,7 +34,7 @@ template <>
 struct Type<Object> : Object, interface<Type<Object>> {
     struct __python__ : def<__python__, Type>, PyTypeObject {   
         static Type __import__() {
-            return reinterpret_borrow<Type>(
+            return borrow<Type>(
                 reinterpret_cast<PyObject*>(&PyBaseObject_Type)
             );
         }
@@ -87,7 +87,7 @@ calling `Py_TYPE(cls)` on the inner Type until we reach a concrete implementatio
 template <typename T>
 struct __init__<Type<Type<T>>> : returns<Type<Type<T>>> {
     static auto operator()() {
-        return reinterpret_borrow<Type<Type<T>>>(reinterpret_cast<PyObject*>(
+        return borrow<Type<Type<T>>>(reinterpret_cast<PyObject*>(
             Py_TYPE(ptr(Type<T>()))
         ));
     }
@@ -192,10 +192,10 @@ template <typename From, typename To> requires (
 )
 struct __cast__<Type<From>, Type<To>> : returns<Type<To>> {
     static auto operator()(const Type<From>& from) {
-        return reinterpret_borrow<Type<To>>(ptr(from));
+        return borrow<Type<To>>(ptr(from));
     }
     static auto operator()(Type<From>&& from) {
-        return reinterpret_steal<Type<To>>(release(from));
+        return steal<Type<To>>(release(from));
     }
 };
 
@@ -215,7 +215,7 @@ template <typename From, typename To> requires (
 struct __cast__<Type<From>, Type<To>> : returns<Type<To>> {
     static auto operator()(const Type<From>& from) {
         if (issubclass<typename __object__<To>::type>(from)) {
-            return reinterpret_borrow<Type<To>>(ptr(from));
+            return borrow<Type<To>>(ptr(from));
         } else {
             throw TypeError(
                 "cannot convert Python type from '" + repr(from) + "' to '" +
@@ -225,7 +225,7 @@ struct __cast__<Type<From>, Type<To>> : returns<Type<To>> {
     }
     static auto operator()(Type<From>&& from) {
         if (issubclass<typename __object__<To>::type>(from)) {
-            return reinterpret_steal<Type<To>>(release(from));
+            return steal<Type<To>>(release(from));
         } else {
             throw TypeError(
                 "cannot convert Python type from '" + repr(from) + "' to '" +
@@ -5209,7 +5209,7 @@ struct __getitem__<BertrandMeta, Type<T>...>                : returns<BertrandMe
         if (value == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<BertrandMeta>(value);
+        return steal<BertrandMeta>(value);
     }
 };
 
@@ -5233,7 +5233,7 @@ struct __getitem__<Type<T>, Type<U>...>                     : returns<BertrandMe
         if (value == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<BertrandMeta>(value);
+        return steal<BertrandMeta>(value);
     }
 };
 
@@ -5249,7 +5249,7 @@ template <impl::has_export To>
 struct __cast__<BertrandMeta, Type<To>>                     : returns<Type<To>> {
     static auto operator()(const BertrandMeta& from) {
         if (issubclass<typename __object__<To>::type>(from)) {
-            return reinterpret_borrow<Type<To>>(ptr(from));
+            return borrow<Type<To>>(ptr(from));
         } else {
             throw TypeError(
                 "cannot convert Python type from '" + repr(from) + "' to '" +
@@ -5259,7 +5259,7 @@ struct __cast__<BertrandMeta, Type<To>>                     : returns<Type<To>> 
     }
     static auto operator()(BertrandMeta&& from) {
         if (issubclass<typename __object__<To>::type>(from)) {
-            return reinterpret_steal<Type<To>>(release(from));
+            return steal<Type<To>>(release(from));
         } else {
             throw TypeError(
                 "cannot convert Python type from '" + repr(from) + "' to '" +
@@ -5315,26 +5315,26 @@ public:
 
 
 inline Type<Object> Object::__python__::__import__() {
-    return reinterpret_borrow<Type<Object>>(reinterpret_cast<PyObject*>(
+    return borrow<Type<Object>>(reinterpret_cast<PyObject*>(
         &PyBaseObject_Type
     ));
 }
 
 
 inline Type<Code> Code::__python__::__import__() {
-    return reinterpret_borrow<Type<Code>>(reinterpret_cast<PyObject*>(&PyCode_Type));
+    return borrow<Type<Code>>(reinterpret_cast<PyObject*>(&PyCode_Type));
 }
 
 
 inline Type<Frame> Frame::__python__::__import__() {
-    return reinterpret_borrow<Type<Frame>>(
+    return borrow<Type<Frame>>(
         reinterpret_cast<PyObject*>(&PyFrame_Type)
     );
 }
 
 
 inline Type<Traceback> Traceback::__python__::__import__() {
-    return reinterpret_borrow<Type<Traceback>>(
+    return borrow<Type<Traceback>>(
         reinterpret_cast<PyObject*>(&PyTraceBack_Type)
     );
 }
@@ -5342,7 +5342,7 @@ inline Type<Traceback> Traceback::__python__::__import__() {
 
 #define IMPORT_EXCEPTION(CLS, PYTYPE)                                                   \
     inline Type<CLS> CLS::__python__::__import__() {                                    \
-        return reinterpret_borrow<Type<CLS>>(PYTYPE);                                   \
+        return borrow<Type<CLS>>(PYTYPE);                                   \
     }
 
 
@@ -5499,7 +5499,7 @@ inline Type<BertrandMeta> BertrandMeta::__python__::__export__(Module<ModName> m
     if (cls == nullptr) {
         Exception::from_python();
     }
-    return reinterpret_steal<Type<BertrandMeta>>(cls);
+    return steal<Type<BertrandMeta>>(cls);
 }
 
 
@@ -5555,7 +5555,7 @@ types.)doc";
         if (cls->templates == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<BertrandMeta>(reinterpret_cast<PyObject*>(cls));
+        return steal<BertrandMeta>(reinterpret_cast<PyObject*>(cls));
     } catch (...) {
         Py_DECREF(cls);
         throw;
@@ -7906,7 +7906,7 @@ private:
                     "Setter must accept a single argument."
                 );
                 reinterpret_cast<Closure*>(closure)->setter(
-                    reinterpret_borrow<Object>(value)
+                    borrow<Object>(value)
                 );
             }
         };
@@ -7970,7 +7970,7 @@ private:
         };
 
         try {
-            return get(closure, reinterpret_borrow<Type<Wrapper>>(cls));
+            return get(closure, borrow<Type<Wrapper>>(cls));
         } catch (...) {
             Exception::to_python();
             return nullptr;
@@ -8005,7 +8005,7 @@ private:
                 );
                 reinterpret_cast<Closure*>(closure)->setter(
                     cls,
-                    reinterpret_borrow<Object>(value)
+                    borrow<Object>(value)
                 );
             }
         };
@@ -8028,9 +8028,9 @@ private:
 
         try {
             if (value) {
-                set(closure, reinterpret_borrow<Type<Wrapper>>(cls), value);
+                set(closure, borrow<Type<Wrapper>>(cls), value);
             } else {
-                del(closure, reinterpret_borrow<Type<Wrapper>>(cls));
+                del(closure, borrow<Type<Wrapper>>(cls));
             }
             return 0;
         } catch (...) {
@@ -8069,7 +8069,7 @@ private:
         };
 
         try {
-            return get(closure, reinterpret_borrow<Wrapper>(self));
+            return get(closure, borrow<Wrapper>(self));
         } catch (...) {
             Exception::to_python();
             return nullptr;
@@ -8104,7 +8104,7 @@ private:
                 );
                 reinterpret_cast<Closure*>(closure)->setter(
                     self,
-                    reinterpret_borrow<Object>(value)
+                    borrow<Object>(value)
                 );
             }
         };
@@ -8127,9 +8127,9 @@ private:
 
         try {
             if (value) {
-                set(closure, reinterpret_borrow<Wrapper>(self), value);
+                set(closure, borrow<Wrapper>(self), value);
             } else {
-                del(closure, reinterpret_borrow<Wrapper>(self));
+                del(closure, borrow<Wrapper>(self));
             }
             return 0;
         } catch (...) {
@@ -8283,19 +8283,19 @@ public:
                 auto member = reinterpret_cast<T CRTP::*>(closure);
                 if constexpr (std::same_as<CRTP, Cls>) {
                     reinterpret_cast<CRTP*>(self)->*member = static_cast<T>(
-                        reinterpret_borrow<Object>(new_val)
+                        borrow<Object>(new_val)
                     );
                 } else {
                     std::visit(
                         Visitor{
                             [member, new_val](Cls& obj) {
                                 obj.*member = static_cast<T>(
-                                    reinterpret_borrow<Object>(new_val)
+                                    borrow<Object>(new_val)
                                 );
                             },
                             [member, new_val](Cls* obj) {
                                 obj->*member = static_cast<T>(
-                                    reinterpret_borrow<Object>(new_val)
+                                    borrow<Object>(new_val)
                                 );
                             },
                             [new_val](const Cls* obj) {
@@ -8399,7 +8399,7 @@ public:
             }
             try {
                 *reinterpret_cast<T*>(value) = static_cast<T>(
-                    reinterpret_borrow<Object>(new_val)
+                    borrow<Object>(new_val)
                 );
                 return 0;
             } catch (...) {
@@ -8914,7 +8914,7 @@ public:
             .callbacks = {
                 [](Type<Wrapper>& type) {
                     // get the module under which the parent type was exposed
-                    Module<ModName> mod = reinterpret_steal<Module<ModName>>(
+                    Module<ModName> mod = steal<Module<ModName>>(
                         PyType_GetModule(ptr(type))
                     );
                     if (ptr(mod) == nullptr) {
@@ -8957,7 +8957,7 @@ public:
             .callbacks = {
                 [doc = std::move(doc)](Type<Wrapper>& type) {
                     // get the module under which the parent type was exposed
-                    Module<ModName> mod = reinterpret_steal<Module<ModName>>(
+                    Module<ModName> mod = steal<Module<ModName>>(
                         PyType_GetModule(ptr(type))
                     );
                     if (ptr(mod) == nullptr) {
@@ -9005,7 +9005,7 @@ public:
         }
         it->second.callbacks.push_back([](Type<Wrapper>& type) {
             // get the template interface with the same name
-            BertrandMeta existing = reinterpret_steal<BertrandMeta>(
+            BertrandMeta existing = steal<BertrandMeta>(
                 PyObject_GetAttr(
                     ptr(type),
                     impl::TemplateString<Name>::ptr
@@ -9016,7 +9016,7 @@ public:
             }
 
             // call the type's __export__() method to instantiate the type
-            Module<ModName> mod = reinterpret_steal<Module<ModName>>(
+            Module<ModName> mod = steal<Module<ModName>>(
                 PyType_GetModule(ptr(type))
             );
             if (ptr(mod) == nullptr) {
@@ -9144,7 +9144,7 @@ public:
                 Exception::from_python();
             }
         }
-        Type<Wrapper> cls = reinterpret_steal<Type<Wrapper>>(
+        Type<Wrapper> cls = steal<Type<Wrapper>>(
             PyType_FromMetaclass(
                 reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>())),
                 ptr(module),

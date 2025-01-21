@@ -39,7 +39,7 @@ namespace impl {
         if (cls->tp_flags & Py_TPFLAGS_HAVE_GC) {
             PyObject_GC_Track(self);
         }
-        return reinterpret_steal<Wrapper>(self);
+        return steal<Wrapper>(self);
     }
 
     /// TODO: it may be possible to avoid any extra allocations while still maintaining
@@ -64,7 +64,7 @@ namespace impl {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Object>(result);
+        return steal<Object>(result);
     }
 
 }
@@ -222,9 +222,9 @@ template <meta::inherits<Object> From, std::derived_from<Object> To>
 struct __cast__<From, To>                                   : returns<To> {
     static To operator()(From from) {
         if constexpr (std::is_lvalue_reference_v<From>) {
-            return reinterpret_borrow<To>(ptr(from));
+            return borrow<To>(ptr(from));
         } else {
-            return reinterpret_steal<To>(release(from));
+            return steal<To>(release(from));
         }
     }
 };
@@ -261,11 +261,11 @@ struct __cast__<From, To>                                   : returns<To> {
                 );
             }
             if constexpr (std::is_lvalue_reference_v<From>) {
-                To result = reinterpret_borrow<To>(ptr(from));
+                To result = borrow<To>(ptr(from));
                 result.m_index = index;
                 return result;
             } else {
-                To result = reinterpret_steal<To>(release(from));
+                To result = steal<To>(release(from));
                 result.m_index = index;
                 return result;
             }
@@ -273,9 +273,9 @@ struct __cast__<From, To>                                   : returns<To> {
         } else {
             if (isinstance<To>(from)) {
                 if constexpr (std::is_lvalue_reference_v<From>) {
-                    return reinterpret_borrow<To>(ptr(from));
+                    return borrow<To>(ptr(from));
                 } else {
-                    return reinterpret_steal<To>(release(from));
+                    return steal<To>(release(from));
                 }
             } else {
                 throw TypeError(
@@ -338,7 +338,7 @@ template <static_str Name, meta::python Self>
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __getattr__<Self, Name>::type>(result);
+        return steal<typename __getattr__<Self, Name>::type>(result);
     }
 }
 
@@ -389,7 +389,7 @@ template <static_str Name, meta::python Self>
             PyErr_Clear();
             return default_value;
         }
-        return reinterpret_steal<typename __getattr__<Self, Name>::type>(result);
+        return steal<typename __getattr__<Self, Name>::type>(result);
     }
 }
 
@@ -707,7 +707,7 @@ template <typename Self>
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Return>(result);
+        return steal<Return>(result);
     }
 }
 
@@ -752,7 +752,7 @@ decltype(auto) operator~(Self&& self) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __invert__<Self>::type>(result);
+        return steal<typename __invert__<Self>::type>(result);
     }
 }
 
@@ -788,7 +788,7 @@ decltype(auto) operator+(Self&& self) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __pos__<Self>::type>(result);
+        return steal<typename __pos__<Self>::type>(result);
     }
 }
 
@@ -824,7 +824,7 @@ decltype(auto) operator-(Self&& self) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __neg__<Self>::type>(result);
+        return steal<typename __neg__<Self>::type>(result);
     }
 }
 
@@ -868,7 +868,7 @@ decltype(auto) operator++(Self&& self) {
         } else if (result == ptr(self)) {
             Py_DECREF(result);
         } else {
-            self = reinterpret_steal<Return>(result);
+            self = steal<Return>(result);
         }
         return std::forward<Self>(self);
     }
@@ -914,7 +914,7 @@ decltype(auto) operator--(Self&& self) {
         } else if (result == ptr(self)) {
             Py_DECREF(result);
         } else {
-            self = reinterpret_steal<Return>(result);
+            self = steal<Return>(result);
         }
         return std::forward<Self>(self);
     }
@@ -955,7 +955,7 @@ decltype(auto) operator<(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __lt__<L, R>::type>(result);
+        return steal<typename __lt__<L, R>::type>(result);
     }
 }
 
@@ -994,7 +994,7 @@ decltype(auto) operator<=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __le__<L, R>::type>(result);
+        return steal<typename __le__<L, R>::type>(result);
     }
 }
 
@@ -1033,7 +1033,7 @@ decltype(auto) operator==(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __eq__<L, R>::type>(result);
+        return steal<typename __eq__<L, R>::type>(result);
     }
 }
 
@@ -1072,7 +1072,7 @@ decltype(auto) operator!=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __ne__<L, R>::type>(result);
+        return steal<typename __ne__<L, R>::type>(result);
     }
 }
 
@@ -1111,7 +1111,7 @@ decltype(auto) operator>=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __ge__<L, R>::type>(result);
+        return steal<typename __ge__<L, R>::type>(result);
     }
 }
 
@@ -1150,7 +1150,7 @@ decltype(auto) operator>(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __gt__<L, R>::type>(result);
+        return steal<typename __gt__<L, R>::type>(result);
     }
 }
 
@@ -1188,7 +1188,7 @@ decltype(auto) operator+(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __add__<L, R>::type>(result);
+        return steal<typename __add__<L, R>::type>(result);
     }
 }
 
@@ -1228,7 +1228,7 @@ decltype(auto) operator+=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        Return out = reinterpret_steal<Return>(result);
+        Return out = steal<Return>(result);
         lhs = out;
         return out;
     }
@@ -1268,7 +1268,7 @@ decltype(auto) operator-(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __sub__<L, R>::type>(result);
+        return steal<typename __sub__<L, R>::type>(result);
     }
 }
 
@@ -1308,7 +1308,7 @@ decltype(auto) operator-=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        Return out = reinterpret_steal<Return>(result);
+        Return out = steal<Return>(result);
         lhs = out;
         return out;
     }
@@ -1348,7 +1348,7 @@ decltype(auto) operator*(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __mul__<L, R>::type>(result);
+        return steal<typename __mul__<L, R>::type>(result);
     }
 }
 
@@ -1388,7 +1388,7 @@ decltype(auto) operator*=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        Return out = reinterpret_steal<Return>(result);
+        Return out = steal<Return>(result);
         lhs = out;
         return out;
     }
@@ -1450,7 +1450,7 @@ decltype(auto) pow(Base&& base, Exp&& exp) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __pow__<Base, Exp>::type>(result);
+        return steal<typename __pow__<Base, Exp>::type>(result);
     }
 }
 
@@ -1519,7 +1519,7 @@ decltype(auto) pow(Base&& base, Exp&& exp, Mod&& mod) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __pow__<Base, Exp, Mod>::type>(result);
+        return steal<typename __pow__<Base, Exp, Mod>::type>(result);
     }
 }
 
@@ -1574,7 +1574,7 @@ decltype(auto) operator/(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __truediv__<L, R>::type>(result);
+        return steal<typename __truediv__<L, R>::type>(result);
     }
 }
 
@@ -1614,7 +1614,7 @@ decltype(auto) operator/=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        Return out = reinterpret_steal<Return>(result);
+        Return out = steal<Return>(result);
         lhs = out;
         return out;
     }
@@ -1642,7 +1642,7 @@ decltype(auto) floordiv(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __floordiv__<L, R>::type>(result);
+        return steal<typename __floordiv__<L, R>::type>(result);
     }
 }
 
@@ -1670,7 +1670,7 @@ decltype(auto) ifloordiv(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Return>(result);
+        return steal<Return>(result);
     }
 }
 
@@ -1708,7 +1708,7 @@ decltype(auto) operator%(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __mod__<L, R>::type>(result);
+        return steal<typename __mod__<L, R>::type>(result);
     }
 }
 
@@ -1748,7 +1748,7 @@ decltype(auto) operator%=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        Return out = reinterpret_steal<Return>(result);
+        Return out = steal<Return>(result);
         lhs = out;
         return out;
     }
@@ -1788,7 +1788,7 @@ decltype(auto) operator<<(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __lshift__<L, R>::type>(result);
+        return steal<typename __lshift__<L, R>::type>(result);
     }
 }
 
@@ -1827,7 +1827,7 @@ decltype(auto) operator<<=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Return>(result);
+        return steal<Return>(result);
     }
 }
 
@@ -1865,7 +1865,7 @@ decltype(auto) operator>>(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __rshift__<L, R>::type>(result);
+        return steal<typename __rshift__<L, R>::type>(result);
     }
 }
 
@@ -1904,7 +1904,7 @@ decltype(auto) operator>>=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Return>(result);
+        return steal<Return>(result);
     }
 }
 
@@ -1942,7 +1942,7 @@ decltype(auto) operator&(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __and__<L, R>::type>(result);
+        return steal<typename __and__<L, R>::type>(result);
     }
 }
 
@@ -1982,7 +1982,7 @@ decltype(auto) operator&=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        Return out = reinterpret_steal<Return>(result);
+        Return out = steal<Return>(result);
         lhs = out;
         return out;
     }
@@ -2022,7 +2022,7 @@ decltype(auto) operator|(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __or__<L, R>::type>(result);
+        return steal<typename __or__<L, R>::type>(result);
     }
 }
 
@@ -2062,7 +2062,7 @@ decltype(auto) operator|=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        Return out = reinterpret_steal<Return>(result);
+        Return out = steal<Return>(result);
         lhs = out;
         return out;
     }
@@ -2102,7 +2102,7 @@ decltype(auto) operator^(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __xor__<L, R>::type>(result);
+        return steal<typename __xor__<L, R>::type>(result);
     }
 }
 
@@ -2142,7 +2142,7 @@ decltype(auto) operator^=(L&& lhs, R&& rhs) {
         if (result == nullptr) {
             Exception::from_python();
         }
-        Return out = reinterpret_steal<Return>(result);
+        Return out = steal<Return>(result);
         lhs = out;
         return out;
     }

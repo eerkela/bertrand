@@ -50,27 +50,26 @@ namespace impl {
 }
 
 
-/* Retrieve the raw pointer backing a Python object. */
-template <meta::python T>
-[[nodiscard]] PyObject* ptr(T&& obj) {
-    return std::forward<T>(obj).m_ptr;
-}
-
-
-/* Access an internal member of the underlying PyObject* pointer by casting it to its
-internal `__python__` representation.  The Bertrand object model and type safety
-guarantees should ensure that this is safe for general use, but it is possible to
-invoke undefined behavior if the underlying pointer is improperly initialized (by
-accessing an internal field of a moved-from object, or through improper use of
-`release()` or the `reinterpret()` family of functions). */
+/* Access a member of the underlying PyObject* pointer by casting it to its internal
+`__python__` representation.  The Bertrand object model and type safety guarantees
+should ensure that this is safe for general use, but it is possible to invoke undefined
+behavior if the underlying pointer is improperly initialized (by viewing a moved-from
+object, or by improper use of the `borrow()` and `steal()` functions). */
 template <meta::python Self>
-[[nodiscard]] auto reinterpret(Self&& self) {
+[[nodiscard]] auto view(Self&& self) {
     if constexpr (DEBUG) {
-        assert_(ptr(self) != nullptr, "Cannot reinterpret a null object.");
+        assert_(ptr(self) != nullptr, "Cannot view a null object.");
     }
     return reinterpret_cast<typename std::remove_cvref_t<Self>::__python__*>(
         ptr(std::forward<Self>(self))
     );
+}
+
+
+/* Retrieve the raw pointer backing a Python object. */
+template <meta::python T>
+[[nodiscard]] PyObject* ptr(T&& obj) {
+    return std::forward<T>(obj).m_ptr;
 }
 
 
@@ -85,13 +84,13 @@ template <meta::python T> requires (!meta::is_const<T>)
 
 
 /* Steal a reference to a raw Python object. */
-template <meta::python T> requires (!meta::is_qualified<T>)
-[[nodiscard]] T reinterpret_steal(PyObject* obj);
+template <meta::has_python T> requires (!meta::is_qualified<T>)
+[[nodiscard]] obj<T> steal(PyObject* obj);
 
 
 /* Borrow a reference to a raw Python object. */
-template <meta::python T> requires (!meta::is_qualified<T>)
-[[nodiscard]] T reinterpret_borrow(PyObject* obj);
+template <meta::has_python T> requires (!meta::is_qualified<T>)
+[[nodiscard]] obj<T> borrow(PyObject* obj);
 
 
 /* Convert an arbitrary value into a Python object if it is not one already.
@@ -200,10 +199,10 @@ protected:
     friend PyObject* ptr(T&&);
     template <meta::python T> requires (!meta::is_const<T>)
     friend PyObject* release(T&&);
-    template <meta::python T> requires (!meta::is_qualified<T>)
-    friend T reinterpret_borrow(PyObject*);
-    template <meta::python T> requires (!meta::is_qualified<T>)
-    friend T reinterpret_steal(PyObject*);
+    template <meta::has_python T> requires (!meta::is_qualified<T>)
+    friend obj<T> borrow(PyObject*);
+    template <meta::has_python T> requires (!meta::is_qualified<T>)
+    friend obj<T> steal(PyObject*);
     template <meta::python T> requires (meta::has_cpp<T>)
     friend auto& impl::unwrap(T& obj);
     template <meta::python T> requires (meta::has_cpp<T>)
@@ -583,10 +582,10 @@ public:
     /* Move constructor.  Steals a reference to a temporary object. */
     Object(Object&& other) noexcept : m_ptr(release(other)) {}
 
-    /* reinterpret_borrow() constructor.  Borrows a reference to a raw Python pointer. */
+    /* borrow() constructor.  Borrows a reference to a raw Python pointer. */
     Object(PyObject* p, borrowed_t) noexcept : m_ptr(Py_XNewRef(p)) {}
 
-    /* reinterpret_steal() constructor.  Steals a reference to a raw Python pointer. */
+    /* steal() constructor.  Steals a reference to a raw Python pointer. */
     Object(PyObject* p, stolen_t) noexcept : m_ptr(p) {}
 
     /* Initializer list constructor.  Implemented via the __initializer__ control
@@ -777,15 +776,15 @@ public:
 };
 
 
-template <meta::python T> requires (!meta::is_qualified<T>)
-[[nodiscard]] T reinterpret_borrow(PyObject* ptr) {
-    return T(ptr, Object::borrowed_t{});
+template <meta::has_python T> requires (!meta::is_qualified<T>)
+[[nodiscard]] obj<T> borrow(PyObject* ptr) {
+    return obj<T>(ptr, Object::borrowed_t{});
 }
 
 
-template <meta::python T> requires (!meta::is_qualified<T>)
-[[nodiscard]] T reinterpret_steal(PyObject* ptr) {
-    return T(ptr, Object::stolen_t{});
+template <meta::has_python T> requires (!meta::is_qualified<T>)
+[[nodiscard]] obj<T> steal(PyObject* ptr) {
+    return obj<T>(ptr, Object::stolen_t{});
 }
 
 
@@ -793,7 +792,7 @@ template <meta::python T> requires (!meta::is_qualified<T>)
 template <>
 struct __init__<Object>                                     : returns<Object> {
     static auto operator()() {
-        return reinterpret_steal<Object>(Py_NewRef(Py_None));
+        return borrow<Object>(Py_None);
     }
 };
 
@@ -809,7 +808,7 @@ cast type, and then reinterpreting as a dynamic object. */
 template <meta::cpp T> requires (meta::has_python<T>)
 struct __cast__<T, Object>                                  : returns<Object> {
     static auto operator()(T value) {
-        return reinterpret_steal<Object>(
+        return steal<Object>(
             release(meta::python_type<T>(std::forward<T>(value)))
         );
     }
@@ -1047,7 +1046,7 @@ struct NoneType : Object, interface<NoneType> {
 template <>
 struct __init__<NoneType>                                   : returns<NoneType> {
     static auto operator()() {
-        return reinterpret_borrow<NoneType>(Py_None);
+        return borrow<NoneType>(Py_None);
     }
 };
 
@@ -1161,7 +1160,7 @@ struct NotImplementedType : Object, interface<NotImplementedType> {
 template <>
 struct __init__<NotImplementedType>                         : returns<NotImplementedType> {
     static auto operator()() {
-        return reinterpret_borrow<NotImplementedType>(Py_NotImplemented);
+        return borrow<NotImplementedType>(Py_NotImplemented);
     }
 };
 
@@ -1237,7 +1236,7 @@ struct EllipsisType : Object, interface<EllipsisType> {
 template <>
 struct __init__<EllipsisType>                               : returns<EllipsisType> {
     static auto operator()() {
-        return reinterpret_borrow<EllipsisType>(Py_Ellipsis);
+        return borrow<EllipsisType>(Py_Ellipsis);
     }
 };
 

@@ -355,7 +355,7 @@ namespace impl {
                         }
                         try {
                             *reinterpret_cast<T*>(closure) = static_cast<T>(
-                                reinterpret_borrow<Object>(new_val)
+                                borrow<Object>(new_val)
                             );
                             return 0;
                         } catch (...) {
@@ -418,7 +418,7 @@ namespace impl {
                             CRTP* obj = reinterpret_cast<CRTP*>(self);
                             auto value = reinterpret_cast<T CRTP::*>(closure);
                             obj->*value = static_cast<T>(
-                                reinterpret_borrow<Object>(new_val)
+                                borrow<Object>(new_val)
                             );
                             return 0;
                         } catch (...) {
@@ -539,7 +539,7 @@ namespace impl {
                     }
                     it->second.callbacks.push_back([](Module<ModName>& mod) {
                         // get the template interface with the same name
-                        BertrandMeta existing = reinterpret_steal<BertrandMeta>(
+                        BertrandMeta existing = steal<BertrandMeta>(
                             PyObject_GetAttr(
                                 ptr(mod),
                                 impl::TemplateString<Name>::ptr
@@ -640,7 +640,7 @@ namespace impl {
                                     mod,
                                     reinterpret_cast<PyTypeObject*>(ptr(cls)),
                                     [](PyObject* value) {
-                                        throw reinterpret_steal<Cls>(value);
+                                        throw steal<Cls>(value);
                                     }
                                 );
                             }
@@ -812,7 +812,7 @@ namespace impl {
                     }
 
                     // instantiate a module from the type
-                    Module<ModName> mod = reinterpret_steal<Module<ModName>>(
+                    Module<ModName> mod = steal<Module<ModName>>(
                         type->tp_alloc(type, 0)
                     );
                     Py_DECREF(type);  // module now holds the only reference to its type
@@ -968,7 +968,7 @@ namespace impl {
                         "found in module '" + ModName + "'."
                     );
                 }
-                return reinterpret_steal<Type<T>>(it->second);
+                return steal<Type<T>>(it->second);
             }
 
         };
@@ -1010,7 +1010,7 @@ struct __init__<Module<Name>>                               : returns<Module<Nam
         if (mod == nullptr) {
             throw Exception();
         }
-        return reinterpret_steal<Module<Name>>(mod);
+        return steal<Module<Name>>(mod);
     }
 };
 

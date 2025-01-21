@@ -6,58 +6,446 @@
 #include "code.h"
 
 
+/// TODO: ops.h may need to be included before this file
+///     declarations.h
+///     object.h
+///     ops.h
+///     except.h
+///     access.h
+///     iter.h
+///     union.h
+///     intersection.h
+///     func.h
+///     arg.h
+///     type.h
+///     module.h
+
+
+
+
+
+
 namespace bertrand {
+
+
+namespace impl {
+
+    /* Get the current thread state and assert that it does not have an active
+    exception. */
+    inline PyThreadState* assert_no_active_python_exception() {
+        PyThreadState* tstate = PyThreadState_Get();
+        if (!tstate) {
+            throw AssertionError(
+                "Exception::to_python() called without an active Python interpreter"
+            );
+        }
+        if (tstate->current_exception) {
+            Object str = steal<Object>(PyObject_Repr(tstate->current_exception));
+            if (str.is(nullptr)) {
+                Exception::from_python();
+            }
+            Py_ssize_t len;
+            const char* message = PyUnicode_AsUTF8AndSize(
+                ptr(str),
+                &len
+            );
+            if (message == nullptr) {
+                Exception::from_python();
+            }
+
+            throw AssertionError(
+                "Exception::to_python() called while an active Python exception "
+                "already exists for the current interpreter:\n\n" +
+                std::string(message, len)
+            );
+        }
+        return tstate;
+    }
+
+    /* A wrapper around an existing Python exception that allows it to be handled as an
+    equivalent C++ exception.  This inherits from both `Object` and the templated
+    exception type, meaning it can be treated polymorphically in both directions.
+    Under normal use, the user should not be aware that this class even exists,
+    although it does optimize the case where an exception originates from Python,
+    propagates through C++, and then is returned to Python by retaining the original
+    Python object without any additional allocations. */
+    template <meta::inherits<Exception> T> requires (!meta::is_qualified<T>)
+    struct py_err;
+
+    template <meta::inherits<Exception> T>
+    py_err(T) -> py_err<T>;
+
+    /* Holds the tables needed to translate C++ exceptions to python and vice versa. */
+    struct ExceptionTable {
+        /* A map relating every bertrand exception type to its equivalent Python
+        type. */
+        inline static std::unordered_map<std::type_index, Object> types;
+
+        /* A map holding function pointers that take an arbitrary bertrand exception
+        and convert it into an equivalent Python exception.  A program is malformed and
+        will immediately exit if a subclass of `bertrand::Exception` is passed to
+        Python without a corresponding entry in this map. */
+        inline static std::unordered_map<std::type_index, Object(*)(const Exception&)> to_python;
+
+        /* A map holding function pointers that take a Python exception of a particular
+        C++ type and re-throw it as a matching `py_err<T>` wrapper.  The result can
+        then be caught and handled via ordinary semantics.  The value stored in this
+        map is always identical to `from_python.at(types.at(typeid(T)))` - this map is
+        just a shortcut to avoid the intermediate lookup.  It is used to implement the
+        `borrow()` and `steal()` constructors for `py_err<T>`. */
+        inline static std::unordered_map<std::type_index, void(*)(Object)> to_cpp;
+
+        /* A map holding function pointers that take an arbitrary Python exception
+        object directly from the interpreter and re-throw it as a corresponding
+        `py_err<T>` wrapper, which can be caught in C++ according to Python semantics.
+        A program is malformed and will immediately exit if a Python exception is
+        caught in C++ whose type is not present in this map. */
+        inline static std::unordered_map<Object, void(*)(Object)> from_python;
+
+        /* Insert an `Exception::from_python()` hook for this exception type into the
+        global map. */
+        template <meta::inherits<Exception> T> requires (!meta::is_qualified<T>)
+        static void register_from_python(
+            Object type,
+            void(*callback)(Object) = simple_from_python<T>
+        ) {
+            types.emplace(typeid(T), type);
+            types.emplace(typeid(py_err<T>), type);
+            to_cpp.emplace(typeid(T), callback);
+            to_cpp.emplace(typeid(py_err<T>), callback);
+            from_python.emplace(
+                type,
+                [](Object exception) {
+                    throw steal<py_err<T>>(std::move(exception));
+                }
+            );
+        }
+
+        /* Insert an `Exception::to_python()` hook for this exception type into the
+        global map. */
+        template <meta::inherits<Exception> T> requires (!meta::is_qualified<T>)
+        static void register_to_python(
+            Object(*callback)(const Exception&) = simple_to_python<T>
+        ) {
+            to_python.emplace(typeid(T), callback);
+            to_python.emplace(
+                typeid(py_err<T>),
+                [](const Exception& exception) -> Object {
+                    return reinterpret_cast<const py_err<T>&>(exception);
+                }
+            );
+        }
+
+        /* Clear all Python handlers for this exception type. */
+        template <meta::inherits<Exception> T> requires (!meta::is_qualified<T>)
+        static void unregister() {
+            auto node = types.extract(typeid(T));
+            if (node) {
+                to_python.erase(node.key());
+                to_cpp.erase(node.key());
+                from_python.erase(node.mapped());
+            }
+            node = types.extract(typeid(py_err<T>));
+            if (node) {
+                to_python.erase(node.key());
+                to_cpp.erase(node.key());
+                from_python.erase(node.mapped());
+            }
+        }
+
+        /* The default `Exception::from_python()` handler that will be registered if no
+        explicit override is provided.  This will simply reinterpret the current Python
+        error as a corresponding `py_err<T>` exception wrapper, which can be caught using
+        typical bertrand. */
+        template <typename T>
+        [[noreturn]] static void simple_from_python(Object exception) {
+            Object args = steal<Object>(PyException_GetArgs(ptr(exception)));
+            if (args.is(nullptr)) {
+                Exception::from_python();
+            }
+            PyObject* message;
+            if (
+                PyTuple_GET_SIZE(ptr(args)) != 1 ||
+                !PyUnicode_Check(message = PyTuple_GET_ITEM(ptr(args), 0))
+            ) {
+                throw AssertionError(
+                    "Python exception must take a single string argument or "
+                    "register a custom from_python() handler: '" + type_name<T> + "'"
+                );
+            }
+            Py_ssize_t len;
+            const char* text = PyUnicode_AsUTF8AndSize(message, &len);
+            if (text == nullptr) {
+                Exception::from_python();
+            }
+            throw T(std::string(text, len));
+        }
+
+        /* The default `Exception::to_python()` handler that will be registered if no
+        explicit override is provided.  This simply calls the exception's Python
+        constructor with the raw text of the error message, and then */
+        template <typename T>
+        static Object simple_to_python(const Exception& exception) {
+            // look up equivalent Python type for T
+            auto it = types.find(typeid(T));
+            if (it == types.end()) {
+                throw AssertionError(
+                    "no Python exception type registered for C++ exception of type '" +
+                    type_name<T> + "'"
+                );
+            }
+
+            // convert C++ exception message to a Python string
+            Object message = steal<Object>(PyUnicode_FromStringAndSize(
+                exception.message().data(),
+                exception.message().size()
+            ));
+            if (message.is(nullptr)) {
+                Exception::from_python();
+            }
+
+            // call the Python constructor with the converted message
+            Object value = steal<Object>(PyObject_CallOneArg(
+                ptr(it->second),
+                ptr(message)
+            ));
+            if (value.is(nullptr)) {
+                Exception::from_python();
+            }
+            return value;
+        }
+    };
+
+    /* A wrapper around an existing Python exception that allows it to be handled as an
+    equivalent C++ exception.  This inherits from both `Object` and the templated
+    exception type, meaning it can be treated polymorphically in both directions.
+    Under normal use, the user should not be aware that this class even exists,
+    although it does optimize the case where an exception originates from Python,
+    propagates through C++, and then is returned to Python by retaining the original
+    Python object without any additional allocations. */
+    template <meta::inherits<Exception> T> requires (!meta::is_qualified<T>)
+    struct py_err : T, Object {
+
+        /// TODO: not sure if I'm trimming the tracebacks correctly
+
+        /* `borrow()` constructor.  Also converts the Python exception into an
+        instance of `T` by consulting the exception tables. */
+        py_err(PyObject* p, borrowed_t t) :
+            T([](Object p) {
+                auto it = ExceptionTable::to_cpp.find(typeid(T));
+                if (it == ExceptionTable::to_cpp.end()) {
+                    throw AssertionError(
+                        "no exception handler registered for '" + type_name<T> + "'"
+                    );
+                }
+                try {
+                    it->second(std::move(p));
+                } catch (T&& exc) {
+                    return T(std::move(exc).trim_before());
+                } catch (...) {
+                    throw;
+                }
+                throw AssertionError(
+                    "handler must throw an exception of type '" + type_name<T> + "'"
+                );
+            }(borrow<Object>(p))),
+            Object(p, t)
+        {}
+
+        /* `steal()` constructor.  Also converts the Python exception into an instance
+        of `T` by consulting the exception tables. */
+        py_err(PyObject* p, stolen_t t) :
+            T([](Object p) {
+                auto it = ExceptionTable::to_cpp.find(typeid(T));
+                if (it == ExceptionTable::to_cpp.end()) {
+                    throw AssertionError(
+                        "no exception handler registered for '" + type_name<T> + "'"
+                    );
+                }
+                try {
+                    it->second(std::move(p));
+                } catch (T&& exc) {
+                    return T(std::move(exc)).trim_before();
+                } catch (...) {
+                    throw;
+                }
+                throw AssertionError(
+                    "handler must throw an exception of type '" + type_name<T> + "'"
+                );
+            }(borrow<Object>(p))),
+            Object(p, t)
+        {}
+
+        /* Forwarding constructor.  Directly constructs an instance of `T`, and then
+        converts that instance into an equivalent Python form by consulting the
+        exception tables. */
+        template <typename... Args> requires (std::constructible_from<T, Args...>)
+        explicit py_err(Args&&... args) :
+            T(std::forward<Args>(args)...),
+            Object([](const T& exc) {
+                auto it = ExceptionTable::to_python.find(typeid(T));
+                if (it == ExceptionTable::to_python.end()) {
+                    throw AssertionError(
+                        "no Python exception type registered for C++ exception of type '" +
+                        type_name<T> + "'"
+                    );
+                }
+                return it->second(exc);
+            }(static_cast<const T&>(*this)))
+        {}
+
+        /* A type index for this exception wrapper, which can be searched in the global
+        exception tables to find a corresponding callback. */
+        virtual std::type_index type() const noexcept override {
+            return typeid(py_err);
+        }
+
+        /* The full exception diagnostic, including a traceback that interleaves the
+        original Python trace with a continuation trace in C++. */
+        constexpr virtual const char* what() const noexcept override {
+            if (T::m_what.empty()) {
+                /// TODO: start with the Python frames, from least recent to most
+                /// recent, and then continue with the C++ frames like normal
+
+            }
+            return T::m_what.data();
+        }
+    };
+
+    /* Append a C++ stack trace to a Python traceback, which can be attached to a
+    newly-constructed exception object.  Steals a reference to `head` if it is given,
+    and returns a new reference to the updated traceback, which may be null if no new
+    frames were generated and `head` is null. */
+    inline PyTracebackObject* build_traceback(
+        const cpptrace::stacktrace& trace,
+        PyTracebackObject* head = nullptr
+    ) {
+        PyThreadState* tstate = PyThreadState_Get();
+        Object globals = steal<Object>(PyDict_New());
+        if (globals.is(nullptr)) {
+            Exception::from_python();
+        }
+        for (const cpptrace::stacktrace_frame& frame : trace) {
+            size_t line = frame.line.value_or(0);
+            PyCodeObject* code = PyCode_NewEmpty(
+                frame.filename.c_str(),
+                frame.symbol.c_str(),
+                line
+            );
+            if (!code) {
+                Exception::from_python();
+            }
+            PyFrameObject* py_frame = PyFrame_New(
+                tstate,
+                code,
+                ptr(globals),
+                nullptr
+            );
+            Py_DECREF(code);
+            if (!py_frame) {
+                Exception::from_python();
+            }
+            py_frame->f_lineno = line;
+            PyTracebackObject* tb = PyObject_GC_New(
+                PyTracebackObject,
+                &PyTraceBack_Type
+            );
+            if (tb == nullptr) {
+                Py_DECREF(py_frame);
+                throw MemoryError();
+            }
+            tb->tb_next = head;
+            tb->tb_frame = py_frame;  // steals reference
+            tb->tb_lasti = PyFrame_GetLasti(tb->tb_frame) * sizeof(_Py_CODEUNIT);
+            tb->tb_lineno = PyFrame_GetLineNumber(tb->tb_frame);
+            PyObject_GC_Track(tb);
+            head = tb;
+        }
+        return head;
+    }
+
+}
+
+
+void Exception::to_python() noexcept {
+    constexpr auto raise = [](const Exception& exc) {
+        impl::assert_no_active_python_exception();
+        auto it = impl::ExceptionTable::to_python.find(exc.type());
+        if (it == impl::ExceptionTable::to_python.end()) {
+            std::cerr << "no to_python() handler for exception of type '"
+                      << exc.name() << "'";
+            std::exit(1);
+        }
+        Object value = it->second(exc);
+        if (auto traceback = exc.trace()) {
+            PyObject* existing = PyException_GetTraceback(ptr(value));  // new reference
+            Object tb = steal<Object>(reinterpret_cast<PyObject*>(
+                impl::build_traceback(
+                    *traceback,
+                    reinterpret_cast<PyTracebackObject*>(existing)  // steals a reference
+                ))
+            );
+            if (!tb.is(existing)) {
+                PyException_SetTraceback(ptr(value), ptr(tb));
+            }
+        }
+        PyErr_SetRaisedException(release(value));  // steals a reference
+    };
+
+    try {
+        throw;
+    } catch (const Exception& exc) {
+        raise(exc.trim_after(1));
+    } catch (const std::exception& e) {
+        raise(Exception(e.what()).trim_after(1));
+    } catch (...) {
+        raise(Exception("unknown C++ exception").trim_after(1));
+    }
+}
+
+
+[[noreturn]] void Exception::from_python() {
+    Object exception = steal<Object>(PyErr_GetRaisedException());
+    if (exception.is(nullptr)) {
+        throw AssertionError(
+            "Exception::from_python() called without an active Python exception "
+            "for the current interpreter"
+        );
+    }
+    PyTypeObject* type = Py_TYPE(ptr(exception));
+    if (!type) {
+        throw AssertionError(
+            "Exception::from_python() could not determine the type of Python "
+            "exception being raised"
+        );
+    }
+    auto it = impl::ExceptionTable::from_python.find(
+        borrow<Object>(reinterpret_cast<PyObject*>(type))
+    );
+    if (it == impl::ExceptionTable::from_python.end()) {
+        throw AssertionError(
+            "no from_python() handler for Python exception of type '" +
+            demangle(type->tp_name) + "'"
+        );
+    }
+    it->second(std::move(exception));  // throws py_err<T>
+}
+
+
+namespace meta {
+
+    namespace detail {
+        template <typename T>
+        inline constexpr bool builtin_type<impl::py_err<T>> = true;
+    }
+
+}
 
 
 ///////////////////////////
 ////    STACK TRACE    ////
 ///////////////////////////
 
-
-namespace impl {
-
-    inline const char* virtualenv = std::getenv("BERTRAND_HOME");
-
-    inline PyTracebackObject* build_traceback(
-        const cpptrace::stacktrace& trace,
-        PyTracebackObject* front = nullptr
-    ) {
-        for (auto&& frame : trace) {
-            // stop the traceback if we encounter a C++ frame in which a nested Python
-            // script was executed.
-            if (frame.symbol.find("bertrand::Code::operator()") != std::string::npos) {
-                break;
-
-            // ignore frames that are not part of the user's code
-            } else if (
-                frame.symbol.starts_with("__") ||
-                (virtualenv != nullptr && frame.filename.starts_with(virtualenv))
-            ) {
-                continue;
-
-            } else {
-                PyTracebackObject* tb = PyObject_GC_New(
-                    PyTracebackObject,
-                    &PyTraceBack_Type
-                );
-                if (tb == nullptr) {
-                    throw std::runtime_error(
-                        "could not create Python traceback object - failed to "
-                        "allocate PyTraceBackObject"
-                    );
-                }
-                tb->tb_next = front;
-                tb->tb_frame = reinterpret_cast<PyFrameObject*>(release(Frame(frame)));
-                tb->tb_lasti = PyFrame_GetLasti(tb->tb_frame) * sizeof(_Py_CODEUNIT);
-                tb->tb_lineno = PyFrame_GetLineNumber(tb->tb_frame);
-                PyObject_GC_Track(tb);
-                front = tb;
-            }
-        }
-        return front;
-    }
-
-}
 
 
 struct Traceback;
@@ -147,7 +535,7 @@ struct __cast__<T, Traceback>                               : returns<Traceback>
             frame = PyFrame_GetBack(frame);
         }
 
-        return reinterpret_steal<Traceback>(reinterpret_cast<PyObject*>(front));
+        return steal<Traceback>(reinterpret_cast<PyObject*>(front));
     }
 };
 
@@ -171,7 +559,7 @@ struct __init__<Traceback, T>                               : returns<Traceback>
     static auto operator()(int skip) {
         // if skip is zero, then the result will be empty by definition
         if (skip == 0) {
-            return reinterpret_steal<Traceback>(nullptr);
+            return steal<Traceback>(nullptr);
         }
 
         // compute the full traceback to account for mixed C++ and Python frames
@@ -189,7 +577,7 @@ struct __init__<Traceback, T>                               : returns<Traceback>
                 // the traceback may be shorter than the skip value, in which case we
                 // return an empty traceback
                 if (curr == nullptr) {
-                    return reinterpret_steal<Traceback>(nullptr);
+                    return steal<Traceback>(nullptr);
                 }
                 curr = curr->tb_next;
             }
@@ -523,7 +911,7 @@ public:
     const char* what() const noexcept override {
         if (!m_what.has_value()) {
             std::string msg;
-            Traceback tb = reinterpret_steal<Traceback>(
+            Traceback tb = steal<Traceback>(
                 PyException_GetTraceback(ptr(*this))
             );
             if (ptr(tb) != nullptr) {
@@ -565,19 +953,17 @@ template <std::derived_from<Exception> Exc, typename Msg>
     requires (std::convertible_to<Msg, std::string_view> || meta::static_str<Msg>)
 struct __init__<Exc, Msg>                                   : returns<Exc> {
     static Object unicode(const char* msg, size_t len) noexcept {
-        return reinterpret_steal<Object>(
-            PyUnicode_FromStringAndSize(msg, len)
-        );
+        return steal<Object>(PyUnicode_FromStringAndSize(msg, len));
     }
 
     static Exc exception(PyObject* unicode) noexcept {
         if constexpr (std::is_invocable_v<impl::builtin_exception_map<Exc>>) {   
-            return reinterpret_steal<Exc>(PyObject_CallOneArg(
+            return steal<Exc>(PyObject_CallOneArg(
                 impl::builtin_exception_map<Exc>{}(),
                 unicode
             ));
         } else {
-            return reinterpret_steal<Exc>(PyObject_CallOneArg(
+            return steal<Exc>(PyObject_CallOneArg(
                 ptr(Type<Exc>()),
                 unicode
             ));
@@ -598,11 +984,11 @@ struct __init__<Exc, Msg>                                   : returns<Exc> {
         // by default, the exception will have an empty traceback, so we need to
         // populate it with C++ frames if directed.
         if constexpr (DEBUG) {
-            Object trace = reinterpret_steal<Object>(
-                reinterpret_cast<PyObject*>(impl::build_traceback(
+            Object trace = steal<Object>(reinterpret_cast<PyObject*>(
+                impl::build_traceback(
                     cpptrace::generate_trace(1)
-                ))
-            );
+                )
+            ));
             if (!trace.is(nullptr)) {
                 PyException_SetTraceback(ptr(result), ptr(trace));
             }
@@ -624,8 +1010,8 @@ struct __init__<Exc, Msg>                                   : returns<Exc> {
         // by default, the exception will have an empty traceback, so we need to
         // populate it with C++ frames if directed.
         if constexpr (DEBUG) {
-            Object trace = reinterpret_steal<Object>(
-                reinterpret_cast<PyObject*>(impl::build_traceback(
+            Object trace = steal<Object>(reinterpret_cast<PyObject*>(
+                impl::build_traceback(
                     cpptrace::generate_trace(1)
                 ))
             );
@@ -652,11 +1038,11 @@ struct __init__<Exc, Msg>                                   : returns<Exc> {
         // by default, the exception will have an empty traceback, so we need to
         // populate it with C++ frames if directed.
         if constexpr (DEBUG) {
-            Object trace = reinterpret_steal<Object>(
-                reinterpret_cast<PyObject*>(impl::build_traceback(
+            Object trace = steal<Object>(reinterpret_cast<PyObject*>(
+                impl::build_traceback(
                     cpptrace::generate_trace(1)
-                ))
-            );
+                )
+            ));
             if (!trace.is(nullptr)) {
                 PyException_SetTraceback(ptr(result), ptr(trace));
             }
@@ -872,9 +1258,7 @@ struct UnicodeDecodeError : Exception, interface<UnicodeDecodeError> {
         if (!m_what.has_value()) {
             try {
                 std::string msg;
-                Traceback tb = reinterpret_steal<Traceback>(
-                    PyException_GetTraceback(ptr(*this))
-                );
+                Traceback tb = steal<Traceback>(PyException_GetTraceback(ptr(*this)));
                 if (ptr(tb) != nullptr) {
                     msg = tb.to_string() + "\n";
                 } else {
@@ -968,7 +1352,7 @@ struct __init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> :
             }
         }
 
-        return reinterpret_steal<UnicodeDecodeError>(result);
+        return steal<UnicodeDecodeError>(result);
     }
 };
 
@@ -1127,9 +1511,7 @@ struct UnicodeEncodeError : Exception, interface<UnicodeEncodeError> {
         if (!m_what.has_value()) {
             try {
                 std::string msg;
-                Traceback tb = reinterpret_steal<Traceback>(
-                    PyException_GetTraceback(ptr(*this))
-                );
+                Traceback tb = steal<Traceback>(PyException_GetTraceback(ptr(*this)));
                 if (ptr(tb) != nullptr) {
                     msg = tb.to_string() + "\n";
                 } else {
@@ -1224,7 +1606,7 @@ struct __init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> :
             }
         }
 
-        return reinterpret_steal<UnicodeEncodeError>(result);
+        return steal<UnicodeEncodeError>(result);
     }
 };
 
@@ -1379,9 +1761,7 @@ struct UnicodeTranslateError : Exception, interface<UnicodeTranslateError> {
         if (!m_what.has_value()) {
             try {
                 std::string msg;
-                Traceback tb = reinterpret_steal<Traceback>(
-                    PyException_GetTraceback(ptr(*this))
-                );
+                Traceback tb = steal<Traceback>(PyException_GetTraceback(ptr(*this)));
                 if (ptr(tb) != nullptr) {
                     msg = tb.to_string() + "\n";
                 } else {
@@ -1471,7 +1851,7 @@ struct __init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reason> :
             }
         }
 
-        return reinterpret_steal<UnicodeTranslateError>(result);
+        return steal<UnicodeTranslateError>(result);
     }
 };
 
@@ -1533,42 +1913,6 @@ struct __init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reason> :
     std::string result(data, len);
     Py_DECREF(reason);
     return result;
-}
-
-
-/////////////////////////
-////    OPERATORS    ////
-/////////////////////////
-
-
-template <size_t N>
-[[gnu::always_inline]] inline void assert_(bool condition, const char(&message)[N]) {
-    if constexpr (DEBUG) {
-        if (!condition) {
-            throw AssertionError(message);
-        }
-    }
-}
-
-
-template <meta::static_str T>
-[[gnu::always_inline]] inline void assert_(bool condition, const T& message) {
-    if constexpr (DEBUG) {
-        if (!condition) {
-            throw AssertionError(message);
-        }
-    }
-}
-
-
-template <std::convertible_to<std::string_view> T>
-    requires (!meta::string_literal<T> && !meta::static_str<T>)
-[[gnu::always_inline]] inline void assert_(bool condition, const T& message) {
-    if constexpr (DEBUG) {
-        if (!condition) {
-            throw AssertionError(message);
-        }
-    }
 }
 
 

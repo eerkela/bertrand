@@ -52,10 +52,10 @@ public:
                 }
                 throw StopIteration();
             }
-            return reinterpret_steal<Begin>(next);
+            return steal<Begin>(next);
 
         } else {
-            auto inner = reinterpret(self);
+            auto inner = view(self);
             if (inner->begin == inner->end) {
                 throw StopIteration();
             }
@@ -107,13 +107,13 @@ template <meta::python Return>
 struct Iterator<Return, void, void> : Object, interface<Iterator<Return, void, void>> {
     struct __python__ : cls<__python__, Iterator>, PyObject {
         static Type<Iterator> __import__() {
-            Object collections = reinterpret_steal<Object>(PyImport_Import(
+            Object collections = steal<Object>(PyImport_Import(
                 ptr(impl::template_string<"collections.abc">())
             ));
             if (collections.is(nullptr)) {
                 Exception::from_python();
             }
-            Type<Iterator> result = reinterpret_steal<Type<Iterator>>(
+            Type<Iterator> result = steal<Type<Iterator>>(
                 PyObject_GetItem(
                     ptr(getattr<"Iterator">(collections)),
                     ptr(Type<Return>())
@@ -179,7 +179,7 @@ struct Iterator<Begin, End, void> : Object, interface<Iterator<Begin, End, void>
 
         static Type<Iterator> __import__() {
             ready();
-            return reinterpret_borrow<Type<Iterator>>(&__type__);
+            return borrow<Type<Iterator>>(&__type__);
         }
 
         static int __bool__(__python__* self) {
@@ -291,7 +291,7 @@ struct Iterator<Begin, End, Container> : Object, interface<Iterator<Begin, End, 
 
         static Type<Iterator> __import__() {
             ready();
-            return reinterpret_borrow<Type<Iterator>>(&__type__);
+            return borrow<Type<Iterator>>(&__type__);
         }
 
         static int __bool__(__python__* self) {
@@ -492,13 +492,13 @@ struct __iter__<Iterator<T, void, void>>                    : returns<T> {
     T curr;
 
     __iter__(const Iterator<T>& self) :
-        iter(self), curr(reinterpret_steal<T>(nullptr))
+        iter(self), curr(steal<T>(nullptr))
     {
         ++(*this);
     }
 
     __iter__(Iterator<T>&& self) :
-        iter(self), curr(reinterpret_steal<T>(nullptr))
+        iter(self), curr(steal<T>(nullptr))
     {
         ++(*this);
     }
@@ -528,7 +528,7 @@ struct __iter__<Iterator<T, void, void>>                    : returns<T> {
         if (PyErr_Occurred()) {
             Exception::from_python();
         }
-        curr = reinterpret_steal<T>(next);
+        curr = steal<T>(next);
         return *this;
     }
 
@@ -626,14 +626,14 @@ template <meta::python Self>
 
     } else if constexpr (meta::inherits<Self, impl::IterTag>) {
         if constexpr (!std::is_void_v<typename std::remove_reference_t<Self>::end_type>) {
-            return reinterpret(self)->begin;
+            return view(self)->begin;
         } else {
             using T = __iter__<Self>::type;
             PyObject* iter = PyObject_GetIter(ptr(self));
             if (iter == nullptr) {
                 Exception::from_python();
             }
-            return __iter__<Iterator<T>>{reinterpret_steal<Iterator<T>>(iter)};
+            return __iter__<Iterator<T>>{steal<Iterator<T>>(iter)};
         }
 
     } else {
@@ -642,7 +642,7 @@ template <meta::python Self>
         if (iter == nullptr) {
             Exception::from_python();
         }
-        return __iter__<Iterator<T>>{reinterpret_steal<Iterator<T>>(iter)};
+        return __iter__<Iterator<T>>{steal<Iterator<T>>(iter)};
     }
 }
 
@@ -686,7 +686,7 @@ template <meta::python Self>
 
     } else if constexpr (meta::inherits<Self, impl::IterTag>) {
         if constexpr (!std::is_void_v<typename std::remove_reference_t<Self>::end_type>) {
-            return reinterpret(self)->end;
+            return view(self)->end;
         } else {
             return sentinel{};
         }
@@ -738,10 +738,10 @@ template <meta::python Self>
 
     } else {
         using T = typename __reversed__<Self>::type;
-        Object builtins = reinterpret_steal<Object>(
+        Object builtins = steal<Object>(
             PyFrame_GetBuiltins(PyEval_GetFrame())
         );
-        Object func = reinterpret_steal<Object>(PyDict_GetItemWithError(
+        Object func = steal<Object>(PyDict_GetItemWithError(
             ptr(builtins),
             ptr(impl::template_string<"reversed">())
         ));
@@ -755,7 +755,7 @@ template <meta::python Self>
         if (iter == nullptr) {
             Exception::from_python();
         }
-        return __iter__<Iterator<T>>{reinterpret_steal<Iterator<T>>(iter)};
+        return __iter__<Iterator<T>>{steal<Iterator<T>>(iter)};
     }
 }
 

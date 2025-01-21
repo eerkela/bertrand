@@ -17,20 +17,6 @@ template <typename... Funcs>
 struct Visitor : Funcs... { using Funcs::operator()...; };
 
 
-template <typename... Types>
-    requires (
-        sizeof...(Types) > 1 &&
-        (!meta::is_qualified<Types> && ...) &&
-        (meta::python<Types> && ...) &&
-        meta::types_are_unique<Types...>
-    )
-struct Union;
-
-
-template <std::derived_from<Object> T> requires (!std::same_as<T, NoneType>)
-using Optional = Union<T, NoneType>;
-
-
 template <meta::has_python T> requires (!std::same_as<T, NoneType>)
 Union(T) -> Union<obj<T>, NoneType>;
 
@@ -721,9 +707,9 @@ struct interface<Union<Types...>> : impl::UnionTag {
             );
         }
         if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
-            return reinterpret_borrow<T>(ptr(self));
+            return borrow<T>(ptr(self));
         } else {
-            return reinterpret_steal<T>(release(self));
+            return steal<T>(release(self));
         }
     }
 
@@ -736,9 +722,9 @@ struct interface<Union<Types...>> : impl::UnionTag {
             );
         }
         if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
-            return reinterpret_borrow<at<I>>(ptr(self));
+            return borrow<at<I>>(ptr(self));
         } else {
-            return reinterpret_steal<at<I>>(release(self));
+            return steal<at<I>>(release(self));
         }
     }
 
@@ -748,9 +734,9 @@ struct interface<Union<Types...>> : impl::UnionTag {
             return None;
         }
         if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
-            return reinterpret_borrow<T>(ptr(self));
+            return borrow<T>(ptr(self));
         } else {
-            return reinterpret_steal<T>(release(self));
+            return steal<T>(release(self));
         }
     }
 
@@ -760,9 +746,9 @@ struct interface<Union<Types...>> : impl::UnionTag {
             return None;
         }
         if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
-            return reinterpret_borrow<at<I>>(ptr(self));
+            return borrow<at<I>>(ptr(self));
         } else {
-            return reinterpret_steal<at<I>>(release(self));
+            return steal<at<I>>(release(self));
         }
     }
 
@@ -839,11 +825,10 @@ public:
 };
 
 
-template <typename... Types>
+template <meta::python... Types>
     requires (
         sizeof...(Types) > 1 &&
         (!meta::is_qualified<Types> && ...) &&
-        (meta::python<Types> && ...) &&
         meta::types_are_unique<Types...>
     )
 struct Union : Object, interface<Union<Types...>> {
@@ -1049,7 +1034,7 @@ struct __template__<Union<Ts...>>                           : returns<Object> {
         if (result == nullptr) {
             Exception::to_python();
         }
-        return reinterpret_steal<Object>(result);
+        return steal<Object>(result);
     }
 };
 
@@ -1060,7 +1045,7 @@ template <typename T> requires (__initializer__<T>::enable)
 struct __initializer__<Optional<T>>                        : returns<Optional<T>> {
     using Element = __initializer__<T>::type;
     static Optional<T> operator()(const std::initializer_list<Element>& init) {
-        Optional<T> result = reinterpret_steal<Optional<T>>(release(T(init)));
+        Optional<T> result = steal<Optional<T>>(release(T(init)));
         result.m_index = 0;
         return result;
     }
@@ -1087,12 +1072,12 @@ struct __init__<Union<Ts...>>                               : returns<Union<Ts..
 
     static Union<Ts...> operator()() {
         if constexpr (none_idx<0, Ts...> < sizeof...(Ts)) {
-            Union<Ts...> result = reinterpret_borrow<Union<Ts...>>(ptr(None));
+            Union<Ts...> result = borrow<Union<Ts...>>(ptr(None));
             result.m_index = none_idx<0, Ts...>;
             return result;
         } else {
             constexpr size_t index = idx<0, Ts...>;
-            Union<Ts...> result = reinterpret_steal<Union<Ts...>>(
+            Union<Ts...> result = steal<Union<Ts...>>(
                 release(meta::unpack_type<index>())
             );
             result.m_index = index;
@@ -1108,7 +1093,7 @@ template <typename T, typename... Args>
     requires (sizeof...(Args) > 0 && std::constructible_from<T, Args...>)
 struct __init__<Optional<T>, Args...>                       : returns<Optional<T>> {
     static Optional<T> operator()(Args&&... args) {
-        Optional<T> result = reinterpret_steal<Optional<T>>(
+        Optional<T> result = steal<Optional<T>>(
             release(T(std::forward<Args>(args)...))
         );
         result.m_index = 0;
@@ -1139,14 +1124,14 @@ struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts..
     static Union<Ts...> operator()(From from) {
         if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
             constexpr size_t idx = match_idx<0, Ts...>;
-            Union<Ts...> result = reinterpret_steal<Union<Ts...>>(
+            Union<Ts...> result = steal<Union<Ts...>>(
                 release(meta::unpack_type<idx>(std::forward<From>(from)))
             );
             result.m_index = idx;
             return result;
         } else {
             constexpr size_t idx = convert_idx<0, Ts...>;
-            Union<Ts...> result = reinterpret_steal<Union<Ts...>>(
+            Union<Ts...> result = steal<Union<Ts...>>(
                 release(meta::unpack_type<idx>(std::forward<From>(from)))
             );
             result.m_index = idx;
@@ -1252,14 +1237,14 @@ struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts..
             []<typename T>(T&& value) -> Union<Ts...> {
                 if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
                     constexpr size_t idx = match_idx<0, Ts...>;
-                    Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                    Union<Ts...> result = steal<Union<Ts...>>(release(
                         meta::unpack_type<idx, Ts...>(std::forward<T>(value))
                     ));
                     result.m_index = idx;
                     return result;
                 } else {
                     constexpr size_t idx = convert_idx<0, Ts...>;
-                    Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                    Union<Ts...> result = steal<Union<Ts...>>(release(
                         meta::unpack_type<idx, Ts...>(std::forward<T>(value))
                     ));
                     result.m_index = idx;
@@ -1297,21 +1282,21 @@ struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts..
         if (from.has_value()) {
             if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
                 constexpr size_t idx = match_idx<0, Ts...>;
-                Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                Union<Ts...> result = steal<Union<Ts...>>(release(
                     meta::unpack_type<idx, Ts...>(from.value())
                 ));
                 result.m_index = idx;
                 return result;
             } else {
                 constexpr size_t idx = convert_idx<0, Ts...>;
-                Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                Union<Ts...> result = steal<Union<Ts...>>(release(
                     meta::unpack_type<idx, Ts...>(from.value())
                 ));
                 result.m_index = idx;
                 return result;
             }
         } else {
-            Union<Ts...> result = reinterpret_borrow<Union<Ts...>>(ptr(None));
+            Union<Ts...> result = borrow<Union<Ts...>>(ptr(None));
             result.m_index = meta::index_of<NoneType, Ts...>;
             return result;
         }
@@ -1343,21 +1328,21 @@ struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts..
         if (from) {
             if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
                 constexpr size_t idx = match_idx<0, Ts...>;
-                Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                Union<Ts...> result = steal<Union<Ts...>>(release(
                     meta::unpack_type<idx, Ts...>(*from)
                 ));
                 result.m_index = idx;
                 return result;
             } else {
                 constexpr size_t idx = convert_idx<0, Ts...>;
-                Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                Union<Ts...> result = steal<Union<Ts...>>(release(
                     meta::unpack_type<idx, Ts...>(*from)
                 ));
                 result.m_index = idx;
                 return result;
             }
         } else {
-            Union<Ts...> result = reinterpret_borrow<Union<Ts...>>(ptr(None));
+            Union<Ts...> result = borrow<Union<Ts...>>(ptr(None));
             result.m_index = meta::index_of<NoneType, Ts...>;
             return result;
         }
@@ -1389,21 +1374,21 @@ struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts..
         if (from) {
             if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
                 constexpr size_t idx = match_idx<0, Ts...>;
-                Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                Union<Ts...> result = steal<Union<Ts...>>(release(
                     meta::unpack_type<idx, Ts...>(*from)
                 ));
                 result.m_index = idx;
                 return result;
             } else {
                 constexpr size_t idx = convert_idx<0, Ts...>;
-                Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                Union<Ts...> result = steal<Union<Ts...>>(release(
                     meta::unpack_type<idx, Ts...>(*from)
                 ));
                 result.m_index = idx;
                 return result;
             }
         } else {
-            Union<Ts...> result = reinterpret_borrow<Union<Ts...>>(ptr(None));
+            Union<Ts...> result = borrow<Union<Ts...>>(ptr(None));
             result.m_index = meta::index_of<NoneType, Ts...>;
             return result;
         }
@@ -1435,21 +1420,21 @@ struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts..
         if (from) {
             if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
                 constexpr size_t idx = match_idx<0, Ts...>;
-                Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                Union<Ts...> result = steal<Union<Ts...>>(release(
                     meta::unpack_type<idx, Ts...>(*from)
                 ));
                 result.m_index = idx;
                 return result;
             } else {
                 constexpr size_t idx = convert_idx<0, Ts...>;
-                Union<Ts...> result = reinterpret_steal<Union<Ts...>>(release(
+                Union<Ts...> result = steal<Union<Ts...>>(release(
                     meta::unpack_type<idx, Ts...>(*from)
                 ));
                 result.m_index = idx;
                 return result;
             }
         } else {
-            Union<Ts...> result = reinterpret_borrow<Union<Ts...>>(ptr(None));
+            Union<Ts...> result = borrow<Union<Ts...>>(ptr(None));
             result.m_index = meta::index_of<NoneType, Ts...>;
             return result;
         }

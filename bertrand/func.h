@@ -1084,6 +1084,12 @@ public:
 };
 
 
+/// TODO: arg_pack and kwarg_pack can be placed into the impl:: namespace, and I
+/// might be able to expose a global dereference operator + control struct that
+/// enables it for an iterable container, so you could dereference, say, `std::vector`
+/// as if it were a Python container.
+
+
 /* A keyword parameter pack obtained by double-dereferencing a mapping-like container
 within a Python-style function call. */
 template <meta::mapping_like T>
@@ -1588,6 +1594,11 @@ instances of this class can be used to provide an even more Pythonic syntax:
 */
 template <static_str name> requires (meta::arg_name<name>)
 constexpr impl::ArgFactory<name> arg {};
+
+
+/// TODO: arg_traits<T> could probably also be placed in the meta:: namespace, and
+/// then capitalized once again to ArgTraits<T> to match the naming convention of
+/// Arg<"", T>
 
 
 /* Manipulate a C++ argument annotation at compile time.  Unannotated types are
@@ -4680,41 +4691,60 @@ struct signature<T> : signature<
 > {};
 
 
-/* A template constraint that controls whether the `bertrand::call()` operator is
-enabled for a given C++ function and argument list. */
-template <typename F, typename... Args>
-concept callable =
-    signature<F>::enable &&
-    signature<F>::args_fit_within_bitset &&
-    signature<F>::proper_argument_order &&
-    signature<F>::no_qualified_arg_annotations &&
-    signature<F>::no_duplicate_args &&
-    signature<F>::template Bind<Args...>::proper_argument_order &&
-    signature<F>::template Bind<Args...>::no_qualified_arg_annotations &&
-    signature<F>::template Bind<Args...>::no_duplicate_args &&
-    signature<F>::template Bind<Args...>::no_conflicting_values &&
-    signature<F>::template Bind<Args...>::no_extra_positional_args &&
-    signature<F>::template Bind<Args...>::no_extra_keyword_args &&
-    signature<F>::template Bind<Args...>::satisfies_required_args &&
-    signature<F>::template Bind<Args...>::can_convert;
+/// TODO: callable<T> could be placed in meta:: ?
 
 
-/* A template constraint that controls whether the `bertrand::def()` operator is
-enabled for a given C++ function and argument list. */
-template <typename F, typename... Args>
-concept partially_callable =
-    signature<F>::enable &&
-    !(arg_traits<Args>::variadic() || ...) &&
-    signature<F>::proper_argument_order &&
-    signature<F>::no_qualified_arg_annotations &&
-    signature<F>::no_duplicate_args &&
-    signature<F>::template Bind<Args...>::proper_argument_order &&
-    signature<F>::template Bind<Args...>::no_qualified_arg_annotations &&
-    signature<F>::template Bind<Args...>::no_duplicate_args &&
-    signature<F>::template Bind<Args...>::no_conflicting_values &&
-    signature<F>::template Bind<Args...>::no_extra_positional_args &&
-    signature<F>::template Bind<Args...>::no_extra_keyword_args &&
-    signature<F>::template Bind<Args...>::can_convert;
+namespace meta {
+
+    /* A template constraint that controls whether the `bertrand::call()` operator is
+    enabled for a given C++ function and argument list. */
+    template <typename F, typename... Args>
+    concept callable =
+        bertrand::signature<F>::enable &&
+        bertrand::signature<F>::args_fit_within_bitset &&
+        bertrand::signature<F>::proper_argument_order &&
+        bertrand::signature<F>::no_qualified_arg_annotations &&
+        bertrand::signature<F>::no_duplicate_args &&
+        bertrand::signature<F>::template Bind<Args...>::proper_argument_order &&
+        bertrand::signature<F>::template Bind<Args...>::no_qualified_arg_annotations &&
+        bertrand::signature<F>::template Bind<Args...>::no_duplicate_args &&
+        bertrand::signature<F>::template Bind<Args...>::no_conflicting_values &&
+        bertrand::signature<F>::template Bind<Args...>::no_extra_positional_args &&
+        bertrand::signature<F>::template Bind<Args...>::no_extra_keyword_args &&
+        bertrand::signature<F>::template Bind<Args...>::satisfies_required_args &&
+        bertrand::signature<F>::template Bind<Args...>::can_convert;
+
+    /* A template constraint that controls whether the `bertrand::def()` operator is
+    enabled for a given C++ function and argument list. */
+    template <typename F, typename... Args>
+    concept partially_callable =
+        bertrand::signature<F>::enable &&
+        !(arg_traits<Args>::variadic() || ...) &&
+        bertrand::signature<F>::proper_argument_order &&
+        bertrand::signature<F>::no_qualified_arg_annotations &&
+        bertrand::signature<F>::no_duplicate_args &&
+        bertrand::signature<F>::template Bind<Args...>::proper_argument_order &&
+        bertrand::signature<F>::template Bind<Args...>::no_qualified_arg_annotations &&
+        bertrand::signature<F>::template Bind<Args...>::no_duplicate_args &&
+        bertrand::signature<F>::template Bind<Args...>::no_conflicting_values &&
+        bertrand::signature<F>::template Bind<Args...>::no_extra_positional_args &&
+        bertrand::signature<F>::template Bind<Args...>::no_extra_keyword_args &&
+        bertrand::signature<F>::template Bind<Args...>::can_convert;
+
+    /* A template constraint that controls whether the `bertrand::Function()` type can
+    be instantiated with a given Python-compatible signature. */
+    template <typename F>
+    concept py_function =
+        bertrand::signature<F>::enable &&
+        std::same_as<typename bertrand::signature<F>::type, F> &&
+        bertrand::signature<F>::is_python &&
+        bertrand::signature<F>::args_fit_within_bitset &&
+        bertrand::signature<F>::proper_argument_order &&
+        bertrand::signature<F>::no_qualified_args &&
+        bertrand::signature<F>::no_qualified_arg_annotations &&
+        bertrand::signature<F>::no_duplicate_args;
+
+}
 
 
 /* Invoke a C++ function with Python-style calling conventions, including keyword
@@ -4724,7 +4754,7 @@ as the function signature must be known unambiguously at compile time to impleme
 required matching. */
 template <typename F, typename... Args>
     requires (
-        callable<F, Args...> && (
+        meta::callable<F, Args...> && (
             impl::call_passthrough<F>::enable ||
             (signature<F>::Partial::empty() && signature<F>::Defaults::empty())
         )
@@ -4749,7 +4779,7 @@ function signature cannot contain any template parameters (including auto argume
 as the function signature must be known unambiguously at compile time to implement the
 required matching. */
 template <typename F, typename... Args>
-    requires (callable<F, Args...> && signature<F>::Partial::empty())
+    requires (meta::callable<F, Args...> && signature<F>::Partial::empty())
 constexpr decltype(auto) call(
     const typename signature<F>::Defaults& defaults,
     F&& func,
@@ -4770,7 +4800,7 @@ function signature cannot contain any template parameters (including auto argume
 as the function signature must be known unambiguously at compile time to implement the
 required matching. */
 template <typename F, typename... Args>
-    requires (callable<F, Args...> && signature<F>::Partial::empty())
+    requires (meta::callable<F, Args...> && signature<F>::Partial::empty())
 constexpr decltype(auto) call(
     typename signature<F>::Defaults&& defaults,
     F&& func,
@@ -4802,7 +4832,11 @@ The returned partial is a thin proxy that only implements the call operator and 
 handful of introspection methods.  It also allows transparent access to the decorated
 function via the `*` and `->` operators. */
 template <typename Func, typename... Args>
-    requires (signature<Func>::Partial::empty() && partially_callable<Func, Args...>)
+    requires (
+        signature<Func>::enable &&
+        signature<Func>::Partial::empty() &&
+        meta::partially_callable<Func, Args...>
+    )
 struct def : impl::def_tag {
 private:
     template <typename, typename, size_t>
@@ -4963,19 +4997,19 @@ template <typename F, typename... A>
     requires (
         signature<F>::Defaults::empty() &&
         signature<F>::Partial::empty() &&
-        partially_callable<F, A...>
+        meta::partially_callable<F, A...>
     )
 def(F, A&&...) -> def<F, A...>;
 template <typename F, typename... A>
     requires (
         signature<F>::Partial::empty() &&
-        partially_callable<F, A...>
+        meta::partially_callable<F, A...>
     )
 def(typename signature<F>::Defaults&&, F, A&&...) -> def<F, A...>;
 template <typename F, typename... A>
     requires (
         signature<F>::Partial::empty() &&
-        partially_callable<F, A...>
+        meta::partially_callable<F, A...>
     )
 def(const typename signature<F>::Defaults&, F, A&&...) -> def<F, A...>;
 

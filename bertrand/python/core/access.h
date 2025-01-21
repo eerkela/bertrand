@@ -73,10 +73,10 @@ namespace impl {
         friend PyObject* bertrand::ptr(T&&);
         template <meta::python T> requires (!meta::is_const<T>)
         friend PyObject* bertrand::release(T&&);
-        template <meta::python T> requires (!meta::is_qualified<T>)
-        friend T bertrand::reinterpret_borrow(PyObject*);
-        template <meta::python T> requires (!meta::is_qualified<T>)
-        friend T bertrand::reinterpret_steal(PyObject*);
+        template <meta::has_python T> requires (!meta::is_qualified<T>)
+        friend obj<T> bertrand::borrow(PyObject*);
+        template <meta::has_python T> requires (!meta::is_qualified<T>)
+        friend obj<T> bertrand::steal(PyObject*);
         template <meta::python T> requires (meta::has_cpp<T>)
         friend auto& impl::unwrap(T& obj);
         template <meta::python T> requires (meta::has_cpp<T>)
@@ -210,10 +210,10 @@ namespace impl {
         friend PyObject* bertrand::ptr(T&&);
         template <meta::python T> requires (!meta::is_const<T>)
         friend PyObject* bertrand::release(T&&);
-        template <meta::python T> requires (!meta::is_qualified<T>)
-        friend T bertrand::reinterpret_borrow(PyObject*);
-        template <meta::python T> requires (!meta::is_qualified<T>)
-        friend T bertrand::reinterpret_steal(PyObject*);
+        template <meta::has_python T> requires (!meta::is_qualified<T>)
+        friend obj<T> bertrand::borrow(PyObject*);
+        template <meta::has_python T> requires (!meta::is_qualified<T>)
+        friend obj<T> bertrand::steal(PyObject*);
         template <meta::python T> requires (meta::has_cpp<T>)
         friend auto& impl::unwrap(T& obj);
         template <meta::python T> requires (meta::has_cpp<T>)
@@ -710,25 +710,19 @@ struct interface<Slice> {
     /* Get the start object of the slice.  Note that this might not be an integer. */
     __declspec(property(get = _get_start)) Object start;
     [[nodiscard]] Object _get_start(this auto&& self) {
-        return self->start ?
-            reinterpret_borrow<Object>(self->start) :
-            reinterpret_borrow<Object>(Py_None);
+        return self->start ? borrow<Object>(self->start) : borrow<Object>(Py_None);
     }
 
     /* Get the stop object of the slice.  Note that this might not be an integer. */
     __declspec(property(get = _get_stop)) Object stop;
     [[nodiscard]] Object _get_stop(this auto&& self) {
-        return self->stop ?
-            reinterpret_borrow<Object>(self->stop) :
-            reinterpret_borrow<Object>(Py_None);
+        return self->stop ? borrow<Object>(self->stop) : borrow<Object>(Py_None);
     }
 
     /* Get the step object of the slice.  Note that this might not be an integer. */
     __declspec(property(get = _get_step)) Object step;
     [[nodiscard]] Object _get_step(this auto&& self) {
-        return self->step ?
-            reinterpret_borrow<Object>(self->step) :
-            reinterpret_borrow<Object>(Py_None);
+        return self->step ? borrow<Object>(self->step) : borrow<Object>(Py_None);
     }
 
     /* Normalize the indices of this slice against a container of the given length.
@@ -836,7 +830,7 @@ struct __init__<Slice>                                      : returns<Slice> {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Slice>(result);
+        return steal<Slice>(result);
     }
 };
 
@@ -856,7 +850,7 @@ struct __init__<Slice, Start, Stop, Step>                   : returns<Slice> {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Slice>(result);
+        return steal<Slice>(result);
     }
 };
 
@@ -875,7 +869,7 @@ struct __init__<Slice, Start, Stop>                         : returns<Slice> {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Slice>(result);
+        return steal<Slice>(result);
     }
 };
 
@@ -891,7 +885,7 @@ struct __init__<Slice, Stop>                                : returns<Slice> {
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Slice>(result);
+        return steal<Slice>(result);
     }
 };
 

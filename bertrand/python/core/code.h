@@ -322,20 +322,20 @@ struct __call__<Self, Context>                              : returns<Dict<Str, 
 
 /* Get the first line number of the function. */
 [[nodiscard]] inline Py_ssize_t interface<Code>::_get_line_number(this auto&& self) noexcept {
-    return reinterpret(self)->co_firstlineno;
+    return view(self)->co_firstlineno;
 }
 
 
 /* Get the number of positional arguments for the function. */
 [[nodiscard]] inline Py_ssize_t interface<Code>::_get_argcount(this auto&& self) noexcept {
-    return reinterpret(self)->co_argcount;
+    return view(self)->co_argcount;
 }
 
 
 /* Get the number of positional-only arguments for the function, including those with
 default values.  Does not include variable positional or keyword arguments. */
 [[nodiscard]] inline Py_ssize_t interface<Code>::_get_posonlyargcount(this auto&& self) noexcept {
-    return reinterpret(self)->co_posonlyargcount;
+    return view(self)->co_posonlyargcount;
 }
 
 
@@ -343,25 +343,25 @@ default values.  Does not include variable positional or keyword arguments. */
 default values.  Does not include positional-only or variable positional/keyword
 arguments. */
 [[nodiscard]] inline Py_ssize_t interface<Code>::_get_kwonlyargcount(this auto&& self) noexcept {
-    return reinterpret(self)->co_kwonlyargcount;
+    return view(self)->co_kwonlyargcount;
 }
 
 
 /* Get the number of local variables used by the function (including all parameters). */
 [[nodiscard]] inline Py_ssize_t interface<Code>::_get_nlocals(this auto&& self) noexcept {
-    return reinterpret(self)->co_nlocals;
+    return view(self)->co_nlocals;
 }
 
 
 /* Get the required stack space for the code object. */
 [[nodiscard]] inline Py_ssize_t interface<Code>::_get_stacksize(this auto&& self) noexcept {
-    return reinterpret(self)->co_stacksize;
+    return view(self)->co_stacksize;
 }
 
 
 /* Get an integer encoding flags for the Python interpreter. */
 [[nodiscard]] inline int interface<Code>::_get_flags(this auto&& self) noexcept {
-    return reinterpret(self)->co_flags;
+    return view(self)->co_flags;
 }
 
 
@@ -596,7 +596,7 @@ struct __cast__<T, Frame>                                   : returns<Frame> {
             );
         }
         result->f_lineno = line;
-        return reinterpret_steal<Frame>(reinterpret_cast<PyObject*>(result));
+        return steal<Frame>(reinterpret_cast<PyObject*>(result));
     }
 };
 

@@ -5,7 +5,6 @@
 #include <exception>
 #include <string>
 #include <typeindex>
-#include <unordered_map>
 
 #include <cpptrace/cpptrace.hpp>
 
@@ -13,25 +12,6 @@
 
 
 namespace bertrand {
-
-
-struct Exception;
-
-
-namespace impl {
-
-    /* This map acts as a late-binding vtable for all bertrand exception types.  It
-    holds function pointers that take an arbitrary exception object and construct an
-    equivalent Python exception and set it for the active interpreter.  A program is
-    malformed and will immediately exit if a subclass of `bertrand::Exception` is
-    raised to Python without a corresponding entry in this map. */
-    inline std::unordered_map<std::type_index, void(*)(const Exception&)> exception_to_python;
-
-    /// TODO: I would create another exception_from_python map that is keyed on PyObject*
-    /// and holds void(*)(PyObject*) functions that take a Python error and throw it as
-    /// a proper C++ exception.
-
-}
 
 
 /* The root of the bertrand exception hierarchy.  This and all its subclasses are
@@ -83,7 +63,7 @@ protected:
     }
 
     template <typename Msg> requires (std::constructible_from<std::string, Msg>)
-    explicit constexpr Exception(Msg&& msg, get_trace trace) :
+    explicit constexpr Exception(get_trace trace, Msg&& msg) :
         m_message(std::forward<Msg>(msg)),
         m_skip(trace.skip + 1)  // skip this constructor
     {
@@ -326,8 +306,8 @@ public:
     }
 
     /* The raw text of the exception message, sans exception type and traceback. */
-    constexpr const char* message() const noexcept {
-        return m_message.data();
+    constexpr std::string_view message() const noexcept {
+        return m_message;
     }
 
     /* A resolved trace to the source location where the error occurred, with internal
@@ -364,15 +344,15 @@ public:
         return nullptr;
     }
 
-    /* A type index for this exception, which can be searched in the global to_python()
-    map to find a corresponding callback. */
+    /* A type index for this exception, which can be searched in the global
+    `to_python()` map to find a corresponding callback. */
     virtual std::type_index type() const noexcept {
         return typeid(Exception);
     }
 
     /* The plaintext name of the exception type, displayed immediately before the
     error message. */
-    constexpr virtual const char* name() const noexcept {
+    constexpr virtual std::string_view name() const noexcept {
         return "Exception";
     }
 
@@ -400,7 +380,7 @@ public:
             }
             m_what += name();
             m_what += ": ";
-            m_what += m_message;
+            m_what += message();
         }
         return m_what.data();
     }
@@ -411,53 +391,11 @@ public:
         m_what.clear();
     }
 
-    /// TODO: to_python() will also filter the cpptrace error to stop at the last
-    /// bertrand::Code::operator() call, similar to what I'm currently doing.  If
-    /// the error was already caught from python, then it will already have a coherent
-    /// error trace, and all I have to do is paste the C++ trace to the end of it,
-    /// starting from the most recent frame.
-    /// -> Actually the bertrand::Code::operator() filtering only needs to be done
-    /// if I'm catching a C++ exception from Python?
-
     /* Throw the most recent C++ exception as a corresponding Python error, pushing it
     onto the active interpreter.  If there is no unhandled exception for this thread or
     no callback could be found (for instance if Python isn't loaded), then this will
     terminate the program instead. */
-    static void to_python() noexcept {
-        try {
-            throw;
-
-        } catch (const Exception& exc) {
-            auto it = impl::exception_to_python.find(exc.type());
-            if (it == impl::exception_to_python.end()) {
-                std::cerr <<
-                    "no to_python() handler for exception of type '" +
-                    std::string(exc.name()) + "'";
-                std::exit(1);
-            }
-            it->second(exc.trim_after(1));  // terminate at caller
-
-        } catch (const std::exception& e) {
-            Exception exc(e.what());
-            auto it = impl::exception_to_python.find(exc.type());
-            if (it == impl::exception_to_python.end()) {
-                std::cerr <<
-                    "no to_python() handler for exception of type '" << exc.name() << "'";
-                std::exit(1);
-            }
-            it->second(exc.trim_after(1));  // terminate at caller
-
-        } catch (...) {
-            Exception exc("unknown C++ exception");
-            auto it = impl::exception_to_python.find(exc.type());
-            if (it == impl::exception_to_python.end()) {
-                std::cerr <<
-                    "no to_python() handler for exception of type '" << exc.name() << "'";
-                std::exit(1);
-            }
-            it->second(exc.trim_after(1));  // terminate at caller
-        }
-    }
+    static void to_python() noexcept;
 
     /* Catch an exception from Python, re-throwing it as an equivalent C++ error. */
     [[noreturn]] static void from_python();
@@ -470,20 +408,20 @@ public:
     protected:                                                                          \
                                                                                         \
         template <typename Msg> requires (std::constructible_from<std::string, Msg>)    \
-        explicit constexpr CLS(Msg&& msg, get_trace trace) : BASE(                      \
-            std::forward<Msg>(msg),                                                     \
-            trace++                                                                     \
+        explicit constexpr CLS(get_trace trace, Msg&& msg) : BASE(                      \
+            trace++,                                                                    \
+            std::forward<Msg>(msg)                                                      \
         ) {}                                                                            \
                                                                                         \
     public:                                                                             \
         virtual std::type_index type() const noexcept override { return typeid(CLS); }  \
-        constexpr virtual const char* name() const noexcept override { return #CLS; }   \
+        constexpr virtual std::string_view name() const noexcept override { return #CLS; } \
                                                                                         \
         template <typename Msg = const char*>                                           \
             requires (std::constructible_from<std::string, Msg>)                        \
         explicit constexpr CLS(Msg&& msg = "") : BASE(                                  \
-            std::forward<Msg>(msg),                                                     \
-            get_trace{}                                                                 \
+            get_trace{},                                                                \
+            std::forward<Msg>(msg)                                                      \
         ) {}                                                                            \
                                                                                         \
         template <typename Msg> requires (std::constructible_from<std::string, Msg>)    \
@@ -555,6 +493,21 @@ BERTRAND_EXCEPTION(ValueError, Exception)
 
 
 #undef BERTRAND_EXCEPTION
+
+
+/* A python-style `assert` statement in C++, which is optimized away if built without
+`-DBERTRAND_DEBUG` (release mode).  The only difference between this and the built-in
+C++ `assert()` macro is that this is implemented as a normal function and throws a
+`bertrand::AssertionError` which can be passed up to Python with a coherent traceback.
+It is thus possible to implement pytest-style unit tests using this function just as
+you would in Python. */
+inline void assert_(bool condition, const char* message) {
+    if constexpr (DEBUG) {
+        if (!condition) {
+            throw AssertionError(message);
+        }
+    }
+}
 
 
 }  // namespace bertrand

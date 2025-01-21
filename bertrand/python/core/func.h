@@ -284,7 +284,7 @@ private:
         if (bertrand == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Object>(bertrand);
+        return steal<Object>(bertrand);
     }
 
     static Object import_inspect() {
@@ -294,7 +294,7 @@ private:
         if (inspect == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Object>(inspect);
+        return steal<Object>(inspect);
     }
 
     static Object import_typing() {
@@ -304,7 +304,7 @@ private:
         if (typing == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Object>(typing);
+        return steal<Object>(typing);
     }
 
     static Object import_types() {
@@ -314,7 +314,7 @@ private:
         if (types == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Object>(types);
+        return steal<Object>(types);
     }
 
     Object get_name() {
@@ -324,7 +324,7 @@ private:
             if (name == nullptr) {
                 Exception::from_python();
             }
-            return reinterpret_steal<Object>(name);
+            return steal<Object>(name);
         }
         return impl::template_string<"">();
     }
@@ -351,7 +351,7 @@ private:
             partials(getattr<"__partial__">(m_func, None)),
             self(getattr<"__self__">(
                 m_func,
-                reinterpret_steal<Object>(nullptr)
+                steal<Object>(nullptr)
             )),
             idx(0),
             size(0)
@@ -415,7 +415,7 @@ private:
             }(this->parameters)),
             hints(getattr<"get_type_hints">(ctx.typing)(
                 m_func,
-                arg<"include_extras"> = reinterpret_borrow<Object>(Py_True)
+                arg<"include_extras"> = borrow<Object>(Py_True)
             ))
         {}
     };
@@ -445,7 +445,7 @@ private:
                 return std::string_view(name, size);
             }(ptr(unicode))),
             annotation([](init_imports& ctx, init_signature& sig, PyObject* unicode) {
-                Object result = reinterpret_steal<Object>(PyDict_GetItem(
+                Object result = steal<Object>(PyDict_GetItem(
                     ptr(sig.hints),
                     unicode
                 ));
@@ -455,7 +455,7 @@ private:
                 return parse(result);
             }(ctx, sig, ptr(unicode))),
             default_value(getattr<"default">(param)),
-            partial(reinterpret_steal<Object>(nullptr)),
+            partial(steal<Object>(nullptr)),
             kind([&] {
                 Object py_kind = getattr<"kind">(param);
                 if (py_kind.is(ctx.POSITIONAL_ONLY)) {
@@ -506,11 +506,11 @@ private:
                 PyObject* pair = PyTuple_GET_ITEM(ptr(parts.partials), parts.idx);
                 if (parts.is_positional(pair)) {
                     ++parts.idx;
-                    return reinterpret_borrow<Object>(pair);
+                    return borrow<Object>(pair);
                 }
 
             } else if (idx == 0 && !parts.self.is(nullptr)) {
-                Object result = reinterpret_steal<Object>(PyTuple_Pack(
+                Object result = steal<Object>(PyTuple_Pack(
                     2,
                     ptr(impl::template_string<"">()),
                     ptr(parts.self)
@@ -521,7 +521,7 @@ private:
                 return result;
             }
 
-            return reinterpret_steal<Object>(nullptr);
+            return steal<Object>(nullptr);
         }
 
         static Object partial_pos_or_kw(
@@ -534,7 +534,7 @@ private:
                 PyObject* pair = PyTuple_GET_ITEM(ptr(parts.partials), parts.idx);
                 if (parts.is_positional(pair)) {
                     ++parts.idx;
-                    return reinterpret_borrow<Object>(pair);
+                    return borrow<Object>(pair);
                 }
                 int rc = PyObject_RichCompareBool(
                     PyTuple_GET_ITEM(pair, 0),
@@ -546,11 +546,11 @@ private:
                 }
                 if (rc) {
                     ++parts.idx;
-                    return reinterpret_borrow<Object>(pair);
+                    return borrow<Object>(pair);
                 }
 
             } else if (idx == 0 && !parts.self.is(nullptr)) {
-                Object result = reinterpret_steal<Object>(PyTuple_Pack(
+                Object result = steal<Object>(PyTuple_Pack(
                     2,
                     ptr(impl::template_string<"">()),
                     ptr(parts.self)
@@ -561,7 +561,7 @@ private:
                 return result;
             }
 
-            return reinterpret_steal<Object>(nullptr);
+            return steal<Object>(nullptr);
         }
 
         static Object partial_kwonly(
@@ -583,12 +583,12 @@ private:
                     }
                     if (rc) {
                         ++parts.idx;
-                        return reinterpret_borrow<Object>(pair);
+                        return borrow<Object>(pair);
                     }
                 }
             }
 
-            return reinterpret_steal<Object>(nullptr);
+            return steal<Object>(nullptr);
         }
 
         static Object partial_args(
@@ -596,13 +596,13 @@ private:
             init_partials& parts
         ) {
             if (!parts.partials.is(None) && parts.idx < parts.size) {
-                Object out = reinterpret_steal<Object>(nullptr);
+                Object out = steal<Object>(nullptr);
 
                 while (parts.idx < parts.size) {
                     PyObject* pair = PyTuple_GET_ITEM(ptr(parts.partials), parts.idx);
                     if (parts.is_positional(pair)) {
                         if (out.is(nullptr)) {
-                            out = reinterpret_steal<Object>(PyList_New(1));
+                            out = steal<Object>(PyList_New(1));
                             if (out.is(nullptr)) {
                                 Exception::from_python();
                             }
@@ -619,11 +619,11 @@ private:
                 }
 
                 if (!out.is(nullptr)) {
-                    return reinterpret_steal<Object>(PyList_AsTuple(ptr(out)));
+                    return steal<Object>(PyList_AsTuple(ptr(out)));
                 }
             }
 
-            return reinterpret_steal<Object>(nullptr);
+            return steal<Object>(nullptr);
         }
 
         static Object partial_kwargs(
@@ -631,13 +631,13 @@ private:
             init_partials& parts
         ) {
             if (!parts.partials.is(None) && parts.idx < parts.size) {
-                Object out = reinterpret_steal<Object>(nullptr);
+                Object out = steal<Object>(nullptr);
 
                 while (parts.idx < parts.size) {
                     PyObject* pair = PyTuple_GET_ITEM(ptr(parts.partials), parts.idx);
                     if (!parts.is_positional(pair)) {
                         if (out.is(nullptr)) {
-                            out = reinterpret_steal<Object>(PyList_New(1));
+                            out = steal<Object>(PyList_New(1));
                             if (out.is(nullptr)) {
                                 Exception::from_python();
                             }
@@ -652,11 +652,11 @@ private:
                 }
 
                 if (!out.is(nullptr)) {
-                    return reinterpret_steal<Object>(PyList_AsTuple(ptr(out)));
+                    return steal<Object>(PyList_AsTuple(ptr(out)));
                 }
             }
 
-            return reinterpret_steal<Object>(nullptr);
+            return steal<Object>(nullptr);
         }
     };
 
@@ -666,7 +666,7 @@ private:
         init_signature sig(ctx, m_func);
 
         // allocate new parameters tuple + parameter array + name map
-        Object new_params = reinterpret_steal<Object>(PyTuple_New(sig.size));
+        Object new_params = steal<Object>(PyTuple_New(sig.size));
         if (new_params.is(nullptr)) {
             Exception::from_python();
         }
@@ -718,7 +718,7 @@ private:
         }
 
         // normalize return annotation
-        Object new_return = reinterpret_steal<Object>(PyDict_GetItem(
+        Object new_return = steal<Object>(PyDict_GetItem(
             ptr(sig.hints),
             ptr(impl::template_string<"return">())
         ));
@@ -770,9 +770,9 @@ private:
     size_t m_first_keyword = std::numeric_limits<size_t>::max();
     std::vector<Param> m_parameters;
     std::unordered_set<const Param*, Hash, Equal> m_names;
-    Object m_return_annotation = reinterpret_steal<Object>(nullptr);
+    Object m_return_annotation = steal<Object>(nullptr);
     Object m_signature = initialize();
-    mutable Object m_key = reinterpret_steal<Object>(nullptr);
+    mutable Object m_key = steal<Object>(nullptr);
 
 public:
     explicit inspect(const Object& func) : m_func(func) {}
@@ -785,7 +785,7 @@ public:
             if (str == nullptr) {
                 Exception::from_python();
             }
-            return reinterpret_steal<Object>(str);
+            return steal<Object>(str);
         }(name))
     {}
 
@@ -796,7 +796,7 @@ public:
             if (str == nullptr) {
                 Exception::from_python();
             }
-            return reinterpret_steal<Object>(str);
+            return steal<Object>(str);
         }(name))
     {}
 
@@ -1028,14 +1028,14 @@ public:
         }
 
         if (keys.empty()) {
-            return reinterpret_borrow<Object>(
+            return borrow<Object>(
                 reinterpret_cast<PyObject*>(Py_TYPE(Py_None))
             );
         } else if (keys.size() == 1) {
             return std::move(keys.back());
         } else {
             Object bertrand = import_bertrand();
-            Object key = reinterpret_steal<Object>(
+            Object key = steal<Object>(
                 PyTuple_New(keys.size())
             );
             if (key.is(nullptr)) {
@@ -1045,7 +1045,7 @@ public:
             for (Object& type : keys) {
                 PyTuple_SET_ITEM(ptr(key), i++, release(type));
             }
-            Object specialization = reinterpret_steal<Object>(PyObject_GetItem(
+            Object specialization = steal<Object>(PyObject_GetItem(
                 ptr(getattr<"Union">(bertrand)),
                 ptr(key)
             ));
@@ -1069,7 +1069,7 @@ public:
         Object typing = import_typing();
         Object origin = getattr<"get_origin">(typing)(hint);
         if (origin.is(getattr<"Annotated">(typing))) {
-            parse(reinterpret_borrow<Object>(PyTuple_GET_ITEM(
+            parse(borrow<Object>(PyTuple_GET_ITEM(
                 ptr(getattr<"get_args">(typing)(hint)),
                 0
             )), out);
@@ -1124,7 +1124,7 @@ public:
                 if (hint.is(getattr<"empty">(
                     getattr<"Parameter">(import_inspect())
                 ))) {
-                    out.emplace_back(reinterpret_borrow<Object>(
+                    out.emplace_back(borrow<Object>(
                         reinterpret_cast<PyObject*>(&PyBaseObject_Type)
                     ));
                     return true;
@@ -1175,7 +1175,7 @@ public:
                     Object args = getattr<"get_args">(types)(hint);
                     Py_ssize_t len = PyTuple_GET_SIZE(ptr(args));
                     for (Py_ssize_t i = 0; i < len; ++i) {
-                        parse(reinterpret_borrow<Object>(
+                        parse(borrow<Object>(
                             PyTuple_GET_ITEM(ptr(args), i)
                         ), out);
                     }
@@ -1198,7 +1198,7 @@ public:
                     Object args = getattr<"get_args">(typing)(hint);
                     Py_ssize_t len = PyTuple_GET_SIZE(ptr(args));
                     for (Py_ssize_t i = 0; i < len; ++i) {
-                        parse(reinterpret_borrow<Object>(
+                        parse(borrow<Object>(
                             PyTuple_GET_ITEM(ptr(args), i)
                         ), out);
                     }
@@ -1215,7 +1215,7 @@ public:
                 if (origin.is(nullptr)) {
                     Exception::from_python();
                 } else if (origin.is(getattr<"Any">(typing))) {
-                    out.emplace_back(reinterpret_borrow<Object>(
+                    out.emplace_back(borrow<Object>(
                         reinterpret_cast<PyObject*>(&PyBaseObject_Type)
                     ));
                     return true;
@@ -1254,7 +1254,7 @@ public:
                     }
                     Py_ssize_t len = PyTuple_GET_SIZE(ptr(args));
                     for (Py_ssize_t i = 0; i < len; ++i) {
-                        out.emplace_back(reinterpret_borrow<Object>(
+                        out.emplace_back(borrow<Object>(
                             reinterpret_cast<PyObject*>(Py_TYPE(
                                 PyTuple_GET_ITEM(ptr(args), i)
                             ))
@@ -1270,7 +1270,7 @@ public:
             [](Object hint, std::vector<Object>& out) -> bool {
                 Object typing = import_typing();
                 if (hint.is(getattr<"LiteralString">(typing))) {
-                    out.emplace_back(reinterpret_borrow<Object>(
+                    out.emplace_back(borrow<Object>(
                         reinterpret_cast<PyObject*>(&PyUnicode_Type)
                     ));
                     return true;
@@ -1283,10 +1283,10 @@ public:
             [](Object hint, std::vector<Object>& out) -> bool {
                 Object typing = import_typing();
                 if (hint.is(getattr<"AnyStr">(typing))) {
-                    out.emplace_back(reinterpret_borrow<Object>(
+                    out.emplace_back(borrow<Object>(
                         reinterpret_cast<PyObject*>(&PyUnicode_Type)
                     ));
-                    out.emplace_back(reinterpret_borrow<Object>(
+                    out.emplace_back(borrow<Object>(
                         reinterpret_cast<PyObject*>(&PyBytes_Type)
                     ));
                     return true;
@@ -1317,7 +1317,7 @@ public:
                 if (origin.is(nullptr)) {
                     Exception::from_python();
                 } else if (origin.is(getattr<"TypeGuard">(typing))) {
-                    out.emplace_back(reinterpret_borrow<Object>(
+                    out.emplace_back(borrow<Object>(
                         reinterpret_cast<PyObject*>(&PyBool_Type)
                     ));
                     return true;
@@ -1420,7 +1420,7 @@ public:
         Object Arg = getattr<"Arg">(bertrand);
         Object partials = getattr<"__partial__">(m_func, None);
         Object self = getattr<"__self__">(m_func, None);
-        Object result = reinterpret_steal<Object>(
+        Object result = steal<Object>(
             PyTuple_New(m_parameters.size() + 1)
         );
         if (result.is(nullptr)) {
@@ -1462,7 +1462,7 @@ public:
             }
 
             // parametrize Arg with name and type
-            Object key = reinterpret_steal<Object>(PyTuple_Pack(
+            Object key = steal<Object>(PyTuple_Pack(
                 2,
                 str,
                 ptr(param.type)
@@ -1471,7 +1471,7 @@ public:
             if (key.is(nullptr)) {
                 Exception::from_python();
             }
-            Object specialization = reinterpret_steal<Object>(PyObject_GetItem(
+            Object specialization = steal<Object>(PyObject_GetItem(
                 ptr(Arg),
                 ptr(key)
             ));
@@ -1511,7 +1511,7 @@ public:
             if (param.bound()) {
                 if (param.args()) {
                     size_t size = PyTuple_GET_SIZE(ptr(param.partial));
-                    Object out = reinterpret_steal<Object>(PyTuple_New(size));
+                    Object out = steal<Object>(PyTuple_New(size));
                     if (out.is(nullptr)) {
                         Exception::from_python();
                     }
@@ -1522,13 +1522,13 @@ public:
                         ));
                         PyTuple_SET_ITEM(ptr(out), i, Py_NewRef(type));
                     }
-                    specialization = reinterpret_steal<Object>(PyObject_GetItem(
+                    specialization = steal<Object>(PyObject_GetItem(
                         ptr(getattr<"bind">(specialization)),
                         ptr(out)
                     ));
                 } else if (param.kwargs()) {
                     size_t size = PyTuple_GET_SIZE(ptr(param.partial));
-                    Object out = reinterpret_steal<Object>(PyTuple_New(size));
+                    Object out = steal<Object>(PyTuple_New(size));
                     if (out.is(nullptr)) {
                         Exception::from_python();
                     }
@@ -1537,13 +1537,13 @@ public:
                         PyObject* type = reinterpret_cast<PyObject*>(Py_TYPE(
                             PyTuple_GET_ITEM(pair, 1)
                         ));
-                        Object template_params = reinterpret_steal<Object>(
+                        Object template_params = steal<Object>(
                             PyTuple_Pack(2, PyTuple_GET_ITEM(pair, 0), type)
                         );
                         if (template_params.is(nullptr)) {
                             Exception::from_python();
                         }
-                        Object kw = reinterpret_steal<Object>(PyObject_GetItem(
+                        Object kw = steal<Object>(PyObject_GetItem(
                             ptr(Arg),
                             ptr(template_params)
                         ));
@@ -1552,7 +1552,7 @@ public:
                         }
                         PyTuple_SET_ITEM(ptr(out), i, release(kw));
                     }
-                    specialization = reinterpret_steal<Object>(PyObject_GetItem(
+                    specialization = steal<Object>(PyObject_GetItem(
                         ptr(getattr<"bind">(specialization)),
                         ptr(out)
                     ));
@@ -1564,25 +1564,25 @@ public:
                     if (rc < 0) {
                         Exception::from_python();
                     } else if (rc) {
-                        specialization = reinterpret_steal<Object>(PyObject_GetItem(
+                        specialization = steal<Object>(PyObject_GetItem(
                             ptr(getattr<"bind">(specialization)),
                             type
                         ));
                     } else {
-                        Object template_params = reinterpret_steal<Object>(
+                        Object template_params = steal<Object>(
                             PyTuple_Pack(2, name, type)
                         );
                         if (template_params.is(nullptr)) {
                             Exception::from_python();
                         }
-                        Object kw = reinterpret_steal<Object>(PyObject_GetItem(
+                        Object kw = steal<Object>(PyObject_GetItem(
                             ptr(Arg),
                             ptr(template_params)
                         ));
                         if (kw.is(nullptr)) {
                             Exception::from_python();
                         }
-                        specialization = reinterpret_steal<Object>(PyObject_GetItem(
+                        specialization = steal<Object>(PyObject_GetItem(
                             ptr(getattr<"bind">(specialization)),
                             ptr(kw)
                         ));
@@ -2030,7 +2030,7 @@ namespace impl {
                     using T = base::template at<I>;
                     key->emplace_back(
                         std::string(ArgTraits<T>::name),
-                        py::reinterpret_steal<py::Object>(nullptr),
+                        py::steal<py::Object>(nullptr),
                         ArgTraits<T>::kind
                     );
                     to_overload_key<I + 1, K>{}(std::forward<P>(partial), key);
@@ -2718,7 +2718,7 @@ namespace impl {
                     using type = py::impl::python_type<typename ArgTraits<T>::type>;
                     if (old_idx < old_nargs) {
                         PyObject* value = py::release(implicit_cast<type>(
-                            py::reinterpret_borrow<py::Object>(old[old_idx++])
+                            py::borrow<py::Object>(old[old_idx++])
                         ));
                         array[idx++] = value;
                         hash = hash_combine(
@@ -2755,7 +2755,7 @@ namespace impl {
                     using type = py::impl::python_type<typename ArgTraits<T>::type>;
                     if (old_idx < old_nargs) {
                         PyObject* value = py::release(implicit_cast<type>(
-                            py::reinterpret_borrow<py::Object>(old[old_idx++])
+                            py::borrow<py::Object>(old[old_idx++])
                         ));
                         array[idx++] = value;
                         hash = hash_combine(
@@ -2786,7 +2786,7 @@ namespace impl {
                     using type = py::impl::python_type<typename ArgTraits<T>::type>;
                     if (old_idx < old_nargs) {
                         PyObject* value = py::release(implicit_cast<type>(
-                            py::reinterpret_borrow<py::Object>(old[old_idx++])
+                            py::borrow<py::Object>(old[old_idx++])
                         ));
                         array[idx++] = value;
                         hash = hash_combine(
@@ -2795,7 +2795,7 @@ namespace impl {
                         );
                     } else if (auto node = old_kwargs.extract(std::string_view(name))) {
                         PyObject* value = py::release(implicit_cast<type>(
-                            py::reinterpret_borrow<py::Object>(node.value().value)
+                            py::borrow<py::Object>(node.value().value)
                         ));
                         array[idx++] = value;
                         PyTuple_SET_ITEM(
@@ -2847,7 +2847,7 @@ namespace impl {
                     using type = py::impl::python_type<typename ArgTraits<T>::type>;
                     if (auto node = old_kwargs.extract(std::string_view(name))) {
                         PyObject* value = py::release(implicit_cast<type>(
-                            py::reinterpret_borrow<py::Object>(node.value().value)
+                            py::borrow<py::Object>(node.value().value)
                         ));
                         array[idx++] = value;
                         PyTuple_SET_ITEM(
@@ -2884,7 +2884,7 @@ namespace impl {
                     using type = py::impl::python_type<typename ArgTraits<T>::type>;
                     while (old_idx < old_nargs) {
                         PyObject* value = py::release(implicit_cast<type>(
-                            py::reinterpret_borrow<py::Object>(old[old_idx++])
+                            py::borrow<py::Object>(old[old_idx++])
                         ));
                         array[idx++] = value;
                         hash = hash_combine(
@@ -2909,7 +2909,7 @@ namespace impl {
                         // postfix ++ required to increment before invalidation
                         auto node = old_kwargs.extract(it++);
                         PyObject* value = py::release(implicit_cast<type>(
-                            py::reinterpret_borrow<py::Object>(node.value().value)
+                            py::borrow<py::Object>(node.value().value)
                         ));
                         array[idx++] = value;
                         PyTuple_SET_ITEM(
@@ -3545,10 +3545,10 @@ namespace impl {
                         if (idx < nargs) {
                             std::string message =
                                 "unexpected positional arguments: [" +
-                                py::repr(py::reinterpret_borrow<Object>(array[idx]));
+                                py::repr(py::borrow<Object>(array[idx]));
                             while (++idx < nargs) {
                                 message += ", " + py::repr(
-                                    py::reinterpret_borrow<Object>(array[idx])
+                                    py::borrow<Object>(array[idx])
                                 );
                             }
                             message += "]";
@@ -3846,7 +3846,7 @@ namespace impl {
                     // consume vectorcall args
                     for (size_t i = idx; idx < nargs; ++i) {
                         out.emplace_back(
-                            reinterpret_borrow<Object>(array[i])
+                            borrow<Object>(array[i])
                         );
                     }
                     return out;
@@ -3919,7 +3919,7 @@ namespace impl {
                     for (auto& keyword : kwargs) {
                         out.emplace(
                             keyword.name,
-                            reinterpret_borrow<Object>(keyword.value)
+                            borrow<Object>(keyword.value)
                         );
                     }
                     return out;
@@ -3962,7 +3962,7 @@ namespace impl {
                                 ++idx,
                                 nargs,
                                 std::forward<A>(args)...,
-                                to_arg<I>(reinterpret_borrow<Object>(
+                                to_arg<I>(borrow<Object>(
                                     array[idx - 1]
                                 ))
                             );
@@ -4004,7 +4004,7 @@ namespace impl {
                                 ++idx,
                                 nargs,
                                 std::forward<A>(args)...,
-                                to_arg<I>(reinterpret_borrow<Object>(
+                                to_arg<I>(borrow<Object>(
                                     array[idx - 1]
                                 ))
                             );
@@ -4121,7 +4121,7 @@ namespace impl {
                                 nargs,
                                 kwargs,
                                 std::forward<A>(args)...,
-                                to_arg<I>(reinterpret_borrow<Object>(
+                                to_arg<I>(borrow<Object>(
                                     array[idx - 1]
                                 ))
                             );
@@ -4165,7 +4165,7 @@ namespace impl {
                                 nargs,
                                 kwargs,
                                 std::forward<A>(args)...,
-                                to_arg<I>(reinterpret_borrow<Object>(
+                                to_arg<I>(borrow<Object>(
                                     array[idx - 1]
                                 ))
                             );
@@ -4181,7 +4181,7 @@ namespace impl {
                                 nargs,
                                 kwargs,
                                 std::forward<A>(args)...,
-                                to_arg<I>(reinterpret_borrow<Object>(
+                                to_arg<I>(borrow<Object>(
                                     node.value().value
                                 ))
                             );
@@ -4219,7 +4219,7 @@ namespace impl {
                                 nargs,
                                 kwargs,
                                 std::forward<A>(args)...,
-                                to_arg<I>(reinterpret_borrow<Object>(
+                                to_arg<I>(borrow<Object>(
                                     node.value().value
                                 ))
                             );
@@ -4305,7 +4305,7 @@ namespace impl {
                     // consume vectorcall args
                     for (size_t i = idx; idx < nargs; ++i) {
                         out.emplace_back(
-                            reinterpret_borrow<Object>(array[i])
+                            borrow<Object>(array[i])
                         );
                     }
                     return out;
@@ -4328,7 +4328,7 @@ namespace impl {
                         auto node = kwargs.extract(it++);
                         out.emplace_back(
                             node.value().name,
-                            reinterpret_borrow<Object>(node.value().value)
+                            borrow<Object>(node.value().value)
                         );
                     }
                     return out;
@@ -4371,7 +4371,7 @@ namespace impl {
                 nargs(PyVectorcall_NARGS(nargsf)),
                 kwcount(kwnames ? PyTuple_GET_SIZE(kwnames) : 0),
                 flags(nargsf - nargs),
-                kwnames(py::reinterpret_borrow<py::Object>(kwnames)),
+                kwnames(py::borrow<py::Object>(kwnames)),
                 storage(nullptr),
                 array(args - offset()),
                 hash(0)
@@ -4423,9 +4423,9 @@ namespace impl {
                         if (kwnames == nullptr) {
                             Exception::from_python();
                         }
-                        return reinterpret_steal<Object>(kwnames);
+                        return steal<Object>(kwnames);
                     } else {
-                        return reinterpret_steal<Object>(nullptr);
+                        return steal<Object>(nullptr);
                     }
                 }(kwcount)),
                 storage(new PyObject*[nargs + kwcount + 1]),
@@ -4513,9 +4513,9 @@ namespace impl {
                         if (kwnames == nullptr) {
                             Exception::from_python();
                         }
-                        return reinterpret_steal<Object>(kwnames);
+                        return steal<Object>(kwnames);
                     } else {
-                        return reinterpret_steal<Object>(nullptr);
+                        return steal<Object>(nullptr);
                     }
                 }(kwcount)),
                 storage(nullptr),
@@ -4648,7 +4648,7 @@ namespace impl {
                     other.kwcount = 0;
                     other.nargs = 0;
                     other.flags = 0;
-                    other.kwnames = reinterpret_steal<Object>(nullptr);
+                    other.kwnames = steal<Object>(nullptr);
                     other.storage = nullptr;
                     other.array = nullptr;
                     other.hash = 0;
@@ -4866,7 +4866,7 @@ namespace impl {
                     storage[0] = nullptr;
                     if (n_kw) {
                         Kwargs kwargs {array, nargs, ptr(old_kwnames), kwcount};
-                        kwnames = reinterpret_steal<Object>(PyTuple_New(n_kw));
+                        kwnames = steal<Object>(PyTuple_New(n_kw));
                         call<0, 0, 0>::normalize(
                             storage,
                             idx,
@@ -4929,7 +4929,7 @@ namespace impl {
                         signature::kwonly_idx,
                         signature::kwargs_idx
                     });
-                    Object value = reinterpret_borrow<Object>(array[i + offset]);
+                    Object value = borrow<Object>(array[i + offset]);
                     const Callback* callback;
                     if (i < cutoff) {
                         callback = &positional_table[i];
@@ -4956,10 +4956,10 @@ namespace impl {
 
                 // validate keyword arguments
                 for (size_t i = 0, transition = offset + nargs; i < kwcount; ++i) {
-                    Object name = reinterpret_borrow<Object>(
+                    Object name = borrow<Object>(
                         PyTuple_GET_ITEM(ptr(kwnames), i)
                     );
-                    Object value = reinterpret_borrow<Object>(
+                    Object value = borrow<Object>(
                         array[transition + i]
                     );
                     const Callback* callback = name_table[arg_name(ptr(name))];
@@ -5083,7 +5083,7 @@ namespace impl {
             /* Invoke a Python function using normalized vectorcall arguments, converting
             the result to the expected return type. */
             Return operator()(PyObject* func) const {
-                Object result = reinterpret_steal<Object>(PyObject_Vectorcall(
+                Object result = steal<Object>(PyObject_Vectorcall(
                     func,
                     array,
                     nargsf(),
@@ -5115,7 +5115,7 @@ namespace impl {
                 for (Param param : *this) {
                     key->emplace_back(
                         param.name,
-                        reinterpret_borrow<Object>(param.value).
+                        borrow<Object>(param.value).
                         param.kind
                     );
                 }
@@ -5139,13 +5139,13 @@ namespace impl {
                         "template key"
                     );
                 }
-                Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+                Object bertrand = steal<Object>(PyImport_Import(
                     ptr(impl::template_string<"bertrand">())
                 ));
                 if (bertrand.is(nullptr)) {
                     Exception::from_python();
                 }
-                Object result = reinterpret_steal<Object>(
+                Object result = steal<Object>(
                     PyTuple_New(signature::size() + 1)
                 );
                 if (result.is(nullptr)) {
@@ -5181,7 +5181,7 @@ namespace impl {
                                 Param param = self[pos_idx++];
                                 PyTuple_SET_ITEM(result, tuple_idx++, release(BoundArg[
                                     Type<typename ArgTraits<T>::type>(),
-                                    reinterpret_steal<Object>(
+                                    steal<Object>(
                                         PyObject_Type(param.value)
                                     )
                                 ]));
@@ -5193,7 +5193,7 @@ namespace impl {
 
                         // everything else is converted to a specialization of `bertrand.Arg`
                         } else {
-                            Object specialization = reinterpret_steal<Object>(nullptr);
+                            Object specialization = steal<Object>(nullptr);
 
                             if constexpr (ArgTraits<T>::posonly()) {
                                 specialization = getattr<"pos">(Arg[
@@ -5207,7 +5207,7 @@ namespace impl {
                                     Param param = self[pos_idx++];
                                     specialization = BoundArg[
                                         specialization,
-                                        reinterpret_steal<Object>(
+                                        steal<Object>(
                                             PyObject_Type(param.value)
                                         )
                                     ];
@@ -5225,7 +5225,7 @@ namespace impl {
                                     Param param = self[pos_idx++];
                                     specialization = BoundArg[
                                         specialization,
-                                        reinterpret_steal<Object>(
+                                        steal<Object>(
                                             PyObject_Type(param.value)
                                         )
                                     ];
@@ -5234,7 +5234,7 @@ namespace impl {
                                 )) {
                                     specialization = BoundArg[
                                         specialization,
-                                        reinterpret_steal<Object>(
+                                        steal<Object>(
                                             PyObject_Type(node.value().value)
                                         )
                                     ];
@@ -5253,7 +5253,7 @@ namespace impl {
                                 )) {
                                     specialization = BoundArg[
                                         specialization,
-                                        reinterpret_steal<Object>(
+                                        steal<Object>(
                                             PyObject_Type(node.value().value)
                                         )
                                     ];
@@ -5265,7 +5265,7 @@ namespace impl {
                                     Type<typename ArgTraits<T>::type>()
                                 ];
                                 if (pos_idx < nargs) {
-                                    Object tuple = reinterpret_steal<Object>(
+                                    Object tuple = steal<Object>(
                                         PyTuple_New(nargs - pos_idx + 1)
                                     );
                                     if (tuple.is(nullptr)) {
@@ -5296,7 +5296,7 @@ namespace impl {
                                 auto it = kwargs.begin();
                                 auto end = kwargs.end();
                                 if (it != end) {
-                                    Object tuple = reinterpret_steal<Object>(
+                                    Object tuple = steal<Object>(
                                         PyTuple_New(kwargs.size() + 1)
                                     );
                                     if (tuple.is(nullptr)) {
@@ -5314,10 +5314,10 @@ namespace impl {
                                             ptr(tuple),
                                             i++,
                                             release(getattr<"kw">(Arg[
-                                                reinterpret_borrow<Object>(
+                                                borrow<Object>(
                                                     node.value().unicode
                                                 ),
-                                                reinterpret_steal<Object>(
+                                                steal<Object>(
                                                     node.value().value
                                                 )
                                             ]))
@@ -5430,7 +5430,7 @@ namespace impl {
                 return_is_convertible_to_python
             )
         [[nodiscard]] static Object to_python(D&& defaults) {
-            Object inspect = reinterpret_steal<Object>(PyImport_Import(
+            Object inspect = steal<Object>(PyImport_Import(
                 ptr(impl::template_string<"inspect">())
             ));
             if (inspect.is(nullptr)) {
@@ -5438,7 +5438,7 @@ namespace impl {
             }
 
             // build the parameter annotations
-            Object tuple = reinterpret_steal<Object>(PyTuple_New(signature::n));
+            Object tuple = steal<Object>(PyTuple_New(signature::n));
             if (tuple.is(nullptr)) {
                 Exception::from_python();
             }
@@ -5598,13 +5598,13 @@ namespace impl {
                 sig::return_is_python
             )
         [[nodiscard]] static Object template_key() {
-            Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+            Object bertrand = steal<Object>(PyImport_Import(
                 ptr(impl::template_string<"bertrand">())
             ));
             if (bertrand.is(nullptr)) {
                 Exception::from_python();
             }
-            Object result = reinterpret_steal<Object>(
+            Object result = steal<Object>(
                 PyTuple_New(signature::n + 1)
             );
             if (result.is(nullptr)) {
@@ -5645,7 +5645,7 @@ namespace impl {
 
                     // everything else is converted to a specialization of `bertrand.Arg`
                     } else {
-                        Object str = reinterpret_steal<Object>(
+                        Object str = steal<Object>(
                             PyUnicode_FromStringAndSize(
                                 ArgTraits<T>::name.data(),
                                 ArgTraits<T>::name.size()
@@ -6403,7 +6403,7 @@ namespace impl {
                 [[nodiscard]] Iterator<check> begin(
                     const impl::OverloadKey::Argument& arg = {
                         {},
-                        reinterpret_steal<Object>(nullptr),
+                        steal<Object>(nullptr),
                         impl::ArgKind::POS | impl::ArgKind::KW
                     }
                 ) const {
@@ -6598,7 +6598,7 @@ namespace impl {
                 Edge* root = this->root();
                 if (!root) {
                     auto [types, inserted] = m_leading_edge.emplace(
-                        reinterpret_steal<Object>(nullptr),
+                        steal<Object>(nullptr),
                         typename Node::Kinds{{
                             impl::ArgKind::POS,
                             {Edge{   
@@ -6684,7 +6684,7 @@ namespace impl {
                     if (key == this->function()) {
                         throw KeyError("cannot remove the fallback implementation");
                     }
-                    return reinterpret_borrow<Object>(Py_None);
+                    return borrow<Object>(Py_None);
                 }
 
                 auto it = this->begin();
@@ -6717,7 +6717,7 @@ namespace impl {
                     }
                     ++it;
                 }
-                return reinterpret_borrow<Object>(Py_None);
+                return borrow<Object>(Py_None);
             }
 
             /* Remove all overloads from the trie, resetting it to its default state. */
@@ -6922,7 +6922,7 @@ namespace impl {
                         stack.emplace_back(typename Node::template Iterator<check>{
                             Argument{
                                 .name = "",
-                                .value = reinterpret_steal<Object>(nullptr),
+                                .value = steal<Object>(nullptr),
                                 .kind = impl::ArgKind::POS
                             },
                             leading_edge.begin(),
@@ -6939,7 +6939,7 @@ namespace impl {
                         stack.emplace_back(typename Node::template Iterator<check>{
                             Argument{
                                 .name = "",
-                                .value = reinterpret_steal<Object>(nullptr),
+                                .value = steal<Object>(nullptr),
                                 .kind = impl::ArgKind::POS
                             },
                             leading_edge.begin(),
@@ -6998,12 +6998,12 @@ namespace impl {
                         .vec = {
                             {
                                 .name = "",
-                                .value = reinterpret_steal<Object>(nullptr),
+                                .value = steal<Object>(nullptr),
                                 .kind = impl::ArgKind::VAR | impl::ArgKind::POS
                             },
                             {
                                 .name = "",
-                                .value = reinterpret_steal<Object>(nullptr),
+                                .value = steal<Object>(nullptr),
                                 .kind = impl::ArgKind::VAR | impl::ArgKind::KW
                             }
                         }
@@ -8345,14 +8345,14 @@ check.)doc";
                 )) {
                     return -1;
                 }
-                Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+                Object bertrand = steal<Object>(PyImport_Import(
                     ptr(template_string<"bertrand">())
                 ));
                 if (bertrand.is(nullptr)) {
                     Exception::from_python();
                 }
                 Object wrapped = getattr<"Function">(bertrand)(
-                    reinterpret_borrow<Object>(func)
+                    borrow<Object>(func)
                 );
                 getattr<"bind_partial">(
                     getattr<"__signature__">(wrapped)
@@ -8702,14 +8702,14 @@ type check.)doc";
                 )) {
                     return -1;
                 }
-                Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+                Object bertrand = steal<Object>(PyImport_Import(
                     ptr(template_string<"bertrand">())
                 ));
                 if (bertrand.is(nullptr)) {
                     Exception::from_python();
                 }
                 Object wrapped = getattr<"Function">(bertrand)(
-                    reinterpret_borrow<Object>(func)
+                    borrow<Object>(func)
                 );
                 getattr<"bind_partial">(
                     getattr<"__signature__">(wrapped)
@@ -8749,7 +8749,7 @@ type check.)doc";
                     );
                     return nullptr;
                 }
-                Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+                Object bertrand = steal<Object>(PyImport_Import(
                     ptr(template_string<"bertrand">())
                 ));
                 if (bertrand.is(nullptr)) {
@@ -8773,7 +8773,7 @@ type check.)doc";
                 try {
                     self->member_type = self->member_function_type(
                         bertrand,
-                        reinterpret_borrow<Object>(cls)
+                        borrow<Object>(cls)
                     );
                 } catch (...) {
                     Py_DECREF(result);
@@ -8795,7 +8795,7 @@ type check.)doc";
                 reinterpret_cast<PyObject*>(Py_TYPE(obj)) :
                 type;
             if (self->member_type.is(None)) {
-                Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+                Object bertrand = steal<Object>(PyImport_Import(
                     ptr(template_string<"bertrand">())
                 ));
                 if (bertrand.is(nullptr)) {
@@ -8803,7 +8803,7 @@ type check.)doc";
                 }
                 self->member_type = self->member_function_type(
                     bertrand,
-                    reinterpret_borrow<Object>(cls)
+                    borrow<Object>(cls)
                 );
             }
             PyObject* const args[] = {
@@ -8902,12 +8902,12 @@ type check.)doc";
         Object member_function_type(const Object& bertrand, const Object& cls) const {
             Object key = getattr<"__template_key__">(func);
             Py_ssize_t len = PyTuple_GET_SIZE(ptr(key));
-            Object new_key = reinterpret_steal<Object>(PyTuple_New(len - 1));
+            Object new_key = steal<Object>(PyTuple_New(len - 1));
             if (new_key.is(nullptr)) {
                 Exception::from_python();
             }
-            Object rtype = reinterpret_steal<Object>(PySlice_New(
-                ptr(reinterpret_borrow<Object>(
+            Object rtype = steal<Object>(PySlice_New(
+                ptr(borrow<Object>(
                     reinterpret_cast<PyObject*>(&PyType_Type)
                 )[cls]),
                 Py_None,
@@ -8926,14 +8926,14 @@ type check.)doc";
                     Py_NewRef(PyTuple_GET_ITEM(ptr(key), i))
                 );
             }
-            Object specialization = reinterpret_borrow<Object>(
+            Object specialization = borrow<Object>(
                 reinterpret_cast<PyObject*>(Py_TYPE(ptr(func)))
             )[new_key];
             return getattr<"Function">(bertrand)[specialization];
         }
 
         Object structural_type() const {
-            Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+            Object bertrand = steal<Object>(PyImport_Import(
                 ptr(template_string<"bertrand">())
             ));
             if (bertrand.is(nullptr)) {
@@ -8944,7 +8944,7 @@ type check.)doc";
                 throw TypeError("function must accept at least one positional argument");
             }
             Object specialization = member_function_type(bertrand, self_type);
-            Object result = reinterpret_steal<Object>(PySlice_New(
+            Object result = steal<Object>(PySlice_New(
                 ptr(getattr<"__name__">(func)),
                 ptr(specialization),
                 Py_None
@@ -9147,14 +9147,14 @@ type check.)doc";
                 )) {
                     return -1;
                 }
-                Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+                Object bertrand = steal<Object>(PyImport_Import(
                     ptr(template_string<"bertrand">())
                 ));
                 if (bertrand.is(nullptr)) {
                     Exception::from_python();
                 }
                 self->func = getattr<"Function">(bertrand)(
-                    reinterpret_borrow<Object>(func)
+                    borrow<Object>(func)
                 );
                 return 0;
             } catch (...) {
@@ -9296,13 +9296,13 @@ type check.)doc";
     private:
 
         Object structural_type() const {
-            Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+            Object bertrand = steal<Object>(PyImport_Import(
                 ptr(template_string<"bertrand">())
             ));
             if (bertrand.is(nullptr)) {
                 Exception::from_python();
             }
-            Object result = reinterpret_steal<Object>(PySlice_New(
+            Object result = steal<Object>(PySlice_New(
                 ptr(getattr<"__name__">(func)),
                 reinterpret_cast<PyObject*>(Py_TYPE(ptr(func))),
                 Py_None
@@ -9510,7 +9510,7 @@ structural type check.)doc";
             PyObject* kwargs
         ) noexcept {
             try {
-                Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+                Object bertrand = steal<Object>(PyImport_Import(
                     ptr(template_string<"bertrand">())
                 ));
                 if (bertrand.is(nullptr)) {
@@ -9538,7 +9538,7 @@ structural type check.)doc";
                     &fdel,
                     &doc
                 );
-                Object getter = Function(reinterpret_borrow<Object>(fget));
+                Object getter = Function(borrow<Object>(fget));
                 Object self_type = getattr<"_self_type">(getter);
                 if (self_type.is(None)) {
                     PyErr_SetString(
@@ -9547,7 +9547,7 @@ structural type check.)doc";
                     );
                     return -1;
                 }
-                Object setter = reinterpret_borrow<Object>(fset);
+                Object setter = borrow<Object>(fset);
                 if (fset) {
                     setter = Function(setter);
                     getattr<"bind">(getattr<"__signature__">(setter))(None, None);
@@ -9566,7 +9566,7 @@ structural type check.)doc";
                         return -1;
                     }
                 }
-                Object deleter = reinterpret_borrow<Object>(fdel);
+                Object deleter = borrow<Object>(fdel);
                 if (fdel) {
                     deleter = Function(deleter);
                     getattr<"bind">(getattr<"__signature__">(getter))(None);
@@ -9588,7 +9588,7 @@ structural type check.)doc";
                 self->fget = getter;
                 self->fset = setter;
                 self->fdel = deleter;
-                self->doc = reinterpret_borrow<Object>(doc);
+                self->doc = borrow<Object>(doc);
                 return 0;
             } catch (...) {
                 Exception::to_python();
@@ -9610,14 +9610,14 @@ structural type check.)doc";
                     self->fget = None;
                     return 0;
                 }
-                Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+                Object bertrand = steal<Object>(PyImport_Import(
                     ptr(template_string<"bertrand">())
                 ));
                 if (bertrand.is(nullptr)) {
                     Exception::from_python();
                 }
                 Object func = getattr<"Function">(bertrand)(
-                    reinterpret_borrow<Object>(value)
+                    borrow<Object>(value)
                 );
                 Object self_type = getattr<"_self_type">(func);
                 if (self_type.is(None)) {
@@ -9677,14 +9677,14 @@ structural type check.)doc";
                     self->fset = None;
                     return 0;
                 }
-                Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+                Object bertrand = steal<Object>(PyImport_Import(
                     ptr(template_string<"bertrand">())
                 ));
                 if (bertrand.is(nullptr)) {
                     Exception::from_python();
                 }
                 Object func = getattr<"Function">(bertrand)(
-                    reinterpret_borrow<Object>(value)
+                    borrow<Object>(value)
                 );
                 Object self_type = getattr<"_self_type">(func);
                 if (self_type.is(None)) {
@@ -9728,14 +9728,14 @@ structural type check.)doc";
                     self->fdel = None;
                     return 0;
                 }
-                Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+                Object bertrand = steal<Object>(PyImport_Import(
                     ptr(template_string<"bertrand">())
                 ));
                 if (bertrand.is(nullptr)) {
                     Exception::from_python();
                 }
                 Object func = getattr<"Function">(bertrand)(
-                    reinterpret_borrow<Object>(value)
+                    borrow<Object>(value)
                 );
                 Object self_type = getattr<"_self_type">(func);
                 if (self_type.is(None)) {
@@ -9819,7 +9819,7 @@ structural type check.)doc";
                     );
                     return nullptr;
                 }
-                Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+                Object bertrand = steal<Object>(PyImport_Import(
                     ptr(template_string<"bertrand">())
                 ));
                 if (bertrand.is(nullptr)) {
@@ -9982,7 +9982,7 @@ structural type check.)doc";
     private:
 
         Object structural_type() const {
-            Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+            Object bertrand = steal<Object>(PyImport_Import(
                 ptr(template_string<"bertrand">())
             ));
             if (bertrand.is(nullptr)) {
@@ -9992,7 +9992,7 @@ structural type check.)doc";
             if (rtype.is(None)) {
                 throw TypeError("getter must not return void");
             }
-            Object result = reinterpret_steal<Object>(PySlice_New(
+            Object result = steal<Object>(PySlice_New(
                 ptr(getattr<"__name__">(fget)),
                 ptr(rtype),
                 Py_None
@@ -10147,8 +10147,8 @@ structural type check.)doc";
     //                 );
     //             }
     //             PyObject* func = args[0];
-    //             Object name = reinterpret_steal<Object>(nullptr);
-    //             Object doc = reinterpret_steal<Object>(nullptr);
+    //             Object name = steal<Object>(nullptr);
+    //             Object doc = steal<Object>(nullptr);
     //             if (kwcount) {
     //                 for (size_t i = 0; i < kwcount; ++i) {
     //                     PyObject* key = PyTuple_GET_ITEM(kwnames, i);
@@ -10160,7 +10160,7 @@ structural type check.)doc";
     //                     if (is_name < 0) {
     //                         Exception::from_python();
     //                     } else if (is_name) {
-    //                         name = reinterpret_borrow<Object>(args[nargs + i]);
+    //                         name = borrow<Object>(args[nargs + i]);
     //                         if (!PyUnicode_Check(ptr(name))) {
     //                             throw TypeError(
     //                                 "expected 'name' to be a string, but received " +
@@ -10176,7 +10176,7 @@ structural type check.)doc";
     //                     if (is_doc < 0) {
     //                         Exception::from_python();
     //                     } else if (is_doc) {
-    //                         doc = reinterpret_borrow<Object>(args[nargs + i]);
+    //                         doc = borrow<Object>(args[nargs + i]);
     //                         if (!PyUnicode_Check(ptr(doc))) {
     //                             throw TypeError(
     //                                 "expected 'doc' to be a string, but received " +
@@ -10187,7 +10187,7 @@ structural type check.)doc";
     //                     if (!is_name && !is_doc) {
     //                         throw TypeError(
     //                             "unexpected keyword argument '" +
-    //                             repr(reinterpret_borrow<Object>(key)) + "'"
+    //                             repr(borrow<Object>(key)) + "'"
     //                         );
     //                     }
     //                 }
@@ -10200,7 +10200,7 @@ structural type check.)doc";
     //                 impl::fnv1a_seed,
     //                 impl::fnv1a_prime
     //             };
-    //             Object specialization = reinterpret_steal<Object>(
+    //             Object specialization = steal<Object>(
     //                 PyObject_GetItem(
     //                     self,
     //                     ptr(signature.template_key())
@@ -10215,7 +10215,7 @@ structural type check.)doc";
     //             // for each path through the parameter list.  Note that if the function
     //             // is the only argument and already exactly matches the deduced type,
     //             // then we can just return it directly to avoid unnecessary nesting.
-    //             Object result = reinterpret_steal<Object>(nullptr);
+    //             Object result = steal<Object>(nullptr);
     //             if (signature.size() > 1) {
     //                 if (!kwcount) {
     //                     if (specialization.is(
@@ -10223,7 +10223,7 @@ structural type check.)doc";
     //                     )) {
     //                         return release(specialization);
     //                     }
-    //                     result = reinterpret_steal<Object>(PyObject_CallNoArgs(
+    //                     result = steal<Object>(PyObject_CallNoArgs(
     //                         ptr(specialization)
     //                     ));
     //                 } else if (name.is(nullptr)) {
@@ -10231,7 +10231,7 @@ structural type check.)doc";
     //                         nullptr,
     //                         ptr(doc),
     //                     };
-    //                     result = reinterpret_steal<Object>(PyObject_Vectorcall(
+    //                     result = steal<Object>(PyObject_Vectorcall(
     //                         ptr(specialization),
     //                         args,
     //                         kwcount | PY_VECTORCALL_ARGUMENTS_OFFSET,
@@ -10242,7 +10242,7 @@ structural type check.)doc";
     //                         nullptr,
     //                         ptr(name),
     //                     };
-    //                     result = reinterpret_steal<Object>(PyObject_Vectorcall(
+    //                     result = steal<Object>(PyObject_Vectorcall(
     //                         ptr(specialization),
     //                         args,
     //                         kwcount | PY_VECTORCALL_ARGUMENTS_OFFSET,
@@ -10254,7 +10254,7 @@ structural type check.)doc";
     //                         ptr(name),
     //                         ptr(doc),
     //                     };
-    //                     result = reinterpret_steal<Object>(PyObject_Vectorcall(
+    //                     result = steal<Object>(PyObject_Vectorcall(
     //                         ptr(specialization),
     //                         args,
     //                         kwcount | PY_VECTORCALL_ARGUMENTS_OFFSET,
@@ -10264,7 +10264,7 @@ structural type check.)doc";
     //                 if (result.is(nullptr)) {
     //                     Exception::from_python();
     //                 }
-    //                 Object rc = reinterpret_steal<Object>(PyObject_CallMethodOneArg(
+    //                 Object rc = steal<Object>(PyObject_CallMethodOneArg(
     //                     ptr(result),
     //                     ptr(impl::template_string<"overload">()),
     //                     func
@@ -10283,7 +10283,7 @@ structural type check.)doc";
     //                 )) {
     //                     return release(specialization);
     //                 }
-    //                 result = reinterpret_steal<Object>(PyObject_CallOneArg(
+    //                 result = steal<Object>(PyObject_CallOneArg(
     //                     ptr(specialization),
     //                     func
     //                 ));
@@ -10293,7 +10293,7 @@ structural type check.)doc";
     //                     func,
     //                     ptr(doc),
     //                 };
-    //                 result = reinterpret_steal<Object>(PyObject_Vectorcall(
+    //                 result = steal<Object>(PyObject_Vectorcall(
     //                     ptr(specialization),
     //                     args,
     //                     kwcount + 1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
@@ -10305,7 +10305,7 @@ structural type check.)doc";
     //                     func,
     //                     ptr(name),
     //                 };
-    //                 result = reinterpret_steal<Object>(PyObject_Vectorcall(
+    //                 result = steal<Object>(PyObject_Vectorcall(
     //                     ptr(specialization),
     //                     args,
     //                     kwcount + 1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
@@ -10318,7 +10318,7 @@ structural type check.)doc";
     //                     ptr(name),
     //                     ptr(doc),
     //                 };
-    //                 result = reinterpret_steal<Object>(PyObject_Vectorcall(
+    //                 result = steal<Object>(PyObject_Vectorcall(
     //                     ptr(specialization),
     //                     args,
     //                     kwcount + 1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
@@ -11251,10 +11251,10 @@ parameter is a type object, and thus the method is a class method.)doc";
                         std::to_string(nargs)
                     );
                 }
-                Object name = reinterpret_steal<Object>(nullptr);
-                Object doc = reinterpret_steal<Object>(nullptr);
+                Object name = steal<Object>(nullptr);
+                Object doc = steal<Object>(nullptr);
                 if (kwargs) {
-                    name = reinterpret_steal<Object>(PyDict_GetItem(
+                    name = steal<Object>(PyDict_GetItem(
                         kwargs,
                         ptr(impl::template_string<"name">())
                     ));
@@ -11263,7 +11263,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                             "expected 'name' to be a string, not: " + repr(name)
                         );
                     }
-                    doc = reinterpret_steal<Object>(PyDict_GetItem(
+                    doc = steal<Object>(PyDict_GetItem(
                         kwargs,
                         ptr(impl::template_string<"doc">())
                     ));
@@ -11276,7 +11276,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                     if (observed != PyDict_Size(kwargs)) {
                         throw TypeError(
                             "received unexpected keyword argument(s): " +
-                            repr(reinterpret_borrow<Object>(kwargs))
+                            repr(borrow<Object>(kwargs))
                         );
                     }
                 }
@@ -11407,7 +11407,7 @@ parameter is a type object, and thus the method is a class method.)doc";
         decorator from Python. */
         static PyObject* overload(PyFunction* self, PyObject* func) noexcept {
             try {
-                Object obj = reinterpret_borrow<Object>(func);
+                Object obj = borrow<Object>(func);
                 impl::Inspect signature(obj, Sig::seed, Sig::prime);
                 if (!issubclass<typename Sig::Return>(signature.returns())) {
                     std::string message =
@@ -11428,7 +11428,7 @@ parameter is a type object, and thus the method is a class method.)doc";
         is not found. */
         static PyObject* remove(PyFunction* self, PyObject* func) noexcept {
             try {
-                self->overloads.remove(reinterpret_borrow<Object>(func));
+                self->overloads.remove(borrow<Object>(func));
                 Py_RETURN_NONE;
             } catch (...) {
                 Exception::to_python();
@@ -11469,7 +11469,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                     }
                 }
                 auto key = subscript_key(
-                    reinterpret_borrow<Object>(specifier)
+                    borrow<Object>(specifier)
                 );
                 std::optional<PyObject*> func = self->overloads.get_subclass(key);
                 PyObject* value = func.value_or(Py_None);
@@ -11503,9 +11503,9 @@ parameter is a type object, and thus the method is a class method.)doc";
                     }
                 }
                 auto key = subscript_key(
-                    reinterpret_borrow<Object>(specifier)
+                    borrow<Object>(specifier)
                 );
-                Object func = reinterpret_borrow<Object>(
+                Object func = borrow<Object>(
                     self->overloads.search_subclass(key)
                 );
                 if (func.is(nullptr)) {
@@ -11588,7 +11588,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                         return nullptr;
                     }
                     try {
-                        new (descr) impl::Method(reinterpret_borrow<Object>(self));
+                        new (descr) impl::Method(borrow<Object>(self));
                     } catch (...) {
                         Py_DECREF(descr);
                         throw;
@@ -11627,7 +11627,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                         return nullptr;
                     }
                     try {
-                        new (descr) impl::ClassMethod(reinterpret_borrow<Object>(self));
+                        new (descr) impl::ClassMethod(borrow<Object>(self));
                     } catch (...) {
                         Py_DECREF(descr);
                         throw;
@@ -11652,7 +11652,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                     return nullptr;
                 }
                 try {
-                    new (descr) impl::StaticMethod(reinterpret_borrow<Object>(self));
+                    new (descr) impl::StaticMethod(borrow<Object>(self));
                 } catch (...) {
                     Py_DECREF(descr);
                     throw;
@@ -11722,7 +11722,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                         );
                         return nullptr;
                     }
-                    if (!issubclass<T>(reinterpret_borrow<Object>(cls))) {
+                    if (!issubclass<T>(borrow<Object>(cls))) {
                         PyErr_Format(
                             PyExc_TypeError,
                             "class must be a must be a subclass of %R",
@@ -11887,7 +11887,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                 PyObject* cls = reinterpret_cast<PyObject*>(Py_TYPE(self));
 
                 // get the current function's template key and allocate a copy
-                Object unbound_key = reinterpret_steal<Object>(PyObject_GetAttr(
+                Object unbound_key = steal<Object>(PyObject_GetAttr(
                     cls,
                     ptr(impl::template_string<"__template__">())
                 ));
@@ -11895,7 +11895,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                     return nullptr;
                 }
                 Py_ssize_t len = PyTuple_GET_SIZE(ptr(unbound_key));
-                Object bound_key = reinterpret_steal<Object>(
+                Object bound_key = steal<Object>(
                     PyTuple_New(len - 1)
                 );
                 if (bound_key.is(nullptr)) {
@@ -11905,7 +11905,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                 // the first element encodes the unbound function's return type.  All
                 // we need to do is replace the first index of the slice with the new
                 // type and exclude the first argument from the unbound key
-                Object slice = reinterpret_steal<Object>(PySlice_New(
+                Object slice = steal<Object>(PySlice_New(
                     type == Py_None ?
                         reinterpret_cast<PyObject*>(Py_TYPE(obj)) : type,
                     Py_None,
@@ -11927,7 +11927,7 @@ parameter is a type object, and thus the method is a class method.)doc";
 
                 // once the new key is built, we can index the unbound function type to
                 // get the corresponding Python class for the bound function
-                Object bound_type = reinterpret_steal<Object>(PyObject_GetItem(
+                Object bound_type = steal<Object>(PyObject_GetItem(
                     cls,
                     ptr(bound_key)
                 ));
@@ -12032,7 +12032,7 @@ parameter is a type object, and thus the method is a class method.)doc";
             }
 
             try {
-                Object inspect = reinterpret_steal<Object>(PyImport_Import(
+                Object inspect = steal<Object>(PyImport_Import(
                     ptr(impl::template_string<"inspect">())
                 ));
                 if (inspect.is(nullptr)) {
@@ -12052,7 +12052,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                 Object Parameter = getattr<"Parameter">(inspect);
 
                 // build the parameter annotations
-                Object tuple = reinterpret_steal<Object>(PyTuple_New(Sig::n));
+                Object tuple = steal<Object>(PyTuple_New(Sig::n));
                 if (tuple.is(nullptr)) {
                     return nullptr;
                 }
@@ -12142,7 +12142,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                 );
                 return nullptr;
             }
-            if (!issubclass<T>(reinterpret_borrow<Object>(cls))) {
+            if (!issubclass<T>(borrow<Object>(cls))) {
                 PyErr_Format(
                     PyExc_TypeError,
                     "class must be a must be a subclass of %R",
@@ -12197,7 +12197,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                 );
                 return nullptr;
             }
-            if (!issubclass<T>(reinterpret_borrow<Object>(cls))) {
+            if (!issubclass<T>(borrow<Object>(cls))) {
                 PyErr_Format(
                     PyExc_TypeError,
                     "class must be a must be a subclass of %R",
@@ -12335,7 +12335,7 @@ parameter is a type object, and thus the method is a class method.)doc";
             // ensure at least one possible return type exactly matches the
             // expected template signature
             Object rtype = std::is_void_v<typename Sig::Return> ?
-                reinterpret_borrow<Object>(Py_None) :
+                borrow<Object>(Py_None) :
                 Object(Type<typename Sig::Return>());
             bool match = false;
             for (PyObject* returns : signature.returns()) {
@@ -12347,7 +12347,7 @@ parameter is a type object, and thus the method is a class method.)doc";
             if (!match) {
                 throw TypeError(
                     "base function must return " + repr(rtype) + ", not: '" +
-                    repr(reinterpret_borrow<Object>(signature.returns()[0])) +
+                    repr(borrow<Object>(signature.returns()[0])) +
                     "'"
                 );
             }
@@ -12430,7 +12430,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                         throw TypeError(
                             "expected a keyword argument name as first "
                             "element of slice, not " + repr(
-                                reinterpret_borrow<Object>(slice->start)
+                                borrow<Object>(slice->start)
                             )
                         );
                     }
@@ -12443,18 +12443,18 @@ parameter is a type object, and thus the method is a class method.)doc";
                     if (!PyType_Check(slice->stop)) {
                         throw TypeError(
                             "expected a type as second element of slice, not " +
-                            repr(reinterpret_borrow<Object>(slice->stop))
+                            repr(borrow<Object>(slice->stop))
                         );
                     }
                     if (slice->step != Py_None) {
                         throw TypeError(
                             "keyword argument cannot have a third slice element: " +
-                            repr(reinterpret_borrow<Object>(slice->step))
+                            repr(borrow<Object>(slice->step))
                         );
                     }
                     key.emplace_back(
                         name,
-                        reinterpret_borrow<Object>(slice->stop),
+                        borrow<Object>(slice->stop),
                         impl::ArgKind::KW
                     );
                     hash = impl::hash_combine(
@@ -12474,12 +12474,12 @@ parameter is a type object, and thus the method is a class method.)doc";
                     if (!PyType_Check(item)) {
                         throw TypeError(
                             "expected a type object, not " +
-                            repr(reinterpret_borrow<Object>(item))
+                            repr(borrow<Object>(item))
                         );
                     }
                     key.emplace_back(
                         "",
-                        reinterpret_borrow<Object>(item),
+                        borrow<Object>(item),
                         impl::ArgKind::POS
                     );
                     hash = impl::hash_combine(
@@ -12493,23 +12493,23 @@ parameter is a type object, and thus the method is a class method.)doc";
         }
 
         Object structural_type() const {
-            Object bertrand = reinterpret_steal<Object>(PyImport_Import(
+            Object bertrand = steal<Object>(PyImport_Import(
                 ptr(impl::template_string<"bertrand">())
             ));
             if (bertrand.is(nullptr)) {
                 Exception::from_python();
             }
-            Object cls = reinterpret_steal<Object>(_self_type(*this, nullptr));
+            Object cls = steal<Object>(_self_type(*this, nullptr));
             if (cls.is(None)) {
                 throw TypeError("function must accept at least one positional argument");
             }
             Object key = getattr<"__template_key__">(cls);
             Py_ssize_t len = PyTuple_GET_SIZE(ptr(key));
-            Object new_key = reinterpret_steal<Object>(PyTuple_New(len - 1));
+            Object new_key = steal<Object>(PyTuple_New(len - 1));
             if (new_key.is(nullptr)) {
                 Exception::from_python();
             }
-            Object rtype = reinterpret_steal<Object>(PySlice_New(
+            Object rtype = steal<Object>(PySlice_New(
                 ptr(cls),
                 Py_None,
                 reinterpret_cast<PySliceObject*>(
@@ -12527,10 +12527,10 @@ parameter is a type object, and thus the method is a class method.)doc";
                     Py_NewRef(PyTuple_GET_ITEM(ptr(key), i))
                 );
             }
-            Object specialization = reinterpret_borrow<Object>(
+            Object specialization = borrow<Object>(
                 reinterpret_cast<PyObject*>(Py_Type(ptr(func)))
             )[new_key];
-            Object result = reinterpret_steal<Object>(PySlice_New(
+            Object result = steal<Object>(PySlice_New(
                 ptr(name),
                 ptr(specialization),
                 Py_None
@@ -12546,7 +12546,7 @@ parameter is a type object, and thus the method is a class method.)doc";
             using T = Sig::template at<I>;
             using Traits = ArgTraits<T>;
 
-            Object name = reinterpret_steal<Object>(
+            Object name = steal<Object>(
                 PyUnicode_FromStringAndSize(
                     Traits::name,
                     Traits::name.size()
@@ -12581,7 +12581,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                 ptr(default_value),
                 ptr(annotation),
             };
-            Object kwnames = reinterpret_steal<Object>(
+            Object kwnames = steal<Object>(
                 PyTuple_Pack(4,
                     ptr(impl::template_string<"name">()),
                     ptr(impl::template_string<"kind">()),
@@ -12589,7 +12589,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                     ptr(impl::template_string<"annotation">())
                 )
             );
-            Object result = reinterpret_steal<Object>(PyObject_Vectorcall(
+            Object result = steal<Object>(PyObject_Vectorcall(
                 ptr(Parameter),
                 args + 1,
                 0 | PY_VECTORCALL_ARGUMENTS_OFFSET,
@@ -13130,7 +13130,7 @@ parameter is a type object, and thus the method is a class method.)doc";
 
         static PyObject* __signature__(PyFunction* self, void*) noexcept {
             try {
-                Object inspect = reinterpret_steal<Object>(PyImport_Import(
+                Object inspect = steal<Object>(PyImport_Import(
                     ptr(impl::template_string<"inspect">())
                 ));
                 if (inspect.is(nullptr)) {
@@ -13147,7 +13147,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                     getattr<"parameters">(signature)
                 );
                 size_t size = len(values);
-                Object parameters = reinterpret_steal<Object>(
+                Object parameters = steal<Object>(
                     PyTuple_New(size - 1)
                 );
                 if (parameters.is(nullptr)) {
@@ -13164,7 +13164,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                     );
                 }
                 PyObject* args[] = {nullptr, ptr(parameters)};
-                Object kwnames = reinterpret_steal<Object>(
+                Object kwnames = steal<Object>(
                     PyTuple_Pack(1, ptr(impl::template_string<"parameters">()))
                 );
                 return PyObject_Vectorcall(
@@ -13194,7 +13194,7 @@ parameter is a type object, and thus the method is a class method.)doc";
                     return nullptr;
                 }
                 str += std::string(name, len) + " of ";
-                str += repr(reinterpret_borrow<Object>(self->__self__)) + ">";
+                str += repr(borrow<Object>(self->__self__)) + ">";
                 return PyUnicode_FromStringAndSize(str.c_str(), str.size());
             } catch (...) {
                 Exception::to_python();
@@ -13484,7 +13484,7 @@ struct __template__<F> {
                     PyTuple_SET_ITEM(tuple, I + offset, ptr(type));
                 }
             } else {
-                Object name = reinterpret_steal<Object>(
+                Object name = steal<Object>(
                     PyUnicode_FromStringAndSize(
                         ArgTraits<T>::name,
                         ArgTraits<T>::name.size()
@@ -13517,7 +13517,7 @@ struct __template__<F> {
             }
 
         } else if constexpr (ArgTraits<T>::kw()) {
-            Object name = reinterpret_steal<Object>(
+            Object name = steal<Object>(
                 PyUnicode_FromStringAndSize(
                     ArgTraits<T>::name,
                     ArgTraits<T>::name.size()
@@ -13537,7 +13537,7 @@ struct __template__<F> {
             PyTuple_SET_ITEM(tuple, I + offset, slice);
 
         } else if constexpr (ArgTraits<T>::args()) {
-            Object name = reinterpret_steal<Object>(
+            Object name = steal<Object>(
                 PyUnicode_FromStringAndSize(
                     "*" + ArgTraits<T>::name,
                     ArgTraits<T>::name.size() + 1
@@ -13557,7 +13557,7 @@ struct __template__<F> {
             PyTuple_SET_ITEM(tuple, I + offset, slice);
 
         } else if constexpr (ArgTraits<T>::kwargs()) {
-            Object name = reinterpret_steal<Object>(
+            Object name = steal<Object>(
                 PyUnicode_FromStringAndSize(
                     "**" + ArgTraits<T>::name,
                     ArgTraits<T>::name.size() + 2
@@ -13582,7 +13582,7 @@ struct __template__<F> {
     }
 
     static Object operator()() {
-        Object result = reinterpret_steal<Object>(
+        Object result = steal<Object>(
             PyTuple_New(Func::n + 1 + Func::has_posonly + Func::has_kwonly)
         );
         if (result.is(nullptr)) {
@@ -13593,7 +13593,7 @@ struct __template__<F> {
             Object(None) :
             Object(Type<typename ArgTraits<typename Func::Return>::type>());
         if constexpr (Func::has_self) {
-            Object slice = reinterpret_steal<Object>(PySlice_New(
+            Object slice = steal<Object>(PySlice_New(
                 Type<typename ArgTraits<typename Func::Self>::type>(),
                 Py_None,
                 ptr(rtype)
@@ -13603,7 +13603,7 @@ struct __template__<F> {
             }
             PyTuple_SET_ITEM(ptr(result), 0, release(slice));
         } else {
-            Object slice = reinterpret_steal<Object>(PySlice_New(
+            Object slice = steal<Object>(PySlice_New(
                 Py_None,
                 Py_None,
                 ptr(rtype)
@@ -13644,7 +13644,7 @@ template <typename Return, typename... Target, typename Func, typename... Values
 struct __init__<Function<Return(Target...)>, Func, Values...> {
     using type = Function<Return(Target...)>;
     static type operator()(Func&& func, Values&&... defaults) {
-        return reinterpret_steal<type>(py::Type<type>::__python__::__create__(
+        return steal<type>(py::Type<type>::__python__::__create__(
             "",
             "",
             std::function(std::forward<Func>(func)),
@@ -13669,7 +13669,7 @@ template <
 struct __init__<Function<Return(Target...)>, Name, Func, Values...> {
     using type = Function<Return(Target...)>;
     static type operator()(Name&& name, Func&& func, Values&&... defaults) {
-        return reinterpret_steal<type>(py::Type<type>::__python__::__create__(
+        return steal<type>(py::Type<type>::__python__::__create__(
             std::forward(name),
             "",
             std::function(std::forward<Func>(func)),
@@ -13695,7 +13695,7 @@ template <
 struct __init__<Function<Return(Target...)>, Name, Doc, Func, Values...> {
     using type = Function<Return(Target...)>;
     static type operator()(Name&& name, Doc&& doc, Func&& func, Values&&... defaults) {
-        return reinterpret_steal<type>(py::Type<type>::__python__::__create__(
+        return steal<type>(py::Type<type>::__python__::__create__(
             std::forward(name),
             std::forward<Doc>(doc),
             std::function(std::forward<Func>(func)),
@@ -13841,7 +13841,7 @@ struct TODO2 {
                 throw TypeError(
                     "expected keyword-only argument '" + ArgTraits<at<I>>::name +
                     "' to be a subclass of '" + repr(expected) + "', not: '" +
-                    repr(reinterpret_borrow<Object>(param.value)) + "'"
+                    repr(borrow<Object>(param.value)) + "'"
                 );
             }
 
@@ -13893,7 +13893,7 @@ struct TODO2 {
                     "expected positional-or-keyword argument '" +
                     ArgTraits<at<I>>::name + "' to be a subclass of '" +
                     repr(expected) + "', not: '" +
-                    repr(reinterpret_borrow<Object>(param.value)) + "'"
+                    repr(borrow<Object>(param.value)) + "'"
                 );
             }
 
@@ -13945,7 +13945,7 @@ struct TODO2 {
                     "expected positional-only argument '" +
                     ArgTraits<at<I>>::name + "' to be a subclass of '" +
                     repr(expected) + "', not: '" +
-                    repr(reinterpret_borrow<Object>(param.value)) + "'"
+                    repr(borrow<Object>(param.value)) + "'"
                 );
             }
 
@@ -13982,7 +13982,7 @@ struct TODO2 {
                     "expected variadic positional argument '" +
                     ArgTraits<at<I>>::name + "' to be a subclass of '" +
                     repr(expected) + "', not: '" +
-                    repr(reinterpret_borrow<Object>(param.value)) + "'"
+                    repr(borrow<Object>(param.value)) + "'"
                 );
             }
 
@@ -14019,7 +14019,7 @@ struct TODO2 {
                     "expected variadic keyword argument '" +
                     ArgTraits<at<I>>::name + "' to be a subclass of '" +
                     repr(expected) + "', not: '" +
-                    repr(reinterpret_borrow<Object>(param.value)) + "'"
+                    repr(borrow<Object>(param.value)) + "'"
                 );
             }
 
@@ -14123,7 +14123,7 @@ struct TODO2 {
                 return (
                     (param.kwonly() & (~ArgTraits<at<I>>::opt() | param.opt())) &&
                     (param.name == ArgTraits<at<I>>::name) &&
-                    (issubclass<T>(reinterpret_borrow<Object>(param.value)))
+                    (issubclass<T>(borrow<Object>(param.value)))
                 );
             }
 
@@ -14134,7 +14134,7 @@ struct TODO2 {
                 return (
                     (param.kw() & (~ArgTraits<at<I>>::opt() | param.opt())) &&
                     (param.name == ArgTraits<at<I>>::name) &&
-                    (issubclass<T>(reinterpret_borrow<Object>(param.value)))
+                    (issubclass<T>(borrow<Object>(param.value)))
                 );
             }
 
@@ -14145,7 +14145,7 @@ struct TODO2 {
                 return (
                     (param.pos() & (~ArgTraits<at<I>>::opt() | param.opt())) &&
                     (param.name == ArgTraits<at<I>>::name) &&
-                    (issubclass<T>(reinterpret_borrow<Object>(param.value)))
+                    (issubclass<T>(borrow<Object>(param.value)))
                 );
             }
 
@@ -14153,7 +14153,7 @@ struct TODO2 {
             if (idx < key.size()) {
                 const Param* param = &key[idx];
                 while (param->pos()) {
-                    if (!issubclass<T>(reinterpret_borrow<Object>(param->value))) {
+                    if (!issubclass<T>(borrow<Object>(param->value))) {
                         return false;
                     }
                     ++idx;
@@ -14163,7 +14163,7 @@ struct TODO2 {
                     param = &key[idx];            
                 }
                 if (param->args()) {
-                    if (!issubclass<T>(reinterpret_borrow<Object>(param->value))) {
+                    if (!issubclass<T>(borrow<Object>(param->value))) {
                         return false;
                     }
                     ++idx;
@@ -14179,7 +14179,7 @@ struct TODO2 {
                     if (
                         /// TODO: check to see if the argument is present
                         // !callback(param->name) &&
-                        !issubclass<T>(reinterpret_borrow<Object>(param->value))
+                        !issubclass<T>(borrow<Object>(param->value))
                     ) {
                         return false;
                     }
@@ -14190,7 +14190,7 @@ struct TODO2 {
                     param = &key[idx];
                 }
                 if (param->kwargs()) {
-                    if (!issubclass<T>(reinterpret_borrow<Object>(param->value))) {
+                    if (!issubclass<T>(borrow<Object>(param->value))) {
                         return false;
                     }
                     ++idx;
@@ -14252,11 +14252,11 @@ struct TODO2 {
                     "' must not have a default value"
                 );
             }
-            if (!issubclass<T>(reinterpret_borrow<Object>(param.value))) {
+            if (!issubclass<T>(borrow<Object>(param.value))) {
                 throw TypeError(
                     "expected keyword-only argument '" + ArgTraits<at<I>>::name +
                     "' to be a subclass of '" + repr(Type<T>()) + "', not: '" +
-                    repr(reinterpret_borrow<Object>(param.value)) + "'"
+                    repr(borrow<Object>(param.value)) + "'"
                 );
             }
             ++idx;
@@ -14288,12 +14288,12 @@ struct TODO2 {
                     ArgTraits<at<I>>::name + "' must not have a default value"
                 );
             }
-            if (!issubclass<T>(reinterpret_borrow<Object>(param.value))) {
+            if (!issubclass<T>(borrow<Object>(param.value))) {
                 throw TypeError(
                     "expected positional-or-keyword argument '" +
                     ArgTraits<at<I>>::name + "' to be a subclass of '" +
                     repr(Type<T>()) + "', not: '" +
-                    repr(reinterpret_borrow<Object>(param.value)) + "'"
+                    repr(borrow<Object>(param.value)) + "'"
                 );
             }
             ++idx;
@@ -14325,11 +14325,11 @@ struct TODO2 {
                     "' must not have a default value"
                 );
             }
-            if (!issubclass<T>(reinterpret_borrow<Object>(param.value))) {
+            if (!issubclass<T>(borrow<Object>(param.value))) {
                 throw TypeError(
                     "expected positional argument '" + ArgTraits<at<I>>::name +
                     "' to be a subclass of '" + repr(Type<T>()) + "', not: '" +
-                    repr(reinterpret_borrow<Object>(param.value)) + "'"
+                    repr(borrow<Object>(param.value)) + "'"
                 );
             }
             ++idx;
@@ -14338,12 +14338,12 @@ struct TODO2 {
             if (idx < key.size()) {
                 const Param* param = &key[idx];
                 while (param->pos() && idx < key.size()) {
-                    if (!issubclass<T>(reinterpret_borrow<Object>(param->value))) {
+                    if (!issubclass<T>(borrow<Object>(param->value))) {
                         throw TypeError(
                             "expected positional argument '" +
                             std::string(param->name) + "' to be a subclass of '" +
                             repr(Type<T>()) + "', not: '" +
-                            repr(reinterpret_borrow<Object>(param->value)) + "'"
+                            repr(borrow<Object>(param->value)) + "'"
                         );
                     }
                     ++idx;
@@ -14353,12 +14353,12 @@ struct TODO2 {
                     param = &key[idx];
                 }
                 if (param->args()) {
-                    if (!issubclass<T>(reinterpret_borrow<Object>(param->value))) {
+                    if (!issubclass<T>(borrow<Object>(param->value))) {
                         throw TypeError(
                             "expected variadic positional argument '" +
                             std::string(param->name) + "' to be a subclass of '" +
                             repr(Type<T>()) + "', not: '" +
-                            repr(reinterpret_borrow<Object>(param->value)) + "'"
+                            repr(borrow<Object>(param->value)) + "'"
                         );
                     }
                     ++idx;
@@ -14369,12 +14369,12 @@ struct TODO2 {
             if (idx < key.size()) {
                 const Param* param = &key[idx];
                 while (param->kw() && idx < key.size()) {
-                    if (!issubclass<T>(reinterpret_borrow<Object>(param->value))) {
+                    if (!issubclass<T>(borrow<Object>(param->value))) {
                         throw TypeError(
                             "expected keyword argument '" +
                             std::string(param->name) + "' to be a subclass of '" +
                             repr(Type<T>()) + "', not: '" +
-                            repr(reinterpret_borrow<Object>(param->value)) + "'"
+                            repr(borrow<Object>(param->value)) + "'"
                         );
                     }
                     ++idx;
@@ -14384,12 +14384,12 @@ struct TODO2 {
                     param = &key[idx];
                 }
                 if (param->kwargs()) {
-                    if (!issubclass<T>(reinterpret_borrow<Object>(param->value))) {
+                    if (!issubclass<T>(borrow<Object>(param->value))) {
                         throw TypeError(
                             "expected variadic keyword argument '" +
                             std::string(param->name) + "' to be a subclass of '" +
                             repr(Type<T>()) + "', not: '" +
-                            repr(reinterpret_borrow<Object>(param->value)) + "'"
+                            repr(borrow<Object>(param->value)) + "'"
                         );
                     }
                     ++idx;
@@ -14613,7 +14613,7 @@ namespace impl {
         )
     decltype(auto) call_method(Self&& self, Args&&... args) {
         using Func = __getattr__<std::decay_t<Self>, Name>::type;
-        Object meth = reinterpret_steal<Object>(PyObject_GetAttr(
+        Object meth = steal<Object>(PyObject_GetAttr(
             ptr(self),
             ptr(template_string<Name>())
         ));
@@ -14640,7 +14640,7 @@ namespace impl {
         )
     decltype(auto) call_static(Args&&... args) {
         using Func = __getattr__<std::decay_t<Self>, Name>::type;
-        Object meth = reinterpret_steal<Object>(PyObject_GetAttr(
+        Object meth = steal<Object>(PyObject_GetAttr(
             ptr(Self::type),
             ptr(template_string<Name>())
         ));

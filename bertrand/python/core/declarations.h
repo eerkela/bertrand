@@ -45,6 +45,7 @@
 
 #include <bertrand/common.h>
 #include <bertrand/bitset.h>
+#include <bertrand/except.h>
 #include <bertrand/static_str.h>
 #include <bertrand/static_map.h>
 #include <bertrand/func.h>
@@ -70,6 +71,8 @@ namespace impl {
     struct ItemTag : BertrandTag {};
     struct DictTag : BertrandTag {};
     struct MappingProxyTag : BertrandTag {};
+
+    struct empty_interface : BertrandTag {};
 
     /* Library constructor runs BEFORE a `main()` entry point and ensures the Python
     interpreter is available for any static/global constructors, without explicit
@@ -129,21 +132,6 @@ namespace impl {
 }
 
 
-/* A python-style `assert` statement in C++, which is optimized away if built without
-`-DBERTRAND_DEBUG` (i.e. in release mode).  The only difference between this and the
-built-in `assert()` macro is that this is a standard function and raises a Python
-`AssertionError` with a coherent traceback for cross-language support. */
-template <size_t N>
-[[gnu::always_inline]] inline void assert_(bool, const char(&)[N]);
-
-template <meta::static_str T>
-[[gnu::always_inline]] inline void assert_(bool, const T&);
-
-template <std::convertible_to<std::string_view> T>
-    requires (!meta::string_literal<T> && !meta::static_str<T>)
-[[gnu::always_inline]] inline void assert_(bool, const T&);
-
-
 ///////////////////////////////
 ////    CONTROL STRUCTS    ////
 ///////////////////////////////
@@ -157,11 +145,12 @@ namespace meta {
 
     namespace detail {
         template <typename T>
-        constexpr bool builtin_type = false;
+        inline constexpr bool builtin_type = false;
+        template <>
+        inline constexpr bool builtin_type<Object> = true;
+        template <>
+        inline constexpr bool builtin_type<Int> = true;
     }
-
-    template <typename T>
-    concept bertrand = std::derived_from<std::remove_cvref_t<T>, impl::BertrandTag>;
 
     template <typename T>
     concept python =
@@ -2404,7 +2393,7 @@ accounting for multiple inheritance.  In fact, with a few `using` declarations t
 resolve conflicts, the Object and its Type can even model Python-style MRO, or expose
 multiple overloads at the same time. */
 template <typename T>
-struct interface;
+struct interface : impl::empty_interface {};
 
 
 namespace meta {
@@ -2446,10 +2435,28 @@ namespace meta {
 }  // namespace meta
 
 
-template <typename T = Object> requires (meta::has_python<T>)
+template <meta::py_function Func>
+struct Function;
+template <meta::has_python T = Object>
 struct Type;
 template <static_str Name> requires (meta::arg_name<Name>)
 struct Module;
+template <meta::python... Types>
+    requires (
+        sizeof...(Types) > 1 &&
+        (!meta::is_qualified<Types> && ...) &&
+        meta::types_are_unique<Types...>
+    )
+struct Union;
+template <meta::arg... Attrs>
+    requires (
+        (!meta::is_qualified<Attrs> && ...) &&
+        (!meta::is_qualified<typename arg_traits<Attrs>::type> && ...) &&
+        (meta::python<typename arg_traits<Attrs>::type> && ...) &&
+        meta::strings_are_unique<arg_traits<Attrs>::name...> &&
+        impl::minimal_perfect_hash<arg_traits<Attrs>::name...>::exists
+    )
+struct Intersection;
 struct NoneType;
 struct NotImplementedType;
 struct EllipsisType;
@@ -2487,28 +2494,75 @@ template <meta::python M> requires (!meta::is_qualified<M>)
 struct MappingProxy;
 
 
+template <meta::python T>
+    requires (!meta::is_qualified<T> && !std::same_as<T, NoneType>)
+using Optional = Union<T, NoneType>;
+
+
 namespace meta {
 
     namespace detail {
 
-        /// TODO: this works, but I'll need to whitelist all of the built-in types
-        /// to prevent template errors.  Perhaps what I ought to do is force the
-        /// operators to only accept defined types?  Since the operators will never be
-        /// used at class scope (only within the body of a method), that should avoid
-        /// any issues, right?
-
         template <typename T>
-        static constexpr bool builtin_type<Tuple<T>> = true;
-        template <>
-        static constexpr bool builtin_type<Str> = true;
-
-
-
-
-        template <typename T, typename = void>
-        constexpr bool has_interface = false;
+        inline constexpr bool builtin_type<Function<T>> = true;
         template <typename T>
-        constexpr bool has_interface<T, std::void_t<interface<T>>> = true;
+        inline constexpr bool builtin_type<Type<T>> = true;
+        template <bertrand::static_str Name>
+        inline constexpr bool builtin_type<Module<Name>> = true;
+        template <typename... Ts>
+        inline constexpr bool builtin_type<Union<Ts...>> = true;
+        template <typename... Ts>
+        inline constexpr bool builtin_type<Intersection<Ts...>> = true;
+        template<>
+        inline constexpr bool builtin_type<NoneType> = true;
+        template<>
+        inline constexpr bool builtin_type<NotImplementedType> = true;
+        template<>
+        inline constexpr bool builtin_type<EllipsisType> = true;
+        template<>
+        inline constexpr bool builtin_type<Slice> = true;
+        template<>
+        inline constexpr bool builtin_type<Bool> = true;
+        template<>
+        inline constexpr bool builtin_type<Float> = true;
+        template<>
+        inline constexpr bool builtin_type<Complex> = true;
+        template<>
+        inline constexpr bool builtin_type<Str> = true;
+        template<>
+        inline constexpr bool builtin_type<Bytes> = true;
+        template<>
+        inline constexpr bool builtin_type<ByteArray> = true;
+        template<>
+        inline constexpr bool builtin_type<Date> = true;
+        template<>
+        inline constexpr bool builtin_type<Time> = true;
+        template<>
+        inline constexpr bool builtin_type<Datetime> = true;
+        template<>
+        inline constexpr bool builtin_type<Timedelta> = true;
+        template<>
+        inline constexpr bool builtin_type<Timezone> = true;
+        template<>
+        inline constexpr bool builtin_type<Range> = true;
+        template <typename T>
+        inline constexpr bool builtin_type<List<T>> = true;
+        template <typename T>
+        inline constexpr bool builtin_type<Tuple<T>> = true;
+        template <typename T>
+        inline constexpr bool builtin_type<Set<T>> = true;
+        template <typename T>
+        inline constexpr bool builtin_type<FrozenSet<T>> = true;
+        template <typename K, typename V>
+        inline constexpr bool builtin_type<Dict<K, V>> = true;
+        template <typename M>
+        inline constexpr bool builtin_type<KeyView<M>> = true;
+        template <typename M>
+        inline constexpr bool builtin_type<ValueView<M>> = true;
+        template <typename M>
+        inline constexpr bool builtin_type<ItemView<M>> = true;
+        template <typename M>
+        inline constexpr bool builtin_type<MappingProxy<M>> = true;
 
         template <typename T, typename = void>
         constexpr bool has_type = false;
@@ -2545,7 +2599,10 @@ namespace meta {
     }  // namespace detail
 
     template <typename T>
-    concept has_interface = detail::has_interface<std::remove_cvref_t<T>>;
+    concept has_interface = !inherits<
+        interface<std::remove_cvref_t<T>>,
+        impl::empty_interface
+    >;
 
     template <typename T>
     concept has_type = detail::has_type<std::remove_cvref_t<T>>;
