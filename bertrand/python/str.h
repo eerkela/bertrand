@@ -859,6 +859,60 @@ struct __imul__<L, R>                                       : Returns<Str&> {
 };
 
 
+
+template <impl::inherits<Object> From, typename Char>
+auto __explicit_cast__<From, std::basic_string<Char>>::operator()(From&& from) {
+    PyObject* str = PyObject_Str(reinterpret_cast<PyObject*>(ptr(from)));
+    if (str == nullptr) {
+        Exception::from_python();
+    }
+    if constexpr (sizeof(Char) == 1) {
+        Py_ssize_t size;
+        const char* data = PyUnicode_AsUTF8AndSize(str, &size);
+        if (data == nullptr) {
+            Py_DECREF(str);
+            Exception::from_python();
+        }
+        std::basic_string<Char> result(data, size);
+        Py_DECREF(str);
+        return result;
+
+    } else if constexpr (sizeof(Char) == 2) {
+        PyObject* bytes = PyUnicode_AsUTF16String(str);
+        Py_DECREF(str);
+        if (bytes == nullptr) {
+            Exception::from_python();
+        }
+        std::basic_string<Char> result(
+            reinterpret_cast<const Char*>(PyBytes_AsString(bytes)) + 1,  // skip BOM marker
+            (PyBytes_GET_SIZE(bytes) / sizeof(Char)) - 1
+        );
+        Py_DECREF(bytes);
+        return result;
+
+    } else if constexpr (sizeof(Char) == 4) {
+        PyObject* bytes = PyUnicode_AsUTF32String(str);
+        Py_DECREF(str);
+        if (bytes == nullptr) {
+            Exception::from_python();
+        }
+        std::basic_string<Char> result(
+            reinterpret_cast<const Char*>(PyBytes_AsString(bytes)) + 1,  // skip BOM marker
+            (PyBytes_GET_SIZE(bytes) / sizeof(Char)) - 1
+        );
+        Py_DECREF(bytes);
+        return result;
+
+    } else {
+        static_assert(
+            sizeof(Char) == 1 || sizeof(Char) == 2 || sizeof(Char) == 4,
+            "unsupported character size for string conversion"
+        );
+    }
+}
+
+
+
 }  // namespace py
 
 

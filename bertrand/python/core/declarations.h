@@ -272,33 +272,6 @@ template <typename From, typename To = void>
 struct __cast__                                             : disable {};
 
 
-/// TODO: see if I can eliminate the __explicit_cast__ control struct.  It's
-/// unnecessarily confusing, and can interfere with expected C++ behavior
-/// (i.e. static_cast<> not doing any work at runtime).
-
-
-/* Enables explicit conversions between any `bertrand::Object` subclass and an
-arbitrary type.  This class corresponds to the `static_cast<To>()` operator in C++,
-which is similar to, but more restrictive than the ordinary `__cast__` control struct.
-Specializations of this class MUST implement a custom call operator which takes an
-instance of `From` and returns an instance of `To` (both of which can have arbitrary
-cvref-qualifiers), with the following rules:
-
-1.  If `From` is a C++ type and `To` is a Python type, then `__explicit_cast__<From,
-    To>` will enable an explicit constructor on `To` that accepts a `From` object with
-    the given qualifiers.  Such a constructor will be also called when performing a
-    functional-style cast in C++ (e.g. `To(from)`).
-2.  If `From` is a Python type and `To` is a C++ type, then `__explicit_cast__<From,
-    To>` will enable an explicit conversion operator on `From` that returns a `To`
-    object with the given qualifiers.
-
-Note that normal `__cast__` specializations will always take precedence over explicit
-casts, so this control struct is only used when no implicit conversion would match, and
-the user explicitly specifies the cast. */
-template <typename From, typename To>
-struct __explicit_cast__                                    : disable {};
-
-
 /* Enables the explicit C++ constructor for any `bertrand::Object` subclass.  The
 default specialization delegates to Python by introspecting
 `__getattr__<Self, "__init__">` or `__getattr__<Self, "__new__">` in that order, which
@@ -2951,7 +2924,7 @@ template <meta::has_python T>
 using obj = meta::python_type<T>;
 
 
-}  // namespace py
+}  // namespace bertrand
 
 
 #endif

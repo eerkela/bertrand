@@ -71,6 +71,12 @@ namespace bertrand {
 struct sentinel {};
 
 
+/* A simple convenience struct implementing the overload pattern for `visit()`-style
+functions. */
+template <typename... Funcs>
+struct visitor : Funcs... { using Funcs::operator()...; };
+
+
 namespace impl {
 
     struct virtualenv;

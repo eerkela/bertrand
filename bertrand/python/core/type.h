@@ -8174,7 +8174,7 @@ public:
                     }
                 } else {
                     return std::visit(
-                        Visitor{
+                        visitor{
                             [member](const Cls& obj) {
                                 if constexpr (impl::python_like<T>) {
                                     return Py_NewRef(ptr(obj.*member));
@@ -8240,7 +8240,7 @@ public:
                     }
                 } else {
                     return std::visit(
-                        Visitor{
+                        visitor{
                             [member](Cls& obj) {
                                 if constexpr (impl::python_like<T>) {
                                     return Py_NewRef(ptr(obj.*member));
@@ -8287,7 +8287,7 @@ public:
                     );
                 } else {
                     std::visit(
-                        Visitor{
+                        visitor{
                             [member, new_val](Cls& obj) {
                                 obj.*member = static_cast<T>(
                                     borrow<Object>(new_val)
@@ -9483,15 +9483,6 @@ template <impl::has_cpp Self, typename T>
 struct __cast__<Self, T>                                    : returns<T> {
     static T operator()(const Self& self) {
         return unwrap(self);
-    }
-};
-
-
-template <impl::has_cpp Self, typename T>
-    requires (impl::explicitly_convertible_to<impl::cpp_type<Self>, T>)
-struct __explicit_cast__<Self, T>                           : returns<T> {
-    static T operator()(const Self& self) {
-        return static_cast<T>(unwrap(self));
     }
 };
 

@@ -612,6 +612,376 @@ struct __call__<Self>                                       : returns<Object> {
 };
 
 
+///////////////////////////
+////    STACK TRACE    ////
+///////////////////////////
+
+
+/// TODO: tracebacks should be either deleted or moved later on in the process.
+
+
+struct Traceback;
+
+
+template <>
+struct interface<Traceback> {
+    [[nodiscard]] std::string to_string(this const auto& self);
+};
+
+
+/* A cross-language traceback that records an accurate call stack of a mixed Python/C++
+application. */
+struct Traceback : Object, interface<Traceback> {
+    struct __python__ : cls<__python__, Traceback>, PyTracebackObject {
+        static Type<Traceback> __import__();
+    };
+
+    Traceback(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Traceback(PyObject* p, stolen_t t) : Object(p, t) {}
+
+    template <typename T = Traceback> requires (__initializer__<T>::enable)
+    [[clang::noinline]] Traceback(
+        std::initializer_list<typename __initializer__<T>::type> init
+    ) : Object(__initializer__<T>{}(init)) {}
+
+    template <typename... Args> requires (implicit_ctor<Traceback>::template enable<Args...>)
+    [[clang::noinline]] Traceback(Args&&... args) : Object(
+        implicit_ctor<Traceback>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Traceback>::template enable<Args...>)
+    [[clang::noinline]] explicit Traceback(Args&&... args) : Object(
+        explicit_ctor<Traceback>{},
+        std::forward<Args>(args)...
+    ) {}
+
+};
+
+
+template <>
+struct interface<Type<Traceback>> {
+    [[nodiscard]] static std::string to_string(const auto& self) {
+        return self.to_string();
+    }
+};
+
+
+template <meta::is<cpptrace::stacktrace> T>
+struct __cast__<T>                                          : returns<Traceback> {};
+
+
+/* Converting a `cpptrace::stacktrace_frame` into a Python frame object will synthesize
+an interpreter frame with an empty bytecode object. */
+template <meta::is<cpptrace::stacktrace> T>
+struct __cast__<T, Traceback>                               : returns<Traceback> {
+    static auto operator()(const cpptrace::stacktrace& trace) {
+        // Traceback objects are stored in a singly-linked list, with the most recent
+        // frame at the end of the list and the least frame at the beginning.  As a
+        // result, we need to build them from the inside out, starting with C++ frames.
+        PyTracebackObject* front = impl::build_traceback(trace);
+
+        // continue with the Python frames, again starting with the most recent
+        PyFrameObject* frame = reinterpret_cast<PyFrameObject*>(
+            Py_XNewRef(PyEval_GetFrame())
+        );
+        while (frame != nullptr) {
+            PyTracebackObject* tb = PyObject_GC_New(
+                PyTracebackObject,
+                &PyTraceBack_Type
+            );
+            if (tb == nullptr) {
+                Py_DECREF(frame);
+                Py_DECREF(front);
+                throw std::runtime_error(
+                    "could not create Python traceback object - failed to allocate "
+                    "PyTraceBackObject"
+                );
+            }
+            tb->tb_next = front;
+            tb->tb_frame = frame;
+            tb->tb_lasti = PyFrame_GetLasti(tb->tb_frame) * sizeof(_Py_CODEUNIT);
+            tb->tb_lineno = PyFrame_GetLineNumber(tb->tb_frame);
+            PyObject_GC_Track(tb);
+            front = tb;
+            frame = PyFrame_GetBack(frame);
+        }
+
+        return steal<Traceback>(reinterpret_cast<PyObject*>(front));
+    }
+};
+
+
+/* Default initializing a Traceback object retrieves a trace to the current frame,
+inserting C++ frames where necessary. */
+template <>
+struct __init__<Traceback>                                  : returns<Traceback> {
+    [[clang::noinline]] static auto operator()() {
+        return Traceback(cpptrace::generate_trace(1));
+    }
+};
+
+
+/* Providing an explicit integer will skip that number of frames from either the least
+recent frame (if positive or zero) or the most recent (if negative).  Positive integers
+will produce a traceback with at most the given length, and negative integers will
+reduce the length by at most the given value. */
+template <std::convertible_to<int> T>
+struct __init__<Traceback, T>                               : returns<Traceback> {
+    static auto operator()(int skip) {
+        // if skip is zero, then the result will be empty by definition
+        if (skip == 0) {
+            return steal<Traceback>(nullptr);
+        }
+
+        // compute the full traceback to account for mixed C++ and Python frames
+        Traceback trace(cpptrace::generate_trace(1));
+        PyTracebackObject* curr = reinterpret_cast<PyTracebackObject*>(ptr(trace));
+
+        // if skip is negative, we need to skip the most recent frames, which are
+        // stored at the tail of the list.  Since we don't know the exact length of the
+        // list, we can use a 2-pointer approach wherein the second pointer trails the
+        // first by the given skip value.  When the first pointer reaches the end of
+        // the list, the second pointer will be at the new terminal frame.
+        if (skip < 0) {
+            PyTracebackObject* offset = curr;
+            for (int i = 0; i > skip; ++i) {
+                // the traceback may be shorter than the skip value, in which case we
+                // return an empty traceback
+                if (curr == nullptr) {
+                    return steal<Traceback>(nullptr);
+                }
+                curr = curr->tb_next;
+            }
+
+            while (curr != nullptr) {
+                curr = curr->tb_next;
+                offset = offset->tb_next;
+            }
+
+            // the offset pointer is now at the terminal frame, so we can safely remove
+            // any subsequent frames.  Decrementing the reference count of the next
+            // frame will garbage collect the remainder of the list.
+            curr = offset->tb_next;
+            offset->tb_next = nullptr;
+            Py_DECREF(curr);
+            return trace;
+        }
+
+        // if skip is positive, then we clear from the head, which is much simpler
+        PyTracebackObject* prev = nullptr;
+        for (int i = 0; i < skip; ++i) {
+            // the traceback may be shorter than the skip value, in which case we return
+            // the original traceback
+            if (curr == nullptr) {
+                return trace;
+            }
+            prev = curr;
+            curr = curr->tb_next;
+        }
+        prev->tb_next = nullptr;
+        Py_DECREF(curr);
+        return trace;
+    }
+};
+
+
+/* len(Traceback) yields the overall depth of the stack trace, including both C++ and
+Python frames. */
+template <meta::is<Traceback> Self>
+struct __len__<Self>                                        : returns<size_t> {
+    static auto operator()(const Traceback& self) {
+        PyTracebackObject* tb = reinterpret_cast<PyTracebackObject*>(ptr(self));
+        size_t count = 0;
+        while (tb != nullptr) {
+            ++count;
+            tb = tb->tb_next;
+        }
+        return count;
+    }
+};
+
+
+/* Iterating over the frames yields them in least recent -> most recent order. */
+template <meta::is<Traceback> Self>
+struct __iter__<Self>                                       : returns<Frame> {
+    using iterator_category = std::forward_iterator_tag;
+    using difference_type = std::ptrdiff_t;
+    using value_type = Frame;
+    using reference = Frame&;
+    using pointer = Frame*;
+
+    Traceback traceback;
+    PyTracebackObject* curr;
+
+    __iter__(const Traceback& self) :
+        traceback(self),
+        curr(reinterpret_cast<PyTracebackObject*>(ptr(traceback)))
+    {}
+    __iter__(Traceback&& self) :
+        traceback(std::move(self)),
+        curr(reinterpret_cast<PyTracebackObject*>(ptr(traceback)))
+    {}
+    __iter__(const __iter__& other) : traceback(other.traceback), curr(other.curr) {}
+    __iter__(__iter__&& other) : traceback(std::move(other.traceback)), curr(other.curr) {
+        other.curr = nullptr;
+    }
+
+    __iter__& operator=(const __iter__& other) {
+        if (&other != this) {
+            traceback = other.traceback;
+            curr = other.curr;
+        }
+        return *this;
+    }
+
+    __iter__& operator=(__iter__&& other) {
+        if (&other != this) {
+            traceback = std::move(other.traceback);
+            curr = other.curr;
+            other.curr = nullptr;
+        }
+        return *this;
+    }
+
+    [[nodiscard]] Frame operator*() const;
+
+    __iter__& operator++() {
+        if (curr != nullptr) {
+            curr = curr->tb_next;
+        }
+        return *this;
+    }
+
+    __iter__ operator++(int) {
+        __iter__ copy(*this);
+        if (curr != nullptr) {
+            curr = curr->tb_next;
+        }
+        return copy;
+    }
+
+    [[nodiscard]] friend bool operator==(const __iter__& self, sentinel) {
+        return self.curr == nullptr;
+    }
+
+    [[nodiscard]] friend bool operator==(sentinel, const __iter__& self) {
+        return self.curr == nullptr;
+    }
+
+    [[nodiscard]] friend bool operator!=(const __iter__& self, sentinel) {
+        return self.curr != nullptr;
+    }
+
+    [[nodiscard]] friend bool operator!=(sentinel, const __iter__& self) {
+        return self.curr != nullptr;
+    }
+};
+
+
+/* Reverse iterating over the frames yields them in most recent -> least recent order. */
+template <meta::is<Traceback> Self>
+struct __reversed__<Self>                                   : returns<Traceback> {
+    using iterator_category = std::forward_iterator_tag;
+    using difference_type = std::ptrdiff_t;
+    using value_type = Frame;
+    using reference = Frame&;
+    using pointer = Frame*;
+
+    Traceback traceback;
+    std::vector<PyTracebackObject*> frames;
+    Py_ssize_t index;
+
+    __reversed__(const Traceback& self) : traceback(self) {
+        PyTracebackObject* curr = reinterpret_cast<PyTracebackObject*>(
+            ptr(traceback)
+        );
+        while (curr != nullptr) {
+            frames.push_back(curr);
+            curr = curr->tb_next;
+        }
+        index = std::ssize(frames) - 1;
+    }
+
+    __reversed__(Traceback&& self) : traceback(std::move(self)) {
+        PyTracebackObject* curr = reinterpret_cast<PyTracebackObject*>(
+            ptr(traceback)
+        );
+        while (curr != nullptr) {
+            frames.push_back(curr);
+            curr = curr->tb_next;
+        }
+        index = std::ssize(frames) - 1;
+    }
+
+    __reversed__(const __reversed__& other) :
+        traceback(other.traceback),
+        frames(other.frames),
+        index(other.index)
+    {}
+
+    __reversed__(__reversed__&& other) :
+        traceback(std::move(other.traceback)),
+        frames(std::move(other.frames)),
+        index(other.index)
+    {
+        other.index = -1;
+    }
+
+    __reversed__& operator=(const __reversed__& other) {
+        if (&other != this) {
+            traceback = other.traceback;
+            frames = other.frames;
+            index = other.index;
+        }
+        return *this;
+    }
+
+    __reversed__& operator=(__reversed__&& other) {
+        if (&other != this) {
+            traceback = std::move(other.traceback);
+            frames = std::move(other.frames);
+            index = other.index;
+            other.index = -1;
+        }
+        return *this;
+    }
+
+    [[nodiscard]] value_type operator*() const;
+
+    __reversed__& operator++() {
+        if (index >= 0) {
+            --index;
+        }
+        return *this;
+    }
+
+    __reversed__ operator++(int) {
+        __reversed__ copy(*this);
+        if (index >= 0) {
+            --index;
+        }
+        return copy;
+    }
+
+    [[nodiscard]] friend bool operator==(const __reversed__& self, sentinel) {
+        return self.index == -1;
+    }
+
+    [[nodiscard]] friend bool operator==(sentinel, const __reversed__& self) {
+        return self.index == -1;
+    }
+
+    [[nodiscard]] friend bool operator!=(const __reversed__& self, sentinel) {
+        return self.index != -1;
+    }
+
+    [[nodiscard]] friend bool operator!=(sentinel, const __reversed__& self) {
+        return self.index != -1;
+    }
+};
+
+
 }
 
 

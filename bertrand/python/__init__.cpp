@@ -109,7 +109,6 @@ export namespace py {
     using py::__init__;
     using py::__explicit_init__;
     using py::__cast__;
-    using py::__explicit_cast__;
     using py::__call__;
     using py::__getattr__;
     using py::__setattr__;

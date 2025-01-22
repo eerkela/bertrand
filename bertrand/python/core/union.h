@@ -3,18 +3,10 @@
 
 #include "declarations.h"
 #include "object.h"
-#include "except.h"
 #include "ops.h"
-#include "access.h"
 
 
 namespace bertrand {
-
-
-/* A simple convenience struct implementing the overload pattern for the
-`bertrand::visit()` operator and any similar use cases. */
-template <typename... Funcs>
-struct Visitor : Funcs... { using Funcs::operator()...; };
 
 
 template <meta::has_python T> requires (!std::same_as<T, NoneType>)
@@ -210,28 +202,28 @@ namespace impl {
     template <typename... Prev>
     struct visit_helper<args<Prev...>> {
         // Base case: no more arguments to visit - invoke the visitor function.
-        template <typename Visitor> requires (std::is_invocable_v<Visitor, Prev...>)
-        static decltype(auto) operator()(Visitor&& visitor, Prev... prev) {
-            return std::forward<Visitor>(visitor)(std::forward<Prev>(prev)...);
+        template <typename visitor> requires (std::is_invocable_v<visitor, Prev...>)
+        static decltype(auto) operator()(visitor&& visit, Prev... prev) {
+            return std::forward<visitor>(visit)(std::forward<Prev>(prev)...);
         }
     };
     template <typename... Prev, typename Curr, typename... Next>
     struct visit_helper<args<Prev...>, Curr, Next...> {
         // 1. construct a vtable for the current argument type
-        template <size_t I, typename Visitor>
-            requires (meta::exhaustive<Visitor, Prev..., Curr, Next...>)
+        template <size_t I, typename visitor>
+            requires (meta::exhaustive<visitor, Prev..., Curr, Next...>)
         struct VTable {
             // 1a. determine the common return type for the visitor across all
             //     permutations
-            using Return = meta::visit_returns<Visitor, Prev..., Curr, Next...>;
+            using Return = meta::visit_returns<visitor, Prev..., Curr, Next...>;
 
             // 1b. construct a function pointer for each permutation, which will
             //     reinterpret the union as the correct type and recursively call the
             //     outer visit_helper to advance to the next argument.  Separate
             //     overloads are provided for Python unions and std::variants.
-            static constexpr auto python() -> Return(*)(Visitor, Prev..., Curr, Next...) {
+            static constexpr auto python() -> Return(*)(visitor, Prev..., Curr, Next...) {
                 constexpr auto callback = [](
-                    Visitor visitor,
+                    visitor visit,
                     Prev... prev,
                     Curr curr,
                     Next... next
@@ -240,14 +232,14 @@ namespace impl {
                     using Q = meta::qualify<T, Curr>;
                     if constexpr (std::is_lvalue_reference_v<Curr>) {
                         return visit_helper<args<Prev..., Q>, Next...>{}(
-                            std::forward<Visitor>(visitor),
+                            std::forward<visitor>(visit),
                             std::forward<Prev>(prev)...,
                             reinterpret_cast<Q>(curr),
                             std::forward<Next>(next)...
                         );
                     } else {
                         return visit_helper<args<Prev..., Q>, Next...>{}(
-                            std::forward<Visitor>(visitor),
+                            std::forward<visitor>(visit),
                             std::forward<Prev>(prev)...,
                             reinterpret_cast<std::add_rvalue_reference_t<Q>>(curr),
                             std::forward<Next>(next)...
@@ -256,9 +248,9 @@ namespace impl {
                 };
                 return +callback;
             };
-            static constexpr auto variant() -> Return(*)(Visitor, Prev..., Curr, Next...) {
+            static constexpr auto variant() -> Return(*)(visitor, Prev..., Curr, Next...) {
                 constexpr auto callback = [](
-                    Visitor visitor,
+                    visitor visit,
                     Prev... prev,
                     Curr curr,
                     Next... next
@@ -270,14 +262,14 @@ namespace impl {
                         std::is_const_v<std::remove_reference_t<Curr>>
                     ) {
                         return visit_helper<args<Prev..., Q>, Next...>{}(
-                            std::forward<Visitor>(visitor),
+                            std::forward<visitor>(visit),
                             std::forward<Prev>(prev)...,
                             std::get<I>(curr),
                             std::forward<Next>(next)...
                         );
                     } else {
                         return visit_helper<args<Prev..., Q>, Next...>{}(
-                            std::forward<Visitor>(visitor),
+                            std::forward<visitor>(visit),
                             std::forward<Prev>(prev)...,
                             std::move(std::get<I>(curr)),
                             std::forward<Next>(next)...
@@ -290,9 +282,9 @@ namespace impl {
 
         // 2. trigger the dispatch algorithm, unwrapping the correct union type for
         //    every argument and invoking the visitor with the correct permutation
-        template <typename Visitor>
+        template <typename visitor>
         static decltype(auto) operator()(
-            Visitor&& visitor,
+            visitor&& visit,
             Prev... prev,
             Curr curr,
             Next... next
@@ -300,11 +292,11 @@ namespace impl {
             // 2a. build and invoke a vtable for `bertrand::Union` types
             if constexpr (meta::Union<Curr>) {
                 constexpr auto vtable = []<size_t... Is>(std::index_sequence<Is...>) {
-                    return std::array{VTable<Is, Visitor>::python()...};
+                    return std::array{VTable<Is, visitor>::python()...};
                 }(std::make_index_sequence<std::remove_cvref_t<Curr>::size()>{});
 
                 return vtable[curr.m_index](
-                    std::forward<Visitor>(visitor),
+                    std::forward<visitor>(visit),
                     std::forward<Prev>(prev)...,
                     std::forward<Curr>(curr),
                     std::forward<Next>(next)...
@@ -313,11 +305,11 @@ namespace impl {
             // 2b. build and invoke a vtable for `std::variant` types
             } else if constexpr (meta::is_variant<Curr>) {
                 constexpr auto vtable = []<size_t... Is>(std::index_sequence<Is...>) {
-                    return std::array{VTable<Is, Visitor>::variant()...};
+                    return std::array{VTable<Is, visitor>::variant()...};
                 }(std::make_index_sequence<std::variant_size_v<std::remove_cvref_t<Curr>>>{});
 
                 return vtable[curr.index()](
-                    std::forward<Visitor>(visitor),
+                    std::forward<visitor>(visit),
                     std::forward<Prev>(prev)...,
                     std::forward<Curr>(curr),
                     std::forward<Next>(next)...
@@ -326,7 +318,7 @@ namespace impl {
             // 2c. pass through non-union types as-is, without any vtables
             } else {
                 return visit_helper<args<Prev..., Curr>, Next...>{}(
-                    std::forward<Visitor>(visitor),
+                    std::forward<visitor>(visit),
                     std::forward<Prev>(prev)...,
                     std::forward<Curr>(curr),
                     std::forward<Next>(next)...
@@ -1151,27 +1143,6 @@ struct __cast__<From, To>                                   : returns<To> {
     static To operator()(From from) {
         return std::forward<From>(from).visit([](auto&& value) -> To {
             return std::forward<decltype(value)>(value);
-        });
-    }
-};
-
-
-/* Unversal explicit conversion from a union to any type for which ANY elements of the
-union are explicitly convertible.  This can potentially raise an error if the actual
-type contained within the union does not support the conversion. */
-template <meta::Union From, typename To>
-    requires (!meta::Union<To> && impl::UnionToType<From>::template convert<To>)
-struct __explicit_cast__<From, To>                          : returns<To> {
-    static To operator()(From from) {
-        return std::forward<From>(from).visit([](auto&& value) -> To {
-            if constexpr (__explicit_cast__<decltype(value), To>::enable) {
-                return static_cast<To>(std::forward<decltype(value)>(value));
-            } else {
-                throw TypeError(
-                    "cannot convert from '" + type_name<decltype(value)> + "' to '" +
-                    type_name<To> + "'"
-                );
-            }
         });
     }
 };

@@ -188,6 +188,127 @@ template <typename T>
 }
 
 
+/// TODO: implement the extra overloads for Object, Union, Type, and Tuple of
+/// any of the above for type checks.
+
+
+/* Does a compile-time check to see if the derived type inherits from the base type.
+Ordinarily, this is equivalent to a `std::derived_from<>` concept, except that custom
+logic is allowed by defining a zero-argument call operator in a specialization of
+`__issubclass__`, and `interface<T>` specializations are used to handle Python objects
+in a way that allows for multiple inheritance. */
+template <meta::python Derived, meta::python Base>
+    requires (
+        !meta::is_qualified<Derived> &&
+        !meta::is_qualified<Base> && (
+            std::is_invocable_r_v<bool, __issubclass__<Derived, Base>> ||
+            !std::is_invocable_v<__issubclass__<Derived, Base>>
+        )
+    )
+[[nodiscard]] constexpr bool issubclass() {
+    if constexpr (std::is_invocable_v<__issubclass__<Derived, Base>>) {
+        return __issubclass__<Derived, Base>{}();
+    } else if constexpr (meta::has_interface<Base>) {
+        return meta::inherits<Derived, interface<Base>>;
+    } else {
+        return meta::inherits<Derived, Base>;
+    }
+}
+
+
+/* Devolves to a compile-time `issubclass<Derived, Base>()` check unless the object is
+a dynamic object which may be narrowed to a single type, or a one-argument call
+operator is defined in a specialization of `__issubclass__`. */
+template <meta::python Base, meta::python Derived>
+    requires (
+        !meta::is_qualified<Base> &&
+        std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, Derived>
+    )
+[[nodiscard]] constexpr bool issubclass(Derived&& obj) {
+    if constexpr (DEBUG) {
+        assert_(
+            ptr(obj) != nullptr,
+            "issubclass() cannot be called on a null object."
+        );
+    }
+    return __issubclass__<Derived, Base>{}(std::forward<Derived>(obj));
+}
+
+
+/* Equivalent to Python `issubclass(obj, base)`.  This overload must be explicitly
+enabled by defining a two-argument call operator in a specialization of
+`__issubclass__`.  The derived type must be a single type or a dynamic object which can
+be narrowed to a single type, and the base must be type-like, a union of types, or a
+dynamic object which can be narrowed to such. */
+template <meta::python Derived, meta::python Base>
+    requires (std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, Derived, Base>)
+[[nodiscard]] constexpr bool issubclass(Derived&& obj, Base&& base) {
+    if constexpr (DEBUG) {
+        assert_(
+            ptr(obj) != nullptr,
+            "left operand to issubclass() cannot be a null object."
+        );
+        assert_(
+            ptr(base) != nullptr,
+            "right operand to issubclass() cannot be a null object."
+        );
+    }
+    return __issubclass__<Derived, Base>{}(
+        std::forward<Derived>(obj),
+        std::forward<Base>(base)
+    );
+}
+
+
+/* Checks if the given object can be safely converted to the specified base type.  This
+is automatically called whenever a Python object is narrowed from a parent type to one
+of its subclasses. */
+template <meta::python Base, meta::python Derived>
+    requires (
+        !meta::is_qualified<Base> && (
+            std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, Derived> ||
+            !std::is_invocable_v<__isinstance__<Derived, Base>>
+        )
+    )
+[[nodiscard]] constexpr bool isinstance(Derived&& obj) {
+    if constexpr (DEBUG) {
+        assert_(
+            ptr(obj) != nullptr,
+            "isinstance() cannot be called on a null object."
+        );
+    }
+    if constexpr (std::is_invocable_v<__isinstance__<Derived, Base>, Derived>) {
+        return __isinstance__<Derived, Base>{}(std::forward<Derived>(obj));
+    } else {
+        return issubclass<std::remove_cvref_t<Derived>, Base>();
+    }
+}
+
+
+/* Equivalent to Python `isinstance(obj, base)`.  This overload must be explicitly
+enabled by defining a two-argument call operator in a specialization of
+`__isinstance__`.  By default, this is only done for bases which are type-like, a union
+of types, or a dynamic object which can be narrowed to either of the above. */
+template <meta::python Derived, meta::python Base>
+    requires (std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, Derived, Base>)
+[[nodiscard]] constexpr bool isinstance(Derived&& obj, Base&& base) {
+    if constexpr (DEBUG) {
+        assert_(
+            ptr(obj) != nullptr,
+            "left operand to isinstance() cannot be a null object."
+        );
+        assert_(
+            ptr(base) != nullptr,
+            "right operand to isinstance() cannot be a null object."
+        );
+    }
+    return __isinstance__<Derived, Base>{}(
+        std::forward<Derived>(obj),
+        std::forward<Base>(base)
+    );
+}
+
+
 template <>
 struct interface<Object> {};
 template <>
@@ -200,13 +321,6 @@ runtime `isinstance()` check, and raises a `TypeError` if the check fails. */
 struct Object : interface<Object> {
 private:
 
-    /* A convenience struct implementing the overload pattern for visiting a
-    std::variant. */
-    template <typename... Ts>
-    struct Visitor : Ts... {
-        using Ts::operator()...;
-    };
-
     /* A helper class that simplifies the creation of new Python types within a
     `def::__export__()` script, which exposes the type's interface to Python.  `Cls`
     refers to the type being exposed, and may refer to either an external C++ type or
@@ -218,8 +332,6 @@ private:
     struct Bindings;
 
 protected:
-    PyObject* m_ptr;
-
     struct borrowed_t {};
     struct stolen_t {};
 
@@ -236,110 +348,6 @@ protected:
     template <meta::python T> requires (meta::has_cpp<T>)
     friend const auto& impl::unwrap(const T& obj);
 
-    /// TODO: lift the static assertion here into a template constraint applied to/by
-    /// the ctor classes
-
-    template <typename T>
-    struct implicit_ctor {
-        template <typename... Fs>
-        struct helper { static constexpr bool enable = false; };
-        template <>
-        struct helper<> {
-            static constexpr bool enable = __init__<T>::enable;
-            template <typename... Args>
-            static auto operator()(Args... args) {
-                return __init__<T>{}(std::forward<Args>(args)...);
-            }
-        };
-        template <typename F>
-        struct helper<F> {
-            static constexpr bool enable =
-                !meta::inherits<F, Object> &&
-                __cast__<F, T>::enable &&
-                std::is_invocable_r_v<T, __cast__<F, T>, F>;
-            template <typename... Args>
-            static auto operator()(Args... args) {
-                return __cast__<F, T>{}(std::forward<Args>(args)...);
-            }
-        };
-        template <typename... Args>
-        static constexpr bool enable = helper<Args...>::enable;
-        template <typename... Args>
-        static auto operator()(Args... args) {
-            return helper<Args...>{}(std::forward<Args>(args)...);
-        }
-    };
-
-    template <typename T>
-    struct explicit_ctor {
-        template <typename... Fs>
-        struct helper {
-            template <typename... Args>
-            static constexpr bool enable =
-                __init__<T, Args...>::enable &&
-                std::is_invocable_r_v<T, __init__<T, Args...>, Args...>;
-            template <typename... Args>
-            static auto operator()(Args... args) {
-                return __init__<T, Args...>{}(std::forward<Args>(args)...);
-            }
-        };
-        template <typename F>
-            requires (!__init__<T, F>::enable && __explicit_cast__<F, T>::enable)
-        struct helper<F> {
-            static constexpr bool enable =
-                !meta::inherits<F, Object> &&
-                std::is_invocable_r_v<T, __explicit_cast__<F, T>, F>;
-            template <typename... Args>
-            static auto operator()(Args... args) {
-                return __explicit_cast__<F, T>{}(std::forward<Args>(args)...);
-            }
-        };
-        template <typename... Args>
-        static constexpr bool enable =
-            !implicit_ctor<T>::template enable<Args...> &&
-            helper<Args...>::template enable<Args...>;
-        template <typename... Args>
-        static auto operator()(Args... args) {
-            return helper<Args...>{}(std::forward<Args>(args)...);
-        }
-    };
-
-    template <std::derived_from<Object> T, typename... Args>
-    explicit Object(implicit_ctor<T>, Args&&... args) : m_ptr(release((
-        impl::Interpreter::init(),  // comma operator
-        implicit_ctor<T>{}(std::forward<Args>(args)...)
-    ))) {
-        using Return = std::invoke_result_t<__init__<T, Args...>, Args...>;
-        static_assert(
-            std::is_same_v<Return, T>,
-            "Implicit constructor must return a new instance of type T."
-        );
-        if constexpr (DEBUG) {
-            assert_(
-                m_ptr != nullptr,
-                "Implicit constructor cannot return a null object."
-            );
-        }
-    }
-
-    template <std::derived_from<Object> T, typename... Args>
-    explicit Object(explicit_ctor<T>, Args&&... args) : m_ptr(release((
-        impl::Interpreter::init(),  // comma operator
-        explicit_ctor<T>{}(std::forward<Args>(args)...)
-    ))) {
-        using Return = std::invoke_result_t<__init__<T, Args...>, Args...>;
-        static_assert(
-            std::is_same_v<Return, T>,
-            "Explicit constructor must return a new instance of type T."
-        );
-        if constexpr (DEBUG) {
-            assert_(
-                m_ptr != nullptr,
-                "Explicit constructor cannot return a null object."
-            );
-        }
-    }
-
     /* A CRTP base class that generates bindings for a new Python type that wraps an
     external C++ type.
 
@@ -350,9 +358,6 @@ protected:
     template <typename CRTP, typename Derived, typename CppType = void>
     struct cls : PyObject, impl::BertrandTag {
     protected:
-
-        template <typename... Ts>
-        using Visitor = Visitor<Ts...>;
 
         template <static_str ModName>
         using Bindings = Object::Bindings<CppType, CRTP, Derived, ModName>;
@@ -599,6 +604,99 @@ protected:
 
     };
 
+    /// TODO: lift the static assertion here into a template constraint applied to/by
+    /// the ctor classes
+
+    template <typename T>
+    struct implicit_ctor {
+        template <typename... Fs>
+        struct helper { static constexpr bool enable = false; };
+        template <>
+        struct helper<> {
+            static constexpr bool enable = __init__<T>::enable;
+            template <typename... Args>
+            static auto operator()(Args... args) {
+                return __init__<T>{}(std::forward<Args>(args)...);
+            }
+        };
+        template <typename F>
+        struct helper<F> {
+            static constexpr bool enable =
+                !meta::inherits<F, Object> &&
+                __cast__<F, T>::enable &&
+                std::is_invocable_r_v<T, __cast__<F, T>, F>;
+            template <typename... Args>
+            static auto operator()(Args... args) {
+                return __cast__<F, T>{}(std::forward<Args>(args)...);
+            }
+        };
+        template <typename... Args>
+        static constexpr bool enable = helper<Args...>::enable;
+        template <typename... Args>
+        static auto operator()(Args&&... args) {
+            return helper<Args...>{}(std::forward<Args>(args)...);
+        }
+    };
+
+    template <typename T>
+    struct explicit_ctor {
+        template <typename... Args>
+        struct helper {
+            static constexpr bool enable =
+                __init__<T, Args...>::enable &&
+                std::is_invocable_r_v<T, __init__<T, Args...>, Args...>;
+            static auto operator()(Args... args) {
+                return __init__<T, Args...>{}(std::forward<Args>(args)...);
+            }
+        };
+        template <typename... Args>
+        static constexpr bool enable =
+            !implicit_ctor<T>::template enable<Args...> &&
+            helper<Args...>::enable;
+        template <typename... Args>
+        static auto operator()(Args&&... args) {
+            return helper<Args...>{}(std::forward<Args>(args)...);
+        }
+    };
+
+    PyObject* m_ptr;
+
+    template <std::derived_from<Object> T, typename... Args>
+    explicit Object(implicit_ctor<T>, Args&&... args) : m_ptr(release((
+        impl::Interpreter::init(),  // comma operator
+        implicit_ctor<T>{}(std::forward<Args>(args)...)
+    ))) {
+        using Return = std::invoke_result_t<__init__<T, Args...>, Args...>;
+        static_assert(
+            std::is_same_v<Return, T>,
+            "Implicit constructor must return a new instance of type T."
+        );
+        if constexpr (DEBUG) {
+            assert_(
+                m_ptr != nullptr,
+                "Implicit constructor cannot return a null object."
+            );
+        }
+    }
+
+    template <std::derived_from<Object> T, typename... Args>
+    explicit Object(explicit_ctor<T>, Args&&... args) : m_ptr(release((
+        impl::Interpreter::init(),  // comma operator
+        explicit_ctor<T>{}(std::forward<Args>(args)...)
+    ))) {
+        using Return = std::invoke_result_t<__init__<T, Args...>, Args...>;
+        static_assert(
+            std::is_same_v<Return, T>,
+            "Explicit constructor must return a new instance of type T."
+        );
+        if constexpr (DEBUG) {
+            assert_(
+                m_ptr != nullptr,
+                "Explicit constructor cannot return a null object."
+            );
+        }
+    }
+
 public:
     struct __python__ : cls<__python__, Object>, PyObject {
         static Type<Object> __import__();
@@ -664,7 +762,10 @@ public:
     /* Copy assignment operator. */
     Object& operator=(const Object& other) noexcept {
         if constexpr (DEBUG) {
-            assert_(ptr(other) != nullptr, "Cannot copy-assign from a null object.");
+            assert_(
+                ptr(other) != nullptr,
+                "Cannot copy-assign from a null object."
+            );
         }
         if (this != &other) {
             PyObject* temp = m_ptr;
@@ -677,7 +778,10 @@ public:
     /* Move assignment operator. */
     Object& operator=(Object&& other) noexcept {
         if constexpr (DEBUG) {
-            assert_(ptr(other) != nullptr, "Cannot move-assign from a null object.");
+            assert_(
+                ptr(other) != nullptr,
+                "Cannot move-assign from a null object."
+            );
         }
         if (this != &other) {
             PyObject* temp = m_ptr;
@@ -730,16 +834,22 @@ public:
         return __cast__<Self, T>{}(std::forward<Self>(self));
     }
 
-    /* Universal explicit conversion operator.  Implemented via the __explicit_cast__
-    control struct. */
-    template <typename Self, typename T>
-        requires (
-            !__cast__<Self, T>::enable &&
-            __explicit_cast__<Self, T>::enable &&
-            std::is_invocable_r_v<T, __explicit_cast__<Self, T>, Self>
-        )
-    [[nodiscard]] explicit operator T(this Self&& self) {
-        return __explicit_cast__<Self, T>{}(std::forward<Self>(self));
+    /* Contextually convert a Python object to a boolean, allowing Python-style truth
+    checks. */
+    template <typename Self>
+    [[nodiscard]] explicit operator bool(this Self&& self) {
+        if constexpr (
+            meta::has_cpp<Self> &&
+            meta::has_operator_bool<meta::cpp_type<Self>>
+        ) {
+            return static_cast<bool>(from_python(std::forward<Self>(self)));
+        } else {
+            int result = PyObject_IsTrue(ptr(std::forward<Self>(self)));
+            if (result < 0) {
+                Exception::from_python();
+            }
+            return result;
+        }
     }
 
     /* Index operator.  Specific key and element types can be controlled via the
@@ -768,7 +878,23 @@ public:
                 )
             )
         )
-    decltype(auto) operator[](this Self&& self, Key&&... key);
+    decltype(auto) operator[](this Self&& self, Key&&... key) {
+        if constexpr (
+            meta::has_cpp<Self> &&
+            std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...>
+        ) {
+            return __getitem__<Self, Key...>{}(
+                std::forward<Self>(self),
+                std::forward<Key>(key)...
+            );
+
+        } else {
+            return impl::Item<Self, Key...>(
+                std::forward<Self>(self),
+                std::forward<Key>(key)...
+            );
+        }
+    }
 
     /* Call operator.  This can be enabled for specific argument signatures and return
     types via the __call__ control struct, enabling static type safety for callable
@@ -799,8 +925,23 @@ public:
                 )
             )
         )
-    decltype(auto) operator()(this Self&& self, Args&&... args);
+    decltype(auto) operator()(this Self&& self, Args&&... args) {
+        if constexpr (std::is_invocable_v<__call__<Self, Args...>, Self, Args...>) {
+            return __call__<Self, Args...>{}(
+                std::forward<Self>(self),
+                std::forward<Args>(args)...
+            );
 
+        } else if constexpr (meta::has_cpp<Self>) {
+            return from_python(std::forward<Self>(self))(
+                std::forward<Args>(args)...
+            );
+        } else {
+            return getattr<"__call__">(std::forward<Self>(self))(
+                std::forward<Args>(args)...
+            );
+        }
+    }
 };
 
 
@@ -819,9 +960,7 @@ template <meta::has_python T> requires (!meta::is_qualified<T>)
 /* Default initialize `bertrand::Object` to `None`. */
 template <>
 struct __init__<Object>                                     : returns<Object> {
-    static auto operator()() {
-        return borrow<Object>(Py_None);
-    }
+    static auto operator()() { return borrow<Object>(Py_None); }
 };
 
 
@@ -831,14 +970,91 @@ struct __cast__<T>                                          : returns<T> {
 };
 
 
+/* Implicitly convert a Python object into one of its superclasses. */
+template <meta::python From, meta::python To>
+    requires (
+        !meta::is_qualified<To> &&
+        !meta::is<From, To> &&
+        issubclass<std::remove_cvref_t<From>, To>()
+    )
+struct __cast__<From, To>                                   : returns<To> {
+    static To operator()(From from) {
+        if constexpr (std::is_lvalue_reference_v<From>) {
+            return borrow<To>(ptr(from));
+        } else {
+            return steal<To>(release(from));
+        }
+    }
+};
+
+
+/* Implicitly convert a Python object into one of its subclasses by applying an
+`isinstance<Derived>()` check. */
+template <meta::python From, meta::python To>
+    requires (
+        !meta::is_qualified<To> &&
+        !meta::is<From, To> &&
+        issubclass<To, std::remove_cvref_t<From>>()
+    )
+struct __cast__<From, To>                                   : returns<To> {
+    template <size_t I>
+    static size_t find_union_type(std::add_lvalue_reference_t<From> obj) {
+        if constexpr (I < To::size()) {
+            if (isinstance<To::template at<I>>(obj)) {
+                return I;
+            }
+            return find_union_type<I + 1>(obj);
+        } else {
+            return To::size();
+        }
+    }
+
+    static auto operator()(From from) {
+        if constexpr (meta::inherits<To, impl::UnionTag>) {
+            size_t index = find_union_type<0>(from);
+            if (index == To::size()) {
+                throw TypeError(
+                    "cannot convert Python object from type '" +
+                    repr(Type<From>()) + "' to type '" +
+                    repr(Type<To>()) + "'"
+                );
+            }
+            if constexpr (std::is_lvalue_reference_v<From>) {
+                To result = borrow<To>(ptr(from));
+                result.m_index = index;
+                return result;
+            } else {
+                To result = steal<To>(release(from));
+                result.m_index = index;
+                return result;
+            }
+
+        } else {
+            if (isinstance<To>(from)) {
+                if constexpr (std::is_lvalue_reference_v<From>) {
+                    return borrow<To>(ptr(from));
+                } else {
+                    return steal<To>(release(from));
+                }
+            } else {
+                throw TypeError(
+                    "cannot convert Python object from type '" + repr(Type<From>()) +
+                    "' to type '" + repr(Type<To>()) + "'"
+                );
+            }
+        }
+    }
+};
+
+
 /* Implicitly convert any C++ value into a `bertrand::Object` by invoking the unary
 cast type, and then reinterpreting as a dynamic object. */
 template <meta::cpp T> requires (meta::has_python<T>)
 struct __cast__<T, Object>                                  : returns<Object> {
     static auto operator()(T value) {
-        return steal<Object>(
-            release(meta::python_type<T>(std::forward<T>(value)))
-        );
+        return steal<Object>(release(
+            meta::python_type<T>(std::forward<T>(value))
+        ));
     }
 };
 
@@ -847,12 +1063,7 @@ struct __cast__<T, Object>                                  : returns<Object> {
 equivalent Python type via __cast__, implicitly converting to that type, and then
 implicitly converting the result to the C++ type in a 2-step process. */
 template <meta::is<Object> From, meta::cpp To>
-    requires (
-        !std::is_reference_v<To> &&
-        !std::is_const_v<To> &&
-        !std::is_volatile_v<To> &&
-        __cast__<To>::enable
-    )
+    requires (!meta::is_qualified<To> && __cast__<To>::enable)
 struct __cast__<From, To>                                   : returns<To> {
     static auto operator()(From self) {
         using Intermediate = __cast__<To>::type;
@@ -865,7 +1076,7 @@ struct __cast__<From, To>                                   : returns<To> {
 
 /* Implicitly convert a Python object that wraps around a C++ type into an lvalue
 reference to that type, which directly references the internal data. */
-template <meta::inherits<Object> From, typename To>
+template <meta::python From, typename To>
     requires (
         meta::has_cpp<From> &&
         std::same_as<meta::cpp_type<std::remove_cvref_t<From>>, std::remove_cv_t<To>>
@@ -878,18 +1089,10 @@ struct __cast__<From, To&>                                  : returns<To&> {
 
 
 /* Implicitly convert a Python object that wraps around a C++ type into a pointer to
-that type, which directly references the internal data. */
-template <meta::inherits<Object> From, typename To> requires (std::convertible_to<From, To>)
-struct __cast__<From, std::optional<To>>                    : returns<std::optional<To>> {
-    static std::optional<To> operator()(From from) {
-        return {meta::implicit_cast<To>(std::forward<From>(from))};
-    }
-};
-
-
-/* Implicitly convert a Python object that wraps around a C++ type into a pointer to
-that type, which directly references the internal data. */
-template <meta::inherits<Object> From, typename To>
+that type, which directly references the internal data.  This allows C++ functions
+accepting pointer inputs to be called seamlessly from Python as long as the underlying
+C++ type exactly matches. */
+template <meta::python From, typename To>
     requires (
         meta::has_cpp<From> &&
         std::same_as<meta::cpp_type<std::remove_cvref_t<From>>, std::remove_cv_t<To>>
@@ -901,9 +1104,27 @@ struct __cast__<From, To*>                                  : returns<To*> {
 };
 
 
+/// TODO: perhaps I should also allow Object to be converted to `std::variant` along
+/// the same lines?  I'm also not sure if these are really the best way to do this,
+/// since you could just use a helper method to convert to whatever type you need,
+/// or accept the optional/variant by value, in which case conversions should work as
+/// expected?
+
+
+/* Implicitly convert a Python object that wraps around a C++ type into an optional of
+that type, which allows C++ functions expecting optional inputs to be called seamlessly
+from Python. */
+template <meta::python From, typename To> requires (std::convertible_to<From, To>)
+struct __cast__<From, std::optional<To>>                    : returns<std::optional<To>> {
+    static std::optional<To> operator()(From from) {
+        return {meta::implicit_cast<To>(std::forward<From>(from))};
+    }
+};
+
+
 /* Implicitly convert a Python object into a shared pointer as long as the underlying
 types are convertible. */
-template <meta::inherits<Object> From, typename To> requires (std::convertible_to<From, To>)
+template <meta::python From, typename To> requires (std::convertible_to<From, To>)
 struct __cast__<From, std::shared_ptr<To>>                  : returns<std::shared_ptr<To>> {
     static std::shared_ptr<To> operator()(From value) {
         return std::make_shared<To>(
@@ -915,74 +1136,13 @@ struct __cast__<From, std::shared_ptr<To>>                  : returns<std::share
 
 /* Implicitly convert a Python object into a unique pointer as long as the underlying
 types are convertible. */
-template <meta::inherits<Object> From, typename To> requires (std::convertible_to<From, To>)
+template <meta::python From, typename To> requires (std::convertible_to<From, To>)
 struct __cast__<From, std::unique_ptr<To>>                  : returns<std::unique_ptr<To>> {
     static std::unique_ptr<To> operator()(From value) {
         return std::make_unique<To>(
             meta::implicit_cast<To>(std::forward<From>(value))
         );
     }
-};
-
-
-/* Explicitly convert a Python object into any C++ type by checking for an equivalent
-Python type via unary __cast__, explicitly converting to that type, and then to the C++
-type in a 2-step process. */
-template <meta::inherits<Object> From, meta::cpp To>
-    requires (
-        !std::is_reference_v<To> &&
-        !std::is_const_v<To> &&
-        !std::is_volatile_v<To> &&
-        meta::has_python<To>
-    )
-struct __explicit_cast__<From, To>                          : returns<To> {
-    static auto operator()(From from) {
-        return static_cast<To>(
-            static_cast<meta::python_type<To>>(std::forward<From>(from))
-        );
-    }
-};
-
-
-/* Contextually convert an Object into a boolean value for use in if/else statements,
-with the same semantics as Python. */
-template <meta::inherits<Object> From>
-struct __explicit_cast__<From, bool>                         : returns<bool> {
-    static bool operator()(From&& from);
-};
-
-
-/* Explicitly convert a Python object into a C++ integer by calling `int(obj)` at the
-Python level. */
-template <meta::inherits<Object> From, meta::cpp To>
-    requires (meta::has_python<To> && std::integral<To>)
-struct __explicit_cast__<From, To>                          : returns<To> {
-    static To operator()(From&& from);
-};
-
-
-/* Explicitly convert a Python object into a C++ floating-point number by calling
-`float(obj)` at the Python level. */
-template <meta::inherits<Object> From, meta::cpp To>
-    requires (meta::has_python<To> && std::floating_point<To>)
-struct __explicit_cast__<From, To>                          : returns<To> {
-    static To operator()(From&& from);
-};
-
-
-/* Explicitly convert a Python object into a C++ complex number by calling
-`complex(obj)` at the Python level. */
-template <meta::inherits<Object> From, typename Float>
-struct __explicit_cast__<From, std::complex<Float>> : returns<std::complex<Float>> {
-    static auto operator()(From&& from);
-};
-
-
-/* Explicitly convert a Python object into a C++ sd::string representation by calling
-`str(obj)` at the Python level. */
-template <meta::inherits<Object> From, typename Char>
-struct __explicit_cast__<From, std::basic_string<Char>> : returns<std::basic_string<Char>> {
-    static auto operator()(From&& from);
 };
 
 
@@ -1001,6 +1161,10 @@ template <meta::is<Object> Self, static_str Name, std::convertible_to<Object> Va
 struct __setattr__<Self, Name, Value>                       : returns<void> {};
 template <meta::is<Object> Self, static_str Name> requires (!meta::is_const<Self>)
 struct __delattr__<Self, Name>                              : returns<void> {};
+
+
+/// TODO: see if these can be removed with some more clever metaprogramming?
+
 template <meta::is<Object> Self, std::convertible_to<Object>... Args>
 struct __call__<Self, Args...>                              : returns<Object> {
     static Object operator()(Self, Args...);
@@ -1011,7 +1175,8 @@ template <meta::is<Object> Self>
 struct __reversed__<Self>                                   : returns<Object> {};
 
 
-/// TODO: issubclass(obj, obj) doesn't work? 
+/// TODO: issubclass(obj, obj) doesn't work?
+/// -> Object is not convertible to bool until Bool is registered.
 
 
 /* Allow Objects to be used as left-hand arguments in `issubclass()` checks. */
@@ -1023,10 +1188,10 @@ struct __issubclass__<Derived, Base>                         : returns<bool> {
 
 /* Inserting a Python object into an output stream corresponds to a `str()` call at the
 Python level. */
-template <std::derived_from<std::ostream> Stream, meta::inherits<Object> Self>
+template <meta::inherits<std::ostream> Stream, meta::python Self>
 struct __lshift__<Stream, Self>                             : returns<Stream&> {
     /// TODO: Str, Bytes, ByteArray should specialize this to write to the stream directly.
-    static Stream& operator()(Stream& stream, Self self);
+    static Stream& operator()(Stream stream, Self self);
 };
 
 
@@ -1040,6 +1205,8 @@ struct NoneType;
 
 template <>
 struct interface<NoneType> : impl::BertrandTag {};
+template <>
+struct interface<Type<NoneType>> : impl::BertrandTag {};
 
 
 /* Represents the type of Python's `None` singleton in C++. */
@@ -1067,69 +1234,52 @@ struct NoneType : Object, interface<NoneType> {
         explicit_ctor<NoneType>{},
         std::forward<Args>(args)...
     ) {}
-
-};
-
-
-template <>
-struct __init__<NoneType>                                   : returns<NoneType> {
-    static auto operator()() {
-        return borrow<NoneType>(Py_None);
-    }
 };
 
 
 template <typename Self> requires (std::is_void_v<Self>)
-struct __cast__<Self>                                       : returns<NoneType> {
-    static NoneType operator()() { return {}; }
+struct __cast__<Self>                                       : returns<NoneType> {};
+
+
+template <>
+struct __init__<NoneType>                                   : returns<NoneType> {
+    static auto operator()() { return borrow<NoneType>(Py_None); }
 };
 
 
-template <meta::none_like From>
+template <meta::like<NoneType> From>
 struct __cast__<From, NoneType>                             : returns<NoneType> {
-    static NoneType operator()(const From& value) {
-        return {};
-    }
+    static NoneType operator()(From value) { return {}; }
 };
 
 
-template <meta::is<NoneType> From, meta::none_like To>
+template <meta::is<NoneType> From, meta::like<NoneType> To>
 struct __cast__<From, To>                                   : returns<To> {
-    static To operator()(From value) {
-        return {};
-    }
+    static To operator()(From value) { return {}; }
 };
 
 
 template <meta::is<NoneType> From, typename To> requires (!std::convertible_to<From, To>)
 struct __cast__<From, std::optional<To>>                    : returns<std::optional<To>> {
-    static std::optional<To> operator()(From value) {
-        return std::nullopt;
-    }
+    static std::optional<To> operator()(From value) { return std::nullopt; }
 };
 
 
 template <meta::is<NoneType> From, typename To>
 struct __cast__<From, To*>                                  : returns<To*> {
-    static To* operator()(From value) {
-        return nullptr;
-    }
+    static To* operator()(From value) { return nullptr; }
 };
 
 
-template <meta::is<NoneType> From, typename To> requires (!std::convertible_to<From, To>)
+template <meta::is<NoneType> From, typename To>
 struct __cast__<From, std::shared_ptr<To>>                  : returns<std::shared_ptr<To>> {
-    static std::shared_ptr<To> operator()(From value) {
-        return nullptr;
-    }
+    static std::shared_ptr<To> operator()(From value) { return nullptr; }
 };
 
 
-template <meta::is<NoneType> From, typename To> requires (!std::convertible_to<From, To>)
+template <meta::is<NoneType> From, typename To>
 struct __cast__<From, std::unique_ptr<To>>                  : returns<std::unique_ptr<To>> {
-    static std::unique_ptr<To> operator()(From value) {
-        return nullptr;
-    }
+    static std::unique_ptr<To> operator()(From value) { return nullptr; }
 };
 
 
@@ -1138,10 +1288,6 @@ struct __hash__<Self>                                       : returns<size_t> {}
 
 
 inline const NoneType None;
-
-
-template <>
-struct interface<Type<NoneType>> : impl::BertrandTag {};
 
 
 //////////////////////////////
@@ -1154,6 +1300,8 @@ struct NotImplementedType;
 
 template <>
 struct interface<NotImplementedType> : impl::BertrandTag {};
+template <>
+struct interface<Type<NotImplementedType>> : impl::BertrandTag {};
 
 
 /* Represents the type of Python's `NotImplemented` singleton in C++. */
@@ -1181,7 +1329,6 @@ struct NotImplementedType : Object, interface<NotImplementedType> {
         explicit_ctor<NotImplementedType>{},
         std::forward<Args>(args)...
     ) {}
-
 };
 
 
@@ -1193,19 +1340,15 @@ struct __init__<NotImplementedType>                         : returns<NotImpleme
 };
 
 
-template <meta::notimplemented_like From>
+template <meta::like<NotImplementedType> From>
 struct __cast__<From, NotImplementedType>                   : returns<NotImplementedType> {
-    static NotImplementedType operator()(const From& value) {
-        return {};
-    }
+    static NotImplementedType operator()(const From& value) { return {}; }
 };
 
 
-template <meta::is<NotImplementedType> From, meta::notimplemented_like To>
+template <meta::is<NotImplementedType> From, meta::like<NotImplementedType> To>
 struct __cast__<From, To>                                   : returns<To> {
-    static To operator()(From value) {
-        return {};
-    }
+    static To operator()(From value) { return {}; }
 };
 
 
@@ -1214,10 +1357,6 @@ struct __hash__<Self>                                       : returns<size_t> {}
 
 
 inline const NotImplementedType NotImplemented;
-
-
-template <>
-struct interface<Type<NotImplementedType>> : impl::BertrandTag {};
 
 
 ////////////////////////
@@ -1230,7 +1369,8 @@ struct EllipsisType;
 
 template <>
 struct interface<EllipsisType> : impl::BertrandTag {};
-
+template <>
+struct interface<Type<EllipsisType>> : impl::BertrandTag {};
 
 /* Represents the type of Python's `Ellipsis` singleton in C++. */
 struct EllipsisType : Object, interface<EllipsisType> {
@@ -1257,7 +1397,6 @@ struct EllipsisType : Object, interface<EllipsisType> {
         explicit_ctor<EllipsisType>{},
         std::forward<Args>(args)...
     ) {}
-
 };
 
 
@@ -1269,19 +1408,15 @@ struct __init__<EllipsisType>                               : returns<EllipsisTy
 };
 
 
-template <meta::ellipsis_like From>
+template <meta::like<EllipsisType> From>
 struct __cast__<From, EllipsisType>                         : returns<EllipsisType> {
-    static EllipsisType operator()(const From& value) {
-        return {};
-    }
+    static EllipsisType operator()(const From& value) { return {}; }
 };
 
 
-template <meta::is<EllipsisType> From, meta::ellipsis_like To>
+template <meta::is<EllipsisType> From, meta::like<EllipsisType> To>
 struct __cast__<From, To>                                   : returns<To> {
-    static To operator()(From value) {
-        return {};
-    }
+    static To operator()(From value) { return {}; }
 };
 
 
@@ -1290,10 +1425,6 @@ struct __hash__<Self>                                       : returns<size_t> {}
 
 
 inline const EllipsisType Ellipsis;
-
-
-template <>
-struct interface<Type<EllipsisType>> : impl::BertrandTag {};
 
 
 /////////////////////
@@ -1310,19 +1441,25 @@ struct interface<Slice> {
     /* Get the start object of the slice.  Note that this might not be an integer. */
     __declspec(property(get = _get_start)) Object start;
     [[nodiscard]] Object _get_start(this auto&& self) {
-        return self->start ? borrow<Object>(self->start) : borrow<Object>(Py_None);
+        return view(self)->start ?
+            borrow<Object>(view(self)->start) :
+            borrow<Object>(Py_None);
     }
 
     /* Get the stop object of the slice.  Note that this might not be an integer. */
     __declspec(property(get = _get_stop)) Object stop;
     [[nodiscard]] Object _get_stop(this auto&& self) {
-        return self->stop ? borrow<Object>(self->stop) : borrow<Object>(Py_None);
+        return view(self)->stop ?
+            borrow<Object>(view(self)->stop) :
+            borrow<Object>(Py_None);
     }
 
     /* Get the step object of the slice.  Note that this might not be an integer. */
     __declspec(property(get = _get_step)) Object step;
     [[nodiscard]] Object _get_step(this auto&& self) {
-        return self->step ? borrow<Object>(self->step) : borrow<Object>(Py_None);
+        return view(self)->step ?
+            borrow<Object>(view(self)->step) :
+            borrow<Object>(Py_None);
     }
 
     /* Normalize the indices of this slice against a container of the given length.
@@ -1357,7 +1494,6 @@ struct interface<Slice> {
         }
         return result;
     }
-
 };
 template <>
 struct interface<Type<Slice>> {
@@ -1398,94 +1534,87 @@ struct Slice : Object, interface<Slice> {
         explicit_ctor<Slice>{},
         std::forward<Args>(args)...
     ) {}
-
 };
 
 
 /// TODO: this must be declared after func.h
-// template <std::derived_from<Slice> Self>
+// template <typename Self> requires (issubclass<Self, Slice>())
 // struct __getattr__<Self, "indices"> : returns<Function<
 //     Tuple<Int>(Arg<"length", const Int&>)
 // >> {};
-template <std::derived_from<Slice> Self>
+template <typename Self> requires (issubclass<Self, Slice>())
 struct __getattr__<Self, "start">                           : returns<Object> {};
-template <std::derived_from<Slice> Self>
+template <typename Self> requires (issubclass<Self, Slice>())
 struct __getattr__<Self, "stop">                            : returns<Object> {};
-template <std::derived_from<Slice> Self>
+template <typename Self> requires (issubclass<Self, Slice>())
 struct __getattr__<Self, "step">                            : returns<Object> {};
+
+
+/// TODO: can't I separate __isinstance__/__issubclass__ into left and right-hand
+/// versions?
 
 
 template <meta::is<Object> Derived, meta::is<Slice> Base>
 struct __isinstance__<Derived, Base>                        : returns<bool> {
-    static constexpr bool operator()(Derived obj) {
-        return PySlice_Check(ptr(obj));
-    }
+    static constexpr bool operator()(Derived obj) { return PySlice_Check(ptr(obj)); }
 };
 
 
-template <>
-struct __init__<Slice>                                      : returns<Slice> {
+template <typename... Args>
+    requires (meta::callable<
+        Slice(
+            Arg<"start", Object>::pos::opt,
+            Arg<"stop", Object>::pos::opt,
+            Arg<"step", Object>::pos::opt
+        ),
+        Args...
+    >)
+struct __init__<Slice, Args...>                             : returns<Slice> {
     static auto operator()() {
-        PyObject* result = PySlice_New(nullptr, nullptr, nullptr);
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return steal<Slice>(result);
-    }
-};
-
-
-template <
-    std::convertible_to<Object> Start,
-    std::convertible_to<Object> Stop,
-    std::convertible_to<Object> Step
->
-struct __init__<Slice, Start, Stop, Step>                   : returns<Slice> {
-    static auto operator()(const Object& start, const Object& stop, const Object& step) {
-        PyObject* result = PySlice_New(
-            ptr(start),
-            ptr(stop),
-            ptr(step)
+        Slice result = steal<Slice>(
+            PySlice_New(nullptr, nullptr, nullptr)
         );
-        if (result == nullptr) {
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<Slice>(result);
+        return result;
     }
-};
 
-
-template <
-    std::convertible_to<Object> Start,
-    std::convertible_to<Object> Stop
->
-struct __init__<Slice, Start, Stop>                         : returns<Slice> {
-    static auto operator()(const Object& start, const Object& stop) {
-        PyObject* result = PySlice_New(
-            ptr(start),
-            ptr(stop),
-            nullptr
-        );
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return steal<Slice>(result);
-    }
-};
-
-
-template <std::convertible_to<Object> Stop>
-struct __init__<Slice, Stop>                                : returns<Slice> {
-    static auto operator()(const Object& stop) {
-        PyObject* result = PySlice_New(
+    static auto operator()(Object stop) {
+        Slice result = steal<Slice>(PySlice_New(
             nullptr,
             ptr(stop),
             nullptr
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<Slice>(result);
+        return result;
+    }
+
+    static auto operator()(Object start, Object stop) {
+        Slice result = steal<Slice>(PySlice_New(
+            ptr(start),
+            ptr(stop),
+            nullptr
+        ));
+        if (result.is(nullptr)) {
+            Exception::from_python();
+        }
+        return result;
+    }
+
+
+    static auto operator()(Object start, Object stop, Object step) {
+        Slice result = steal<Slice>(PySlice_New(
+            ptr(start),
+            ptr(stop),
+            ptr(step)
+        ));
+        if (result.is(nullptr)) {
+            Exception::from_python();
+        }
+        return result;
     }
 };
 

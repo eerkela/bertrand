@@ -35,6 +35,14 @@
 /// (as it should), then turn back now while you still can!
 
 
+
+/// TODO: the arguments have fully-fledged Python types, which are described here,
+/// but otherwise the C++ implementation is fully self-contained.  This file only
+/// exists to replicate those semantics in Python, such that a matching class can be
+/// exported within the bertrand module.
+
+
+
 namespace bertrand {
 
 
@@ -44,52 +52,6 @@ both languages with a consistent syntax.  Also defines supporting data structure
 allow for dynamic function overloading and partial function application. */
 template <typename T>
 struct signature;
-
-
-/* Call operator for all `py::Object` types. */
-template <typename Self, typename... Args>
-    requires (
-        __call__<Self, Args...>::enable &&
-        std::convertible_to<typename __call__<Self, Args...>::type, Object> && (
-            std::is_invocable_r_v<
-                typename __call__<Self, Args...>::type,
-                __call__<Self, Args...>,
-                Self,
-                Args...
-            > || (
-                !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
-                meta::has_cpp<Self> &&
-                std::is_invocable_r_v<
-                    typename __call__<Self, Args...>::type,
-                    meta::cpp_type<Self>,
-                    Args...
-                >
-            ) || (
-                !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
-                !meta::has_cpp<Self> &&
-                std::derived_from<typename __call__<Self, Args...>::type, Object> &&
-                __getattr__<Self, "__call__">::enable &&
-                meta::inherits<typename __getattr__<Self, "__call__">::type, impl::FunctionTag>
-            )
-        )
-    )
-decltype(auto) Object::operator()(this Self&& self, Args&&... args) {
-    if constexpr (std::is_invocable_v<__call__<Self, Args...>, Self, Args...>) {
-        return __call__<Self, Args...>{}(
-            std::forward<Self>(self),
-            std::forward<Args>(args)...
-        );
-
-    } else if constexpr (meta::has_cpp<Self>) {
-        return from_python(std::forward<Self>(self))(
-            std::forward<Args>(args)...
-        );
-    } else {
-        return getattr<"__call__">(std::forward<Self>(self))(
-            std::forward<Args>(args)...
-        );
-    }
-}
 
 
 /* The dereference operator is used to emulate Python container unpacking when calling
