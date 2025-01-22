@@ -9,6 +9,34 @@ namespace bertrand {
 
 namespace impl {
 
+    /* Construct a new instance of an inner `Wrapper::__python__` type using
+    Python-based memory allocation and forwarding to the nested type's C++ constructor
+    to complete initialization. */
+    template <typename Wrapper, typename... Args>
+        requires (
+            std::derived_from<Wrapper, Object> && meta::has_python<Wrapper> &&
+            std::constructible_from<typename Wrapper::__python__, Args...>
+        )
+    Wrapper construct(Args&&... args) {
+        using Self = Wrapper::__python__;
+        Type<Wrapper> type;
+        PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(ptr(type));
+        Self* self = reinterpret_cast<Self*>(cls->tp_alloc(cls, 0));
+        if (self == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            new (self) Self(std::forward<Args>(args)...);
+        } catch (...) {
+            cls->tp_free(self);
+            throw;
+        }
+        if (cls->tp_flags & Py_TPFLAGS_HAVE_GC) {
+            PyObject_GC_Track(self);
+        }
+        return steal<Wrapper>(self);
+    }
+
     /* Wrap a non-owning, mutable reference to a C++ object into a `bertrand::Object`
     proxy that exposes it to Python.  Note that this only works if a corresponding
     `bertrand::Object` subclass exists, which was declared using the `__python__` CRTP
@@ -1266,6 +1294,214 @@ inline const EllipsisType Ellipsis;
 
 template <>
 struct interface<Type<EllipsisType>> : impl::BertrandTag {};
+
+
+/////////////////////
+////    SLICE    ////
+/////////////////////
+
+
+struct Slice;
+
+
+template <>
+struct interface<Slice> {
+
+    /* Get the start object of the slice.  Note that this might not be an integer. */
+    __declspec(property(get = _get_start)) Object start;
+    [[nodiscard]] Object _get_start(this auto&& self) {
+        return self->start ? borrow<Object>(self->start) : borrow<Object>(Py_None);
+    }
+
+    /* Get the stop object of the slice.  Note that this might not be an integer. */
+    __declspec(property(get = _get_stop)) Object stop;
+    [[nodiscard]] Object _get_stop(this auto&& self) {
+        return self->stop ? borrow<Object>(self->stop) : borrow<Object>(Py_None);
+    }
+
+    /* Get the step object of the slice.  Note that this might not be an integer. */
+    __declspec(property(get = _get_step)) Object step;
+    [[nodiscard]] Object _get_step(this auto&& self) {
+        return self->step ? borrow<Object>(self->step) : borrow<Object>(Py_None);
+    }
+
+    /* Normalize the indices of this slice against a container of the given length.
+    This accounts for negative indices and clips those that are out of bounds.
+    Returns a simple data struct with the following fields:
+
+        * (Py_ssize_t) start: the normalized start index
+        * (Py_ssize_t) stop: the normalized stop index
+        * (Py_ssize_t) step: the normalized step size
+        * (Py_ssize_t) length: the number of indices that are included in the slice
+
+    It can be destructured using C++17 structured bindings:
+
+        auto [start, stop, step, length] = slice.indices(size);
+    */
+    [[nodiscard]] auto indices(this auto&& self, size_t size) {
+        struct Indices {
+            Py_ssize_t start = 0;
+            Py_ssize_t stop = 0;
+            Py_ssize_t step = 0;
+            Py_ssize_t length = 0;
+        } result;
+        if (PySlice_GetIndicesEx(
+            ptr(self),
+            size,
+            &result.start,
+            &result.stop,
+            &result.step,
+            &result.length
+        )) {
+            Exception::from_python();
+        }
+        return result;
+    }
+
+};
+template <>
+struct interface<Type<Slice>> {
+    template <meta::inherits<interface<Slice>> Self>
+    [[nodiscard]] static Object start(Self&& self) { return self.start; }
+    template <meta::inherits<interface<Slice>> Self>
+    [[nodiscard]] static Object stop(Self&& self) { return self.stop; }
+    template <meta::inherits<interface<Slice>> Self>
+    [[nodiscard]] static Object step(Self&& self) { return self.step; }
+    template <meta::inherits<interface<Slice>> Self>
+    [[nodiscard]] static auto indices(Self&& self, size_t size) { return self.indices(size); }
+};
+
+
+/* Represents a statically-typed Python `slice` object in C++.  Note that the start,
+stop, and step values do not strictly need to be integers. */
+struct Slice : Object, interface<Slice> {
+    struct __python__ : cls<__python__, Slice>, PySliceObject {
+        static Type<Slice> __import__();
+    };
+
+    Slice(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Slice(PyObject* p, stolen_t t) : Object(p, t) {}
+
+    template <typename Self = Slice> requires (__initializer__<Self>::enable)
+    Slice(const std::initializer_list<typename __initializer__<Self>::type>& init) :
+        Object(__initializer__<Self>{}(init))
+    {}
+
+    template <typename... Args> requires (implicit_ctor<Slice>::enable<Args...>)
+    Slice(Args&&... args) : Object(
+        implicit_ctor<Slice>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Slice>::enable<Args...>)
+    explicit Slice(Args&&... args) : Object(
+        explicit_ctor<Slice>{},
+        std::forward<Args>(args)...
+    ) {}
+
+};
+
+
+/// TODO: this must be declared after func.h
+// template <std::derived_from<Slice> Self>
+// struct __getattr__<Self, "indices"> : returns<Function<
+//     Tuple<Int>(Arg<"length", const Int&>)
+// >> {};
+template <std::derived_from<Slice> Self>
+struct __getattr__<Self, "start">                           : returns<Object> {};
+template <std::derived_from<Slice> Self>
+struct __getattr__<Self, "stop">                            : returns<Object> {};
+template <std::derived_from<Slice> Self>
+struct __getattr__<Self, "step">                            : returns<Object> {};
+
+
+template <meta::is<Object> Derived, meta::is<Slice> Base>
+struct __isinstance__<Derived, Base>                        : returns<bool> {
+    static constexpr bool operator()(Derived obj) {
+        return PySlice_Check(ptr(obj));
+    }
+};
+
+
+template <>
+struct __init__<Slice>                                      : returns<Slice> {
+    static auto operator()() {
+        PyObject* result = PySlice_New(nullptr, nullptr, nullptr);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return steal<Slice>(result);
+    }
+};
+
+
+template <
+    std::convertible_to<Object> Start,
+    std::convertible_to<Object> Stop,
+    std::convertible_to<Object> Step
+>
+struct __init__<Slice, Start, Stop, Step>                   : returns<Slice> {
+    static auto operator()(const Object& start, const Object& stop, const Object& step) {
+        PyObject* result = PySlice_New(
+            ptr(start),
+            ptr(stop),
+            ptr(step)
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return steal<Slice>(result);
+    }
+};
+
+
+template <
+    std::convertible_to<Object> Start,
+    std::convertible_to<Object> Stop
+>
+struct __init__<Slice, Start, Stop>                         : returns<Slice> {
+    static auto operator()(const Object& start, const Object& stop) {
+        PyObject* result = PySlice_New(
+            ptr(start),
+            ptr(stop),
+            nullptr
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return steal<Slice>(result);
+    }
+};
+
+
+template <std::convertible_to<Object> Stop>
+struct __init__<Slice, Stop>                                : returns<Slice> {
+    static auto operator()(const Object& stop) {
+        PyObject* result = PySlice_New(
+            nullptr,
+            ptr(stop),
+            nullptr
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return steal<Slice>(result);
+    }
+};
+
+
+template <meta::is<Slice> L, meta::is<Slice> R>
+struct __lt__<L, R>                                         : returns<Bool> {};
+template <meta::is<Slice> L, meta::is<Slice> R>
+struct __le__<L, R>                                         : returns<Bool> {};
+template <meta::is<Slice> L, meta::is<Slice> R>
+struct __eq__<L, R>                                         : returns<Bool> {};
+template <meta::is<Slice> L, meta::is<Slice> R>
+struct __ne__<L, R>                                         : returns<Bool> {};
+template <meta::is<Slice> L, meta::is<Slice> R>
+struct __ge__<L, R>                                         : returns<Bool> {};
+template <meta::is<Slice> L, meta::is<Slice> R>
+struct __gt__<L, R>                                         : returns<Bool> {};
 
 
 }  // namespace py

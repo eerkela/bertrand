@@ -14,6 +14,14 @@
 namespace bertrand {
 
 
+/* CPython exception types:
+ *      https://docs.python.org/3/c-api/exceptions.html#standard-exceptions
+ *
+ * Inheritance hierarchy:
+ *      https://docs.python.org/3/library/exceptions.html#exception-hierarchy
+ */
+
+
 /* The root of the bertrand exception hierarchy.  This and all its subclasses are
 usable just like their built-in Python equivalents, and maintain coherent stack traces
 across both languages.  If Python is not loaded, then the same exception types can
@@ -21,6 +29,8 @@ still be used in a pure C++ context, but the `from_python()` and `to_python()` h
 will be disabled. */
 struct Exception : public std::exception {
 protected:
+    /// NOTE: cpptrace always stores the most recent frame first.
+
     std::string m_message;
     mutable size_t m_skip = 0;
     mutable std::string m_what;
@@ -39,27 +49,18 @@ protected:
         constexpr get_trace operator++(int) const noexcept { return {skip + 1}; }
     };
 
-    /// NOTE: cpptrace always stores the most recent frame first.
-
-    /// TODO: these frame filters might not be necessary if the trim_after() approach
-    /// works as intended.
-
-    /* Returns true if the frame originates from an internal context, i.e. from an
-    internal C++ library or the Python interpreter. */
-    static constexpr bool internal_frame(const cpptrace::stacktrace_frame& frame) noexcept {
-        return (
-            frame.symbol.starts_with("__") || (
-                VIRTUAL_ENV && (
-                    frame.filename.starts_with(VIRTUAL_ENV.lib.c_str())
-                )
-            )
-        );
-    }
-
-    /* Returns true if the frame indicates the invocation of a Python script from a
-    C++ context. */
-    static constexpr bool script_frame(const cpptrace::stacktrace_frame& frame) noexcept {
-        return frame.symbol.find("bertrand::Code::operator()") != std::string::npos;
+    static std::string format_frame(const cpptrace::stacktrace_frame& frame) {
+        std::string result = "    File \"" + frame.filename + "\", line ";
+        if (frame.line.has_value()) {
+            result += std::to_string(frame.line.value()) + ", in ";
+        } else {
+            result += "<unknown>, in ";
+        }
+        if (frame.is_inline) {
+            result += "[inline] ";
+        }
+        result += frame.symbol + "\n";
+        return result;
     }
 
     template <typename Msg> requires (std::constructible_from<std::string, Msg>)
@@ -85,16 +86,18 @@ public:
         }
     }
 
-    template <typename Msg> requires (std::constructible_from<std::string, Msg>)
-    explicit Exception(Msg&& msg, cpptrace::raw_trace&& trace) :
+    template <typename Msg = const char*>
+        requires (std::constructible_from<std::string, Msg>)
+    explicit Exception(cpptrace::raw_trace&& trace, Msg&& msg = "") :
         m_message(std::forward<Msg>(msg)),
         m_trace_type(RAW_TRACE)
     {
         new (&m_raw_trace) cpptrace::raw_trace(std::move(trace));
     }
 
-    template <typename Msg> requires (std::constructible_from<std::string, Msg>)
-    explicit Exception(Msg&& msg, cpptrace::stacktrace&& trace) :
+    template <typename Msg = const char*>
+        requires (std::constructible_from<std::string, Msg>)
+    explicit Exception(cpptrace::stacktrace&& trace, Msg&& msg) :
         m_message(std::forward<Msg>(msg)),
         m_trace_type(STACK_TRACE)
     {
@@ -356,26 +359,14 @@ public:
         return "Exception";
     }
 
-    /// TODO: py_err<T> will override this again for its use case, where I take a
-    /// Python exception and compute a shared traceback from the Python and C++ traces.
-
     /* The full exception diagnostic, including a coherent, Python-style traceback and
     error text. */
     constexpr virtual const char* what() const noexcept override {
         if (m_what.empty()) {
+            m_what = "Traceback (most recent call last):\n";
             if (const cpptrace::stacktrace* trace = this->trace()) {
-                m_what = "Traceback (most recent call last):\n";
-                for (const cpptrace::stacktrace_frame& frame : trace->frames) {
-                    m_what += "    File \"" + frame.filename + "\", line ";
-                    if (frame.line.has_value()) {
-                        m_what += std::to_string(frame.line.value()) + ", in ";
-                    } else {
-                        m_what += "<unknown>, in ";
-                    }
-                    if (frame.is_inline) {
-                        m_what += "[inline] ";
-                    }
-                    m_what += frame.symbol + "\n";
+                for (size_t i = trace->frames.size(); i-- > 0;) {
+                    m_what += format_frame(trace->frames[i]);
                 }
             }
             m_what += name();
@@ -424,16 +415,18 @@ public:
             std::forward<Msg>(msg)                                                      \
         ) {}                                                                            \
                                                                                         \
-        template <typename Msg> requires (std::constructible_from<std::string, Msg>)    \
-        explicit CLS(Msg&& msg, cpptrace::raw_trace&& trace) : BASE(                    \
-            std::forward<Msg>(msg),                                                     \
-            std::move(trace)                                                            \
+        template <typename Msg = const char*>                                           \
+            requires (std::constructible_from<std::string, Msg>)                        \
+        explicit CLS(cpptrace::raw_trace&& trace, Msg&& msg = "") : BASE(               \
+            std::move(trace),                                                           \
+            std::forward<Msg>(msg)                                                      \
         ) {}                                                                            \
                                                                                         \
-        template <typename Msg> requires (std::constructible_from<std::string, Msg>)    \
-        explicit CLS(Msg&& msg, cpptrace::stacktrace&& trace) : BASE(                   \
-            std::forward<Msg>(msg),                                                     \
-            std::move(trace)                                                            \
+        template <typename Msg = const char*>                                           \
+            requires (std::constructible_from<std::string, Msg>)                        \
+        explicit CLS(cpptrace::stacktrace&& trace, Msg&& msg = "") : BASE(              \
+            std::move(trace),                                                           \
+            std::forward<Msg>(msg)                                                      \
         ) {}                                                                            \
     };
 
@@ -488,11 +481,304 @@ BERTRAND_EXCEPTION(ValueError, Exception)
         // BERTRAND_EXCEPTION(UnicodeTranslateError, UnicodeError)
 
 
-/// TODO: Unicode errors have special cases for the constructor, which may need to
-/// be accounted for.
-
-
 #undef BERTRAND_EXCEPTION
+
+
+struct UnicodeDecodeError : UnicodeError {
+protected:
+    explicit constexpr UnicodeDecodeError(
+        get_trace trace,
+        std::string encoding,
+        std::string object,
+        ssize_t start,
+        ssize_t end,
+        std::string reason
+    ) :
+        UnicodeError(
+            trace++,
+            "'" + encoding + "' codec can't decode bytes in position " +
+            std::to_string(start) + "-" + std::to_string(end - 1) +
+            ": " + reason
+        ),
+        encoding(std::move(encoding)),
+        object(std::move(object)),
+        start(start),
+        end(end),
+        reason(std::move(reason))
+    {}
+
+public:
+    virtual std::type_index type() const noexcept override {
+        return typeid(UnicodeDecodeError);
+    }
+
+    constexpr virtual std::string_view name() const noexcept override {
+        return "UnicodeDecodeError";
+    }
+
+    std::string encoding;
+    std::string object;
+    ssize_t start;
+    ssize_t end;
+    std::string reason;
+
+    explicit constexpr UnicodeDecodeError(
+        std::string encoding,
+        std::string object,
+        ssize_t start,
+        ssize_t end,
+        std::string reason
+    ) :
+        UnicodeError(
+            get_trace{},
+            "'" + encoding + "' codec can't decode bytes in position " +
+            std::to_string(start) + "-" + std::to_string(end - 1) +
+            ": " + reason
+        ),
+        encoding(std::move(encoding)),
+        object(std::move(object)),
+        start(start),
+        end(end),
+        reason(std::move(reason))
+    {}
+
+    explicit UnicodeDecodeError(
+        cpptrace::raw_trace&& trace,
+        std::string encoding,
+        std::string object,
+        ssize_t start,
+        ssize_t end,
+        std::string reason
+    ) :
+        UnicodeError(
+            std::move(trace),
+            "'" + encoding + "' codec can't decode bytes in position " +
+            std::to_string(start) + "-" + std::to_string(end - 1) +
+            ": " + reason
+        ),
+        encoding(std::move(encoding)),
+        object(std::move(object)),
+        start(start),
+        end(end),
+        reason(std::move(reason))
+    {}
+
+    explicit UnicodeDecodeError(
+        cpptrace::stacktrace&& trace,
+        std::string encoding,
+        std::string object,
+        ssize_t start,
+        ssize_t end,
+        std::string reason
+    ) :
+        UnicodeError(
+            std::move(trace),
+            "'" + encoding + "' codec can't decode bytes in position " +
+            std::to_string(start) + "-" + std::to_string(end - 1) +
+            ": " + reason
+        ),
+        encoding(std::move(encoding)),
+        object(std::move(object)),
+        start(start),
+        end(end),
+        reason(std::move(reason))
+    {}
+};
+
+
+struct UnicodeEncodeError : UnicodeError {
+protected:
+    explicit constexpr UnicodeEncodeError(
+        get_trace trace,
+        std::string encoding,
+        std::string object,
+        ssize_t start,
+        ssize_t end,
+        std::string reason
+    ) :
+        UnicodeError(
+            trace++,
+            "'" + encoding + "' codec can't encode characters in position " +
+            std::to_string(start) + "-" + std::to_string(end - 1) +
+            ": " + reason
+        ),
+        encoding(std::move(encoding)),
+        object(std::move(object)),
+        start(start),
+        end(end),
+        reason(std::move(reason))
+    {}
+
+public:
+    virtual std::type_index type() const noexcept override {
+        return typeid(UnicodeEncodeError);
+    }
+
+    constexpr virtual std::string_view name() const noexcept override {
+        return "UnicodeEncodeError";
+    }
+
+    std::string encoding;
+    std::string object;
+    ssize_t start;
+    ssize_t end;
+    std::string reason;
+
+    explicit constexpr UnicodeEncodeError(
+        std::string encoding,
+        std::string object,
+        ssize_t start,
+        ssize_t end,
+        std::string reason
+    ) :
+        UnicodeError(
+            get_trace{},
+            "'" + encoding + "' codec can't encode characters in position " +
+            std::to_string(start) + "-" + std::to_string(end - 1) +
+            ": " + reason
+        ),
+        encoding(std::move(encoding)),
+        object(std::move(object)),
+        start(start),
+        end(end),
+        reason(std::move(reason))
+    {}
+
+    explicit UnicodeEncodeError(
+        cpptrace::raw_trace&& trace,
+        std::string encoding,
+        std::string object,
+        ssize_t start,
+        ssize_t end,
+        std::string reason
+    ) :
+        UnicodeError(
+            std::move(trace),
+            "'" + encoding + "' codec can't encode characters in position " +
+            std::to_string(start) + "-" + std::to_string(end - 1) +
+            ": " + reason
+        ),
+        encoding(std::move(encoding)),
+        object(std::move(object)),
+        start(start),
+        end(end),
+        reason(std::move(reason))
+    {}
+
+    explicit UnicodeEncodeError(
+        cpptrace::stacktrace&& trace,
+        std::string encoding,
+        std::string object,
+        ssize_t start,
+        ssize_t end,
+        std::string reason
+    ) :
+        UnicodeError(
+            std::move(trace),
+            "'" + encoding + "' codec can't encode characters in position " +
+            std::to_string(start) + "-" + std::to_string(end - 1) +
+            ": " + reason
+        ),
+        encoding(std::move(encoding)),
+        object(std::move(object)),
+        start(start),
+        end(end),
+        reason(std::move(reason))
+    {}
+};
+
+
+struct UnicodeTranslateError : UnicodeError {
+protected:
+    explicit constexpr UnicodeTranslateError(
+        get_trace trace,
+        std::string object,
+        ssize_t start,
+        ssize_t end,
+        std::string reason
+    ) :
+        UnicodeError(
+            trace++,
+            "can't translate characters in position " +
+            std::to_string(start) + "-" + std::to_string(end - 1) +
+            ": " + reason
+        ),
+        object(std::move(object)),
+        start(start),
+        end(end),
+        reason(std::move(reason))
+    {}
+
+public:
+    virtual std::type_index type() const noexcept override {
+        return typeid(UnicodeTranslateError);
+    }
+
+    constexpr virtual std::string_view name() const noexcept override {
+        return "UnicodeTranslateError";
+    }
+
+    std::string object;
+    ssize_t start;
+    ssize_t end;
+    std::string reason;
+
+    explicit constexpr UnicodeTranslateError(
+        std::string object,
+        ssize_t start,
+        ssize_t end,
+        std::string reason
+    ) :
+        UnicodeError(
+            get_trace{},
+            "can't translate characters in position " +
+            std::to_string(start) + "-" + std::to_string(end - 1) +
+            ": " + reason
+        ),
+        object(std::move(object)),
+        start(start),
+        end(end),
+        reason(std::move(reason))
+    {}
+
+    explicit UnicodeTranslateError(
+        cpptrace::raw_trace&& trace,
+        std::string object,
+        ssize_t start,
+        ssize_t end,
+        std::string reason
+    ) :
+        UnicodeError(
+            std::move(trace),
+            "can't translate characters in position " +
+            std::to_string(start) + "-" + std::to_string(end - 1) +
+            ": " + reason
+        ),
+        object(std::move(object)),
+        start(start),
+        end(end),
+        reason(std::move(reason))
+    {}
+
+    explicit UnicodeTranslateError(
+        cpptrace::stacktrace&& trace,
+        std::string object,
+        ssize_t start,
+        ssize_t end,
+        std::string reason
+    ) :
+        UnicodeError(
+            std::move(trace),
+            "can't translate characters in position " +
+            std::to_string(start) + "-" + std::to_string(end - 1) +
+            ": " + reason
+        ),
+        object(std::move(object)),
+        start(start),
+        end(end),
+        reason(std::move(reason))
+    {}
+};
 
 
 /* A python-style `assert` statement in C++, which is optimized away if built without
