@@ -5,12 +5,113 @@
 #include "object.h"
 
 
+namespace std {
+
+    template <bertrand::meta::python T>
+        requires (bertrand::__hash__<T>::enable && (
+            std::is_invocable_r_v<size_t, bertrand::__hash__<T>, T> ||
+            (
+                !std::is_invocable_v<bertrand::__hash__<T>, T> &&
+                bertrand::meta::has_cpp<T> &&
+                bertrand::meta::hashable<bertrand::meta::cpp_type<T>>
+            ) || (
+                !std::is_invocable_v<bertrand::__hash__<T>, T> &&
+                !bertrand::meta::has_cpp<T>
+            )
+        ))
+    struct hash<T> {
+        static constexpr size_t operator()(T obj) {
+            if constexpr (std::is_invocable_v<bertrand::__hash__<T>, T>) {
+                return bertrand::__hash__<T>{}(std::forward<T>(obj));
+
+            } else if constexpr (bertrand::meta::has_cpp<T>) {
+                return std::hash<bertrand::meta::cpp_type<std::remove_cvref_t<T>>>{}(
+                    from_python(std::forward<T>(obj))
+                );
+
+            } else {
+                Py_hash_t result = PyObject_Hash(
+                    bertrand::ptr(bertrand::to_python(std::forward<T>(obj)))
+                );
+                if (result == -1 && PyErr_Occurred()) {
+                    bertrand::Exception::from_python();
+                }
+                return result;
+            }
+        }
+    };
+
+};  // namespace std
+
+
 namespace bertrand {
 
 
 /// TODO: replace std::derived_from<> with better concepts from meta:: namespace
 
 /// TODO: add assertions where appropriate to ensure that no object is ever null.
+
+
+/* Equivalent to Python `hash(obj)`, but delegates to std::hash, which is overloaded
+for the relevant Python types.  This promotes hash-not-implemented exceptions into
+compile-time equivalents. */
+template <meta::hashable T>
+[[nodiscard]] size_t hash(T&& obj) {
+    return std::hash<T>{}(std::forward<T>(obj));
+}
+
+
+/* Equivalent to Python `repr(obj)`, but returns a std::string and attempts to
+represent C++ types using the stream insertion operator (<<) or std::to_string.  If all
+else fails, falls back to demangling the result of typeid(obj).name(). */
+template <typename Self>
+    requires (!__repr__<Self>::enable || (
+        std::convertible_to<typename __repr__<Self>::type, std::string> && (
+            !std::is_invocable_v<__repr__<Self>> ||
+            std::is_invocable_r_v<std::string, __repr__<Self>, Self>
+        )
+    ))
+[[nodiscard]] std::string repr(Self&& obj) {
+    if constexpr (std::is_invocable_r_v<std::string, __repr__<Self>, Self>) {
+        return __repr__<Self>{}(std::forward<Self>(obj));
+
+    } else if constexpr (meta::has_python<Self>) {
+        PyObject* str = PyObject_Repr(
+            ptr(to_python(std::forward<Self>(obj)))
+        );
+        if (str == nullptr) {
+            Exception::from_python();
+        }
+        Py_ssize_t size;
+        const char* data = PyUnicode_AsUTF8AndSize(str, &size);
+        if (data == nullptr) {
+            Py_DECREF(str);
+            Exception::from_python();
+        }
+        std::string result(data, size);
+        Py_DECREF(str);
+        return result;
+
+    } else if constexpr (meta::has_to_string<Self>) {
+        return std::to_string(std::forward<Self>(obj));
+
+    } else if constexpr (meta::has_stream_insertion<Self>) {
+        std::ostringstream stream;
+        stream << std::forward<Self>(obj);
+        return stream.str();
+
+    } else {
+        return
+            "<" + type_name<Self> + " at " + std::to_string(
+                reinterpret_cast<size_t>(&obj)
+            ) + ">";
+    }
+}
+
+
+/////////////////////////////////////
+////    ATTRIBUTE/ITEM ACCESS    ////
+/////////////////////////////////////
 
 
 /* Replicates Python's `del` keyword for attribute and item deletion.  Note that the
@@ -879,6 +980,11 @@ void delattr(Self&& self) {
 }
 
 
+/////////////////////////
+////    ITERATORS    ////
+/////////////////////////
+
+
 /* Contains operator.  Equivalent to Python's `in` keyword, but as a freestanding
 non-member function (i.e. `x in y` -> `bertrand::in(x, y)`).  A member equivalent is
 defined for all subclasses of `Object` (i.e. `x.in(y)`), which delegates to this
@@ -940,63 +1046,6 @@ template <typename Self, typename Key>
     )
 [[nodiscard]] inline bool Object::in(this Self&& self, Key&& key) {
     return bertrand::in(std::forward<Key>(key), std::forward<Self>(self));
-}
-
-
-/* Equivalent to Python `repr(obj)`, but returns a std::string and attempts to
-represent C++ types using the stream insertion operator (<<) or std::to_string.  If all
-else fails, falls back to demangling the result of typeid(obj).name(). */
-template <typename Self>
-    requires (!__repr__<Self>::enable || (
-        std::convertible_to<typename __repr__<Self>::type, std::string> && (
-            !std::is_invocable_v<__repr__<Self>> ||
-            std::is_invocable_r_v<std::string, __repr__<Self>, Self>
-        )
-    ))
-[[nodiscard]] std::string repr(Self&& obj) {
-    if constexpr (std::is_invocable_r_v<std::string, __repr__<Self>, Self>) {
-        return __repr__<Self>{}(std::forward<Self>(obj));
-
-    } else if constexpr (meta::has_python<Self>) {
-        PyObject* str = PyObject_Repr(
-            ptr(to_python(std::forward<Self>(obj)))
-        );
-        if (str == nullptr) {
-            Exception::from_python();
-        }
-        Py_ssize_t size;
-        const char* data = PyUnicode_AsUTF8AndSize(str, &size);
-        if (data == nullptr) {
-            Py_DECREF(str);
-            Exception::from_python();
-        }
-        std::string result(data, size);
-        Py_DECREF(str);
-        return result;
-
-    } else if constexpr (meta::has_to_string<Self>) {
-        return std::to_string(std::forward<Self>(obj));
-
-    } else if constexpr (meta::has_stream_insertion<Self>) {
-        std::ostringstream stream;
-        stream << std::forward<Self>(obj);
-        return stream.str();
-
-    } else {
-        return
-            "<" + type_name<Self> + " at " + std::to_string(
-                reinterpret_cast<size_t>(&obj)
-            ) + ">";
-    }
-}
-
-
-/* Equivalent to Python `hash(obj)`, but delegates to std::hash, which is overloaded
-for the relevant Python types.  This promotes hash-not-implemented exceptions into
-compile-time equivalents. */
-template <meta::hashable T>
-[[nodiscard]] size_t hash(T&& obj) {
-    return std::hash<T>{}(std::forward<T>(obj));
 }
 
 
@@ -1069,6 +1118,22 @@ template <typename Self> requires (!__len__<Self>::enable && meta::has_size<Self
 [[nodiscard]] size_t size(Self&& obj) {
     return len(std::forward<Self>(obj));
 }
+
+
+
+
+
+/// TODO: iterators here
+
+
+
+
+
+
+
+//////////////////////////////
+////    MATH OPERATORS    ////
+//////////////////////////////
 
 
 /* Equivalent to Python `abs(obj)` for any object that specializes the __abs__ control
@@ -2545,44 +2610,20 @@ decltype(auto) operator^=(L&& lhs, R&& rhs) {
 }
 
 
-}  // namespace py
+//////////////////////////
+////    EXCEPTIONS    ////
+//////////////////////////
 
 
-namespace std {
 
-    template <bertrand::meta::python T>
-        requires (bertrand::__hash__<T>::enable && (
-            std::is_invocable_r_v<size_t, bertrand::__hash__<T>, T> ||
-            (
-                !std::is_invocable_v<bertrand::__hash__<T>, T> &&
-                bertrand::meta::has_cpp<T> &&
-                bertrand::meta::hashable<bertrand::meta::cpp_type<T>>
-            ) || (
-                !std::is_invocable_v<bertrand::__hash__<T>, T> &&
-                !bertrand::meta::has_cpp<T>
-            )
-        ))
-    struct hash<T> {
-        static constexpr size_t operator()(T obj) {
-            if constexpr (std::is_invocable_v<bertrand::__hash__<T>, T>) {
-                return bertrand::__hash__<T>{}(std::forward<T>(obj));
+/// TODO: place exception maps, etc. here
 
-            } else if constexpr (bertrand::meta::has_cpp<T>) {
-                return bertrand::hash(bertrand::from_python(std::forward<T>(obj)));
 
-            } else {
-                Py_hash_t result = PyObject_Hash(
-                    bertrand::ptr(bertrand::to_python(std::forward<T>(obj)))
-                );
-                if (result == -1 && PyErr_Occurred()) {
-                    bertrand::Exception::from_python();
-                }
-                return result;
-            }
-        }
-    };
 
-};  // namespace std
+
+
+
+}  // namespace bertrand
 
 
 #endif

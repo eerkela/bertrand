@@ -54,41 +54,6 @@ template <typename T>
 struct signature;
 
 
-/* The dereference operator is used to emulate Python container unpacking when calling
-a Python-style function from C++.
-
-A single unpacking operator passes the contents of an iterable container as positional
-arguments to a function.  Unlike Python, only one such operator is allowed per call,
-and it must be the last positional argument in the parameter list.  This allows the
-compiler to ensure that the container's value type is minimally convertible to each of
-the remaining positional arguments ahead of time, even though the number of arguments
-cannot be determined until runtime.  Thus, if any arguments are missing or extras are
-provided, the call will raise an exception similar to Python, rather than failing
-statically at compile time.  This can be avoided by using standard positional and
-keyword arguments instead, which can be fully verified at compile time, or by including
-variadic positional arguments in the function signature, which will consume any
-remaining arguments according to Python semantics.
-
-A second unpacking operator promotes the arguments into keywords, and can only be used
-if the container is mapping-like, meaning it possess both `::key_type` and
-`::mapped_type` aliases, and that indexing it with an instance of the key type returns
-a value of the mapped type.  The actual unpacking is robust, and will attempt to use
-iterators over the container to produce key-value pairs, either directly through
-`begin()` and `end()` or by calling the `.items()` method if present, followed by
-zipping `.keys()` and `.values()` if both exist, and finally by iterating over the keys
-and indexing into the container.  Similar to the positional unpacking operator, only
-one of these may be present as the last keyword argument in the parameter list, and a
-compile-time check is made to ensure that the mapped type is convertible to any missing
-keyword arguments that are not explicitly provided at the call site.
-
-In both cases, the extra runtime complexity results in a small performance degradation
-over a typical function call, which is minimized as much as possible. */
-template <meta::inherits<Object> Self> requires (meta::iterable<Self>)
-[[nodiscard]] auto operator*(Self&& self) {
-    return arg_pack<Self>{std::forward<Self>(self)};
-}
-
-
 namespace impl {
 
     /// TODO: determine whether I can eliminate the get_parameter_name() function.

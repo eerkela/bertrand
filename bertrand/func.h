@@ -180,6 +180,11 @@ namespace meta {
         constexpr bool arg_names_are_unique<Name, Names...> =
             (Name.empty() || ((Name != Names) && ...)) && arg_names_are_unique<Names...>;
 
+        template <typename T>
+        constexpr bool enable_unpack_operator = false;
+
+        template <typename T>
+        constexpr bool enable_comprehension_operator = false;
     }
 
     template <typename T>
@@ -190,6 +195,23 @@ namespace meta {
 
     template <typename T>
     concept chain = inherits<T, impl::chain_tag>;
+
+    template <typename Range, typename View>
+    concept viewable = requires {
+        std::views::all(std::declval<Range>()) | std::declval<View>();
+    };
+
+    template <typename Range, typename Func>
+    concept transformable = !viewable<Range, Func> && requires {
+        std::views::transform(std::declval<Range>(), std::declval<Func>());
+    };
+
+    template <typename T>
+    concept unpack_operator = detail::enable_unpack_operator<std::remove_cvref_t<T>>;
+
+    template <typename T>
+    concept comprehension_operator =
+        detail::enable_comprehension_operator<std::remove_cvref_t<T>>;
 
     template <typename T>
     concept signature = inherits<T, impl::signature_tag>;
@@ -595,6 +617,138 @@ template <typename Prev, meta::chain Self>
         std::forward<Self>(self)
     );
 }
+
+
+/* A range adaptor returned by the `->*` operator, which allows for Python-style
+iterator comprehensions in C++.  This is essentially equivalent to a
+`std::views::transform_view`, but with the caveat that any function which returns
+another view will have its result flattened into the output, allowing for nested
+comprehensions and filtering according to Python semantics. */
+template <typename Range, typename Func> requires (meta::transformable<Range, Func>)
+struct comprehension : std::ranges::view_interface<comprehension<Range, Func>> {
+private:
+    using View = decltype(std::views::transform(
+        std::declval<Range>(),
+        std::declval<Func>()
+    ));
+    using Value = std::ranges::range_value_t<View>;
+
+    View view;
+
+    template <typename>
+    struct iterator {
+        using Begin = std::ranges::iterator_t<const View>;
+        using End = std::ranges::sentinel_t<const View>;
+    };
+    template <typename Value> requires (std::ranges::view<std::remove_cvref_t<Value>>)
+    struct iterator<Value> {
+        struct Begin {
+            using iterator_category = std::input_iterator_tag;
+            using difference_type = std::ranges::range_difference_t<const Value>;
+            using value_type = std::ranges::range_value_t<const Value>;
+            using pointer = value_type*;
+            using reference = value_type&;
+
+            using Iter = std::ranges::iterator_t<const View>;
+            using End = std::ranges::sentinel_t<const View>;
+            Iter iter;
+            End end;
+            struct Inner {
+                using Iter = std::ranges::iterator_t<const Value>;
+                using End = std::ranges::sentinel_t<const Value>;
+                Value curr;
+                Iter iter = std::ranges::begin(curr);
+                End end = std::ranges::end(curr);
+            } inner;
+
+            Begin(Iter&& begin, End&& end) :
+                iter(std::move(begin)),
+                end(std::move(end)),
+                inner([](Iter& begin, End& end) -> Inner {
+                    while (begin != end) {
+                        Inner curr = {*begin};
+                        if (curr.iter != curr.end) {
+                            return curr;
+                        }
+                        ++begin;
+                    }
+                    return {};
+                }(this->iter, this->end))
+            {}
+
+            Begin& operator++() {
+                if (++inner.iter == inner.end) {
+                    while (++iter != end) {
+                        inner.curr = *iter;
+                        inner.iter = std::ranges::begin(inner.curr);
+                        inner.end = std::ranges::end(inner.curr);
+                        if (inner.iter != inner.end) {
+                            break;
+                        }
+                    }
+                }
+                return *this;
+            }
+
+            decltype(auto) operator*() const { return *inner.iter; }
+            decltype(auto) operator->() const { return inner.iter.operator->(); }
+
+            friend bool operator==(const Begin& self, sentinel) {
+                return self.iter == self.end;
+            }
+
+            friend bool operator==(sentinel, const Begin& self) {
+                return self.iter == self.end;
+            }
+
+            friend bool operator!=(const Begin& self, sentinel) {
+                return self.iter != self.end;
+            }
+
+            friend bool operator!=(sentinel, const Begin& self) {
+                return self.iter != self.end;
+            }
+        };
+        using End = sentinel;
+    };
+
+    using Begin = iterator<Value>::Begin;
+    using End = iterator<Value>::End;
+
+public:
+    comprehension() = default;
+    comprehension(Range range, Func func) :
+        view(std::views::transform(
+            std::forward<Range>(range),
+            std::forward<Func>(func)
+        ))
+    {}
+
+    Begin begin() const {
+        if constexpr (std::ranges::view<std::remove_cvref_t<Value>>) {
+            return {std::ranges::begin(view), std::ranges::end(view)};
+        } else {
+            return std::ranges::begin(view);
+        }
+    }
+
+    End end() const {
+        if constexpr (std::ranges::view<std::remove_cvref_t<Value>>) {
+            return {};
+        } else {
+            return std::ranges::end(view);
+        }
+    }
+
+    /* Implicitly convert the comprehension into any type that can be constructed from
+    the iterator pair. */
+    template <typename T> requires (std::constructible_from<T, Begin, End>)
+    [[nodiscard]] operator T() const { return T(begin(), end()); }
+};
+
+
+template <typename Range, typename Func> requires (meta::transformable<Range, Func>)
+comprehension(Range&&, Func&&) -> comprehension<Range, Func>;
 
 
 /* A family of compile-time argument annotations that represent positional and/or
@@ -1095,10 +1249,7 @@ within a Python-style function call. */
 template <meta::mapping_like T>
     requires (
         meta::has_size<T> &&
-        std::convertible_to<
-            typename std::remove_reference_t<T>::key_type,
-            std::string
-        >
+        std::convertible_to<typename std::remove_reference_t<T>::key_type, std::string>
     )
 struct kwarg_pack {
     using key_type = std::remove_reference_t<T>::key_type;
@@ -1175,6 +1326,14 @@ public:
 };
 
 
+template <meta::mapping_like T>
+    requires (
+        meta::has_size<T> &&
+        std::convertible_to<typename std::remove_reference_t<T>::key_type, std::string>
+    )
+kwarg_pack(T&&) -> kwarg_pack<T>;
+
+
 /* A positional parameter pack obtained by dereferencing an iterable container within
 a Python-style function call. */
 template <meta::iterable T> requires (meta::has_size<T>)
@@ -1214,6 +1373,10 @@ public:
         return kwarg_pack<T>{std::forward<T>(value)};
     }
 };
+
+
+template <meta::iterable T> requires (meta::has_size<T>)
+arg_pack(T&&) -> arg_pack<T>;
 
 
 namespace impl {
@@ -2024,6 +2187,8 @@ namespace impl {
             ++begin;
             return result;
         }
+
+        /// TODO: eliminate calls to repr() or make it a pure C++ function in common.h
 
         void validate() {
             if (begin != end) {
@@ -5162,7 +5327,98 @@ namespace std {
 }
 
 
+/* The dereference operator can be used to emulate Python container unpacking when
+calling a Python-style function from C++.
+
+A single unpacking operator passes the contents of an iterable container as positional
+arguments to a function.  Unlike Python, only one such operator is allowed per call,
+and it must be the last positional argument in the parameter list.  This allows the
+compiler to ensure that the container's value type is minimally convertible to each of
+the remaining positional arguments ahead of time, even though the number of arguments
+cannot be determined until runtime.  Thus, if any arguments are missing or extras are
+provided, the call will raise an exception similar to Python, rather than failing
+statically at compile time.  This can be avoided by using standard positional and
+keyword arguments instead, which can be fully verified at compile time, or by including
+variadic positional arguments in the function signature, which will consume any
+remaining arguments according to Python semantics.
+
+A second unpacking operator promotes the arguments into keywords, and can only be used
+if the container is mapping-like, meaning it possess both `::key_type` and
+`::mapped_type` aliases, and that indexing it with an instance of the key type returns
+a value of the mapped type.  The actual unpacking is robust, and will attempt to use
+iterators over the container to produce key-value pairs, either directly through
+`begin()` and `end()` or by calling the `.items()` method if present, followed by
+zipping `.keys()` and `.values()` if both exist, and finally by iterating over the keys
+and indexing into the container.  Similar to the positional unpacking operator, only
+one of these may be present as the last keyword argument in the parameter list, and a
+compile-time check is made to ensure that the mapped type is convertible to any missing
+keyword arguments that are not explicitly provided at the call site.
+
+In both cases, the extra runtime complexity results in a small performance degradation
+over a typical function call, which is minimized as much as possible. */
+template <bertrand::meta::iterable T> requires (bertrand::meta::unpack_operator<T>)
+[[nodiscard]] constexpr auto operator*(T&& value) {
+    return bertrand::arg_pack{std::forward<T>(value)};
+}
+
+
+/* Apply a C++ range adaptor to a container via the comprehension operator.  This is
+similar to the C++-style `|` operator for chaining range adaptors, but uses the `->*`
+operator to avoid conflicts with other operator overloads and apply higher precedence
+than typical binary operators. */
+template <typename T, typename V>
+    requires (
+        bertrand::meta::comprehension_operator<T> &&
+        bertrand::meta::viewable<T, V>
+    )
+[[nodiscard]] constexpr auto operator->*(T&& value, V&& view) {
+    return std::views::all(std::forward<T>(value)) | std::forward<V>(view);
+}
+
+
+/* Generate a C++ range adaptor that approximates a Python-style list comprehension.
+This is done by piping a function in place of a C++ range adaptor, which will be
+applied to each element in the sequence.  The function must be callable with the
+container's value type, and may return any type.
+
+If the function returns another range adaptor, then the adaptor's output will be
+flattened into the parent range, similar to a nested `for` loop within a Python
+comprehension.  Returning a range with no elements will effectively filter out the
+current element, similar to a Python `if` clause within a comprehension.
+
+Here's an example:
+
+    std::vector vec = {1, 2, 3, 4, 5};
+    std::vector new_vec = vec->*[](int x) {
+        return std::views::repeat(x, x % 2 ? 0 : x);
+    };
+    for (int x : new_vec) {
+        std::cout << x << ", ";  // 2, 2, 4, 4, 4, 4,
+    }
+
+This is functionally equivalent to `std::views::transform()` in C++ and uses that
+implementation under the hood.  The only difference is the added logic for flattening
+nested ranges, which is extremely lightweight. */
+template <typename T, typename F>
+    requires (
+        bertrand::meta::comprehension_operator<T> &&
+        bertrand::meta::transformable<T, F>
+    )
+[[nodiscard]] constexpr auto operator->*(T&& value, F&& func) {
+    return bertrand::comprehension{std::forward<T>(value), std::forward<F>(func)};
+}
+
+
+
+
+
+
 namespace bertrand {
+
+    template <typename T>
+    constexpr bool meta::detail::enable_unpack_operator<std::vector<T>> = true;
+    template <typename T>
+    constexpr bool meta::detail::enable_comprehension_operator<std::vector<T>> = true;
 
     inline void test() {
         constexpr def sub(
@@ -5185,6 +5441,15 @@ namespace bertrand {
         };
         static_assert(chain(10, 2) == 4);
         static_assert(chain.get<1>().defaults.size() == 1);
+
+
+        std::vector vec = {1, 2, 3};
+        auto view = vec->*std::views::transform([](int x) { return x * 2; });
+        auto pack = sub(*vec);
+
+        for (auto&& x : vec->*[](int x) { return x * 2; }) {
+            std::cout << x << std::endl;
+        }
     }
 
 }
