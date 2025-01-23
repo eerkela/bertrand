@@ -24,22 +24,12 @@ template <typename F, typename... Fs>
         !(std::is_reference_v<Fs> || ...)
     )
 struct chain;
-template <meta::iterable T> requires (meta::has_size<T>)
-struct arg_pack;
-template <meta::mapping_like T>
-    requires (
-        meta::has_size<T> &&
-        std::convertible_to<
-            typename std::remove_reference_t<T>::key_type,
-            std::string
-        >
-    )
-struct kwarg_pack;
 
 
 namespace impl {
     struct args_tag {};
     struct chain_tag {};
+    struct comprehension_tag {};
     struct signature_tag {};
     struct signature_defaults_tag {};
     struct signature_partial_tag {};
@@ -195,6 +185,9 @@ namespace meta {
 
     template <typename T>
     concept chain = inherits<T, impl::chain_tag>;
+
+    template <typename T>
+    concept comprehension = inherits<T, impl::comprehension_tag>;
 
     template <typename Range, typename View>
     concept viewable = requires {
@@ -625,7 +618,10 @@ iterator comprehensions in C++.  This is essentially equivalent to a
 another view will have its result flattened into the output, allowing for nested
 comprehensions and filtering according to Python semantics. */
 template <typename Range, typename Func> requires (meta::transformable<Range, Func>)
-struct comprehension : std::ranges::view_interface<comprehension<Range, Func>> {
+struct comprehension :
+    std::ranges::view_interface<comprehension<Range, Func>>,
+    impl::comprehension_tag
+{
 private:
     using View = decltype(std::views::transform(
         std::declval<Range>(),
@@ -690,6 +686,12 @@ private:
                 return *this;
             }
 
+            Begin operator++(int) {
+                Begin copy = *this;
+                ++(*this);
+                return copy;
+            }
+
             decltype(auto) operator*() const { return *inner.iter; }
             decltype(auto) operator->() const { return inner.iter.operator->(); }
 
@@ -724,7 +726,7 @@ public:
         ))
     {}
 
-    Begin begin() const {
+    [[nodiscard]] Begin begin() const {
         if constexpr (std::ranges::view<std::remove_cvref_t<Value>>) {
             return {std::ranges::begin(view), std::ranges::end(view)};
         } else {
@@ -732,7 +734,7 @@ public:
         }
     }
 
-    End end() const {
+    [[nodiscard]] End end() const {
         if constexpr (std::ranges::view<std::remove_cvref_t<Value>>) {
             return {};
         } else {
@@ -749,6 +751,153 @@ public:
 
 template <typename Range, typename Func> requires (meta::transformable<Range, Func>)
 comprehension(Range&&, Func&&) -> comprehension<Range, Func>;
+
+
+/* A keyword parameter pack obtained by double-dereferencing a mapping-like container
+within a Python-style function call. */
+template <meta::mapping_like T>
+    requires (
+        meta::has_size<T> &&
+        std::convertible_to<typename std::remove_reference_t<T>::key_type, std::string>
+    )
+struct kwarg_pack {
+    using key_type = std::remove_reference_t<T>::key_type;
+    using mapped_type = std::remove_reference_t<T>::mapped_type;
+
+    static constexpr static_str name = "";
+    static constexpr impl::ArgKind kind = impl::ArgKind::VAR | impl::ArgKind::KW;
+    using type = mapped_type;
+    template <typename... Vs>
+    using bind = kwarg_pack;
+    using bound_to = bertrand::args<>;
+    using unbind = kwarg_pack;
+    template <static_str N>
+    using with_name = kwarg_pack;
+    template <typename V>
+    using with_type = kwarg_pack;
+
+    T value;
+
+private:
+    template <typename, typename>
+    friend struct meta::detail::detect_arg;
+    using _detect_arg = void;
+
+    template <typename U>
+    static constexpr bool can_iterate =
+        meta::yields_pairs_with<U, key_type, mapped_type> ||
+        meta::has_items<U> ||
+        (meta::has_keys<U> && meta::has_values<U>) ||
+        (meta::yields<U, key_type> && meta::lookup_yields<U, mapped_type, key_type>) ||
+        (meta::has_keys<U> && meta::lookup_yields<U, mapped_type, key_type>);
+
+    auto transform() const {
+        if constexpr (meta::yields_pairs_with<T, key_type, mapped_type>) {
+            return value;
+
+        } else if constexpr (meta::has_items<T>) {
+            return value.items();
+
+        } else if constexpr (meta::has_keys<T> && meta::has_values<T>) {
+            return std::ranges::views::zip(value.keys(), value.values());
+
+        } else if constexpr (
+            meta::yields<T, key_type> && meta::lookup_yields<T, mapped_type, key_type>
+        ) {
+            return std::ranges::views::transform(
+                value,
+                [&](const key_type& key) {
+                    return std::make_pair(key, value[key]);
+                }
+            );
+
+        } else {
+            return std::ranges::views::transform(
+                value.keys(),
+                [&](const key_type& key) {
+                    return std::make_pair(key, value[key]);
+                }
+            );
+        }
+    }
+
+public:
+
+    [[nodiscard]] auto size() const { return std::ranges::size(value); }
+
+    template <typename Self> requires (can_iterate<T>)
+    [[nodiscard]] auto begin(this const Self& self) {
+        return std::ranges::begin(self.transform());
+    }
+
+    template <typename Self> requires (can_iterate<T>)
+    [[nodiscard]] auto cbegin(this const Self& self) {
+        return self.begin();
+    }
+
+    template <typename Self> requires (can_iterate<T>)
+    [[nodiscard]] auto end(this const Self& self) {
+        return std::ranges::end(self.transform());
+    }
+
+    template <typename Self> requires (can_iterate<T>)
+    [[nodiscard]] auto cend(this const Self& self) {
+        return self.end();
+    }
+};
+
+
+template <meta::mapping_like T>
+    requires (
+        meta::has_size<T> &&
+        std::convertible_to<typename std::remove_reference_t<T>::key_type, std::string>
+    )
+kwarg_pack(T&&) -> kwarg_pack<T>;
+
+
+/* A positional parameter pack obtained by dereferencing an iterable container within
+a Python-style function call. */
+template <meta::iterable T> requires (meta::has_size<T>)
+struct arg_pack {
+private:
+    template <typename, typename>
+    friend struct meta::detail::detect_arg;
+    using _detect_arg = void;
+
+public:
+    static constexpr static_str name = "";
+    static constexpr impl::ArgKind kind = impl::ArgKind::VAR | impl::ArgKind::POS;
+    using type = meta::iter_type<T>;
+    template <typename... Vs>
+    using bind = arg_pack;
+    using bound_to = bertrand::args<>;
+    using unbind = arg_pack;
+    template <static_str N>
+    using with_name = arg_pack;
+    template <typename V>
+    using with_type = arg_pack;
+
+    T value;
+
+    [[nodiscard]] auto size() const { return std::ranges::size(value); }
+    [[nodiscard]] auto begin() const { return std::ranges::begin(value); }
+    [[nodiscard]] auto cbegin() const { return begin(); }
+    [[nodiscard]] auto end() const { return std::ranges::end(value); }
+    [[nodiscard]] auto cend() const { return end(); }
+
+    template <typename Self>
+        requires (meta::mapping_like<T> && std::convertible_to<
+            typename std::remove_reference_t<T>::key_type,
+            std::string
+        >)
+    [[nodiscard]] auto operator*(this const Self& self) {
+        return kwarg_pack<T>{std::forward<Self>(self).value};
+    }
+};
+
+
+template <meta::iterable T> requires (meta::has_size<T>)
+arg_pack(T&&) -> arg_pack<T>;
 
 
 /* A family of compile-time argument annotations that represent positional and/or
@@ -1236,147 +1385,6 @@ public:
     }
 
 };
-
-
-/// TODO: arg_pack and kwarg_pack can be placed into the impl:: namespace, and I
-/// might be able to expose a global dereference operator + control struct that
-/// enables it for an iterable container, so you could dereference, say, `std::vector`
-/// as if it were a Python container.
-
-
-/* A keyword parameter pack obtained by double-dereferencing a mapping-like container
-within a Python-style function call. */
-template <meta::mapping_like T>
-    requires (
-        meta::has_size<T> &&
-        std::convertible_to<typename std::remove_reference_t<T>::key_type, std::string>
-    )
-struct kwarg_pack {
-    using key_type = std::remove_reference_t<T>::key_type;
-    using mapped_type = std::remove_reference_t<T>::mapped_type;
-
-    static constexpr static_str name = "";
-    static constexpr impl::ArgKind kind = impl::ArgKind::VAR | impl::ArgKind::KW;
-    using type = mapped_type;
-    template <typename... Vs>
-    using bind = kwarg_pack;
-    using bound_to = bertrand::args<>;
-    using unbind = kwarg_pack;
-    template <static_str N>
-    using with_name = kwarg_pack;
-    template <typename V>
-    using with_type = kwarg_pack;
-
-    T value;
-
-private:
-    template <typename, typename>
-    friend struct meta::detail::detect_arg;
-    using _detect_arg = void;
-
-    template <typename U>
-    static constexpr bool can_iterate =
-        meta::yields_pairs_with<U, key_type, mapped_type> ||
-        meta::has_items<U> ||
-        (meta::has_keys<U> && meta::has_values<U>) ||
-        (meta::yields<U, key_type> && meta::lookup_yields<U, mapped_type, key_type>) ||
-        (meta::has_keys<U> && meta::lookup_yields<U, mapped_type, key_type>);
-
-    auto transform() const {
-        if constexpr (meta::yields_pairs_with<T, key_type, mapped_type>) {
-            return value;
-
-        } else if constexpr (meta::has_items<T>) {
-            return value.items();
-
-        } else if constexpr (meta::has_keys<T> && meta::has_values<T>) {
-            return std::ranges::views::zip(value.keys(), value.values());
-
-        } else if constexpr (
-            meta::yields<T, key_type> && meta::lookup_yields<T, mapped_type, key_type>
-        ) {
-            return std::ranges::views::transform(
-                value,
-                [&](const key_type& key) {
-                    return std::make_pair(key, value[key]);
-                }
-            );
-
-        } else {
-            return std::ranges::views::transform(
-                value.keys(),
-                [&](const key_type& key) {
-                    return std::make_pair(key, value[key]);
-                }
-            );
-        }
-    }
-
-public:
-
-    auto size() const { return std::ranges::size(value); }
-    template <typename U = T> requires (can_iterate<U>)
-    auto begin() const { return std::ranges::begin(transform()); }
-    template <typename U = T> requires (can_iterate<U>)
-    auto cbegin() const { return begin(); }
-    template <typename U = T> requires (can_iterate<U>)
-    auto end() const { return std::ranges::end(transform()); }
-    template <typename U = T> requires (can_iterate<U>)
-    auto cend() const { return end(); }
-};
-
-
-template <meta::mapping_like T>
-    requires (
-        meta::has_size<T> &&
-        std::convertible_to<typename std::remove_reference_t<T>::key_type, std::string>
-    )
-kwarg_pack(T&&) -> kwarg_pack<T>;
-
-
-/* A positional parameter pack obtained by dereferencing an iterable container within
-a Python-style function call. */
-template <meta::iterable T> requires (meta::has_size<T>)
-struct arg_pack {
-private:
-    template <typename, typename>
-    friend struct meta::detail::detect_arg;
-    using _detect_arg = void;
-
-public:
-    static constexpr static_str name = "";
-    static constexpr impl::ArgKind kind = impl::ArgKind::VAR | impl::ArgKind::POS;
-    using type = meta::iter_type<T>;
-    template <typename... Vs>
-    using bind = arg_pack;
-    using bound_to = bertrand::args<>;
-    using unbind = arg_pack;
-    template <static_str N>
-    using with_name = arg_pack;
-    template <typename V>
-    using with_type = arg_pack;
-
-    T value;
-
-    auto size() const { return std::ranges::size(value); }
-    auto begin() const { return std::ranges::begin(value); }
-    auto cbegin() const { return begin(); }
-    auto end() const { return std::ranges::end(value); }
-    auto cend() const { return end(); }
-
-    template <typename U = T>
-        requires (meta::mapping_like<U> && std::convertible_to<
-            typename std::remove_reference_t<U>::key_type,
-            std::string
-        >)
-    auto operator*() const {
-        return kwarg_pack<T>{std::forward<T>(value)};
-    }
-};
-
-
-template <meta::iterable T> requires (meta::has_size<T>)
-arg_pack(T&&) -> arg_pack<T>;
 
 
 namespace impl {
@@ -4856,9 +4864,6 @@ struct signature<T> : signature<
 > {};
 
 
-/// TODO: callable<T> could be placed in meta:: ?
-
-
 namespace meta {
 
     /* A template constraint that controls whether the `bertrand::call()` operator is
@@ -5442,12 +5447,11 @@ namespace bertrand {
         static_assert(chain(10, 2) == 4);
         static_assert(chain.get<1>().defaults.size() == 1);
 
-
         std::vector vec = {1, 2, 3};
+        std::vector<int> new_vec = vec->*[](int x) { return x * 2; };
         auto view = vec->*std::views::transform([](int x) { return x * 2; });
-        auto pack = sub(*vec);
-
-        for (auto&& x : vec->*[](int x) { return x * 2; }) {
+        auto result = sub(*vec);
+        for (int x : vec->*[](int x) { return x * 2; }) {
             std::cout << x << std::endl;
         }
     }

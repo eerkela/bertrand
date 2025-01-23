@@ -1182,6 +1182,8 @@ struct __reversed__<Self>                                   : returns<Object> {}
 /* Allow Objects to be used as left-hand arguments in `issubclass()` checks. */
 template <meta::is<Object> Derived, typename Base>
 struct __issubclass__<Derived, Base>                         : returns<bool> {
+    /// TODO: this should also not be forward declared  I don't know what this needs
+    /// to actually do.
     static bool operator()(Derived derived);
 };
 
@@ -1191,7 +1193,19 @@ Python level. */
 template <meta::inherits<std::ostream> Stream, meta::python Self>
 struct __lshift__<Stream, Self>                             : returns<Stream&> {
     /// TODO: Str, Bytes, ByteArray should specialize this to write to the stream directly.
-    static Stream& operator()(Stream stream, Self self);
+    static Stream& operator()(Stream stream, Self self) {
+        Object str = steal<Object>(PyObject_Str(ptr(self)));
+        if (str.is(nullptr)) {
+            Exception::from_python();
+        }
+        Py_ssize_t len;
+        const char* data = PyUnicode_AsUTF8AndSize(ptr(str), &len);
+        if (data == nullptr) {
+            Exception::from_python();
+        }
+        stream.write(data, len);
+        return stream;
+    }
 };
 
 
