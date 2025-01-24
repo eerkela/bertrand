@@ -47,8 +47,6 @@ namespace std {
 namespace bertrand {
 
 
-/// TODO: replace std::derived_from<> with better concepts from meta:: namespace
-
 /// TODO: add assertions where appropriate to ensure that no object is ever null.
 
 
@@ -130,7 +128,8 @@ namespace impl {
     template <typename Self, static_str Name>
         requires (
             __getattr__<Self, Name>::enable &&
-            std::derived_from<typename __getattr__<Self, Name>::type, Object> && (
+            meta::python<typename __getattr__<Self, Name>::type> &&
+            !meta::is_qualified<typename __getattr__<Self, Name>::type> && (
                 !std::is_invocable_v<__getattr__<Self, Name>, Self> ||
                 std::is_invocable_r_v<
                     typename __getattr__<Self, Name>::type,
@@ -139,9 +138,9 @@ namespace impl {
                 >
             )
         )
-    struct Attr : std::remove_cv_t<typename __getattr__<Self, Name>::type> {
+    struct Attr : __getattr__<Self, Name>::type {
     private:
-        using Base = std::remove_cv_t<typename __getattr__<Self, Name>::type>;
+        using Base = __getattr__<Self, Name>::type;
 
         template <typename S, static_str N>
             requires (
@@ -255,7 +254,8 @@ namespace impl {
     template <typename Self, typename... Key>
         requires (
             __getitem__<Self, Key...>::enable &&
-            std::convertible_to<typename __getitem__<Self, Key...>::type, Object> && (
+            meta::python<typename __getitem__<Self, Key...>::type> &&
+            !meta::is_qualified<typename __getitem__<Self, Key...>::type> && (
                 std::is_invocable_r_v<
                     typename __getitem__<Self, Key...>::type,
                     __getitem__<Self, Key...>,
@@ -271,14 +271,13 @@ namespace impl {
                     >
                 ) || (
                     !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
-                    !meta::has_cpp<Self> &&
-                    std::derived_from<typename __getitem__<Self, Key...>::type, Object>
+                    !meta::has_cpp<Self>
                 )
             )
         )
-    struct Item : std::remove_cv_t<typename __getitem__<Self, Key...>::type> {
+    struct Item : __getitem__<Self, Key...>::type {
     private:
-        using Base = std::remove_cv_t<typename __getitem__<Self, Key...>::type>;
+        using Base = __getitem__<Self, Key...>::type;
 
         template <typename S, typename... K>
             requires (
@@ -942,22 +941,18 @@ public:
 
     decltype(auto) __next__(this auto&& self) {
         if constexpr (std::is_void_v<End>) {
-            PyObject* next = PyIter_Next(ptr(self));
-            if (next == nullptr) {
+            Begin next = steal<Begin>(PyIter_Next(ptr(self)));
+            if (next.is(nullptr)) {
                 if (PyErr_Occurred()) {
                     Exception::from_python();
                 }
                 throw StopIteration();
             }
-            return steal<Begin>(next);
+            return next;
 
         } else {
-            auto inner = view(self);
-            if (inner->begin == inner->end) {
-                throw StopIteration();
-            }
-            ++(inner->begin);
-            if (inner->begin == inner->end) {
+            auto* inner = view(self);
+            if (inner->begin == inner->end || ++inner->begin == inner->end) {
                 throw StopIteration();
             }
             return *(inner->begin);
@@ -1000,7 +995,7 @@ no specialized C++ iterator can be found.  In that case, its value type is set t
 `T` in an `__iter__<Container> : returns<T> {};` specialization.  If you want to use
 this class and avoid type safety issues, leave the return type set to `Object` (the
 default), which will incur a runtime check on conversion. */
-template <meta::python Return>
+template <meta::python Return> requires (!meta::is_qualified<Return>)
 struct Iterator<Return, void, void> : Object, interface<Iterator<Return, void, void>> {
     struct __python__ : cls<__python__, Iterator>, PyObject {
         static Type<Iterator> __import__() {
@@ -1042,7 +1037,6 @@ struct Iterator<Return, void, void> : Object, interface<Iterator<Return, void, v
         explicit_ctor<Iterator>{},
         std::forward<Args>(args)...
     ) {}
-
 };
 
 
@@ -1152,7 +1146,6 @@ struct Iterator<Begin, End, void> : Object, interface<Iterator<Begin, End, void>
         explicit_ctor<Iterator>{},
         std::forward<Args>(args)...
     ) {}
-
 };
 
 
@@ -1266,28 +1259,6 @@ struct Iterator<Begin, End, Container> : Object, interface<Iterator<Begin, End, 
 };
 
 
-namespace impl {
-
-    template <meta::iterable Container>
-    struct IterTraits {
-        using begin = decltype(std::ranges::begin(
-            std::declval<std::add_lvalue_reference_t<Container>>()
-        ));
-        using end = decltype(std::ranges::end(
-            std::declval<std::add_lvalue_reference_t<Container>>()
-        ));
-        using container = std::remove_reference_t<Container>;
-    };
-    template <meta::iterable Container> requires (std::is_lvalue_reference_v<Container>)
-    struct IterTraits<Container> {
-        using begin = decltype(std::ranges::begin(std::declval<Container>()));
-        using end = decltype(std::ranges::end(std::declval<Container>()));
-        using container = void;
-    };
-
-}
-
-
 /* CTAD guide will generate a Python iterator around a pair of raw C++ iterators. */
 template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
     requires (std::convertible_to<decltype(*std::declval<Begin>()), Object>)
@@ -1299,9 +1270,9 @@ correct ownership semantics. */
 template <meta::iterable Container>
     requires (meta::yields<Container, Object>)
 Iterator(Container&&) -> Iterator<
-    typename impl::IterTraits<Container>::begin,
-    typename impl::IterTraits<Container>::end,
-    typename impl::IterTraits<Container>::container
+    typename meta::iter_traits<Container>::begin,
+    typename meta::iter_traits<Container>::end,
+    typename meta::iter_traits<Container>::container
 >;
 
 
@@ -1311,21 +1282,21 @@ template <meta::iterable Container>
     requires (meta::yields<Container, Object>)
 struct __init__<
     Iterator<
-        typename impl::IterTraits<Container>::begin,
-        typename impl::IterTraits<Container>::end,
-        typename impl::IterTraits<Container>::container
+        typename meta::iter_traits<Container>::begin,
+        typename meta::iter_traits<Container>::end,
+        typename meta::iter_traits<Container>::container
     >,
     Container
 > : returns<Iterator<
-    typename impl::IterTraits<Container>::begin,
-    typename impl::IterTraits<Container>::end,
-    typename impl::IterTraits<Container>::container
+    typename meta::iter_traits<Container>::begin,
+    typename meta::iter_traits<Container>::end,
+    typename meta::iter_traits<Container>::container
 >> {
     static auto operator()(Container&& self) {
         return impl::construct<Iterator<
-            typename impl::IterTraits<Container>::begin,
-            typename impl::IterTraits<Container>::end,
-            typename impl::IterTraits<Container>::container
+            typename meta::iter_traits<Container>::begin,
+            typename meta::iter_traits<Container>::end,
+            typename meta::iter_traits<Container>::container
         >>(std::forward<Container>(self));
     }
 };
@@ -1344,11 +1315,12 @@ struct __init__<Iterator<Begin, End, void>, Begin, End> : returns<Iterator<Begin
 };
 
 
+/// TODO: figure out isisntance/issubclass for iterators
+
+
 template <meta::is<Object> Derived, typename Return>
 struct __isinstance__<Derived, Iterator<Return, void, void>> : returns<bool> {
-    static constexpr bool operator()(Derived obj) {
-        return PyIter_Check(ptr(obj));
-    }
+    static constexpr bool operator()(Derived obj) { return PyIter_Check(ptr(obj)); }
 };
 
 
@@ -1376,6 +1348,10 @@ struct __issubclass__<Derived, Iterator<Return, void, void>> : returns<bool> {
 };
 
 
+template <typename T, typename Begin, typename End, typename Container>
+struct __contains__<T, Iterator<Begin, End, Container>> : returns<bool> {};
+
+
 /* Traversing a Python iterator requires a customized C++ iterator type. */
 template <typename T>
 struct __iter__<Iterator<T, void, void>>                    : returns<T> {
@@ -1400,8 +1376,8 @@ struct __iter__<Iterator<T, void, void>>                    : returns<T> {
         ++(*this);
     }
 
-    /// NOTE: python iterators cannot be copied due to their stateful nature via the
-    /// shared PyObject* pointer.
+    /// NOTE: python iterators cannot be copied due to their inherently stateful nature
+    /// via the shared PyObject* pointer.
 
     __iter__(const __iter__&) = delete;
     __iter__(__iter__&& other) :
@@ -1421,11 +1397,10 @@ struct __iter__<Iterator<T, void, void>>                    : returns<T> {
     [[nodiscard]] const T* operator->() const { return &curr; }
 
     __iter__& operator++() {
-        PyObject* next = PyIter_Next(ptr(iter));
-        if (PyErr_Occurred()) {
+        curr = steal<T>(PyIter_Next(ptr(iter)));
+        if (curr.is(nullptr) && PyErr_Occurred()) {
             Exception::from_python();
         }
-        curr = steal<T>(next);
         return *this;
     }
 
@@ -1448,21 +1423,15 @@ struct __iter__<Iterator<T, void, void>>                    : returns<T> {
     [[nodiscard]] friend bool operator!=(sentinel, const __iter__& self) {
         return !self.curr.is(nullptr);
     }
-
 };
 /// NOTE: can't iterate over a const Iterator<T> because the iterator itself must be
 /// mutable.
 
 
 /* py::Iterator<Begin, End, ...> is special cased in the begin() and end() operators to
-extract the internal C++ iterators rather than creating yet another layer of
-indirection. */
+extract the internal C++ iterators rather than creating another layer of indirection. */
 template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End, typename Container>
 struct __iter__<Iterator<Begin, End, Container>> : returns<decltype(*std::declval<Begin>())> {};
-
-
-template <typename T, typename Begin, typename End, typename Container>
-struct __contains__<T, Iterator<Begin, End, Container>> : returns<bool> {};
 
 
 /// TODO: these attributes can only be defined after functions are defined
@@ -1510,59 +1479,58 @@ controlled by the __iter__ control struct, whose return type dictates the
 iterator's dereference type. */
 template <meta::python Self>
     requires (__iter__<Self>::enable && (
-        std::is_constructible_v<__iter__<Self>, Self> ||
-        (meta::has_cpp<Self> && meta::iterable<meta::cpp_type<Self>>) ||
-        (!meta::has_cpp<Self> && std::derived_from<typename __iter__<Self>::type, Object>)
+        std::is_constructible_v<__iter__<Self>, Self> || (
+            meta::has_cpp<Self> &&
+            meta::iterable<meta::cpp_type<Self>>
+        ) || (
+            !meta::has_cpp<Self> &&
+            meta::python<typename __iter__<Self>::type> &&
+            !meta::is_qualified<typename __iter__<Self>::type>
+        )
     ))
-[[nodiscard]] auto begin(const Self& self) {
+[[nodiscard]] auto begin(Self&& self) {
     if constexpr (std::is_constructible_v<__iter__<Self>, Self>) {
-        return __iter__<Self>(self);
+        return __iter__<Self>(std::forward<Self>(self));
 
     } else if constexpr (meta::has_cpp<Self>) {
-        return std::ranges::begin(from_python(self));
+        return std::ranges::begin(from_python(std::forward<Self>(self)));
 
     } else if constexpr (meta::inherits<Self, impl::IterTag>) {
         if constexpr (!std::is_void_v<typename std::remove_reference_t<Self>::end_type>) {
             return view(self)->begin;
         } else {
             using T = __iter__<Self>::type;
-            PyObject* iter = PyObject_GetIter(ptr(self));
-            if (iter == nullptr) {
+            Iterator<T> iter = steal<Iterator<T>>(PyObject_GetIter(ptr(self)));
+            if (iter.is(nullptr)) {
                 Exception::from_python();
             }
-            return __iter__<Iterator<T>>{steal<Iterator<T>>(iter)};
+            return __iter__<Iterator<T>>{std::move(iter)};
         }
 
     } else {
         using T = __iter__<Self>::type;
-        PyObject* iter = PyObject_GetIter(ptr(self));
-        if (iter == nullptr) {
+        Iterator<T> iter = steal<Iterator<T>>(PyObject_GetIter(ptr(self)));
+        if (iter.is(nullptr)) {
             Exception::from_python();
         }
-        return __iter__<Iterator<T>>{steal<Iterator<T>>(iter)};
+        return __iter__<Iterator<T>>{std::move(iter)};
     }
 }
 
 
 template <meta::python Self>
     requires (__iter__<Self>::enable && (
-        std::is_constructible_v<__iter__<Self>, Self> ||
-        (meta::has_cpp<Self> && meta::iterable<meta::cpp_type<Self>>) ||
-        (!meta::has_cpp<Self> && std::derived_from<typename __iter__<Self>::type, Object>)
+        std::is_constructible_v<__iter__<Self>, Self> || (
+            meta::has_cpp<Self> &&
+            meta::iterable<meta::cpp_type<Self>>
+        ) || (
+            !meta::has_cpp<Self> &&
+            meta::python<typename __iter__<Self>::type> &&
+            !meta::is_qualified<typename __iter__<Self>::type>
+        )
     ))
-[[nodiscard]] auto begin(Self& self) {
-    return begin(reinterpret_cast<std::add_const_t<Self>&>(self));
-}
-
-
-template <meta::python Self>
-    requires (__iter__<Self>::enable && (
-        std::is_constructible_v<__iter__<Self>, Self> ||
-        (meta::has_cpp<Self> && meta::iterable<meta::cpp_type<Self>>) ||
-        (!meta::has_cpp<Self> && std::derived_from<typename __iter__<Self>::type, Object>)
-    ))
-[[nodiscard]] auto cbegin(const Self& self) {
-    return begin(self);
+[[nodiscard]] auto cbegin(Self&& self) {
+    return begin(std::forward<Self>(self));
 }
 
 
@@ -1570,11 +1538,16 @@ template <meta::python Self>
 __iter__ control struct. */
 template <meta::python Self>
     requires (__iter__<Self>::enable && (
-        std::is_constructible_v<__iter__<Self>, Self> ||
-        (meta::has_cpp<Self> && meta::iterable<meta::cpp_type<Self>>) ||
-        (!meta::has_cpp<Self> && std::derived_from<typename __iter__<Self>::type, Object>)
+        std::is_constructible_v<__iter__<Self>, Self> || (
+            meta::has_cpp<Self> &&
+            meta::iterable<meta::cpp_type<Self>>
+        ) || (
+            !meta::has_cpp<Self> &&
+            meta::python<typename __iter__<Self>::type> &&
+            !meta::is_qualified<typename __iter__<Self>::type>
+        )
     ))
-[[nodiscard]] auto end(const Self& self) {
+[[nodiscard]] auto end(Self&& self) {
     if constexpr (std::is_constructible_v<__iter__<Self>, Self>) {
         return sentinel{};
 
@@ -1594,25 +1567,19 @@ template <meta::python Self>
 }
 
 
-template <meta::python Self>
-    requires (__iter__<Self>::enable && (
-        std::is_constructible_v<__iter__<Self>, Self> ||
-        (meta::has_cpp<Self> && meta::iterable<meta::cpp_type<Self>>) ||
-        (!meta::has_cpp<Self> && std::derived_from<typename __iter__<Self>::type, Object>)
-    ))
-[[nodiscard]] auto end(Self& self) {
-    return end(reinterpret_cast<std::add_const_t<Self>&>(self));
-}
-
-
 /* Const end operator.  Similar to `cbegin()`, this is identical to `end()`. */
 template <meta::python Self>
     requires (__iter__<Self>::enable && (
-        std::is_constructible_v<__iter__<Self>, Self> ||
-        (meta::has_cpp<Self> && meta::iterable<meta::cpp_type<Self>>) ||
-        (!meta::has_cpp<Self> && std::derived_from<typename __iter__<Self>::type, Object>)
-    ) && std::is_const_v<std::remove_reference_t<Self>>)
-[[nodiscard]] auto cend(const Self& self) {
+        std::is_constructible_v<__iter__<Self>, Self> || (
+            meta::has_cpp<Self> &&
+            meta::iterable<meta::cpp_type<Self>>
+        ) || (
+            !meta::has_cpp<Self> &&
+            meta::python<typename __iter__<Self>::type> &&
+            !meta::is_qualified<typename __iter__<Self>::type>
+        )
+    ))
+[[nodiscard]] auto cend(Self&& self) {
     return end(std::forward<Self>(self));
 }
 
@@ -1622,11 +1589,16 @@ controlled by the __reversed__ control struct, whose return type dictates the
 iterator's dereference type. */
 template <meta::python Self>
     requires (__reversed__<Self>::enable && (
-        std::is_constructible_v<__reversed__<Self>, Self> ||
-        (meta::has_cpp<Self> && meta::reverse_iterable<meta::cpp_type<Self>>) ||
-        (!meta::has_cpp<Self> && std::derived_from<typename __reversed__<Self>::type, Object>)
+        std::is_constructible_v<__reversed__<Self>, Self> || (
+            meta::has_cpp<Self> &&
+            meta::reverse_iterable<meta::cpp_type<Self>>
+        ) || (
+            !meta::has_cpp<Self> &&
+            meta::python<typename __reversed__<Self>::type> &&
+            !meta::is_qualified<typename __reversed__<Self>::type>
+        )
     ))
-[[nodiscard]] auto rbegin(const Self& self) {
+[[nodiscard]] auto rbegin(Self&& self) {
     if constexpr (std::is_constructible_v<__reversed__<Self>, Self>) {
         return __reversed__<Self>(std::forward<Self>(self));
 
@@ -1648,23 +1620,14 @@ template <meta::python Self>
             }
             throw KeyError("'reversed'");
         }
-        PyObject* iter = PyObject_CallOneArg(ptr(func), ptr(self));
-        if (iter == nullptr) {
+        Iterator<T> iter = steal<Iterator<T>>(
+            PyObject_CallOneArg(ptr(func), ptr(self))
+        );
+        if (iter.is(nullptr)) {
             Exception::from_python();
         }
-        return __iter__<Iterator<T>>{steal<Iterator<T>>(iter)};
+        return __iter__<Iterator<T>>{std::move(iter)};
     }
-}
-
-
-template <meta::python Self>
-    requires (__reversed__<Self>::enable && (
-        std::is_constructible_v<__reversed__<Self>, Self> ||
-        (meta::has_cpp<Self> && meta::reverse_iterable<meta::cpp_type<Self>>) ||
-        (!meta::has_cpp<Self> && std::derived_from<typename __reversed__<Self>::type, Object>)
-    ))
-[[nodiscard]] auto rbegin(Self& self) {
-    return rbegin(reinterpret_cast<std::add_const_t<Self>&>(self));
 }
 
 
@@ -1672,8 +1635,17 @@ template <meta::python Self>
 and immutable iterators, so this is fundamentally the same as the ordinary
 rbegin() method.  Some libraries assume the existence of this method. */
 template <meta::python Self>
-    requires (__reversed__<Self>::enable && std::is_const_v<std::remove_reference_t<Self>>)
-[[nodiscard]] auto crbegin(const Self& self) {
+    requires (__reversed__<Self>::enable && (
+        std::is_constructible_v<__reversed__<Self>, Self> || (
+            meta::has_cpp<Self> &&
+            meta::reverse_iterable<meta::cpp_type<Self>>
+        ) || (
+            !meta::has_cpp<Self> &&
+            meta::python<typename __reversed__<Self>::type> &&
+            !meta::is_qualified<typename __reversed__<Self>::type>
+        )
+    ))
+[[nodiscard]] auto crbegin(Self&& self) {
     return rbegin(std::forward<Self>(self));
 }
 
@@ -1682,11 +1654,16 @@ template <meta::python Self>
 by the __reversed__ control struct. */
 template <meta::python Self>
     requires (__reversed__<Self>::enable && (
-        std::is_constructible_v<__reversed__<Self>, Self> ||
-        (meta::has_cpp<Self> && meta::reverse_iterable<meta::cpp_type<Self>>) ||
-        (!meta::has_cpp<Self> && std::derived_from<typename __reversed__<Self>::type, Object>)
+        std::is_constructible_v<__reversed__<Self>, Self> || (
+            meta::has_cpp<Self> &&
+            meta::reverse_iterable<meta::cpp_type<Self>>
+        ) || (
+            !meta::has_cpp<Self> &&
+            meta::python<typename __reversed__<Self>::type> &&
+            !meta::is_qualified<typename __reversed__<Self>::type>
+        )
     ))
-[[nodiscard]] auto rend(const Self& self) {
+[[nodiscard]] auto rend(Self&& self) {
     if constexpr (std::is_constructible_v<__reversed__<Self>, Self>) {
         return sentinel{};
 
@@ -1699,26 +1676,20 @@ template <meta::python Self>
 }
 
 
-template <meta::python Self>
-    requires (__reversed__<Self>::enable && (
-        std::is_constructible_v<__reversed__<Self>, Self> ||
-        (meta::has_cpp<Self> && meta::reverse_iterable<meta::cpp_type<Self>>) ||
-        (!meta::has_cpp<Self> && std::derived_from<typename __reversed__<Self>::type, Object>)
-    ))
-[[nodiscard]] auto rend(Self& self) {
-    return rend(reinterpret_cast<std::add_const_t<Self>&>(self));
-}
-
-
 /* Const reverse end operator.  Similar to `crbegin()`, this is identical to
 `rend()`. */
 template <meta::python Self>
     requires (__reversed__<Self>::enable && (
-        std::is_constructible_v<__reversed__<Self>, Self> ||
-        (meta::has_cpp<Self> && meta::reverse_iterable<meta::cpp_type<Self>>) ||
-        (!meta::has_cpp<Self> && std::derived_from<typename __reversed__<Self>::type, Object>)
-    ) && std::is_const_v<std::remove_reference_t<Self>>)
-[[nodiscard]] auto crend(const Self& self) {
+        std::is_constructible_v<__reversed__<Self>, Self> || (
+            meta::has_cpp<Self> &&
+            meta::reverse_iterable<meta::cpp_type<Self>>
+        ) || (
+            !meta::has_cpp<Self> &&
+            meta::python<typename __reversed__<Self>::type> &&
+            !meta::is_qualified<typename __reversed__<Self>::type>
+        )
+    ))
+[[nodiscard]] auto crend(Self&& self) {
     return rend(std::forward<Self>(self));
 }
 
@@ -1730,7 +1701,7 @@ function. */
 template <typename Key, typename Container>
     requires (
         __contains__<Container, Key>::enable &&
-        std::same_as<typename __contains__<Container, Key>::type, bool> && (
+        std::convertible_to<typename __contains__<Container, Key>::type, bool> && (
             std::is_invocable_r_v<bool, __contains__<Container, Key>, Container, Key> || (
                 !std::is_invocable_v<__contains__<Container, Key>, Container, Key> &&
                 meta::has_cpp<Container> &&
@@ -1758,7 +1729,7 @@ template <typename Key, typename Container>
             ptr(to_python(std::forward<Container>(container))),
             ptr(to_python(std::forward<Key>(key)))
         );
-        if (result == -1) {
+        if (result < 0) {
             Exception::from_python();
         }
         return result;
@@ -1771,7 +1742,7 @@ key is already a Python object */
 template <typename Self, typename Key>
     requires (
         __contains__<Self, Key>::enable &&
-        std::same_as<typename __contains__<Self, Key>::type, bool> && (
+        std::convertible_to<typename __contains__<Self, Key>::type, bool> && (
             std::is_invocable_r_v<bool, __contains__<Self, Key>, Self, Key> || (
                 !std::is_invocable_v<__contains__<Self, Key>, Self, Key> &&
                 meta::has_cpp<Self> &&
@@ -1855,6 +1826,14 @@ free-floating size() function. */
 template <typename Self> requires (!__len__<Self>::enable && meta::has_size<Self>)
 [[nodiscard]] size_t size(Self&& obj) {
     return len(std::forward<Self>(obj));
+}
+
+
+namespace meta::detail {
+    template <meta::python T> requires (meta::iterable<T>)
+    constexpr bool enable_unpack_operator<T> = true;
+    template <meta::python T> requires (meta::iterable<T>)
+    constexpr bool enable_comprehension_operator<T> = true;
 }
 
 
@@ -2019,7 +1998,9 @@ template <meta::python Self>
             !std::is_invocable_v<__increment__<Self>, Self> &&
             !meta::has_cpp<Self> &&
             !meta::is_const<Self> &&
-            std::same_as<typename __increment__<Self>::type, Self>
+            meta::python<typename __increment__<Self>::type> &&
+            !meta::is_qualified<typename __increment__<Self>::type> &&
+            std::convertible_to<typename __increment__<Self>::type, std::remove_cvref_t<Self>>
         )
     ))
 decltype(auto) operator++(Self&& self) {
@@ -2030,7 +2011,7 @@ decltype(auto) operator++(Self&& self) {
         return ++from_python(std::forward<Self>(self));
 
     } else {
-        using Return = std::remove_cvref_t<typename __increment__<Self>::type>;
+        using Return = __increment__<Self>::type;
         Object one = steal<Object>(PyLong_FromLong(1));
         if (one.is(nullptr)) {
             Exception::from_python();
@@ -2062,7 +2043,9 @@ template <meta::python Self>
             !std::is_invocable_v<__decrement__<Self>, Self> &&
             !meta::has_cpp<Self> &&
             !meta::is_const<Self> &&
-            std::same_as<typename __decrement__<Self>::type, Self>
+            meta::python<typename __decrement__<Self>::type> &&
+            !meta::is_qualified<typename __decrement__<Self>::type> &&
+            std::convertible_to<typename __decrement__<Self>::type, std::remove_cvref_t<Self>>
         )
     ))
 decltype(auto) operator--(Self&& self) {
@@ -2382,7 +2365,9 @@ template <meta::python L, typename R>
             !std::is_invocable_v<__iadd__<L, R>, L, R> &&
             !(meta::has_cpp<L> && meta::has_cpp<R>) &&
             !meta::is_const<L> &&
-            std::same_as<typename __iadd__<L, R>::type, L>
+            meta::python<typename __iadd__<L, R>::type> &&
+            !meta::is_qualified<typename __iadd__<L, R>::type> &&
+            std::convertible_to<typename __iadd__<L, R>::type, std::remove_cvref_t<L>>
         )
     ))
 decltype(auto) operator+=(L&& lhs, R&& rhs) {
@@ -2461,7 +2446,9 @@ template <meta::python L, typename R>
             !std::is_invocable_v<__isub__<L, R>, L, R> &&
             !(meta::has_cpp<L> && meta::has_cpp<R>) &&
             !meta::is_const<L> &&
-            std::same_as<typename __isub__<L, R>::type, L>
+            meta::python<typename __isub__<L, R>::type> &&
+            !meta::is_qualified<typename __isub__<L, R>::type> &&
+            std::convertible_to<typename __isub__<L, R>::type, std::remove_cvref_t<L>>
         )
     ))
 decltype(auto) operator-=(L&& lhs, R&& rhs) {
@@ -2540,7 +2527,9 @@ template <meta::python L, typename R>
             !std::is_invocable_v<__imul__<L, R>, L, R> &&
             !(meta::has_cpp<L> && meta::has_cpp<R>) &&
             !meta::is_const<L> &&
-            std::same_as<typename __imul__<L, R>::type, L>
+            meta::python<typename __imul__<L, R>::type> &&
+            !meta::is_qualified<typename __imul__<L, R>::type> &&
+            std::convertible_to<typename __imul__<L, R>::type, std::remove_cvref_t<L>>
         )
     ))
 decltype(auto) operator*=(L&& lhs, R&& rhs) {
@@ -2763,7 +2752,9 @@ template <meta::python L, typename R>
             !std::is_invocable_v<__itruediv__<L, R>, L, R> &&
             !(meta::has_cpp<L> && meta::has_cpp<R>) &&
             !meta::is_const<L> &&
-            std::same_as<typename __itruediv__<L, R>::type, L>
+            meta::python<typename __itruediv__<L, R>::type> &&
+            !meta::is_qualified<typename __itruediv__<L, R>::type> &&
+            std::convertible_to<typename __itruediv__<L, R>::type, std::remove_cvref_t<L>>
         )
     ))
 decltype(auto) operator/=(L&& lhs, R&& rhs) {
@@ -2822,7 +2813,9 @@ template <meta::python L, typename R>
         std::is_invocable_r_v<typename __ifloordiv__<L, R>::type, __ifloordiv__<L, R>, L, R> || (
             !std::is_invocable_v<__ifloordiv__<L, R>, L, R> &&
             !meta::is_const<L> &&
-            std::same_as<typename __ifloordiv__<L, R>::type, L>
+            meta::python<typename __ifloordiv__<L, R>::type> &&
+            !meta::is_qualified<typename __ifloordiv__<L, R>::type> &&
+            std::convertible_to<typename __ifloordiv__<L, R>::type, std::remove_cvref_t<L>>
         )
     ))
 decltype(auto) ifloordiv(L&& lhs, R&& rhs) {
@@ -2896,7 +2889,9 @@ template <meta::python L, typename R>
             !std::is_invocable_v<__imod__<L, R>, L, R> &&
             !(meta::has_cpp<L> && meta::has_cpp<R>) &&
             !meta::is_const<L> &&
-            std::same_as<typename __imod__<L, R>::type, L>
+            meta::python<typename __imod__<L, R>::type> &&
+            !meta::is_qualified<typename __imod__<L, R>::type> &&
+            std::convertible_to<typename __imod__<L, R>::type, std::remove_cvref_t<L>>
         )
     ))
 decltype(auto) operator%=(L&& lhs, R&& rhs) {
@@ -2975,7 +2970,9 @@ template <meta::python L, typename R>
             !std::is_invocable_v<__ilshift__<L, R>, L, R> &&
             !(meta::has_cpp<L> && meta::has_cpp<R>) &&
             !meta::is_const<L> &&
-            std::same_as<typename __ilshift__<L, R>::type, L>
+            meta::python<typename __ilshift__<L, R>::type> &&
+            !meta::is_qualified<typename __ilshift__<L, R>::type> &&
+            std::convertible_to<typename __ilshift__<L, R>::type, std::remove_cvref_t<L>>
         )
     ))
 decltype(auto) operator<<=(L&& lhs, R&& rhs) {
@@ -3054,7 +3051,9 @@ template <meta::python L, typename R>
             !std::is_invocable_v<__irshift__<L, R>, L, R> &&
             !(meta::has_cpp<L> && meta::has_cpp<R>) &&
             !meta::is_const<L> &&
-            std::same_as<typename __irshift__<L, R>::type, L>
+            meta::python<typename __irshift__<L, R>::type> &&
+            !meta::is_qualified<typename __irshift__<L, R>::type> &&
+            std::convertible_to<typename __irshift__<L, R>::type, std::remove_cvref_t<L>>
         )
     ))
 decltype(auto) operator>>=(L&& lhs, R&& rhs) {
@@ -3133,7 +3132,9 @@ template <meta::python L, typename R>
             !std::is_invocable_v<__iand__<L, R>, L, R> &&
             !(meta::has_cpp<L> && meta::has_cpp<R>) &&
             !meta::is_const<L> &&
-            std::same_as<typename __iand__<L, R>::type, L>
+            meta::python<typename __iand__<L, R>::type> &&
+            !meta::is_qualified<typename __iand__<L, R>::type> &&
+            std::convertible_to<typename __iand__<L, R>::type, std::remove_cvref_t<L>>
         )
     ))
 decltype(auto) operator&=(L&& lhs, R&& rhs) {
@@ -3211,7 +3212,9 @@ template <meta::python L, typename R>
             !std::is_invocable_v<__ior__<L, R>, L, R> &&
             !(meta::has_cpp<L> && meta::has_cpp<R>) &&
             !meta::is_const<L> &&
-            std::same_as<typename __ior__<L, R>::type, L>
+            meta::python<typename __ior__<L, R>::type> &&
+            !meta::is_qualified<typename __ior__<L, R>::type> &&
+            std::convertible_to<typename __ior__<L, R>::type, std::remove_cvref_t<L>>
         )
     ))
 decltype(auto) operator|=(L&& lhs, R&& rhs) {
@@ -3290,7 +3293,9 @@ template <meta::python L, typename R>
             !std::is_invocable_v<__ixor__<L, R>, L, R> &&
             !(meta::has_cpp<L> && meta::has_cpp<R>) &&
             !meta::is_const<L> &&
-            std::same_as<typename __ixor__<L, R>::type, L>
+            meta::python<typename __ixor__<L, R>::type> &&
+            !meta::is_qualified<typename __ixor__<L, R>::type> &&
+            std::convertible_to<typename __ixor__<L, R>::type, std::remove_cvref_t<L>>
         )
     ))
 decltype(auto) operator^=(L&& lhs, R&& rhs) {

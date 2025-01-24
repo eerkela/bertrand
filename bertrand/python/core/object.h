@@ -810,7 +810,7 @@ public:
     template <typename Self, typename Key>
         requires (
             __contains__<Self, Key>::enable &&
-            std::same_as<typename __contains__<Self, Key>::type, bool> && (
+            std::convertible_to<typename __contains__<Self, Key>::type, bool> && (
                 std::is_invocable_r_v<bool, __contains__<Self, Key>, Self, Key> || (
                     !std::is_invocable_v<__contains__<Self, Key>, Self, Key> &&
                     meta::has_cpp<Self> &&
@@ -821,7 +821,7 @@ public:
                 )
             )
         )
-    [[nodiscard]] bool in(this Self&& self, Key&& other);
+    [[nodiscard]] bool in(this Self&&, Key&&);
 
     /* Universal implicit conversion operator.  Implemented via the __cast__ control
     struct. */

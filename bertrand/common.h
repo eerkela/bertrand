@@ -551,6 +551,23 @@ namespace meta {
     concept yields_reverse =
         reverse_iterable<T> && std::convertible_to<reverse_iter_type<T>, Value>;
 
+    template <iterable Container>
+    struct iter_traits {
+        using begin = decltype(std::ranges::begin(
+            std::declval<std::add_lvalue_reference_t<Container>>()
+        ));
+        using end = decltype(std::ranges::end(
+            std::declval<std::add_lvalue_reference_t<Container>>()
+        ));
+        using container = std::remove_reference_t<Container>;
+    };
+    template <meta::iterable Container> requires (std::is_lvalue_reference_v<Container>)
+    struct iter_traits<Container> {
+        using begin = decltype(std::ranges::begin(std::declval<Container>()));
+        using end = decltype(std::ranges::end(std::declval<Container>()));
+        using container = void;
+    };
+
     template <typename T>
     concept has_size = requires(T t) {
         { std::ranges::size(t) } -> std::convertible_to<size_t>;
