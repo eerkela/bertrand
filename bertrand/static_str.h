@@ -8,6 +8,7 @@
 #include <iterator>
 #include <limits>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -188,7 +189,7 @@ namespace meta {
     constexpr static_str unpack_string = detail::_unpack_string<I, Strs...>::value;
 
     template <static_str... Strings>
-    constexpr bool strings_are_unique = detail::strings_are_unique<Strings...>;
+    concept strings_are_unique = detail::strings_are_unique<Strings...>;
 
     template <typename T>
     concept static_str = inherits<T, impl::static_str_tag>;
@@ -1885,6 +1886,55 @@ constexpr std::string demangle(const char* name) {
     #else
         return name; // fallback: no demangling
     #endif
+}
+
+
+/* Customizes the `bertrand::repr()` output for an arbitrary type.  Note that
+`bertrand::repr()` is always enabled by default; specializing this struct merely
+changes the output.  The default behavior will look for a valid `to_string()` function
+either as a member method, an ADL function, or `std::to_string()` as a fallback.  If
+none of these are found, `repr()` will attempt to perform stream insertion via the `<<`
+operator, and if that fails, will return a string containing the demangled type name
+and memory address, similar to Python. */
+template <typename Self>
+struct __repr__ {
+    static constexpr bool enable = true;
+    using type = std::string;
+
+    static constexpr std::string operator()(Self obj) {
+        if constexpr (meta::has_member_to_string<Self>) {
+            return std::forward<Self>(obj).to_string();
+
+        } else if constexpr (meta::has_adl_to_string<Self>) {
+            return to_string(std::forward<Self>(obj));
+
+        } else if constexpr (meta::has_std_to_string<Self>) {
+            return std::to_string(std::forward<Self>(obj));
+
+        } else if constexpr (meta::has_stream_insertion<Self>) {
+            std::ostringstream stream;
+            stream << std::forward<Self>(obj);
+            return stream.str();
+
+        } else {
+            return "<" + type_name<Self> + " at " + std::to_string(
+                reinterpret_cast<size_t>(&obj)
+            ) + ">";
+        }
+    }
+};
+
+
+/* Get a simple string representation of an arbitrary object.  This function is
+functionally equivalent to Python's `repr()` function, but extended to work for
+arbitrary C++ types, with possible customization via the `__repr__` control struct. */
+template <typename Self>
+    requires (__repr__<Self>::enable && (
+        std::convertible_to<typename __repr__<Self>::type, std::string> &&
+        std::is_invocable_r_v<std::string, __repr__<Self>, Self>
+    ))
+[[nodiscard]] constexpr std::string repr(Self&& obj) {
+    return __repr__<Self>{}(std::forward<Self>(obj));
 }
 
 

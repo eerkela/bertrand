@@ -787,10 +787,10 @@ C++ `assert()` macro is that this is implemented as a normal function and throws
 `bertrand::AssertionError` which can be passed up to Python with a coherent traceback.
 It is thus possible to implement pytest-style unit tests using this function just as
 you would in Python. */
-inline void assert_(bool condition, const char* message) {
+inline void assert_(bool cnd, const char* msg) {
     if constexpr (DEBUG) {
-        if (!condition) {
-            throw AssertionError(message);
+        if (!cnd) {
+            throw AssertionError(msg);
         }
     }
 }

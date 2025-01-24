@@ -618,8 +618,18 @@ namespace meta {
         iterable<T> && pair_like_with<iter_type<T>, First, Second>;
 
     template <typename T>
-    concept has_to_string = requires(T t) {
-        { std::to_string(t) } -> std::convertible_to<std::string>;
+    concept has_member_to_string = requires(T t) {
+        { std::forward<T>(t).to_string() } -> std::convertible_to<std::string>;
+    };
+
+    template <typename T>
+    concept has_adl_to_string = requires(T t) {
+        { to_string(std::forward<T>(t)) } -> std::convertible_to<std::string>;
+    };
+
+    template <typename T>
+    concept has_std_to_string = requires(T t) {
+        { std::to_string(std::forward<T>(t)) } -> std::convertible_to<std::string>;
     };
 
     template <typename T>
@@ -994,6 +1004,14 @@ namespace meta {
         { l ^= r } -> std::convertible_to<Return>;
     };
 
+}
+
+
+/* Equivalent to calling `std::hash<T>{}(...)`, but without explicitly specializating
+`std::hash`. */
+template <meta::hashable T>
+[[nodiscard]] size_t hash(T&& obj) {
+    return std::hash<std::decay_t<T>>{}(std::forward<T>(obj));
 }
 
 

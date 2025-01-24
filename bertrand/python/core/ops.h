@@ -30,9 +30,9 @@ namespace std {
                 );
 
             } else {
-                Py_hash_t result = PyObject_Hash(
-                    bertrand::ptr(bertrand::to_python(std::forward<T>(obj)))
-                );
+                Py_hash_t result = PyObject_Hash(bertrand::ptr(
+                    bertrand::to_python(std::forward<T>(obj))
+                ));
                 if (result == -1 && PyErr_Occurred()) {
                     bertrand::Exception::from_python();
                 }
@@ -50,68 +50,6 @@ namespace bertrand {
 /// TODO: replace std::derived_from<> with better concepts from meta:: namespace
 
 /// TODO: add assertions where appropriate to ensure that no object is ever null.
-
-
-/// TODO: move hash() and repr() to common.h?
-
-
-/* Equivalent to Python `hash(obj)`, but delegates to std::hash, which is overloaded
-for the relevant Python types.  This promotes hash-not-implemented exceptions into
-compile-time equivalents. */
-template <meta::hashable T>
-[[nodiscard]] size_t hash(T&& obj) {
-    return std::hash<T>{}(std::forward<T>(obj));
-}
-
-
-/// TODO: if I wanted to raise hash() and repr() to the pure C++ layer, I absolutely
-/// could, but I would also have to raise the __repr__ control struct at the same time.
-
-
-/* Equivalent to Python `repr(obj)`, but returns a std::string and attempts to
-represent C++ types using the stream insertion operator (<<) or std::to_string.  If all
-else fails, falls back to demangling the result of typeid(obj).name(). */
-template <typename Self>
-    requires (!__repr__<Self>::enable || (
-        std::convertible_to<typename __repr__<Self>::type, std::string> &&
-        std::is_invocable_r_v<std::string, __repr__<Self>, Self>
-    ))
-[[nodiscard]] std::string repr(Self&& obj) {
-    if constexpr (std::is_invocable_r_v<std::string, __repr__<Self>, Self>) {
-        return __repr__<Self>{}(std::forward<Self>(obj));
-
-    } else if constexpr (meta::has_python<Self>) {
-        Object str = steal<Object>(PyObject_Repr(
-            ptr(to_python(std::forward<Self>(obj)))
-        ));
-        if (str.is(nullptr)) {
-            Exception::from_python();
-        }
-        Py_ssize_t size;
-        const char* data = PyUnicode_AsUTF8AndSize(ptr(str), &size);
-        if (data == nullptr) {
-            Exception::from_python();
-        }
-        return std::string(data, size);
-
-    /// TODO: this can also look for a to_string() member or ADL method, in addition
-    /// to std::to_string().
-
-    } else if constexpr (meta::has_to_string<Self>) {
-        return std::to_string(std::forward<Self>(obj));
-
-    } else if constexpr (meta::has_stream_insertion<Self>) {
-        std::ostringstream stream;
-        stream << std::forward<Self>(obj);
-        return stream.str();
-
-    } else {
-        return
-            "<" + type_name<Self> + " at " + std::to_string(
-                reinterpret_cast<size_t>(&obj)
-            ) + ">";
-    }
-}
 
 
 /////////////////////////////////////
@@ -152,9 +90,9 @@ void del(impl::Item<Self, Key...>&& item);
 namespace impl {
 
     /* A global map storing cached Python strings for the `template_string<"name">`
-    accessor.  This avoids the overhead of repeatedly creating identical string
-    instances during attribute lookups, and replaces it with a simple, 2-level hash
-    lookup with proper per-interpreter state. */
+    accessor.  This avoids the overhead of repeatedly creating identical strings for
+    attribute lookups, and replaces it with a simple, 2-level hash lookup with proper
+    per-interpreter state. */
     inline std::unordered_map<
         PyInterpreterState*,
         std::unordered_map<const char*, Object>
@@ -503,13 +441,13 @@ void del(impl::Attr<Self, Name>&& attr) {
         __delattr__<Self, Name>{}(std::forward<Self>(attr.m_self));
 
     } else {
-        PyObject* name = PyUnicode_FromStringAndSize(Name, Name.size());
-        if (name == nullptr) {
+        Object name = steal<Object>(
+            PyUnicode_FromStringAndSize(Name, Name.size())
+        );
+        if (name.is(nullptr)) {
             Exception::from_python();
         }
-        int rc = PyObject_DelAttr(ptr(attr.m_self), name);
-        Py_DECREF(name);
-        if (rc) {
+        if (PyObject_DelAttr(ptr(attr.m_self), ptr(name))) {
             Exception::from_python();
         }
     }
@@ -525,7 +463,7 @@ template <typename Self, typename... Key>
         )
     )
 void del(impl::Item<Self, Key...>&& item) {
-    std::move(item.m_key)([&](Key... key) {
+    std::move(item.m_key)([&](auto&&... key) {
         if constexpr (std::is_invocable_v<__delitem__<Self, Key...>, Self, Key...>) {
             __delitem__<Self, Key...>{}(
                 std::forward<Self>(item.m_self),
@@ -535,22 +473,20 @@ void del(impl::Item<Self, Key...>&& item) {
         } else if constexpr (sizeof...(Key) == 1) {
             if (PyObject_DelItem(
                 ptr(item.m_self),
-                ptr(to_python(key))...)
+                ptr(to_python(std::forward<decltype(key)>(key)))...)
             ) {
                 Exception::from_python();
             }
 
         } else {
-            PyObject* tuple = PyTuple_Pack(
+            Object tuple = steal<Object>(PyTuple_Pack(
                 sizeof...(Key),
-                ptr(to_python(key))...
-            );
-            if (tuple == nullptr) {
+                ptr(to_python(std::forward<decltype(key)>(key)))...
+            ));
+            if (tuple.is(nullptr)) {
                 Exception::from_python();
             }
-            int rc = PyObject_DelItem(ptr(item.m_self), tuple);
-            Py_DECREF(tuple);
-            if (rc) {
+            if (PyObject_DelItem(ptr(item.m_self), ptr(tuple))) {
                 Exception::from_python();
             }
         }
@@ -808,7 +744,8 @@ template <static_str Name, meta::python Self>
 template <static_str Name, meta::python Self>
     requires (
         __getattr__<Self, Name>::enable &&
-        std::derived_from<typename __getattr__<Self, Name>::type, Object> && (
+        meta::python<typename __getattr__<Self, Name>::type> &&
+        !meta::is_qualified<typename __getattr__<Self, Name>::type> && (
             !std::is_invocable_v<__getattr__<Self, Name>, Self> ||
             std::is_invocable_r_v<
                 typename __getattr__<Self, Name>::type,
@@ -818,9 +755,10 @@ template <static_str Name, meta::python Self>
         )
     )
 [[nodiscard]] auto getattr(Self&& self) -> __getattr__<Self, Name>::type {
+    using Return = __getattr__<Self, Name>::type;
     if constexpr (DEBUG) {
         assert_(
-            ptr(self) != nullptr,
+            !self.is(nullptr),
             "Cannot get attribute '" + Name + "' from a null object."
         );
     }
@@ -828,19 +766,14 @@ template <static_str Name, meta::python Self>
         return __getattr__<Self, Name>{}(std::forward<Self>(self));
 
     } else {
-        PyObject* name = PyUnicode_FromStringAndSize(Name, Name.size());
-        if (name == nullptr) {
+        Return result = steal<Return>(PyObject_GetAttr(
+            ptr(self),
+            ptr(impl::template_string<Name>())
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        PyObject* result = PyObject_GetAttr(
-            ptr(to_python(std::forward<Self>(self))),
-            name
-        );
-        Py_DECREF(name);
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return steal<typename __getattr__<Self, Name>::type>(result);
+        return result;
     }
 }
 
@@ -850,7 +783,8 @@ default value. */
 template <static_str Name, meta::python Self>
     requires (
         __getattr__<Self, Name>::enable &&
-        std::derived_from<typename __getattr__<Self, Name>::type, Object> && (
+        meta::python<typename __getattr__<Self, Name>::type> &&
+        !meta::is_qualified<typename __getattr__<Self, Name>::type> && (
             !std::is_invocable_v<
                 __getattr__<Self, Name>,
                 Self,
@@ -867,31 +801,26 @@ template <static_str Name, meta::python Self>
     Self&& self,
     const typename __getattr__<Self, Name>::type& default_value
 ) -> __getattr__<Self, Name>::type {
+    using Return = __getattr__<Self, Name>::type;
     if constexpr (DEBUG) {
         assert_(
-            ptr(self) != nullptr,
+            !self.is(nullptr),
             "Cannot get attribute '" + Name + "' from a null object."
         );
     }
-    using Return = __getattr__<Self, Name>::type;
     if constexpr (std::is_invocable_v<__getattr__<Self, Name>, Self, const Return&>) {
         return __getattr__<Self, Name>{}(std::forward<Self>(self), default_value);
 
     } else {
-        PyObject* name = PyUnicode_FromStringAndSize(Name, Name.size());
-        if (name == nullptr) {
-            Exception::from_python();
-        }
-        PyObject* result = PyObject_GetAttr(
-            ptr(to_python(std::forward<Self>(self))),
-            name
-        );
-        Py_DECREF(name);
-        if (result == nullptr) {
+        Return result = steal<Return>(PyObject_GetAttr(
+            ptr(self),
+            ptr(impl::template_string<Name>())
+        ));
+        if (result.is(nullptr)) {
             PyErr_Clear();
             return default_value;
         }
-        return steal<typename __getattr__<Self, Name>::type>(result);
+        return result;
     }
 }
 
@@ -914,7 +843,7 @@ template <static_str Name, meta::python Self, typename Value>
 void setattr(Self&& self, Value&& value) {
     if constexpr (DEBUG) {
         assert_(
-            ptr(self) != nullptr,
+            !self.is(nullptr),
             "Cannot assign attribute '" + Name + "' on a null object."
         );
     }
@@ -928,21 +857,15 @@ void setattr(Self&& self, Value&& value) {
         auto obj = to_python(std::forward<Value>(value));
         if constexpr (DEBUG) {
             assert_(
-                ptr(obj) != nullptr,
+                !obj.is(nullptr),
                 "Cannot assign attribute '" + Name + "' to a null object."
             );
         }
-        PyObject* name = PyUnicode_FromStringAndSize(Name, Name.size());
-        if (name == nullptr) {
-            Exception::from_python();
-        }
-        int rc = PyObject_SetAttr(
-            ptr(to_python(std::forward<Self>(self))),
-            name,
+        if (PyObject_SetAttr(
+            ptr(self),
+            ptr(impl::template_string<Name>()),
             ptr(obj)
-        );
-        Py_DECREF(name);
-        if (rc) {
+        )) {
             Exception::from_python();
         }
     }
@@ -961,7 +884,7 @@ template <static_str Name, meta::python Self>
 void delattr(Self&& self) {
     if constexpr (DEBUG) {
         assert_(
-            ptr(self) != nullptr,
+            !self.is(nullptr),
             "Cannot delete attribute '" + Name + "' on a null object."
         );
     }
@@ -969,16 +892,10 @@ void delattr(Self&& self) {
         __delattr__<Self, Name>{}(std::forward<Self>(self));
 
     } else {
-        PyObject* name = PyUnicode_FromStringAndSize(Name, Name.size());
-        if (name == nullptr) {
-            Exception::from_python();
-        }
-        int rc = PyObject_DelAttr(
-            ptr(to_python(std::forward<Self>(self))),
-            name
-        );
-        Py_DECREF(name);
-        if (rc) {
+        if (PyObject_DelAttr(
+            ptr(self),
+            ptr(impl::template_string<Name>())
+        )) {
             Exception::from_python();
         }
     }
@@ -1517,19 +1434,19 @@ struct __iter__<Iterator<T, void, void>>                    : returns<T> {
     }
 
     [[nodiscard]] friend bool operator==(const __iter__& self, sentinel) {
-        return ptr(self.curr) == nullptr;
+        return self.curr.is(nullptr);
     }
 
     [[nodiscard]] friend bool operator==(sentinel, const __iter__& self) {
-        return ptr(self.curr) == nullptr;
+        return self.curr.is(nullptr);
     }
 
     [[nodiscard]] friend bool operator!=(const __iter__& self, sentinel) {
-        return ptr(self.curr) != nullptr;
+        return !self.curr.is(nullptr);
     }
 
     [[nodiscard]] friend bool operator!=(sentinel, const __iter__& self) {
-        return ptr(self.curr) != nullptr;
+        return !self.curr.is(nullptr);
     }
 
 };
@@ -1949,21 +1866,20 @@ template <typename Self> requires (!__len__<Self>::enable && meta::has_size<Self
 /* Equivalent to Python `abs(obj)` for any object that specializes the __abs__ control
 struct. */
 template <typename Self>
-    requires (
-        __abs__<Self>::enable &&
-        std::convertible_to<typename __abs__<Self>::type, Object> && (
-            std::is_invocable_r_v<typename __abs__<Self>::type, __abs__<Self>, Self> || (
-                !std::is_invocable_v<__abs__<Self>, Self> &&
-                meta::has_cpp<Self> &&
-                meta::abs_returns<meta::cpp_type<Self>, typename __abs__<Self>::type>
-            ) || (
-                !std::is_invocable_v<__abs__<Self>, Self> &&
-                !meta::has_cpp<Self> &&
-                std::derived_from<typename __abs__<Self>::type, Object>
-            )
+    requires (__abs__<Self>::enable && (
+        std::is_invocable_r_v<typename __abs__<Self>::type, __abs__<Self>, Self> || (
+            !std::is_invocable_v<__abs__<Self>, Self> &&
+            meta::has_cpp<Self> &&
+            meta::abs_returns<meta::cpp_type<Self>, typename __abs__<Self>::type>
+        ) || (
+            !std::is_invocable_v<__abs__<Self>, Self> &&
+            !meta::has_cpp<Self> &&
+            meta::python<typename __abs__<Self>::type> &&
+            !meta::is_qualified<typename __abs__<Self>::type>
         )
-    )
+    ))
 [[nodiscard]] decltype(auto) abs(Self&& self) {
+    using Return = std::remove_cvref_t<typename __abs__<Self>::type>;
     if constexpr (std::is_invocable_v<__abs__<Self>, Self>) {
         return __abs__<Self>{}(std::forward<Self>(self));
 
@@ -1971,22 +1887,20 @@ template <typename Self>
         return std::abs(from_python(std::forward<Self>(self)));
 
     } else {
-        using Return = std::remove_cvref_t<typename __abs__<Self>::type>;
-        PyObject* result = PyNumber_Absolute(
+        Return result = steal<Return>(PyNumber_Absolute(
             ptr(to_python(std::forward<Self>(self)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<Return>(result);
+        return result;
     }
 }
 
 
 /* Equivalent to Python `abs(obj)`, except that it takes a C++ value and applies
 std::abs() for identical semantics. */
-template <meta::has_abs Self>
-    requires (!__abs__<Self>::enable && meta::abs_returns<Self, Object>)
+template <meta::has_abs Self> requires (!__abs__<Self>::enable)
 [[nodiscard]] decltype(auto) abs(Self&& value) {
     return std::abs(std::forward<Self>(value));
 }
@@ -1995,20 +1909,18 @@ template <meta::has_abs Self>
 template <meta::python Self> requires (!__invert__<Self>::enable)
 decltype(auto) operator~(Self&& self) = delete;
 template <meta::python Self>
-    requires (
-        __invert__<Self>::enable &&
-        std::convertible_to<typename __invert__<Self>::type, Object> && (
-            std::is_invocable_r_v<typename __invert__<Self>::type, __invert__<Self>, Self> || (
-                !std::is_invocable_v<__invert__<Self>, Self> &&
-                meta::has_cpp<Self> &&
-                meta::invert_returns<meta::cpp_type<Self>, typename __invert__<Self>::type>
-            ) || (
-                !std::is_invocable_v<__invert__<Self>, Self> &&
-                !meta::has_cpp<Self> &&
-                std::derived_from<typename __invert__<Self>::type, Object>
-            )
+    requires (__invert__<Self>::enable && (
+        std::is_invocable_r_v<typename __invert__<Self>::type, __invert__<Self>, Self> || (
+            !std::is_invocable_v<__invert__<Self>, Self> &&
+            meta::has_cpp<Self> &&
+            meta::invert_returns<meta::cpp_type<Self>, typename __invert__<Self>::type>
+        ) || (
+            !std::is_invocable_v<__invert__<Self>, Self> &&
+            !meta::has_cpp<Self> &&
+            meta::python<typename __invert__<Self>::type> &&
+            !meta::is_qualified<typename __invert__<Self>::type>
         )
-    )
+    ))
 decltype(auto) operator~(Self&& self) {
     if constexpr (std::is_invocable_v<__invert__<Self>, Self>) {
         return __invert__<Self>{}(std::forward<Self>(self));
@@ -2017,13 +1929,12 @@ decltype(auto) operator~(Self&& self) {
         return ~from_python(std::forward<Self>(self));
 
     } else {
-        PyObject* result = PyNumber_Invert(
-            ptr(to_python(std::forward<Self>(self)))
-        );
-        if (result == nullptr) {
+        using Return = __invert__<Self>::type;
+        Return result = steal<Return>(PyNumber_Invert(ptr(self)));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __invert__<Self>::type>(result);
+        return result;
     }
 }
 
@@ -2031,20 +1942,18 @@ decltype(auto) operator~(Self&& self) {
 template <meta::python Self> requires (!__pos__<Self>::enable)
 decltype(auto) operator+(Self&& self) = delete;
 template <meta::python Self>
-    requires (
-        __pos__<Self>::enable &&
-        std::convertible_to<typename __pos__<Self>::type, Object> && (
-            std::is_invocable_r_v<typename __pos__<Self>::type, __pos__<Self>, Self> || (
-                !std::is_invocable_v<__pos__<Self>, Self> &&
-                meta::has_cpp<Self> &&
-                meta::pos_returns<meta::cpp_type<Self>, typename __pos__<Self>::type>
-            ) || (
-                !std::is_invocable_v<__pos__<Self>, Self> &&
-                !meta::has_cpp<Self> &&
-                std::derived_from<typename __pos__<Self>::type, Object>
-            )
+    requires (__pos__<Self>::enable && (
+        std::is_invocable_r_v<typename __pos__<Self>::type, __pos__<Self>, Self> || (
+            !std::is_invocable_v<__pos__<Self>, Self> &&
+            meta::has_cpp<Self> &&
+            meta::pos_returns<meta::cpp_type<Self>, typename __pos__<Self>::type>
+        ) || (
+            !std::is_invocable_v<__pos__<Self>, Self> &&
+            !meta::has_cpp<Self> &&
+            meta::python<typename __pos__<Self>::type> &&
+            !meta::is_qualified<typename __pos__<Self>::type>
         )
-    )
+    ))
 decltype(auto) operator+(Self&& self) {
     if constexpr (std::is_invocable_v<__pos__<Self>, Self>) {
         return __pos__<Self>{}(std::forward<Self>(self));
@@ -2053,13 +1962,12 @@ decltype(auto) operator+(Self&& self) {
         return +from_python(std::forward<Self>(self));
 
     } else {
-        PyObject* result = PyNumber_Positive(
-            ptr(to_python(std::forward<Self>(self)))
-        );
-        if (result == nullptr) {
+        using Return = __pos__<Self>::type;
+        Return result = steal<Return>(PyNumber_Positive(ptr(self)));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __pos__<Self>::type>(result);
+        return result;
     }
 }
 
@@ -2067,20 +1975,18 @@ decltype(auto) operator+(Self&& self) {
 template <meta::python Self> requires (!__neg__<Self>::enable)
 decltype(auto) operator-(Self&& self) = delete;
 template <meta::python Self>
-    requires (
-        __neg__<Self>::enable &&
-        std::convertible_to<typename __neg__<Self>::type, Object> && (
-            std::is_invocable_r_v<typename __neg__<Self>::type, __neg__<Self>, Self> || (
-                !std::is_invocable_v<__neg__<Self>, Self> &&
-                meta::has_cpp<Self> &&
-                meta::neg_returns<meta::cpp_type<Self>, typename __neg__<Self>::type>
-            ) || (
-                !std::is_invocable_v<__neg__<Self>, Self> &&
-                !meta::has_cpp<Self> &&
-                std::derived_from<typename __neg__<Self>::type, Object>
-            )
+    requires (__neg__<Self>::enable && (
+        std::is_invocable_r_v<typename __neg__<Self>::type, __neg__<Self>, Self> || (
+            !std::is_invocable_v<__neg__<Self>, Self> &&
+            meta::has_cpp<Self> &&
+            meta::neg_returns<meta::cpp_type<Self>, typename __neg__<Self>::type>
+        ) || (
+            !std::is_invocable_v<__neg__<Self>, Self> &&
+            !meta::has_cpp<Self> &&
+            meta::python<typename __neg__<Self>::type> &&
+            !meta::is_qualified<typename __neg__<Self>::type>
         )
-    )
+    ))
 decltype(auto) operator-(Self&& self) {
     if constexpr (std::is_invocable_v<__neg__<Self>, Self>) {
         return __neg__<Self>{}(std::forward<Self>(self));
@@ -2089,13 +1995,12 @@ decltype(auto) operator-(Self&& self) {
         return -from_python(std::forward<Self>(self));
 
     } else {
-        PyObject* result = PyNumber_Negative(
-            ptr(to_python(std::forward<Self>(self)))
-        );
-        if (result == nullptr) {
+        using Return = __neg__<Self>::type;
+        Return result = steal<Return>(PyNumber_Negative(ptr(self)));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __neg__<Self>::type>(result);
+        return result;
     }
 }
 
@@ -2105,20 +2010,18 @@ decltype(auto) operator++(Self&& self, int) = delete;  // post-increment is not 
 template <meta::python Self> requires (!__increment__<Self>::enable)
 decltype(auto) operator++(Self&& self) = delete;
 template <meta::python Self>
-    requires (
-        __increment__<Self>::enable &&
-        std::convertible_to<typename __increment__<Self>::type, Object> && (
-            std::is_invocable_r_v<typename __increment__<Self>::type, __increment__<Self>, Self> || (
-                !std::is_invocable_v<__increment__<Self>, Self> &&
-                meta::has_cpp<Self> &&
-                meta::preincrement_returns<meta::cpp_type<Self>, typename __increment__<Self>::type>
-            ) || (
-                !std::is_invocable_v<__increment__<Self>, Self> &&
-                !meta::has_cpp<Self> &&
-                std::same_as<typename __increment__<Self>::type, Self>
-            )
+    requires (__increment__<Self>::enable && (
+        std::is_invocable_r_v<typename __increment__<Self>::type, __increment__<Self>, Self> || (
+            !std::is_invocable_v<__increment__<Self>, Self> &&
+            meta::has_cpp<Self> &&
+            meta::preincrement_returns<meta::cpp_type<Self>, typename __increment__<Self>::type>
+        ) || (
+            !std::is_invocable_v<__increment__<Self>, Self> &&
+            !meta::has_cpp<Self> &&
+            !meta::is_const<Self> &&
+            std::same_as<typename __increment__<Self>::type, Self>
         )
-    )
+    ))
 decltype(auto) operator++(Self&& self) {
     if constexpr (std::is_invocable_v<__increment__<Self>, Self>) {
         return __increment__<Self>{}(std::forward<Self>(self));
@@ -2128,18 +2031,17 @@ decltype(auto) operator++(Self&& self) {
 
     } else {
         using Return = std::remove_cvref_t<typename __increment__<Self>::type>;
-        PyObject* one = PyLong_FromLong(1);
-        if (one == nullptr) {
+        Object one = steal<Object>(PyLong_FromLong(1));
+        if (one.is(nullptr)) {
             Exception::from_python();
         }
-        PyObject* result = PyNumber_InPlaceAdd(ptr(self), one);
-        Py_DECREF(one);
-        if (result == nullptr) {
+        Return result = steal<Return>(
+            PyNumber_InPlaceAdd(ptr(self), ptr(one))
+        );
+        if (result.is(nullptr)) {
             Exception::from_python();
-        } else if (result == ptr(self)) {
-            Py_DECREF(result);
-        } else {
-            self = steal<Return>(result);
+        } else if (!self.is(result)) {
+            self = std::move(result);
         }
         return std::forward<Self>(self);
     }
@@ -2151,20 +2053,18 @@ decltype(auto) operator--(Self& self, int) = delete;  // post-decrement is not v
 template <meta::python Self> requires (!__decrement__<Self>::enable)
 decltype(auto) operator--(Self& self) = delete;
 template <meta::python Self>
-    requires (
-        __decrement__<Self>::enable &&
-        std::convertible_to<typename __decrement__<Self>::type, Object> && (
-            std::is_invocable_r_v<typename __decrement__<Self>::type, __decrement__<Self>, Self> || (
-                !std::is_invocable_v<__decrement__<Self>, Self> &&
-                meta::has_cpp<Self> &&
-                meta::predecrement_returns<meta::cpp_type<Self>, typename __decrement__<Self>::type>
-            ) || (
-                !std::is_invocable_v<__decrement__<Self>, Self> &&
-                !meta::has_cpp<Self> &&
-                std::same_as<typename __decrement__<Self>::type, Self>
-            )
+    requires (__decrement__<Self>::enable && (
+        std::is_invocable_r_v<typename __decrement__<Self>::type, __decrement__<Self>, Self> || (
+            !std::is_invocable_v<__decrement__<Self>, Self> &&
+            meta::has_cpp<Self> &&
+            meta::predecrement_returns<meta::cpp_type<Self>, typename __decrement__<Self>::type>
+        ) || (
+            !std::is_invocable_v<__decrement__<Self>, Self> &&
+            !meta::has_cpp<Self> &&
+            !meta::is_const<Self> &&
+            std::same_as<typename __decrement__<Self>::type, Self>
         )
-    )
+    ))
 decltype(auto) operator--(Self&& self) {
     if constexpr (std::is_invocable_v<__decrement__<Self>, Self>) {
         return __decrement__<Self>{}(std::forward<Self>(self));
@@ -2174,18 +2074,17 @@ decltype(auto) operator--(Self&& self) {
 
     } else {
         using Return = std::remove_cvref_t<typename __decrement__<Self>::type>;
-        PyObject* one = PyLong_FromLong(1);
-        if (one == nullptr) {
+        Object one = steal<Object>(PyLong_FromLong(1));
+        if (one.is(nullptr)) {
             Exception::from_python();
         }
-        PyObject* result = PyNumber_InPlaceSubtract(ptr(self), one);
-        Py_DECREF(one);
-        if (result == nullptr) {
+        Return result = steal<Return>(
+            PyNumber_InPlaceSubtract(ptr(self), ptr(one))
+        );
+        if (result.is(nullptr)) {
             Exception::from_python();
-        } else if (result == ptr(self)) {
-            Py_DECREF(result);
-        } else {
-            self = steal<Return>(result);
+        } else if (!self.is(result)) {
+            self = std::move(result);
         }
         return std::forward<Self>(self);
     }
@@ -2196,37 +2095,38 @@ template <typename L, typename R>
     requires ((meta::python<L> || meta::python<R>) && !__lt__<L, R>::enable)
 decltype(auto) operator<(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
-    requires (
-        __lt__<L, R>::enable &&
-        std::convertible_to<typename __lt__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __lt__<L, R>::type, __lt__<L, R>, L, R> || (
-                !std::is_invocable_v<__lt__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::lt_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __lt__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__lt__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                std::derived_from<typename __lt__<L, R>::type, Object>
-            )
+    requires (__lt__<L, R>::enable && (
+        std::is_invocable_r_v<typename __lt__<L, R>::type, __lt__<L, R>, L, R> || (
+            !std::is_invocable_v<__lt__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::lt_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __lt__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__lt__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::python<typename __lt__<L, R>::type> &&
+            !meta::is_qualified<typename __lt__<L, R>::type>
         )
-    )
+    ))
 decltype(auto) operator<(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__lt__<L, R>, L, R>) {
         return __lt__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) < from_python(std::forward<R>(rhs));
+        return
+            from_python(std::forward<L>(lhs)) <
+            from_python(std::forward<R>(rhs));
 
     } else {
-        PyObject* result = PyObject_RichCompare(
+        using Return = __lt__<L, R>::type;
+        Return result = steal<Return>(PyObject_RichCompare(
             ptr(to_python(std::forward<L>(lhs))),
             ptr(to_python(std::forward<R>(rhs))),
             Py_LT
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __lt__<L, R>::type>(result);
+        return result;
     }
 }
 
@@ -2235,37 +2135,38 @@ template <typename L, typename R>
     requires ((meta::python<L> || meta::python<R>) && !__le__<L, R>::enable)
 decltype(auto) operator<=(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
-    requires (
-        __le__<L, R>::enable &&
-        std::convertible_to<typename __le__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __le__<L, R>::type, __le__<L, R>, L, R> || (
-                !std::is_invocable_v<__le__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::le_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __le__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__le__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                std::derived_from<typename __le__<L, R>::type, Object>
-            )
+    requires (__le__<L, R>::enable && (
+        std::is_invocable_r_v<typename __le__<L, R>::type, __le__<L, R>, L, R> || (
+            !std::is_invocable_v<__le__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::le_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __le__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__le__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::python<typename __le__<L, R>::type> &&
+            !meta::is_qualified<typename __le__<L, R>::type>
         )
-    )
+    ))
 decltype(auto) operator<=(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__le__<L, R>, L, R>) {
         return __le__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) <= from_python(std::forward<R>(rhs));
+        return
+            from_python(std::forward<L>(lhs)) <=
+            from_python(std::forward<R>(rhs));
 
     } else {
-        PyObject* result = PyObject_RichCompare(
+        using Return = __le__<L, R>::type;
+        Return result = steal<Return>(PyObject_RichCompare(
             ptr(to_python(std::forward<L>(lhs))),
             ptr(to_python(std::forward<R>(rhs))),
             Py_LE
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __le__<L, R>::type>(result);
+        return result;
     }
 }
 
@@ -2274,37 +2175,38 @@ template <typename L, typename R>
     requires ((meta::python<L> || meta::python<R>) && !__eq__<L, R>::enable)
 decltype(auto) operator==(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
-    requires (
-        __eq__<L, R>::enable &&
-        std::convertible_to<typename __eq__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __eq__<L, R>::type, __eq__<L, R>, L, R> || (
-                !std::is_invocable_v<__eq__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::eq_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __eq__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__eq__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                std::derived_from<typename __eq__<L, R>::type, Object>
-            )
+    requires (__eq__<L, R>::enable && (
+        std::is_invocable_r_v<typename __eq__<L, R>::type, __eq__<L, R>, L, R> || (
+            !std::is_invocable_v<__eq__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::eq_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __eq__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__eq__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::python<typename __eq__<L, R>::type> &&
+            !meta::is_qualified<typename __eq__<L, R>::type>
         )
-    )
+    ))
 decltype(auto) operator==(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__eq__<L, R>, L, R>) {
         return __eq__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) == from_python(std::forward<R>(rhs));
+        return
+            from_python(std::forward<L>(lhs)) ==
+            from_python(std::forward<R>(rhs));
 
     } else {
-        PyObject* result = PyObject_RichCompare(
+        using Return = __eq__<L, R>::type;
+        Return result = steal<Return>(PyObject_RichCompare(
             ptr(to_python(std::forward<L>(lhs))),
             ptr(to_python(std::forward<R>(rhs))),
             Py_EQ
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __eq__<L, R>::type>(result);
+        return result;
     }
 }
 
@@ -2313,37 +2215,38 @@ template <typename L, typename R>
     requires ((meta::python<L> || meta::python<R>) && !__ne__<L, R>::enable)
 decltype(auto) operator!=(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
-    requires (
-        __ne__<L, R>::enable &&
-        std::convertible_to<typename __ne__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __ne__<L, R>::type, __ne__<L, R>, L, R> || (
-                !std::is_invocable_v<__ne__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::ne_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __ne__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__ne__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                std::derived_from<typename __ne__<L, R>::type, Object>
-            )
+    requires (__ne__<L, R>::enable && (
+        std::is_invocable_r_v<typename __ne__<L, R>::type, __ne__<L, R>, L, R> || (
+            !std::is_invocable_v<__ne__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::ne_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __ne__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__ne__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::python<typename __ne__<L, R>::type> &&
+            !meta::is_qualified<typename __ne__<L, R>::type>
         )
-    )
+    ))
 decltype(auto) operator!=(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__ne__<L, R>, L, R>) {
         return __ne__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) != from_python(std::forward<R>(rhs));
+        return
+            from_python(std::forward<L>(lhs)) !=
+            from_python(std::forward<R>(rhs));
 
     } else {
-        PyObject* result = PyObject_RichCompare(
+        using Return = __ne__<L, R>::type;
+        Return result = steal<Return>(PyObject_RichCompare(
             ptr(to_python(std::forward<L>(lhs))),
             ptr(to_python(std::forward<R>(rhs))),
             Py_NE
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __ne__<L, R>::type>(result);
+        return result;
     }
 }
 
@@ -2352,37 +2255,38 @@ template <typename L, typename R>
     requires ((meta::python<L> || meta::python<R>) && !__ge__<L, R>::enable)
 decltype(auto) operator>=(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
-    requires (
-        __ge__<L, R>::enable &&
-        std::convertible_to<typename __ge__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __ge__<L, R>::type, __ge__<L, R>, L, R> || (
-                !std::is_invocable_v<__ge__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::ge_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __ge__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__ge__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                std::derived_from<typename __ge__<L, R>::type, Object>
-            )
+    requires (__ge__<L, R>::enable && (
+        std::is_invocable_r_v<typename __ge__<L, R>::type, __ge__<L, R>, L, R> || (
+            !std::is_invocable_v<__ge__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::ge_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __ge__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__ge__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::python<typename __ge__<L, R>::type> &&
+            !meta::is_qualified<typename __ge__<L, R>::type>
         )
-    )
+    ))
 decltype(auto) operator>=(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__ge__<L, R>, L, R>) {
         return __ge__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) >= from_python(std::forward<R>(rhs));
+        return
+            from_python(std::forward<L>(lhs)) >=
+            from_python(std::forward<R>(rhs));
 
     } else {
-        PyObject* result = PyObject_RichCompare(
+        using Return = __ge__<L, R>::type;
+        Return result = steal<Return>(PyObject_RichCompare(
             ptr(to_python(std::forward<L>(lhs))),
             ptr(to_python(std::forward<R>(rhs))),
             Py_GE
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __ge__<L, R>::type>(result);
+        return result;
     }
 }
 
@@ -2391,37 +2295,38 @@ template <typename L, typename R>
     requires ((meta::python<L> || meta::python<R>) && !__gt__<L, R>::enable)
 decltype(auto) operator>(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
-    requires (
-        __gt__<L, R>::enable &&
-        std::convertible_to<typename __gt__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __gt__<L, R>::type, __gt__<L, R>, L, R> || (
-                !std::is_invocable_v<__gt__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::gt_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __gt__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__gt__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                std::derived_from<typename __gt__<L, R>::type, Object>
-            )
+    requires (__gt__<L, R>::enable && (
+        std::is_invocable_r_v<typename __gt__<L, R>::type, __gt__<L, R>, L, R> || (
+            !std::is_invocable_v<__gt__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::gt_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __gt__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__gt__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::python<typename __gt__<L, R>::type> &&
+            !meta::is_qualified<typename __gt__<L, R>::type>
         )
-    )
+    ))
 decltype(auto) operator>(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__gt__<L, R>, L, R>) {
         return __gt__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) > from_python(std::forward<R>(rhs));
+        return
+            from_python(std::forward<L>(lhs)) >
+            from_python(std::forward<R>(rhs));
 
     } else {
-        PyObject* result = PyObject_RichCompare(
+        using Return = __gt__<L, R>::type;
+        Return result = steal<Return>(PyObject_RichCompare(
             ptr(to_python(std::forward<L>(lhs))),
             ptr(to_python(std::forward<R>(rhs))),
             Py_GT
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __gt__<L, R>::type>(result);
+        return result;
     }
 }
 
@@ -2430,36 +2335,37 @@ template <typename L, typename R>
     requires ((meta::python<L> || meta::python<R>) && !__add__<L, R>::enable)
 decltype(auto) operator+(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
-    requires (
-        __add__<L, R>::enable &&
-        std::convertible_to<typename __add__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __add__<L, R>::type, __add__<L, R>, L, R> || (
-                !std::is_invocable_v<__add__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::add_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __add__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__add__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                std::derived_from<typename __add__<L, R>::type, Object>
-            )
+    requires (__add__<L, R>::enable && (
+        std::is_invocable_r_v<typename __add__<L, R>::type, __add__<L, R>, L, R> || (
+            !std::is_invocable_v<__add__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::add_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __add__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__add__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::python<typename __add__<L, R>::type> &&
+            !meta::is_qualified<typename __add__<L, R>::type>
         )
-    )
+    ))
 decltype(auto) operator+(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__add__<L, R>, L, R>) {
         return __add__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) + from_python(std::forward<R>(rhs));
+        return
+            from_python(std::forward<L>(lhs)) +
+            from_python(std::forward<R>(rhs));
 
     } else {
-        PyObject* result = PyNumber_Add(
+        using Return = __add__<L, R>::type;
+        Return result = steal<Return>(PyNumber_Add(
             ptr(to_python(std::forward<L>(lhs))),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __add__<L, R>::type>(result);
+        return result;
     }
 }
 
@@ -2467,41 +2373,39 @@ decltype(auto) operator+(L&& lhs, R&& rhs) {
 template <meta::python L, typename R> requires (!__iadd__<L, R>::enable)
 decltype(auto) operator+=(L& lhs, R&& rhs) = delete;
 template <meta::python L, typename R>
-    requires (
-        __iadd__<L, R>::enable &&
-        !std::is_const_v<std::remove_reference_t<L>> &&
-        std::convertible_to<typename __iadd__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __iadd__<L, R>::type, __iadd__<L, R>, L, R> || (
-                !std::is_invocable_v<__iadd__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::iadd_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __iadd__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__iadd__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::inherits<typename __iadd__<L, R>::type, L>
-            )
+    requires (__iadd__<L, R>::enable && (
+        std::is_invocable_r_v<typename __iadd__<L, R>::type, __iadd__<L, R>, L, R> || (
+            !std::is_invocable_v<__iadd__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::iadd_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __iadd__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__iadd__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            !meta::is_const<L> &&
+            std::same_as<typename __iadd__<L, R>::type, L>
         )
-    )
+    ))
 decltype(auto) operator+=(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__iadd__<L, R>, L, R>) {
         return __iadd__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) +=
+        return
+            from_python(std::forward<L>(lhs)) +=
             from_python(std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __iadd__<L, R>::type>;
-        PyObject* result = PyNumber_InPlaceAdd(
+        Return result = steal<Return>(PyNumber_InPlaceAdd(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
+        } else if (!lhs.is(result)) {
+            lhs = std::move(result);
         }
-        Return out = steal<Return>(result);
-        lhs = out;
-        return out;
+        return std::forward<L>(lhs);
     }
 }
 
@@ -2510,36 +2414,37 @@ template <typename L, typename R>
     requires ((meta::python<L> || meta::python<R>) && !__sub__<L, R>::enable)
 decltype(auto) operator-(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
-    requires (
-        __sub__<L, R>::enable &&
-        std::convertible_to<typename __sub__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __sub__<L, R>::type, __sub__<L, R>, L, R> || (
-                !std::is_invocable_v<__sub__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::sub_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __sub__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__sub__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                std::derived_from<typename __sub__<L, R>::type, Object>
-            )
+    requires (__sub__<L, R>::enable && (
+        std::is_invocable_r_v<typename __sub__<L, R>::type, __sub__<L, R>, L, R> || (
+            !std::is_invocable_v<__sub__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::sub_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __sub__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__sub__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::python<typename __sub__<L, R>::type> &&
+            !meta::is_qualified<typename __sub__<L, R>::type>
         )
-    )
+    ))
 decltype(auto) operator-(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__sub__<L, R>, L, R>) {
         return __sub__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) - from_python(std::forward<R>(rhs));
+        return
+            from_python(std::forward<L>(lhs)) -
+            from_python(std::forward<R>(rhs));
 
     } else {
-        PyObject* result = PyNumber_Subtract(
+        using Return = __sub__<L, R>::type;
+        Return result = steal<Return>(PyNumber_Subtract(
             ptr(to_python(std::forward<L>(lhs))),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __sub__<L, R>::type>(result);
+        return result;
     }
 }
 
@@ -2547,41 +2452,39 @@ decltype(auto) operator-(L&& lhs, R&& rhs) {
 template <meta::python L, typename R> requires (!__isub__<L, R>::enable)
 decltype(auto) operator-=(L& lhs, R&& rhs) = delete;
 template <meta::python L, typename R>
-    requires (
-        __isub__<L, R>::enable &&
-        !std::is_const_v<std::remove_reference_t<L>> &&
-        std::convertible_to<typename __isub__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __isub__<L, R>::type, __isub__<L, R>, L, R> || (
-                !std::is_invocable_v<__isub__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::isub_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __isub__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__isub__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::inherits<typename __isub__<L, R>::type, L>
-            )
+    requires (__isub__<L, R>::enable && (
+        std::is_invocable_r_v<typename __isub__<L, R>::type, __isub__<L, R>, L, R> || (
+            !std::is_invocable_v<__isub__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::isub_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __isub__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__isub__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            !meta::is_const<L> &&
+            std::same_as<typename __isub__<L, R>::type, L>
         )
-    )
+    ))
 decltype(auto) operator-=(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__isub__<L, R>, L, R>) {
         return __isub__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) -=
+        return
+            from_python(std::forward<L>(lhs)) -=
             from_python(std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __isub__<L, R>::type>;
-        PyObject* result = PyNumber_InPlaceSubtract(
+        Return result = steal<Return>(PyNumber_InPlaceSubtract(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
+        } else if (!lhs.is(result)) {
+            lhs = std::move(result);
         }
-        Return out = steal<Return>(result);
-        lhs = out;
-        return out;
+        return std::forward<L>(lhs);
     }
 }
 
@@ -2590,36 +2493,37 @@ template <typename L, typename R>
     requires ((meta::python<L> || meta::python<R>) && !__mul__<L, R>::enable)
 decltype(auto) operator*(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
-    requires (
-        __mul__<L, R>::enable &&
-        std::convertible_to<typename __mul__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __mul__<L, R>::type, __mul__<L, R>, L, R> || (
-                !std::is_invocable_v<__mul__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::mul_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __mul__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__mul__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                std::derived_from<typename __mul__<L, R>::type, Object>
-            )
+    requires (__mul__<L, R>::enable && (
+        std::is_invocable_r_v<typename __mul__<L, R>::type, __mul__<L, R>, L, R> || (
+            !std::is_invocable_v<__mul__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::mul_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __mul__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__mul__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::python<typename __mul__<L, R>::type> &&
+            !meta::is_qualified<typename __mul__<L, R>::type>
         )
-    )
+    ))
 decltype(auto) operator*(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__mul__<L, R>, L, R>) {
         return __mul__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) * from_python(std::forward<R>(rhs));
+        return
+            from_python(std::forward<L>(lhs)) *
+            from_python(std::forward<R>(rhs));
 
     } else {
-        PyObject* result = PyNumber_Multiply(
+        using Return = __mul__<L, R>::type;
+        Return result = steal<Return>(PyNumber_Multiply(
             ptr(to_python(std::forward<L>(lhs))),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __mul__<L, R>::type>(result);
+        return result;
     }
 }
 
@@ -2627,61 +2531,57 @@ decltype(auto) operator*(L&& lhs, R&& rhs) {
 template <meta::python L, typename R> requires (!__imul__<L, R>::enable)
 decltype(auto) operator*=(L& lhs, R&& rhs) = delete;
 template <meta::python L, typename R>
-    requires (
-        __imul__<L, R>::enable &&
-        !std::is_const_v<std::remove_reference_t<L>> &&
-        std::convertible_to<typename __imul__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __imul__<L, R>::type, __imul__<L, R>, L, R> || (
-                !std::is_invocable_v<__imul__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::imul_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __imul__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__imul__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::inherits<typename __imul__<L, R>::type, L>
-            )
+    requires (__imul__<L, R>::enable && (
+        std::is_invocable_r_v<typename __imul__<L, R>::type, __imul__<L, R>, L, R> || (
+            !std::is_invocable_v<__imul__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::imul_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __imul__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__imul__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            !meta::is_const<L> &&
+            std::same_as<typename __imul__<L, R>::type, L>
         )
-    )
+    ))
 decltype(auto) operator*=(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__imul__<L, R>, L, R>) {
         return __imul__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) *=
+        return
+            from_python(std::forward<L>(lhs)) *=
             from_python(std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __imul__<L, R>::type>;
-        PyObject* result = PyNumber_InPlaceMultiply(
+        Return result = steal<Return>(PyNumber_InPlaceMultiply(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
+        } else if (!lhs.is(result)) {
+            lhs = std::move(result);
         }
-        Return out = steal<Return>(result);
-        lhs = out;
-        return out;
+        return std::forward<L>(lhs);
     }
 }
 
 
 /* Equivalent to Python `base ** exp` (exponentiation). */
 template <typename Base, typename Exp>
-    requires (
-        __pow__<Base, Exp>::enable &&
-        std::convertible_to<typename __pow__<Base, Exp>::type, Object> && (
-            std::is_invocable_r_v<typename __pow__<Base, Exp>::type, __pow__<Base, Exp>, Base, Exp> || (
-                !std::is_invocable_v<__pow__<Base, Exp>, Base, Exp> &&
-                (meta::has_cpp<Base> && meta::has_cpp<Exp>) &&
-                meta::pow_returns<meta::cpp_type<Base>, meta::cpp_type<Exp>, typename __pow__<Base, Exp>::type>
-            ) && (
-                !std::is_invocable_v<__pow__<Base, Exp>, Base, Exp> &&
-                !(meta::has_cpp<Base> && meta::has_cpp<Exp>) &&
-                std::derived_from<typename __pow__<Base, Exp>::type, Object>
-            )
+    requires (__pow__<Base, Exp>::enable && (
+        std::is_invocable_r_v<typename __pow__<Base, Exp>::type, __pow__<Base, Exp>, Base, Exp> || (
+            !std::is_invocable_v<__pow__<Base, Exp>, Base, Exp> &&
+            (meta::has_cpp<Base> && meta::has_cpp<Exp>) &&
+            meta::pow_returns<meta::cpp_type<Base>, meta::cpp_type<Exp>, typename __pow__<Base, Exp>::type>
+        ) && (
+            !std::is_invocable_v<__pow__<Base, Exp>, Base, Exp> &&
+            !(meta::has_cpp<Base> && meta::has_cpp<Exp>) &&
+            meta::python<typename __pow__<Base, Exp>::type> &&
+            !meta::is_qualified<typename __pow__<Base, Exp>::type>
         )
-    )
+    ))
 decltype(auto) pow(Base&& base, Exp&& exp) {
     if constexpr (std::is_invocable_v<__pow__<Base, Exp>, Base, Exp>) {
         return __pow__<Base, Exp>{}(std::forward<Base>(base), std::forward<Exp>(exp));
@@ -2713,15 +2613,16 @@ decltype(auto) pow(Base&& base, Exp&& exp) {
         }
 
     } else {
-        PyObject* result = PyNumber_Power(
+        using Return = __pow__<Base, Exp>::type;
+        Return result = steal<Return>(PyNumber_Power(
             ptr(to_python(std::forward<Base>(base))),
             ptr(to_python(std::forward<Exp>(exp))),
             Py_None
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __pow__<Base, Exp>::type>(result);
+        return result;
     }
 }
 
@@ -2758,21 +2659,19 @@ decltype(auto) pow(Base&& base, Exp&& exp) {
 
 /* Equivalent to Python `pow(base, exp, mod)`. */
 template <typename Base, typename Exp, typename Mod>
-    requires (
-        __pow__<Base, Exp, Mod>::enable &&
-        std::convertible_to<typename __pow__<Base, Exp, Mod>::type, Object> && (
-            std::is_invocable_r_v<
-                typename __pow__<Base, Exp, Mod>::type,
-                __pow__<Base, Exp, Mod>,
-                Base,
-                Exp,
-                Mod
-            > || (
-                !std::is_invocable_v<__pow__<Base, Exp, Mod>, Base, Exp, Mod> &&
-                std::derived_from<typename __pow__<Base, Exp, Mod>::type, Object>
-            )
+    requires (__pow__<Base, Exp, Mod>::enable && (
+        std::is_invocable_r_v<
+            typename __pow__<Base, Exp, Mod>::type,
+            __pow__<Base, Exp, Mod>,
+            Base,
+            Exp,
+            Mod
+        > || (
+            !std::is_invocable_v<__pow__<Base, Exp, Mod>, Base, Exp, Mod> &&
+            meta::python<typename __pow__<Base, Exp, Mod>::type> &&
+            !meta::is_qualified<typename __pow__<Base, Exp, Mod>::type>
         )
-    )
+    ))
 decltype(auto) pow(Base&& base, Exp&& exp, Mod&& mod) {
     if constexpr (std::is_invocable_v<__pow__<Base, Exp, Mod>, Base, Exp, Mod>) {
         return __pow__<Base, Exp, Mod>{}(
@@ -2782,15 +2681,16 @@ decltype(auto) pow(Base&& base, Exp&& exp, Mod&& mod) {
         );
 
     } else {
-        PyObject* result = PyNumber_Power(
+        using Return = __pow__<Base, Exp, Mod>::type;
+        Return result = steal<Return>(PyNumber_Power(
             ptr(to_python(std::forward<Base>(base))),
             ptr(to_python(std::forward<Exp>(exp))),
             ptr(to_python(std::forward<Mod>(mod)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __pow__<Base, Exp, Mod>::type>(result);
+        return result;
     }
 }
 
@@ -2816,36 +2716,37 @@ template <typename L, typename R>
     requires ((meta::python<L> || meta::python<R>) && !__truediv__<L, R>::enable)
 decltype(auto) operator/(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
-    requires (
-        __truediv__<L, R>::enable &&
-        std::convertible_to<typename __truediv__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __truediv__<L, R>::type, __truediv__<L, R>, L, R> || (
-                !std::is_invocable_v<__truediv__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::truediv_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __truediv__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__truediv__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                std::derived_from<typename __truediv__<L, R>::type, Object>
-            )
+    requires (__truediv__<L, R>::enable && (
+        std::is_invocable_r_v<typename __truediv__<L, R>::type, __truediv__<L, R>, L, R> || (
+            !std::is_invocable_v<__truediv__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::truediv_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __truediv__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__truediv__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::python<typename __truediv__<L, R>::type> &&
+            !meta::is_qualified<typename __truediv__<L, R>::type>
         )
-    )
+    ))
 decltype(auto) operator/(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__truediv__<L, R>, L, R>) {
         return __truediv__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) / from_python(std::forward<R>(rhs));
+        return
+            from_python(std::forward<L>(lhs)) /
+            from_python(std::forward<R>(rhs));
 
     } else {
-        PyObject* result = PyNumber_TrueDivide(
+        using Return = __truediv__<L, R>::type;
+        Return result = steal<Return>(PyNumber_TrueDivide(
             ptr(to_python(std::forward<L>(lhs))),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __truediv__<L, R>::type>(result);
+        return result;
     }
 }
 
@@ -2853,95 +2754,93 @@ decltype(auto) operator/(L&& lhs, R&& rhs) {
 template <meta::python L, typename R> requires (!__itruediv__<L, R>::enable)
 decltype(auto) operator/=(L& lhs, R&& rhs) = delete;
 template <meta::python L, typename R>
-    requires (
-        __itruediv__<L, R>::enable &&
-        !std::is_const_v<std::remove_reference_t<L>> &&
-        std::convertible_to<typename __itruediv__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __itruediv__<L, R>::type, __itruediv__<L, R>, L, R> || (
-                !std::is_invocable_v<__itruediv__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::itruediv_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __itruediv__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__itruediv__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::inherits<typename __itruediv__<L, R>::type, L>
-            )
+    requires (__itruediv__<L, R>::enable && (
+        std::is_invocable_r_v<typename __itruediv__<L, R>::type, __itruediv__<L, R>, L, R> || (
+            !std::is_invocable_v<__itruediv__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::itruediv_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __itruediv__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__itruediv__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            !meta::is_const<L> &&
+            std::same_as<typename __itruediv__<L, R>::type, L>
         )
-    )
+    ))
 decltype(auto) operator/=(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__itruediv__<L, R>, L, R>) {
         return __itruediv__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) /=
+        return
+            from_python(std::forward<L>(lhs)) /=
             from_python(std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __itruediv__<L, R>::type>;
-        PyObject* result = PyNumber_InPlaceTrueDivide(
+        Return result = steal<Return>(PyNumber_InPlaceTrueDivide(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
+        } else if (!lhs.is(result)) {
+            lhs = std::move(result);
         }
-        Return out = steal<Return>(result);
-        lhs = out;
-        return out;
+        return std::forward<L>(lhs);
     }
 }
 
 
 template <typename L, typename R>
-    requires (
-        __floordiv__<L, R>::enable &&
-        std::convertible_to<typename __floordiv__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __floordiv__<L, R>::type, __floordiv__<L, R>, L, R> || (
-                !std::is_invocable_v<__floordiv__<L, R>, L, R> &&
-                std::derived_from<typename __floordiv__<L, R>::type, Object>
-            )
+    requires (__floordiv__<L, R>::enable && (
+        std::is_invocable_r_v<typename __floordiv__<L, R>::type, __floordiv__<L, R>, L, R> || (
+            !std::is_invocable_v<__floordiv__<L, R>, L, R> &&
+            meta::python<typename __floordiv__<L, R>::type> &&
+            !meta::is_qualified<typename __floordiv__<L, R>::type>
         )
-    )
+    ))
 decltype(auto) floordiv(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__floordiv__<L, R>, L, R>) {
         return __floordiv__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
+
     } else {
-        PyObject* result = PyNumber_FloorDivide(
+        using Return = __floordiv__<L, R>::type;
+        Return result = steal<Return>(PyNumber_FloorDivide(
             ptr(to_python(std::forward<L>(lhs))),
             ptr(to_python(std::forward<R>(lhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __floordiv__<L, R>::type>(result);
+        return result;
     }
 }
 
 
 template <meta::python L, typename R>
-    requires (
-        __ifloordiv__<L, R>::enable &&
-        std::convertible_to<typename __ifloordiv__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __ifloordiv__<L, R>::type, __ifloordiv__<L, R>, L, R> || (
-                !std::is_invocable_v<__ifloordiv__<L, R>, L, R> &&
-                std::derived_from<typename __ifloordiv__<L, R>::type, Object>
-            )
+    requires (__ifloordiv__<L, R>::enable && (
+        std::is_invocable_r_v<typename __ifloordiv__<L, R>::type, __ifloordiv__<L, R>, L, R> || (
+            !std::is_invocable_v<__ifloordiv__<L, R>, L, R> &&
+            !meta::is_const<L> &&
+            std::same_as<typename __ifloordiv__<L, R>::type, L>
         )
-    )
+    ))
 decltype(auto) ifloordiv(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__ifloordiv__<L, R>, L, R>) {
         return __ifloordiv__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __ifloordiv__<L, R>::type>;
-        PyObject* result = PyNumber_InPlaceFloorDivide(
+        Return result = steal<Return>(PyNumber_InPlaceFloorDivide(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
+        } else if (!lhs.is(result)) {
+            lhs = std::move(result);
         }
-        return steal<Return>(result);
+        return std::forward<L>(lhs);
     }
 }
 
@@ -2950,36 +2849,37 @@ template <typename L, typename R>
     requires ((meta::python<L> || meta::python<R>) && !__mod__<L, R>::enable)
 decltype(auto) operator%(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
-    requires (
-        __mod__<L, R>::enable &&
-        std::convertible_to<typename __mod__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __mod__<L, R>::type, __mod__<L, R>, L, R> || (
-                !std::is_invocable_v<__mod__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::mod_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __mod__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__mod__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                std::derived_from<typename __mod__<L, R>::type, Object>
-            )
+    requires (__mod__<L, R>::enable && (
+        std::is_invocable_r_v<typename __mod__<L, R>::type, __mod__<L, R>, L, R> || (
+            !std::is_invocable_v<__mod__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::mod_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __mod__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__mod__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::python<typename __mod__<L, R>::type> &&
+            !meta::is_qualified<typename __mod__<L, R>::type>
         )
-    )
+    ))
 decltype(auto) operator%(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__mod__<L, R>, L, R>) {
         return __mod__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) % from_python(std::forward<R>(rhs));
+        return
+            from_python(std::forward<L>(lhs)) %
+            from_python(std::forward<R>(rhs));
 
     } else {
-        PyObject* result = PyNumber_Remainder(
+        using Return = __mod__<L, R>::type;
+        Return result = steal<Return>(PyNumber_Remainder(
             ptr(to_python(std::forward<L>(lhs))),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __mod__<L, R>::type>(result);
+        return result;
     }
 }
 
@@ -2987,41 +2887,39 @@ decltype(auto) operator%(L&& lhs, R&& rhs) {
 template <meta::python L, typename R> requires (!__imod__<L, R>::enable)
 decltype(auto) operator%=(L& lhs, R&& rhs) = delete;
 template <meta::python L, typename R>
-    requires (
-        __imod__<L, R>::enable &&
-        !std::is_const_v<std::remove_reference_t<L>> &&
-        std::convertible_to<typename __imod__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __imod__<L, R>::type, __imod__<L, R>, L, R> || (
-                !std::is_invocable_v<__imod__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::imod_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __imod__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__imod__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::inherits<typename __imod__<L, R>::type, L>
-            )
+    requires (__imod__<L, R>::enable && (
+        std::is_invocable_r_v<typename __imod__<L, R>::type, __imod__<L, R>, L, R> || (
+            !std::is_invocable_v<__imod__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::imod_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __imod__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__imod__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            !meta::is_const<L> &&
+            std::same_as<typename __imod__<L, R>::type, L>
         )
-    )
+    ))
 decltype(auto) operator%=(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__imod__<L, R>, L, R>) {
         return __imod__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) %=
+        return
+            from_python(std::forward<L>(lhs)) %=
             from_python(std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __imod__<L, R>::type>;
-        PyObject* result = PyNumber_InPlaceRemainder(
+        Return result = steal<Return>(PyNumber_InPlaceRemainder(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
+        } else if (!lhs.is(result)) {
+            lhs = std::move(result);
         }
-        Return out = steal<Return>(result);
-        lhs = out;
-        return out;
+        return std::forward<L>(lhs);
     }
 }
 
@@ -3030,36 +2928,37 @@ template <typename L, typename R>
     requires ((meta::python<L> || meta::python<R>) && !__lshift__<L, R>::enable)
 decltype(auto) operator<<(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
-    requires (
-        __lshift__<L, R>::enable &&
-        std::convertible_to<typename __lshift__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __lshift__<L, R>::type, __lshift__<L, R>, L, R> || (
-                !std::is_invocable_v<__lshift__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::lshift_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __lshift__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__lshift__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                std::derived_from<typename __lshift__<L, R>::type, Object>
-            )
+    requires (__lshift__<L, R>::enable && (
+        std::is_invocable_r_v<typename __lshift__<L, R>::type, __lshift__<L, R>, L, R> || (
+            !std::is_invocable_v<__lshift__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::lshift_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __lshift__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__lshift__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::python<typename __lshift__<L, R>::type> &&
+            !meta::is_qualified<typename __lshift__<L, R>::type>
         )
-    )
+    ))
 decltype(auto) operator<<(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__lshift__<L, R>, L, R>) {
         return __lshift__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) << from_python(std::forward<R>(rhs));
+        return
+            from_python(std::forward<L>(lhs)) <<
+            from_python(std::forward<R>(rhs));
 
     } else {
-        PyObject* result = PyNumber_Lshift(
+        using Return = __lshift__<L, R>::type;
+        Return result = steal<Return>(PyNumber_Lshift(
             ptr(to_python(std::forward<L>(lhs))),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __lshift__<L, R>::type>(result);
+        return result;
     }
 }
 
@@ -3067,38 +2966,39 @@ decltype(auto) operator<<(L&& lhs, R&& rhs) {
 template <meta::python L, typename R> requires (!__ilshift__<L, R>::enable)
 decltype(auto) operator<<=(L& lhs, R&& rhs) = delete;
 template <meta::python L, typename R>
-    requires (
-        __ilshift__<L, R>::enable &&
-        std::convertible_to<typename __ilshift__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __ilshift__<L, R>::type, __ilshift__<L, R>, L, R> || (
-                !std::is_invocable_v<__ilshift__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::ilshift_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __ilshift__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__ilshift__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                std::derived_from<typename __ilshift__<L, R>::type, Object>
-            )
+    requires (__ilshift__<L, R>::enable && (
+        std::is_invocable_r_v<typename __ilshift__<L, R>::type, __ilshift__<L, R>, L, R> || (
+            !std::is_invocable_v<__ilshift__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::ilshift_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __ilshift__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__ilshift__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            !meta::is_const<L> &&
+            std::same_as<typename __ilshift__<L, R>::type, L>
         )
-    )
+    ))
 decltype(auto) operator<<=(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__ilshift__<L, R>, L, R>) {
         return __ilshift__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) <<=
+        return
+            from_python(std::forward<L>(lhs)) <<=
             from_python(std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __ilshift__<L, R>::type>;
-        PyObject* result = PyNumber_InPlaceLshift(
+        Return result = steal<Return>(PyNumber_InPlaceLshift(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
+        } else if (!lhs.is(result)) {
+            lhs = std::move(result);
         }
-        return steal<Return>(result);
+        return std::forward<L>(lhs);
     }
 }
 
@@ -3107,36 +3007,37 @@ template <typename L, typename R>
     requires ((meta::python<L> || meta::python<R>) && !__rshift__<L, R>::enable)
 decltype(auto) operator>>(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
-    requires (
-        __rshift__<L, R>::enable &&
-        std::convertible_to<typename __rshift__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __rshift__<L, R>::type, __rshift__<L, R>, L, R> || (
-                !std::is_invocable_v<__rshift__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::rshift_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __rshift__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__rshift__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                std::derived_from<typename __rshift__<L, R>::type, Object>
-            )
+    requires (__rshift__<L, R>::enable && (
+        std::is_invocable_r_v<typename __rshift__<L, R>::type, __rshift__<L, R>, L, R> || (
+            !std::is_invocable_v<__rshift__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::rshift_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __rshift__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__rshift__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::python<typename __rshift__<L, R>::type> &&
+            !meta::is_qualified<typename __rshift__<L, R>::type>
         )
-    )
+    ))
 decltype(auto) operator>>(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__rshift__<L, R>, L, R>) {
         return __rshift__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) >> from_python(std::forward<R>(rhs));
+        return
+            from_python(std::forward<L>(lhs)) >>
+            from_python(std::forward<R>(rhs));
 
     } else {
-        PyObject* result = PyNumber_Rshift(
+        using Return = __rshift__<L, R>::type;
+        Return result = steal<Return>(PyNumber_Rshift(
             ptr(to_python(std::forward<L>(lhs))),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __rshift__<L, R>::type>(result);
+        return result;
     }
 }
 
@@ -3144,38 +3045,39 @@ decltype(auto) operator>>(L&& lhs, R&& rhs) {
 template <meta::python L, typename R> requires (!__irshift__<L, R>::enable)
 decltype(auto) operator>>=(L& lhs, R&& rhs) = delete;
 template <meta::python L, typename R>
-    requires (
-        __irshift__<L, R>::enable &&
-        std::convertible_to<typename __irshift__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __irshift__<L, R>::type, __irshift__<L, R>, L, R> || (
-                !std::is_invocable_v<__irshift__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::irshift_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __irshift__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__irshift__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                std::derived_from<typename __irshift__<L, R>::type, Object>
-            )
+    requires (__irshift__<L, R>::enable && (
+        std::is_invocable_r_v<typename __irshift__<L, R>::type, __irshift__<L, R>, L, R> || (
+            !std::is_invocable_v<__irshift__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::irshift_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __irshift__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__irshift__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            !meta::is_const<L> &&
+            std::same_as<typename __irshift__<L, R>::type, L>
         )
-    )
+    ))
 decltype(auto) operator>>=(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__irshift__<L, R>, L, R>) {
         return __irshift__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) >>=
+        return
+            from_python(std::forward<L>(lhs)) >>=
             from_python(std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __irshift__<L, R>::type>;
-        PyObject* result = PyNumber_InPlaceRshift(
+        Return result = steal<Return>(PyNumber_InPlaceRshift(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
+        } else if (!lhs.is(result)) {
+            lhs = std::move(result);
         }
-        return steal<Return>(result);
+        return std::forward<L>(lhs);
     }
 }
 
@@ -3184,36 +3086,37 @@ template <typename L, typename R>
     requires ((meta::python<L> || meta::python<R>) && !__and__<L, R>::enable)
 decltype(auto) operator&(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
-    requires (
-        __and__<L, R>::enable &&
-        std::convertible_to<typename __and__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __and__<L, R>::type, __and__<L, R>, L, R> || (
-                !std::is_invocable_v<__and__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::and_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __and__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__and__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                std::derived_from<typename __and__<L, R>::type, Object>
-            )
+    requires (__and__<L, R>::enable && (
+        std::is_invocable_r_v<typename __and__<L, R>::type, __and__<L, R>, L, R> || (
+            !std::is_invocable_v<__and__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::and_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __and__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__and__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::python<typename __and__<L, R>::type> &&
+            !meta::is_qualified<typename __and__<L, R>::type>
         )
-    )
+    ))
 decltype(auto) operator&(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__and__<L, R>, L, R>) {
         return __and__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) & from_python(std::forward<R>(rhs));
+        return
+            from_python(std::forward<L>(lhs)) &
+            from_python(std::forward<R>(rhs));
 
     } else {
-        PyObject* result = PyNumber_And(
+        using Return = __and__<L, R>::type;
+        Return result = steal<Return>(PyNumber_And(
             ptr(to_python(std::forward<L>(lhs))),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __and__<L, R>::type>(result);
+        return result;
     }
 }
 
@@ -3221,21 +3124,18 @@ decltype(auto) operator&(L&& lhs, R&& rhs) {
 template <meta::python L, typename R> requires (!__iand__<L, R>::enable)
 decltype(auto) operator&=(L& lhs, R&& rhs) = delete;
 template <meta::python L, typename R>
-    requires (
-        __iand__<L, R>::enable &&
-        !std::is_const_v<std::remove_reference_t<L>> &&
-        std::convertible_to<typename __iand__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __iand__<L, R>::type, __iand__<L, R>, L, R> || (
-                !std::is_invocable_v<__iand__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::iand_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __iand__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__iand__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::inherits<typename __iand__<L, R>::type, L>
-            )
+    requires (__iand__<L, R>::enable && (
+        std::is_invocable_r_v<typename __iand__<L, R>::type, __iand__<L, R>, L, R> || (
+            !std::is_invocable_v<__iand__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::iand_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __iand__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__iand__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            !meta::is_const<L> &&
+            std::same_as<typename __iand__<L, R>::type, L>
         )
-    )
+    ))
 decltype(auto) operator&=(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__iand__<L, R>, L, R>) {
         return __iand__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
@@ -3246,16 +3146,16 @@ decltype(auto) operator&=(L&& lhs, R&& rhs) {
 
     } else {
         using Return = std::remove_cvref_t<typename __iand__<L, R>::type>;
-        PyObject* result = PyNumber_InPlaceAnd(
+        Return result = steal<Return>(PyNumber_InPlaceAnd(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
+        } else if (!lhs.is(result)) {
+            lhs = std::move(result);
         }
-        Return out = steal<Return>(result);
-        lhs = out;
-        return out;
+        return std::forward<L>(lhs);
     }
 }
 
@@ -3264,36 +3164,37 @@ template <typename L, typename R>
     requires ((meta::python<L> || meta::python<R>) && !__or__<L, R>::enable)
 decltype(auto) operator|(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
-    requires (
-        __or__<L, R>::enable &&
-        std::convertible_to<typename __or__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __or__<L, R>::type, __or__<L, R>, L, R> || (
-                !std::is_invocable_v<__or__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::or_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __or__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__or__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                std::derived_from<typename __or__<L, R>::type, Object>
-            )
+    requires (__or__<L, R>::enable && (
+        std::is_invocable_r_v<typename __or__<L, R>::type, __or__<L, R>, L, R> || (
+            !std::is_invocable_v<__or__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::or_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __or__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__or__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::python<typename __or__<L, R>::type> &&
+            !meta::is_qualified<typename __or__<L, R>::type>
         )
-    )
+    ))
 decltype(auto) operator|(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__or__<L, R>, L, R>) {
         return __or__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) | from_python(std::forward<R>(rhs));
+        return
+            from_python(std::forward<L>(lhs)) |
+            from_python(std::forward<R>(rhs));
 
     } else {
-        PyObject* result = PyNumber_Or(
+        using Return = __or__<L, R>::type;
+        Return result = steal<Return>(PyNumber_Or(
             ptr(to_python(std::forward<L>(lhs))),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __or__<L, R>::type>(result);
+        return result;
     }
 }
 
@@ -3301,41 +3202,39 @@ decltype(auto) operator|(L&& lhs, R&& rhs) {
 template <meta::python L, typename R> requires (!__ior__<L, R>::enable)
 decltype(auto) operator|=(L& lhs, R&& rhs) = delete;
 template <meta::python L, typename R>
-    requires (
-        __ior__<L, R>::enable &&
-        !std::is_const_v<std::remove_reference_t<L>> &&
-        std::convertible_to<typename __ior__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __ior__<L, R>::type, __ior__<L, R>, L, R> || (
-                !std::is_invocable_v<__ior__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::ior_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __ior__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__ior__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::inherits<typename __ior__<L, R>::type, L>
-            )
+    requires (__ior__<L, R>::enable && (
+        std::is_invocable_r_v<typename __ior__<L, R>::type, __ior__<L, R>, L, R> || (
+            !std::is_invocable_v<__ior__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::ior_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __ior__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__ior__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            !meta::is_const<L> &&
+            std::same_as<typename __ior__<L, R>::type, L>
         )
-    )
+    ))
 decltype(auto) operator|=(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__ior__<L, R>, L, R>) {
         return __ior__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) |=
+        return
+            from_python(std::forward<L>(lhs)) |=
             from_python(std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __ior__<L, R>::type>;
-        PyObject* result = PyNumber_InPlaceOr(
+        Return result = steal<Return>(PyNumber_InPlaceOr(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
+        } else if (!lhs.is(result)) {
+            lhs = std::move(result);
         }
-        Return out = steal<Return>(result);
-        lhs = out;
-        return out;
+        return std::forward<L>(lhs);
     }
 }
 
@@ -3344,36 +3243,37 @@ template <typename L, typename R>
     requires ((meta::python<L> || meta::python<R>) && !__xor__<L, R>::enable)
 decltype(auto) operator^(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
-    requires (
-        __xor__<L, R>::enable &&
-        std::convertible_to<typename __xor__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __xor__<L, R>::type, __xor__<L, R>, L, R> || (
-                !std::is_invocable_v<__xor__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::xor_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __xor__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__xor__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                std::derived_from<typename __xor__<L, R>::type, Object>
-            )
+    requires (__xor__<L, R>::enable && (
+        std::is_invocable_r_v<typename __xor__<L, R>::type, __xor__<L, R>, L, R> || (
+            !std::is_invocable_v<__xor__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::xor_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __xor__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__xor__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::python<typename __xor__<L, R>::type> &&
+            !meta::is_qualified<typename __xor__<L, R>::type>
         )
-    )
+    ))
 decltype(auto) operator^(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__xor__<L, R>, L, R>) {
         return __xor__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) ^ from_python(std::forward<R>(rhs));
+        return
+            from_python(std::forward<L>(lhs)) ^
+            from_python(std::forward<R>(rhs));
 
     } else {
-        PyObject* result = PyNumber_Xor(
+        using Return = __xor__<L, R>::type;
+        Return result = steal<Return>(PyNumber_Xor(
             ptr(to_python(std::forward<L>(lhs))),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
         }
-        return steal<typename __xor__<L, R>::type>(result);
+        return result;
     }
 }
 
@@ -3381,41 +3281,39 @@ decltype(auto) operator^(L&& lhs, R&& rhs) {
 template <meta::python L, typename R> requires (!__ixor__<L, R>::enable)
 decltype(auto) operator^=(L& lhs, R&& rhs) = delete;
 template <meta::python L, typename R>
-    requires (
-        __ixor__<L, R>::enable &&
-        !std::is_const_v<std::remove_reference_t<L>> &&
-        std::convertible_to<typename __ixor__<L, R>::type, Object> && (
-            std::is_invocable_r_v<typename __ixor__<L, R>::type, __ixor__<L, R>, L, R> || (
-                !std::is_invocable_v<__ixor__<L, R>, L, R> &&
-                (meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::ixor_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __ixor__<L, R>::type>
-            ) || (
-                !std::is_invocable_v<__ixor__<L, R>, L, R> &&
-                !(meta::has_cpp<L> && meta::has_cpp<R>) &&
-                meta::inherits<typename __ixor__<L, R>::type, L>
-            )
+    requires (__ixor__<L, R>::enable && (
+        std::is_invocable_r_v<typename __ixor__<L, R>::type, __ixor__<L, R>, L, R> || (
+            !std::is_invocable_v<__ixor__<L, R>, L, R> &&
+            (meta::has_cpp<L> && meta::has_cpp<R>) &&
+            meta::ixor_returns<meta::cpp_type<L>, meta::cpp_type<R>, typename __ixor__<L, R>::type>
+        ) || (
+            !std::is_invocable_v<__ixor__<L, R>, L, R> &&
+            !(meta::has_cpp<L> && meta::has_cpp<R>) &&
+            !meta::is_const<L> &&
+            std::same_as<typename __ixor__<L, R>::type, L>
         )
-    )
+    ))
 decltype(auto) operator^=(L&& lhs, R&& rhs) {
     if constexpr (std::is_invocable_v<__ixor__<L, R>, L, R>) {
         return __ixor__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (meta::has_cpp<L> && meta::has_cpp<R>) {
-        return from_python(std::forward<L>(lhs)) ^=
+        return
+            from_python(std::forward<L>(lhs)) ^=
             from_python(std::forward<R>(rhs));
 
     } else {
         using Return = std::remove_cvref_t<typename __ixor__<L, R>::type>;
-        PyObject* result = PyNumber_InPlaceXor(
+        Return result = steal<Return>(PyNumber_InPlaceXor(
             ptr(lhs),
             ptr(to_python(std::forward<R>(rhs)))
-        );
-        if (result == nullptr) {
+        ));
+        if (result.is(nullptr)) {
             Exception::from_python();
+        } else if (!lhs.is(result)) {
+            lhs = std::move(result);
         }
-        Return out = steal<Return>(result);
-        lhs = out;
-        return out;
+        return std::forward<L>(lhs);
     }
 }
 
@@ -4202,7 +4100,6 @@ inline void Exception::to_python() noexcept {
         "from_python() handler must throw an exception of type 'py_err<T>'"
     );
 }
-
 
 
 }  // namespace bertrand

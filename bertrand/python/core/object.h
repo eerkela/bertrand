@@ -957,6 +957,46 @@ template <meta::has_python T> requires (!meta::is_qualified<T>)
 }
 
 
+/* repr() calls on Python objects will always delegate to the equivalent Python
+function. */
+template <meta::python Self>
+struct __repr__<Self> : returns<std::string> {
+    static std::string operator()(Self obj) {
+        Object str = steal<Object>(PyObject_Repr(ptr(obj)));
+        if (str.is(nullptr)) {
+            Exception::from_python();
+        }
+        Py_ssize_t size;
+        const char* data = PyUnicode_AsUTF8AndSize(ptr(str), &size);
+        if (data == nullptr) {
+            Exception::from_python();
+        }
+        return std::string(data, size);
+    }
+};
+
+
+/* Inserting a Python object into an output stream corresponds to a `str()` call at the
+Python level. */
+template <meta::inherits<std::ostream> Stream, meta::python Self>
+struct __lshift__<Stream, Self>                             : returns<Stream&> {
+    /// TODO: Str, Bytes, ByteArray should specialize this to write to the stream directly.
+    static Stream& operator()(Stream stream, Self self) {
+        Object str = steal<Object>(PyObject_Str(ptr(self)));
+        if (str.is(nullptr)) {
+            Exception::from_python();
+        }
+        Py_ssize_t len;
+        const char* data = PyUnicode_AsUTF8AndSize(ptr(str), &len);
+        if (data == nullptr) {
+            Exception::from_python();
+        }
+        stream.write(data, len);
+        return stream;
+    }
+};
+
+
 /* Default initialize `bertrand::Object` to `None`. */
 template <>
 struct __init__<Object>                                     : returns<Object> {
@@ -1185,27 +1225,6 @@ struct __issubclass__<Derived, Base>                         : returns<bool> {
     /// TODO: this should also not be forward declared  I don't know what this needs
     /// to actually do.
     static bool operator()(Derived derived);
-};
-
-
-/* Inserting a Python object into an output stream corresponds to a `str()` call at the
-Python level. */
-template <meta::inherits<std::ostream> Stream, meta::python Self>
-struct __lshift__<Stream, Self>                             : returns<Stream&> {
-    /// TODO: Str, Bytes, ByteArray should specialize this to write to the stream directly.
-    static Stream& operator()(Stream stream, Self self) {
-        Object str = steal<Object>(PyObject_Str(ptr(self)));
-        if (str.is(nullptr)) {
-            Exception::from_python();
-        }
-        Py_ssize_t len;
-        const char* data = PyUnicode_AsUTF8AndSize(ptr(str), &len);
-        if (data == nullptr) {
-            Exception::from_python();
-        }
-        stream.write(data, len);
-        return stream;
-    }
 };
 
 
@@ -1452,6 +1471,10 @@ struct Slice;
 template <>
 struct interface<Slice> {
 
+    /// TODO: these should be impl::Attr<> properties so they obey the same rules as
+    /// __setattr__, __delattr__, etc.
+    /// -> Slice attributes are actually read-only in Python, so this is fine.
+
     /* Get the start object of the slice.  Note that this might not be an integer. */
     __declspec(property(get = _get_start)) Object start;
     [[nodiscard]] Object _get_start(this auto&& self) {
@@ -1551,6 +1574,10 @@ struct Slice : Object, interface<Slice> {
 };
 
 
+/// TODO: __getattr__ for start/stop/step should access the raw C++ field by viewing
+/// the Python object.
+
+
 /// TODO: this must be declared after func.h
 // template <typename Self> requires (issubclass<Self, Slice>())
 // struct __getattr__<Self, "indices"> : returns<Function<
@@ -1647,7 +1674,7 @@ template <meta::is<Slice> L, meta::is<Slice> R>
 struct __gt__<L, R>                                         : returns<Bool> {};
 
 
-}  // namespace py
+}  // namespace bertrand
 
 
 #endif

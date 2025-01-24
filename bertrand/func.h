@@ -14,8 +14,6 @@
 namespace bertrand {
 
 
-template <typename T>
-struct arg_traits;
 template <typename... Ts>
 struct args;
 template <typename F, typename... Fs>
@@ -128,6 +126,9 @@ namespace impl {
 
 namespace meta {
 
+    template <typename T>
+    struct arg_traits;
+
     namespace detail {
         template <typename, typename = void>
         struct detect_arg { static constexpr bool value = false; };
@@ -189,6 +190,13 @@ namespace meta {
     template <typename T>
     concept comprehension = inherits<T, impl::comprehension_tag>;
 
+    template <typename T>
+    concept unpack_operator = detail::enable_unpack_operator<std::remove_cvref_t<T>>;
+
+    template <typename T>
+    concept comprehension_operator =
+        detail::enable_comprehension_operator<std::remove_cvref_t<T>>;
+
     template <typename Range, typename View>
     concept viewable = requires {
         std::views::all(std::declval<Range>()) | std::declval<View>();
@@ -198,13 +206,6 @@ namespace meta {
     concept transformable = !viewable<Range, Func> && requires {
         std::views::transform(std::declval<Range>(), std::declval<Func>());
     };
-
-    template <typename T>
-    concept unpack_operator = detail::enable_unpack_operator<std::remove_cvref_t<T>>;
-
-    template <typename T>
-    concept comprehension_operator =
-        detail::enable_comprehension_operator<std::remove_cvref_t<T>>;
 
     template <typename T>
     concept signature = inherits<T, impl::signature_tag>;
@@ -980,17 +981,17 @@ public:
     static constexpr bool can_bind = false;
     template <std::convertible_to<type> V>
     static constexpr bool can_bind<V> =
-        !arg_traits<V>::opt() &&
-        !arg_traits<V>::variadic() &&
-        (arg_traits<V>::name.empty() || arg_traits<V>::name == name);
+        !meta::arg_traits<V>::opt() &&
+        !meta::arg_traits<V>::variadic() &&
+        (meta::arg_traits<V>::name.empty() || meta::arg_traits<V>::name == name);
 
     /* Bind a partial value to this argument. */
     template <std::convertible_to<type>... Vs>
         requires (
             sizeof...(Vs) == 1 &&
-            (!arg_traits<Vs>::opt() && ...) &&
-            (!arg_traits<Vs>::variadic() && ...) &&
-            ((arg_traits<Vs>::name.empty() || arg_traits<Vs>::name == name) && ...)
+            (!meta::arg_traits<Vs>::opt() && ...) &&
+            (!meta::arg_traits<Vs>::variadic() && ...) &&
+            ((meta::arg_traits<Vs>::name.empty() || meta::arg_traits<Vs>::name == name) && ...)
         )
     using bind = impl::BoundArg<Arg, Vs...>;
 
@@ -1063,9 +1064,9 @@ public:
         template <std::convertible_to<type>... Vs>
             requires (
                 sizeof...(Vs) == 1 &&
-                (!arg_traits<Vs>::opt() && ...) &&
-                (!arg_traits<Vs>::variadic() && ...) &&
-                ((arg_traits<Vs>::name.empty() || arg_traits<Vs>::name == name) && ...)
+                (!meta::arg_traits<Vs>::opt() && ...) &&
+                (!meta::arg_traits<Vs>::variadic() && ...) &&
+                ((meta::arg_traits<Vs>::name.empty() || meta::arg_traits<Vs>::name == name) && ...)
             )
         using bind = impl::BoundArg<opt, Vs...>;
     };
@@ -1102,18 +1103,18 @@ public:
         static constexpr bool can_bind = false;
         template <std::convertible_to<type> V>
         static constexpr bool can_bind<V> =
-            arg_traits<V>::posonly() &&
-            !arg_traits<V>::opt() &&
-            !arg_traits<V>::variadic() &&
-            (arg_traits<V>::name.empty() || arg_traits<V>::name == name);
+            meta::arg_traits<V>::posonly() &&
+            !meta::arg_traits<V>::opt() &&
+            !meta::arg_traits<V>::variadic() &&
+            (meta::arg_traits<V>::name.empty() || meta::arg_traits<V>::name == name);
 
         template <std::convertible_to<type>... Vs>
             requires (
                 sizeof...(Vs) == 1 &&
-                (arg_traits<Vs>::posonly() && ...) &&
-                (!arg_traits<Vs>::opt() && ...) &&
-                (!arg_traits<Vs>::variadic() && ...) &&
-                ((arg_traits<Vs>::name.empty() || arg_traits<Vs>::name == name) && ...)
+                (meta::arg_traits<Vs>::posonly() && ...) &&
+                (!meta::arg_traits<Vs>::opt() && ...) &&
+                (!meta::arg_traits<Vs>::variadic() && ...) &&
+                ((meta::arg_traits<Vs>::name.empty() || meta::arg_traits<Vs>::name == name) && ...)
             )
         using bind = impl::BoundArg<pos, Vs...>;
 
@@ -1150,10 +1151,10 @@ public:
             template <std::convertible_to<type>... Vs>
                 requires (
                     sizeof...(Vs) == 1 &&
-                    (arg_traits<Vs>::posonly() && ...) &&
-                    (!arg_traits<Vs>::opt() && ...) &&
-                    (!arg_traits<Vs>::variadic() && ...) &&
-                    ((arg_traits<Vs>::name.empty() || arg_traits<Vs>::name == name) && ...)
+                    (meta::arg_traits<Vs>::posonly() && ...) &&
+                    (!meta::arg_traits<Vs>::opt() && ...) &&
+                    (!meta::arg_traits<Vs>::variadic() && ...) &&
+                    ((meta::arg_traits<Vs>::name.empty() || meta::arg_traits<Vs>::name == name) && ...)
                 )
             using bind = impl::BoundArg<opt, Vs...>;
         };
@@ -1191,18 +1192,18 @@ public:
         static constexpr bool can_bind = false;
         template <std::convertible_to<type> V>
         static constexpr bool can_bind<V> =
-            arg_traits<V>::kw() &&
-            !arg_traits<V>::opt() &&
-            !arg_traits<V>::variadic() &&
-            (arg_traits<V>::name.empty() || arg_traits<V>::name == name);
+            meta::arg_traits<V>::kw() &&
+            !meta::arg_traits<V>::opt() &&
+            !meta::arg_traits<V>::variadic() &&
+            (meta::arg_traits<V>::name.empty() || meta::arg_traits<V>::name == name);
 
         template <std::convertible_to<type>... Vs>
             requires (
                 sizeof...(Vs) == 1 &&
-                (arg_traits<Vs>::kw() && ...) &&
-                (!arg_traits<Vs>::opt() && ...) &&
-                (!arg_traits<Vs>::variadic() && ...) &&
-                ((arg_traits<Vs>::name.empty() || arg_traits<Vs>::name == name) && ...)
+                (meta::arg_traits<Vs>::kw() && ...) &&
+                (!meta::arg_traits<Vs>::opt() && ...) &&
+                (!meta::arg_traits<Vs>::variadic() && ...) &&
+                ((meta::arg_traits<Vs>::name.empty() || meta::arg_traits<Vs>::name == name) && ...)
             )
         using bind = impl::BoundArg<kw, Vs...>;
 
@@ -1239,10 +1240,10 @@ public:
             template <std::convertible_to<type>... Vs>
                 requires (
                     sizeof...(Vs) == 1 &&
-                    (arg_traits<Vs>::kw() && ...) &&
-                    (!arg_traits<Vs>::opt() && ...) &&
-                    (!arg_traits<Vs>::variadic() && ...) &&
-                    ((arg_traits<Vs>::name.empty() || arg_traits<Vs>::name == name) && ...)
+                    (meta::arg_traits<Vs>::kw() && ...) &&
+                    (!meta::arg_traits<Vs>::opt() && ...) &&
+                    (!meta::arg_traits<Vs>::variadic() && ...) &&
+                    ((meta::arg_traits<Vs>::name.empty() || meta::arg_traits<Vs>::name == name) && ...)
                 )
             using bind = impl::BoundArg<opt, Vs...>;
         };
@@ -1287,17 +1288,17 @@ public:
     static constexpr bool can_bind = false;
     template <std::convertible_to<T>... Vs>
     static constexpr bool can_bind<Vs...> =
-        (arg_traits<Vs>::posonly() && ...) &&
-        (!arg_traits<Vs>::opt() && ...) &&
-        (!arg_traits<Vs>::variadic() && ...) &&
-        meta::arg_names_are_unique<arg_traits<Vs>::name...>;
+        (meta::arg_traits<Vs>::posonly() && ...) &&
+        (!meta::arg_traits<Vs>::opt() && ...) &&
+        (!meta::arg_traits<Vs>::variadic() && ...) &&
+        meta::arg_names_are_unique<meta::arg_traits<Vs>::name...>;
 
     template <std::convertible_to<T>... Vs>
         requires (
-            (arg_traits<Vs>::posonly() && ...) &&
-            (!arg_traits<Vs>::opt() && ...) &&
-            (!arg_traits<Vs>::variadic() && ...) &&
-            meta::arg_names_are_unique<arg_traits<Vs>::name...>
+            (meta::arg_traits<Vs>::posonly() && ...) &&
+            (!meta::arg_traits<Vs>::opt() && ...) &&
+            (!meta::arg_traits<Vs>::variadic() && ...) &&
+            meta::arg_names_are_unique<meta::arg_traits<Vs>::name...>
         )
     using bind = impl::BoundArg<Arg, Vs...>;
 
@@ -1355,17 +1356,17 @@ public:
     static constexpr bool can_bind = false;
     template <std::convertible_to<T>... Vs>
     static constexpr bool can_bind<Vs...> =
-        (arg_traits<Vs>::kw() && ...) &&
-        (!arg_traits<Vs>::opt() && ...) &&
-        (!arg_traits<Vs>::variadic() && ...) &&
-        meta::arg_names_are_unique<arg_traits<Vs>::name...>;
+        (meta::arg_traits<Vs>::kw() && ...) &&
+        (!meta::arg_traits<Vs>::opt() && ...) &&
+        (!meta::arg_traits<Vs>::variadic() && ...) &&
+        meta::arg_names_are_unique<meta::arg_traits<Vs>::name...>;
 
     template <std::convertible_to<T>... Vs>
         requires (
-            (arg_traits<Vs>::kw() && ...) &&
-            (!arg_traits<Vs>::opt() && ...) &&
-            (!arg_traits<Vs>::variadic() && ...) &&
-            meta::arg_names_are_unique<arg_traits<Vs>::name...>
+            (meta::arg_traits<Vs>::kw() && ...) &&
+            (!meta::arg_traits<Vs>::opt() && ...) &&
+            (!meta::arg_traits<Vs>::variadic() && ...) &&
+            meta::arg_names_are_unique<meta::arg_traits<Vs>::name...>
         )
     using bind = impl::BoundArg<Arg, Vs...>;
 
@@ -1389,32 +1390,32 @@ public:
 
 namespace impl {
 
-    template <typename Arg, typename T> requires (!arg_traits<Arg>::variadic())
+    template <typename Arg, typename T> requires (!meta::arg_traits<Arg>::variadic())
     struct BoundArg<Arg, T> {
     private:
         template <typename, typename>
         friend struct meta::detail::detect_arg;
         using _detect_arg = void;
-        using Value = std::remove_reference_t<typename arg_traits<Arg>::type>;
+        using Value = std::remove_reference_t<typename meta::arg_traits<Arg>::type>;
 
     public:
-        static constexpr static_str name = arg_traits<Arg>::name;
-        static constexpr ArgKind kind = arg_traits<Arg>::kind;
-        using type = arg_traits<Arg>::type;
+        static constexpr static_str name = meta::arg_traits<Arg>::name;
+        static constexpr ArgKind kind = meta::arg_traits<Arg>::kind;
+        using type = meta::arg_traits<Arg>::type;
         using bound_to = bertrand::args<T>;
         using unbind = Arg;
         template <static_str N> requires (meta::arg_name<N>)
         using with_name = BoundArg<
-            typename arg_traits<Arg>::template with_name<N>,
+            typename meta::arg_traits<Arg>::template with_name<N>,
             T
         >;
         template <typename V>
             requires (
                 !std::is_void_v<V> &&
-                std::convertible_to<typename arg_traits<T>::type, V>
+                std::convertible_to<typename meta::arg_traits<T>::type, V>
             )
         using with_type = BoundArg<
-            typename arg_traits<Arg>::template with_type<V>,
+            typename meta::arg_traits<Arg>::template with_type<V>,
             T
         >;
 
@@ -1435,13 +1436,13 @@ namespace impl {
         }
 
         template <typename... Vs>
-        static constexpr bool can_bind = arg_traits<Arg>::template can_bind<Vs...>;
+        static constexpr bool can_bind = meta::arg_traits<Arg>::template can_bind<Vs...>;
         template <typename... Vs> requires (can_bind<Vs...>)
-        using bind = arg_traits<Arg>::template bind<Vs...>;
+        using bind = meta::arg_traits<Arg>::template bind<Vs...>;
     };
 
     template <typename Arg, typename... Ts>
-        requires (arg_traits<Arg>::args() && sizeof...(Ts) > 0)
+        requires (meta::arg_traits<Arg>::args() && sizeof...(Ts) > 0)
     struct BoundArg<Arg, Ts...> {
     private:
         template <typename, typename>
@@ -1453,14 +1454,14 @@ namespace impl {
         template <typename... curr, typename... Vs>
         struct rebind<bertrand::args<curr...>, Vs...> {
             static constexpr bool value =
-                arg_traits<Arg>::template can_bind<curr..., Vs...>;
-            using type = arg_traits<Arg>::template bind<curr..., Vs...>;
+                meta::arg_traits<Arg>::template can_bind<curr..., Vs...>;
+            using type = meta::arg_traits<Arg>::template bind<curr..., Vs...>;
         };
 
     public:
-        static constexpr static_str name = arg_traits<Arg>::name;
-        static constexpr ArgKind kind = arg_traits<Arg>::kind;
-        using type = arg_traits<Arg>::type;
+        static constexpr static_str name = meta::arg_traits<Arg>::name;
+        static constexpr ArgKind kind = meta::arg_traits<Arg>::kind;
+        using type = meta::arg_traits<Arg>::type;
         using vec = std::vector<std::conditional_t<
             std::is_lvalue_reference_v<type>,
             std::reference_wrapper<type>,
@@ -1470,16 +1471,16 @@ namespace impl {
         using unbind = Arg;
         template <static_str N> requires (meta::arg_name<N>)
         using with_name = BoundArg<
-            typename arg_traits<Arg>::template with_name<N>,
+            typename meta::arg_traits<Arg>::template with_name<N>,
             Ts...
         >;
         template <typename V>
             requires (
                 !std::is_void_v<V> &&
-                (std::convertible_to<typename arg_traits<Ts>::type, V> && ...)
+                (std::convertible_to<typename meta::arg_traits<Ts>::type, V> && ...)
             )
         using with_type = BoundArg<
-            typename arg_traits<Arg>::template with_type<V>,
+            typename meta::arg_traits<Arg>::template with_type<V>,
             Ts...
         >;
 
@@ -1508,7 +1509,7 @@ namespace impl {
     };
 
     template <typename Arg, typename... Ts>
-        requires (arg_traits<Arg>::kwargs() && sizeof...(Ts) > 0)
+        requires (meta::arg_traits<Arg>::kwargs() && sizeof...(Ts) > 0)
     struct BoundArg<Arg, Ts...> {
     private:
         template <typename, typename>
@@ -1520,14 +1521,14 @@ namespace impl {
         template <typename... curr, typename... Vs>
         struct rebind<bertrand::args<curr...>, Vs...> {
             static constexpr bool value =
-                arg_traits<Arg>::template can_bind<curr..., Vs...>;
-            using type = arg_traits<Arg>::template bind<curr..., Vs...>;
+                meta::arg_traits<Arg>::template can_bind<curr..., Vs...>;
+            using type = meta::arg_traits<Arg>::template bind<curr..., Vs...>;
         };
 
     public:
-        static constexpr static_str name = arg_traits<Arg>::name;
-        static constexpr ArgKind kind = arg_traits<Arg>::kind;
-        using type = arg_traits<Arg>::type;
+        static constexpr static_str name = meta::arg_traits<Arg>::name;
+        static constexpr ArgKind kind = meta::arg_traits<Arg>::kind;
+        using type = meta::arg_traits<Arg>::type;
         using map = std::unordered_map<std::string, std::conditional_t<
             std::is_lvalue_reference_v<type>,
             std::reference_wrapper<type>,
@@ -1537,16 +1538,16 @@ namespace impl {
         using unbind = Arg;
         template <static_str N> requires (meta::arg_name<N>)
         using with_name = BoundArg<
-            typename arg_traits<Arg>::template with_name<N>,
+            typename meta::arg_traits<Arg>::template with_name<N>,
             Ts...
         >;
         template <typename V>
             requires (
                 !std::is_void_v<V> &&
-                (std::convertible_to<typename arg_traits<Ts>::type, V> && ...)
+                (std::convertible_to<typename meta::arg_traits<Ts>::type, V> && ...)
             )
         using with_type = BoundArg<
-            typename arg_traits<Arg>::template with_type<V>,
+            typename meta::arg_traits<Arg>::template with_type<V>,
             Ts...
         >;
 
@@ -1767,93 +1768,91 @@ template <static_str name> requires (meta::arg_name<name>)
 constexpr impl::ArgFactory<name> arg {};
 
 
-/// TODO: arg_traits<T> could probably also be placed in the meta:: namespace, and
-/// then capitalized once again to ArgTraits<T> to match the naming convention of
-/// Arg<"", T>
+namespace meta {
 
+    /* Manipulate a C++ argument annotation at compile time.  Unannotated types are
+    treated as anonymous, positional-only, and required in order to preserve C++ style. */
+    template <typename T>
+    struct arg_traits {
+    private:
+        template <bertrand::static_str N>
+        struct _with_name { using type = Arg<N, T>::pos; };
+        template <bertrand::static_str N> requires (N.empty())
+        struct _with_name<N> { using type = T; };
 
-/* Manipulate a C++ argument annotation at compile time.  Unannotated types are
-treated as anonymous, positional-only, and required in order to preserve C++ style. */
-template <typename T>
-struct arg_traits {
-private:
-    template <static_str N>
-    struct _with_name { using type = Arg<N, T>::pos; };
-    template <static_str N> requires (N.empty())
-    struct _with_name<N> { using type = T; };
+    public:
+        using type                                  = T;
+        static constexpr bertrand::static_str name  = "";
+        static constexpr impl::ArgKind kind         = impl::ArgKind::POS;
+        static constexpr bool posonly() noexcept    { return kind.posonly(); }
+        static constexpr bool pos() noexcept        { return kind.pos(); }
+        static constexpr bool args() noexcept       { return kind.args(); }
+        static constexpr bool kwonly() noexcept     { return kind.kwonly(); }
+        static constexpr bool kw() noexcept         { return kind.kw(); }
+        static constexpr bool kwargs() noexcept     { return kind.kwargs(); }
+        static constexpr bool bound() noexcept      { return bound_to::size() > 0; }
+        static constexpr bool opt() noexcept        { return kind.opt(); }
+        static constexpr bool variadic() noexcept   { return kind.variadic(); }
 
-public:
-    using type                                  = T;
-    static constexpr static_str name            = "";
-    static constexpr impl::ArgKind kind         = impl::ArgKind::POS;
-    static constexpr bool posonly() noexcept    { return kind.posonly(); }
-    static constexpr bool pos() noexcept        { return kind.pos(); }
-    static constexpr bool args() noexcept       { return kind.args(); }
-    static constexpr bool kwonly() noexcept     { return kind.kwonly(); }
-    static constexpr bool kw() noexcept         { return kind.kw(); }
-    static constexpr bool kwargs() noexcept     { return kind.kwargs(); }
-    static constexpr bool bound() noexcept      { return bound_to::size() > 0; }
-    static constexpr bool opt() noexcept        { return kind.opt(); }
-    static constexpr bool variadic() noexcept   { return kind.variadic(); }
+        template <typename... Vs>
+        static constexpr bool can_bind = false;
+        template <std::convertible_to<type> V>
+        static constexpr bool can_bind<V> =
+            arg_traits<V>::posonly() &&
+            !arg_traits<V>::opt() &&
+            !arg_traits<V>::variadic() &&
+            (arg_traits<V>::name.empty() || arg_traits<V>::name == name);
 
-    template <typename... Vs>
-    static constexpr bool can_bind = false;
-    template <std::convertible_to<type> V>
-    static constexpr bool can_bind<V> =
-        arg_traits<V>::posonly() &&
-        !arg_traits<V>::opt() &&
-        !arg_traits<V>::variadic() &&
-        (arg_traits<V>::name.empty() || arg_traits<V>::name == name);
+        template <typename... Vs> requires (can_bind<Vs...>)
+        using bind                                  = impl::BoundArg<T, Vs...>;
+        using bound_to                              = bertrand::args<>;
+        using unbind                                = T;
+        template <bertrand::static_str N> requires (N.empty() || meta::arg_name<N>)
+        using with_name                             = _with_name<N>::type;
+        template <typename V> requires (!std::is_void_v<V>)
+        using with_type                             = V;
+    };
 
-    template <typename... Vs> requires (can_bind<Vs...>)
-    using bind                                  = impl::BoundArg<T, Vs...>;
-    using bound_to                              = bertrand::args<>;
-    using unbind                                = T;
-    template <static_str N> requires (N.empty() || meta::arg_name<N>)
-    using with_name                             = _with_name<N>::type;
-    template <typename V> requires (!std::is_void_v<V>)
-    using with_type                             = V;
-};
+    /* Manipulate a C++ argument annotation at compile time.  Forwards to the annotated
+    type's interface where possible. */
+    template <meta::arg T>
+    struct arg_traits<T> {
+    private:
+        using T2 = std::remove_cvref_t<T>;
 
+        template <bertrand::static_str N>
+        struct _with_name { using type = T2::template with_name<N>; };
+        template <bertrand::static_str N> requires (N.empty())
+        struct _with_name<N> { using type = T2::type; };
 
-/* Manipulate a C++ argument annotation at compile time.  Forwards to the annotated
-type's interface where possible. */
-template <meta::arg T>
-struct arg_traits<T> {
-private:
-    using T2 = std::remove_cvref_t<T>;
+    public:
+        using type                                  = T2::type;
+        static constexpr bertrand::static_str name  = T2::name;
+        static constexpr impl::ArgKind kind         = T2::kind;
+        static constexpr bool posonly() noexcept    { return kind.posonly(); }
+        static constexpr bool pos() noexcept        { return kind.pos(); }
+        static constexpr bool args() noexcept       { return kind.args(); }
+        static constexpr bool kwonly() noexcept     { return kind.kwonly(); }
+        static constexpr bool kw() noexcept         { return kind.kw(); }
+        static constexpr bool kwargs() noexcept     { return kind.kwargs(); }
+        static constexpr bool bound() noexcept      { return bound_to::size() > 0; }
+        static constexpr bool opt() noexcept        { return kind.opt(); }
+        static constexpr bool variadic() noexcept   { return kind.variadic(); }
 
-    template <static_str N>
-    struct _with_name { using type = T2::template with_name<N>; };
-    template <static_str N> requires (N.empty())
-    struct _with_name<N> { using type = T2::type; };
+        template <typename... Vs>
+        static constexpr bool can_bind = T2::template can_bind<Vs...>;
 
-public:
-    using type                                  = T2::type;
-    static constexpr static_str name            = T2::name;
-    static constexpr impl::ArgKind kind         = T2::kind;
-    static constexpr bool posonly() noexcept    { return kind.posonly(); }
-    static constexpr bool pos() noexcept        { return kind.pos(); }
-    static constexpr bool args() noexcept       { return kind.args(); }
-    static constexpr bool kwonly() noexcept     { return kind.kwonly(); }
-    static constexpr bool kw() noexcept         { return kind.kw(); }
-    static constexpr bool kwargs() noexcept     { return kind.kwargs(); }
-    static constexpr bool bound() noexcept      { return bound_to::size() > 0; }
-    static constexpr bool opt() noexcept        { return kind.opt(); }
-    static constexpr bool variadic() noexcept   { return kind.variadic(); }
+        template <typename... Vs> requires (can_bind<Vs...>)
+        using bind                                  = T2::template bind<Vs...>;
+        using unbind                                = T2::unbind;
+        using bound_to                              = T2::bound_to;
+        template <bertrand::static_str N> requires (N.empty() || meta::arg_name<N>)
+        using with_name                             = _with_name<N>::type;
+        template <typename V> requires (!std::is_void_v<V>)
+        using with_type                             = T2::template with_type<V>;
+    };
 
-    template <typename... Vs>
-    static constexpr bool can_bind = T2::template can_bind<Vs...>;
-
-    template <typename... Vs> requires (can_bind<Vs...>)
-    using bind                                  = T2::template bind<Vs...>;
-    using unbind                                = T2::unbind;
-    using bound_to                              = T2::bound_to;
-    template <static_str N> requires (N.empty() || meta::arg_name<N>)
-    using with_name                             = _with_name<N>::type;
-    template <typename V> requires (!std::is_void_v<V>)
-    using with_type                             = T2::template with_type<V>;
-};
+}
 
 
 /* Introspect an annotated C++ function signature to extract compile-time type
@@ -1877,181 +1876,181 @@ namespace impl {
     constexpr size_t n_posonly = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_posonly<T, Ts...> =
-        n_posonly<Ts...> + arg_traits<T>::posonly();
+        n_posonly<Ts...> + meta::arg_traits<T>::posonly();
 
     template <typename...>
     constexpr size_t n_opt_posonly = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_opt_posonly<T, Ts...> =
-        n_opt_posonly<Ts...> + (arg_traits<T>::posonly() && arg_traits<T>::opt());
+        n_opt_posonly<Ts...> + (meta::arg_traits<T>::posonly() && meta::arg_traits<T>::opt());
 
     template <typename...>
     constexpr size_t n_partial_posonly = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_partial_posonly<T, Ts...> =
-        n_partial_posonly<Ts...> + (arg_traits<T>::posonly() && arg_traits<T>::bound());
+        n_partial_posonly<Ts...> + (meta::arg_traits<T>::posonly() && meta::arg_traits<T>::bound());
 
     template <typename...>
     constexpr size_t n_pos = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_pos<T, Ts...> =
-        n_pos<Ts...> + arg_traits<T>::pos();
+        n_pos<Ts...> + meta::arg_traits<T>::pos();
 
     template <typename...>
     constexpr size_t n_opt_pos = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_opt_pos<T, Ts...> =
-        n_opt_pos<Ts...> + (arg_traits<T>::pos() && arg_traits<T>::opt());
+        n_opt_pos<Ts...> + (meta::arg_traits<T>::pos() && meta::arg_traits<T>::opt());
 
     template <typename...>
     constexpr size_t n_partial_pos = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_partial_pos<T, Ts...> =
-        n_partial_pos<Ts...> + (arg_traits<T>::pos() && arg_traits<T>::bound());
+        n_partial_pos<Ts...> + (meta::arg_traits<T>::pos() && meta::arg_traits<T>::bound());
 
     template <typename...>
     constexpr size_t n_partial_args = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_partial_args<T, Ts...> =
-        arg_traits<T>::args() ? arg_traits<T>::bound_to::size() : n_partial_args<Ts...>;
+        meta::arg_traits<T>::args() ? meta::arg_traits<T>::bound_to::size() : n_partial_args<Ts...>;
 
     template <typename...>
     constexpr size_t n_kw = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_kw<T, Ts...> =
-        n_kw<Ts...> + arg_traits<T>::kw();
+        n_kw<Ts...> + meta::arg_traits<T>::kw();
 
     template <typename...>
     constexpr size_t n_opt_kw = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_opt_kw<T, Ts...> =
-        n_opt_kw<Ts...> + (arg_traits<T>::kw() && arg_traits<T>::opt());
+        n_opt_kw<Ts...> + (meta::arg_traits<T>::kw() && meta::arg_traits<T>::opt());
 
     template <typename...>
     constexpr size_t n_partial_kw = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_partial_kw<T, Ts...> =
-        n_partial_kw<Ts...> + (arg_traits<T>::kw() && arg_traits<T>::bound());
+        n_partial_kw<Ts...> + (meta::arg_traits<T>::kw() && meta::arg_traits<T>::bound());
 
     template <typename...>
     constexpr size_t n_kwonly = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_kwonly<T, Ts...> =
-        n_kwonly<Ts...> + arg_traits<T>::kwonly();
+        n_kwonly<Ts...> + meta::arg_traits<T>::kwonly();
 
     template <typename...>
     constexpr size_t n_opt_kwonly = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_opt_kwonly<T, Ts...> =
-        n_opt_kwonly<Ts...> + (arg_traits<T>::kwonly() && arg_traits<T>::opt());
+        n_opt_kwonly<Ts...> + (meta::arg_traits<T>::kwonly() && meta::arg_traits<T>::opt());
 
     template <typename...>
     constexpr size_t n_partial_kwonly = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_partial_kwonly<T, Ts...> =
-        n_partial_kwonly<Ts...> + (arg_traits<T>::kwonly() && arg_traits<T>::bound());
+        n_partial_kwonly<Ts...> + (meta::arg_traits<T>::kwonly() && meta::arg_traits<T>::bound());
 
     template <typename...>
     constexpr size_t n_partial_kwargs = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_partial_kwargs<T, Ts...> =
-        arg_traits<T>::kwargs() ? arg_traits<T>::bound_to::size() : n_partial_kwargs<Ts...>;
+        meta::arg_traits<T>::kwargs() ? meta::arg_traits<T>::bound_to::size() : n_partial_kwargs<Ts...>;
 
     template <typename...>
     constexpr size_t posonly_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t posonly_idx<T, Ts...> =
-        arg_traits<T>::posonly() ? 0 : posonly_idx<Ts...> + 1;
+        meta::arg_traits<T>::posonly() ? 0 : posonly_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t opt_posonly_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t opt_posonly_idx<T, Ts...> =
-        arg_traits<T>::posonly() && arg_traits<T>::opt() ? 0 : opt_posonly_idx<Ts...> + 1;
+        meta::arg_traits<T>::posonly() && meta::arg_traits<T>::opt() ? 0 : opt_posonly_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t partial_posonly_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t partial_posonly_idx<T, Ts...> =
-        arg_traits<T>::posonly() && arg_traits<T>::bound() ? 0 : partial_posonly_idx<Ts...> + 1;
+        meta::arg_traits<T>::posonly() && meta::arg_traits<T>::bound() ? 0 : partial_posonly_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t pos_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t pos_idx<T, Ts...> =
-        arg_traits<T>::pos() ? 0 : pos_idx<Ts...> + 1;
+        meta::arg_traits<T>::pos() ? 0 : pos_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t opt_pos_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t opt_pos_idx<T, Ts...> =
-        arg_traits<T>::pos() && arg_traits<T>::opt() ? 0 : opt_pos_idx<Ts...> + 1;
+        meta::arg_traits<T>::pos() && meta::arg_traits<T>::opt() ? 0 : opt_pos_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t partial_pos_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t partial_pos_idx<T, Ts...> =
-        arg_traits<T>::pos() && arg_traits<T>::bound() ? 0 : partial_pos_idx<Ts...> + 1;
+        meta::arg_traits<T>::pos() && meta::arg_traits<T>::bound() ? 0 : partial_pos_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t args_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t args_idx<T, Ts...> =
-        arg_traits<T>::args() ? 0 : args_idx<Ts...> + 1;
+        meta::arg_traits<T>::args() ? 0 : args_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t kw_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t kw_idx<T, Ts...> =
-        arg_traits<T>::kw() ? 0 : kw_idx<Ts...> + 1;
+        meta::arg_traits<T>::kw() ? 0 : kw_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t opt_kw_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t opt_kw_idx<T, Ts...> =
-        arg_traits<T>::kw() && arg_traits<T>::opt() ? 0 : opt_kw_idx<Ts...> + 1;
+        meta::arg_traits<T>::kw() && meta::arg_traits<T>::opt() ? 0 : opt_kw_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t partial_kw_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t partial_kw_idx<T, Ts...> =
-        arg_traits<T>::kw() && arg_traits<T>::bound() ? 0 : partial_kw_idx<Ts...> + 1;
+        meta::arg_traits<T>::kw() && meta::arg_traits<T>::bound() ? 0 : partial_kw_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t kwonly_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t kwonly_idx<T, Ts...> =
-        arg_traits<T>::kwonly() ? 0 : kwonly_idx<Ts...> + 1;
+        meta::arg_traits<T>::kwonly() ? 0 : kwonly_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t opt_kwonly_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t opt_kwonly_idx<T, Ts...> =
-        arg_traits<T>::kwonly() && arg_traits<T>::opt() ? 0 : opt_kwonly_idx<Ts...> + 1;
+        meta::arg_traits<T>::kwonly() && meta::arg_traits<T>::opt() ? 0 : opt_kwonly_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t partial_kwonly_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t partial_kwonly_idx<T, Ts...> =
-        arg_traits<T>::kwonly() && arg_traits<T>::bound() ? 0 : partial_kwonly_idx<Ts...> + 1;
+        meta::arg_traits<T>::kwonly() && meta::arg_traits<T>::bound() ? 0 : partial_kwonly_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t kwargs_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t kwargs_idx<T, Ts...> =
-        arg_traits<T>::kwargs() ? 0 : kwargs_idx<Ts...> + 1;
+        meta::arg_traits<T>::kwargs() ? 0 : kwargs_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t opt_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t opt_idx<T, Ts...> =
-        arg_traits<T>::opt() ? 0 : opt_idx<Ts...> + 1;
+        meta::arg_traits<T>::opt() ? 0 : opt_idx<Ts...> + 1;
 
     template <static_str, typename...>
     constexpr size_t arg_idx = 0;
     template <static_str N, typename A, typename... As>
     constexpr size_t arg_idx<N, A, As...> =
-        N == arg_traits<A>::name ? 0 : arg_idx<N, As...> + 1;
+        N == meta::arg_traits<A>::name ? 0 : arg_idx<N, As...> + 1;
 
     template <typename... Ts>
     constexpr bool has_posonly = posonly_idx<Ts...> < sizeof...(Ts);
@@ -2087,7 +2086,7 @@ namespace impl {
 
     template <typename... A>
     constexpr bool no_qualified_args =
-        !(meta::is_qualified<typename arg_traits<A>::type> || ...);
+        !(meta::is_qualified<typename meta::arg_traits<A>::type> || ...);
 
     template <typename... A>
     constexpr bool no_qualified_arg_annotations =
@@ -2104,19 +2103,19 @@ namespace impl {
         constexpr size_t kwargs_idx = impl::kwargs_idx<A...>;
         constexpr size_t opt_idx = impl::opt_idx<A...>;
         return !((
-            arg_traits<T>::posonly() && (
+            meta::arg_traits<T>::posonly() && (
                 (I > std::min({args_idx, kw_idx, kwargs_idx})) ||
-                (!arg_traits<T>::opt() && I > opt_idx)
+                (!meta::arg_traits<T>::opt() && I > opt_idx)
             )
         ) || (
-            arg_traits<T>::pos() && (
+            meta::arg_traits<T>::pos() && (
                 (I > std::min({args_idx, kwonly_idx, kwargs_idx})) ||
-                (!arg_traits<T>::opt() && I > opt_idx)
+                (!meta::arg_traits<T>::opt() && I > opt_idx)
             )
         ) || (
-            arg_traits<T>::args() && (I > std::min(kwonly_idx, kwargs_idx))
+            meta::arg_traits<T>::args() && (I > std::min(kwonly_idx, kwargs_idx))
         ) || (
-            arg_traits<T>::kwonly() && (I > kwargs_idx)
+            meta::arg_traits<T>::kwonly() && (I > kwargs_idx)
         )) && _proper_argument_order<I + 1, A...>;
     }();
     template <typename... A>
@@ -2129,16 +2128,16 @@ namespace impl {
         using T = meta::unpack_type<I, A...>;
         constexpr size_t args_idx = impl::args_idx<A...>;
         constexpr size_t kwargs_idx = impl::kwargs_idx<A...>;
-        if constexpr (arg_traits<T>::name.empty()) {
+        if constexpr (meta::arg_traits<T>::name.empty()) {
             return !(
-                (arg_traits<T>::args() && I != args_idx) ||
-                (arg_traits<T>::kwargs() && I != kwargs_idx)
+                (meta::arg_traits<T>::args() && I != args_idx) ||
+                (meta::arg_traits<T>::kwargs() && I != kwargs_idx)
             ) && _no_duplicate_args<I + 1, A...>;
         } else {
             return !(
-                (I != arg_idx<arg_traits<T>::name, A...>) ||
-                (arg_traits<T>::args() && I != args_idx) ||
-                (arg_traits<T>::kwargs() && I != kwargs_idx)
+                (I != arg_idx<meta::arg_traits<T>::name, A...>) ||
+                (meta::arg_traits<T>::args() && I != args_idx) ||
+                (meta::arg_traits<T>::kwargs() && I != kwargs_idx)
             ) && _no_duplicate_args<I + 1, A...>;
         }
     }();
@@ -2149,14 +2148,14 @@ namespace impl {
     constexpr bitset<MAX_ARGS> required = 0;
     template <typename A, typename... As>
     constexpr bitset<MAX_ARGS> required<A, As...> =
-        (required<As...> << 1) | !(arg_traits<A>::opt() || arg_traits<A>::variadic());
+        (required<As...> << 1) | !(meta::arg_traits<A>::opt() || meta::arg_traits<A>::variadic());
 
     /* A temporary container describing the contents of a `*` unpacking operator at a
     function's call site.  Encloses an iterator over the unpacked container, which is
     incremented every time an argument is consumed from the pack.  If it is not empty
     by the end of the call, then we know extra arguments were given that could not be
     matched. */
-    template <typename Pack> requires (arg_traits<Pack>::args())
+    template <typename Pack> requires (meta::arg_traits<Pack>::args())
     struct PositionalPack {
     private:
         template <typename, typename>
@@ -2196,8 +2195,6 @@ namespace impl {
             return result;
         }
 
-        /// TODO: eliminate calls to repr() or make it a pure C++ function in common.h
-
         void validate() {
             if (begin != end) {
                 std::string message =
@@ -2217,7 +2214,7 @@ namespace impl {
     destructively searched every time an argument is consumed from the pack.  If the
     map is not empty by the end of the call, then we know extra arguments were given
     that could not be matched. */
-    template <typename Pack> requires (arg_traits<Pack>::kwargs())
+    template <typename Pack> requires (meta::arg_traits<Pack>::kwargs())
     struct KeywordPack {
     private:
         template <typename, typename>
@@ -2414,11 +2411,11 @@ namespace impl {
     struct _defaults_signature<args<out...>, A, As...> {
         template <typename>
         struct filter { using type = args<out...>; };
-        template <typename T> requires (arg_traits<T>::opt())
+        template <typename T> requires (meta::arg_traits<T>::opt())
         struct filter<T> {
             using type = args<
                 out...,
-                typename Arg<arg_traits<T>::name, typename arg_traits<T>::type>::kw
+                typename Arg<meta::arg_traits<T>::name, typename meta::arg_traits<T>::type>::kw
             >;
         };
         using type = _defaults_signature<typename filter<A>::type, As...>::type;
@@ -2433,11 +2430,11 @@ namespace impl {
     struct _defaults_tuple<std::tuple<out...>, I, A, As...> {
         template <typename>
         struct filter { using type = std::tuple<out...>; };
-        template <typename T> requires (arg_traits<T>::opt())
+        template <typename T> requires (meta::arg_traits<T>::opt())
         struct filter<T> {
             using type = std::tuple<
                 out...,
-                SignatureElement<I, arg_traits<T>::name, typename arg_traits<T>::type>
+                SignatureElement<I, meta::arg_traits<T>::name, typename meta::arg_traits<T>::type>
             >;
         };
         using type = _defaults_tuple<typename filter<A>::type, I + 1, As...>::type;
@@ -2455,7 +2452,7 @@ namespace impl {
     struct _partial_signature<args<out...>, A, As...> {
         template <typename>
         struct filter { using type = args<out...>; };
-        template <typename T> requires (arg_traits<T>::bound())
+        template <typename T> requires (meta::arg_traits<T>::bound())
         struct filter<T> {
             template <typename>
             struct extend;
@@ -2464,18 +2461,18 @@ namespace impl {
                 template <typename P>
                 struct proper_name { using type = P; };
                 template <typename P>
-                    requires (!arg_traits<T>::name.empty() && !arg_traits<T>::variadic())
+                    requires (!meta::arg_traits<T>::name.empty() && !meta::arg_traits<T>::variadic())
                 struct proper_name<P> {
-                    using base = Arg<arg_traits<T>::name, typename arg_traits<P>::type>;
+                    using base = Arg<meta::arg_traits<T>::name, typename meta::arg_traits<P>::type>;
                     using type = std::conditional_t<
-                        arg_traits<P>::pos(),
+                        meta::arg_traits<P>::pos(),
                         typename base::pos,
                         typename base::kw
                     >;
                 };
                 using type = args<out..., typename proper_name<Ps>::type...>;
             };
-            using type = extend<typename arg_traits<T>::bound_to>::type;
+            using type = extend<typename meta::arg_traits<T>::bound_to>::type;
         };
         using type = _partial_signature<typename filter<A>::type, As...>::type;
     };
@@ -2490,7 +2487,7 @@ namespace impl {
     struct _partial_tuple<std::tuple<out...>, I, A, As...> {
         template <typename>
         struct filter { using type = std::tuple<out...>; };
-        template <typename T> requires (arg_traits<T>::bound())
+        template <typename T> requires (meta::arg_traits<T>::bound())
         struct filter<T> {
             template <typename>
             struct extend;
@@ -2500,12 +2497,12 @@ namespace impl {
                     out...,
                     impl::SignatureElement<
                         I,
-                        arg_traits<Ps>::name,
-                        typename arg_traits<Ps>::type
+                        meta::arg_traits<Ps>::name,
+                        typename meta::arg_traits<Ps>::type
                     >...
                 >;
             };
-            using type = extend<typename arg_traits<T>::bound_to>::type;
+            using type = extend<typename meta::arg_traits<T>::bound_to>::type;
         };
         using type = _partial_tuple<typename filter<A>::type, I + 1, As...>::type;
     };
@@ -2521,8 +2518,8 @@ namespace impl {
         static constexpr CppParam create() noexcept {
             using T = meta::unpack_type<I, Args...>;
             return {
-                .name = std::string_view(arg_traits<T>::name),
-                .kind = arg_traits<T>::kind,
+                .name = std::string_view(meta::arg_traits<T>::name),
+                .kind = meta::arg_traits<T>::kind,
                 .index = I,
             };
         }
@@ -2581,11 +2578,11 @@ namespace impl {
             requires (
                 sizeof...(Ts) == 0 &&
                 I < MAX_ARGS &&
-                meta::strings_are_unique<arg_traits<out>::name...> &&
-                impl::minimal_perfect_hash<arg_traits<out>::name...>::exists
+                meta::strings_are_unique<meta::arg_traits<out>::name...> &&
+                impl::minimal_perfect_hash<meta::arg_traits<out>::name...>::exists
             )
         struct get_names<args<out...>, I, Ts...> {
-            using type = static_map<const Param&, arg_traits<out>::name...>;
+            using type = static_map<const Param&, meta::arg_traits<out>::name...>;
             static constexpr type operator()(const auto&... callbacks) {
                 return {callbacks...};
             }
@@ -2599,7 +2596,7 @@ namespace impl {
                     return get_names<type, I + 1, Ts...>{}(callbacks...);
                 }
             };
-            template <typename U> requires (!arg_traits<U>::name.empty())
+            template <typename U> requires (!meta::arg_traits<U>::name.empty())
             struct filter<U> {
                 using type = args<out..., U>;
                 static constexpr auto operator()(const auto&... callbacks) noexcept {
@@ -2630,7 +2627,7 @@ namespace impl {
         struct _Unbind<R(out...), Ts...> { using type = signature<R(out...)>; };
         template <typename R, typename... out, typename A, typename... As>
         struct _Unbind<R(out...), A, As...> {
-            using type = _Unbind<R(out..., typename arg_traits<A>::unbind), As...>::type;
+            using type = _Unbind<R(out..., typename meta::arg_traits<A>::unbind), As...>::type;
         };
 
     public:
@@ -2816,8 +2813,8 @@ namespace impl {
                     using T = CppSignature::at<std::tuple_element_t<I, Tuple>::index>;
                     using U = D::template at<I>;
                     return std::same_as<
-                        typename arg_traits<T>::unbind,
-                        typename arg_traits<U>::unbind
+                        typename meta::arg_traits<T>::unbind,
+                        typename meta::arg_traits<U>::unbind
                     > && _copy<D, I + 1>;
                 } else {
                     return false;
@@ -2911,7 +2908,7 @@ namespace impl {
 
             /* Given an index into the enclosing signature, find the corresponding index
             in the defaults tuple if the corresponding argument is marked as optional. */
-            template <size_t I> requires (arg_traits<typename CppSignature::at<I>>::opt())
+            template <size_t I> requires (meta::arg_traits<typename CppSignature::at<I>>::opt())
             static constexpr size_t find = _find<I, Tuple>;
 
             /* Given an index into the defaults tuple, find the corresponding index in
@@ -2928,7 +2925,7 @@ namespace impl {
 
             template <typename... A>
                 requires (
-                    !(arg_traits<A>::variadic() || ...) &&
+                    !(meta::arg_traits<A>::variadic() || ...) &&
                     Bind<A...>::proper_argument_order &&
                     Bind<A...>::no_qualified_arg_annotations &&
                     Bind<A...>::no_duplicate_args &&
@@ -2958,7 +2955,7 @@ namespace impl {
         /* Instance-level constructor for a `::Defaults` tuple. */
         template <typename... A>
             requires (
-                !(arg_traits<A>::variadic() || ...) &&
+                !(meta::arg_traits<A>::variadic() || ...) &&
                 Defaults::template Bind<A...>::proper_argument_order &&
                 Defaults::template Bind<A...>::no_qualified_arg_annotations &&
                 Defaults::template Bind<A...>::no_duplicate_args &&
@@ -3104,7 +3101,7 @@ namespace impl {
 
             template <typename... A>
                 requires (
-                    !(arg_traits<A>::variadic() || ...) &&
+                    !(meta::arg_traits<A>::variadic() || ...) &&
                     Bind<A...>::proper_argument_order &&
                     Bind<A...>::no_qualified_arg_annotations &&
                     Bind<A...>::no_duplicate_args &&
@@ -3126,7 +3123,7 @@ namespace impl {
             cannot include positional or keyword parameter packs. */
             template <typename... A>
                 requires (
-                    !(arg_traits<A>::variadic() || ...) &&
+                    !(meta::arg_traits<A>::variadic() || ...) &&
                     CppSignature::Bind<A...>::proper_argument_order &&
                     CppSignature::Bind<A...>::no_qualified_arg_annotations &&
                     CppSignature::Bind<A...>::no_duplicate_args &&
@@ -3143,7 +3140,7 @@ namespace impl {
             }
             template <typename... A>
                 requires (
-                    !(arg_traits<A>::variadic() || ...) &&
+                    !(meta::arg_traits<A>::variadic() || ...) &&
                     CppSignature::Bind<A...>::proper_argument_order &&
                     CppSignature::Bind<A...>::no_qualified_arg_annotations &&
                     CppSignature::Bind<A...>::no_duplicate_args &&
@@ -3168,7 +3165,7 @@ namespace impl {
         /* Instance-level constructor for a `::Partial` tuple. */
         template <typename... A>
             requires (
-                !(arg_traits<A>::variadic() || ...) &&
+                !(meta::arg_traits<A>::variadic() || ...) &&
                 Partial::template Bind<A...>::proper_argument_order &&
                 Partial::template Bind<A...>::no_qualified_arg_annotations &&
                 Partial::template Bind<A...>::no_duplicate_args &&
@@ -3255,7 +3252,7 @@ namespace impl {
             template <size_t J> requires (J < kwargs_idx)
             static constexpr bool _no_extra_keyword_args<J> = [] {
                 return
-                    CppSignature::contains<arg_traits<at<J>>::name>() &&
+                    CppSignature::contains<meta::arg_traits<at<J>>::name>() &&
                     _no_extra_keyword_args<J + 1>;
             }();
 
@@ -3266,13 +3263,13 @@ namespace impl {
                 using T = CppSignature::at<I>;
 
                 constexpr bool kw_conflicts_with_partial =
-                    arg_traits<at<J>>::kw() &&
-                    Partial::template contains<arg_traits<at<J>>::name>();
+                    meta::arg_traits<at<J>>::kw() &&
+                    Partial::template contains<meta::arg_traits<at<J>>::name>();
 
                 constexpr bool kw_conflicts_with_positional =
-                    !in_partial<I> && !arg_traits<T>::name.empty() && (
-                        arg_traits<T>::posonly() || J < std::min(kw_idx, kwargs_idx)
-                    ) && contains<arg_traits<T>::name>();
+                    !in_partial<I> && !meta::arg_traits<T>::name.empty() && (
+                        meta::arg_traits<T>::posonly() || J < std::min(kw_idx, kwargs_idx)
+                    ) && contains<meta::arg_traits<T>::name>();
 
                 return
                     !kw_conflicts_with_partial &&
@@ -3296,14 +3293,14 @@ namespace impl {
             static constexpr bool _satisfies_required_args<I, J> = [] {
                 return (
                     in_partial<I> ||
-                    arg_traits<CppSignature::at<I>>::opt() ||
-                    arg_traits<CppSignature::at<I>>::variadic() ||
+                    meta::arg_traits<CppSignature::at<I>>::opt() ||
+                    meta::arg_traits<CppSignature::at<I>>::variadic() ||
                     (
-                        arg_traits<CppSignature::at<I>>::pos() &&
+                        meta::arg_traits<CppSignature::at<I>>::pos() &&
                         J < std::min(kw_idx, kwargs_idx)
                     ) || (
-                        arg_traits<CppSignature::at<I>>::kw() &&
-                        contains<arg_traits<CppSignature::at<I>>::name>()
+                        meta::arg_traits<CppSignature::at<I>>::kw() &&
+                        contains<meta::arg_traits<CppSignature::at<I>>::name>()
                     )
                 ) && _satisfies_required_args<
                     has_args && J == args_idx ?
@@ -3319,25 +3316,25 @@ namespace impl {
             static constexpr bool _can_convert = true;
             template <size_t I, size_t J> requires (I < CppSignature::size() && J < size())
             static constexpr bool _can_convert<I, J> = [] {
-                if constexpr (arg_traits<CppSignature::at<I>>::args()) {
+                if constexpr (meta::arg_traits<CppSignature::at<I>>::args()) {
                     constexpr size_t source_kw = std::min(kw_idx, kwargs_idx);
                     return
                         []<size_t... Js>(std::index_sequence<Js...>) {
                             return (std::convertible_to<
-                                typename arg_traits<at<J + Js>>::type,
-                                typename arg_traits<CppSignature::at<I>>::type
+                                typename meta::arg_traits<at<J + Js>>::type,
+                                typename meta::arg_traits<CppSignature::at<I>>::type
                             > && ...);
                         }(std::make_index_sequence<J < source_kw ? source_kw - J : 0>{}) &&
                         _can_convert<I + 1, source_kw>;
 
-                } else if constexpr (arg_traits<CppSignature::at<I>>::kwargs()) {
+                } else if constexpr (meta::arg_traits<CppSignature::at<I>>::kwargs()) {
                     return
                         []<size_t... Js>(std::index_sequence<Js...>) {
                             return ((
-                                CppSignature::contains<arg_traits<at<kw_idx + Js>>::name>() ||
+                                CppSignature::contains<meta::arg_traits<at<kw_idx + Js>>::name>() ||
                                 std::convertible_to<
-                                    typename arg_traits<at<kw_idx + Js>>::type,
-                                    typename arg_traits<CppSignature::at<I>>::type
+                                    typename meta::arg_traits<at<kw_idx + Js>>::type,
+                                    typename meta::arg_traits<CppSignature::at<I>>::type
                                 >
                             ) && ...);
                         }(std::make_index_sequence<size() - kw_idx>{}) &&
@@ -3346,25 +3343,25 @@ namespace impl {
                 } else if constexpr (in_partial<I>) {
                     return _can_convert<I + 1, J>;
 
-                } else if constexpr (arg_traits<at<J>>::posonly()) {
+                } else if constexpr (meta::arg_traits<at<J>>::posonly()) {
                     return std::convertible_to<
-                        typename arg_traits<at<J>>::type,
-                        typename arg_traits<CppSignature::at<I>>::type
+                        typename meta::arg_traits<at<J>>::type,
+                        typename meta::arg_traits<CppSignature::at<I>>::type
                     > && _can_convert<I + 1, J + 1>;
 
-                } else if constexpr (arg_traits<at<J>>::kw()) {
-                    constexpr static_str name = arg_traits<at<J>>::name;
+                } else if constexpr (meta::arg_traits<at<J>>::kw()) {
+                    constexpr static_str name = meta::arg_traits<at<J>>::name;
                     if constexpr (CppSignature::contains<name>()) {
                         if constexpr (!std::convertible_to<
-                            typename arg_traits<at<J>>::type,
-                            typename arg_traits<CppSignature::at<CppSignature::index<name>()>>::type
+                            typename meta::arg_traits<at<J>>::type,
+                            typename meta::arg_traits<CppSignature::at<CppSignature::index<name>()>>::type
                         >) {
                             return false;
                         };
                     }
                     return _can_convert<I + 1, J + 1>;
 
-                } else if constexpr (arg_traits<at<J>>::args()) {
+                } else if constexpr (meta::arg_traits<at<J>>::args()) {
                     constexpr size_t target_kw =
                         std::min(CppSignature::kwonly_idx, CppSignature::kwargs_idx);
                     return
@@ -3372,15 +3369,15 @@ namespace impl {
                             return (
                                 (
                                     in_partial<I + Is> || std::convertible_to<
-                                        typename arg_traits<at<J>>::type,
-                                        typename arg_traits<CppSignature::at<I + Is>>::type
+                                        typename meta::arg_traits<at<J>>::type,
+                                        typename meta::arg_traits<CppSignature::at<I + Is>>::type
                                     >
                                 ) && ...
                             );
                         }(std::make_index_sequence<I < target_kw ? target_kw - I : 0>{}) &&
                         _can_convert<target_kw, J + 1>;
 
-                } else if constexpr (arg_traits<at<J>>::kwargs()) {
+                } else if constexpr (meta::arg_traits<at<J>>::kwargs()) {
                     static constexpr size_t cutoff =
                         std::min({args_idx, kwonly_idx, kwargs_idx});
                     static constexpr size_t target_kw = has_args ?
@@ -3398,10 +3395,10 @@ namespace impl {
                         []<size_t... Is>(std::index_sequence<Is...>) {
                             return ((
                                 in_partial<target_kw + Is> || contains<
-                                    arg_traits<CppSignature::at<target_kw + Is>>::name
+                                    meta::arg_traits<CppSignature::at<target_kw + Is>>::name
                                 >() || std::convertible_to<
-                                    typename arg_traits<at<J>>::type,
-                                    typename arg_traits<CppSignature::at<target_kw + Is>>::type
+                                    typename meta::arg_traits<at<J>>::type,
+                                    typename meta::arg_traits<CppSignature::at<target_kw + Is>>::type
                                 >
                             ) && ...);
                         }(std::make_index_sequence<CppSignature::size() - target_kw>{}) &&
@@ -3422,7 +3419,7 @@ namespace impl {
             struct merge {
             private:
                 using T = CppSignature::at<I>;
-                static constexpr static_str name = arg_traits<T>::name;
+                static constexpr static_str name = meta::arg_traits<T>::name;
 
                 template <size_t K2>
                 static constexpr bool use_partial = false;
@@ -3439,7 +3436,7 @@ namespace impl {
                 static constexpr size_t pos_range = 0;
                 template <typename A, typename... As>
                 static constexpr size_t pos_range<A, As...> =
-                    arg_traits<A>::pos() ? pos_range<As...> + 1 : 0;
+                    meta::arg_traits<A>::pos() ? pos_range<As...> + 1 : 0;
 
                 template <typename... A>
                 static constexpr void assert_no_kwargs_conflict(A&&... args) {
@@ -3604,7 +3601,7 @@ namespace impl {
                         meta::unpack_arg<Prev>(
                             std::forward<decltype(args)>(args)...
                         )...,
-                        to_arg<I>(std::forward<typename arg_traits<T>::type>(
+                        to_arg<I>(std::forward<typename meta::arg_traits<T>::type>(
                             node.mapped()
                         )),
                         meta::unpack_arg<J + Next>(
@@ -3644,7 +3641,7 @@ namespace impl {
                     static constexpr size_t diff = J < cutoff ? cutoff - J : 0;
 
                     // allocate variadic positional array
-                    using vec = std::vector<typename arg_traits<T>::type>;
+                    using vec = std::vector<typename meta::arg_traits<T>::type>;
                     vec out;
                     if constexpr (diff) {
                         if constexpr (impl::args_idx<A...> < sizeof...(A)) {
@@ -3708,7 +3705,7 @@ namespace impl {
                     // allocate variadic keyword map
                     using map = std::unordered_map<
                         std::string,
-                        typename arg_traits<T>::type
+                        typename meta::arg_traits<T>::type
                     >;
                     map out;
                     if constexpr (impl::kwargs_idx<A...> < sizeof...(A)) {
@@ -3766,7 +3763,7 @@ namespace impl {
                                 }
                             } else {
                                 out.emplace(
-                                    std::string(arg_traits<meta::unpack_type<J2, A...>>::name),
+                                    std::string(meta::arg_traits<meta::unpack_type<J2, A...>>::name),
                                     *meta::unpack_arg<J2>(
                                         std::forward<decltype(args)>(args)...
                                     )
@@ -3790,7 +3787,7 @@ namespace impl {
                 type being described above. */
                 template <typename P, typename... A>
                 static constexpr auto bind(P&& parts, A&&... args) {
-                    if constexpr (arg_traits<T>::args()) {
+                    if constexpr (meta::arg_traits<T>::args()) {
                         static constexpr size_t cutoff = impl::kw_idx<A...>;
                         return []<size_t... Prev, size_t... Ks, size_t... Next>(
                             std::index_sequence<Prev...>,
@@ -3823,7 +3820,7 @@ namespace impl {
                             std::forward<A>(args)...
                         );
 
-                    } else if constexpr (arg_traits<T>::kwargs()) {
+                    } else if constexpr (meta::arg_traits<T>::kwargs()) {
                         return []<size_t... Prev, size_t... Ks, size_t... Next>(
                             std::index_sequence<Prev...>,
                             std::index_sequence<Ks...>,
@@ -3869,8 +3866,8 @@ namespace impl {
                             // positional and the target arg can be both positional or
                             // keyword
                             if constexpr (name.empty() || (
-                                arg_traits<T>::pos() &&
-                                arg_traits<T>::kw() &&
+                                meta::arg_traits<T>::pos() &&
+                                meta::arg_traits<T>::kw() &&
                                 (impl::kw_idx<A...> == sizeof...(A) || J < impl::kw_idx<A...>)
                             )) {
                                 return merge<I + 1, J + 1, K + 1>::bind(
@@ -3927,7 +3924,7 @@ namespace impl {
                     F&& func,
                     A&&... args
                 ) {
-                    if constexpr (arg_traits<T>::posonly()) {
+                    if constexpr (meta::arg_traits<T>::posonly()) {
                         if constexpr (use_partial<K>) {
                             assert_no_kwargs_conflict(std::forward<A>(args)...);
                             return forward_partial(
@@ -3970,7 +3967,7 @@ namespace impl {
                                     std::forward<A>(args)...
                                 );
                             }
-                        } else if constexpr (arg_traits<T>::opt()) {
+                        } else if constexpr (meta::arg_traits<T>::opt()) {
                             assert_no_kwargs_conflict(std::forward<A>(args)...);
                             return forward_default(
                                 std::make_index_sequence<J>{},
@@ -3992,7 +3989,7 @@ namespace impl {
                             );
                         }
 
-                    } else if constexpr (arg_traits<T>::pos()) {
+                    } else if constexpr (meta::arg_traits<T>::pos()) {
                         if constexpr (use_partial<K>) {
                             assert_no_kwargs_conflict(std::forward<A>(args)...);
                             return forward_partial(
@@ -4062,7 +4059,7 @@ namespace impl {
                                     std::forward<A>(args)...
                                 );
                             } else {
-                                if constexpr (arg_traits<T>::opt()) {
+                                if constexpr (meta::arg_traits<T>::opt()) {
                                     return forward_default(
                                         std::make_index_sequence<J>{},
                                         std::make_index_sequence<sizeof...(A) - J>{},
@@ -4078,7 +4075,7 @@ namespace impl {
                                     );
                                 }
                             }
-                        } else if constexpr (arg_traits<T>::opt()) {
+                        } else if constexpr (meta::arg_traits<T>::opt()) {
                             assert_no_kwargs_conflict(std::forward<A>(args)...);
                             return forward_default(
                                 std::make_index_sequence<J>{},
@@ -4095,7 +4092,7 @@ namespace impl {
                             );
                         }
 
-                    } else if constexpr (arg_traits<T>::kw()) {
+                    } else if constexpr (meta::arg_traits<T>::kw()) {
                         if constexpr (use_partial<K>) {
                             assert_no_kwargs_conflict(std::forward<A>(args)...);
                             return forward_partial(
@@ -4133,7 +4130,7 @@ namespace impl {
                                     std::forward<A>(args)...
                                 );
                             } else {
-                                if constexpr (arg_traits<T>::opt()) {
+                                if constexpr (meta::arg_traits<T>::opt()) {
                                     return forward_default(
                                         std::make_index_sequence<J>{},
                                         std::make_index_sequence<sizeof...(A) - J>{},
@@ -4149,7 +4146,7 @@ namespace impl {
                                     );
                                 }
                             }
-                        } else if constexpr (arg_traits<T>::opt()) {
+                        } else if constexpr (meta::arg_traits<T>::opt()) {
                             assert_no_kwargs_conflict(std::forward<A>(args)...);
                             return forward_default(
                                 std::make_index_sequence<J>{},
@@ -4166,7 +4163,7 @@ namespace impl {
                             );
                         }
 
-                    } else if constexpr (arg_traits<T>::args()) {
+                    } else if constexpr (meta::arg_traits<T>::args()) {
                         static constexpr size_t cutoff = std::min(
                             impl::kw_idx<A...>,
                             impl::kwargs_idx<A...>
@@ -4203,7 +4200,7 @@ namespace impl {
                             std::forward<A>(args)...
                         );
 
-                    } else if constexpr (arg_traits<T>::kwargs()) {
+                    } else if constexpr (meta::arg_traits<T>::kwargs()) {
                         return []<size_t... Prev>(
                             std::index_sequence<Prev...>,
                             auto&& parts,
@@ -4253,7 +4250,7 @@ namespace impl {
                         template <typename>
                         struct maybe_bind;
 
-                        template <typename T> requires (arg_traits<T>::posonly())
+                        template <typename T> requires (meta::arg_traits<T>::posonly())
                         struct maybe_bind<T> {
                             // If no matching partial exists, forward the unbound arg
                             template <size_t J3>
@@ -4264,13 +4261,13 @@ namespace impl {
                             template <size_t J3> requires (J3 < impl::kw_idx<As...>)
                             struct append<J3> {
                                 using S = meta::unpack_type<J3, As...>;
-                                using B = arg_traits<T>::template bind<S>;
+                                using B = meta::arg_traits<T>::template bind<S>;
                                 using type = advance<Return(out..., B), I2 + 1, J3 + 1>::type;
                             };
                             using type = append<J2>::type;
                         };
 
-                        template <typename T> requires (arg_traits<T>::pos() && arg_traits<T>::kw())
+                        template <typename T> requires (meta::arg_traits<T>::pos() && meta::arg_traits<T>::kw())
                         struct maybe_bind<T> {
                             // If no matching partial exists, forward the unbound arg
                             template <size_t J3>
@@ -4281,25 +4278,25 @@ namespace impl {
                             template <size_t J3> requires (J3 < impl::kw_idx<As...>)
                             struct append<J3> {
                                 using S = meta::unpack_type<J3, As...>;
-                                using B = arg_traits<T>::template bind<S>;
+                                using B = meta::arg_traits<T>::template bind<S>;
                                 using type = advance<Return(out..., B), I2 + 1, J3 + 1>::type;
                             };
                             // If a partial keyword arg exists, bind it and advance
                             template <size_t J3> requires (
                                 J3 >= impl::kw_idx<As...> &&
-                                impl::arg_idx<arg_traits<T>::name, As...> < sizeof...(As)
+                                impl::arg_idx<meta::arg_traits<T>::name, As...> < sizeof...(As)
                             )
                             struct append<J3> {
-                                static constexpr static_str name = arg_traits<T>::name;
+                                static constexpr static_str name = meta::arg_traits<T>::name;
                                 static constexpr size_t idx = impl::arg_idx<name, As...>;
                                 using S = meta::unpack_type<idx, As...>;
-                                using B = arg_traits<T>::template bind<S>;
+                                using B = meta::arg_traits<T>::template bind<S>;
                                 using type = advance<Return(out..., B), I2 + 1, J3>::type;
                             };
                             using type = append<J2>::type;
                         };
 
-                        template <typename T> requires (arg_traits<T>::kwonly())
+                        template <typename T> requires (meta::arg_traits<T>::kwonly())
                         struct maybe_bind<T> {
                             // If no matching partial exists, forward the unbound arg
                             template <size_t J3>
@@ -4309,19 +4306,19 @@ namespace impl {
                             // If a partial keyword arg exists, bind it and advance
                             template <size_t J3>
                                 requires (
-                                    impl::arg_idx<arg_traits<T>::name, As...> < sizeof...(As)
+                                    impl::arg_idx<meta::arg_traits<T>::name, As...> < sizeof...(As)
                                 )
                             struct append<J3> {
-                                static constexpr static_str name = arg_traits<T>::name;
+                                static constexpr static_str name = meta::arg_traits<T>::name;
                                 static constexpr size_t idx = impl::arg_idx<name, As...>;
                                 using S = meta::unpack_type<idx, As...>;
-                                using B = arg_traits<T>::template bind<S>;
+                                using B = meta::arg_traits<T>::template bind<S>;
                                 using type = advance<Return(out..., B), I2 + 1, J3>::type;
                             };
                             using type = append<J2>::type;
                         };
 
-                        template <typename T> requires (arg_traits<T>::args())
+                        template <typename T> requires (meta::arg_traits<T>::args())
                         struct maybe_bind<T> {
                             // Recur until there are no more partial positional args to bind
                             template <typename result, size_t J3>
@@ -4336,7 +4333,7 @@ namespace impl {
                                 // Otherwise, bind the collected partials and advance
                                 template <typename r2, typename... r2s>
                                 struct collect<args<r2, r2s...>> {
-                                    using B = arg_traits<T>::template bind<r2, r2s...>;
+                                    using B = meta::arg_traits<T>::template bind<r2, r2s...>;
                                     using type = advance<Return(out..., B), I2 + 1, J3>::type;
                                 };
                                 using type = collect<result>::type;
@@ -4353,7 +4350,7 @@ namespace impl {
                             using type = append<args<>, J2>::type;
                         };
 
-                        template <typename T> requires (arg_traits<T>::kwargs())
+                        template <typename T> requires (meta::arg_traits<T>::kwargs())
                         struct maybe_bind<T> {
                             // Recur until there are no more partial keyword args to bind
                             template <typename result, size_t J3>
@@ -4368,7 +4365,7 @@ namespace impl {
                                 // Otherwise, bind the collected partials without advancing
                                 template <typename r2, typename... r2s>
                                 struct collect<args<r2, r2s...>> {
-                                    using B = arg_traits<T>::template bind<r2, r2s...>;
+                                    using B = meta::arg_traits<T>::template bind<r2, r2s...>;
                                     using type = advance<Return(out..., B), I2 + 1, J3>::type;
                                 };
                                 using type = collect<result>::type;
@@ -4382,7 +4379,7 @@ namespace impl {
                                 };
                                 // Otherwise, append it to the output pack and continue
                                 template <typename S>
-                                    requires (!CppSignature::template contains<arg_traits<S>::name>())
+                                    requires (!CppSignature::template contains<meta::arg_traits<S>::name>())
                                 struct collect<S> {
                                     using type = args<result..., S>;
                                 };
@@ -4397,7 +4394,7 @@ namespace impl {
 
                         // Feed in the unbound argument and return a possibly bound equivalent
                         using type = maybe_bind<
-                            typename arg_traits<CppSignature::at<I2>>::unbind
+                            typename meta::arg_traits<CppSignature::at<I2>>::unbind
                         >::type;
                     };
 
@@ -4607,8 +4604,8 @@ namespace impl {
         [[nodiscard]] static constexpr auto capture(F&& func) {
             struct Func {
                 std::remove_cvref_t<F> func;
-                constexpr Return operator()(typename arg_traits<Args>::unbind... args) const {
-                    return func(std::forward<typename arg_traits<Args>::unbind>(args)...);
+                constexpr Return operator()(typename meta::arg_traits<Args>::unbind... args) const {
+                    return func(std::forward<typename meta::arg_traits<Args>::unbind>(args)...);
                 }
             };
             return Func{std::forward<F>(func)};
@@ -4660,24 +4657,24 @@ namespace impl {
             ) {
                 if constexpr (I < size()) {
                     using T = CppSignature::at<I>;
-                    if constexpr (arg_traits<T>::args()) {
-                        components.emplace_back(std::string("*" + arg_traits<T>::name));
-                    } else if constexpr (arg_traits<T>::kwargs()) {
-                        components.emplace_back(std::string("**" + arg_traits<T>::name));
+                    if constexpr (meta::arg_traits<T>::args()) {
+                        components.emplace_back(std::string("*" + meta::arg_traits<T>::name));
+                    } else if constexpr (meta::arg_traits<T>::kwargs()) {
+                        components.emplace_back(std::string("**" + meta::arg_traits<T>::name));
                     } else {
-                        if constexpr (arg_traits<T>::posonly()) {
+                        if constexpr (meta::arg_traits<T>::posonly()) {
                             last_posonly = I;
-                        } else if constexpr (arg_traits<T>::kwonly() && !CppSignature::has_args) {
+                        } else if constexpr (meta::arg_traits<T>::kwonly() && !CppSignature::has_args) {
                             if (first_kwonly == std::numeric_limits<size_t>::max()) {
                                 first_kwonly = I;
                             }
                         }
-                        components.emplace_back(std::string(arg_traits<T>::name));
+                        components.emplace_back(std::string(meta::arg_traits<T>::name));
                     }
                     components.emplace_back(
-                        std::string(type_name<typename arg_traits<T>::type>)
+                        std::string(type_name<typename meta::arg_traits<T>::type>)
                     );
-                    if constexpr (arg_traits<T>::opt()) {
+                    if constexpr (meta::arg_traits<T>::opt()) {
                         components.emplace_back("...");
                     } else {
                         components.emplace_back("");
@@ -4728,24 +4725,24 @@ namespace impl {
             ) {
                 if constexpr (I < size()) {
                     using T = CppSignature::at<I>;
-                    if constexpr (arg_traits<T>::args()) {
-                        components.emplace_back(std::string("*" + arg_traits<T>::name));
-                    } else if constexpr (arg_traits<T>::kwargs()) {
-                        components.emplace_back(std::string("**" + arg_traits<T>::name));
+                    if constexpr (meta::arg_traits<T>::args()) {
+                        components.emplace_back(std::string("*" + meta::arg_traits<T>::name));
+                    } else if constexpr (meta::arg_traits<T>::kwargs()) {
+                        components.emplace_back(std::string("**" + meta::arg_traits<T>::name));
                     } else {
-                        if constexpr (arg_traits<T>::posonly()) {
+                        if constexpr (meta::arg_traits<T>::posonly()) {
                             last_posonly = I;
-                        } else if constexpr (arg_traits<T>::kwonly() && !CppSignature::has_args) {
+                        } else if constexpr (meta::arg_traits<T>::kwonly() && !CppSignature::has_args) {
                             if (first_kwonly == std::numeric_limits<size_t>::max()) {
                                 first_kwonly = I;
                             }
                         }
-                        components.emplace_back(std::string(arg_traits<T>::name));
+                        components.emplace_back(std::string(meta::arg_traits<T>::name));
                     }
                     components.emplace_back(
-                        std::string(type_name<typename arg_traits<T>::type>)
+                        std::string(type_name<typename meta::arg_traits<T>::type>)
                     );
-                    if constexpr (arg_traits<T>::opt()) {
+                    if constexpr (meta::arg_traits<T>::opt()) {
                         components.emplace_back(repr(
                             defaults.template get<Defaults::template find<I>>()
                         ));
@@ -4889,7 +4886,7 @@ namespace meta {
     template <typename F, typename... Args>
     concept partially_callable =
         bertrand::signature<F>::enable &&
-        !(arg_traits<Args>::variadic() || ...) &&
+        !(meta::arg_traits<Args>::variadic() || ...) &&
         bertrand::signature<F>::proper_argument_order &&
         bertrand::signature<F>::no_qualified_arg_annotations &&
         bertrand::signature<F>::no_duplicate_args &&
@@ -5017,13 +5014,13 @@ private:
     struct bind_type<args<out...>, sig, I> {
         template <typename T>
         struct filter { using type = args<out...>; };
-        template <typename T> requires (arg_traits<T>::bound())
+        template <typename T> requires (meta::arg_traits<T>::bound())
         struct filter<T> {
             template <typename>
             struct extend;
             template <typename... bound>
             struct extend<args<bound...>> { using type = args<out..., bound...>; };
-            using type = extend<typename arg_traits<T>::bound_to>::type;
+            using type = extend<typename meta::arg_traits<T>::bound_to>::type;
         };
         using type = bind_type<
             typename filter<typename sig::template at<I>>::type,
@@ -5122,7 +5119,7 @@ public:
     will not be considered when binding the new arguments. */
     template <typename Self, typename... A>
         requires (
-            !(arg_traits<A>::variadic() || ...) &&
+            !(meta::arg_traits<A>::variadic() || ...) &&
             Bind<A...>::proper_argument_order &&
             Bind<A...>::no_qualified_arg_annotations &&
             Bind<A...>::no_duplicate_args &&

@@ -201,6 +201,9 @@ template <typename Self>
 struct __template__                                         : disable {};
 
 
+/// NOTE: __repr__ is contained in static_str.h in order to allow pure C++ usage.
+
+
 /* Enables the `bertrand::getattr<"name">()` helper for any `bertrand::Object`
 subclass, and assigns a corresponding return type.  Disabled by default unless this
 class is explicitly specialized for a given attribute name.  Specializations of this
@@ -319,26 +322,6 @@ struct __init__ {
             void
         >
     >;
-};
-
-
-/* Customizes the `bertrand::repr()` output for an arbitrary type.  Note that
-`bertrand::repr()` is always enabled by default; specializing this struct merely
-changes the output.  The default specialization delegates to Python by introspecting
-`__getattr__<Self, "__repr__">` if possible, which must return a member function,
-possibly with Python-style argument annotations.  If no such attribute exists, then
-the operator will fall back to either C++ stream insertion via the `<<` operator or
-`std::to_string()` for primitive types.  If none of the above are available, then
-`repr()` will return a string containing the demangled typeid. */
-template <typename Self>
-struct __repr__ {
-    template <static_str>
-    static constexpr bool _enable = false;
-    template <static_str name> requires (__getattr__<Self, name>::enable)
-    static constexpr bool _enable<name> =
-        std::is_invocable_r_v<std::string, typename __getattr__<Self, name>::type>;
-    static constexpr bool enable = _enable<"__repr__">;
-    using type = std::string;
 };
 
 
@@ -1102,10 +1085,11 @@ struct __iadd__ {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
+        template <typename T>
+            requires (std::is_invocable_r_v<std::remove_cvref_t<L>, T, R>) 
         struct inspect<T> {
             static constexpr bool enable = true;
-            using type = std::invoke_result_t<T, R>;
+            using type = meta::qualify<std::invoke_result_t<T, R>, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -1223,10 +1207,11 @@ struct __isub__ {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
+        template <typename T>
+            requires (std::is_invocable_r_v<std::remove_cvref_t<L>, T, R>) 
         struct inspect<T> {
             static constexpr bool enable = true;
-            using type = std::invoke_result_t<T, R>;
+            using type = meta::qualify<std::invoke_result_t<T, R>, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -1344,10 +1329,11 @@ struct __imul__ {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
+        template <typename T>
+            requires (std::is_invocable_r_v<std::remove_cvref_t<L>, T, R>) 
         struct inspect<T> {
             static constexpr bool enable = true;
-            using type = std::invoke_result_t<T, R>;
+            using type = meta::qualify<std::invoke_result_t<T, R>, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -1441,10 +1427,11 @@ struct __itruediv__ {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
+        template <typename T>
+            requires (std::is_invocable_r_v<std::remove_cvref_t<L>, T, R>) 
         struct inspect<T> {
             static constexpr bool enable = true;
-            using type = std::invoke_result_t<T, R>;
+            using type = meta::qualify<std::invoke_result_t<T, R>, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -1547,10 +1534,11 @@ struct __ifloordiv__ {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
+        template <typename T>
+            requires (std::is_invocable_r_v<std::remove_cvref_t<L>, T, R>) 
         struct inspect<T> {
             static constexpr bool enable = true;
-            using type = std::invoke_result_t<T, R>;
+            using type = meta::qualify<std::invoke_result_t<T, R>, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -1644,10 +1632,11 @@ struct __imod__ {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
+        template <typename T>
+            requires (std::is_invocable_r_v<std::remove_cvref_t<L>, T, R>) 
         struct inspect<T> {
             static constexpr bool enable = true;
-            using type = std::invoke_result_t<T, R>;
+            using type = meta::qualify<std::invoke_result_t<T, R>, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -1726,11 +1715,12 @@ struct __ipow__ {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <typename T> requires (std::is_invocable_r_v<Object, T, Exp>) 
+        template <typename T>
+            requires (std::is_invocable_r_v<std::remove_cvref_t<Base>, T, Exp>) 
         struct inspect<T> {
             /// TODO: same as for ternary form of pow()
             static constexpr bool enable = true;
-            using type = std::invoke_result_t<T, Exp>;
+            using type = meta::qualify<std::invoke_result_t<T, Exp>, Base>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<Base, name>::type>::enable;
@@ -1824,10 +1814,11 @@ struct __ilshift__ {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
+        template <typename T>
+            requires (std::is_invocable_r_v<std::remove_cvref_t<L>, T, R>) 
         struct inspect<T> {
             static constexpr bool enable = true;
-            using type = std::invoke_result_t<T, R>;
+            using type = meta::qualify<std::invoke_result_t<T, R>, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -1921,10 +1912,11 @@ struct __irshift__ {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
+        template <typename T>
+            requires (std::is_invocable_r_v<std::remove_cvref_t<L>, T, R>) 
         struct inspect<T> {
             static constexpr bool enable = true;
-            using type = std::invoke_result_t<T, R>;
+            using type = meta::qualify<std::invoke_result_t<T, R>, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -2018,10 +2010,11 @@ struct __iand__ {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
+        template <typename T>
+            requires (std::is_invocable_r_v<std::remove_cvref_t<L>, T, R>) 
         struct inspect<T> {
             static constexpr bool enable = true;
-            using type = std::invoke_result_t<T, R>;
+            using type = meta::qualify<std::invoke_result_t<T, R>, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -2115,10 +2108,11 @@ struct __ior__ {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
+        template <typename T>
+            requires (std::is_invocable_r_v<std::remove_cvref_t<L>, T, R>) 
         struct inspect<T> {
             static constexpr bool enable = true;
-            using type = std::invoke_result_t<T, R>;
+            using type = meta::qualify<std::invoke_result_t<T, R>, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -2212,10 +2206,11 @@ struct __ixor__ {
             static constexpr bool enable = false;
             using type = void;
         };
-        template <typename T> requires (std::is_invocable_r_v<Object, T, R>) 
+        template <typename T>
+            requires (std::is_invocable_r_v<std::remove_cvref_t<L>, T, R>) 
         struct inspect<T> {
             static constexpr bool enable = true;
-            using type = std::invoke_result_t<T, R>;
+            using type = meta::qualify<std::invoke_result_t<T, R>, L>;
         };
         static constexpr bool enable =
             inspect<typename __getattr__<L, name>::type>::enable;
@@ -2424,10 +2419,10 @@ struct Union;
 template <meta::arg... Attrs>
     requires (
         (!meta::is_qualified<Attrs> && ...) &&
-        (!meta::is_qualified<typename arg_traits<Attrs>::type> && ...) &&
-        (meta::python<typename arg_traits<Attrs>::type> && ...) &&
-        meta::strings_are_unique<arg_traits<Attrs>::name...> &&
-        impl::minimal_perfect_hash<arg_traits<Attrs>::name...>::exists
+        (!meta::is_qualified<typename meta::arg_traits<Attrs>::type> && ...) &&
+        (meta::python<typename meta::arg_traits<Attrs>::type> && ...) &&
+        meta::strings_are_unique<meta::arg_traits<Attrs>::name...> &&
+        impl::minimal_perfect_hash<meta::arg_traits<Attrs>::name...>::exists
     )
 struct Intersection;
 struct NoneType;

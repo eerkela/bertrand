@@ -2651,7 +2651,7 @@ struct __ior__<L, R> : returns<typename impl::UnionInplaceOr<L, R>::type> {
 };
 
 
-}
+}  // namespace bertrand
 
 
 /// TODO: std::get<>, etc. for Union<...> types.  Also, I broke the automatic type
