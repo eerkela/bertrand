@@ -3,10 +3,7 @@
 
 #include "declarations.h"
 #include "object.h"
-#include "except.h"
 #include "ops.h"
-#include "access.h"
-#include "iter.h"
 
 
 /// NOTE: Beware all ye who enter here, for this is the point of no return!
@@ -193,9 +190,9 @@ Instances of this type are stored as keys within a function's overload trie, in 
 to uniquely identify all possible signatures, and check for conflicts between them.  It
 is somewhat expensive to construct, and is only necessary when dealing with
 dynamically-typed Python functions, whose signatures cannot be known ahead of time.
-For C++ functions where the signature is encoded at compile time, the `py::signature`
-class should be used instead, which is much more detailed and eliminates runtime
-overhead. */
+For C++ functions where the signature is encoded at compile time, the
+`bertrand::signature` class should be used instead, which is much more detailed and
+eliminates runtime overhead. */
 struct inspect {
     using Required = bitset<MAX_ARGS>;
 
@@ -1781,20 +1778,17 @@ identical. */
 
 
 namespace std {
-    template <py::impl::is<py::inspect> T>
+    template <bertrand::meta::is<bertrand::inspect> T>
     struct hash<T> {
-        [[nodiscard]] static size_t operator()(const py::inspect& inspect) {
+        [[nodiscard]] static size_t operator()(const bertrand::inspect& inspect) {
             return inspect.hash();
         }
     };
-}
+}  // namespace std
 
 
 namespace bertrand {
-
-
 namespace impl {
-
     struct signature_vectorcall_tag {};
 
     /* A single entry in a callback table, storing the argument name (which may be
@@ -1807,45 +1801,45 @@ namespace impl {
         std::string_view name;
         ArgKind kind;
         size_t index;
-        py::Object(*type)();
-        bool(*isinstance)(const py::Object&);
-        bool(*issubclass)(const py::Object&);
+        Object(*type)();
+        bool(*isinstance)(const Object&);
+        bool(*issubclass)(const Object&);
 
         template <size_t I, typename... Args>
         static constexpr PyParam create() {
-            using T = unpack_type<I, Args...>;
+            using T = meta::unpack_type<I, Args...>;
             return {
-                .name = std::string_view(ArgTraits<T>::name),
-                .kind = ArgTraits<T>::kind,
+                .name = std::string_view(meta::arg_traits<T>::name),
+                .kind = meta::arg_traits<T>::kind,
                 .index = I,
-                .type = []() -> py::Object {
-                    using U = ArgTraits<T>::type;
-                    if constexpr (py::impl::has_python<U>) {
-                        return py::Type<std::remove_cvref_t<py::impl::python_type<U>>>();
+                .type = []() -> Object {
+                    using U = meta::arg_traits<T>::type;
+                    if constexpr (meta::has_python<U>) {
+                        return Type<std::remove_cvref_t<meta::python_type<U>>>();
                     } else {
-                        throw py::TypeError(
+                        throw TypeError(
                             "C++ type has no Python equivalent: " + type_name<U>
                         );
                     }
                 },
-                .isinstance = [](const py::Object& value) -> bool {
-                    using U = ArgTraits<T>::type;
-                    if constexpr (py::impl::has_python<U>) {
-                        using V = std::remove_cvref_t<py::impl::python_type<U>>;
-                        return py::isinstance<V>(value);
+                .isinstance = [](const Object& value) -> bool {
+                    using U = meta::arg_traits<T>::type;
+                    if constexpr (meta::has_python<U>) {
+                        using V = std::remove_cvref_t<meta::python_type<U>>;
+                        return bertrand::isinstance<V>(value);
                     } else {
-                        throw py::TypeError(
+                        throw TypeError(
                             "C++ type has no Python equivalent: " + type_name<U>
                         );
                     }
                 },
-                .issubclass = [](const py::Object& type) -> bool {
-                    using U = ArgTraits<T>::type;
-                    if constexpr (py::impl::has_python<U>) {
-                        using V = std::remove_cvref_t<py::impl::python_type<U>>;
-                        return py::issubclass<V>(type);
+                .issubclass = [](const Object& type) -> bool {
+                    using U = meta::arg_traits<T>::type;
+                    if constexpr (meta::has_python<U>) {
+                        using V = std::remove_cvref_t<meta::python_type<U>>;
+                        return bertrand::issubclass<V>(type);
                     } else {
-                        throw py::TypeError(
+                        throw TypeError(
                             "C++ type has no Python equivalent: " + type_name<U>
                         );
                     }
@@ -1863,7 +1857,7 @@ namespace impl {
         [[nodiscard]] constexpr bool variadic() const noexcept { return kind.variadic(); }
 
         [[nodiscard]] size_t hash() const noexcept {
-            py::Object type = this->type();
+            Object type = this->type();
             return hash_combine(
                 fnv1a(
                     name.data(),
@@ -1892,12 +1886,12 @@ namespace impl {
 
         static constexpr bool is_convertible_to_python = true;
         static constexpr bool is_python =
-            py::impl::python<Return> && (
-                py::impl::python<typename ArgTraits<Args>::type> && ...
+            meta::python<Return> && (
+                meta::python<typename meta::arg_traits<Args>::type> && ...
             );
 
-        using as_python = signature<py::impl::python_type<Return>(
-            typename ArgTraits<Args>::template with_type<py::impl::python_type<Args>>...
+        using as_python = signature<meta::python_type<Return>(
+            typename meta::arg_traits<Args>::template with_type<meta::python_type<Args>>...
         )>;
 
         /* A tuple holding a partial value for every bound argument in the enclosing
@@ -1913,7 +1907,7 @@ namespace impl {
             struct to_overload_key {
                 static constexpr size_t size(size_t result) noexcept { return result; }
                 template <typename P>
-                static void operator()(P&&, py::impl::OverloadKey&) {}
+                static void operator()(P&&, impl::OverloadKey&) {}
             };
             template <size_t I, size_t K>
                 requires (
@@ -1923,20 +1917,20 @@ namespace impl {
             struct to_overload_key<I, K> {
                 static constexpr size_t size(size_t result) noexcept {
                     using T = base::template at<I>;
-                    return to_overload_key<I + !ArgTraits<T>::variadic(), K + 1>::size(
+                    return to_overload_key<I + !meta::arg_traits<T>::variadic(), K + 1>::size(
                         result + 1
                     );
                 }
 
                 template <typename P>
-                static void operator()(P&& partial, py::impl::OverloadKey& key) {
+                static void operator()(P&& partial, impl::OverloadKey& key) {
                     using T = base::template at<I>;
                     key->emplace_back(
                         std::string(base::Partial::template name<K>),
-                        py::to_python(std::forward<P>(partial).template get<K>()),
-                        ArgTraits<T>::kind
+                        bertrand::to_python(std::forward<P>(partial).template get<K>()),
+                        meta::arg_traits<T>::kind
                     );
-                    to_overload_key<I + !ArgTraits<T>::variadic(), K + 1>{}(
+                    to_overload_key<I + !meta::arg_traits<T>::variadic(), K + 1>{}(
                         std::forward<P>(partial),
                         key
                     );
@@ -1953,12 +1947,12 @@ namespace impl {
                 }
 
                 template <typename P>
-                static void operator()(P&& partial, py::impl::OverloadKey& key) {
+                static void operator()(P&& partial, impl::OverloadKey& key) {
                     using T = base::template at<I>;
                     key->emplace_back(
-                        std::string(ArgTraits<T>::name),
-                        py::steal<py::Object>(nullptr),
-                        ArgTraits<T>::kind
+                        std::string(meta::arg_traits<T>::name),
+                        steal<Object>(nullptr),
+                        meta::arg_traits<T>::kind
                     );
                     to_overload_key<I + 1, K>{}(std::forward<P>(partial), key);
                 }
@@ -1969,16 +1963,10 @@ namespace impl {
 
             /* Convert a partial tuple into a standardized key type that can be used to
             initiate a search of an overload trie. */
-            [[nodiscard]] py::impl::OverloadKey overload_key() const {
-                py::impl::OverloadKey key;
+            [[nodiscard]] impl::OverloadKey overload_key(this auto&& self) {
+                impl::OverloadKey key;
                 key->reserve(to_overload_key<0, 0>::size(0));
-                to_overload_key<0, 0>{}(*this, key);
-                return key;
-            }
-            [[nodiscard]] py::impl::OverloadKey overload_key() && {
-                py::impl::OverloadKey key;
-                key->reserve(to_overload_key<0, 0>::size(0));
-                to_overload_key<0, 0>{}(std::move(*this), key);
+                to_overload_key<0, 0>{}(std::forward<decltype(self)>(self), key);
                 return key;
             }
         };
@@ -1986,8 +1974,7 @@ namespace impl {
         /* Instance-level constructor for a `::Partial` tuple. */
         template <typename... A>
             requires (
-                !(arg_pack<A> || ...) &&
-                !(kwarg_pack<A> || ...) &&
+                !(meta::arg_traits<A>::variadic() || ...) &&
                 Partial::template Bind<A...>::proper_argument_order &&
                 Partial::template Bind<A...>::no_qualified_arg_annotations &&
                 Partial::template Bind<A...>::no_duplicate_args &&
@@ -2020,26 +2007,27 @@ namespace impl {
         presence of this argument is determined by the `PY_VECTORCALL_ARGUMENTS_OFFSET`
         flag, which is encoded in `nargsf`.  You can check for its presence by bitwise
         AND-ing against `nargsf`, and the true number of positional arguments must be
-        extracted using `PyVectorcall_NARGS(nargsf)` to account for this.  By default, any vectorcall array
-        that is produced by Bertrand will include this offset in order to speed up
-        downstream code, but vectorcall arrays passed in from Python might not use it.  If
-        `PY_VECTORCALL_ARGUMENTS_OFFSET` is set and 'x' is written to, then it must always
-        be reset to its original value before the function returns to allow for nested
-        forwarding/scoping using the same argument list.
+        extracted using `PyVectorcall_NARGS(nargsf)` to account for this.  By default,
+        any vectorcall array that is produced by Bertrand will include this offset in
+        order to speed up downstream code, but vectorcall arrays passed in from Python
+        might not use it.  If `PY_VECTORCALL_ARGUMENTS_OFFSET` is set and 'x' is
+        written to, then it must always be reset to its original value before the
+        function returns to allow for nested forwarding/scoping using the same argument
+        list.
 
         Type safety is handled by either converting C++ arguments to Python via
-        `py::to_python()` or converting Python arguments to C++ by interpreting them as
-        dynamic `py::Object` types and implicitly converting to the expected C++ type.
-        This means that any changes made to the `__isinstance__` or `__cast__` control
-        structs will be reflected here as well, and the conversion will always be as
-        efficient as possible thanks to compile-time specialization.
+        `bertrand::to_python()` or converting Python arguments to C++ by interpreting
+        them as dynamic `Object` types and implicitly converting to the expected C++
+        type.  This means that any changes made to the `__isinstance__` or `__cast__`
+        control structs will be reflected here as well, and the conversion will always
+        be as efficient as possible thanks to compile-time specialization.
 
-        In some cases, an additional conversion may be required to handle Python types that
-        lack sufficient type information for the check, such as standard Python containers
-        that can contain any type.  In those cases, the type check may be applied
-        elementwise to the contents of the container, which can be expensive if the
-        container is large.  This can be avoided by using Bertrand types as inputs to the
-        function, in which case the check is always O(1) in time, due to the 1:1
+        In some cases, an additional conversion may be required to handle Python types
+        that lack sufficient type information for the check, such as standard Python
+        containers that can contain any type.  In those cases, the type check may be
+        applied elementwise to the contents of the container, which can be expensive if
+        the container is large.  This can be avoided by using Bertrand types as inputs
+        to the function, in which case the check is always O(1) in time, due to the 1:1
         equivalence between Bertrand wrappers and their C++ counterparts. */
         struct Vectorcall : signature_vectorcall_tag {
         private:
@@ -2057,7 +2045,7 @@ namespace impl {
                 PyObject* value,
                 ArgKind kind
             ) noexcept {
-                return py::impl::parameter_hash(name, value, kind);
+                return impl::parameter_hash(name, value, kind);
             }
 
             /* Python flags are joined into `nargsf` and occupy only the highest bits,
@@ -2136,12 +2124,13 @@ namespace impl {
                 {}
 
                 void validate() {
-                    if constexpr (!signature::has_kwargs) {
+                    if constexpr (!base::has_kwargs) {
                         if (!set.empty()) {
                             auto it = set.begin();
                             auto end = set.end();
                             std::string message =
-                                "unexpected keyword arguments: ['" + std::string(it->name);
+                                "unexpected keyword arguments: ['" +
+                                std::string(it->name);
                             while (++it != end) {
                                 message += "', '" + std::string(it->name);
                             }
@@ -2162,7 +2151,7 @@ namespace impl {
             struct merge {
             private:
                 using T = base::template at<I>;
-                static constexpr static_str name = ArgTraits<T>::name;
+                static constexpr static_str name = meta::arg_traits<T>::name;
 
                 template <size_t K2>
                 static constexpr bool use_partial = false;
@@ -2179,7 +2168,7 @@ namespace impl {
                 static constexpr size_t pos_range = 0;
                 template <typename A, typename... As>
                 static constexpr size_t pos_range<A, As...> =
-                    ArgTraits<A>::pos() ? pos_range<As...> + 1 : 0;
+                    meta::arg_traits<A>::pos() ? pos_range<As...> + 1 : 0;
 
                 template <typename... A>
                 static constexpr void assert_no_kwargs_conflict(A&&... args) {
@@ -2188,7 +2177,7 @@ namespace impl {
                             std::forward<A>(args)...
                         );
                         if (auto node = pack.extract(name)) {
-                            throw py::TypeError(
+                            throw TypeError(
                                 "conflicting value for parameter '" + name +
                                 "' at index " + static_str<>::from_int<I>
                             );
@@ -2196,29 +2185,30 @@ namespace impl {
                     }
                 }
 
+                template <typename P, typename... A>
                 static void forward_partial(
                     PyObject** array,
                     size_t& idx,
                     PyObject* kwnames,
                     size_t& kw_idx,
                     size_t& hash,
-                    auto&& parts,
-                    auto&&... args
+                    P&& parts,
+                    A&&... args
                 ) {
                     constexpr static_str partial_name = Partial::template name<K>;
 
-                    PyObject* value = py::release(py::to_python(
+                    PyObject* value = release(bertrand::to_python(
                         std::forward<P>(parts).template get<K>()
                     ));
                     array[idx++] = value;
 
-                    if constexpr (ArgTraits<T>::posonly() || ArgTraits<T>::args()) {
+                    if constexpr (meta::arg_traits<T>::posonly() || meta::arg_traits<T>::args()) {
                         hash = hash_combine(
                             hash,
                             arg_hash("", value, ArgKind::POS)
                         );
 
-                    } else if constexpr (ArgTraits<T>::pos()) {
+                    } else if constexpr (meta::arg_traits<T>::pos()) {
                         if constexpr (
                             partial_name.empty() ||
                             J < std::min(impl::kw_idx<A...>, impl::kwargs_idx<A...>)
@@ -2231,7 +2221,7 @@ namespace impl {
                             PyTuple_SET_ITEM(
                                 kwnames,
                                 kw_idx++,
-                                py::release(py::impl::template_string<partial_name>())
+                                release(impl::template_string<partial_name>())
                             );
                             hash = hash_combine(
                                 hash,
@@ -2239,11 +2229,11 @@ namespace impl {
                             );
                         }
 
-                    } else if constexpr (ArgTraits<T>::kw() || ArgTraits<T>::kwargs()) {
+                    } else if constexpr (meta::arg_traits<T>::kw() || meta::arg_traits<T>::kwargs()) {
                         PyTuple_SET_ITEM(
                             kwnames,
                             kw_idx++,
-                            py::release(py::impl::template_string<partial_name>())
+                            release(impl::template_string<partial_name>())
                         );
                         hash = hash_combine(
                             hash,
@@ -2255,7 +2245,7 @@ namespace impl {
                         std::unreachable();
                     }
 
-                    return merge<I + !ArgTraits<T>::variadic(), J, K + 1>::create(
+                    return merge<I + !meta::arg_traits<T>::variadic(), J, K + 1>::create(
                         array,
                         idx,
                         kwnames,
@@ -2276,7 +2266,7 @@ namespace impl {
                     auto&&... args
                 ) {
                     assert_no_kwargs_conflict(std::forward<decltype(args)>(args)...);
-                    PyObject* value = py::release(py::to_python(
+                    PyObject* value = release(bertrand::to_python(
                         unpack_arg<J>(std::forward<decltype(args)>(args)...)
                     ));
                     array[idx++] = value;
@@ -2309,14 +2299,14 @@ namespace impl {
                     auto&&... args
                 ) {
                     constexpr size_t kw = impl::args_idx<name, decltype(args)...>;
-                    PyObject* value = py::release(py::to_python(
+                    PyObject* value = release(bertrand::to_python(
                         unpack_arg<kw>(std::forward<decltype(args)>(args)...)
                     ));
                     array[idx++] = value;
                     PyTuple_SET_ITEM(
                         kwnames,
                         kw_idx++,
-                        py::release(py::impl::template_string<name>())
+                        release(impl::template_string<name>())
                     );
                     hash = hash_combine(
                         hash,
@@ -2345,7 +2335,7 @@ namespace impl {
                     auto&& parts,
                     auto&&... args
                 ) {
-                    PyObject* value = py::release(py::to_python(pack.value()));
+                    PyObject* value = release(bertrand::to_python(pack.value()));
                     array[idx++] = value;
                     hash = hash_combine(
                         hash,
@@ -2371,12 +2361,14 @@ namespace impl {
                     auto&& parts,
                     auto&&... args
                 ) {
-                    PyObject* value = py::release(py::to_python(std::move(node.mapped())));
+                    PyObject* value = release(bertrand::to_python(
+                        std::move(node.mapped())
+                    ));
                     array[idx++] = value;
                     PyTuple_SET_ITEM(
                         kwnames,
                         kw_idx++,
-                        py::release(py::impl::template_string<name>())
+                        release(impl::template_string<name>())
                     );
                     hash = hash_combine(
                         hash,
@@ -2404,7 +2396,7 @@ namespace impl {
                     A&&... args
                 ) {
                     if constexpr (J2 < pos_range<A...>) {
-                        PyObject* value = py::release(py::to_python(
+                        PyObject* value = release(bertrand::to_python(
                             unpack_arg<J2>(std::forward<A>(args)...)
                         ));
                         array[idx++] = value;
@@ -2424,7 +2416,7 @@ namespace impl {
                     } else if constexpr (J2 < sizeof...(A) && J2 == impl::args_idx<A...>) {
                         auto&& pack = unpack_arg<J2>(std::forward<A>(args)...);
                         while (pack.has_value()) {
-                            PyObject* value = py::release(py::to_python(
+                            PyObject* value = release(bertrand::to_python(
                                 pack.value()
                             ));
                             array[idx++] = value;
@@ -2469,15 +2461,15 @@ namespace impl {
                 ) {
                     if constexpr (J2 < impl::kwargs_idx<A...>) {
                         using U = unpack_type<J2, A...>;
-                        constexpr static_str name = ArgTraits<U>::name;
-                        PyObject* value = py::release(py::to_python(
+                        constexpr static_str name = meta::arg_traits<U>::name;
+                        PyObject* value = release(bertrand::to_python(
                             unpack_arg<J2>(std::forward<A>(args)...)
                         ));
                         array[idx++] = value;
                         PyTuple_SET_ITEM(
                             kwnames,
                             kw_idx++,
-                            py::release(py::impl::template_string<name>())
+                            release(impl::template_string<name>())
                         );
                         hash = hash_combine(
                             hash,
@@ -2499,7 +2491,7 @@ namespace impl {
                         while (it != end) {
                             // postfix++ required to increment before invalidating
                             auto node = pack.extract(it++);
-                            PyObject* value = py::release(py::to_python(
+                            PyObject* value = release(bertrand::to_python(
                                 std::move(node.mapped())
                             ));
                             array[idx++] = value;
@@ -2508,7 +2500,7 @@ namespace impl {
                                 node.key().size()
                             );
                             if (name == nullptr) {
-                                py::Exception::from_python();
+                                Exception::from_python();
                             }
                             PyTuple_SET_ITEM(
                                 kwnames,
@@ -2589,18 +2581,18 @@ namespace impl {
                 ) {
                     constexpr static_str partial_name = Partial::template name<K>;
 
-                    PyObject* value = py::release(py::to_python(
+                    PyObject* value = release(bertrand::to_python(
                         std::forward<P>(parts).template get<K>()
                     ));
                     array[idx++] = value;
 
-                    if constexpr (ArgTraits<T>::posonly() || ArgTraits<T>::args()) {
+                    if constexpr (meta::arg_traits<T>::posonly() || meta::arg_traits<T>::args()) {
                         hash = hash_combine(
                             hash,
                             arg_hash("", value, ArgKind::POS)
                         );
 
-                    } else if constexpr (ArgTraits<T>::pos()) {
+                    } else if constexpr (meta::arg_traits<T>::pos()) {
                         if (partial_name.empty() || old_idx < old_nargs) {
                             hash = hash_combine(
                                 hash,
@@ -2610,7 +2602,7 @@ namespace impl {
                             PyTuple_SET_ITEM(
                                 kwnames,
                                 kw_idx++,
-                                py::release(py::impl::template_string<partial_name>())
+                                release(impl::template_string<partial_name>())
                             );
                             hash = hash_combine(
                                 hash,
@@ -2618,11 +2610,11 @@ namespace impl {
                             );
                         }
 
-                    } else if constexpr (ArgTraits<T>::kw() || ArgTraits<T>::kwargs()) {
+                    } else if constexpr (meta::arg_traits<T>::kw() || meta::arg_traits<T>::kwargs()) {
                         PyTuple_SET_ITEM(
                             kwnames,
                             kw_idx++,
-                            py::release(py::impl::template_string<partial_name>())
+                            release(impl::template_string<partial_name>())
                         );
                         hash = hash_combine(
                             hash,
@@ -2642,10 +2634,10 @@ namespace impl {
                     size_t& old_idx,
                     size_t& old_nargs
                 ) {
-                    using type = py::impl::python_type<typename ArgTraits<T>::type>;
+                    using type = meta::python_type<typename meta::arg_traits<T>::type>;
                     if (old_idx < old_nargs) {
-                        PyObject* value = py::release(implicit_cast<type>(
-                            py::borrow<py::Object>(old[old_idx++])
+                        PyObject* value = release(meta::implicit_cast<type>(
+                            borrow<Object>(old[old_idx++])
                         ));
                         array[idx++] = value;
                         hash = hash_combine(
@@ -2653,14 +2645,14 @@ namespace impl {
                             arg_hash("", value, ArgKind::POS)
                         );
                     } else {
-                        if constexpr (!ArgTraits<T>::opt()) {
+                        if constexpr (!meta::arg_traits<T>::opt()) {
                             if constexpr (name.empty()) {
-                                throw py::TypeError(
+                                throw TypeError(
                                     "no match for positional-only parameter at "
                                     "index " + static_str<>::from_int<I>
                                 );
                             } else {
-                                throw py::TypeError(
+                                throw TypeError(
                                     "no match for positional-only parameter '" +
                                     name + "' at index " + static_str<>::from_int<I>
                                 );
@@ -2679,10 +2671,10 @@ namespace impl {
                     size_t& old_idx,
                     size_t& old_nargs
                 ) {
-                    using type = py::impl::python_type<typename ArgTraits<T>::type>;
+                    using type = meta::python_type<typename meta::arg_traits<T>::type>;
                     if (old_idx < old_nargs) {
-                        PyObject* value = py::release(implicit_cast<type>(
-                            py::borrow<py::Object>(old[old_idx++])
+                        PyObject* value = release(meta::implicit_cast<type>(
+                            borrow<Object>(old[old_idx++])
                         ));
                         array[idx++] = value;
                         hash = hash_combine(
@@ -2690,8 +2682,8 @@ namespace impl {
                             arg_hash("", value, ArgKind::POS)
                         );
                     } else {
-                        if constexpr (!ArgTraits<T>::opt()) {
-                            throw py::TypeError(
+                        if constexpr (!meta::arg_traits<T>::opt()) {
+                            throw TypeError(
                                 "no match for parameter '" + name + "' at index " +
                                 static_str<>::from_int<I>
                             );
@@ -2710,10 +2702,10 @@ namespace impl {
                     size_t& old_idx,
                     size_t& old_nargs
                 ) {
-                    using type = py::impl::python_type<typename ArgTraits<T>::type>;
+                    using type = meta::python_type<typename meta::arg_traits<T>::type>;
                     if (old_idx < old_nargs) {
-                        PyObject* value = py::release(implicit_cast<type>(
-                            py::borrow<py::Object>(old[old_idx++])
+                        PyObject* value = release(meta::implicit_cast<type>(
+                            borrow<Object>(old[old_idx++])
                         ));
                         array[idx++] = value;
                         hash = hash_combine(
@@ -2721,8 +2713,8 @@ namespace impl {
                             arg_hash("", value, ArgKind::POS)
                         );
                     } else if (auto node = old_kwargs.extract(std::string_view(name))) {
-                        PyObject* value = py::release(implicit_cast<type>(
-                            py::borrow<py::Object>(node.value().value)
+                        PyObject* value = release(meta::implicit_cast<type>(
+                            borrow<Object>(node.value().value)
                         ));
                         array[idx++] = value;
                         PyTuple_SET_ITEM(
@@ -2739,8 +2731,8 @@ namespace impl {
                             )
                         );
                     } else {
-                        if constexpr (!ArgTraits<T>::opt()) {
-                            throw py::TypeError(
+                        if constexpr (!meta::arg_traits<T>::opt()) {
+                            throw TypeError(
                                 "no match for parameter '" + name + "' at index " +
                                 static_str<>::from_int<I>
                             );
@@ -2756,7 +2748,7 @@ namespace impl {
                     size_t& hash
                 ) {
                     if constexpr (!ArgTraits<T>::opt()) {
-                        throw py::TypeError(
+                        throw TypeError(
                             "no match for keyword-only parameter '" + ArgTraits<T>::name +
                             "' at index " + static_str<>::from_int<I>
                         );
@@ -2771,10 +2763,10 @@ namespace impl {
                     size_t& hash,
                     Kwargs& old_kwargs
                 ) {
-                    using type = py::impl::python_type<typename ArgTraits<T>::type>;
+                    using type = meta::python_type<typename ArgTraits<T>::type>;
                     if (auto node = old_kwargs.extract(std::string_view(name))) {
-                        PyObject* value = py::release(implicit_cast<type>(
-                            py::borrow<py::Object>(node.value().value)
+                        PyObject* value = release(meta::implicit_cast<type>(
+                            borrow<Object>(node.value().value)
                         ));
                         array[idx++] = value;
                         PyTuple_SET_ITEM(
@@ -2792,7 +2784,7 @@ namespace impl {
                         );
                     } else {
                         if constexpr (!ArgTraits<T>::opt()) {
-                            throw py::TypeError(
+                            throw TypeError(
                                 "no match for keyword-only parameter '" + name +
                                 "' at index " + static_str<>::from_int<I>
                             );
@@ -2808,10 +2800,10 @@ namespace impl {
                     size_t& old_idx,
                     size_t& old_nargs
                 ) {
-                    using type = py::impl::python_type<typename ArgTraits<T>::type>;
+                    using type = meta::python_type<typename ArgTraits<T>::type>;
                     while (old_idx < old_nargs) {
-                        PyObject* value = py::release(implicit_cast<type>(
-                            py::borrow<py::Object>(old[old_idx++])
+                        PyObject* value = release(meta::implicit_cast<type>(
+                            borrow<Object>(old[old_idx++])
                         ));
                         array[idx++] = value;
                         hash = hash_combine(
@@ -2829,14 +2821,14 @@ namespace impl {
                     size_t& hash,
                     Kwargs& old_kwargs
                 ) {
-                    using type = py::impl::python_type<typename ArgTraits<T>::type>;
+                    using type = meta::python_type<typename ArgTraits<T>::type>;
                     auto it = old_kwargs.begin();
                     auto end = old_kwargs.end();
                     while (it != end) {
                         // postfix ++ required to increment before invalidation
                         auto node = old_kwargs.extract(it++);
-                        PyObject* value = py::release(implicit_cast<type>(
-                            py::borrow<py::Object>(node.value().value)
+                        PyObject* value = release(meta::implicit_cast<type>(
+                            borrow<Object>(node.value().value)
                         ));
                         array[idx++] = value;
                         PyTuple_SET_ITEM(
@@ -2934,7 +2926,7 @@ namespace impl {
                 either a stack-allocated array with a precomputed size or a
                 heap-allocated array if there are packs in the argument list, whose
                 size cannot be known ahead of time. */
-                template <inherits<Partial> P, typename... A>
+                template <meta::inherits<Partial> P, typename... A>
                 static void create(
                     PyObject** array,
                     size_t& idx,
@@ -3005,12 +2997,12 @@ namespace impl {
                                 std::forward<A>(args)...
                             );
                         } else if constexpr (name.empty()) {
-                            throw py::TypeError(
+                            throw TypeError(
                                 "no match for positional-only parameter at "
                                 "index " + static_str<>::from_int<I>
                             );
                         } else {
-                            throw py::TypeError(
+                            throw TypeError(
                                 "no match for positional-only parameter '" +
                                 name + "' at index " + static_str<>::from_int<I>
                             );
@@ -3108,7 +3100,7 @@ namespace impl {
                                         std::forward<A>(args)...
                                     );
                                 } else {
-                                    throw py::TypeError(
+                                    throw TypeError(
                                         "no match for parameter '" + name + "' at index " +
                                         static_str<>::from_int<I>
                                     );
@@ -3125,7 +3117,7 @@ namespace impl {
                                 std::forward<A>(args)...
                             );
                         } else {
-                            throw py::TypeError(
+                            throw TypeError(
                                 "no match for parameter '" + name + "' at index " +
                                 static_str<>::from_int<I>
                             );
@@ -3183,7 +3175,7 @@ namespace impl {
                                         std::forward<A>(args)...
                                     );
                                 } else {
-                                    throw py::TypeError(
+                                    throw TypeError(
                                         "no match for parameter '" + name + "' at index " +
                                         static_str<>::from_int<I>
                                     );
@@ -3200,7 +3192,7 @@ namespace impl {
                                 std::forward<A>(args)...
                             );
                         } else {
-                            throw py::TypeError(
+                            throw TypeError(
                                 "no match for keyword-only parameter '" + name +
                                 "' at index " + static_str<>::from_int<I>
                             );
@@ -3254,7 +3246,7 @@ namespace impl {
                     }
                 }
 
-                template <inherits<Partial> P>
+                template <meta::inherits<Partial> P>
                 static void normalize(
                     PyObject** array,
                     size_t& idx,
@@ -3346,7 +3338,7 @@ namespace impl {
                     }
                 }
 
-                template <inherits<Partial> P>
+                template <meta::inherits<Partial> P>
                 static void normalize(
                     PyObject** array,
                     size_t& idx,
@@ -3362,7 +3354,7 @@ namespace impl {
                     if constexpr (use_partial<K>) {
                         if constexpr (!ArgTraits<T>::variadic() && !name.empty()) {
                             if (auto node = old_kwargs.extract(std::string_view(name))) {
-                                throw py::TypeError(
+                                throw TypeError(
                                     "received multiple values for argument '" + name + "'"
                                 );
                             }
@@ -3472,14 +3464,14 @@ namespace impl {
                         if (idx < nargs) {
                             std::string message =
                                 "unexpected positional arguments: [" +
-                                py::repr(py::borrow<Object>(array[idx]));
+                                repr(borrow<Object>(array[idx]));
                             while (++idx < nargs) {
-                                message += ", " + py::repr(
-                                    py::borrow<Object>(array[idx])
+                                message += ", " + repr(
+                                    borrow<Object>(array[idx])
                                 );
                             }
                             message += "]";
-                            throw py::TypeError(message);
+                            throw TypeError(message);
                         }
                     }
                 }
@@ -3491,7 +3483,7 @@ namespace impl {
                     return 0;
                 }
 
-                template <inherits<Partial> P, typename... A>
+                template <meta::inherits<Partial> P, typename... A>
                 static void create(
                     PyObject** array,
                     size_t& idx,
@@ -3515,7 +3507,7 @@ namespace impl {
                     }
                 }
 
-                template <inherits<Partial> P>
+                template <meta::inherits<Partial> P>
                 static void normalize(
                     PyObject** array,
                     size_t& idx,
@@ -3530,7 +3522,7 @@ namespace impl {
                     validate_positional(old, old_idx, old_nargs);
                 }
 
-                template <inherits<Partial> P>
+                template <meta::inherits<Partial> P>
                 static void normalize(
                     PyObject** array,
                     size_t& idx,
@@ -3549,8 +3541,8 @@ namespace impl {
 
 
                 template <
-                    inherits<Partial> P,
-                    inherits<Defaults> D,
+                    meta::inherits<Partial> P,
+                    meta::inherits<Defaults> D,
                     typename F,
                     typename... A
                 >
@@ -3569,8 +3561,8 @@ namespace impl {
                 }
 
                 template <
-                    inherits<Partial> P,
-                    inherits<Defaults> D,
+                    meta::inherits<Partial> P,
+                    meta::inherits<Defaults> D,
                     typename F,
                     typename... A
                 >
@@ -3614,8 +3606,8 @@ namespace impl {
 
 
                 template <
-                    impl::inherits<Partial> P,
-                    impl::inherits<Defaults> D,
+                    meta::inherits<Partial> P,
+                    meta::inherits<Defaults> D,
                     typename F,
                     typename... A
                 >
@@ -3674,8 +3666,8 @@ namespace impl {
                 }
 
                 template <
-                    impl::inherits<Partial> P,
-                    impl::inherits<Defaults> D,
+                    meta::inherits<Partial> P,
+                    meta::inherits<Defaults> D,
                     typename F,
                     typename... A
                 >
@@ -3860,8 +3852,8 @@ namespace impl {
             struct call<I, J, K> {  // insert Python argument(s) or default value
 
                 template <
-                    impl::inherits<Partial> P,
-                    impl::inherits<Defaults> D,
+                    meta::inherits<Partial> P,
+                    meta::inherits<Defaults> D,
                     typename F,
                     typename... A
                 >
@@ -4017,8 +4009,8 @@ namespace impl {
                 }
 
                 template <
-                    impl::inherits<Partial> P,
-                    impl::inherits<Defaults> D,
+                    meta::inherits<Partial> P,
+                    meta::inherits<Defaults> D,
                     typename F,
                     typename... A
                 >
@@ -4266,7 +4258,7 @@ namespace impl {
             size_t kwcount;
             size_t nargs;
             size_t flags;
-            py::Object kwnames;
+            Object kwnames;
             PyObject** storage;
             PyObject* const* array;
             size_t hash;
@@ -4277,7 +4269,7 @@ namespace impl {
                 size_t kwcount,
                 size_t nargs,
                 size_t flags,
-                const py::Object& kwnames,
+                const Object& kwnames,
                 PyObject** storage,
                 PyObject* const* array,
                 size_t hash
@@ -4298,7 +4290,7 @@ namespace impl {
                 nargs(PyVectorcall_NARGS(nargsf)),
                 kwcount(kwnames ? PyTuple_GET_SIZE(kwnames) : 0),
                 flags(nargsf - nargs),
-                kwnames(py::borrow<py::Object>(kwnames)),
+                kwnames(borrow<Object>(kwnames)),
                 storage(nullptr),
                 array(args - offset()),
                 hash(0)
@@ -4308,7 +4300,7 @@ namespace impl {
             involve a heap allocation for the array itself, since the possible presence of
             parameter packs in the source arguments means its size cannot be known at
             compile time. */
-            template <inherits<Partial> P, typename... A>
+            template <meta::inherits<Partial> P, typename... A>
                 requires (
                     Bind<A...>::proper_argument_order &&
                     Bind<A...>::no_qualified_arg_annotations &&
@@ -4408,10 +4400,9 @@ namespace impl {
             an extra heap allocation, thereby improving performance.  The user must ensure
             that the lifetime of the array exceeds that of the Vectorcall arguments, and
             any existing contents stored in the array will be overwritten. */
-            template <impl::inherits<Partial> P, typename... A>
+            template <meta::inherits<Partial> P, typename... A>
                 requires (
-                    !(impl::arg_pack<A> || ...) &&
-                    !(impl::kwarg_pack<A> || ...) &&
+                    !(meta::arg_traits<A>::variadic() || ...) &&
                     signature::args_are_convertible_to_python &&
                     signature::return_is_convertible_to_python &&
                     Bind<A...>::proper_argument_order &&
@@ -4773,7 +4764,7 @@ namespace impl {
             that the `array`, `nargs`, `flags`, and `kwnames` members can then be used to
             directly invoke a Python function via the vectorcall protocol.  Any existing
             iterators will be invalidated when this method is called. */
-            template <impl::inherits<Partial> P>
+            template <meta::inherits<Partial> P>
                 requires (
                     signature::args_are_convertible_to_python &&
                     signature::return_is_convertible_to_python
@@ -4961,7 +4952,7 @@ namespace impl {
             /* Invoke a C++ function using denormalized vectorcall arguments by providing
             a separate partial tuple which will be directly merged into the C++ argument
             list, without any extra allocations. */
-            template <impl::inherits<Partial> P, impl::inherits<Defaults> D, typename F>
+            template <meta::inherits<Partial> P, meta::inherits<Defaults> D, typename F>
                 requires (signature::invocable<F>)
             Return operator()(P&& parts, D&& defaults, F&& func) const {
                 if (kwcount) {
@@ -4989,7 +4980,7 @@ namespace impl {
 
             /* Invoke a C++ function using pre-normalized vectorcall arguments,
             disregarding partials. */
-            template <impl::inherits<Defaults> D, typename F>
+            template <meta::inherits<Defaults> D, typename F>
                 requires (signature::invocable<F>)
             Return operator()(D&& defaults, F&& func) const {
                 return typename signature::Unbind::Vectorcall{
@@ -5297,18 +5288,16 @@ namespace impl {
         }
 
         /* Construct a normalized vectorcall array from C++. */
-        template <impl::inherits<Partial> P, typename... A>
+        template <meta::inherits<Partial> P, typename... A>
             requires (
-                args_are_convertible_to_python &&
-                return_is_convertible_to_python &&
-                Bind<A...>::proper_argument_order &&
-                Bind<A...>::no_qualified_arg_annotations &&
-                Bind<A...>::no_duplicate_args &&
-                Bind<A...>::no_extra_positional_args &&
-                Bind<A...>::no_extra_keyword_args &&
-                Bind<A...>::no_conflicting_values &&
-                Bind<A...>::satisfies_required_args &&
-                Bind<A...>::can_convert
+                base::template Bind<A...>::proper_argument_order &&
+                base::template Bind<A...>::no_qualified_arg_annotations &&
+                base::template Bind<A...>::no_duplicate_args &&
+                base::template Bind<A...>::no_extra_positional_args &&
+                base::template Bind<A...>::no_extra_keyword_args &&
+                base::template Bind<A...>::no_conflicting_values &&
+                base::template Bind<A...>::satisfies_required_args &&
+                base::template Bind<A...>::can_convert
             )
         [[nodiscard]] static Vectorcall vectorcall(
             P&& partial,
@@ -5321,20 +5310,17 @@ namespace impl {
         stack-allocated array which is modified as an out parameter.  This avoids an extra
         heap allocation for the argument array.  The user must ensure that the array
         outlives the resulting vectorcall object. */
-        template <impl::inherits<Partial> P, typename... A>
+        template <meta::inherits<Partial> P, typename... A>
             requires (
-                !(impl::arg_pack<A> || ...) &&
-                !(impl::kwarg_pack<A> || ...) &&
-                args_are_convertible_to_python &&
-                return_is_convertible_to_python &&
-                Bind<A...>::proper_argument_order &&
-                Bind<A...>::no_qualified_arg_annotations &&
-                Bind<A...>::no_duplicate_args &&
-                Bind<A...>::no_extra_positional_args &&
-                Bind<A...>::no_extra_keyword_args &&
-                Bind<A...>::no_conflicting_values &&
-                Bind<A...>::satisfies_required_args &&
-                Bind<A...>::can_convert
+                !(meta::arg_traits<A>::variadic() || ...) &&
+                base::template Bind<A...>::proper_argument_order &&
+                base::template Bind<A...>::no_qualified_arg_annotations &&
+                base::template Bind<A...>::no_duplicate_args &&
+                base::template Bind<A...>::no_extra_positional_args &&
+                base::template Bind<A...>::no_extra_keyword_args &&
+                base::template Bind<A...>::no_conflicting_values &&
+                base::template Bind<A...>::satisfies_required_args &&
+                base::template Bind<A...>::can_convert
             )
         [[nodiscard]] static Vectorcall vectorcall(
             std::array<PyObject*, Partial::n + sizeof...(A) + 1>& out,
@@ -5351,11 +5337,7 @@ namespace impl {
 
         /* Produce a Python `inspect.Signature` object that matches this signature,
         allowing a corresponding function to be seamlessly introspected from Python. */
-        template <impl::inherits<Defaults> D>
-            requires (
-                args_are_convertible_to_python &&
-                return_is_convertible_to_python
-            )
+        template <meta::inherits<Defaults> D>
         [[nodiscard]] static Object to_python(D&& defaults) {
             Object inspect = steal<Object>(PyImport_Import(
                 ptr(impl::template_string<"inspect">())
@@ -5519,11 +5501,7 @@ namespace impl {
 
         /* Convert a C++ signature into a template key that can be used to specialize the
         `bertrand.Function` type on the Python side. */
-        template <typename sig = signature>
-            requires (
-                sig::args_are_python &&
-                sig::return_is_python
-            )
+        template <typename sig = CppToPySignature> requires (sig::is_python)
         [[nodiscard]] static Object template_key() {
             Object bertrand = steal<Object>(PyImport_Import(
                 ptr(impl::template_string<"bertrand">())
@@ -5643,13 +5621,12 @@ namespace impl {
 
             return result;
         }
-
     };
 
     /* Backs a C++ function whose return and argument types are already Python objects.
     This extends the convertible equivalent above to support dynamic overload tries,
-    which are necessary to convert to the final `py::Function` type, which is a valid
-    Python object that can be returned to a Python runtime. */
+    which are necessary to convert to the final `bertrand::Function` type, which is a
+    valid Python object that can be returned to a Python runtime. */
     template <typename Param, typename Return, typename... Args>
     struct PySignature : CppToPySignature<Param, Return, Args...> {
     private:
@@ -6380,7 +6357,7 @@ namespace impl {
                 /// performance of conversions from Python -> C++ in the case where you're
                 /// using bertrand types from the beginning.
 
-                using Expected = py::signature<Return(Args...)>;
+                using Expected = bertrand::signature<Return(Args...)>;
                 if (sig != Expected{}) {
                     constexpr size_t max_width = 80;
                     constexpr size_t indent = 4;
@@ -6560,7 +6537,7 @@ namespace impl {
                     root->matches |= id;
 
                     // ensure the function is a viable overload of the enclosing signature
-                    if (overload->signature >= py::signature<Return(Args...)>{}) {
+                    if (overload->signature >= bertrand::signature<Return(Args...)>{}) {
                         throw TypeError(
                             "overload must be more specific than the fallback signature\n"
                             "    fallback:\n" + fallback.signature.to_string(
@@ -6977,21 +6954,21 @@ namespace impl {
 }
 
 
-template <py::impl::has_python Return, py::impl::has_python... Args>
+template <meta::has_python Return, meta::has_python... Args>
 struct signature<Return(Args...)> :
     impl::CppToPySignature<impl::PyParam, Return, Args...>
 {};
 
 
-template <py::impl::python Return, py::impl::python... Args>
-    requires (py::impl::has_python<Return> && (py::impl::has_python<Args> && ...))
+template <meta::python Return, meta::python... Args>
+    requires (meta::has_python<Return> && (meta::has_python<Args> && ...))
 struct signature<Return(Args...)> :
     impl::PySignature<impl::PyParam, Return, Args...>
 {};
 
 
-/* The canonical form of `py::signature`, which encapsulates all of the internal call
-machinery, as much as possible of which is evaluated at compile time.  All other
+/* The canonical form of `bertrand::signature`, which encapsulates all of the internal
+call machinery, as much as possible of which is evaluated at compile time.  All other
 specializations should redirect to this form in order to avoid reimplementing the nuts
 and bolts of the function ecosystem. */
 template <typename Return, typename... Args>
@@ -7002,15 +6979,15 @@ private:
 public:
 
 
-    /// TODO: py::Function determines which overload to call by checking whether
+    /// TODO: bertrand::Function determines which overload to call by checking whether
     /// overloads.function().is(self).  If true, then the function is implemented in
     /// C++, and we call the C++ overload with the internal std::function.  Otherwise,
     /// the function is implemented in Python, and we call the Python overload instead.
 
     /* Call a C++ function from C++ using Python-style arguments. */
     template <
-        impl::inherits<Partial> P,
-        impl::inherits<Defaults> D,
+        meta::inherits<Partial> P,
+        meta::inherits<Defaults> D,
         typename F,
         typename... A
     >
@@ -7042,9 +7019,9 @@ public:
     /* Call a C++ function from C++ using Python-style arguments with possible
     overloads. */
     template <
-        impl::inherits<Partial> P,
-        impl::inherits<Defaults> D,
-        impl::inherits<Overloads> O,
+        meta::inherits<Partial> P,
+        meta::inherits<Defaults> D,
+        meta::inherits<Overloads> O,
         typename F,
         typename... A
     >
@@ -7122,7 +7099,7 @@ public:
     }
 
     /* Call a Python function from C++ using Python-style arguments. */
-    template <impl::inherits<Partial> P, typename... A>
+    template <meta::inherits<Partial> P, typename... A>
         requires (
             args_are_convertible_to_python &&
             return_is_convertible_to_python &&
@@ -7159,7 +7136,7 @@ public:
 
     /* Call a Python function from C++ using Python-style arguments with possible
     overloads. */
-    template <impl::inherits<Partial> P, impl::inherits<Overloads> O, typename... A>
+    template <meta::inherits<Partial> P, meta::inherits<Overloads> O, typename... A>
         requires (
             args_are_convertible_to_python &&
             return_is_convertible_to_python &&
@@ -7213,7 +7190,7 @@ public:
     }
 
     /* Call a C++ function from Python. */
-    template <impl::inherits<Partial> P, impl::inherits<Defaults> D, typename F>
+    template <meta::inherits<Partial> P, meta::inherits<Defaults> D, typename F>
         requires (
             invocable<F> &&
             args_are_convertible_to_python &&
@@ -7236,9 +7213,9 @@ public:
 
     /* Call a C++ function from Python with possible overloads. */
     template <
-        impl::inherits<Partial> P,
-        impl::inherits<Defaults> D,
-        impl::inherits<Overloads> O,
+        meta::inherits<Partial> P,
+        meta::inherits<Defaults> D,
+        meta::inherits<Overloads> O,
         typename F
     >
         requires (
@@ -7289,7 +7266,7 @@ public:
     }
 
     /* Call a Python function from Python. */
-    template <impl::inherits<Partial> P, typename F>
+    template <meta::inherits<Partial> P, typename F>
         requires (
             invocable<F> &&
             args_are_python &&
@@ -7308,7 +7285,7 @@ public:
     }
 
     /* Call a Python function from Python with possible overloads. */
-    template <impl::inherits<Partial> P, impl::inherits<Overloads> O, typename F>
+    template <meta::inherits<Partial> P, meta::inherits<Overloads> O, typename F>
         requires (
             invocable<F> &&
             args_are_python &&
@@ -8311,7 +8288,7 @@ check.)doc";
 
                 /// TODO: maybe I return a PyFunction here?  I can maybe use the Code
                 /// constructor to create the internal function?  That gets a little
-                /// spicy, but maybe I can use py::Function<> itself instead?  That
+                /// spicy, but maybe I can use bertrand::Function<> itself instead?  That
                 /// would allow me to use a capturing lambda here, which is much
                 /// closer to the Python syntax.  That would require a forward
                 /// declaration here, though.  And/or the CTAD constructors would
@@ -10341,7 +10318,7 @@ struct interface<Function<F>> : impl::FunctionTag {
     template <typename Func>
         requires (
             !impl::Signature<std::remove_cvref_t<Func>>::enable &&
-            impl::inherits<Func, impl::FunctionTag>
+            meta::inherits<Func, impl::FunctionTag>
         )
     static constexpr bool compatible<Func> = compatible<
         typename std::remove_reference_t<Func>::Signature
@@ -10350,7 +10327,7 @@ struct interface<Function<F>> : impl::FunctionTag {
     template <typename Func>
         requires (
             !impl::Signature<Func>::enable &&
-            !impl::inherits<Func, impl::FunctionTag> &&
+            !meta::inherits<Func, impl::FunctionTag> &&
             impl::has_call_operator<Func>
         )
     static constexpr bool compatible<Func> = 
@@ -10825,47 +10802,47 @@ struct interface<Type<Function<F>>> {
     }
 
     /* Register an overload for this function. */
-    template <impl::inherits<interface<Function<F>>> Self, typename Func>
+    template <meta::inherits<interface<Function<F>>> Self, typename Func>
         requires (!std::is_const_v<std::remove_reference_t<Self>> && compatible<Func>)
     void overload(Self&& self, const Function<Func>& func) {
         std::forward<Self>(self).overload(func);
     }
 
     /* Attach the function as a bound method of a Python type. */
-    template <impl::inherits<interface<Function<F>>> Self, typename T>
+    template <meta::inherits<interface<Function<F>>> Self, typename T>
     void method(const Self& self, Type<T>& type) {
         std::forward<Self>(self).method(type);
     }
 
-    template <impl::inherits<interface<Function<F>>> Self, typename T>
+    template <meta::inherits<interface<Function<F>>> Self, typename T>
     void classmethod(const Self& self, Type<T>& type) {
         std::forward<Self>(self).classmethod(type);
     }
 
-    template <impl::inherits<interface<Function<F>>> Self, typename T>
+    template <meta::inherits<interface<Function<F>>> Self, typename T>
     void staticmethod(const Self& self, Type<T>& type) {
         std::forward<Self>(self).staticmethod(type);
     }
 
-    template <impl::inherits<interface<Function<F>>> Self, typename T>
+    template <meta::inherits<interface<Function<F>>> Self, typename T>
     void property(const Self& self, Type<T>& type, /* setter */, /* deleter */) {
         std::forward<Self>(self).property(type);
     }
 
-    template <impl::inherits<interface> Self>
+    template <meta::inherits<interface> Self>
     [[nodiscard]] static std::string __name__(const Self& self) {
         return self.__name__;
     }
 
-    template <impl::inherits<interface> Self>
+    template <meta::inherits<interface> Self>
     [[nodiscard]] static std::string __doc__(const Self& self) {
         return self.__doc__;
     }
 
-    template <impl::inherits<interface> Self>
+    template <meta::inherits<interface> Self>
     [[nodiscard]] static std::optional<Tuple<Object>> __defaults__(const Self& self);
 
-    template <impl::inherits<interface> Self>
+    template <meta::inherits<interface> Self>
     [[nodiscard]] static std::optional<Dict<Str, Object>> __annotations__(const Self& self);
 
 };
@@ -13318,7 +13295,7 @@ public:
 
 
 
-template <impl::inherits<impl::FunctionTag> F>
+template <meta::inherits<impl::FunctionTag> F>
 struct __template__<F> {
     using Func = std::remove_reference_t<F>;
 
@@ -14463,7 +14440,7 @@ struct __issubclass__<T, Function<R(A...)>>                 : Returns<bool> {
 /* Call the function with the given arguments.  If the wrapped function is of the
 coupled Python type, then this will be translated into a raw C++ call, bypassing
 Python entirely. */
-template <impl::inherits<impl::FunctionTag> Self, typename... Args>
+template <meta::inherits<impl::FunctionTag> Self, typename... Args>
     requires (std::remove_reference_t<Self>::bind<Args...>)
 struct __call__<Self, Args...> : Returns<typename std::remove_reference_t<Self>::Return> {
     using Func = std::remove_reference_t<Self>;

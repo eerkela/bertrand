@@ -112,13 +112,13 @@ template <meta::python T> requires (!meta::is_const<T>)
 
 
 /* Steal a reference to a raw Python object. */
-template <meta::has_python T> requires (!meta::is_qualified<T>)
-[[nodiscard]] obj<T> steal(PyObject* obj);
+template <meta::python T> requires (!meta::is_qualified<T>)
+[[nodiscard]] T steal(PyObject* obj);
 
 
 /* Borrow a reference to a raw Python object. */
-template <meta::has_python T> requires (!meta::is_qualified<T>)
-[[nodiscard]] obj<T> borrow(PyObject* obj);
+template <meta::python T> requires (!meta::is_qualified<T>)
+[[nodiscard]] T borrow(PyObject* obj);
 
 
 /* Convert an arbitrary value into a Python object if it is not one already.
@@ -199,11 +199,8 @@ logic is allowed by defining a zero-argument call operator in a specialization o
 in a way that allows for multiple inheritance. */
 template <meta::python Derived, meta::python Base>
     requires (
-        !meta::is_qualified<Derived> &&
-        !meta::is_qualified<Base> && (
-            std::is_invocable_r_v<bool, __issubclass__<Derived, Base>> ||
-            !std::is_invocable_v<__issubclass__<Derived, Base>>
-        )
+        std::is_invocable_r_v<bool, __issubclass__<Derived, Base>> ||
+        !std::is_invocable_v<__issubclass__<Derived, Base>>
     )
 [[nodiscard]] constexpr bool issubclass() {
     if constexpr (std::is_invocable_v<__issubclass__<Derived, Base>>) {
@@ -220,14 +217,11 @@ template <meta::python Derived, meta::python Base>
 a dynamic object which may be narrowed to a single type, or a one-argument call
 operator is defined in a specialization of `__issubclass__`. */
 template <meta::python Base, meta::python Derived>
-    requires (
-        !meta::is_qualified<Base> &&
-        std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, Derived>
-    )
+    requires (std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, Derived>)
 [[nodiscard]] constexpr bool issubclass(Derived&& obj) {
     if constexpr (DEBUG) {
         assert_(
-            ptr(obj) != nullptr,
+            !obj.is(nullptr),
             "issubclass() cannot be called on a null object."
         );
     }
@@ -245,11 +239,11 @@ template <meta::python Derived, meta::python Base>
 [[nodiscard]] constexpr bool issubclass(Derived&& obj, Base&& base) {
     if constexpr (DEBUG) {
         assert_(
-            ptr(obj) != nullptr,
+            !obj.is(nullptr),
             "left operand to issubclass() cannot be a null object."
         );
         assert_(
-            ptr(base) != nullptr,
+            !base.is(nullptr),
             "right operand to issubclass() cannot be a null object."
         );
     }
@@ -265,15 +259,13 @@ is automatically called whenever a Python object is narrowed from a parent type 
 of its subclasses. */
 template <meta::python Base, meta::python Derived>
     requires (
-        !meta::is_qualified<Base> && (
-            std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, Derived> ||
-            !std::is_invocable_v<__isinstance__<Derived, Base>>
-        )
+        std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, Derived> ||
+        !std::is_invocable_v<__isinstance__<Derived, Base>>
     )
 [[nodiscard]] constexpr bool isinstance(Derived&& obj) {
     if constexpr (DEBUG) {
         assert_(
-            ptr(obj) != nullptr,
+            !obj.is(nullptr),
             "isinstance() cannot be called on a null object."
         );
     }
@@ -294,11 +286,11 @@ template <meta::python Derived, meta::python Base>
 [[nodiscard]] constexpr bool isinstance(Derived&& obj, Base&& base) {
     if constexpr (DEBUG) {
         assert_(
-            ptr(obj) != nullptr,
+            !obj.is(nullptr),
             "left operand to isinstance() cannot be a null object."
         );
         assert_(
-            ptr(base) != nullptr,
+            !base.is(nullptr),
             "right operand to isinstance() cannot be a null object."
         );
     }
@@ -339,10 +331,10 @@ protected:
     friend PyObject* ptr(T&&);
     template <meta::python T> requires (!meta::is_const<T>)
     friend PyObject* release(T&&);
-    template <meta::has_python T> requires (!meta::is_qualified<T>)
-    friend obj<T> borrow(PyObject*);
-    template <meta::has_python T> requires (!meta::is_qualified<T>)
-    friend obj<T> steal(PyObject*);
+    template <meta::python T> requires (!meta::is_qualified<T>)
+    friend T borrow(PyObject*);
+    template <meta::python T> requires (!meta::is_qualified<T>)
+    friend T steal(PyObject*);
     template <meta::python T> requires (meta::has_cpp<T>)
     friend auto& impl::unwrap(T& obj);
     template <meta::python T> requires (meta::has_cpp<T>)
@@ -429,7 +421,6 @@ protected:
         static int __clear__(CRTP* self) {
             return 0;
         }
-
     };
 
     /* A CRTP base class that generates bindings for a pure Python class, which has no
@@ -517,7 +508,6 @@ protected:
         static int __clear__(CRTP* self) {
             return 0;
         }
-
     };
 
     /* A CRTP base class that generates bindings for an importable Python module, which
@@ -601,33 +591,23 @@ protected:
         static int __clear__(CRTP* self) {
             return 0;
         }
-
     };
 
-    /// TODO: lift the static assertion here into a template constraint applied to/by
-    /// the ctor classes
-
-    template <typename T>
+    template <meta::python T> requires (!meta::is_qualified<T>)
     struct implicit_ctor {
         template <typename... Fs>
         struct helper { static constexpr bool enable = false; };
         template <>
         struct helper<> {
             static constexpr bool enable = __init__<T>::enable;
-            template <typename... Args>
-            static auto operator()(Args... args) {
-                return __init__<T>{}(std::forward<Args>(args)...);
-            }
+            static auto operator()() { return __init__<T>{}(); }
         };
-        template <typename F>
+        template <typename F> requires (__cast__<F, T>::enable && !meta::python<F>)
         struct helper<F> {
             static constexpr bool enable =
-                !meta::inherits<F, Object> &&
-                __cast__<F, T>::enable &&
-                std::is_invocable_r_v<T, __cast__<F, T>, F>;
-            template <typename... Args>
-            static auto operator()(Args... args) {
-                return __cast__<F, T>{}(std::forward<Args>(args)...);
+                std::same_as<T, typename __cast__<F, T>::type>;
+            static auto operator()(F from) {
+                return __cast__<F, T>{}(std::forward<F>(from));
             }
         };
         template <typename... Args>
@@ -638,30 +618,28 @@ protected:
         }
     };
 
-    template <typename T>
+    template <meta::python T> requires (!meta::is_qualified<T>)
     struct explicit_ctor {
+        template <typename...>
+        static constexpr bool enable = false;
+        template <typename F>
+            requires (__init__<T, F>::enable && !__cast__<F, T>::enable)
+        static constexpr bool enable<F> =
+            std::same_as<T, typename __init__<T, F>::type>;
         template <typename... Args>
-        struct helper {
-            static constexpr bool enable =
-                __init__<T, Args...>::enable &&
-                std::is_invocable_r_v<T, __init__<T, Args...>, Args...>;
-            static auto operator()(Args... args) {
-                return __init__<T, Args...>{}(std::forward<Args>(args)...);
-            }
-        };
-        template <typename... Args>
-        static constexpr bool enable =
-            !implicit_ctor<T>::template enable<Args...> &&
-            helper<Args...>::enable;
+            requires (__init__<T, Args...>::enable && sizeof...(Args) > 1)
+        static constexpr bool enable<Args...> =
+            std::same_as<T, typename __init__<T, Args...>::type>;
+
         template <typename... Args>
         static auto operator()(Args&&... args) {
-            return helper<Args...>{}(std::forward<Args>(args)...);
+            return __init__<T, Args...>{}(std::forward<Args>(args)...);
         }
     };
 
     PyObject* m_ptr;
 
-    template <std::derived_from<Object> T, typename... Args>
+    template <typename T, typename... Args>
     explicit Object(implicit_ctor<T>, Args&&... args) : m_ptr(release((
         impl::Interpreter::init(),  // comma operator
         implicit_ctor<T>{}(std::forward<Args>(args)...)
@@ -679,7 +657,7 @@ protected:
         }
     }
 
-    template <std::derived_from<Object> T, typename... Args>
+    template <typename T, typename... Args>
     explicit Object(explicit_ctor<T>, Args&&... args) : m_ptr(release((
         impl::Interpreter::init(),  // comma operator
         explicit_ctor<T>{}(std::forward<Args>(args)...)
@@ -828,7 +806,7 @@ public:
     template <typename Self, typename T>
         requires (
             __cast__<Self, T>::enable &&
-            std::is_invocable_r_v<T, __cast__<Self, T>, Self>
+            std::same_as<T, typename __cast__<Self, T>::type>
         )
     [[nodiscard]] operator T(this Self&& self) {
         return __cast__<Self, T>{}(std::forward<Self>(self));
@@ -945,15 +923,15 @@ public:
 };
 
 
-template <meta::has_python T> requires (!meta::is_qualified<T>)
-[[nodiscard]] obj<T> borrow(PyObject* ptr) {
-    return obj<T>(ptr, Object::borrowed_t{});
+template <meta::python T> requires (!meta::is_qualified<T>)
+[[nodiscard]] T borrow(PyObject* ptr) {
+    return T(ptr, Object::borrowed_t{});
 }
 
 
-template <meta::has_python T> requires (!meta::is_qualified<T>)
-[[nodiscard]] obj<T> steal(PyObject* ptr) {
-    return obj<T>(ptr, Object::stolen_t{});
+template <meta::python T> requires (!meta::is_qualified<T>)
+[[nodiscard]] T steal(PyObject* ptr) {
+    return T(ptr, Object::stolen_t{});
 }
 
 
@@ -1037,51 +1015,18 @@ template <meta::python From, meta::python To>
         issubclass<To, std::remove_cvref_t<From>>()
     )
 struct __cast__<From, To>                                   : returns<To> {
-    template <size_t I>
-    static size_t find_union_type(std::add_lvalue_reference_t<From> obj) {
-        if constexpr (I < To::size()) {
-            if (isinstance<To::template at<I>>(obj)) {
-                return I;
-            }
-            return find_union_type<I + 1>(obj);
-        } else {
-            return To::size();
-        }
-    }
-
     static auto operator()(From from) {
-        if constexpr (meta::inherits<To, impl::UnionTag>) {
-            size_t index = find_union_type<0>(from);
-            if (index == To::size()) {
-                throw TypeError(
-                    "cannot convert Python object from type '" +
-                    repr(Type<From>()) + "' to type '" +
-                    repr(Type<To>()) + "'"
-                );
-            }
+        if (isinstance<To>(from)) {
             if constexpr (std::is_lvalue_reference_v<From>) {
-                To result = borrow<To>(ptr(from));
-                result.m_index = index;
-                return result;
+                return borrow<To>(ptr(from));
             } else {
-                To result = steal<To>(release(from));
-                result.m_index = index;
-                return result;
+                return steal<To>(release(from));
             }
-
         } else {
-            if (isinstance<To>(from)) {
-                if constexpr (std::is_lvalue_reference_v<From>) {
-                    return borrow<To>(ptr(from));
-                } else {
-                    return steal<To>(release(from));
-                }
-            } else {
-                throw TypeError(
-                    "cannot convert Python object from type '" + repr(Type<From>()) +
-                    "' to type '" + repr(Type<To>()) + "'"
-                );
-            }
+            throw TypeError(
+                "cannot convert Python object from type '" + repr(Type<From>()) +
+                "' to type '" + repr(Type<To>()) + "'"
+            );
         }
     }
 };
@@ -1194,6 +1139,14 @@ struct __cast__<From, std::unique_ptr<To>>                  : returns<std::uniqu
 /// prevents template conflicts in downstream code, reducing the chance of ambiguity.
 
 
+/// TODO: I might be unable to instantiate bertrand::signature for Python types until
+/// func.h is included, since that's where Python signatures are defined.  In general,
+/// it is probably not a bad idea to hold off defining any of the types that are here
+/// (None, Slice, etc.) until core.h, since that's when all the core types and
+/// specializations are defined.  Stuff like the print() function can also be defined
+/// there, since all the python machinery for keyword arguments, etc. will be in place.
+
+
 template <meta::is<Object> Self, static_str Name>
 struct __getattr__<Self, Name>                              : returns<Object> {};
 template <meta::is<Object> Self, static_str Name, std::convertible_to<Object> Value>
@@ -1201,13 +1154,12 @@ template <meta::is<Object> Self, static_str Name, std::convertible_to<Object> Va
 struct __setattr__<Self, Name, Value>                       : returns<void> {};
 template <meta::is<Object> Self, static_str Name> requires (!meta::is_const<Self>)
 struct __delattr__<Self, Name>                              : returns<void> {};
-
-
-/// TODO: see if these can be removed with some more clever metaprogramming?
-
-template <meta::is<Object> Self, std::convertible_to<Object>... Args>
+template <meta::is<Object> Self, typename... Args> requires (meta::callable<
+    Object(Arg<"*args", Object>, Arg<"**kwargs", Object>),
+    Args...
+>)
 struct __call__<Self, Args...>                              : returns<Object> {
-    static Object operator()(Self, Args...);
+    static Object operator()(Self, Args...);  // TODO: this must be defined in func.h, after Python signatures are defined
 };
 template <meta::is<Object> Self>
 struct __iter__<Self>                                       : returns<Object> {};
@@ -1215,16 +1167,68 @@ template <meta::is<Object> Self>
 struct __reversed__<Self>                                   : returns<Object> {};
 
 
-/// TODO: issubclass(obj, obj) doesn't work?
-/// -> Object is not convertible to bool until Bool is registered.
+/* Allow 2-argument `issubclass()` checks between dynamic objects. */
+template <meta::is<Object> Derived, meta::is<Object> Base>
+struct __issubclass__<Derived, Base>                        : returns<bool> {
+    static bool operator()(Derived derived) { return PyType_Check(ptr(derived)); }
+    static bool operator()(Derived derived, Base base) {
+        int result = PyObject_IsSubclass(
+            ptr(derived),
+            ptr(base)
+        );
+        if (result < 0) {
+            Exception::from_python();
+        }
+        return result;
+    }
+};
 
 
-/* Allow Objects to be used as left-hand arguments in `issubclass()` checks. */
+/* Allow dynamic objects to be used as left-hand arguments in `issubclass()` checks. */
 template <meta::is<Object> Derived, typename Base>
 struct __issubclass__<Derived, Base>                         : returns<bool> {
-    /// TODO: this should also not be forward declared  I don't know what this needs
-    /// to actually do.
-    static bool operator()(Derived derived);
+    static bool operator()(Derived derived) {
+        int result = PyObject_IsSubclass(
+            ptr(derived),
+            ptr(Type<Base>())
+        );
+        if (result < 0) {
+            Exception::from_python();
+        }
+        return result;
+    }
+};
+
+
+/* Allow 2-argument `isinstance()` checks between dynamic objects. */
+template <meta::is<Object> Derived, meta::is<Object> Base>
+struct __isinstance__<Derived, Base>                        : returns<bool> {
+    static bool operator()(Derived derived, Base base) {
+        int result = PyObject_IsInstance(
+            ptr(derived),
+            ptr(base)
+        );
+        if (result < 0) {
+            Exception::from_python();
+        }
+        return result;
+    }
+};
+
+
+/* Allow dynamic objects to be used as left-hand arguments in `isinstance()` checks. */
+template <meta::is<Object> Derived, typename Base>
+struct __isinstance__<Derived, Base>                         : returns<bool> {
+    static bool operator()(Derived derived) {
+        int result = PyObject_IsInstance(
+            ptr(derived),
+            ptr(Type<Base>())
+        );
+        if (result < 0) {
+            Exception::from_python();
+        }
+        return result;
+    }
 };
 
 
@@ -1468,13 +1472,39 @@ inline const EllipsisType Ellipsis;
 struct Slice;
 
 
+/// TODO: this must be declared after func.h
+// template <typename Self> requires (issubclass<Self, Slice>())
+// struct __getattr__<Self, "indices"> : returns<Function<
+//     Tuple<Int>(Arg<"length", const Int&>)
+// >> {};
+template <typename Self> requires (issubclass<Self, Slice>())
+struct __getattr__<Self, "start">                           : returns<Object> {
+    static Object operator()(Self self) {
+        return view(self)->start ?
+            borrow<Object>(view(self)->start) :
+            borrow<Object>(Py_None);
+    }
+};
+template <typename Self> requires (issubclass<Self, Slice>())
+struct __getattr__<Self, "stop">                            : returns<Object> {
+    static Object operator()(Self self) {
+        return view(self)->stop ?
+            borrow<Object>(view(self)->stop) :
+            borrow<Object>(Py_None);
+    }
+};
+template <typename Self> requires (issubclass<Self, Slice>())
+struct __getattr__<Self, "step">                            : returns<Object> {
+    static Object operator()(Self self) {
+        return view(self)->step ?
+            borrow<Object>(view(self)->step) :
+            borrow<Object>(Py_None);
+    }
+};
+
+
 template <>
 struct interface<Slice> {
-
-    /// TODO: these should be impl::Attr<> properties so they obey the same rules as
-    /// __setattr__, __delattr__, etc.
-    /// -> Slice attributes are actually read-only in Python, so this is fine.
-
     /* Get the start object of the slice.  Note that this might not be an integer. */
     __declspec(property(get = _get_start)) Object start;
     [[nodiscard]] Object _get_start(this auto&& self) {
@@ -1497,6 +1527,18 @@ struct interface<Slice> {
         return view(self)->step ?
             borrow<Object>(view(self)->step) :
             borrow<Object>(Py_None);
+    }
+
+    /* C++-style `get<I>()` accessor for slices, to enable structured bindings. */
+    template <size_t I> requires (I < 3)
+    [[nodiscard]] Object get(this auto&& self) {
+        if constexpr (I == 0) {
+            return std::forward<decltype(self)>(self).start;
+        } else if constexpr (I == 1) {
+            return std::forward<decltype(self)>(self).stop;
+        } else {
+            return std::forward<decltype(self)>(self).step;
+        }
     }
 
     /* Normalize the indices of this slice against a container of the given length.
@@ -1540,6 +1582,8 @@ struct interface<Type<Slice>> {
     [[nodiscard]] static Object stop(Self&& self) { return self.stop; }
     template <meta::inherits<interface<Slice>> Self>
     [[nodiscard]] static Object step(Self&& self) { return self.step; }
+    template <size_t I, meta::inherits<interface<Slice>> Self> requires (I < 3)
+    [[nodiscard]] static Object get(Self&& self) { return self.template get<I>(); }
     template <meta::inherits<interface<Slice>> Self>
     [[nodiscard]] static auto indices(Self&& self, size_t size) { return self.indices(size); }
 };
@@ -1572,23 +1616,6 @@ struct Slice : Object, interface<Slice> {
         std::forward<Args>(args)...
     ) {}
 };
-
-
-/// TODO: __getattr__ for start/stop/step should access the raw C++ field by viewing
-/// the Python object.
-
-
-/// TODO: this must be declared after func.h
-// template <typename Self> requires (issubclass<Self, Slice>())
-// struct __getattr__<Self, "indices"> : returns<Function<
-//     Tuple<Int>(Arg<"length", const Int&>)
-// >> {};
-template <typename Self> requires (issubclass<Self, Slice>())
-struct __getattr__<Self, "start">                           : returns<Object> {};
-template <typename Self> requires (issubclass<Self, Slice>())
-struct __getattr__<Self, "stop">                            : returns<Object> {};
-template <typename Self> requires (issubclass<Self, Slice>())
-struct __getattr__<Self, "step">                            : returns<Object> {};
 
 
 /// TODO: can't I separate __isinstance__/__issubclass__ into left and right-hand
@@ -1660,21 +1687,43 @@ struct __init__<Slice, Args...>                             : returns<Slice> {
 };
 
 
-template <meta::is<Slice> L, meta::is<Slice> R>
+template <meta::inherits<Slice> L, meta::inherits<Slice> R>
 struct __lt__<L, R>                                         : returns<Bool> {};
-template <meta::is<Slice> L, meta::is<Slice> R>
+template <meta::inherits<Slice> L, meta::inherits<Slice> R>
 struct __le__<L, R>                                         : returns<Bool> {};
-template <meta::is<Slice> L, meta::is<Slice> R>
+template <meta::inherits<Slice> L, meta::inherits<Slice> R>
 struct __eq__<L, R>                                         : returns<Bool> {};
-template <meta::is<Slice> L, meta::is<Slice> R>
+template <meta::inherits<Slice> L, meta::inherits<Slice> R>
 struct __ne__<L, R>                                         : returns<Bool> {};
-template <meta::is<Slice> L, meta::is<Slice> R>
+template <meta::inherits<Slice> L, meta::inherits<Slice> R>
 struct __ge__<L, R>                                         : returns<Bool> {};
-template <meta::is<Slice> L, meta::is<Slice> R>
+template <meta::inherits<Slice> L, meta::inherits<Slice> R>
 struct __gt__<L, R>                                         : returns<Bool> {};
 
 
 }  // namespace bertrand
+
+
+namespace std {
+
+    template <bertrand::meta::inherits<bertrand::Slice> T>
+    struct tuple_size<T> : std::integral_constant<size_t, 3> {};
+
+    template <size_t I, bertrand::meta::inherits<bertrand::Slice> T> requires (I < 3)
+    struct tuple_element<I, T> { using type = bertrand::Object; };
+
+    template <size_t I, bertrand::meta::inherits<bertrand::Slice> T> requires (I < 3)
+    [[nodiscard]] auto get(T&& slice) {
+        if constexpr (I == 0) {
+            return std::forward<T>(slice).start;
+        } else if constexpr (I == 1) {
+            return std::forward<T>(slice).stop;
+        } else {
+            return std::forward<T>(slice).step;
+        }
+    }
+
+}
 
 
 #endif

@@ -155,10 +155,10 @@ namespace impl {
         friend PyObject* bertrand::ptr(T&&);
         template <meta::python T> requires (!meta::is_const<T>)
         friend PyObject* bertrand::release(T&&);
-        template <meta::has_python T> requires (!meta::is_qualified<T>)
-        friend obj<T> bertrand::borrow(PyObject*);
-        template <meta::has_python T> requires (!meta::is_qualified<T>)
-        friend obj<T> bertrand::steal(PyObject*);
+        template <meta::python T> requires (!meta::is_qualified<T>)
+        friend T bertrand::borrow(PyObject*);
+        template <meta::python T> requires (!meta::is_qualified<T>)
+        friend T bertrand::steal(PyObject*);
         template <meta::python T> requires (meta::has_cpp<T>)
         friend auto& impl::unwrap(T& obj);
         template <meta::python T> requires (meta::has_cpp<T>)
@@ -174,22 +174,18 @@ namespace impl {
         __declspec(property(get = _get_ptr, put = _set_ptr)) PyObject* m_ptr;
         void _set_ptr(PyObject* value) { Base::m_ptr = value; }
         PyObject* _get_ptr() {
-            if (Base::m_ptr == nullptr) {
+            if (!Base::m_ptr) {
                 if constexpr (std::is_invocable_v<__getattr__<Self, Name>, Self>) {
                     Base::m_ptr = release(__getattr__<Self, Name>{}(
                         std::forward<Self>(m_self))
                     );
                 } else {
-                    PyObject* name = PyUnicode_FromStringAndSize(Name, Name.size());
-                    if (name == nullptr) {
+                    if (!(Base::m_ptr = PyObject_GetAttr(
+                        ptr(m_self),
+                        ptr(impl::template_string<Name>())
+                    ))) {
                         Exception::from_python();
                     }
-                    PyObject* result = PyObject_GetAttr(ptr(m_self), name);
-                    Py_DECREF(name);
-                    if (result == nullptr) {
-                        Exception::from_python();
-                    }
-                    Base::m_ptr = result;
                 }
             }
             return Base::m_ptr;
@@ -231,13 +227,11 @@ namespace impl {
 
             } else {
                 Base::operator=(std::forward<Value>(value));
-                PyObject* name = PyUnicode_FromStringAndSize(Name, Name.size());
-                if (name == nullptr) {
-                    Exception::from_python();
-                }
-                int rc = PyObject_SetAttr(ptr(m_self), name, ptr(*this));
-                Py_DECREF(name);
-                if (rc) {
+                if (PyObject_SetAttr(
+                    ptr(m_self),
+                    ptr(impl::template_string<Name>()),
+                    Base::m_ptr
+                )) {
                     Exception::from_python();
                 }
             }
@@ -292,10 +286,10 @@ namespace impl {
         friend PyObject* bertrand::ptr(T&&);
         template <meta::python T> requires (!meta::is_const<T>)
         friend PyObject* bertrand::release(T&&);
-        template <meta::has_python T> requires (!meta::is_qualified<T>)
-        friend obj<T> bertrand::borrow(PyObject*);
-        template <meta::has_python T> requires (!meta::is_qualified<T>)
-        friend obj<T> bertrand::steal(PyObject*);
+        template <meta::python T> requires (!meta::is_qualified<T>)
+        friend T bertrand::borrow(PyObject*);
+        template <meta::python T> requires (!meta::is_qualified<T>)
+        friend T bertrand::steal(PyObject*);
         template <meta::python T> requires (meta::has_cpp<T>)
         friend auto& impl::unwrap(T& obj);
         template <meta::python T> requires (meta::has_cpp<T>)
@@ -313,7 +307,7 @@ namespace impl {
         __declspec(property(get = _get_ptr, put = _set_ptr)) PyObject* m_ptr;
         void _set_ptr(PyObject* value) { Base::m_ptr = value; }
         PyObject* _get_ptr() {
-            if (Base::m_ptr == nullptr) {
+            if (!Base::m_ptr) {
                 Base::m_ptr = std::move(m_key)([&](Key... key) {
                     if constexpr (std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...>) {
                         return release(__getitem__<Self, Key...>{}(
@@ -332,15 +326,17 @@ namespace impl {
                         return result;
 
                     } else {
-                        PyObject* tuple = PyTuple_Pack(
+                        Object tuple = steal<Object>(PyTuple_Pack(
                             sizeof...(Key),
                             ptr(to_python(std::forward<Key>(key)))...
-                        );
-                        if (tuple == nullptr) {
+                        ));
+                        if (tuple.is(nullptr)) {
                             Exception::from_python();
                         }
-                        PyObject* result = PyObject_GetItem(ptr(m_self), tuple);
-                        Py_DECREF(tuple);
+                        PyObject* result = PyObject_GetItem(
+                            ptr(m_self),
+                            ptr(tuple)
+                        );
                         if (result == nullptr) {
                             Exception::from_python();
                         }
@@ -395,27 +391,25 @@ namespace impl {
                     if (PyObject_SetItem(
                         ptr(m_self),
                         ptr(to_python(key))...,
-                        ptr(*this)
+                        Base::m_ptr
                     )) {
                         Exception::from_python();
                     }
 
                 } else {
                     Base::operator=(std::forward<Value>(value));
-                    PyObject* tuple = PyTuple_Pack(
+                    Object tuple = steal<Object>(PyTuple_Pack(
                         sizeof...(Key),
                         ptr(to_python(key))...
-                    );
-                    if (tuple == nullptr) {
+                    ));
+                    if (tuple.is(nullptr)) {
                         Exception::from_python();
                     }
-                    int rc = PyObject_SetItem(
+                    if (PyObject_SetItem(
                         ptr(m_self),
-                        tuple,
-                        ptr(*this)
-                    );
-                    Py_DECREF(tuple);
-                    if (rc) {
+                        ptr(tuple),
+                        Base::m_ptr
+                    )) {
                         Exception::from_python();
                     }
                 }
@@ -495,6 +489,11 @@ void del(impl::Item<Self, Key...>&& item) {
 
 /// TODO: perhaps all of these could be avoided by exploiting inheritance for the
 /// root control structs, which would help avoid ambiguities.
+/// -> If I just use inherits<> on the actual wrapper type, then all of this should
+/// resolve itself, since inheritance between wrapper types will be handled through
+/// the interface mixins, not directly.  Only lazy wrappers or similar features will
+/// directly inherit from the control structs.  The only special case in that regard
+/// is Object itself, since all Python types will inherit from it.
 
 
 template <meta::lazily_evaluated Derived, meta::lazily_evaluated Base>

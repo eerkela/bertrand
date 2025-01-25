@@ -154,7 +154,8 @@ namespace meta {
 
     template <typename T>
     concept python =
-        detail::builtin_type<T> || std::derived_from<std::remove_cvref_t<T>, Object>;
+        detail::builtin_type<std::remove_cvref_t<T>> ||
+        std::derived_from<std::remove_cvref_t<T>, Object>;
 
     template <typename T>
     concept cpp = !python<T>;

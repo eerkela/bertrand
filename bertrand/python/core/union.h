@@ -19,13 +19,12 @@ namespace meta {
 
         template <typename>
         constexpr bool args_are_convertible_to_python = false;
-        template <typename... Ts> requires (sizeof...(Ts) > 1)
-        constexpr bool args_are_convertible_to_python<bertrand::args<Ts...>> = 
-            (meta::has_python<Ts> && ...);
+        template <meta::has_python... Ts>
+        constexpr bool args_are_convertible_to_python<bertrand::args<Ts...>> = true;
 
         template <typename>
         struct to_union;
-        template <typename... Matches> requires (sizeof...(Matches) > 1)
+        template <typename... Matches>
         struct to_union<bertrand::args<Matches...>> {
             template <typename>
             struct unique;
@@ -58,7 +57,7 @@ namespace meta {
     single type, then that type is returned directly, rather than instantiating a new
     Union. */
     template <args T> requires (detail::args_are_convertible_to_python<T>)
-    using to_union = detail::to_union<T>::type;
+    using to_union = detail::to_union<std::remove_cvref_t<T>>::type;
 
 }  // namespace meta
 
@@ -231,17 +230,18 @@ namespace impl {
                     using T = std::remove_cvref_t<Curr>::template at<I>;
                     using Q = meta::qualify<T, Curr>;
                     if constexpr (std::is_lvalue_reference_v<Curr>) {
+                        T value = borrow<T>(ptr(curr));
                         return visit_helper<args<Prev..., Q>, Next...>{}(
                             std::forward<visitor>(visit),
                             std::forward<Prev>(prev)...,
-                            reinterpret_cast<Q>(curr),
+                            value,
                             std::forward<Next>(next)...
                         );
                     } else {
                         return visit_helper<args<Prev..., Q>, Next...>{}(
                             std::forward<visitor>(visit),
                             std::forward<Prev>(prev)...,
-                            reinterpret_cast<std::add_rvalue_reference_t<Q>>(curr),
+                            borrow<T>(ptr(curr)),
                             std::forward<Next>(next)...
                         );
                     }
@@ -295,7 +295,7 @@ namespace impl {
                     return std::array{VTable<Is, visitor>::python()...};
                 }(std::make_index_sequence<std::remove_cvref_t<Curr>::size()>{});
 
-                return vtable[curr.m_index](
+                return vtable[curr.index()](
                     std::forward<visitor>(visit),
                     std::forward<Prev>(prev)...,
                     std::forward<Curr>(curr),
@@ -688,12 +688,12 @@ struct interface<Union<Types...>> : impl::UnionTag {
 
     template <typename T> requires (std::same_as<T, Types> || ...)
     [[nodiscard]] bool holds_alternative(this auto&& self) {
-        return self.m_index == meta::index_of<T, Types...>;
+        return self.index() == meta::index_of<T, Types...>;
     }
 
     template <typename T> requires (std::same_as<T, Types> || ...)
     [[nodiscard]] auto get(this auto&& self) -> T {
-        if (self.m_index != meta::index_of<T, Types...>) {
+        if (self.index() != meta::index_of<T, Types...>) {
             throw TypeError(
                 "bad union access: '" + type_name<T> + "' is not the active type"
             );
@@ -708,7 +708,7 @@ struct interface<Union<Types...>> : impl::UnionTag {
     template <size_t I> requires (I < size())
     [[nodiscard]] auto get(this auto&& self) -> at<I> {
         using ref = meta::qualify_lvalue<at<I>, decltype(self)>;
-        if (self.m_index != I) {
+        if (self.index() != I) {
             throw TypeError(
                 "bad union access: '" + type_name<at<I>> + "' is not the active type"
             );
@@ -722,7 +722,7 @@ struct interface<Union<Types...>> : impl::UnionTag {
 
     template <typename T> requires (std::same_as<T, Types> || ...)
     [[nodiscard]] auto get_if(this auto&& self) -> Optional<T> {
-        if (self.m_index != meta::index_of<T, Types...>) {
+        if (self.index() != meta::index_of<T, Types...>) {
             return None;
         }
         if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
@@ -734,7 +734,7 @@ struct interface<Union<Types...>> : impl::UnionTag {
 
     template <size_t I> requires (I < size())
     [[nodiscard]] auto get_if(this auto&& self) -> Optional<at<I>> {
-        if (self.m_index != I) {
+        if (self.index() != I) {
             return None;
         }
         if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
@@ -824,7 +824,73 @@ template <meta::python... Types>
         meta::types_are_unique<Types...>
     )
 struct Union : Object, interface<Union<Types...>> {
-    struct __python__ : def<__python__, Union>, PyObject {
+protected:
+    struct infer_t {};
+    struct emplace_t { size_t index; };
+
+    template <size_t I, typename From>
+    struct infer_index {
+        static size_t operator()(
+            From obj,
+            PyTypeObject* type,
+            size_t subclass_idx
+        ) {
+            if constexpr (meta::is<From, Union>) {
+                return obj.index();
+            } else {
+                if (subclass_idx == sizeof...(Types)) {
+                    throw TypeError(
+                        "cannot convert Python object from type '" +
+                        demangle(type->tp_name) + "' to type '" +
+                        type_name<Union> + "'"
+                    );
+                }
+                return subclass_idx;
+            }
+        }
+    };
+    template <size_t I, typename From> requires (I < sizeof...(Types))
+    struct infer_index<I, From> {
+        static size_t operator()(
+            From obj,
+            PyTypeObject* type,
+            size_t subclass_idx
+        ) {
+            if constexpr (meta::is<From, Union>) {
+                return obj.index();
+            } else {
+                using T = meta::unpack_type<I, Types...>;
+                if (Type<T>().is(reinterpret_cast<PyObject*>(type))) {
+                    return I;
+                }
+                if (subclass_idx == sizeof...(Types) && isinstance<T>(obj)) {
+                    return infer_index<I + 1, From>{}(std::forward<From>(obj), type, I);
+                }
+                return infer_index<I + 1, From>{}(std::forward<From>(obj), type, subclass_idx);
+            }
+        }
+    };
+
+    size_t m_index;
+
+    template <typename T>
+    Union(T&& value, emplace_t t) :
+        Object(std::forward<T>(value)),
+        m_index(t.index)
+    {}
+
+    template <typename T>
+    Union(T&& value, infer_t) :
+        Object(std::forward<T>(value)),
+        m_index(infer_index<0, T>{}(
+            borrow<std::remove_cvref_t<T>>(ptr(*this)),
+            Py_TYPE(Object::m_ptr),
+            sizeof...(Types)
+        ))
+    {}
+
+public:
+    struct __python__ : cls<__python__, Union>, PyObject {
         static constexpr static_str __doc__ =
 R"doc(A simple union type in Python, similar to `std::variant` in C++.
 
@@ -991,28 +1057,37 @@ int main() {
         static Type<Union> __import__();
     };
 
-    size_t m_index = 0;
-
-    Union(PyObject* p, borrowed_t t) : Object(p, t) {}
-    Union(PyObject* p, stolen_t t) : Object(p, t) {}
+    Union(PyObject* p, borrowed_t t) : Union(Object(p, t), infer_t{}) {}
+    Union(PyObject* p, stolen_t t) : Union(Object(p, t), infer_t{}) {}
 
     template <typename Self = Union> requires (__initializer__<Self>::enable)
     Union(const std::initializer_list<typename __initializer__<Self>::type>& init) :
-        Object(__initializer__<Self>{}(init))
+        Union(__initializer__<Self>{}(init), infer_t{})
     {}
 
     template <typename... Args> requires (implicit_ctor<Union>::template enable<Args...>)
-    Union(Args&&... args) : Object(
-        implicit_ctor<Union>{},
-        std::forward<Args>(args)...
+    Union(Args&&... args) : Union(
+        implicit_ctor<Union>{}(std::forward<Args>(args)...),
+        infer_t{}
     ) {}
 
     template <typename... Args> requires (explicit_ctor<Union>::template enable<Args...>)
-    explicit Union(Args&&... args) : Object(
-        explicit_ctor<Union>{},
-        std::forward<Args>(args)...
+    explicit Union(Args&&... args) : Union(
+        explicit_ctor<Union>{}(std::forward<Args>(args)...),
+        infer_t{}
     ) {}
 
+    /* Construct the union in-place from one of its consituent types. */
+    template <typename T, typename... Args> requires (std::same_as<T, Types> || ...)
+    [[nodiscard]] static Union emplace(Args&&... args) {
+        return Union(
+            T(std::forward<Args>(args)...),
+            emplace_t{meta::index_of<T, Types...>}
+        );
+    }
+
+    /* Get the index of the current active element in the union. */
+    [[nodiscard]] size_t index() const noexcept { return m_index; }
 };
 
 
@@ -1037,9 +1112,7 @@ template <typename T> requires (__initializer__<T>::enable)
 struct __initializer__<Optional<T>>                        : returns<Optional<T>> {
     using Element = __initializer__<T>::type;
     static Optional<T> operator()(const std::initializer_list<Element>& init) {
-        Optional<T> result = steal<Optional<T>>(release(T(init)));
-        result.m_index = 0;
-        return result;
+        return Optional<T>::template emplace<T>(init);
     }
 };
 
@@ -1049,31 +1122,18 @@ default constructible, in which case the first such type is initialized.  If Non
 is present in the union, it is preferred over any other type. */
 template <typename... Ts> requires (std::is_default_constructible_v<Ts> || ...)
 struct __init__<Union<Ts...>>                               : returns<Union<Ts...>> {
-    template <size_t I, typename... Us>
-    static constexpr size_t none_idx = 0;
-    template <size_t I, typename U, typename... Us>
-    static constexpr size_t none_idx<I, U, Us...> =
-        std::same_as<std::remove_cvref_t<U>, NoneType> ?
-            0 : none_idx<I + 1, Us...> + 1;
-
-    template <size_t I, typename... Us>
-    static constexpr size_t idx = 0;
-    template <size_t I, typename U, typename... Us>
-    static constexpr size_t idx<I, U, Us...> =
-        std::is_default_constructible_v<U> ? 0 : idx<I + 1, Us...> + 1;
+    template <typename...>
+    struct constructible { using type = void; };
+    template <typename U, typename... Us>
+    struct constructible<U, Us...> { using type = constructible<Us...>::type; };
+    template <std::default_initializable U, typename... Us>
+    struct constructible<U, Us...> { using type = U; };
 
     static Union<Ts...> operator()() {
-        if constexpr (none_idx<0, Ts...> < sizeof...(Ts)) {
-            Union<Ts...> result = borrow<Union<Ts...>>(ptr(None));
-            result.m_index = none_idx<0, Ts...>;
-            return result;
+        if constexpr ((std::same_as<NoneType, Ts> || ...)) {
+            return Union<Ts...>::template emplace<NoneType>();
         } else {
-            constexpr size_t index = idx<0, Ts...>;
-            Union<Ts...> result = steal<Union<Ts...>>(
-                release(meta::unpack_type<index>())
-            );
-            result.m_index = index;
-            return result;
+            return Union<Ts...>::template emplace<typename constructible<Ts...>::type>();
         }
     }
 };
@@ -1085,11 +1145,7 @@ template <typename T, typename... Args>
     requires (sizeof...(Args) > 0 && std::constructible_from<T, Args...>)
 struct __init__<Optional<T>, Args...>                       : returns<Optional<T>> {
     static Optional<T> operator()(Args&&... args) {
-        Optional<T> result = steal<Optional<T>>(
-            release(T(std::forward<Args>(args)...))
-        );
-        result.m_index = 0;
-        return result;
+        return Optional<T>::template emplace<T>(std::forward<Args>(args)...);
     }
 };
 
@@ -1100,34 +1156,30 @@ conversions, and always converts to the first matching type within the union */
 template <typename From, typename... Ts>
     requires (!meta::Union<From> && (std::convertible_to<From, Ts> || ...))
 struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts...>> {
-    template <size_t I, typename... Us>
-    static constexpr size_t match_idx = 0;
-    template <size_t I, typename U, typename... Us>
-    static constexpr size_t match_idx<I, U, Us...> =
-        std::same_as<std::remove_cvref_t<meta::python_type<From>>, U> ?
-            0 : match_idx<I + 1, Us...> + 1;
+    template <typename T, typename...>
+    struct match { using type = void; };
+    template <typename T, typename U, typename... Us>
+    struct match<T, U, Us...> { using type = match<Us...>::type; };
+    template <typename T, std::same_as<T> U, typename... Us>
+    struct match<T, U, Us...> { using type = U; };
 
-    template <size_t I, typename... Us>
-    static constexpr size_t convert_idx = 0;
-    template <size_t I, typename U, typename... Us>
-    static constexpr size_t convert_idx<I, U, Us...> =
-        std::convertible_to<From, U> ? 0 : convert_idx<I + 1, Us...> + 1;
+    template <typename T, typename...>
+    struct convert { using type = void; };
+    template <typename T, typename U, typename... Us>
+    struct convert<T, U, Us...> { using type = convert<Us...>::type; };
+    template <typename T, typename U, typename... Us> requires (std::convertible_to<T, U>)
+    struct convert<T, U, Us...> { using type = U; };
 
     static Union<Ts...> operator()(From from) {
-        if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
-            constexpr size_t idx = match_idx<0, Ts...>;
-            Union<Ts...> result = steal<Union<Ts...>>(
-                release(meta::unpack_type<idx>(std::forward<From>(from)))
+        using F = std::remove_cvref_t<meta::python_type<From>>;
+        if constexpr (!std::is_void_v<typename match<F, Ts...>::type>) {
+            return Union<Ts...>::template emplace<typename match<F, Ts...>::type>(
+                std::forward<From>(from)
             );
-            result.m_index = idx;
-            return result;
         } else {
-            constexpr size_t idx = convert_idx<0, Ts...>;
-            Union<Ts...> result = steal<Union<Ts...>>(
-                release(meta::unpack_type<idx>(std::forward<From>(from)))
+            return Union<Ts...>::template emplace<typename convert<From, Ts...>::type>(
+                std::forward<From>(from)
             );
-            result.m_index = idx;
-            return result;
         }
     }
 };
@@ -1190,36 +1242,32 @@ struct __cast__<From, To>                                   : returns<To> {
 template <meta::is_variant From, typename... Ts>
     requires (impl::VariantToUnion<From>::template convert<Ts...>)
 struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts...>> {
-    template <size_t I, typename... Us>
-    static constexpr size_t match_idx = 0;
-    template <size_t I, typename U, typename... Us>
-    static constexpr size_t match_idx<I, U, Us...> =
-        std::same_as<std::remove_cvref_t<meta::python_type<From>>, U> ?
-            0 : match_idx<I + 1, Us...> + 1;
+    template <typename T, typename...>
+    struct match { using type = void; };
+    template <typename T, typename U, typename... Us>
+    struct match<T, U, Us...> { using type = match<Us...>::type; };
+    template <typename T, std::same_as<T> U, typename... Us>
+    struct match<T, U, Us...> { using type = U; };
 
-    template <size_t I, typename... Us>
-    static constexpr size_t convert_idx = 0;
-    template <size_t I, typename U, typename... Us>
-    static constexpr size_t convert_idx<I, U, Us...> =
-        std::convertible_to<From, U> ? 0 : convert_idx<I + 1, Us...> + 1;
+    template <typename T, typename...>
+    struct convert { using type = void; };
+    template <typename T, typename U, typename... Us>
+    struct convert<T, U, Us...> { using type = convert<Us...>::type; };
+    template <typename T, typename U, typename... Us> requires (std::convertible_to<T, U>)
+    struct convert<T, U, Us...> { using type = U; };
 
     static Union<Ts...> operator()(From value) {
         return std::visit(
             []<typename T>(T&& value) -> Union<Ts...> {
-                if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
-                    constexpr size_t idx = match_idx<0, Ts...>;
-                    Union<Ts...> result = steal<Union<Ts...>>(release(
-                        meta::unpack_type<idx, Ts...>(std::forward<T>(value))
-                    ));
-                    result.m_index = idx;
-                    return result;
+                using F = std::remove_cvref_t<meta::python_type<T>>;
+                if constexpr (!std::is_void_v<typename match<F, Ts...>::type>) {
+                    return Union<Ts...>::template emplace<typename match<F, Ts...>::type>(
+                        std::forward<T>(value)
+                    );
                 } else {
-                    constexpr size_t idx = convert_idx<0, Ts...>;
-                    Union<Ts...> result = steal<Union<Ts...>>(release(
-                        meta::unpack_type<idx, Ts...>(std::forward<T>(value))
-                    ));
-                    result.m_index = idx;
-                    return result;
+                    return Union<Ts...>::template emplace<typename convert<T, Ts...>::type>(
+                        std::forward<T>(value)
+                    );
                 }
             },
             std::forward<From>(value)
@@ -1231,45 +1279,39 @@ struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts..
 template <meta::is_optional From, typename... Ts>
     requires (
         (std::same_as<NoneType, Ts> || ...) &&
-        (std::convertible_to<meta::optional_type<From>, Ts> || ...)
+        (std::convertible_to<meta::qualify<meta::optional_type<From>, From>, Ts> || ...)
     )
 struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts...>> {
-    using T = meta::optional_type<From>;
+    using T = meta::qualify<meta::optional_type<From>, From>;
 
-    template <size_t I, typename... Us>
-    static constexpr size_t match_idx = 0;
-    template <size_t I, typename U, typename... Us>
-    static constexpr size_t match_idx<I, U, Us...> =
-        std::same_as<std::remove_cvref_t<meta::python_type<From>>, U> ?
-            0 : match_idx<I + 1, Us...> + 1;
+    template <typename T, typename...>
+    struct match { using type = void; };
+    template <typename T, typename U, typename... Us>
+    struct match<T, U, Us...> { using type = match<Us...>::type; };
+    template <typename T, std::same_as<T> U, typename... Us>
+    struct match<T, U, Us...> { using type = U; };
 
-    template <size_t I, typename... Us>
-    static constexpr size_t convert_idx = 0;
-    template <size_t I, typename U, typename... Us>
-    static constexpr size_t convert_idx<I, U, Us...> =
-        std::convertible_to<From, U> ? 0 : convert_idx<I + 1, Us...> + 1;
+    template <typename T, typename...>
+    struct convert { using type = void; };
+    template <typename T, typename U, typename... Us>
+    struct convert<T, U, Us...> { using type = convert<Us...>::type; };
+    template <typename T, typename U, typename... Us> requires (std::convertible_to<T, U>)
+    struct convert<T, U, Us...> { using type = U; };
 
     static Union<Ts...> operator()(From from) {
         if (from.has_value()) {
-            if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
-                constexpr size_t idx = match_idx<0, Ts...>;
-                Union<Ts...> result = steal<Union<Ts...>>(release(
-                    meta::unpack_type<idx, Ts...>(from.value())
-                ));
-                result.m_index = idx;
-                return result;
+            using F = std::remove_cvref_t<meta::python_type<T>>;
+            if constexpr (!std::is_void_v<typename match<F, Ts...>::type>) {
+                return Union<Ts...>::template emplace<typename match<F, Ts...>::type>(
+                    *std::forward<From>(from)
+                );
             } else {
-                constexpr size_t idx = convert_idx<0, Ts...>;
-                Union<Ts...> result = steal<Union<Ts...>>(release(
-                    meta::unpack_type<idx, Ts...>(from.value())
-                ));
-                result.m_index = idx;
-                return result;
+                return Union<Ts...>::template emplace<typename convert<T, Ts...>::type>(
+                    *std::forward<From>(from)
+                );
             }
         } else {
-            Union<Ts...> result = borrow<Union<Ts...>>(ptr(None));
-            result.m_index = meta::index_of<NoneType, Ts...>;
-            return result;
+            return Union<Ts...>::template emplace<NoneType>();
         }
     }
 };
@@ -1278,44 +1320,39 @@ struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts..
 template <meta::is_ptr From, typename... Ts>
     requires (
         (std::same_as<NoneType, Ts> || ...) &&
-        (std::convertible_to<std::remove_pointer_t<From>, Ts> || ...)
+        (std::convertible_to<std::add_lvalue_reference_t<std::remove_pointer_t<From>>, Ts> || ...)
     )
 struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts...>> {
-    template <size_t I, typename... Us>
-    static constexpr size_t match_idx = 0;
-    template <size_t I, typename U, typename... Us>
-    static constexpr size_t match_idx<I, U, Us...> =
-        std::same_as<std::remove_cvref_t<meta::python_type<std::remove_pointer_t<From>>>, U> ?
-            0 : match_idx<I + 1, Us...> + 1;
+    using T = std::add_lvalue_reference_t<std::remove_pointer_t<From>>;
 
-    template <size_t I, typename... Us>
-    static constexpr size_t convert_idx = 0;
-    template <size_t I, typename U, typename... Us>
-    static constexpr size_t convert_idx<I, U, Us...> =
-        std::convertible_to<std::remove_pointer_t<From>, U> ?
-            0 : convert_idx<I + 1, Us...> + 1;
+    template <typename T, typename...>
+    struct match { using type = void; };
+    template <typename T, typename U, typename... Us>
+    struct match<T, U, Us...> { using type = match<Us...>::type; };
+    template <typename T, std::same_as<T> U, typename... Us>
+    struct match<T, U, Us...> { using type = U; };
+
+    template <typename T, typename...>
+    struct convert { using type = void; };
+    template <typename T, typename U, typename... Us>
+    struct convert<T, U, Us...> { using type = convert<Us...>::type; };
+    template <typename T, typename U, typename... Us> requires (std::convertible_to<T, U>)
+    struct convert<T, U, Us...> { using type = U; };
 
     static Union<Ts...> operator()(From from) {
         if (from) {
-            if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
-                constexpr size_t idx = match_idx<0, Ts...>;
-                Union<Ts...> result = steal<Union<Ts...>>(release(
-                    meta::unpack_type<idx, Ts...>(*from)
-                ));
-                result.m_index = idx;
-                return result;
+            using F = std::remove_cvref_t<meta::python_type<T>>;
+            if constexpr (!std::is_void_v<typename match<F, Ts...>::type>) {
+                return Union<Ts...>::template emplace<typename match<F, Ts...>::type>(
+                    *from
+                );
             } else {
-                constexpr size_t idx = convert_idx<0, Ts...>;
-                Union<Ts...> result = steal<Union<Ts...>>(release(
-                    meta::unpack_type<idx, Ts...>(*from)
-                ));
-                result.m_index = idx;
-                return result;
+                return Union<Ts...>::template emplace<typename convert<T, Ts...>::type>(
+                    *from
+                );
             }
         } else {
-            Union<Ts...> result = borrow<Union<Ts...>>(ptr(None));
-            result.m_index = meta::index_of<NoneType, Ts...>;
-            return result;
+            return Union<Ts...>::template emplace<NoneType>();
         }
     }
 };
@@ -1324,44 +1361,39 @@ struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts..
 template <meta::is_shared_ptr From, typename... Ts>
     requires (
         (std::same_as<NoneType, Ts> || ...) &&
-        (std::convertible_to<meta::shared_ptr_type<From>, Ts> || ...)
+        (std::convertible_to<std::add_lvalue_reference_t<meta::shared_ptr_type<From>>, Ts> || ...)
     )
 struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts...>> {
-    template <size_t I, typename... Us>
-    static constexpr size_t match_idx = 0;
-    template <size_t I, typename U, typename... Us>
-    static constexpr size_t match_idx<I, U, Us...> =
-        std::same_as<std::remove_cvref_t<meta::python_type<meta::shared_ptr_type<From>>>, U> ?
-            0 : match_idx<I + 1, Us...> + 1;
+    using T = std::add_lvalue_reference_t<meta::shared_ptr_type<From>>;
 
-    template <size_t I, typename... Us>
-    static constexpr size_t convert_idx = 0;
-    template <size_t I, typename U, typename... Us>
-    static constexpr size_t convert_idx<I, U, Us...> =
-        std::convertible_to<meta::shared_ptr_type<From>, U> ?
-            0 : convert_idx<I + 1, Us...> + 1;
+    template <typename T, typename...>
+    struct match { using type = void; };
+    template <typename T, typename U, typename... Us>
+    struct match<T, U, Us...> { using type = match<Us...>::type; };
+    template <typename T, std::same_as<T> U, typename... Us>
+    struct match<T, U, Us...> { using type = U; };
+
+    template <typename T, typename...>
+    struct convert { using type = void; };
+    template <typename T, typename U, typename... Us>
+    struct convert<T, U, Us...> { using type = convert<Us...>::type; };
+    template <typename T, typename U, typename... Us> requires (std::convertible_to<T, U>)
+    struct convert<T, U, Us...> { using type = U; };
 
     static Union<Ts...> operator()(From from) {
         if (from) {
-            if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
-                constexpr size_t idx = match_idx<0, Ts...>;
-                Union<Ts...> result = steal<Union<Ts...>>(release(
-                    meta::unpack_type<idx, Ts...>(*from)
-                ));
-                result.m_index = idx;
-                return result;
+            using F = std::remove_cvref_t<meta::python_type<T>>;
+            if constexpr (!std::is_void_v<typename match<F, Ts...>::type>) {
+                return Union<Ts...>::template emplace<typename match<F, Ts...>::type>(
+                    *from
+                );
             } else {
-                constexpr size_t idx = convert_idx<0, Ts...>;
-                Union<Ts...> result = steal<Union<Ts...>>(release(
-                    meta::unpack_type<idx, Ts...>(*from)
-                ));
-                result.m_index = idx;
-                return result;
+                return Union<Ts...>::template emplace<typename convert<T, Ts...>::type>(
+                    *from
+                );
             }
         } else {
-            Union<Ts...> result = borrow<Union<Ts...>>(ptr(None));
-            result.m_index = meta::index_of<NoneType, Ts...>;
-            return result;
+            return Union<Ts...>::template emplace<NoneType>();
         }
     }
 };
@@ -1370,44 +1402,39 @@ struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts..
 template <meta::is_unique_ptr From, typename... Ts>
     requires (
         (std::same_as<NoneType, Ts> || ...) &&
-        (std::convertible_to<meta::unique_ptr_type<From>, Ts> || ...)
+        (std::convertible_to<std::add_lvalue_reference_t<meta::unique_ptr_type<From>>, Ts> || ...)
     )
 struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts...>> {
-    template <size_t I, typename... Us>
-    static constexpr size_t match_idx = 0;
-    template <size_t I, typename U, typename... Us>
-    static constexpr size_t match_idx<I, U, Us...> =
-        std::same_as<std::remove_cvref_t<meta::python_type<meta::unique_ptr_type<From>>>, U> ?
-            0 : match_idx<I + 1, Us...> + 1;
+    using T = std::add_lvalue_reference_t<meta::unique_ptr_type<From>>;
 
-    template <size_t I, typename... Us>
-    static constexpr size_t convert_idx = 0;
-    template <size_t I, typename U, typename... Us>
-    static constexpr size_t convert_idx<I, U, Us...> =
-        std::convertible_to<meta::unique_ptr_type<From>, U> ?
-            0 : convert_idx<I + 1, Us...> + 1;
+    template <typename T, typename...>
+    struct match { using type = void; };
+    template <typename T, typename U, typename... Us>
+    struct match<T, U, Us...> { using type = match<Us...>::type; };
+    template <typename T, std::same_as<T> U, typename... Us>
+    struct match<T, U, Us...> { using type = U; };
+
+    template <typename T, typename...>
+    struct convert { using type = void; };
+    template <typename T, typename U, typename... Us>
+    struct convert<T, U, Us...> { using type = convert<Us...>::type; };
+    template <typename T, typename U, typename... Us> requires (std::convertible_to<T, U>)
+    struct convert<T, U, Us...> { using type = U; };
 
     static Union<Ts...> operator()(From from) {
         if (from) {
-            if constexpr (match_idx<0, Ts...> < sizeof...(Ts)) {
-                constexpr size_t idx = match_idx<0, Ts...>;
-                Union<Ts...> result = steal<Union<Ts...>>(release(
-                    meta::unpack_type<idx, Ts...>(*from)
-                ));
-                result.m_index = idx;
-                return result;
+            using F = std::remove_cvref_t<meta::python_type<T>>;
+            if constexpr (!std::is_void_v<typename match<F, Ts...>::type>) {
+                return Union<Ts...>::template emplace<typename match<F, Ts...>::type>(
+                    *from
+                );
             } else {
-                constexpr size_t idx = convert_idx<0, Ts...>;
-                Union<Ts...> result = steal<Union<Ts...>>(release(
-                    meta::unpack_type<idx, Ts...>(*from)
-                ));
-                result.m_index = idx;
-                return result;
+                return Union<Ts...>::template emplace<typename convert<T, Ts...>::type>(
+                    *from
+                );
             }
         } else {
-            Union<Ts...> result = borrow<Union<Ts...>>(ptr(None));
-            result.m_index = meta::index_of<NoneType, Ts...>;
-            return result;
+            return Union<Ts...>::template emplace<NoneType>();
         }
     }
 };
