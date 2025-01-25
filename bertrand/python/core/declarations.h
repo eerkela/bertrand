@@ -58,6 +58,7 @@ namespace impl {
     /// TODO: convert tags to snake_case
     struct BertrandTag {};
     struct UnionTag : BertrandTag {};
+    struct OptionalTag : UnionTag {};
     struct IterTag : BertrandTag {};
     struct FunctionTag : BertrandTag {};
     struct TypeTag : BertrandTag {};
@@ -159,6 +160,12 @@ namespace meta {
 
     template <typename T>
     concept cpp = !python<T>;
+
+    template <typename T>
+    concept Union = inherits<T, impl::UnionTag>;
+
+    template <typename T>
+    concept Optional = inherits<T, impl::OptionalTag>;
 
 }
 
@@ -2414,7 +2421,8 @@ template <meta::python... Types>
     requires (
         sizeof...(Types) > 1 &&
         (!meta::is_qualified<Types> && ...) &&
-        meta::types_are_unique<Types...>
+        meta::types_are_unique<Types...> &&
+        !(meta::Union<Types> || ...)
     )
 struct Union;
 template <meta::arg... Attrs>
@@ -2479,7 +2487,7 @@ namespace meta {
         template <bertrand::static_str Name>
         inline constexpr bool builtin_type<Module<Name>> = true;
         template <typename... Ts>
-        inline constexpr bool builtin_type<Union<Ts...>> = true;
+        inline constexpr bool builtin_type<bertrand::Union<Ts...>> = true;
         template <typename... Ts>
         inline constexpr bool builtin_type<Intersection<Ts...>> = true;
         template<>

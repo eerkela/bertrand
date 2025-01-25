@@ -10,7 +10,7 @@ namespace bertrand {
 
 
 template <meta::has_python T> requires (!std::same_as<T, NoneType>)
-Union(T) -> Union<obj<T>, NoneType>;
+Union(T) -> Union<std::remove_cvref_t<obj<T>>, NoneType>;
 
 
 namespace meta {
@@ -38,7 +38,7 @@ namespace meta {
                 struct to_python<bertrand::args<T>> { using type = T; };  // single Python type
                 template <typename... Ts>
                 struct to_python<bertrand::args<Ts...>> {
-                    using type = Union<std::remove_cvref_t<Ts>...>;  // multiple Python types
+                    using type = bertrand::Union<std::remove_cvref_t<Ts>...>;  // multiple Python types
                 };
                 using type = to_python<
                     typename bertrand::args<meta::python_type<Ms>...>::to_value
@@ -48,9 +48,6 @@ namespace meta {
         };
 
     }  // namespace detail
-
-    template <typename T>
-    concept Union = inherits<T, impl::UnionTag>;
 
     /* Converting a pack to a union involves converting all C++ types to their Python
     equivalents, then deduplicating the results.  If the final pack contains only a
@@ -707,7 +704,6 @@ struct interface<Union<Types...>> : impl::UnionTag {
 
     template <size_t I> requires (I < size())
     [[nodiscard]] auto get(this auto&& self) -> at<I> {
-        using ref = meta::qualify_lvalue<at<I>, decltype(self)>;
         if (self.index() != I) {
             throw TypeError(
                 "bad union access: '" + type_name<at<I>> + "' is not the active type"
@@ -817,11 +813,235 @@ public:
 };
 
 
+template <typename T>
+struct interface<Optional<T>> : impl::OptionalTag {
+private:
+
+    template <typename R>
+    struct Result { using type = Optional<std::remove_cvref_t<meta::python_type<R>>>; };
+    template <meta::Optional R>
+    struct Result<R> { using type = std::remove_cvref_t<R>; };
+
+public:
+    static constexpr size_t size() noexcept { return 2; }
+
+    template <size_t I> requires (I < size())
+    using at = std::conditional_t<I == 0, T, NoneType>;
+
+    template <typename U> requires (std::same_as<U, T> || std::same_as<U, NoneType>)
+    [[nodiscard]] bool holds_alternative(this auto&& self) {
+        return self.index() == std::same_as<U, NoneType>;
+    }
+
+    template <typename U> requires (std::same_as<U, T> || std::same_as<U, NoneType>)
+    [[nodiscard]] U get(this auto&& self) {
+        if (self.index() != std::same_as<U, NoneType>) {
+            throw TypeError(
+                "bad union access -> '" + type_name<U> + "' is not the active type"
+            );
+        }
+        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+            return borrow<U>(ptr(self));
+        } else {
+            return steal<U>(release(self));
+        }
+    }
+
+    template <size_t I> requires (I < size())
+    [[nodiscard]] at<I> get(this auto&& self) {
+        if (self.index() != I) {
+            throw TypeError(
+                "bad union access: '" + type_name<at<I>> + "' is not the active type"
+            );
+        }
+        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+            return borrow<at<I>>(ptr(self));
+        } else {
+            return steal<at<I>>(release(self));
+        }
+    }
+
+    template <typename U> requires (std::same_as<U, T> || std::same_as<U, NoneType>)
+    [[nodiscard]] Optional<U> get_if(this auto&& self) {
+        if (self.index() != std::same_as<U, NoneType>) {
+            return None;
+        }
+        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+            return borrow<U>(ptr(self));
+        } else {
+            return steal<U>(release(self));
+        }
+    }
+
+    template <size_t I> requires (I < size())
+    [[nodiscard]] auto get_if(this auto&& self) -> Optional<at<I>> {
+        if (self.index() != I) {
+            return None;
+        }
+        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+            return borrow<at<I>>(ptr(self));
+        } else {
+            return steal<at<I>>(release(self));
+        }
+    }
+
+    template <typename Self, typename Func, typename... Args>
+        requires (meta::exhaustive<Func, Self, Args...>)
+    decltype(auto) visit(
+        this Self&& self,
+        Func&& visitor,
+        Args&&... args
+    ) {
+        return bertrand::visit(
+            std::forward<Func>(visitor),
+            std::forward<Self>(self),
+            std::forward<Args>(args)...
+        );
+    }
+
+    [[nodiscard]] bool has_value(this auto&& self) {
+        return !self.index();
+    }
+
+    [[nodiscard]] T value(this auto&& self) {
+        if (self.index()) {
+            throw TypeError(
+                "bad union access -> '" + type_name<T> + "' is not the active type"
+            );
+        }
+        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+            return borrow<T>(ptr(self));
+        } else {
+            return steal<T>(release(self));
+        }
+    }
+
+    template <std::convertible_to<T> U>
+    [[nodiscard]] T value_or(this auto&& self, U&& val) {
+        if (self.index()) {
+            return std::forward<U>(val);
+        }
+        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+            return borrow<T>(ptr(self));
+        } else {
+            return steal<T>(release(self));
+        }
+    }
+
+    template <std::invocable<T> F> requires (meta::has_python<std::invoke_result_t<F, T>>)
+    [[nodiscard]] auto and_then(this auto&& self, F&& f)
+        -> Result<std::invoke_result_t<F, T>>::type
+    {
+        if (self.index()) {
+            return None;
+        }
+        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+            return std::forward<F>(f)(borrow<T>(ptr(self)));
+        } else {
+            return std::forward<F>(f)(steal<T>(release(self)));
+        }
+    }
+
+    template <std::invocable<> F> requires (meta::has_python<std::invoke_result_t<F>>)
+    [[nodiscard]] auto or_else(this auto&& self, F&& f)
+        -> Result<std::invoke_result_t<F>>::type
+    {
+        if (!self.index()) {
+            return None;
+        }
+        return std::forward<F>(f)();
+    }
+};
+
+
+template <typename T>
+struct interface<Type<Optional<T>>> {
+private:
+    using type = interface<Optional<T>>;
+
+public:
+    static constexpr size_t size() noexcept { return type::size(); }
+
+    template <size_t I> requires (I < size())
+    using at = type::template at<I>;
+
+    template <typename U, meta::inherits<type> Self>
+        requires (std::same_as<U, T> || std::same_as<U, NoneType>)
+    [[nodiscard]] decltype(auto) holds_alternative(Self&& self) {
+        return std::forward<Self>(self).template holds_alternative<T>();
+    }
+
+    template <typename U, meta::inherits<type> Self>
+        requires (std::same_as<U, T> || std::same_as<U, NoneType>)
+    [[nodiscard]] static decltype(auto) get(Self&& self) {
+        return std::forward<Self>(self).template get<U>();
+    }
+
+    template <size_t I, meta::inherits<type> Self> requires (I < size())
+    [[nodiscard]] static decltype(auto) get(Self&& self) {
+        return std::forward<Self>(self).template get<I>();
+    }
+
+    template <typename U, meta::inherits<type> Self>
+        requires (std::same_as<U, T> || std::same_as<U, NoneType>)
+    [[nodiscard]] static decltype(auto) get_if(Self&& self) {
+        return std::forward<Self>(self).template get_if<U>();
+    }
+
+    template <size_t I, meta::inherits<type> Self> requires (I < size())
+    [[nodiscard]] static decltype(auto) get_if(Self&& self) {
+        return std::forward<Self>(self).template get_if<I>();
+    }
+
+    template <meta::inherits<type> Self, typename Func, typename... Args>
+        requires (meta::exhaustive<Func, Self, Args...>)
+    static decltype(auto) visit(
+        Self&& self,
+        Func&& visitor,
+        Args&&... args
+    ) {
+        return bertrand::visit(
+            std::forward<Func>(visitor),
+            std::forward<Self>(self),
+            std::forward<Args>(args)...
+        );
+    }
+
+    template <meta::inherits<type> Self>
+    [[nodiscard]] static decltype(auto) has_value(Self&& self) {
+        return std::forward<Self>(self).has_value();
+    }
+
+    template <meta::inherits<type> Self>
+    [[nodiscard]] static decltype(auto) value(Self&& self) {
+        return std::forward<Self>(self).value();
+    }
+
+    template <meta::inherits<type> Self, std::convertible_to<T> U>
+    [[nodiscard]] static decltype(auto) value_or(Self&& self, U&& val) {
+        return std::forward<Self>(self).value_or(std::forward<U>(val));
+    }
+
+    template <meta::inherits<type> Self, std::invocable<T> F>
+        requires (meta::has_python<std::invoke_result_t<F, T>>)
+    [[nodiscard]] static decltype(auto) and_then(Self&& self, F&& f) {
+        return std::forward<Self>(self).and_then(std::forward<F>(f));
+    }
+
+    template <meta::inherits<type> Self, std::invocable<> F>
+        requires (meta::has_python<std::invoke_result_t<F>>)
+    [[nodiscard]] static decltype(auto) or_else(Self&& self, F&& f) {
+        return std::forward<Self>(self).or_else(std::forward<F>(f));
+    }
+};
+
+
 template <meta::python... Types>
     requires (
         sizeof...(Types) > 1 &&
         (!meta::is_qualified<Types> && ...) &&
-        meta::types_are_unique<Types...>
+        meta::types_are_unique<Types...> &&
+        !(meta::Union<Types> || ...)
     )
 struct Union : Object, interface<Union<Types...>> {
 protected:
@@ -2678,7 +2898,25 @@ struct __ior__<L, R> : returns<typename impl::UnionInplaceOr<L, R>::type> {
 };
 
 
+inline void test2() {
+    Object o;
+    Optional<Object> x;
+    auto y = x;
+    auto z = x + o;
+    auto w = x.or_else([] { return Ellipsis; });
+    Optional<Slice> s(None, None, None);
+}
+
+
 }  // namespace bertrand
+
+
+namespace std {
+
+    /// TODO: std::holds_alternative<>, variant_size<>, variant_alternative<>, etc.
+    /// std::get<T>, std::get<I>, std::get_if<T>, std::get_if<I>
+
+}
 
 
 /// TODO: std::get<>, etc. for Union<...> types.  Also, I broke the automatic type
