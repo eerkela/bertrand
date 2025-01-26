@@ -683,12 +683,17 @@ struct interface<Union<Types...>> : impl::union_tag {
     template <size_t I> requires (I < size())
     using at = meta::unpack_type<I, Types...>;
 
-    template <typename T> requires (std::same_as<T, Types> || ...)
+    template <typename T>
+    [[nodiscard]] static constexpr bool contains() noexcept {
+        return (std::same_as<T, Types> || ...);
+    }
+
+    template <typename T> requires (contains<T>())
     [[nodiscard]] bool holds_alternative(this auto&& self) {
         return self.index() == meta::index_of<T, Types...>;
     }
 
-    template <typename T> requires (std::same_as<T, Types> || ...)
+    template <typename T> requires (contains<T>())
     [[nodiscard]] auto get(this auto&& self) -> T {
         if (self.index() != meta::index_of<T, Types...>) {
             throw TypeError(
@@ -716,7 +721,7 @@ struct interface<Union<Types...>> : impl::union_tag {
         }
     }
 
-    template <typename T> requires (std::same_as<T, Types> || ...)
+    template <typename T> requires (contains<T>())
     [[nodiscard]] auto get_if(this auto&& self) -> Optional<T> {
         if (self.index() != meta::index_of<T, Types...>) {
             return None;
@@ -767,32 +772,32 @@ public:
     template <size_t I> requires (I < size())
     using at = type::template at<I>;
 
-    template <typename T, meta::inherits<type> Self>
-        requires (std::same_as<T, Types> || ...)
+    template <typename T>
+    [[nodiscard]] static constexpr bool contains() noexcept {
+        return type::template contains<T>();
+    }
+
+    template <typename T, meta::inherits<type> Self> requires (contains<T>())
     [[nodiscard]] bool holds_alternative(Self&& self) {
         return std::forward<Self>(self).template holds_alternative<T>();
     }
 
-    template <typename T, meta::inherits<type> Self>
-        requires (std::same_as<T, Types> || ...)
+    template <typename T, meta::inherits<type> Self> requires (contains<T>())
     [[nodiscard]] static auto get(Self&& self) -> T {
         return std::forward<Self>(self).template get<T>();
     }
 
-    template <size_t I, meta::inherits<type> Self>
-        requires (I < size())
+    template <size_t I, meta::inherits<type> Self> requires (I < size())
     [[nodiscard]] static auto get(Self&& self) -> at<I> {
         return std::forward<Self>(self).template get<I>();
     }
 
-    template <typename T, meta::inherits<type> Self>
-        requires (std::same_as<T, Types> || ...)
+    template <typename T, meta::inherits<type> Self> requires (contains<T>())
     [[nodiscard]] static auto get_if(Self&& self) -> Optional<T> {
         return std::forward<Self>(self).template get_if<T>();
     }
 
-    template <size_t I, meta::inherits<type> Self>
-        requires (I < size())
+    template <size_t I, meta::inherits<type> Self> requires (I < size())
     [[nodiscard]] static auto get_if(Self&& self) -> Optional<at<I>> {
         return std::forward<Self>(self).template get_if<I>();
     }
@@ -828,12 +833,17 @@ public:
     template <size_t I> requires (I < size())
     using at = std::conditional_t<I == 0, T, NoneType>;
 
-    template <typename U> requires (std::same_as<U, T> || std::same_as<U, NoneType>)
+    template <typename U>
+    [[nodiscard]] static constexpr bool contains() noexcept {
+        return std::same_as<U, T> || std::same_as<U, NoneType>;
+    }
+
+    template <typename U> requires (contains<U>())
     [[nodiscard]] bool holds_alternative(this auto&& self) {
         return self.index() == std::same_as<U, NoneType>;
     }
 
-    template <typename U> requires (std::same_as<U, T> || std::same_as<U, NoneType>)
+    template <typename U> requires (contains<U>())
     [[nodiscard]] U get(this auto&& self) {
         if (self.index() != std::same_as<U, NoneType>) {
             throw TypeError(
@@ -861,7 +871,7 @@ public:
         }
     }
 
-    template <typename U> requires (std::same_as<U, T> || std::same_as<U, NoneType>)
+    template <typename U> requires (contains<U>())
     [[nodiscard]] Optional<U> get_if(this auto&& self) {
         if (self.index() != std::same_as<U, NoneType>) {
             return None;
@@ -965,14 +975,17 @@ public:
     template <size_t I> requires (I < size())
     using at = type::template at<I>;
 
-    template <typename U, meta::inherits<type> Self>
-        requires (std::same_as<U, T> || std::same_as<U, NoneType>)
+    template <typename U>
+    [[nodiscard]] static constexpr bool contains() noexcept {
+        return type::template contains<U>();
+    }
+
+    template <typename U, meta::inherits<type> Self> requires (contains<U>())
     [[nodiscard]] decltype(auto) holds_alternative(Self&& self) {
         return std::forward<Self>(self).template holds_alternative<T>();
     }
 
-    template <typename U, meta::inherits<type> Self>
-        requires (std::same_as<U, T> || std::same_as<U, NoneType>)
+    template <typename U, meta::inherits<type> Self> requires (contains<U>())
     [[nodiscard]] static decltype(auto) get(Self&& self) {
         return std::forward<Self>(self).template get<U>();
     }
@@ -982,8 +995,7 @@ public:
         return std::forward<Self>(self).template get<I>();
     }
 
-    template <typename U, meta::inherits<type> Self>
-        requires (std::same_as<U, T> || std::same_as<U, NoneType>)
+    template <typename U, meta::inherits<type> Self> requires (contains<U>())
     [[nodiscard]] static decltype(auto) get_if(Self&& self) {
         return std::forward<Self>(self).template get_if<U>();
     }
@@ -1046,7 +1058,7 @@ template <meta::python... Types>
 struct Union : Object, interface<Union<Types...>> {
 protected:
     struct infer_t {};
-    struct emplace_t { size_t index; };
+    struct inplace_t { size_t index; };
 
     template <size_t I, typename From>
     struct infer_index {
@@ -1094,7 +1106,7 @@ protected:
     size_t m_index;
 
     template <typename T>
-    Union(T&& value, emplace_t t) :
+    Union(T&& value, inplace_t t) :
         Object(std::forward<T>(value)),
         m_index(t.index)
     {}
@@ -1297,12 +1309,13 @@ int main() {
         infer_t{}
     ) {}
 
-    /* Construct the union in-place from one of its consituent types. */
-    template <typename T, typename... Args> requires (std::same_as<T, Types> || ...)
-    [[nodiscard]] static Union emplace(Args&&... args) {
+    /* Construct the union in-place by calling a consituent constructor. */
+    template <typename T, typename... Args>
+        requires ((std::same_as<T, Types> || ...) && std::constructible_from<T, Args...>)
+    [[nodiscard]] static Union construct(Args&&... args) {
         return Union(
             T(std::forward<Args>(args)...),
-            emplace_t{meta::index_of<T, Types...>}
+            inplace_t{meta::index_of<T, Types...>}
         );
     }
 
@@ -1332,7 +1345,7 @@ template <typename T> requires (__initializer__<T>::enable)
 struct __initializer__<Optional<T>>                        : returns<Optional<T>> {
     using Element = __initializer__<T>::type;
     static Optional<T> operator()(const std::initializer_list<Element>& init) {
-        return Optional<T>::template emplace<T>(init);
+        return Optional<T>::template construct<T>(init);
     }
 };
 
@@ -1351,9 +1364,9 @@ struct __init__<Union<Ts...>>                               : returns<Union<Ts..
 
     static Union<Ts...> operator()() {
         if constexpr ((std::same_as<NoneType, Ts> || ...)) {
-            return Union<Ts...>::template emplace<NoneType>();
+            return Union<Ts...>::template construct<NoneType>();
         } else {
-            return Union<Ts...>::template emplace<typename constructible<Ts...>::type>();
+            return Union<Ts...>::template construct<typename constructible<Ts...>::type>();
         }
     }
 };
@@ -1365,7 +1378,7 @@ template <typename T, typename... Args>
     requires (sizeof...(Args) > 0 && std::constructible_from<T, Args...>)
 struct __init__<Optional<T>, Args...>                       : returns<Optional<T>> {
     static Optional<T> operator()(Args&&... args) {
-        return Optional<T>::template emplace<T>(std::forward<Args>(args)...);
+        return Optional<T>::template construct<T>(std::forward<Args>(args)...);
     }
 };
 
@@ -1393,11 +1406,11 @@ struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts..
     static Union<Ts...> operator()(From from) {
         using F = std::remove_cvref_t<meta::python_type<From>>;
         if constexpr (!std::is_void_v<typename match<F, Ts...>::type>) {
-            return Union<Ts...>::template emplace<typename match<F, Ts...>::type>(
+            return Union<Ts...>::template construct<typename match<F, Ts...>::type>(
                 std::forward<From>(from)
             );
         } else {
-            return Union<Ts...>::template emplace<typename convert<From, Ts...>::type>(
+            return Union<Ts...>::template construct<typename convert<From, Ts...>::type>(
                 std::forward<From>(from)
             );
         }
@@ -1481,11 +1494,11 @@ struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts..
             []<typename T>(T&& value) -> Union<Ts...> {
                 using F = std::remove_cvref_t<meta::python_type<T>>;
                 if constexpr (!std::is_void_v<typename match<F, Ts...>::type>) {
-                    return Union<Ts...>::template emplace<typename match<F, Ts...>::type>(
+                    return Union<Ts...>::template construct<typename match<F, Ts...>::type>(
                         std::forward<T>(value)
                     );
                 } else {
-                    return Union<Ts...>::template emplace<typename convert<T, Ts...>::type>(
+                    return Union<Ts...>::template construct<typename convert<T, Ts...>::type>(
                         std::forward<T>(value)
                     );
                 }
@@ -1522,16 +1535,16 @@ struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts..
         if (from.has_value()) {
             using F = std::remove_cvref_t<meta::python_type<T>>;
             if constexpr (!std::is_void_v<typename match<F, Ts...>::type>) {
-                return Union<Ts...>::template emplace<typename match<F, Ts...>::type>(
+                return Union<Ts...>::template construct<typename match<F, Ts...>::type>(
                     *std::forward<From>(from)
                 );
             } else {
-                return Union<Ts...>::template emplace<typename convert<T, Ts...>::type>(
+                return Union<Ts...>::template construct<typename convert<T, Ts...>::type>(
                     *std::forward<From>(from)
                 );
             }
         } else {
-            return Union<Ts...>::template emplace<NoneType>();
+            return Union<Ts...>::template construct<NoneType>();
         }
     }
 };
@@ -1563,16 +1576,16 @@ struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts..
         if (from) {
             using F = std::remove_cvref_t<meta::python_type<T>>;
             if constexpr (!std::is_void_v<typename match<F, Ts...>::type>) {
-                return Union<Ts...>::template emplace<typename match<F, Ts...>::type>(
+                return Union<Ts...>::template construct<typename match<F, Ts...>::type>(
                     *from
                 );
             } else {
-                return Union<Ts...>::template emplace<typename convert<T, Ts...>::type>(
+                return Union<Ts...>::template construct<typename convert<T, Ts...>::type>(
                     *from
                 );
             }
         } else {
-            return Union<Ts...>::template emplace<NoneType>();
+            return Union<Ts...>::template construct<NoneType>();
         }
     }
 };
@@ -1604,16 +1617,16 @@ struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts..
         if (from) {
             using F = std::remove_cvref_t<meta::python_type<T>>;
             if constexpr (!std::is_void_v<typename match<F, Ts...>::type>) {
-                return Union<Ts...>::template emplace<typename match<F, Ts...>::type>(
+                return Union<Ts...>::template construct<typename match<F, Ts...>::type>(
                     *from
                 );
             } else {
-                return Union<Ts...>::template emplace<typename convert<T, Ts...>::type>(
+                return Union<Ts...>::template construct<typename convert<T, Ts...>::type>(
                     *from
                 );
             }
         } else {
-            return Union<Ts...>::template emplace<NoneType>();
+            return Union<Ts...>::template construct<NoneType>();
         }
     }
 };
@@ -1645,16 +1658,16 @@ struct __cast__<From, Union<Ts...>>                         : returns<Union<Ts..
         if (from) {
             using F = std::remove_cvref_t<meta::python_type<T>>;
             if constexpr (!std::is_void_v<typename match<F, Ts...>::type>) {
-                return Union<Ts...>::template emplace<typename match<F, Ts...>::type>(
+                return Union<Ts...>::template construct<typename match<F, Ts...>::type>(
                     *from
                 );
             } else {
-                return Union<Ts...>::template emplace<typename convert<T, Ts...>::type>(
+                return Union<Ts...>::template construct<typename convert<T, Ts...>::type>(
                     *from
                 );
             }
         } else {
-            return Union<Ts...>::template emplace<NoneType>();
+            return Union<Ts...>::template construct<NoneType>();
         }
     }
 };
@@ -2903,16 +2916,37 @@ struct __ior__<L, R> : returns<typename impl::UnionInplaceOr<L, R>::type> {
 
 namespace std {
 
-    /// TODO: std::holds_alternative<>, variant_size<>, variant_alternative<>, etc.
-    /// std::get<T>, std::get<I>, std::get_if<T>, std::get_if<I>
+    template <typename T, bertrand::meta::Union U>
+        requires (std::remove_cvref_t<U>::template contains<T>())
+    [[nodiscard]] bool holds_alternative(U&& u) noexcept {
+        return std::forward<U>(u).template holds_alternative<T>();
+    }
+
+    template <typename T, bertrand::meta::Union U>
+        requires (std::remove_cvref_t<U>::template contains<T>())
+    [[nodiscard]] auto get(U&& u) {
+        return std::forward<U>(u).template get<T>();
+    }
+
+    template <size_t I, bertrand::meta::Union U>
+        requires (I < std::remove_cvref_t<U>::size())
+    [[nodiscard]] auto get(U&& u) {
+        return std::forward<U>(u).template get<I>();
+    }
+
+    template <typename T, bertrand::meta::Union U>
+        requires (std::remove_cvref_t<U>::template contains<T>())
+    [[nodiscard]] auto get_if(U&& u) {
+        return std::forward<U>(u).template get_if<T>();
+    }
+
+    template <size_t I, bertrand::meta::Union U>
+        requires (I < std::remove_cvref_t<U>::size())
+    [[nodiscard]] auto get_if(U&& u) {
+        return std::forward<U>(u).template get_if<I>();
+    }
 
 }
-
-
-/// TODO: std::get<>, etc. for Union<...> types.  Also, I broke the automatic type
-/// deduction somewhere along the way.  Probably the only way to adequately address
-/// this is after most of the rest of the interface is defined, since that's the only
-/// time all the control structures will be correctly set up.
 
 
 #endif
