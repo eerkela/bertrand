@@ -55,25 +55,41 @@ namespace bertrand {
 
 
 namespace impl {
-    /// TODO: convert tags to snake_case
-    struct BertrandTag {};
-    struct UnionTag : BertrandTag {};
-    struct OptionalTag : UnionTag {};
-    struct IterTag : BertrandTag {};
-    struct FunctionTag : BertrandTag {};
-    struct TypeTag : BertrandTag {};
-    struct ModuleTag : BertrandTag {};
-    struct TupleTag : BertrandTag {};
-    struct ListTag : BertrandTag{};
-    struct SetTag : BertrandTag {};
-    struct FrozenSetTag : BertrandTag {};
-    struct KeyTag : BertrandTag {};
-    struct ValueTag : BertrandTag {};
-    struct ItemTag : BertrandTag {};
-    struct DictTag : BertrandTag {};
-    struct MappingProxyTag : BertrandTag {};
-
-    struct empty_interface : BertrandTag {};
+    struct bertrand_tag {};
+    struct empty_interface : bertrand_tag {};
+    struct iter_tag : bertrand_tag {};
+    struct function_tag : bertrand_tag {};
+    struct type_tag : bertrand_tag {};
+    struct module_tag : bertrand_tag {};
+    struct union_tag : bertrand_tag {};
+    struct optional_tag : union_tag {};
+    struct intersection_tag : bertrand_tag {};
+    struct none_tag : bertrand_tag {};
+    struct notimplemented_tag : bertrand_tag {};
+    struct ellipsis_tag : bertrand_tag {};
+    struct slice_tag : bertrand_tag {};
+    struct bool_tag : bertrand_tag {};
+    struct int_tag : bertrand_tag {};
+    struct float_tag : bertrand_tag {};
+    struct complex_tag : bertrand_tag {};
+    struct str_tag : bertrand_tag {};
+    struct bytes_tag : bertrand_tag {};
+    struct bytearray_tag : bertrand_tag {};
+    struct date_tag : bertrand_tag {};
+    struct time_tag : bertrand_tag {};
+    struct datetime_tag : bertrand_tag {};
+    struct timedelta_tag : bertrand_tag {};
+    struct timezone_tag : bertrand_tag {};
+    struct range_tag : bertrand_tag {};
+    struct tuple_tag : bertrand_tag {};
+    struct list_tag : bertrand_tag {};
+    struct set_tag : bertrand_tag {};
+    struct frozenset_tag : bertrand_tag {};
+    struct dict_tag : bertrand_tag {};
+    struct key_view_tag : bertrand_tag {};
+    struct value_view_tag : bertrand_tag {};
+    struct item_view_tag : bertrand_tag {};
+    struct mapping_proxy_tag : bertrand_tag {};
 
     /* Library constructor runs BEFORE a `main()` entry point and ensures the Python
     interpreter is available for any static/global constructors, without explicit
@@ -97,7 +113,7 @@ namespace impl {
 
     /* A static RAII guard that initializes the Python interpreter the first time a Python
     object is created and finalizes it when the program exits. */
-    struct Interpreter : impl::BertrandTag {
+    struct Interpreter {
         /* Ensure that the interpreter is active within the given context.  This is
         called internally whenever a Python object is created from pure C++ inputs, and
         is not called in any other context in order to avoid unnecessary overhead. */
@@ -161,17 +177,11 @@ namespace meta {
     template <typename T>
     concept cpp = !python<T>;
 
-    template <typename T>
-    concept Union = inherits<T, impl::UnionTag>;
-
-    template <typename T>
-    concept Optional = inherits<T, impl::OptionalTag>;
-
 }
 
 
 /* Base class for disabled control structures. */
-struct disable : impl::BertrandTag {
+struct disable {
     static constexpr bool enable = false;
 };
 
@@ -179,7 +189,7 @@ struct disable : impl::BertrandTag {
 /* Base class for enabled control structures.  Encodes the return type as a template
 parameter. */
 template <typename T>
-struct returns : impl::BertrandTag {
+struct returns {
     static constexpr bool enable = true;
     using type = T;
 };
@@ -2378,11 +2388,11 @@ namespace meta {
 
         template <typename T, typename = void>
         struct python {
-            static constexpr bool enable = __cast__<T>::enable;
             template <typename U>
             struct helper { using type = void; };
             template <typename U> requires (__cast__<U>::enable)
             struct helper<U> { using type = __cast__<U>::type; };
+            static constexpr bool enable = __cast__<T>::enable;
             using type = helper<T>::type;
         };
         template <typename T>
@@ -2393,13 +2403,13 @@ namespace meta {
                 std::remove_cvref_t<T>,
                 typename std::remove_cvref_t<T>::__python__::__object__
             >;
-            using type = T;
+            using type = __cast__<T>::type;
         };
 
         template <typename T>
         struct python_type { using type = python<T>::type; };
         template <meta::python T>
-        struct python_type<T> { using type = T; };
+        struct python_type<T> { using type = __cast__<T>::type; };
 
     }  // namespace detail
 
@@ -2408,9 +2418,193 @@ namespace meta {
     template <has_python T>
     using python_type = detail::python_type<T>::type;
 
+    template <typename T>
+    concept Object = is<T, bertrand::Object> || (
+        python<T> &&
+        is<python_type<T>, bertrand::Object>
+    );
+
+    template <typename T>
+    concept Iterator = inherits<T, impl::iter_tag>;
+    template <typename T>
+    concept IteratorLike = has_python<T> && Iterator<python_type<T>>;
+
+    template <typename T>
+    concept Function = inherits<T, impl::function_tag>;
+    template <typename T>
+    concept FunctionLike = has_python<T> && Function<python_type<T>>;
+
+    template <typename T>
+    concept Type = inherits<T, impl::type_tag>;
+    template <typename T>
+    concept TypeLike = has_python<T> && Type<python_type<T>>;
+
+    template <typename T>
+    concept Module = inherits<T, impl::module_tag>;
+    template <typename T>
+    concept ModuleLike = has_python<T> && Module<python_type<T>>;
+
+    template <typename T>
+    concept Union = inherits<T, impl::union_tag>;
+    template <typename T>
+    concept UnionLike = has_python<T> && Union<python_type<T>>;
+
+    template <typename T>
+    concept Optional = inherits<T, impl::optional_tag>;
+    template <typename T>
+    concept OptionalLike = has_python<T> && Optional<python_type<T>>;
+
+    template <typename T>
+    concept Intersection = inherits<T, impl::intersection_tag>;
+    template <typename T>
+    concept IntersectionLike = has_python<T> && Intersection<python_type<T>>;
+
+    template <typename T>
+    concept None = inherits<T, impl::none_tag>;
+    template <typename T>
+    concept NoneLike = has_python<T> && None<python_type<T>>;
+
+    template <typename T>
+    concept NotImplemented = inherits<T, impl::notimplemented_tag>;
+    template <typename T>
+    concept NotImplementedLike = has_python<T> && NotImplemented<python_type<T>>;
+
+    template <typename T>
+    concept Ellipsis = inherits<T, impl::ellipsis_tag>;
+    template <typename T>
+    concept EllipsisLike = has_python<T> && Ellipsis<python_type<T>>;
+
+    template <typename T>
+    concept Slice = inherits<T, impl::slice_tag>;
+    template <typename T>
+    concept SliceLike = has_python<T> && Slice<python_type<T>>;
+
+    template <typename T>
+    concept Bool = inherits<T, impl::bool_tag>;
+    template <typename T>
+    concept BoolLike = has_python<T> && Bool<python_type<T>>;
+
+    template <typename T>
+    concept Int = inherits<T, impl::int_tag>;
+    template <typename T>
+    concept IntLike = has_python<T> && Int<python_type<T>>;
+
+    template <typename T>
+    concept Float = inherits<T, impl::float_tag>;
+    template <typename T>
+    concept FloatLike = has_python<T> && Float<python_type<T>>;
+
+    template <typename T>
+    concept Complex = inherits<T, impl::complex_tag>;
+    template <typename T>
+    concept ComplexLike = has_python<T> && Complex<python_type<T>>;
+
+    template <typename T>
+    concept Str = inherits<T, impl::str_tag>;
+    template <typename T>
+    concept StrLike = has_python<T> && Str<python_type<T>>;
+
+    template <typename T>
+    concept Bytes = inherits<T, impl::bytes_tag>;
+    template <typename T>
+    concept BytesLike = has_python<T> && Bytes<python_type<T>>;
+
+    template <typename T>
+    concept ByteArray = inherits<T, impl::bytearray_tag>;
+    template <typename T>
+    concept ByteArrayLike = has_python<T> && ByteArray<python_type<T>>;
+
+    template <typename T>
+    concept Date = inherits<T, impl::date_tag>;
+    template <typename T>
+    concept DateLike = has_python<T> && Date<python_type<T>>;
+
+    template <typename T>
+    concept Time = inherits<T, impl::time_tag>;
+    template <typename T>
+    concept TimeLike = has_python<T> && Time<python_type<T>>;
+
+    template <typename T>
+    concept DateTime = inherits<T, impl::datetime_tag>;
+    template <typename T>
+    concept DateTimeLike = has_python<T> && DateTime<python_type<T>>;
+
+    template <typename T>
+    concept Timedelta = inherits<T, impl::timedelta_tag>;
+    template <typename T>
+    concept TimedeltaLike = has_python<T> && Timedelta<python_type<T>>;
+
+    template <typename T>
+    concept Timezone = inherits<T, impl::timezone_tag>;
+    template <typename T>
+    concept TimezoneLike = has_python<T> && Timezone<python_type<T>>;
+
+    template <typename T>
+    concept Range = inherits<T, impl::range_tag>;
+    template <typename T>
+    concept RangeLike = has_python<T> && Range<python_type<T>>;
+
+    template <typename T>
+    concept Tuple = inherits<T, impl::tuple_tag>;
+    template <typename T>
+    concept TupleLike = has_python<T> && Tuple<python_type<T>>;
+
+    template <typename T>
+    concept List = inherits<T, impl::list_tag>;
+    template <typename T>
+    concept ListLike = has_python<T> && List<python_type<T>>;
+
+    template <typename T>
+    concept Set = inherits<T, impl::set_tag>;
+    template <typename T>
+    concept SetLike = has_python<T> && Set<python_type<T>>;
+
+    template <typename T>
+    concept FrozenSet = inherits<T, impl::frozenset_tag>;
+    template <typename T>
+    concept FrozenSetLike = has_python<T> && FrozenSet<python_type<T>>;
+
+    template <typename T>
+    concept Dict = inherits<T, impl::dict_tag>;
+    template <typename T>
+    concept DictLike = has_python<T> && Dict<python_type<T>>;
+
+    template <typename T>
+    concept KeyView = inherits<T, impl::key_view_tag>;
+    template <typename T>
+    concept KeyViewLike = has_python<T> && KeyView<python_type<T>>;
+
+    template <typename T>
+    concept ValueView = inherits<T, impl::value_view_tag>;
+    template <typename T>
+    concept ValueViewLike = has_python<T> && ValueView<python_type<T>>;
+
+    template <typename T>
+    concept ItemView = inherits<T, impl::item_view_tag>;
+    template <typename T>
+    concept ItemViewLike = has_python<T> && ItemView<python_type<T>>;
+
+    template <typename T>
+    concept MappingProxy = inherits<T, impl::mapping_proxy_tag>;
+    template <typename T>
+    concept MappingProxyLike = has_python<T> && MappingProxy<python_type<T>>;
+
 }  // namespace meta
 
 
+template <typename Begin, typename End = void, typename Container = void>
+    requires ((
+        meta::python<Begin> &&
+        !meta::is_qualified<Begin> &&
+        meta::is_void<End> &&
+        meta::is_void<Container>
+    ) || (
+        std::input_or_output_iterator<Begin> &&
+        std::sentinel_for<End, Begin> &&
+        meta::has_python<decltype(*std::declval<Begin>())> &&
+        (meta::is_void<Container> || meta::iterable<Container>)
+    ))
+struct Iterator;
 template <meta::py_function Func>
 struct Function;
 template <meta::has_python T = Object>
@@ -2480,71 +2674,73 @@ namespace meta {
 
     namespace detail {
 
+        template <typename Begin, typename End, typename Container>
+        inline constexpr bool builtin_type<bertrand::Iterator<Begin, End, Container>> = true;
         template <typename T>
-        inline constexpr bool builtin_type<Function<T>> = true;
+        inline constexpr bool builtin_type<bertrand::Function<T>> = true;
         template <typename T>
-        inline constexpr bool builtin_type<Type<T>> = true;
+        inline constexpr bool builtin_type<bertrand::Type<T>> = true;
         template <bertrand::static_str Name>
-        inline constexpr bool builtin_type<Module<Name>> = true;
+        inline constexpr bool builtin_type<bertrand::Module<Name>> = true;
         template <typename... Ts>
         inline constexpr bool builtin_type<bertrand::Union<Ts...>> = true;
         template <typename... Ts>
-        inline constexpr bool builtin_type<Intersection<Ts...>> = true;
+        inline constexpr bool builtin_type<bertrand::Intersection<Ts...>> = true;
         template<>
-        inline constexpr bool builtin_type<NoneType> = true;
+        inline constexpr bool builtin_type<bertrand::NoneType> = true;
         template<>
-        inline constexpr bool builtin_type<NotImplementedType> = true;
+        inline constexpr bool builtin_type<bertrand::NotImplementedType> = true;
         template<>
-        inline constexpr bool builtin_type<EllipsisType> = true;
+        inline constexpr bool builtin_type<bertrand::EllipsisType> = true;
         template<>
-        inline constexpr bool builtin_type<Slice> = true;
+        inline constexpr bool builtin_type<bertrand::Slice> = true;
         template<>
-        inline constexpr bool builtin_type<Bool> = true;
+        inline constexpr bool builtin_type<bertrand::Bool> = true;
         template<>
-        inline constexpr bool builtin_type<Float> = true;
+        inline constexpr bool builtin_type<bertrand::Float> = true;
         template<>
-        inline constexpr bool builtin_type<Complex> = true;
+        inline constexpr bool builtin_type<bertrand::Complex> = true;
         template<>
-        inline constexpr bool builtin_type<Str> = true;
+        inline constexpr bool builtin_type<bertrand::Str> = true;
         template<>
-        inline constexpr bool builtin_type<Bytes> = true;
+        inline constexpr bool builtin_type<bertrand::Bytes> = true;
         template<>
-        inline constexpr bool builtin_type<ByteArray> = true;
+        inline constexpr bool builtin_type<bertrand::ByteArray> = true;
         template<>
-        inline constexpr bool builtin_type<Date> = true;
+        inline constexpr bool builtin_type<bertrand::Date> = true;
         template<>
-        inline constexpr bool builtin_type<Time> = true;
+        inline constexpr bool builtin_type<bertrand::Time> = true;
         template<>
-        inline constexpr bool builtin_type<Datetime> = true;
+        inline constexpr bool builtin_type<bertrand::Datetime> = true;
         template<>
-        inline constexpr bool builtin_type<Timedelta> = true;
+        inline constexpr bool builtin_type<bertrand::Timedelta> = true;
         template<>
-        inline constexpr bool builtin_type<Timezone> = true;
+        inline constexpr bool builtin_type<bertrand::Timezone> = true;
         template<>
-        inline constexpr bool builtin_type<Range> = true;
+        inline constexpr bool builtin_type<bertrand::Range> = true;
         template <typename T>
-        inline constexpr bool builtin_type<List<T>> = true;
+        inline constexpr bool builtin_type<bertrand::List<T>> = true;
         template <typename T>
-        inline constexpr bool builtin_type<Tuple<T>> = true;
+        inline constexpr bool builtin_type<bertrand::Tuple<T>> = true;
         template <typename T>
-        inline constexpr bool builtin_type<Set<T>> = true;
+        inline constexpr bool builtin_type<bertrand::Set<T>> = true;
         template <typename T>
-        inline constexpr bool builtin_type<FrozenSet<T>> = true;
+        inline constexpr bool builtin_type<bertrand::FrozenSet<T>> = true;
         template <typename K, typename V>
-        inline constexpr bool builtin_type<Dict<K, V>> = true;
+        inline constexpr bool builtin_type<bertrand::Dict<K, V>> = true;
         template <typename M>
-        inline constexpr bool builtin_type<KeyView<M>> = true;
+        inline constexpr bool builtin_type<bertrand::KeyView<M>> = true;
         template <typename M>
-        inline constexpr bool builtin_type<ValueView<M>> = true;
+        inline constexpr bool builtin_type<bertrand::ValueView<M>> = true;
         template <typename M>
-        inline constexpr bool builtin_type<ItemView<M>> = true;
+        inline constexpr bool builtin_type<bertrand::ItemView<M>> = true;
         template <typename M>
-        inline constexpr bool builtin_type<MappingProxy<M>> = true;
+        inline constexpr bool builtin_type<bertrand::MappingProxy<M>> = true;
 
         template <typename T, typename = void>
         constexpr bool has_type = false;
         template <typename T>
-        constexpr bool has_type<T, std::void_t<Type<T>>> = true;
+        constexpr bool has_type<T, std::void_t<bertrand::Type<T>>> = true;
 
         template <typename T, typename = void>
         constexpr bool has_export = false;
@@ -2696,91 +2892,6 @@ namespace meta {
     template <lazily_evaluated T>
     using lazy_type = detail::lazy_type<std::remove_cvref_t<T>>::type;
 
-    template <typename T, typename Base>
-    concept like =
-        __cast__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __cast__<std::remove_cvref_t<T>>::type, Base>;
-
-    template <typename T>
-    concept type_like = like<T, impl::TypeTag>;
-
-    template <typename T>
-    concept none_like = like<T, NoneType>;
-
-    template <typename T>
-    concept notimplemented_like = like<T, NotImplementedType>;
-
-    template <typename T>
-    concept ellipsis_like = like<T, EllipsisType>;
-
-    template <typename T>
-    concept module_like = like<T, impl::ModuleTag>;
-
-    template <typename T>
-    concept bool_like = like<T, Bool>;
-
-    template <typename T>
-    concept int_like = like<T, Int>;
-
-    template <typename T>
-    concept float_like = like<T, Float>;
-
-    template <typename T>
-    concept str_like = like<T, Str>;
-
-    template <typename T>
-    concept bytes_like =
-        string_literal<T> || std::same_as<std::decay_t<T>, void*> || like<T, Bytes>;
-
-    template <typename T>
-    concept bytearray_like =
-        string_literal<T> || std::same_as<std::decay_t<T>, void*> || like<T, ByteArray>;
-
-    template <typename T>
-    concept anybytes_like = bytes_like<T> || bytearray_like<T>;
-
-    template <typename T>
-    concept timedelta_like = like<T, Timedelta>;
-
-    template <typename T>
-    concept timezone_like = like<T, Timezone>;
-
-    template <typename T>
-    concept date_like = like<T, Date>;
-
-    template <typename T>
-    concept time_like = like<T, Time>;
-
-    template <typename T>
-    concept datetime_like = like<T, Datetime>;
-
-    template <typename T>
-    concept range_like = like<T, Range>;
-
-    template <typename T>
-    concept tuple_like = like<T, impl::TupleTag>;
-
-    template <typename T>
-    concept list_like = like<T, impl::ListTag>;
-
-    template <typename T>
-    concept set_like = like<T, impl::SetTag>;
-
-    template <typename T>
-    concept frozenset_like = like<T, impl::FrozenSetTag>;
-
-    template <typename T>
-    concept anyset_like = set_like<T> || frozenset_like<T>;
-
-    template <typename T>
-    concept dict_like = like<T, impl::DictTag>;
-
-    template <typename T>
-    concept mappingproxy_like = like<T, impl::MappingProxyTag>;
-
-    template <typename T>
-    concept anydict_like = dict_like<T> || mappingproxy_like<T>;
-
     /* NOTE: some binary operators (such as lexicographic comparisons) accept generic
      * containers, which may be combined with containers of different types.  In these
      * cases, the operator should be enabled if and only if it is also supported by the
@@ -2795,42 +2906,42 @@ namespace meta {
      */
 
     template <typename L, typename R>
-    struct lt_comparable : impl::BertrandTag {
+    struct lt_comparable {
         static constexpr bool value = requires(L a, R b) {
             { a < b } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
-    struct le_comparable : impl::BertrandTag {
+    struct le_comparable {
         static constexpr bool value = requires(L a, R b) {
             { a <= b } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
-    struct eq_comparable : impl::BertrandTag {
+    struct eq_comparable {
         static constexpr bool value = requires(L a, R b) {
             { a == b } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
-    struct ne_comparable : impl::BertrandTag {
+    struct ne_comparable {
         static constexpr bool value = requires(L a, R b) {
             { a != b } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
-    struct ge_comparable : impl::BertrandTag {
+    struct ge_comparable {
         static constexpr bool value = requires(L a, R b) {
             { a >= b } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
-    struct gt_comparable : impl::BertrandTag {
+    struct gt_comparable {
         static constexpr bool value = requires(L a, R b) {
             { a > b } -> std::convertible_to<bool>;
         };
@@ -2841,7 +2952,7 @@ namespace meta {
         typename L,
         typename R
     >
-    struct Broadcast : impl::BertrandTag {
+    struct Broadcast {
         template <typename T>
         struct deref { using type = T; };
         template <iterable T>
@@ -2860,7 +2971,7 @@ namespace meta {
         typename T3,
         typename T4
     >
-    struct Broadcast<Condition, std::pair<T1, T2>, std::pair<T3, T4>> : impl::BertrandTag {
+    struct Broadcast<Condition, std::pair<T1, T2>, std::pair<T3, T4>> {
         static constexpr bool value =
             Broadcast<Condition, T1, std::pair<T3, T4>>::value &&
             Broadcast<Condition, T2, std::pair<T3, T4>>::value;
@@ -2872,7 +2983,7 @@ namespace meta {
         typename T1,
         typename T2
     >
-    struct Broadcast<Condition, L, std::pair<T1, T2>> : impl::BertrandTag {
+    struct Broadcast<Condition, L, std::pair<T1, T2>> {
         static constexpr bool value =
             Broadcast<Condition, L, T1>::value && Broadcast<Condition, L, T2>::value;
     };
@@ -2883,7 +2994,7 @@ namespace meta {
         typename T2,
         typename R
     >
-    struct Broadcast<Condition, std::pair<T1, T2>, R> : impl::BertrandTag {
+    struct Broadcast<Condition, std::pair<T1, T2>, R> {
         static constexpr bool value =
             Broadcast<Condition, T1, R>::value && Broadcast<Condition, T2, R>::value;
     };
@@ -2893,7 +3004,7 @@ namespace meta {
         typename... Ts1,
         typename... Ts2
     >
-    struct Broadcast<Condition, std::tuple<Ts1...>, std::tuple<Ts2...>> : impl::BertrandTag {
+    struct Broadcast<Condition, std::tuple<Ts1...>, std::tuple<Ts2...>> {
         static constexpr bool value =
             (Broadcast<Condition, Ts1, std::tuple<Ts2...>>::value && ...);
     };
@@ -2903,7 +3014,7 @@ namespace meta {
         typename L,
         typename... Ts
     >
-    struct Broadcast<Condition, L, std::tuple<Ts...>> : impl::BertrandTag {
+    struct Broadcast<Condition, L, std::tuple<Ts...>> {
         static constexpr bool value =
             (Broadcast<Condition, L, Ts>::value && ...);
     };
@@ -2913,7 +3024,7 @@ namespace meta {
         typename... Ts,
         typename R
     >
-    struct Broadcast<Condition, std::tuple<Ts...>, R> : impl::BertrandTag {
+    struct Broadcast<Condition, std::tuple<Ts...>, R> {
         static constexpr bool value =
             (Broadcast<Condition, Ts, R>::value && ...);
     };

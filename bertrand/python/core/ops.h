@@ -62,7 +62,7 @@ valid. */
 template <typename Self, static_str Name>
     requires (
         __delattr__<Self, Name>::enable &&
-        std::is_void_v<typename __delattr__<Self, Name>::type> && (
+        meta::is_void<typename __delattr__<Self, Name>::type> && (
             std::is_invocable_r_v<void, __delattr__<Self, Name>, Self> ||
             !std::is_invocable_v<__delattr__<Self, Name>, Self>
         )
@@ -77,7 +77,7 @@ valid. */
 template <typename Self, typename... Key>
     requires (
         __delitem__<Self, Key...>::enable &&
-        std::is_void_v<typename __delitem__<Self, Key...>::type> && (
+        meta::is_void<typename __delitem__<Self, Key...>::type> && (
             std::is_invocable_r_v<void, __delitem__<Self, Key...>, Self, Key...> ||
             !std::is_invocable_v<__delitem__<Self, Key...>, Self, Key...>
         )
@@ -145,7 +145,7 @@ namespace impl {
         template <typename S, static_str N>
             requires (
                 __delattr__<S, N>::enable &&
-                std::is_void_v<typename __delattr__<S, N>::type> && (
+                meta::is_void<typename __delattr__<S, N>::type> && (
                     std::is_invocable_r_v<void, __delattr__<S, N>, S> ||
                     !std::is_invocable_v<__delattr__<S, N>, S>
                 )
@@ -204,7 +204,7 @@ namespace impl {
         template <typename Value>
             requires (
                 __setattr__<Self, Name, Value>::enable &&
-                std::is_void_v<typename __setattr__<Self, Name, Value>::type> && (
+                meta::is_void<typename __setattr__<Self, Name, Value>::type> && (
                     std::is_invocable_r_v<void, __setattr__<Self, Name, Value>, Self, Value> || (
                         !std::is_invocable_v<__setattr__<Self, Name, Value>, Self, Value> &&
                         meta::has_cpp<Base> &&
@@ -276,7 +276,7 @@ namespace impl {
         template <typename S, typename... K>
             requires (
                 __delitem__<S, K...>::enable &&
-                std::is_void_v<typename __delitem__<S, K...>::type> && (
+                meta::is_void<typename __delitem__<S, K...>::type> && (
                     std::is_invocable_r_v<void, __delitem__<S, K...>, S, K...> ||
                     !std::is_invocable_v<__delitem__<S, K...>, S, K...>
                 )
@@ -362,7 +362,7 @@ namespace impl {
         template <typename Value>
             requires (
                 __setitem__<Self, Value, Key...>::enable &&
-                std::is_void_v<typename __setitem__<Self, Value, Key...>::type> && (
+                meta::is_void<typename __setitem__<Self, Value, Key...>::type> && (
                     std::is_invocable_r_v<void, __setitem__<Self, Value, Key...>, Self, Value, Key...> || (
                         !std::is_invocable_v<__setitem__<Self, Value, Key...>, Self, Value, Key...> &&
                         meta::has_cpp<Base> &&
@@ -424,7 +424,7 @@ namespace impl {
 template <typename Self, static_str Name>
     requires (
         __delattr__<Self, Name>::enable &&
-        std::is_void_v<typename __delattr__<Self, Name>::type> && (
+        meta::is_void<typename __delattr__<Self, Name>::type> && (
             std::is_invocable_r_v<void, __delattr__<Self, Name>, Self> ||
             !std::is_invocable_v<__delattr__<Self, Name>, Self>
         )
@@ -450,7 +450,7 @@ void del(impl::Attr<Self, Name>&& attr) {
 template <typename Self, typename... Key>
     requires (
         __delitem__<Self, Key...>::enable &&
-        std::is_void_v<typename __delitem__<Self, Key...>::type> && (
+        meta::is_void<typename __delitem__<Self, Key...>::type> && (
             std::is_invocable_r_v<void, __delitem__<Self, Key...>, Self, Key...> ||
             !std::is_invocable_v<__delitem__<Self, Key...>, Self, Key...>
         )
@@ -487,241 +487,14 @@ void del(impl::Item<Self, Key...>&& item) {
 }
 
 
-/// TODO: perhaps all of these could be avoided by exploiting inheritance for the
-/// root control structs, which would help avoid ambiguities.
-/// -> If I just use inherits<> on the actual wrapper type, then all of this should
-/// resolve itself, since inheritance between wrapper types will be handled through
-/// the interface mixins, not directly.  Only lazy wrappers or similar features will
-/// directly inherit from the control structs.  The only special case in that regard
-/// is Object itself, since all Python types will inherit from it.
-
-
-template <meta::lazily_evaluated Derived, meta::lazily_evaluated Base>
-struct __isinstance__<Derived, Base> : __isinstance__<meta::lazy_type<Derived>, meta::lazy_type<Base>> {};
-template <meta::lazily_evaluated Derived, typename Base>
-struct __isinstance__<Derived, Base> : __isinstance__<meta::lazy_type<Derived>, Base> {};
-template <typename Derived, meta::lazily_evaluated Base>
-struct __isinstance__<Derived, Base> : __isinstance__<Derived, meta::lazy_type<Base>> {};
-template <meta::lazily_evaluated Derived, meta::lazily_evaluated Base>
-struct __issubclass__<Derived, Base> : __issubclass__<meta::lazy_type<Derived>, meta::lazy_type<Base>> {};
-template <meta::lazily_evaluated Derived, typename Base>
-struct __issubclass__<Derived, Base> : __issubclass__<meta::lazy_type<Derived>, Base> {};
-template <typename Derived, meta::lazily_evaluated Base>
-struct __issubclass__<Derived, Base> : __issubclass__<Derived, meta::lazy_type<Base>> {};
-template <meta::lazily_evaluated Base, static_str Name>
-struct __getattr__<Base, Name> : __getattr__<meta::lazy_type<Base>, Name> {};
-template <meta::lazily_evaluated Base, static_str Name, typename Value>
-struct __setattr__<Base, Name, Value> : __setattr__<meta::lazy_type<Base>, Name, Value> {};
-template <meta::lazily_evaluated Base, static_str Name>
-struct __delattr__<Base, Name> : __delattr__<meta::lazy_type<Base>, Name> {};
-template <meta::lazily_evaluated Base, typename... Key>
-struct __getitem__<Base, Key...> : __getitem__<meta::lazy_type<Base>, Key...> {};
-template <meta::lazily_evaluated Base, typename Value, typename... Key>
-struct __setitem__<Base, Value, Key...> : __setitem__<meta::lazy_type<Base>, Value, Key...> {};
-template <meta::lazily_evaluated Base, typename... Key>
-struct __delitem__<Base, Key...> : __delitem__<meta::lazy_type<Base>, Key...> {};
-template <meta::lazily_evaluated Base>
-struct __len__<Base> : __len__<meta::lazy_type<Base>> {};
-template <meta::lazily_evaluated Base>
-struct __iter__<Base> : __iter__<meta::lazy_type<Base>> {};
-template <meta::lazily_evaluated Base>
-struct __reversed__<Base> : __reversed__<meta::lazy_type<Base>> {};
-template <meta::lazily_evaluated Base, typename Key>
-struct __contains__<Base, Key> : __contains__<meta::lazy_type<Base>, Key> {};
-template <meta::lazily_evaluated Base>
-struct __hash__<Base> : __hash__<meta::lazy_type<Base>> {};
-template <meta::lazily_evaluated Base>
-struct __abs__<Base> : __abs__<meta::lazy_type<Base>> {};
-template <meta::lazily_evaluated Base>
-struct __invert__<Base> : __invert__<meta::lazy_type<Base>> {};
-template <meta::lazily_evaluated Base>
-struct __pos__<Base> : __pos__<meta::lazy_type<Base>> {};
-template <meta::lazily_evaluated Base>
-struct __neg__<Base> : __neg__<meta::lazy_type<Base>> {};
-template <meta::lazily_evaluated Base>
-struct __increment__<Base> : __increment__<meta::lazy_type<Base>> {};
-template <meta::lazily_evaluated Base>
-struct __decrement__<Base> : __decrement__<meta::lazy_type<Base>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __lt__<L, R> : __lt__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __lt__<L, R> : __lt__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __lt__<L, R> : __lt__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __le__<L, R> : __le__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __le__<L, R> : __le__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __le__<L, R> : __le__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __eq__<L, R> : __eq__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __eq__<L, R> : __eq__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __eq__<L, R> : __eq__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __ne__<L, R> : __ne__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __ne__<L, R> : __ne__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __ne__<L, R> : __ne__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __ge__<L, R> : __ge__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __ge__<L, R> : __ge__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __ge__<L, R> : __ge__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __gt__<L, R> : __gt__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __gt__<L, R> : __gt__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __gt__<L, R> : __gt__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __add__<L, R> : __add__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __add__<L, R> : __add__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __add__<L, R> : __add__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __sub__<L, R> : __sub__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __sub__<L, R> : __sub__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __sub__<L, R> : __sub__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __mul__<L, R> : __mul__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __mul__<L, R> : __mul__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __mul__<L, R> : __mul__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __truediv__<L, R> : __truediv__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __truediv__<L, R> : __truediv__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __truediv__<L, R> : __truediv__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __floordiv__<L, R> : __floordiv__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __floordiv__<L, R> : __floordiv__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __floordiv__<L, R> : __floordiv__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __mod__<L, R> : __mod__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __mod__<L, R> : __mod__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __mod__<L, R> : __mod__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __pow__<L, R> : __pow__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __pow__<L, R> : __pow__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __pow__<L, R> : __pow__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __lshift__<L, R> : __lshift__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __lshift__<L, R> : __lshift__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __lshift__<L, R> : __lshift__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __rshift__<L, R> : __rshift__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __rshift__<L, R> : __rshift__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __rshift__<L, R> : __rshift__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __and__<L, R> : __and__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __and__<L, R> : __and__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __and__<L, R> : __and__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __xor__<L, R> : __xor__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __xor__<L, R> : __xor__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __xor__<L, R> : __xor__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __or__<L, R> : __or__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __or__<L, R> : __or__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __or__<L, R> : __or__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __iadd__<L, R> : __iadd__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __iadd__<L, R> : __iadd__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __iadd__<L, R> : __iadd__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __isub__<L, R> : __isub__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __isub__<L, R> : __isub__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __isub__<L, R> : __isub__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __imul__<L, R> : __imul__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __imul__<L, R> : __imul__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __imul__<L, R> : __imul__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __itruediv__<L, R> : __itruediv__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __itruediv__<L, R> : __itruediv__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __itruediv__<L, R> : __itruediv__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __ifloordiv__<L, R> : __ifloordiv__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __ifloordiv__<L, R> : __ifloordiv__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __ifloordiv__<L, R> : __ifloordiv__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __imod__<L, R> : __imod__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __imod__<L, R> : __imod__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __imod__<L, R> : __imod__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __ipow__<L, R> : __ipow__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __ipow__<L, R> : __ipow__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __ipow__<L, R> : __ipow__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __ilshift__<L, R> : __ilshift__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __ilshift__<L, R> : __ilshift__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __ilshift__<L, R> : __ilshift__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __irshift__<L, R> : __irshift__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __irshift__<L, R> : __irshift__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __irshift__<L, R> : __irshift__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __iand__<L, R> : __iand__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __iand__<L, R> : __iand__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __iand__<L, R> : __iand__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __ixor__<L, R> : __ixor__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __ixor__<L, R> : __ixor__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __ixor__<L, R> : __ixor__<L, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, meta::lazily_evaluated R>
-struct __ior__<L, R> : __ior__<meta::lazy_type<L>, meta::lazy_type<R>> {};
-template <meta::lazily_evaluated L, typename R>
-struct __ior__<L, R> : __ior__<meta::lazy_type<L>, R> {};
-template <typename L, meta::lazily_evaluated R>
-struct __ior__<L, R> : __ior__<L, meta::lazy_type<R>> {};
+/* Unary cast on a lazily-evaluated proxy redirects to the parent type, triggering a
+lookup. */
+template <meta::python T> requires (meta::lazily_evaluated<T>)
+struct __cast__<T> : returns<std::remove_cvref_t<meta::lazy_type<T>>> {
+    static std::remove_cvref_t<meta::lazy_type<T>> operator()(T value) {
+        return std::forward<T>(value);
+    }
+};
 
 
 /* Equivalent to Python `hasattr(obj, name)` with a static attribute name. */
@@ -827,7 +600,7 @@ template <static_str Name, meta::python Self>
 template <static_str Name, meta::python Self, typename Value>
     requires (
         __setattr__<Self, Name, Value>::enable &&
-        std::is_void_v<typename __setattr__<Self, Name, Value>::type> && (
+        meta::is_void<typename __setattr__<Self, Name, Value>::type> && (
             std::is_invocable_r_v<void, __setattr__<Self, Name, Value>, Self, Value> || (
                 !std::is_invocable_v<__setattr__<Self, Name, Value>, Self, Value> &&
                 meta::has_cpp<typename std::remove_cvref_t<typename __getattr__<Self, Name>::type>> &&
@@ -874,7 +647,7 @@ void setattr(Self&& self, Value&& value) {
 template <static_str Name, meta::python Self>
     requires (
         __delattr__<Self, Name>::enable && 
-        std::is_void_v<typename __delattr__<Self, Name>::type> && (
+        meta::is_void<typename __delattr__<Self, Name>::type> && (
             std::is_invocable_r_v<void, __delattr__<Self, Name>, Self> ||
             !std::is_invocable_v<__delattr__<Self, Name>, Self>
         )
@@ -905,12 +678,8 @@ void delattr(Self&& self) {
 /////////////////////////
 
 
-template <typename Begin, typename End = void, typename Container = void>
-struct Iterator;
-
-
 template <typename Begin, typename End, typename Container>
-struct interface<Iterator<Begin, End, Container>> : impl::IterTag {
+struct interface<Iterator<Begin, End, Container>> : impl::iter_tag {
 private:
 
     template <typename B, typename E, typename C>
@@ -939,7 +708,7 @@ public:
     }
 
     decltype(auto) __next__(this auto&& self) {
-        if constexpr (std::is_void_v<End>) {
+        if constexpr (meta::is_void<End>) {
             Begin next = steal<Begin>(PyIter_Next(ptr(self)));
             if (next.is(nullptr)) {
                 if (PyErr_Occurred()) {
@@ -1046,7 +815,7 @@ This will instantiate a unique Python type with an appropriate `__next__()` meth
 every combination of C++ iterators, forwarding to their respective `operator*()`,
 `operator++()`, and `operator==()` methods. */
 template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
-    requires (std::convertible_to<decltype(*std::declval<Begin>()), Object>)
+    requires (meta::has_python<decltype(*std::declval<Begin>())>)
 struct Iterator<Begin, End, void> : Object, interface<Iterator<Begin, End, void>> {
     struct __python__ : cls<__python__, Iterator>, PyObject {
         inline static bool initialized = false;
@@ -1160,7 +929,7 @@ template <
     std::sentinel_for<Begin> End,
     meta::iterable Container
 >
-    requires (std::convertible_to<decltype(*std::declval<Begin>()), Object>)
+    requires (meta::has_python<decltype(*std::declval<Begin>())>)
 struct Iterator<Begin, End, Container> : Object, interface<Iterator<Begin, End, Container>> {
     struct __python__ : cls<__python__, Iterator>, PyObject {
         inline static bool initialized = false;
@@ -1260,14 +1029,13 @@ struct Iterator<Begin, End, Container> : Object, interface<Iterator<Begin, End, 
 
 /* CTAD guide will generate a Python iterator around a pair of raw C++ iterators. */
 template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
-    requires (std::convertible_to<decltype(*std::declval<Begin>()), Object>)
+    requires (meta::has_python<decltype(*std::declval<Begin>())>)
 Iterator(Begin, End) -> Iterator<Begin, End, void>;
 
 
 /* CTAD guide will generate a Python iterator from an arbitrary C++ container, with
 correct ownership semantics. */
-template <meta::iterable Container>
-    requires (meta::yields<Container, Object>)
+template <meta::iterable Container> requires (meta::yields<Container, Object>)
 Iterator(Container&&) -> Iterator<
     typename meta::iter_traits<Container>::begin,
     typename meta::iter_traits<Container>::end,
@@ -1277,8 +1045,7 @@ Iterator(Container&&) -> Iterator<
 
 /* Implement the CTAD guide for iterable containers.  The container type may be const,
 which will be reflected in the deduced iterator types. */
-template <meta::iterable Container>
-    requires (meta::yields<Container, Object>)
+template <meta::iterable Container> requires (meta::yields<Container, Object>)
 struct __init__<
     Iterator<
         typename meta::iter_traits<Container>::begin,
@@ -1303,7 +1070,7 @@ struct __init__<
 
 /* Construct a Python iterator from a pair of C++ iterators. */
 template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
-    requires (std::convertible_to<decltype(*std::declval<Begin>()), Object>)
+    requires (meta::has_python<decltype(*std::declval<Begin>())>)
 struct __init__<Iterator<Begin, End, void>, Begin, End> : returns<Iterator<Begin, End, void>> {
     static auto operator()(auto&& begin, auto&& end) {
         return impl::construct<Iterator<Begin, End, void>>(
@@ -1314,28 +1081,29 @@ struct __init__<Iterator<Begin, End, void>, Begin, End> : returns<Iterator<Begin
 };
 
 
-/// TODO: figure out isisntance/issubclass for iterators
+/// TODO: figure out isinstance/issubclass for iterators.  Delete the 1-arg form for
+/// issubclass()?
 
 
-template <meta::is<Object> Derived, typename Return>
-struct __isinstance__<Derived, Iterator<Return, void, void>> : returns<bool> {
+template <meta::Object Derived, meta::Iterator Base>
+    requires (meta::is_void<typename std::remove_cvref_t<Base>::end_type>)
+struct __isinstance__<Derived, Base>                        : returns<bool> {
     static constexpr bool operator()(Derived obj) { return PyIter_Check(ptr(obj)); }
 };
 
 
-template <typename Derived, typename Return>
-struct __issubclass__<Derived, Iterator<Return, void, void>> : returns<bool> {
+template <typename Derived, meta::Iterator Base>
+    requires (meta::is_void<typename std::remove_cvref_t<Base>::end_type>)
+struct __issubclass__<Derived, Base>                        : returns<bool> {
+    using T = std::remove_cvref_t<Base>;
     static constexpr bool operator()() {
         return
-            meta::inherits<Derived, impl::IterTag> &&
-            std::convertible_to<meta::iter_type<Derived>, Return>;
+            meta::Iterator<Derived> &&
+            std::convertible_to<meta::iter_type<Derived>, typename T::value_type>;
     }
     static constexpr bool operator()(Derived obj) {
-        if constexpr (meta::is<Derived, Object>) {
-            int rc = PyObject_IsSubclass(
-                ptr(obj),
-                ptr(Type<Iterator<Return, void, void>>())
-            );
+        if constexpr (meta::Object<Derived>) {
+            int rc = PyObject_IsSubclass(ptr(obj), ptr(Type<T>()));
             if (rc == -1) {
                 Exception::from_python();
             }
@@ -1347,30 +1115,25 @@ struct __issubclass__<Derived, Iterator<Return, void, void>> : returns<bool> {
 };
 
 
-template <typename T, typename Begin, typename End, typename Container>
-struct __contains__<T, Iterator<Begin, End, Container>> : returns<bool> {};
+/// TODO: this should ensure convertibility to the expected value type?
+template <typename L, meta::Iterator R>
+struct __contains__<L, R>                                   : returns<bool> {};
 
 
 /* Traversing a Python iterator requires a customized C++ iterator type. */
-template <typename T>
-struct __iter__<Iterator<T, void, void>>                    : returns<T> {
+template <meta::Iterator Self> requires (meta::is_void<typename std::remove_cvref_t<Self>::end_type>)
+struct __iter__<Self> : returns<typename std::remove_cvref_t<Self>::value_type> {
     using iterator_category = std::input_iterator_tag;
     using difference_type   = std::ptrdiff_t;
-    using value_type        = T;
-    using pointer           = T*;
-    using reference         = T&;
+    using value_type        = std::remove_cvref_t<Self>::value_type;
+    using pointer           = value_type*;
+    using reference         = value_type&;
 
-    Iterator<T> iter;
-    T curr;
+    std::remove_cvref_t<Self> iter;
+    value_type curr;
 
-    __iter__(const Iterator<T>& self) :
-        iter(self), curr(steal<T>(nullptr))
-    {
-        ++(*this);
-    }
-
-    __iter__(Iterator<T>&& self) :
-        iter(self), curr(steal<T>(nullptr))
+    __iter__(Self self) :
+        iter(std::forward<Self>(self)), curr(steal<value_type>(nullptr))
     {
         ++(*this);
     }
@@ -1392,11 +1155,11 @@ struct __iter__<Iterator<T, void, void>>                    : returns<T> {
         return *this;
     }
 
-    [[nodiscard]] const T& operator*() const { return curr; }
-    [[nodiscard]] const T* operator->() const { return &curr; }
+    [[nodiscard]] const value_type& operator*() const { return curr; }
+    [[nodiscard]] const value_type* operator->() const { return &curr; }
 
     __iter__& operator++() {
-        curr = steal<T>(PyIter_Next(ptr(iter)));
+        curr = steal<value_type>(PyIter_Next(ptr(iter)));
         if (curr.is(nullptr) && PyErr_Occurred()) {
             Exception::from_python();
         }
@@ -1424,27 +1187,27 @@ struct __iter__<Iterator<T, void, void>>                    : returns<T> {
     }
 };
 /// NOTE: can't iterate over a const Iterator<T> because the iterator itself must be
-/// mutable.
+/// mutable, and can't easily reverse a Python iterator.
 
 
 /* py::Iterator<Begin, End, ...> is special cased in the begin() and end() operators to
 extract the internal C++ iterators rather than creating another layer of indirection. */
-template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End, typename Container>
-struct __iter__<Iterator<Begin, End, Container>> : returns<decltype(*std::declval<Begin>())> {};
+template <meta::Iterator Self> requires (!meta::is_void<typename std::remove_cvref_t<Self>::end_type>)
+struct __iter__<Self> : returns<typename std::remove_cvref_t<Self>::value_type> {};
 
 
 /// TODO: these attributes can only be defined after functions are defined
 
 
-// template <impl::inherits<impl::IterTag> Self>
+// template <meta::Iterator Self>
 // struct __getattr__<Self, "__iter__"> : returns<
 //     Function<impl::qualify<Self(std::remove_cvref_t<Self>::*)(), Self>>
 // > {};
-// template <impl::inherits<impl::IterTag> Self>
+// template <meta::Iterator Self>
 // struct __getattr__<Self, "__next__"> : returns<
 //     Function<impl::qualify<
 //         std::conditional_t<
-//             std::is_void_v<typename std::remove_reference_t<Self>::end_type>,
+//             meta::is_void<typename std::remove_reference_t<Self>::end_type>,
 //             std::remove_reference_t<decltype(
 //                 *std::declval<typename std::remove_reference_t<Self>::begin_type>()
 //             )>,
@@ -1455,14 +1218,14 @@ struct __iter__<Iterator<Begin, End, Container>> : returns<decltype(*std::declva
 //         Self
 //     >>
 // > {};
-// template <impl::inherits<impl::IterTag> Self>
+// template <meta::Iterator Self>
 // struct __getattr__<Type<Self>, "__iter__"> : returns<Function<
 //     Self(*)(Self)
 // >> {};
-// template <impl::inherits<impl::IterTag> Self>
+// template <meta::Iterator Self>
 // struct __getattr__<Type<Self>, "__next__"> : returns<Function<
 //     std::conditional_t<
-//         std::is_void_v<typename std::remove_reference_t<Self>::end_type>,
+//         meta::is_void<typename std::remove_reference_t<Self>::end_type>,
 //         std::remove_reference_t<decltype(
 //             *std::declval<typename std::remove_reference_t<Self>::begin_type>()
 //         )>,
@@ -1494,8 +1257,8 @@ template <meta::python Self>
     } else if constexpr (meta::has_cpp<Self>) {
         return std::ranges::begin(from_python(std::forward<Self>(self)));
 
-    } else if constexpr (meta::inherits<Self, impl::IterTag>) {
-        if constexpr (!std::is_void_v<typename std::remove_reference_t<Self>::end_type>) {
+    } else if constexpr (meta::Iterator<Self>) {
+        if constexpr (!meta::is_void<typename std::remove_reference_t<Self>::end_type>) {
             return view(self)->begin;
         } else {
             using T = __iter__<Self>::type;
@@ -1553,8 +1316,8 @@ template <meta::python Self>
     } else if constexpr (meta::has_cpp<Self>) {
         return std::ranges::end(from_python(std::forward<Self>(self)));
 
-    } else if constexpr (meta::inherits<Self, impl::IterTag>) {
-        if constexpr (!std::is_void_v<typename std::remove_reference_t<Self>::end_type>) {
+    } else if constexpr (meta::Iterator<Self>) {
+        if constexpr (!meta::is_void<typename std::remove_reference_t<Self>::end_type>) {
             return view(self)->end;
         } else {
             return sentinel{};

@@ -677,7 +677,7 @@ namespace impl {
 
 
 template <typename... Types>
-struct interface<Union<Types...>> : impl::UnionTag {
+struct interface<Union<Types...>> : impl::union_tag {
     static constexpr size_t size() noexcept { return sizeof...(Types); }
 
     template <size_t I> requires (I < size())
@@ -814,7 +814,7 @@ public:
 
 
 template <typename T>
-struct interface<Optional<T>> : impl::OptionalTag {
+struct interface<Optional<T>> : impl::optional_tag {
 private:
 
     template <typename R>
@@ -2896,16 +2896,6 @@ struct __ior__<L, R> : returns<typename impl::UnionInplaceOr<L, R>::type> {
         );
     }
 };
-
-
-inline void test2() {
-    Object o;
-    Optional<Object> x;
-    auto y = x;
-    auto z = x + o;
-    auto w = x.or_else([] { return Ellipsis; });
-    Optional<Slice> s(None, None, None);
-}
 
 
 }  // namespace bertrand

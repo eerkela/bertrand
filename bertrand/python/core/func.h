@@ -5010,7 +5010,7 @@ namespace impl {
                 if (result.is(nullptr)) {
                     Exception::from_python();
                 }
-                if constexpr (!std::is_void_v<Return>) {
+                if constexpr (!meta::is_void<Return>) {
                     return result;
                 }
             }
@@ -5071,7 +5071,7 @@ namespace impl {
                 }
 
                 // first element describes the return type
-                if constexpr (std::is_void_v<Return>) {
+                if constexpr (meta::is_void<Return>) {
                     PyTuple_SET_ITEM(ptr(result), 0, Py_NewRef(Py_None));
                 } else {
                     PyTuple_SET_ITEM(ptr(result), 0, release(Type<Return>()));
@@ -5517,7 +5517,7 @@ namespace impl {
             }
 
             // first element describes the return type
-            if constexpr (std::is_void_v<Return>) {
+            if constexpr (meta::is_void<Return>) {
                 PyTuple_SET_ITEM(ptr(result), 0, Py_NewRef(Py_None));
             } else {
                 PyTuple_SET_ITEM(ptr(result), 0, release(Type<Return>()));
@@ -12017,7 +12017,7 @@ parameter is a type object, and thus the method is a class method.)doc";
         }
 
         static PyObject* _return_type(PyFunction* self, void*) noexcept {
-            if constexpr (std::is_void_v<typename Sig::Return>) {
+            if constexpr (meta::is_void<typename Sig::Return>) {
                 Py_RETURN_NONE;
             } else {
                 return release(Type<typename Sig::Return>());
@@ -12238,7 +12238,7 @@ parameter is a type object, and thus the method is a class method.)doc";
         static PyObject* validate_signature(PyObject* func, const impl::Inspect& signature) {
             // ensure at least one possible return type exactly matches the
             // expected template signature
-            Object rtype = std::is_void_v<typename Sig::Return> ?
+            Object rtype = meta::is_void<typename Sig::Return> ?
                 borrow<Object>(Py_None) :
                 Object(Type<typename Sig::Return>());
             bool match = false;
@@ -13493,7 +13493,7 @@ struct __template__<F> {
             Exception::from_python();
         }
 
-        Object rtype = std::is_void_v<typename Func::Return> ?
+        Object rtype = meta::is_void<typename Func::Return> ?
             Object(None) :
             Object(Type<typename ArgTraits<typename Func::Return>::type>());
         if constexpr (Func::has_self) {

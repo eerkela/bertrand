@@ -481,6 +481,9 @@ namespace meta {
     template <typename T>
     concept is_qualified = std::is_reference_v<T> || is_const<T> || is_volatile<T>;
 
+    template <typename T>
+    concept is_void = std::is_void_v<std::remove_cvref_t<T>>;
+
     template <typename... Ts>
     concept types_are_unique = detail::types_are_unique<Ts...>;
 

@@ -348,7 +348,7 @@ protected:
     members.  It should only implement the `__export__()` script, which uses the
     binding helpers to expose the C++ type's interface to Python. */
     template <typename CRTP, typename Derived, typename CppType = void>
-    struct cls : PyObject, impl::BertrandTag {
+    struct cls : PyObject {
     protected:
 
         template <static_str ModName>
@@ -448,7 +448,7 @@ protected:
     methods as they see fit.  Bertrand will ensure that these hooks are called whenever
     the Python object is created, destroyed, or otherwise manipulated from Python. */
     template <typename CRTP, typename Derived>
-    struct cls<CRTP, Derived, void> : impl::BertrandTag {
+    struct cls<CRTP, Derived, void> {
     protected:
 
         template <static_str ModName>
@@ -541,7 +541,7 @@ protected:
     and are therefore safe to access from multiple threads, provided that the user
     ensures that the data they reference is thread-safe. */
     template <typename CRTP, static_str Name>
-    struct cls<CRTP, Module<Name>, void> : impl::BertrandTag {
+    struct cls<CRTP, Module<Name>, void> {
     protected:
 
         template <static_str ModName>
@@ -899,7 +899,7 @@ public:
                     !meta::has_cpp<Self> &&
                     std::derived_from<typename __call__<Self, Args...>::type, Object> &&
                     __getattr__<Self, "__call__">::enable &&
-                    meta::inherits<typename __getattr__<Self, "__call__">::type, impl::FunctionTag>
+                    meta::Function<typename __getattr__<Self, "__call__">::type>
                 )
             )
         )
@@ -1044,14 +1044,22 @@ struct __cast__<T, Object>                                  : returns<Object> {
 };
 
 
+static_assert(meta::cpp<void>);
+
+
 /* Implicitly convert a Python object into any recognized C++ type by checking for an
 equivalent Python type via __cast__, implicitly converting to that type, and then
 implicitly converting the result to the C++ type in a 2-step process. */
-template <meta::is<Object> From, meta::cpp To>
-    requires (!meta::is_qualified<To> && __cast__<To>::enable)
+template <typename From, meta::cpp To>
+    requires (
+        !meta::is_void<To> &&
+        !meta::is_qualified<To> &&
+         __cast__<To>::enable &&
+         meta::Object<From>
+    )
 struct __cast__<From, To>                                   : returns<To> {
     static auto operator()(From self) {
-        using Intermediate = __cast__<To>::type;
+        using Intermediate = std::remove_cvref_t<typename __cast__<To>::type>;
         return meta::implicit_cast<To>(
             meta::implicit_cast<Intermediate>(std::forward<From>(self))
         );
@@ -1147,28 +1155,28 @@ struct __cast__<From, std::unique_ptr<To>>                  : returns<std::uniqu
 /// there, since all the python machinery for keyword arguments, etc. will be in place.
 
 
-template <meta::is<Object> Self, static_str Name>
+template <meta::Object Self, static_str Name>
 struct __getattr__<Self, Name>                              : returns<Object> {};
-template <meta::is<Object> Self, static_str Name, std::convertible_to<Object> Value>
+template <meta::Object Self, static_str Name, std::convertible_to<Object> Value>
     requires (!meta::is_const<Self>)
 struct __setattr__<Self, Name, Value>                       : returns<void> {};
-template <meta::is<Object> Self, static_str Name> requires (!meta::is_const<Self>)
+template <meta::Object Self, static_str Name> requires (!meta::is_const<Self>)
 struct __delattr__<Self, Name>                              : returns<void> {};
-template <meta::is<Object> Self, typename... Args> requires (meta::callable<
+template <meta::Object Self, typename... Args> requires (meta::callable<
     Object(Arg<"*args", Object>, Arg<"**kwargs", Object>),
     Args...
 >)
 struct __call__<Self, Args...>                              : returns<Object> {
     static Object operator()(Self, Args...);  // TODO: this must be defined in func.h, after Python signatures are defined
 };
-template <meta::is<Object> Self>
+template <meta::Object Self>
 struct __iter__<Self>                                       : returns<Object> {};
-template <meta::is<Object> Self>
+template <meta::Object Self>
 struct __reversed__<Self>                                   : returns<Object> {};
 
 
 /* Allow 2-argument `issubclass()` checks between dynamic objects. */
-template <meta::is<Object> Derived, meta::is<Object> Base>
+template <meta::Object Derived, meta::Object Base>
 struct __issubclass__<Derived, Base>                        : returns<bool> {
     static bool operator()(Derived derived) { return PyType_Check(ptr(derived)); }
     static bool operator()(Derived derived, Base base) {
@@ -1185,7 +1193,7 @@ struct __issubclass__<Derived, Base>                        : returns<bool> {
 
 
 /* Allow dynamic objects to be used as left-hand arguments in `issubclass()` checks. */
-template <meta::is<Object> Derived, typename Base>
+template <meta::Object Derived, typename Base>
 struct __issubclass__<Derived, Base>                         : returns<bool> {
     static bool operator()(Derived derived) {
         int result = PyObject_IsSubclass(
@@ -1201,7 +1209,7 @@ struct __issubclass__<Derived, Base>                         : returns<bool> {
 
 
 /* Allow 2-argument `isinstance()` checks between dynamic objects. */
-template <meta::is<Object> Derived, meta::is<Object> Base>
+template <meta::Object Derived, meta::Object Base>
 struct __isinstance__<Derived, Base>                        : returns<bool> {
     static bool operator()(Derived derived, Base base) {
         int result = PyObject_IsInstance(
@@ -1217,7 +1225,7 @@ struct __isinstance__<Derived, Base>                        : returns<bool> {
 
 
 /* Allow dynamic objects to be used as left-hand arguments in `isinstance()` checks. */
-template <meta::is<Object> Derived, typename Base>
+template <meta::Object Derived, typename Base>
 struct __isinstance__<Derived, Base>                         : returns<bool> {
     static bool operator()(Derived derived) {
         int result = PyObject_IsInstance(
@@ -1237,13 +1245,10 @@ struct __isinstance__<Derived, Base>                         : returns<bool> {
 ////////////////////
 
 
-struct NoneType;
-
-
 template <>
-struct interface<NoneType> : impl::BertrandTag {};
+struct interface<NoneType> : impl::none_tag {};
 template <>
-struct interface<Type<NoneType>> : impl::BertrandTag {};
+struct interface<Type<NoneType>> {};
 
 
 /* Represents the type of Python's `None` singleton in C++. */
@@ -1274,7 +1279,7 @@ struct NoneType : Object, interface<NoneType> {
 };
 
 
-template <typename Self> requires (std::is_void_v<Self>)
+template <meta::is_void Self>
 struct __cast__<Self>                                       : returns<NoneType> {};
 
 
@@ -1284,43 +1289,43 @@ struct __init__<NoneType>                                   : returns<NoneType> 
 };
 
 
-template <meta::like<NoneType> From>
+template <meta::NoneLike From>
 struct __cast__<From, NoneType>                             : returns<NoneType> {
     static NoneType operator()(From value) { return {}; }
 };
 
 
-template <meta::is<NoneType> From, meta::like<NoneType> To>
+template <meta::None From, meta::NoneLike To>
 struct __cast__<From, To>                                   : returns<To> {
     static To operator()(From value) { return {}; }
 };
 
 
-template <meta::is<NoneType> From, typename To> requires (!std::convertible_to<From, To>)
+template <meta::None From, typename To> requires (!std::convertible_to<From, To>)
 struct __cast__<From, std::optional<To>>                    : returns<std::optional<To>> {
     static std::optional<To> operator()(From value) { return std::nullopt; }
 };
 
 
-template <meta::is<NoneType> From, typename To>
+template <meta::None From, typename To>
 struct __cast__<From, To*>                                  : returns<To*> {
     static To* operator()(From value) { return nullptr; }
 };
 
 
-template <meta::is<NoneType> From, typename To>
+template <meta::None From, typename To>
 struct __cast__<From, std::shared_ptr<To>>                  : returns<std::shared_ptr<To>> {
     static std::shared_ptr<To> operator()(From value) { return nullptr; }
 };
 
 
-template <meta::is<NoneType> From, typename To>
+template <meta::None From, typename To>
 struct __cast__<From, std::unique_ptr<To>>                  : returns<std::unique_ptr<To>> {
     static std::unique_ptr<To> operator()(From value) { return nullptr; }
 };
 
 
-template <meta::is<NoneType> Self>
+template <meta::None Self>
 struct __hash__<Self>                                       : returns<size_t> {};
 
 
@@ -1332,13 +1337,10 @@ inline const NoneType None;
 //////////////////////////////
 
 
-struct NotImplementedType;
-
-
 template <>
-struct interface<NotImplementedType> : impl::BertrandTag {};
+struct interface<NotImplementedType> : impl::notimplemented_tag {};
 template <>
-struct interface<Type<NotImplementedType>> : impl::BertrandTag {};
+struct interface<Type<NotImplementedType>> {};
 
 
 /* Represents the type of Python's `NotImplemented` singleton in C++. */
@@ -1377,19 +1379,19 @@ struct __init__<NotImplementedType>                         : returns<NotImpleme
 };
 
 
-template <meta::like<NotImplementedType> From>
+template <meta::NotImplementedLike From>
 struct __cast__<From, NotImplementedType>                   : returns<NotImplementedType> {
     static NotImplementedType operator()(const From& value) { return {}; }
 };
 
 
-template <meta::is<NotImplementedType> From, meta::like<NotImplementedType> To>
+template <meta::NotImplemented From, meta::NotImplementedLike To>
 struct __cast__<From, To>                                   : returns<To> {
     static To operator()(From value) { return {}; }
 };
 
 
-template <meta::is<NotImplementedType> Self>
+template <meta::NotImplemented Self>
 struct __hash__<Self>                                       : returns<size_t> {};
 
 
@@ -1401,13 +1403,11 @@ inline const NotImplementedType NotImplemented;
 ////////////////////////
 
 
-struct EllipsisType;
-
-
 template <>
-struct interface<EllipsisType> : impl::BertrandTag {};
+struct interface<EllipsisType> : impl::ellipsis_tag {};
 template <>
-struct interface<Type<EllipsisType>> : impl::BertrandTag {};
+struct interface<Type<EllipsisType>> {};
+
 
 /* Represents the type of Python's `Ellipsis` singleton in C++. */
 struct EllipsisType : Object, interface<EllipsisType> {
@@ -1445,19 +1445,19 @@ struct __init__<EllipsisType>                               : returns<EllipsisTy
 };
 
 
-template <meta::like<EllipsisType> From>
+template <meta::EllipsisLike From>
 struct __cast__<From, EllipsisType>                         : returns<EllipsisType> {
     static EllipsisType operator()(const From& value) { return {}; }
 };
 
 
-template <meta::is<EllipsisType> From, meta::like<EllipsisType> To>
+template <meta::Ellipsis From, meta::EllipsisLike To>
 struct __cast__<From, To>                                   : returns<To> {
     static To operator()(From value) { return {}; }
 };
 
 
-template <meta::is<EllipsisType> Self>
+template <meta::Ellipsis Self>
 struct __hash__<Self>                                       : returns<size_t> {};
 
 
@@ -1469,42 +1469,27 @@ inline const EllipsisType Ellipsis;
 /////////////////////
 
 
-struct Slice;
-
-
 /// TODO: this must be declared after func.h
-// template <typename Self> requires (issubclass<Self, Slice>())
+// template <meta::inherits<impl::slice_tag> Self>
 // struct __getattr__<Self, "indices"> : returns<Function<
 //     Tuple<Int>(Arg<"length", const Int&>)
 // >> {};
-template <typename Self> requires (issubclass<Self, Slice>())
+template <meta::inherits<impl::slice_tag> Self>
 struct __getattr__<Self, "start">                           : returns<Object> {
-    static Object operator()(Self self) {
-        return view(self)->start ?
-            borrow<Object>(view(self)->start) :
-            borrow<Object>(Py_None);
-    }
+    static Object operator()(Self self) { return self.start; }
 };
-template <typename Self> requires (issubclass<Self, Slice>())
+template <meta::inherits<impl::slice_tag> Self>
 struct __getattr__<Self, "stop">                            : returns<Object> {
-    static Object operator()(Self self) {
-        return view(self)->stop ?
-            borrow<Object>(view(self)->stop) :
-            borrow<Object>(Py_None);
-    }
+    static Object operator()(Self self) { return self.stop; }
 };
-template <typename Self> requires (issubclass<Self, Slice>())
+template <meta::inherits<impl::slice_tag> Self>
 struct __getattr__<Self, "step">                            : returns<Object> {
-    static Object operator()(Self self) {
-        return view(self)->step ?
-            borrow<Object>(view(self)->step) :
-            borrow<Object>(Py_None);
-    }
+    static Object operator()(Self self) { return self.step; }
 };
 
 
 template <>
-struct interface<Slice> {
+struct interface<Slice> : impl::slice_tag {
     /* Get the start object of the slice.  Note that this might not be an integer. */
     __declspec(property(get = _get_start)) Object start;
     [[nodiscard]] Object _get_start(this auto&& self) {
@@ -1576,15 +1561,15 @@ struct interface<Slice> {
 };
 template <>
 struct interface<Type<Slice>> {
-    template <meta::inherits<interface<Slice>> Self>
+    template <meta::Slice Self>
     [[nodiscard]] static Object start(Self&& self) { return self.start; }
-    template <meta::inherits<interface<Slice>> Self>
+    template <meta::Slice Self>
     [[nodiscard]] static Object stop(Self&& self) { return self.stop; }
-    template <meta::inherits<interface<Slice>> Self>
+    template <meta::Slice Self>
     [[nodiscard]] static Object step(Self&& self) { return self.step; }
-    template <size_t I, meta::inherits<interface<Slice>> Self> requires (I < 3)
+    template <size_t I, meta::Slice Self> requires (I < 3)
     [[nodiscard]] static Object get(Self&& self) { return self.template get<I>(); }
-    template <meta::inherits<interface<Slice>> Self>
+    template <meta::Slice Self>
     [[nodiscard]] static auto indices(Self&& self, size_t size) { return self.indices(size); }
 };
 
@@ -1622,7 +1607,7 @@ struct Slice : Object, interface<Slice> {
 /// versions?
 
 
-template <meta::is<Object> Derived, meta::is<Slice> Base>
+template <meta::Object Derived, meta::Slice Base>
 struct __isinstance__<Derived, Base>                        : returns<bool> {
     static constexpr bool operator()(Derived obj) { return PySlice_Check(ptr(obj)); }
 };
@@ -1687,17 +1672,17 @@ struct __init__<Slice, Args...>                             : returns<Slice> {
 };
 
 
-template <meta::inherits<Slice> L, meta::inherits<Slice> R>
+template <meta::Slice L, meta::Slice R>
 struct __lt__<L, R>                                         : returns<Bool> {};
-template <meta::inherits<Slice> L, meta::inherits<Slice> R>
+template <meta::Slice L, meta::Slice R>
 struct __le__<L, R>                                         : returns<Bool> {};
-template <meta::inherits<Slice> L, meta::inherits<Slice> R>
+template <meta::Slice L, meta::Slice R>
 struct __eq__<L, R>                                         : returns<Bool> {};
-template <meta::inherits<Slice> L, meta::inherits<Slice> R>
+template <meta::Slice L, meta::Slice R>
 struct __ne__<L, R>                                         : returns<Bool> {};
-template <meta::inherits<Slice> L, meta::inherits<Slice> R>
+template <meta::Slice L, meta::Slice R>
 struct __ge__<L, R>                                         : returns<Bool> {};
-template <meta::inherits<Slice> L, meta::inherits<Slice> R>
+template <meta::Slice L, meta::Slice R>
 struct __gt__<L, R>                                         : returns<Bool> {};
 
 
@@ -1706,13 +1691,13 @@ struct __gt__<L, R>                                         : returns<Bool> {};
 
 namespace std {
 
-    template <bertrand::meta::inherits<bertrand::Slice> T>
+    template <bertrand::meta::Slice T>
     struct tuple_size<T> : std::integral_constant<size_t, 3> {};
 
-    template <size_t I, bertrand::meta::inherits<bertrand::Slice> T> requires (I < 3)
+    template <size_t I, bertrand::meta::Slice T> requires (I < 3)
     struct tuple_element<I, T> { using type = bertrand::Object; };
 
-    template <size_t I, bertrand::meta::inherits<bertrand::Slice> T> requires (I < 3)
+    template <size_t I, bertrand::meta::Slice T> requires (I < 3)
     [[nodiscard]] auto get(T&& slice) {
         if constexpr (I == 0) {
             return std::forward<T>(slice).start;
