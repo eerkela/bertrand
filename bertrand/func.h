@@ -4909,8 +4909,7 @@ namespace meta {
     be instantiated with a given Python-compatible signature. */
     template <typename F>
     concept py_function =
-        bertrand::signature<F>::enable &&
-        std::same_as<typename bertrand::signature<F>::type, F> &&
+        normalized_signature<F> &&
         bertrand::signature<F>::is_python &&
         bertrand::signature<F>::args_fit_within_bitset &&
         bertrand::signature<F>::proper_argument_order &&

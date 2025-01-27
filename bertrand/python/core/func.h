@@ -4219,7 +4219,7 @@ namespace impl {
                 size_t kw_idx = 0;
                 try {
                     storage[0] = nullptr;
-                    invoke_with_packs(
+                    impl::invoke_with_packs(
                         [](
                             PyObject** array,
                             size_t& idx,
@@ -4303,7 +4303,7 @@ namespace impl {
                 size_t kw_idx = 0;
                 try {
                     out[0] = nullptr;
-                    invoke_with_packs(
+                    impl::invoke_with_packs(
                         [](
                             PyObject** array,
                             size_t& idx,
@@ -5184,7 +5184,108 @@ namespace impl {
             return {out, std::forward<P>(partial), std::forward<A>(args)...};
         }
 
-        /// TODO: call operators.
+        /* Call a C++ function from C++ using Python-style arguments. */
+        template <
+            meta::inherits<typename base::Partial> P,
+            meta::inherits<typename base::Defaults> D,
+            typename F,
+            typename... A
+        >
+            requires (
+                base::template invocable<F> &&
+                base::template Bind<A...>::proper_argument_order &&
+                base::template Bind<A...>::no_qualified_arg_annotations &&
+                base::template Bind<A...>::no_duplicate_args &&
+                base::template Bind<A...>::no_extra_positional_args &&
+                base::template Bind<A...>::no_extra_keyword_args &&
+                base::template Bind<A...>::no_conflicting_values &&
+                base::template Bind<A...>::can_convert &&
+                base::template Bind<A...>::satisfies_required_args
+            )
+        static constexpr Return operator()(
+            P&& partial,
+            D&& defaults,
+            F&& func,
+            A&&... args
+        ) {
+            return typename base::template Bind<A...>{}(
+                std::forward<P>(partial),
+                std::forward<D>(defaults),
+                std::forward<F>(func),
+                std::forward<A>(args)...
+            );
+        }
+
+        /* Call a Python function from C++ using Python-style arguments. */
+        template <meta::inherits<typename base::Partial> P, typename... A>
+            requires (
+                base::template Bind<A...>::proper_argument_order &&
+                base::template Bind<A...>::no_qualified_arg_annotations &&
+                base::template Bind<A...>::no_duplicate_args &&
+                base::template Bind<A...>::no_extra_positional_args &&
+                base::template Bind<A...>::no_extra_keyword_args &&
+                base::template Bind<A...>::no_conflicting_values &&
+                base::template Bind<A...>::satisfies_required_args &&
+                base::template Bind<A...>::can_convert
+            )
+        static Return operator()(
+            P&& partial,
+            PyObject* func,
+            A&&... args
+        ) { 
+            using source = signature<Return(A...)>;
+            if constexpr (!source::has_args && !source::has_kwargs) {
+                /// NOTE: value array can be stack allocated in this case
+                std::array<PyObject*, base::Partial::size() + sizeof...(A) + 1> array;
+                return Vectorcall{
+                    array,
+                    std::forward<P>(partial),
+                    std::forward<A>(args)...
+                }(func);
+            } else {
+                return Vectorcall{
+                    std::forward<P>(partial),
+                    std::forward<A>(args)...
+                }(func);
+            }
+        }
+
+        /* Call a C++ function from Python. */
+        template <
+            meta::inherits<typename base::Partial> P,
+            meta::inherits<typename base::Defaults> D,
+            typename F
+        >
+            requires (base::template invocable<F>)
+        static Return operator()(
+            P&& partial,
+            D&& defaults,
+            PyObject* const* args,
+            size_t nargsf,
+            PyObject* kwnames,
+            F&& func
+        ) {
+            return Vectorcall{args, nargsf, kwnames}(
+                std::forward<P>(partial),
+                std::forward<D>(defaults),
+                std::forward<F>(func)
+            );
+        }
+
+        /* Call a Python function from Python. */
+        template <meta::inherits<typename base::Partial> P, typename F>
+            requires (base::template invocable<F>)
+        static Return operator()(
+            P&& partial,
+            PyObject* const* args,
+            size_t nargsf,
+            PyObject* kwnames,
+            PyObject* func
+        ) {
+            Vectorcall vectorcall{args, nargsf, kwnames};
+            vectorcall.normalize(std::forward<P>(partial));
+            return vectorcall(func);
+        }
 
         /// TODO: perhaps I implement two versions of to_python(), one that includes
         /// partial arguments and one that doesn't?
@@ -5485,7 +5586,6 @@ namespace impl {
         using base = CppToPySignature<Param, Return, Args...>;
 
     public:
-
         /* A trie-based data structure containing a set of topologically-sorted,
         dynamic overloads for a Python function object, which are used to emulate
         C++-style function overloading.  Uses vectorcall arrays as search keys, meaning
@@ -5876,7 +5976,7 @@ namespace impl {
                     std::vector<Visited> path;
                     path.reserve(overload.signature.size());
                     for (size_t i = 0; i < overload.signature.size(); ++i) {
-                        const inspect::Param& param = &overload.signature[i];
+                        const inspect::Param& param = overload.signature[i];
                         Edge& edge = node->insert_edge(
                             param.type,
                             param.pos() ?
@@ -6198,7 +6298,6 @@ namespace impl {
 
         public:
             template <std::convertible_to<std::string_view> T>
-                requires (args_are_python && return_is_python)
             Overloads(const T& name, const Object& fallback) {
                 std::string_view str = name;
                 inspect sig(fallback, str);
@@ -6791,111 +6890,40 @@ namespace impl {
         /* Construct an overload trie with the given fallback function, which must be a
         Python function that is callable with the enclosing signature. */
         template <std::convertible_to<std::string_view> T>
-            requires (args_are_python && return_is_python)
         [[nodiscard]] static Overloads overloads(const T& name, const Object& func) {
             return {name, func};
         }
 
+        /// TODO: bertrand::Function determines which overload to call by checking whether
+        /// overloads.function().is(self).  If true, then the function is implemented in
+        /// C++, and we call the C++ overload with the internal std::function.  Otherwise,
+        /// the function is implemented in Python, and we call the Python overload instead.
 
-
-    };
-
-}
-
-
-template <meta::has_python Return, meta::has_python... Args>
-struct signature<Return(Args...)> :
-    impl::CppToPySignature<impl::PyParam, Return, Args...>
-{};
-
-
-template <meta::python Return, meta::python... Args>
-    requires (meta::has_python<Return> && (meta::has_python<Args> && ...))
-struct signature<Return(Args...)> :
-    impl::PySignature<impl::PyParam, Return, Args...>
-{};
-
-
-/* The canonical form of `bertrand::signature`, which encapsulates all of the internal
-call machinery, as much as possible of which is evaluated at compile time.  All other
-specializations should redirect to this form in order to avoid reimplementing the nuts
-and bolts of the function ecosystem. */
-template <typename Return, typename... Args>
-struct signature<Return(Args...)> : bertrand::signature<Return(Args...)> {
-private:
-    using base = bertrand::signature<Return(Args...)>;
-
-public:
-
-
-    /// TODO: bertrand::Function determines which overload to call by checking whether
-    /// overloads.function().is(self).  If true, then the function is implemented in
-    /// C++, and we call the C++ overload with the internal std::function.  Otherwise,
-    /// the function is implemented in Python, and we call the Python overload instead.
-
-    /* Call a C++ function from C++ using Python-style arguments. */
-    template <
-        meta::inherits<Partial> P,
-        meta::inherits<Defaults> D,
-        typename F,
-        typename... A
-    >
-        requires (
-            invocable<F> &&
-            Bind<A...>::proper_argument_order &&
-            Bind<A...>::no_qualified_arg_annotations &&
-            Bind<A...>::no_duplicate_args &&
-            Bind<A...>::no_extra_positional_args &&
-            Bind<A...>::no_extra_keyword_args &&
-            Bind<A...>::no_conflicting_values &&
-            Bind<A...>::can_convert &&
-            Bind<A...>::satisfies_required_args
-        )
-    static constexpr Return operator()(
-        P&& partial,
-        D&& defaults,
-        F&& func,
-        A&&... args
-    ) {
-        return Bind<A...>{}(
-            std::forward<P>(partial),
-            std::forward<D>(defaults),
-            std::forward<F>(func),
-            std::forward<A>(args)...
-        );
-    }
-
-    /* Call a C++ function from C++ using Python-style arguments with possible
-    overloads. */
-    template <
-        meta::inherits<Partial> P,
-        meta::inherits<Defaults> D,
-        meta::inherits<Overloads> O,
-        typename F,
-        typename... A
-    >
-        requires (
-            invocable<F> &&
-            args_are_convertible_to_python &&
-            return_is_convertible_to_python &&
-            Bind<A...>::proper_argument_order &&
-            Bind<A...>::no_qualified_arg_annotations &&
-            Bind<A...>::no_duplicate_args &&
-            Bind<A...>::no_extra_positional_args &&
-            Bind<A...>::no_extra_keyword_args &&
-            Bind<A...>::no_conflicting_values &&
-            Bind<A...>::satisfies_required_args &&
-            Bind<A...>::can_convert
-        )
-    static Return operator()(
-        P&& partial,
-        D&& defaults,
-        O&& overloads,
-        F&& func,
-        A&&... args
-    ) {
-        if (overloads.empty()) {
-            return Bind<A...>{}(
+        /* Call a C++ function from C++ using Python-style arguments. */
+        template <
+            meta::inherits<typename base::Partial> P,
+            meta::inherits<typename base::Defaults> D,
+            typename F,
+            typename... A
+        >
+            requires (
+                base::template invocable<F> &&
+                base::template Bind<A...>::proper_argument_order &&
+                base::template Bind<A...>::no_qualified_arg_annotations &&
+                base::template Bind<A...>::no_duplicate_args &&
+                base::template Bind<A...>::no_extra_positional_args &&
+                base::template Bind<A...>::no_extra_keyword_args &&
+                base::template Bind<A...>::no_conflicting_values &&
+                base::template Bind<A...>::can_convert &&
+                base::template Bind<A...>::satisfies_required_args
+            )
+        static constexpr Return operator()(
+            P&& partial,
+            D&& defaults,
+            F&& func,
+            A&&... args
+        ) {
+            return typename base::template Bind<A...>{}(
                 std::forward<P>(partial),
                 std::forward<D>(defaults),
                 std::forward<F>(func),
@@ -6903,267 +6931,320 @@ public:
             );
         }
 
-        using source = signature<Return(A...)>;
-        if constexpr (!source::has_args && !source::has_kwargs) {
-            /// NOTE: value array can be stack allocated in this case
-            std::array<PyObject*, Partial::size() + sizeof...(A) + 1> array;
-            Vectorcall vectorcall{
-                array,
-                std::forward<P>(partial),
-                std::forward<A>(args)...
-            };
-            if (PyObject* cached = overloads.cache_lookup(vectorcall.hash)) {
-                return vectorcall(cached);
-            }
-            /// NOTE: it is impossible for the search to fail, since the arguments are
-            /// validated at compile time and the overload trie is known not to be empty
-            const Object& overload = *overloads.begin(vectorcall.overload_key());
-            if (overload.is(overloads.function())) {
-                return Bind<A...>{}(
+        /* Call a C++ function from C++ using Python-style arguments with possible
+        overloads. */
+        template <
+            meta::inherits<typename base::Partial> P,
+            meta::inherits<typename base::Defaults> D,
+            meta::inherits<Overloads> O,
+            typename F,
+            typename... A
+        >
+            requires (
+                base::template invocable<F> &&
+                base::template Bind<A...>::proper_argument_order &&
+                base::template Bind<A...>::no_qualified_arg_annotations &&
+                base::template Bind<A...>::no_duplicate_args &&
+                base::template Bind<A...>::no_extra_positional_args &&
+                base::template Bind<A...>::no_extra_keyword_args &&
+                base::template Bind<A...>::no_conflicting_values &&
+                base::template Bind<A...>::satisfies_required_args &&
+                base::template Bind<A...>::can_convert
+            )
+        static Return operator()(
+            P&& partial,
+            D&& defaults,
+            O&& overloads,
+            F&& func,
+            A&&... args
+        ) {
+            if (overloads.empty()) {
+                return typename base::template Bind<A...>{}(
                     std::forward<P>(partial),
                     std::forward<D>(defaults),
                     std::forward<F>(func),
                     std::forward<A>(args)...
                 );
             }
-            return vectorcall(ptr(overload));
-        } else {
-            Vectorcall vectorcall{std::forward<P>(partial), std::forward<A>(args)...};
-            if (PyObject* cached = overloads.cache_lookup(vectorcall.hash)) {
-                return vectorcall(cached);
-            }
-            /// NOTE: it is impossible for the search to fail, since the arguments are
-            /// validated at compile time and the overload trie is known not to be empty
-            const Object& overload = *overloads.begin(vectorcall.overload_key());
-            if (overload.is(overloads.function())) {
-                return Bind<A...>{}(
+
+            using source = signature<Return(A...)>;
+            if constexpr (!source::has_args && !source::has_kwargs) {
+                /// NOTE: value array can be stack allocated in this case
+                std::array<PyObject*, base::Partial::size() + sizeof...(A) + 1> array;
+                typename base::Vectorcall vectorcall{
+                    array,
                     std::forward<P>(partial),
-                    std::forward<D>(defaults),
-                    std::forward<F>(func),
                     std::forward<A>(args)...
-                );
+                };
+                if (PyObject* cached = overloads.cache_lookup(vectorcall.hash)) {
+                    return vectorcall(cached);
+                }
+                /// NOTE: it is impossible for the search to fail, since the arguments are
+                /// validated at compile time and the overload trie is known not to be empty
+                const Object& overload = *overloads.begin(vectorcall.overload_key());
+                if (overload.is(overloads.function())) {
+                    return typename base::template Bind<A...>{}(
+                        std::forward<P>(partial),
+                        std::forward<D>(defaults),
+                        std::forward<F>(func),
+                        std::forward<A>(args)...
+                    );
+                }
+                return vectorcall(ptr(overload));
+            } else {
+                typename base::Vectorcall vectorcall{
+                    std::forward<P>(partial),
+                    std::forward<A>(args)...
+                };
+                if (PyObject* cached = overloads.cache_lookup(vectorcall.hash)) {
+                    return vectorcall(cached);
+                }
+                /// NOTE: it is impossible for the search to fail, since the arguments are
+                /// validated at compile time and the overload trie is known not to be empty
+                const Object& overload = *overloads.begin(vectorcall.overload_key());
+                if (overload.is(overloads.function())) {
+                    return typename base::template Bind<A...>{}(
+                        std::forward<P>(partial),
+                        std::forward<D>(defaults),
+                        std::forward<F>(func),
+                        std::forward<A>(args)...
+                    );
+                }
+                return vectorcall(ptr(overload));
             }
-            return vectorcall(ptr(overload));
         }
-    }
 
-    /* Call a Python function from C++ using Python-style arguments. */
-    template <meta::inherits<Partial> P, typename... A>
-        requires (
-            args_are_convertible_to_python &&
-            return_is_convertible_to_python &&
-            Bind<A...>::proper_argument_order &&
-            Bind<A...>::no_qualified_arg_annotations &&
-            Bind<A...>::no_duplicate_args &&
-            Bind<A...>::no_extra_positional_args &&
-            Bind<A...>::no_extra_keyword_args &&
-            Bind<A...>::no_conflicting_values &&
-            Bind<A...>::satisfies_required_args &&
-            Bind<A...>::can_convert
-        )
-    static Return operator()(
-        P&& partial,
-        PyObject* func,
-        A&&... args
-    ) { 
-        using source = signature<Return(A...)>;
-        if constexpr (!source::has_args && !source::has_kwargs) {
-            /// NOTE: value array can be stack allocated in this case
-            std::array<PyObject*, Partial::size() + sizeof...(A) + 1> array;
-            return Vectorcall{
-                array,
-                std::forward<P>(partial),
-                std::forward<A>(args)...
-            }(func);
-        } else {
-            return Vectorcall{
-                std::forward<P>(partial),
-                std::forward<A>(args)...
-            }(func);
+        /* Call a Python function from C++ using Python-style arguments. */
+        template <meta::inherits<typename base::Partial> P, typename... A>
+            requires (
+                base::template Bind<A...>::proper_argument_order &&
+                base::template Bind<A...>::no_qualified_arg_annotations &&
+                base::template Bind<A...>::no_duplicate_args &&
+                base::template Bind<A...>::no_extra_positional_args &&
+                base::template Bind<A...>::no_extra_keyword_args &&
+                base::template Bind<A...>::no_conflicting_values &&
+                base::template Bind<A...>::satisfies_required_args &&
+                base::template Bind<A...>::can_convert
+            )
+        static Return operator()(
+            P&& partial,
+            PyObject* func,
+            A&&... args
+        ) { 
+            using source = signature<Return(A...)>;
+            if constexpr (!source::has_args && !source::has_kwargs) {
+                /// NOTE: value array can be stack allocated in this case
+                std::array<PyObject*, base::Partial::size() + sizeof...(A) + 1> array;
+                return typename base::Vectorcall{
+                    array,
+                    std::forward<P>(partial),
+                    std::forward<A>(args)...
+                }(func);
+            } else {
+                return typename base::Vectorcall{
+                    std::forward<P>(partial),
+                    std::forward<A>(args)...
+                }(func);
+            }
         }
-    }
 
-    /* Call a Python function from C++ using Python-style arguments with possible
-    overloads. */
-    template <meta::inherits<Partial> P, meta::inherits<Overloads> O, typename... A>
-        requires (
-            args_are_convertible_to_python &&
-            return_is_convertible_to_python &&
-            Bind<A...>::proper_argument_order &&
-            Bind<A...>::no_qualified_arg_annotations &&
-            Bind<A...>::no_duplicate_args &&
-            Bind<A...>::no_extra_positional_args &&
-            Bind<A...>::no_extra_keyword_args &&
-            Bind<A...>::no_conflicting_values &&
-            Bind<A...>::satisfies_required_args &&
-            Bind<A...>::can_convert
-        )
-    static Return operator()(
-        P&& partial,
-        O&& overloads,
-        A&&... args
-    ) {
-        using source = signature<Return(A...)>;
-        if constexpr (!source::has_args && !source::has_kwargs) {
-            /// NOTE: value array can be stack allocated in this case
-            std::array<PyObject*, Partial::size() + sizeof...(A) + 1> array;
-            Vectorcall vectorcall{
-                array,
-                std::forward<P>(partial),
-                std::forward<A>(args)...
-            };
-            if (overloads.empty()) {
-                return vectorcall(ptr(overloads.function()));
+        /* Call a Python function from C++ using Python-style arguments with possible
+        overloads. */
+        template <
+            meta::inherits<typename base::Partial> P,
+            meta::inherits<Overloads> O,
+            typename... A
+        >
+            requires (
+                base::template Bind<A...>::proper_argument_order &&
+                base::template Bind<A...>::no_qualified_arg_annotations &&
+                base::template Bind<A...>::no_duplicate_args &&
+                base::template Bind<A...>::no_extra_positional_args &&
+                base::template Bind<A...>::no_extra_keyword_args &&
+                base::template Bind<A...>::no_conflicting_values &&
+                base::template Bind<A...>::satisfies_required_args &&
+                base::template Bind<A...>::can_convert
+            )
+        static Return operator()(
+            P&& partial,
+            O&& overloads,
+            A&&... args
+        ) {
+            using source = signature<Return(A...)>;
+            if constexpr (!source::has_args && !source::has_kwargs) {
+                /// NOTE: value array can be stack allocated in this case
+                std::array<PyObject*, base::Partial::size() + sizeof...(A) + 1> array;
+                typename base::Vectorcall vectorcall{
+                    array,
+                    std::forward<P>(partial),
+                    std::forward<A>(args)...
+                };
+                if (overloads.empty()) {
+                    return vectorcall(ptr(overloads.function()));
+                }
+                if (PyObject* cached = overloads.cache_lookup(vectorcall.hash)) {
+                    return vectorcall(cached);
+                }
+                /// NOTE: it is impossible for the search to fail, since the arguments are
+                /// validated at compile time and the overload trie is known not to be empty
+                return vectorcall(ptr(*overloads.begin(vectorcall.overload_key())));
+            } else {
+                typename base::Vectorcall vectorcall{
+                    std::forward<P>(partial),
+                    std::forward<A>(args)...
+                };
+                if (overloads.empty()) {
+                    return vectorcall(ptr(overloads.function()));
+                }
+                if (PyObject* cached = overloads.cache_lookup(vectorcall.hash)) {
+                    return vectorcall(cached);
+                }
+                /// NOTE: it is impossible for the search to fail, since the arguments are
+                /// validated at compile time and the overload trie is known not to be empty
+                return vectorcall(ptr(*overloads.begin(vectorcall.overload_key())));
             }
-            if (PyObject* cached = overloads.cache_lookup(vectorcall.hash)) {
-                return vectorcall(cached);
-            }
-            /// NOTE: it is impossible for the search to fail, since the arguments are
-            /// validated at compile time and the overload trie is known not to be empty
-            return vectorcall(ptr(*overloads.begin(vectorcall.overload_key())));
-        } else {
-            Vectorcall vectorcall{
-                std::forward<P>(partial),
-                std::forward<A>(args)...
-            };
-            if (overloads.empty()) {
-                return vectorcall(ptr(overloads.function()));
-            }
-            if (PyObject* cached = overloads.cache_lookup(vectorcall.hash)) {
-                return vectorcall(cached);
-            }
-            /// NOTE: it is impossible for the search to fail, since the arguments are
-            /// validated at compile time and the overload trie is known not to be empty
-            return vectorcall(ptr(*overloads.begin(vectorcall.overload_key())));
         }
-    }
 
-    /* Call a C++ function from Python. */
-    template <meta::inherits<Partial> P, meta::inherits<Defaults> D, typename F>
-        requires (
-            invocable<F> &&
-            args_are_convertible_to_python &&
-            return_is_convertible_to_python
-        )
-    static Return operator()(
-        P&& partial,
-        D&& defaults,
-        PyObject* const* args,
-        size_t nargsf,
-        PyObject* kwnames,
-        F&& func
-    ) {
-        return Vectorcall{args, nargsf, kwnames}(
-            std::forward<P>(partial),
-            std::forward<D>(defaults),
-            std::forward<F>(func)
-        );
-    }
-
-    /* Call a C++ function from Python with possible overloads. */
-    template <
-        meta::inherits<Partial> P,
-        meta::inherits<Defaults> D,
-        meta::inherits<Overloads> O,
-        typename F
-    >
-        requires (
-            invocable<F> &&
-            args_are_convertible_to_python &&
-            return_is_convertible_to_python
-        )
-    static Return operator()(
-        P&& partial,
-        D&& defaults,
-        PyObject* const* args,
-        size_t nargsf,
-        PyObject* kwnames,
-        F&& func,
-        O&& overloads
-    ) {
-        Vectorcall vectorcall{args, nargsf, kwnames};
-        if (overloads.empty()) {
-            return vectorcall(
+        /* Call a C++ function from Python. */
+        template <
+            meta::inherits<typename base::Partial> P,
+            meta::inherits<typename base::Defaults> D,
+            typename F
+        >
+            requires (base::template invocable<F>)
+        static Return operator()(
+            P&& partial,
+            D&& defaults,
+            PyObject* const* args,
+            size_t nargsf,
+            PyObject* kwnames,
+            F&& func
+        ) {
+            return typename base::Vectorcall{args, nargsf, kwnames}(
                 std::forward<P>(partial),
                 std::forward<D>(defaults),
                 std::forward<F>(func)
             );
         }
-        vectorcall.normalize(std::forward<P>(partial));
-        if (PyObject* cached = overloads.cache_lookup(vectorcall.hash)) {
-            if (overloads.function().is(cached)) {
+
+        /* Call a C++ function from Python with possible overloads. */
+        template <
+            meta::inherits<typename base::Partial> P,
+            meta::inherits<typename base::Defaults> D,
+            meta::inherits<Overloads> O,
+            typename F
+        >
+            requires (base::template invocable<F>)
+        static Return operator()(
+            P&& partial,
+            D&& defaults,
+            PyObject* const* args,
+            size_t nargsf,
+            PyObject* kwnames,
+            F&& func,
+            O&& overloads
+        ) {
+            typename base::Vectorcall vectorcall{args, nargsf, kwnames};
+            if (overloads.empty()) {
+                return vectorcall(
+                    std::forward<P>(partial),
+                    std::forward<D>(defaults),
+                    std::forward<F>(func)
+                );
+            }
+            vectorcall.normalize(std::forward<P>(partial));
+            if (PyObject* cached = overloads.cache_lookup(vectorcall.hash)) {
+                if (overloads.function().is(cached)) {
+                    return vectorcall(
+                        std::forward<D>(defaults),
+                        std::forward<F>(func)
+                    );
+                }
+                return vectorcall(cached);
+            }
+            auto it = overloads.begin(vectorcall.overload_key());
+            if (it == overloads.end()) {
+                vectorcall.validate();  // noreturn in this case
+                std::unreachable();
+            }
+            const Object& overload = *it;
+            if (overload.is(overloads.function())) {
                 return vectorcall(
                     std::forward<D>(defaults),
                     std::forward<F>(func)
                 );
             }
-            return vectorcall(cached);
+            return vectorcall(ptr(overload));
         }
-        auto it = overloads.begin(vectorcall.overload_key());
-        if (it == overloads.end()) {
-            vectorcall.validate();  // noreturn in this case
-            std::unreachable();
-        }
-        const Object& overload = *it;
-        if (overload.is(overloads.function())) {
-            return vectorcall(
-                std::forward<D>(defaults),
-                std::forward<F>(func)
-            );
-        }
-        return vectorcall(ptr(overload));
-    }
 
-    /* Call a Python function from Python. */
-    template <meta::inherits<Partial> P, typename F>
-        requires (
-            invocable<F> &&
-            args_are_python &&
-            return_is_python
-        )
-    static Return operator()(
-        P&& partial,
-        PyObject* const* args,
-        size_t nargsf,
-        PyObject* kwnames,
-        PyObject* func
-    ) {
-        Vectorcall vectorcall{args, nargsf, kwnames};
-        vectorcall.normalize(std::forward<P>(partial));
-        return vectorcall(func);
-    }
+        /* Call a Python function from Python. */
+        template <meta::inherits<typename base::Partial> P, typename F>
+            requires (base::template invocable<F>)
+        static Return operator()(
+            P&& partial,
+            PyObject* const* args,
+            size_t nargsf,
+            PyObject* kwnames,
+            PyObject* func
+        ) {
+            typename base::Vectorcall vectorcall{args, nargsf, kwnames};
+            vectorcall.normalize(std::forward<P>(partial));
+            return vectorcall(func);
+        }
 
-    /* Call a Python function from Python with possible overloads. */
-    template <meta::inherits<Partial> P, meta::inherits<Overloads> O, typename F>
-        requires (
-            invocable<F> &&
-            args_are_python &&
-            return_is_python
-        )
-    static Return operator()(
-        P&& partial,
-        PyObject* const* args,
-        size_t nargsf,
-        PyObject* kwnames,
-        O&& overloads
-    ) {
-        Vectorcall vectorcall{args, nargsf, kwnames};
-        vectorcall.normalize(std::forward<P>(partial));
-        if (overloads.empty()) {
-            return vectorcall(ptr(overloads.function()));
+        /* Call a Python function from Python with possible overloads. */
+        template <
+            meta::inherits<typename base::Partial> P,
+            meta::inherits<Overloads> O,
+            typename F
+        >
+            requires (base::template invocable<F>)
+        static Return operator()(
+            P&& partial,
+            PyObject* const* args,
+            size_t nargsf,
+            PyObject* kwnames,
+            O&& overloads
+        ) {
+            typename base::Vectorcall vectorcall{args, nargsf, kwnames};
+            vectorcall.normalize(std::forward<P>(partial));
+            if (overloads.empty()) {
+                return vectorcall(ptr(overloads.function()));
+            }
+            if (PyObject* cached = overloads.cache_lookup(vectorcall.hash)) {
+                return vectorcall(cached);
+            }
+            auto it = overloads.begin(vectorcall.overload_key());
+            if (it == overloads.end()) {
+                vectorcall.validate();  // noreturn in this case
+                std::unreachable();
+            }
+            return vectorcall(ptr(*it));
         }
-        if (PyObject* cached = overloads.cache_lookup(vectorcall.hash)) {
-            return vectorcall(cached);
-        }
-        auto it = overloads.begin(vectorcall.overload_key());
-        if (it == overloads.end()) {
-            vectorcall.validate();  // noreturn in this case
-            std::unreachable();
-        }
-        return vectorcall(ptr(*it));
-    }
+    };
 
-};
+}
+
+
+/* Specialization of `bertrand::signature<F>` for functions where the return type and
+all arguments are convertible to Python.  This adds support for Python's vectorcall
+protocol, both for efficiently calling Python functions from C++ and C++ functions from
+Python, with automatic type checks and conversions. */
+template <meta::has_python Return, meta::has_python... Args>
+struct signature<Return(Args...)> :
+    impl::CppToPySignature<impl::PyParam, Return, Args...>
+{};
+
+
+/* Specialization of `bertrand::signature<F>` for functions where the return type and
+all arguments are themselves Python types.  This adds support for dynamic overload
+tries, which allow C++-style function overloading to be mirrored in Python.  A
+signature of this form can be used to back a `bertrand::Function` object wrapper. */
+template <meta::python Return, meta::python... Args>
+    requires (meta::has_python<Return> && (meta::has_python<Args> && ...))
+struct signature<Return(Args...)> :
+    impl::PySignature<impl::PyParam, Return, Args...>
+{};
 
 
 template <typename F>
@@ -7881,17 +7962,7 @@ template <typename L, typename R>
 ////////////////////////
 
 
-template <typename F = Object(Arg<"*args", Object>, Arg<"**kwargs", Object>)>
-    requires (
-        impl::canonical_function_type<F> &&
-        signature<F>::args_fit_within_bitset &&
-        signature<F>::no_qualified_args &&
-        signature<F>::no_qualified_return &&
-        signature<F>::proper_argument_order &&
-        signature<F>::no_duplicate_args &&
-        signature<F>::args_are_python &&
-        signature<F>::return_is_python
-    )
+template <meta::py_function F = Object(Arg<"*args", Object>, Arg<"**kwargs", Object>)>
 struct Function;
 
 
@@ -7904,29 +7975,32 @@ struct Function;
 
 
 template <typename F, typename... Partial>
-    requires (partially_callable<F, Partial...> && Defaults<F>::empty())
+    requires (meta::partially_callable<F, Partial...> && Defaults<F>::empty())
 Function(F&&, Partial&&...)
     -> Function<typename impl::get_signature<F>::to_ptr::type>;
 
-template <typename F, typename... Partial> requires (partially_callable<F, Partial...>)
+template <typename F, typename... Partial>
+    requires (meta::partially_callable<F, Partial...>)
 Function(Defaults<F>, F&&, Partial&&...)
     -> Function<typename impl::get_signature<F>::to_ptr::type>;
 
 template <typename F, typename... Partial>
-    requires (partially_callable<F, Partial...> && Defaults<F>::empty())
+    requires (meta::partially_callable<F, Partial...> && Defaults<F>::empty())
 Function(std::string, F&&, Partial&&...)
     -> Function<typename impl::get_signature<F>::to_ptr::type>;
 
-template <typename F, typename... Partial> requires (partially_callable<F, Partial...>)
+template <typename F, typename... Partial>
+    requires (meta::partially_callable<F, Partial...>)
 Function(std::string, Defaults<F>, F&&, Partial&&...)
     -> Function<typename impl::get_signature<F>::to_ptr::type>;
 
 template <typename F, typename... Partial>
-    requires (partially_callable<F, Partial...> && Defaults<F>::empty())
+    requires (meta::partially_callable<F, Partial...> && Defaults<F>::empty())
 Function(std::string, std::string, F&&, Partial&&...)
     -> Function<typename impl::get_signature<F>::to_ptr::type>;
 
-template <typename F, typename... Partial> requires (partially_callable<F, Partial...>)
+template <typename F, typename... Partial>
+    requires (meta::partially_callable<F, Partial...>)
 Function(std::string, std::string, Defaults<F>, F&&, Partial&&...)
     -> Function<typename impl::get_signature<F>::to_ptr::type>;
 
