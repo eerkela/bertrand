@@ -313,15 +313,15 @@ runtime `isinstance()` check, and raises a `TypeError` if the check fails. */
 struct Object : interface<Object> {
 private:
 
-    /* A helper class that simplifies the creation of new Python types within a
-    `def::__export__()` script, which exposes the type's interface to Python.  `Cls`
-    refers to the type being exposed, and may refer to either an external C++ type or
-    the CRTP type in the case of inline Python types.  All bound methods/variables must
-    either originate from that class or use a non-member method which takes the class
-    as its first argument, unless the method/variable is static and unassociated with
-    any instance. */
-    template <typename Cls, typename CRTP, typename Wrapper, static_str ModName>
-    struct Bindings;
+    // /* A helper class that simplifies the creation of new Python types within a
+    // `def::__export__()` script, which exposes the type's interface to Python.  `Cls`
+    // refers to the type being exposed, and may refer to either an external C++ type or
+    // the CRTP type in the case of inline Python types.  All bound methods/variables must
+    // either originate from that class or use a non-member method which takes the class
+    // as its first argument, unless the method/variable is static and unassociated with
+    // any instance. */
+    // template <typename Cls, typename CRTP, typename Wrapper, static_str ModName>
+    // struct Bindings;
 
 protected:
     struct borrowed_t {};
@@ -340,6 +340,11 @@ protected:
     template <meta::python T> requires (meta::has_cpp<T>)
     friend const auto& impl::unwrap(const T& obj);
 
+    /// TODO: I can probably pare down the number of `cls<>` specializations by moving
+    /// the module-specific specialization into the `Module` class, or by using
+    /// metaprogramming to detect specializations of Module<> for the derived type
+    /// internally.
+
     /* A CRTP base class that generates bindings for a new Python type that wraps an
     external C++ type.
 
@@ -352,7 +357,7 @@ protected:
     protected:
 
         template <static_str ModName>
-        using Bindings = Object::Bindings<CppType, CRTP, Derived, ModName>;
+        struct Bindings;
 
     public:
         using __object__ = Derived;
@@ -452,7 +457,7 @@ protected:
     protected:
 
         template <static_str ModName>
-        using Bindings = Object::Bindings<CRTP, CRTP, Derived, ModName>;
+        struct Bindings;
 
     public:
         using __object__ = Derived;
@@ -545,7 +550,7 @@ protected:
     protected:
 
         template <static_str ModName>
-        using Bindings = Object::Bindings<CRTP, CRTP, Module<ModName>, ModName>;
+        struct Bindings;
 
     public:
         using __object__ = Module<Name>;

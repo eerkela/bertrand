@@ -16,12 +16,21 @@ namespace bertrand {
 
 template <typename... Ts>
 struct args;
+
 template <typename F, typename... Fs>
     requires (
         !std::is_reference_v<F> &&
         !(std::is_reference_v<Fs> || ...)
     )
 struct chain;
+
+/* Introspect an annotated C++ function signature to extract compile-time type
+information and allow matching functions to be called using Python-style conventions.
+Also defines supporting data structures to allow for partial function application. */
+template <typename T>
+struct signature {
+    static constexpr bool enable = false;
+};
 
 
 namespace impl {
@@ -32,6 +41,8 @@ namespace impl {
     struct signature_defaults_tag {};
     struct signature_partial_tag {};
     struct signature_bind_tag {};
+    struct signature_vectorcall_tag {};
+    struct signature_overloads_tag {};
     struct def_tag {};
 
     /* A compact bitset describing the kind (positional, keyword, optional, and/or
@@ -233,6 +244,11 @@ namespace meta {
 
     template <bertrand::static_str... Names>
     concept arg_names_are_unique = detail::arg_names_are_unique<Names...>;
+
+    template <typename F>
+    concept normalized_signature =
+        bertrand::signature<F>::enable &&
+        std::same_as<std::remove_cvref_t<F>, typename bertrand::signature<F>::type>;
 
 }
 
@@ -1853,15 +1869,6 @@ namespace meta {
     };
 
 }
-
-
-/* Introspect an annotated C++ function signature to extract compile-time type
-information and allow matching functions to be called using Python-style conventions.
-Also defines supporting data structures to allow for partial function application. */
-template <typename T>
-struct signature {
-    static constexpr bool enable = false;
-};
 
 
 /* CTAD guide to simplify signature introspection.  Uses a dummy constructor, meaning

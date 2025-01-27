@@ -684,6 +684,7 @@ private:
 
     template <typename B, typename E, typename C>
     struct traits {
+        static constexpr bool python = false;
         using begin_type = B;
         using end_type = E;
         using container_type = C;
@@ -691,6 +692,7 @@ private:
     };
     template <typename R>
     struct traits<R, void, void> {
+        static constexpr bool python = true;
         using begin_type = __iter__<Iterator<R>>;
         using end_type = sentinel;
         using container_type = void;
@@ -698,6 +700,7 @@ private:
     };
 
 public:
+    static constexpr bool python = traits<Begin, End, Container>::python;
     using begin_type = traits<Begin, End, Container>::begin_type;
     using end_type = traits<Begin, End, Container>::end_type;
     using container_type = traits<Begin, End, Container>::container_type;
@@ -731,10 +734,11 @@ public:
 
 template <typename Begin, typename End, typename Container>
 struct interface<Type<Iterator<Begin, End, Container>>> {
-    using begin_type        = interface<Iterator<Begin, End, Container>>::begin_type;
-    using end_type          = interface<Iterator<Begin, End, Container>>::end_type;
-    using container_type    = interface<Iterator<Begin, End, Container>>::container_type;
-    using value_type        = interface<Iterator<Begin, End, Container>>::value_type;
+    static constexpr bool python = interface<Iterator<Begin, End, Container>>::python;
+    using begin_type             = interface<Iterator<Begin, End, Container>>::begin_type;
+    using end_type               = interface<Iterator<Begin, End, Container>>::end_type;
+    using container_type         = interface<Iterator<Begin, End, Container>>::container_type;
+    using value_type             = interface<Iterator<Begin, End, Container>>::value_type;
 
     template <meta::inherits<interface<Iterator<Begin, End, Container>>> Self>
     static decltype(auto) __iter__(Self&& self) {
@@ -1086,14 +1090,14 @@ struct __init__<Iterator<Begin, End, void>, Begin, End> : returns<Iterator<Begin
 
 
 template <meta::Object Derived, meta::Iterator Base>
-    requires (meta::is_void<typename std::remove_cvref_t<Base>::end_type>)
+    requires (std::remove_cvref_t<Base>::python)
 struct __isinstance__<Derived, Base>                        : returns<bool> {
     static constexpr bool operator()(Derived obj) { return PyIter_Check(ptr(obj)); }
 };
 
 
 template <typename Derived, meta::Iterator Base>
-    requires (meta::is_void<typename std::remove_cvref_t<Base>::end_type>)
+    requires (std::remove_cvref_t<Base>::python)
 struct __issubclass__<Derived, Base>                        : returns<bool> {
     using T = std::remove_cvref_t<Base>;
     static constexpr bool operator()() {
@@ -1121,7 +1125,7 @@ struct __contains__<L, R>                                   : returns<bool> {};
 
 
 /* Traversing a Python iterator requires a customized C++ iterator type. */
-template <meta::Iterator Self> requires (meta::is_void<typename std::remove_cvref_t<Self>::end_type>)
+template <meta::Iterator Self> requires (std::remove_cvref_t<Self>::python)
 struct __iter__<Self> : returns<typename std::remove_cvref_t<Self>::value_type> {
     using iterator_category = std::input_iterator_tag;
     using difference_type   = std::ptrdiff_t;
@@ -1192,7 +1196,7 @@ struct __iter__<Self> : returns<typename std::remove_cvref_t<Self>::value_type> 
 
 /* py::Iterator<Begin, End, ...> is special cased in the begin() and end() operators to
 extract the internal C++ iterators rather than creating another layer of indirection. */
-template <meta::Iterator Self> requires (!meta::is_void<typename std::remove_cvref_t<Self>::end_type>)
+template <meta::Iterator Self> requires (!std::remove_cvref_t<Self>::python)
 struct __iter__<Self> : returns<typename std::remove_cvref_t<Self>::value_type> {};
 
 
@@ -1207,7 +1211,7 @@ struct __iter__<Self> : returns<typename std::remove_cvref_t<Self>::value_type> 
 // struct __getattr__<Self, "__next__"> : returns<
 //     Function<impl::qualify<
 //         std::conditional_t<
-//             meta::is_void<typename std::remove_reference_t<Self>::end_type>,
+//             std::remove_reference_t<Self>::python,
 //             std::remove_reference_t<decltype(
 //                 *std::declval<typename std::remove_reference_t<Self>::begin_type>()
 //             )>,
@@ -1225,7 +1229,7 @@ struct __iter__<Self> : returns<typename std::remove_cvref_t<Self>::value_type> 
 // template <meta::Iterator Self>
 // struct __getattr__<Type<Self>, "__next__"> : returns<Function<
 //     std::conditional_t<
-//         meta::is_void<typename std::remove_reference_t<Self>::end_type>,
+//         std::remove_reference_t<Self>::python,
 //         std::remove_reference_t<decltype(
 //             *std::declval<typename std::remove_reference_t<Self>::begin_type>()
 //         )>,
@@ -1258,7 +1262,7 @@ template <meta::python Self>
         return std::ranges::begin(from_python(std::forward<Self>(self)));
 
     } else if constexpr (meta::Iterator<Self>) {
-        if constexpr (!meta::is_void<typename std::remove_reference_t<Self>::end_type>) {
+        if constexpr (!std::remove_reference_t<Self>::python) {
             return view(self)->begin;
         } else {
             using T = __iter__<Self>::type;
@@ -1266,7 +1270,7 @@ template <meta::python Self>
             if (iter.is(nullptr)) {
                 Exception::from_python();
             }
-            return __iter__<Iterator<T>>{std::move(iter)};
+            return __iter__<Iterator<T>>(std::move(iter));
         }
 
     } else {
@@ -1275,7 +1279,7 @@ template <meta::python Self>
         if (iter.is(nullptr)) {
             Exception::from_python();
         }
-        return __iter__<Iterator<T>>{std::move(iter)};
+        return __iter__<Iterator<T>>(std::move(iter));
     }
 }
 
@@ -1317,7 +1321,7 @@ template <meta::python Self>
         return std::ranges::end(from_python(std::forward<Self>(self)));
 
     } else if constexpr (meta::Iterator<Self>) {
-        if constexpr (!meta::is_void<typename std::remove_reference_t<Self>::end_type>) {
+        if constexpr (!std::remove_reference_t<Self>::python) {
             return view(self)->end;
         } else {
             return sentinel{};
@@ -1388,7 +1392,7 @@ template <meta::python Self>
         if (iter.is(nullptr)) {
             Exception::from_python();
         }
-        return __iter__<Iterator<T>>{std::move(iter)};
+        return __iter__<Iterator<T>>(std::move(iter));
     }
 }
 
@@ -3513,6 +3517,11 @@ namespace impl {
     Python object without any additional allocations. */
     template <meta::inherits<Exception> T> requires (!meta::is_qualified<T>)
     struct py_err : T, Object {
+        struct __python__ : cls<__python__, py_err, T> {
+            // template <static_str ModName>
+            // static Type<py_err> __export__(Bindings<ModName> bind);
+            /// TODO: export/import.  Figure this out when implementing types
+        };
 
         /* `borrow()` constructor.  Also converts the Python exception into an
         instance of `T` by consulting the exception tables. */
