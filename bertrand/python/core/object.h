@@ -14,27 +14,25 @@ namespace impl {
     to complete initialization. */
     template <typename Wrapper, typename... Args>
         requires (
-            std::derived_from<Wrapper, Object> && meta::has_python<Wrapper> &&
+            meta::python<Wrapper> &&
+            !meta::is_qualified<Wrapper> &&
             std::constructible_from<typename Wrapper::__python__, Args...>
         )
     Wrapper construct(Args&&... args) {
-        using Self = Wrapper::__python__;
+        using __python__ = Wrapper::__python__;
         Type<Wrapper> type;
         PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(ptr(type));
-        Self* self = reinterpret_cast<Self*>(cls->tp_alloc(cls, 0));
-        if (self == nullptr) {
+        Wrapper self = steal<Wrapper>(cls->tp_alloc(cls, 0));
+        if (self.is(nullptr)) {
             Exception::from_python();
         }
-        try {
-            new (self) Self(std::forward<Args>(args)...);
-        } catch (...) {
-            cls->tp_free(self);
-            throw;
-        }
+        /// TODO: do I need to explicitly free the object if the constructor fails?
+        /// Can the normal destructor fail in this case?
+        new (reinterpret_cast<__python__*>(ptr(self))) __python__(std::forward<Args>(args)...);
         if (cls->tp_flags & Py_TPFLAGS_HAVE_GC) {
-            PyObject_GC_Track(self);
+            PyObject_GC_Track(ptr(self));
         }
-        return steal<Wrapper>(self);
+        return self;
     }
 
     /* Wrap a non-owning, mutable reference to a C++ object into a `bertrand::Object`
@@ -705,7 +703,8 @@ public:
     {}
 
     /* Universal implicit constructor.  Implemented via the __init__ control struct. */
-    template <typename... Args> requires (implicit_ctor<Object>::enable<Args...>)
+    template <typename... Args>
+        requires (implicit_ctor<Object>::template enable<Args...>)
     Object(Args&&... args) : Object(
         implicit_ctor<Object>{},
         std::forward<Args>(args)...
@@ -713,7 +712,8 @@ public:
 
     /* Universal explicit constructor.  Implemented via the __explicit_init__ control
     struct. */
-    template <typename... Args> requires (explicit_ctor<Object>::enable<Args...>)
+    template <typename... Args>
+        requires (explicit_ctor<Object>::template enable<Args...>)
     explicit Object(Args&&... args) : Object(
         explicit_ctor<Object>{},
         std::forward<Args>(args)...
@@ -1049,9 +1049,6 @@ struct __cast__<T, Object>                                  : returns<Object> {
 };
 
 
-static_assert(meta::cpp<void>);
-
-
 /* Implicitly convert a Python object into any recognized C++ type by checking for an
 equivalent Python type via __cast__, implicitly converting to that type, and then
 implicitly converting the result to the C++ type in a 2-step process. */
@@ -1246,6 +1243,92 @@ struct __isinstance__<Derived, Base>                         : returns<bool> {
 
 
 ////////////////////
+////    TYPE    ////
+////////////////////
+
+
+/// NOTE: interface<> for Type<T> are usually defined alongside each wrapper type, so
+/// there is no generic definition here.
+
+
+/* `bertrand::Type<T>` refers to the Python type object associated with an unqualified
+bertrand wrapper `T`.  Default-initializing the type will import it according to
+proper, per-interpreter state. */
+template <meta::has_python T>
+    requires (
+        meta::python<T> &&
+        !meta::is_qualified<T> &&
+        std::same_as<T, meta::python_type<T>>
+    )
+struct Type<T> : Object, interface<Type<T>> {
+    struct __python__ : cls<__python__, Type<T>>, PyTypeObject {
+        /// TODO: how the hell does this work?
+        static Type<Type<T>> __import__();
+    };
+
+    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Type(PyObject* p, stolen_t t) : Object(p, t) {}
+
+    template <typename Self = Type> requires (__initializer__<Self>::enable)
+    Type(const std::initializer_list<typename __initializer__<Self>::type>& init) :
+        Object(__initializer__<Self>{}(init))
+    {}
+
+    template <typename... Args>
+        requires (implicit_ctor<Type>::template enable<Args...>)
+    Type(Args&&... args) : Object(
+        implicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args>
+        requires (explicit_ctor<Type>::template enable<Args...>)
+    explicit Type(Args&&... args) : Object(
+        explicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+};
+
+
+/* `bertrand::Type<T>` can also accept qualified (possibly C++) types and redirect
+them to their corresponding, normalized type. */
+template <meta::has_python T>
+struct Type : Type<std::remove_cvref_t<meta::python_type<T>>> {};
+
+
+/* CTAD allows an object's type to be inferred from an initializer.  The corresponding
+constructor simply forwards to the default constructor. */
+template <meta::has_python T>
+explicit Type(T&&) -> Type<std::remove_cvref_t<meta::python_type<T>>>;
+
+
+/* Default constructor invokes the wrapper's inner `__import__()` method to return a
+new reference to the type.  Such a method is always produced whenever bindings are
+generated for a bertrand extension type, and the exact logic can be
+implementation-defined to account for different standards within the CPython API. */
+template <meta::has_import T>
+struct __init__<Type<T>>                                   : returns<Type<T>> {
+    static auto operator()() {
+        return std::remove_cvref_t<T>::__python__::__import__();
+    }
+};
+
+
+/* The single-argument constructor is only enabled for CTAD purposes.  It is identical
+to calling the default constructor normally. */
+template <meta::has_import T, meta::has_python U>
+    requires (meta::is<T, meta::python_type<U>>)
+struct __init__<Type<T>, U>                                : returns<Type<T>> {
+    static auto operator()(U) { return Type<T>(); }
+};
+
+
+/// TODO: 3-argument form creates a new dynamic type that subclasses from the templated
+/// type.  Maybe this is just a 2-argument form that limits the dynamic type to
+/// single inheritance?  (e.g. `Type<Int>("my_int", {{"abc", 123}})`)
+
+
+////////////////////
 ////    NONE    ////
 ////////////////////
 
@@ -1270,13 +1353,13 @@ struct NoneType : Object, interface<NoneType> {
         Object(__initializer__<Self>{}(init))
     {}
 
-    template <typename... Args> requires (implicit_ctor<NoneType>::enable<Args...>)
+    template <typename... Args> requires (implicit_ctor<NoneType>::template enable<Args...>)
     NoneType(Args&&... args) : Object(
         implicit_ctor<NoneType>{},
         std::forward<Args>(args)...
     ) {}
 
-    template <typename... Args> requires (explicit_ctor<NoneType>::enable<Args...>)
+    template <typename... Args> requires (explicit_ctor<NoneType>::template enable<Args...>)
     explicit NoneType(Args&&... args) : Object(
         explicit_ctor<NoneType>{},
         std::forward<Args>(args)...
@@ -1362,13 +1445,15 @@ struct NotImplementedType : Object, interface<NotImplementedType> {
         Object(__initializer__<Self>{}(init))
     {}
 
-    template <typename... Args> requires (implicit_ctor<NotImplementedType>::enable<Args...>)
+    template <typename... Args>
+        requires (implicit_ctor<NotImplementedType>::template enable<Args...>)
     NotImplementedType(Args&&... args) : Object(
         implicit_ctor<NotImplementedType>{},
         std::forward<Args>(args)...
     ) {}
 
-    template <typename... Args> requires (explicit_ctor<NotImplementedType>::enable<Args...>)
+    template <typename... Args>
+        requires (explicit_ctor<NotImplementedType>::template enable<Args...>)
     explicit NotImplementedType(Args&&... args) : Object(
         explicit_ctor<NotImplementedType>{},
         std::forward<Args>(args)...
@@ -1428,13 +1513,15 @@ struct EllipsisType : Object, interface<EllipsisType> {
         Object(__initializer__<Self>{}(init))
     {}
 
-    template <typename... Args> requires (implicit_ctor<EllipsisType>::enable<Args...>)
+    template <typename... Args>
+        requires (implicit_ctor<EllipsisType>::template enable<Args...>)
     EllipsisType(Args&&... args) : Object(
         implicit_ctor<EllipsisType>{},
         std::forward<Args>(args)...
     ) {}
 
-    template <typename... Args> requires (explicit_ctor<EllipsisType>::enable<Args...>)
+    template <typename... Args>
+        requires (explicit_ctor<EllipsisType>::template enable<Args...>)
     explicit EllipsisType(Args&&... args) : Object(
         explicit_ctor<EllipsisType>{},
         std::forward<Args>(args)...
@@ -1594,13 +1681,15 @@ struct Slice : Object, interface<Slice> {
         Object(__initializer__<Self>{}(init))
     {}
 
-    template <typename... Args> requires (implicit_ctor<Slice>::enable<Args...>)
+    template <typename... Args>
+        requires (implicit_ctor<Slice>::template enable<Args...>)
     Slice(Args&&... args) : Object(
         implicit_ctor<Slice>{},
         std::forward<Args>(args)...
     ) {}
 
-    template <typename... Args> requires (explicit_ctor<Slice>::enable<Args...>)
+    template <typename... Args>
+        requires (explicit_ctor<Slice>::template enable<Args...>)
     explicit Slice(Args&&... args) : Object(
         explicit_ctor<Slice>{},
         std::forward<Args>(args)...

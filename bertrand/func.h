@@ -2552,7 +2552,7 @@ namespace impl {
     struct CppSignature : signature_base<Return> {
         using type = Return(Args...);
         static constexpr bool enable = true;
-        static constexpr bool is_python = false;
+        static constexpr bool python = false;
         static constexpr bool convertible_to_python = false;
 
         /* Dummy constructor for CTAD purposes.  This will be automatically inherited
@@ -4909,8 +4909,8 @@ namespace meta {
     be instantiated with a given Python-compatible signature. */
     template <typename F>
     concept py_function =
-        normalized_signature<F> &&
-        bertrand::signature<F>::is_python &&
+        bertrand::signature<F>::enable &&
+        bertrand::signature<F>::python &&
         bertrand::signature<F>::args_fit_within_bitset &&
         bertrand::signature<F>::proper_argument_order &&
         bertrand::signature<F>::no_qualified_args &&

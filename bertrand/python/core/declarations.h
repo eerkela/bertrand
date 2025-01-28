@@ -59,6 +59,10 @@ namespace impl {
     struct empty_interface : bertrand_tag {};
     struct iter_tag : bertrand_tag {};
     struct function_tag : bertrand_tag {};
+    struct method_tag : bertrand_tag {};
+    struct classmethod_tag : bertrand_tag {};
+    struct staticmethod_tag : bertrand_tag {};
+    struct property_tag : bertrand_tag {};
     struct type_tag : bertrand_tag {};
     struct module_tag : bertrand_tag {};
     struct union_tag : bertrand_tag {};
@@ -162,16 +166,16 @@ namespace meta {
 
     namespace detail {
         template <typename T>
-        inline constexpr bool builtin_type = false;
+        inline constexpr bool extension_type = false;
         template <>
-        inline constexpr bool builtin_type<Object> = true;
+        inline constexpr bool extension_type<Object> = true;
         template <>
-        inline constexpr bool builtin_type<Int> = true;
+        inline constexpr bool extension_type<Int> = true;
     }
 
     template <typename T>
     concept python =
-        detail::builtin_type<std::remove_cvref_t<T>> ||
+        detail::extension_type<std::remove_cvref_t<T>> ||
         std::derived_from<std::remove_cvref_t<T>, Object>;
 
     template <typename T>
@@ -2435,6 +2439,26 @@ namespace meta {
     concept FunctionLike = has_python<T> && Function<python_type<T>>;
 
     template <typename T>
+    concept Method = inherits<T, impl::method_tag>;
+    template <typename T>
+    concept MethodLike = has_python<T> && Method<python_type<T>>;
+
+    template <typename T>
+    concept ClassMethod = inherits<T, impl::classmethod_tag>;
+    template <typename T>
+    concept ClassMethodLike = has_python<T> && ClassMethod<python_type<T>>;
+
+    template <typename T>
+    concept StaticMethod = inherits<T, impl::staticmethod_tag>;
+    template <typename T>
+    concept StaticMethodLike = has_python<T> && StaticMethod<python_type<T>>;
+
+    template <typename T>
+    concept Property = inherits<T, impl::property_tag>;
+    template <typename T>
+    concept PropertyLike = has_python<T> && Property<python_type<T>>;
+
+    template <typename T>
     concept Type = inherits<T, impl::type_tag>;
     template <typename T>
     concept TypeLike = has_python<T> && Type<python_type<T>>;
@@ -2605,7 +2629,8 @@ template <typename Begin, typename End = void, typename Container = void>
         (meta::is_void<Container> || meta::iterable<Container>)
     ))
 struct Iterator;
-template <meta::py_function Func>
+template <meta::py_function F = Object(Arg<"*args", Object>, Arg<"**kwargs", Object>)>
+    requires (meta::normalized_signature<F>)
 struct Function;
 template <meta::has_python T = Object>
 struct Type;
@@ -2675,67 +2700,67 @@ namespace meta {
     namespace detail {
 
         template <typename Begin, typename End, typename Container>
-        inline constexpr bool builtin_type<bertrand::Iterator<Begin, End, Container>> = true;
+        inline constexpr bool extension_type<bertrand::Iterator<Begin, End, Container>> = true;
         template <typename T>
-        inline constexpr bool builtin_type<bertrand::Function<T>> = true;
+        inline constexpr bool extension_type<bertrand::Function<T>> = true;
         template <typename T>
-        inline constexpr bool builtin_type<bertrand::Type<T>> = true;
+        inline constexpr bool extension_type<bertrand::Type<T>> = true;
         template <bertrand::static_str Name>
-        inline constexpr bool builtin_type<bertrand::Module<Name>> = true;
+        inline constexpr bool extension_type<bertrand::Module<Name>> = true;
         template <typename... Ts>
-        inline constexpr bool builtin_type<bertrand::Union<Ts...>> = true;
+        inline constexpr bool extension_type<bertrand::Union<Ts...>> = true;
         template <typename... Ts>
-        inline constexpr bool builtin_type<bertrand::Intersection<Ts...>> = true;
+        inline constexpr bool extension_type<bertrand::Intersection<Ts...>> = true;
         template<>
-        inline constexpr bool builtin_type<bertrand::NoneType> = true;
+        inline constexpr bool extension_type<bertrand::NoneType> = true;
         template<>
-        inline constexpr bool builtin_type<bertrand::NotImplementedType> = true;
+        inline constexpr bool extension_type<bertrand::NotImplementedType> = true;
         template<>
-        inline constexpr bool builtin_type<bertrand::EllipsisType> = true;
+        inline constexpr bool extension_type<bertrand::EllipsisType> = true;
         template<>
-        inline constexpr bool builtin_type<bertrand::Slice> = true;
+        inline constexpr bool extension_type<bertrand::Slice> = true;
         template<>
-        inline constexpr bool builtin_type<bertrand::Bool> = true;
+        inline constexpr bool extension_type<bertrand::Bool> = true;
         template<>
-        inline constexpr bool builtin_type<bertrand::Float> = true;
+        inline constexpr bool extension_type<bertrand::Float> = true;
         template<>
-        inline constexpr bool builtin_type<bertrand::Complex> = true;
+        inline constexpr bool extension_type<bertrand::Complex> = true;
         template<>
-        inline constexpr bool builtin_type<bertrand::Str> = true;
+        inline constexpr bool extension_type<bertrand::Str> = true;
         template<>
-        inline constexpr bool builtin_type<bertrand::Bytes> = true;
+        inline constexpr bool extension_type<bertrand::Bytes> = true;
         template<>
-        inline constexpr bool builtin_type<bertrand::ByteArray> = true;
+        inline constexpr bool extension_type<bertrand::ByteArray> = true;
         template<>
-        inline constexpr bool builtin_type<bertrand::Date> = true;
+        inline constexpr bool extension_type<bertrand::Date> = true;
         template<>
-        inline constexpr bool builtin_type<bertrand::Time> = true;
+        inline constexpr bool extension_type<bertrand::Time> = true;
         template<>
-        inline constexpr bool builtin_type<bertrand::Datetime> = true;
+        inline constexpr bool extension_type<bertrand::Datetime> = true;
         template<>
-        inline constexpr bool builtin_type<bertrand::Timedelta> = true;
+        inline constexpr bool extension_type<bertrand::Timedelta> = true;
         template<>
-        inline constexpr bool builtin_type<bertrand::Timezone> = true;
+        inline constexpr bool extension_type<bertrand::Timezone> = true;
         template<>
-        inline constexpr bool builtin_type<bertrand::Range> = true;
+        inline constexpr bool extension_type<bertrand::Range> = true;
         template <typename T>
-        inline constexpr bool builtin_type<bertrand::List<T>> = true;
+        inline constexpr bool extension_type<bertrand::List<T>> = true;
         template <typename T>
-        inline constexpr bool builtin_type<bertrand::Tuple<T>> = true;
+        inline constexpr bool extension_type<bertrand::Tuple<T>> = true;
         template <typename T>
-        inline constexpr bool builtin_type<bertrand::Set<T>> = true;
+        inline constexpr bool extension_type<bertrand::Set<T>> = true;
         template <typename T>
-        inline constexpr bool builtin_type<bertrand::FrozenSet<T>> = true;
+        inline constexpr bool extension_type<bertrand::FrozenSet<T>> = true;
         template <typename K, typename V>
-        inline constexpr bool builtin_type<bertrand::Dict<K, V>> = true;
+        inline constexpr bool extension_type<bertrand::Dict<K, V>> = true;
         template <typename M>
-        inline constexpr bool builtin_type<bertrand::KeyView<M>> = true;
+        inline constexpr bool extension_type<bertrand::KeyView<M>> = true;
         template <typename M>
-        inline constexpr bool builtin_type<bertrand::ValueView<M>> = true;
+        inline constexpr bool extension_type<bertrand::ValueView<M>> = true;
         template <typename M>
-        inline constexpr bool builtin_type<bertrand::ItemView<M>> = true;
+        inline constexpr bool extension_type<bertrand::ItemView<M>> = true;
         template <typename M>
-        inline constexpr bool builtin_type<bertrand::MappingProxy<M>> = true;
+        inline constexpr bool extension_type<bertrand::MappingProxy<M>> = true;
 
         template <typename T, typename = void>
         constexpr bool has_type = false;
@@ -2754,7 +2779,8 @@ namespace meta {
         template <typename T>
         constexpr bool has_import<T, std::void_t<decltype(&T::__python__::__import__)>> =
             std::is_function_v<decltype(T::__python__::__import__)> &&
-            std::is_invocable_v<decltype(T::__python__::__import__)>;
+            std::is_invocable_v<decltype(T::__python__::__import__)> &&
+            std::same_as<std::invoke_result_t<decltype(T::__python__::__import__)>, bertrand::Type<T>>;
 
         template <typename T, typename = void>
         struct cpp {

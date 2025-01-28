@@ -3518,9 +3518,9 @@ namespace impl {
     template <meta::inherits<Exception> T> requires (!meta::is_qualified<T>)
     struct py_err : T, Object {
         struct __python__ : cls<__python__, py_err, T> {
+            /// TODO: export/import.  Figure this out when implementing types
             // template <static_str ModName>
             // static Type<py_err> __export__(Bindings<ModName> bind);
-            /// TODO: export/import.  Figure this out when implementing types
         };
 
         /* `borrow()` constructor.  Also converts the Python exception into an
@@ -3794,7 +3794,7 @@ namespace impl {
 
 namespace meta::detail {
     template <typename T>
-    inline constexpr bool builtin_type<impl::py_err<T>> = true;
+    inline constexpr bool extension_type<impl::py_err<T>> = true;
 }
 
 
