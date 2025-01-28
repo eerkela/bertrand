@@ -203,6 +203,12 @@ struct returns {
 /// and are enabled if the underlying type supports the operation.
 
 
+/// TODO: it turns out to actually matter how the control structure operators are
+/// typed, since not using generic argument types can cause subtle issues related
+/// to copy/movability, especially during interactions with item/attr proxies.
+
+
+
 /* Customizes the way C++ templates are exposed to Python.  The closest Python
 analogue to this is the `__class_getitem__` method of a custom type, which in
 Bertrand's case allows navigation of the C++ template hierarchy from Python, by

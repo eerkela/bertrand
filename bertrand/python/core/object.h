@@ -1169,7 +1169,7 @@ template <meta::Object Self, typename... Args> requires (meta::callable<
     Args...
 >)
 struct __call__<Self, Args...>                              : returns<Object> {
-    static Object operator()(Self, Args...);  // TODO: this must be defined in func.h, after Python signatures are defined
+    static Object operator()(auto&&, auto&&...);  // TODO: this must be defined in func.h, after Python signatures are defined
 };
 template <meta::Object Self>
 struct __iter__<Self>                                       : returns<Object> {};

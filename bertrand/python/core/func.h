@@ -8056,6 +8056,78 @@ Function(std::string, std::string, typename signature<F>::Defaults, F&&, Partial
 
 namespace impl {
 
+    /* An equivalent for `PyObject_GetAttr` that avoids invoking the descriptor
+    protocol.  This is used during structural type checks to apply the check to the
+    descriptor itself, and not its products. */
+    inline Object get_descriptor(PyTypeObject* cls, PyObject* name) {
+        // traverse the object's MRO to check for class-level descriptors
+        if (cls->tp_mro) {
+            Object bases = borrow<Object>(cls->tp_mro);
+            for (Object type : bases) {
+                cls = reinterpret_cast<PyTypeObject*>(ptr(type));
+                if (cls->tp_dict) {
+                    Object attr = borrow<Object>(PyDict_GetItemWithError(
+                        cls->tp_dict,
+                        name
+                    ));
+                    if (!attr.is(nullptr)) {
+                        return attr;
+                    }
+                    if (PyErr_Occurred()) {
+                        Exception::from_python();
+                    }
+                }
+            }
+        }
+
+        // no descriptor found
+        Py_ssize_t len;
+        const char* data = PyUnicode_AsUTF8AndSize(name, &len);
+        if (data == nullptr) {
+            Exception::from_python();
+        }
+        throw AttributeError(std::string(data, len));
+    }
+
+    inline Object get_descriptor(PyObject* obj, PyObject* name) {
+        PyTypeObject* cls = Py_TYPE(obj);
+
+        // try the object's instance dictionary first
+        if ((cls->tp_flags & Py_TPFLAGS_MANAGED_DICT || cls->tp_dictoffset)) {
+            Object dict = steal<Object>(PyObject_GenericGetDict(obj, nullptr));
+            if (dict.is(nullptr)) {
+                Exception::from_python();
+            }
+            Object attr = borrow<Object>(PyDict_GetItemWithError(
+                ptr(dict),
+                name
+            ));
+            if (attr.is(nullptr) && PyErr_Occurred()) {
+                Exception::from_python();
+            }
+            if (!attr.is(nullptr)) {
+                return attr;
+            }
+        }
+
+        return get_descriptor(cls, name);
+    }
+
+    /* Build a `bertrand.Intersection[]` type with the given name and type.  This is
+    used to generate proper structural types using the `&` operator for bertrand
+    functions. */
+    inline Object get_intersection(const Object& name, const Object& obj) {
+        Object bertrand = steal<Object>(PyImport_Import(
+            ptr(impl::template_string<"bertrand">())
+        ));
+        if (bertrand.is(nullptr)) {
+            Exception::from_python();
+        }
+        return getattr<"intersection">(bertrand)[
+            getattr<"Arg">(bertrand)[name, obj]
+        ];
+    }
+
     /* A descriptor proxy for an unbound Bertrand function, which enables the
     `func.method` access specifier.  Unlike the others, this descriptor is never
     attached to a type, it merely forwards the underlying function to match Python's
@@ -8130,6 +8202,9 @@ struct interface<Type<impl::Property<F>>> {
 
 namespace impl {
 
+    /// TODO: in general, these descriptors should match their Python equivalents as
+    /// closely as possible, in order not to break existing code.
+
     /* NOTE: descriptors are self-attaching when used as type decorators, meaning that
      * they all implement a `__call__` operator that attaches the descriptor to the
      * decorated type.  This is rather tricky, especially in C++, where we don't have
@@ -8148,66 +8223,6 @@ namespace impl {
      *
      * The equivalent C++ code is substantially messier, but is effectively identical.
      */
-
-    /// TODO: in general, these descriptors should match their Python equivalents as
-    /// closely as possible, in order not to break existing code.
-
-    /* An equivalent for `PyObject_GetAttr` that avoids invoking the descriptor
-    protocol.  This is used during structural type checks to apply the check to the
-    descriptor itself, and not its products. */
-    inline Object getattr_descriptor(PyTypeObject* cls, PyObject* name) {
-        // traverse the object's MRO to check for class-level descriptors
-        if (cls->tp_mro) {
-            Object bases = borrow<Object>(cls->tp_mro);
-            for (Object type : bases) {
-                cls = reinterpret_cast<PyTypeObject*>(ptr(type));
-                if (cls->tp_dict) {
-                    Object attr = borrow<Object>(PyDict_GetItemWithError(
-                        cls->tp_dict,
-                        name
-                    ));
-                    if (!attr.is(nullptr)) {
-                        return attr;
-                    }
-                    if (PyErr_Occurred()) {
-                        Exception::from_python();
-                    }
-                }
-            }
-        }
-
-        // no descriptor found
-        Py_ssize_t len;
-        const char* data = PyUnicode_AsUTF8AndSize(name, &len);
-        if (data == nullptr) {
-            Exception::from_python();
-        }
-        throw AttributeError(std::string(data, len));
-    }
-
-    inline Object getattr_descriptor(PyObject* obj, PyObject* name) {
-        PyTypeObject* cls = Py_TYPE(obj);
-
-        // try the object's instance dictionary first
-        if ((cls->tp_flags & Py_TPFLAGS_MANAGED_DICT || cls->tp_dictoffset)) {
-            Object dict = steal<Object>(PyObject_GenericGetDict(obj, nullptr));
-            if (dict.is(nullptr)) {
-                Exception::from_python();
-            }
-            Object attr = borrow<Object>(PyDict_GetItemWithError(
-                ptr(dict),
-                name
-            ));
-            if (attr.is(nullptr) && PyErr_Occurred()) {
-                Exception::from_python();
-            }
-            if (!attr.is(nullptr)) {
-                return attr;
-            }
-        }
-
-        return getattr_descriptor(cls, name);
-    }
 
     template <meta::py_function F>
         requires (meta::normalized_signature<F> && signature<F>::Partial::empty())
@@ -8456,8 +8471,6 @@ check.)doc";
                 }
             }
 
-            /// TODO: __and__ needs to generate an intersection with the proper names.
-
             static PyObject* __and__(PyObject* lhs, PyObject* rhs) noexcept {
                 try {
                     Type<Method> type;
@@ -8465,9 +8478,21 @@ check.)doc";
                         Py_TYPE(lhs),
                         reinterpret_cast<PyTypeObject*>(ptr(type))
                     )) {
-                        return PyNumber_And(ptr(type), rhs);
+                        return PyNumber_And(
+                            ptr(get_intersection(
+                                ptr(reinterpret_cast<__python__*>(lhs)->func.name),
+                                ptr(type)
+                            )),
+                            rhs
+                        );
                     } else {
-                        return PyNumber_And(lhs, ptr(type));
+                        return PyNumber_And(
+                            lhs,
+                            ptr(get_intersection(
+                                ptr(reinterpret_cast<__python__*>(rhs)->func.name),
+                                ptr(type)
+                            ))
+                        );
                     }
                 } catch (...) {
                     Exception::to_python();
@@ -8482,9 +8507,21 @@ check.)doc";
                         Py_TYPE(lhs),
                         reinterpret_cast<PyTypeObject*>(ptr(type))
                     )) {
-                        return PyNumber_Or(ptr(type), rhs);
+                        return PyNumber_Or(
+                            ptr(get_intersection(
+                                ptr(reinterpret_cast<__python__*>(lhs)->func.name),
+                                ptr(type)
+                            )),
+                            rhs
+                        );
                     } else {
-                        return PyNumber_Or(lhs, ptr(type));
+                        return PyNumber_Or(
+                            lhs,
+                            ptr(get_intersection(
+                                ptr(reinterpret_cast<__python__*>(rhs)->func.name),
+                                ptr(type)
+                            ))
+                        );
                     }
                 } catch (...) {
                     Exception::to_python();
@@ -8495,7 +8532,7 @@ check.)doc";
             static PyObject* __instancecheck__(__python__* self, PyObject* obj) noexcept {
                 try {
                     return PyBool_FromLong(PyType_IsSubtype(
-                        Py_TYPE(ptr(getattr_descriptor(
+                        Py_TYPE(ptr(get_descriptor(
                             obj,
                             ptr(self->func.name)
                         ))),
@@ -8517,7 +8554,7 @@ check.)doc";
                         return nullptr;
                     }
                     return PyBool_FromLong(PyType_IsSubtype(
-                        Py_TYPE(ptr(getattr_descriptor(
+                        Py_TYPE(ptr(get_descriptor(
                             reinterpret_cast<PyTypeObject*>(cls),
                             ptr(self->func.name)
                         ))),
@@ -8845,9 +8882,21 @@ type check.)doc";
                         Py_TYPE(lhs),
                         reinterpret_cast<PyTypeObject*>(ptr(type))
                     )) {
-                        return PyNumber_And(ptr(type), rhs);
+                        return PyNumber_And(
+                            ptr(get_intersection(
+                                ptr(reinterpret_cast<__python__*>(lhs)->func.name),
+                                ptr(type)
+                            )),
+                            rhs
+                        );
                     } else {
-                        return PyNumber_And(lhs, ptr(type));
+                        return PyNumber_And(
+                            lhs,
+                            ptr(get_intersection(
+                                ptr(reinterpret_cast<__python__*>(rhs)->func.name),
+                                ptr(type)
+                            ))
+                        );
                     }
                 } catch (...) {
                     Exception::to_python();
@@ -8862,9 +8911,21 @@ type check.)doc";
                         Py_TYPE(lhs),
                         reinterpret_cast<PyTypeObject*>(ptr(type))
                     )) {
-                        return PyNumber_Or(ptr(type), rhs);
+                        return PyNumber_Or(
+                            ptr(get_intersection(
+                                ptr(reinterpret_cast<__python__*>(lhs)->func.name),
+                                ptr(type)
+                            )),
+                            rhs
+                        );
                     } else {
-                        return PyNumber_Or(lhs, ptr(type));
+                        return PyNumber_Or(
+                            lhs,
+                            ptr(get_intersection(
+                                ptr(reinterpret_cast<__python__*>(rhs)->func.name),
+                                ptr(type)
+                            ))
+                        );
                     }
                 } catch (...) {
                     Exception::to_python();
@@ -8875,7 +8936,7 @@ type check.)doc";
             static PyObject* __instancecheck__(__python__* self, PyObject* obj) noexcept {
                 try {
                     return PyBool_FromLong(PyType_IsSubtype(
-                        Py_TYPE(ptr(getattr_descriptor(
+                        Py_TYPE(ptr(get_descriptor(
                             obj,
                             ptr(self->func.name)
                         ))),
@@ -8897,7 +8958,7 @@ type check.)doc";
                         return nullptr;
                     }
                     return PyBool_FromLong(PyType_IsSubtype(
-                        Py_TYPE(ptr(getattr_descriptor(
+                        Py_TYPE(ptr(get_descriptor(
                             reinterpret_cast<PyTypeObject*>(cls),
                             ptr(self->func.name)
                         ))),
@@ -9219,9 +9280,21 @@ type check.)doc";
                         Py_TYPE(lhs),
                         reinterpret_cast<PyTypeObject*>(ptr(type))
                     )) {
-                        return PyNumber_And(ptr(type), rhs);
+                        return PyNumber_And(
+                            ptr(get_intersection(
+                                ptr(reinterpret_cast<__python__*>(lhs)->func.name),
+                                ptr(type)
+                            )),
+                            rhs
+                        );
                     } else {
-                        return PyNumber_And(lhs, ptr(type));
+                        return PyNumber_And(
+                            lhs,
+                            ptr(get_intersection(
+                                ptr(reinterpret_cast<__python__*>(rhs)->func.name),
+                                ptr(type)
+                            ))
+                        );
                     }
                 } catch (...) {
                     Exception::to_python();
@@ -9236,9 +9309,21 @@ type check.)doc";
                         Py_TYPE(lhs),
                         reinterpret_cast<PyTypeObject*>(ptr(type))
                     )) {
-                        return PyNumber_Or(ptr(type), rhs);
+                        return PyNumber_Or(
+                            ptr(get_intersection(
+                                ptr(reinterpret_cast<__python__*>(lhs)->func.name),
+                                ptr(type)
+                            )),
+                            rhs
+                        );
                     } else {
-                        return PyNumber_Or(lhs, ptr(type));
+                        return PyNumber_Or(
+                            lhs,
+                            ptr(get_intersection(
+                                ptr(reinterpret_cast<__python__*>(rhs)->func.name),
+                                ptr(type)
+                            ))
+                        );
                     }
                 } catch (...) {
                     Exception::to_python();
@@ -9249,7 +9334,7 @@ type check.)doc";
             static PyObject* __instancecheck__(__python__* self, PyObject* obj) noexcept {
                 try {
                     return PyBool_FromLong(PyType_IsSubtype(
-                        Py_TYPE(ptr(getattr_descriptor(
+                        Py_TYPE(ptr(get_descriptor(
                             obj,
                             ptr(self->func.name)
                         ))),
@@ -9271,7 +9356,7 @@ type check.)doc";
                         return nullptr;
                     }
                     return PyBool_FromLong(PyType_IsSubtype(
-                        Py_TYPE(ptr(getattr_descriptor(
+                        Py_TYPE(ptr(get_descriptor(
                             reinterpret_cast<PyTypeObject*>(cls),
                             ptr(self->func.name)
                         ))),
@@ -9838,16 +9923,27 @@ structural type check.)doc";
 
             static PyObject* __and__(PyObject* lhs, PyObject* rhs) noexcept {
                 try {
-                    if (PyType_IsSubtype(Py_TYPE(lhs), &__type__)) {
+                    Type<Property> type;
+                    if (PyType_IsSubtype(
+                        Py_TYPE(lhs),
+                        reinterpret_cast<PyTypeObject*>(ptr(type))
+                    )) {
                         return PyNumber_And(
-                            ptr(reinterpret_cast<Property*>(lhs)->structural_type()),
+                            ptr(get_intersection(
+                                ptr(reinterpret_cast<__python__*>(lhs)->func.name),
+                                ptr(type)
+                            )),
                             rhs
                         );
+                    } else {
+                        return PyNumber_And(
+                            lhs,
+                            ptr(get_intersection(
+                                ptr(reinterpret_cast<__python__*>(rhs)->func.name),
+                                ptr(type)
+                            ))
+                        );
                     }
-                    return PyNumber_And(
-                        lhs,
-                        ptr(reinterpret_cast<Property*>(rhs)->structural_type())
-                    );
                 } catch (...) {
                     Exception::to_python();
                     return nullptr;
@@ -9856,16 +9952,27 @@ structural type check.)doc";
 
             static PyObject* __or__(PyObject* lhs, PyObject* rhs) noexcept {
                 try {
-                    if (PyType_IsSubtype(Py_TYPE(lhs), &__type__)) {
+                    Type<Property> type;
+                    if (PyType_IsSubtype(
+                        Py_TYPE(lhs),
+                        reinterpret_cast<PyTypeObject*>(ptr(type))
+                    )) {
                         return PyNumber_Or(
-                            ptr(reinterpret_cast<Property*>(lhs)->structural_type()),
+                            ptr(get_intersection(
+                                ptr(reinterpret_cast<__python__*>(lhs)->func.name),
+                                ptr(type)
+                            )),
                             rhs
                         );
+                    } else {
+                        return PyNumber_Or(
+                            lhs,
+                            ptr(get_intersection(
+                                ptr(reinterpret_cast<__python__*>(rhs)->func.name),
+                                ptr(type)
+                            ))
+                        );
                     }
-                    return PyNumber_Or(
-                        lhs,
-                        ptr(reinterpret_cast<Property*>(rhs)->structural_type())
-                    );
                 } catch (...) {
                     Exception::to_python();
                     return nullptr;
@@ -9875,7 +9982,7 @@ structural type check.)doc";
             static PyObject* __instancecheck__(Property* self, PyObject* obj) noexcept {
                 try {
                     return PyBool_FromLong(PyType_IsSubtype(
-                        Py_TYPE(ptr(getattr_descriptor(
+                        Py_TYPE(ptr(get_descriptor(
                             obj,
                             ptr(self->func.name)
                         ))),
@@ -9897,7 +10004,7 @@ structural type check.)doc";
                         return nullptr;
                     }
                     return PyBool_FromLong(PyType_IsSubtype(
-                        Py_TYPE(ptr(getattr_descriptor(
+                        Py_TYPE(ptr(get_descriptor(
                             reinterpret_cast<PyTypeObject*>(cls),
                             ptr(self->func.name)
                         ))),
