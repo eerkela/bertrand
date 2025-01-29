@@ -236,13 +236,24 @@ struct __template__                                         : disable {};
 /// NOTE: __repr__ is contained in static_str.h in order to allow pure C++ usage.
 
 
-/* Enables the `bertrand::getattr<"name">()` helper for any `bertrand::Object`
+/* Enables the `bertrand::getattr<"name">()` operator for any `bertrand::Object`
 subclass, and assigns a corresponding return type.  Disabled by default unless this
 class is explicitly specialized for a given attribute name.  Specializations of this
 class may implement a custom call operator to replace the default behavior, which
 delegates to a normal dotted attribute lookup at the Python level.   */
 template <typename Self, static_str Name>
 struct __getattr__                                          : disable {};
+
+
+/* Enables the `bertrand::hasattr<"name">()` operator for any `bertrand::Object`
+subclass, and assigns a corresponding return type.  Specializations of this class may
+implement a custom call operator to replace the default behavior, which simply
+delegates to `__getattr__<>::enable` as a compile-time expression. */
+template <typename Self, static_str Name>
+struct __hasattr__ {
+    static constexpr bool enable = __getattr__<Self, Name>::enable;
+    using type = bool;
+};
 
 
 /* Enables the `bertrand::setattr<"name">()` helper for any `bertrand::Object`
@@ -2394,6 +2405,8 @@ resolve conflicts, the Object and its Type can even model Python-style MRO, or e
 multiple overloads at the same time. */
 template <typename T>
 struct interface : impl::empty_interface {};
+template <meta::is_qualified T>
+struct interface<T> : interface<std::remove_cvref_t<T>> {};
 
 
 namespace meta {
@@ -2433,193 +2446,193 @@ namespace meta {
     using python_type = detail::python_type<T>::type;
 
     template <typename T>
-    concept Object = is<T, bertrand::Object> || (
-        python<T> &&
+    concept Object = python<T> && (
+        is<T, bertrand::Object> ||
         is<python_type<T>, bertrand::Object>
     );
 
     template <typename T>
-    concept Iterator = inherits<T, impl::iter_tag>;
+    concept Iterator = python<T> && inherits<T, impl::iter_tag>;
     template <typename T>
     concept IteratorLike = has_python<T> && Iterator<python_type<T>>;
 
     template <typename T>
-    concept Function = inherits<T, impl::function_tag>;
+    concept Function = python<T> && inherits<T, impl::function_tag>;
     template <typename T>
     concept FunctionLike = has_python<T> && Function<python_type<T>>;
 
     template <typename T>
-    concept Method = inherits<T, impl::method_tag>;
+    concept Method = python<T> && inherits<T, impl::method_tag>;
     template <typename T>
     concept MethodLike = has_python<T> && Method<python_type<T>>;
 
     template <typename T>
-    concept ClassMethod = inherits<T, impl::classmethod_tag>;
+    concept ClassMethod = python<T> && inherits<T, impl::classmethod_tag>;
     template <typename T>
     concept ClassMethodLike = has_python<T> && ClassMethod<python_type<T>>;
 
     template <typename T>
-    concept StaticMethod = inherits<T, impl::staticmethod_tag>;
+    concept StaticMethod = python<T> && inherits<T, impl::staticmethod_tag>;
     template <typename T>
     concept StaticMethodLike = has_python<T> && StaticMethod<python_type<T>>;
 
     template <typename T>
-    concept Property = inherits<T, impl::property_tag>;
+    concept Property = python<T> && inherits<T, impl::property_tag>;
     template <typename T>
     concept PropertyLike = has_python<T> && Property<python_type<T>>;
 
     template <typename T>
-    concept Type = inherits<T, impl::type_tag>;
+    concept Type = python<T> && inherits<T, impl::type_tag>;
     template <typename T>
     concept TypeLike = has_python<T> && Type<python_type<T>>;
 
     template <typename T>
-    concept Module = inherits<T, impl::module_tag>;
+    concept Module = python<T> && inherits<T, impl::module_tag>;
     template <typename T>
     concept ModuleLike = has_python<T> && Module<python_type<T>>;
 
     template <typename T>
-    concept Union = inherits<T, impl::union_tag>;
+    concept Union = python<T> && inherits<T, impl::union_tag>;
     template <typename T>
     concept UnionLike = has_python<T> && Union<python_type<T>>;
 
     template <typename T>
-    concept Optional = inherits<T, impl::optional_tag>;
+    concept Optional = python<T> && inherits<T, impl::optional_tag>;
     template <typename T>
     concept OptionalLike = has_python<T> && Optional<python_type<T>>;
 
     template <typename T>
-    concept Intersection = inherits<T, impl::intersection_tag>;
+    concept Intersection = python<T> && inherits<T, impl::intersection_tag>;
     template <typename T>
     concept IntersectionLike = has_python<T> && Intersection<python_type<T>>;
 
     template <typename T>
-    concept None = inherits<T, impl::none_tag>;
+    concept None = python<T> && inherits<T, impl::none_tag>;
     template <typename T>
     concept NoneLike = has_python<T> && None<python_type<T>>;
 
     template <typename T>
-    concept NotImplemented = inherits<T, impl::notimplemented_tag>;
+    concept NotImplemented = python<T> && inherits<T, impl::notimplemented_tag>;
     template <typename T>
     concept NotImplementedLike = has_python<T> && NotImplemented<python_type<T>>;
 
     template <typename T>
-    concept Ellipsis = inherits<T, impl::ellipsis_tag>;
+    concept Ellipsis = python<T> && inherits<T, impl::ellipsis_tag>;
     template <typename T>
     concept EllipsisLike = has_python<T> && Ellipsis<python_type<T>>;
 
     template <typename T>
-    concept Slice = inherits<T, impl::slice_tag>;
+    concept Slice = python<T> && inherits<T, impl::slice_tag>;
     template <typename T>
     concept SliceLike = has_python<T> && Slice<python_type<T>>;
 
     template <typename T>
-    concept Bool = inherits<T, impl::bool_tag>;
+    concept Bool = python<T> && inherits<T, impl::bool_tag>;
     template <typename T>
     concept BoolLike = has_python<T> && Bool<python_type<T>>;
 
     template <typename T>
-    concept Int = inherits<T, impl::int_tag>;
+    concept Int = python<T> && inherits<T, impl::int_tag>;
     template <typename T>
     concept IntLike = has_python<T> && Int<python_type<T>>;
 
     template <typename T>
-    concept Float = inherits<T, impl::float_tag>;
+    concept Float = python<T> && inherits<T, impl::float_tag>;
     template <typename T>
     concept FloatLike = has_python<T> && Float<python_type<T>>;
 
     template <typename T>
-    concept Complex = inherits<T, impl::complex_tag>;
+    concept Complex = python<T> && inherits<T, impl::complex_tag>;
     template <typename T>
     concept ComplexLike = has_python<T> && Complex<python_type<T>>;
 
     template <typename T>
-    concept Str = inherits<T, impl::str_tag>;
+    concept Str = python<T> && inherits<T, impl::str_tag>;
     template <typename T>
     concept StrLike = has_python<T> && Str<python_type<T>>;
 
     template <typename T>
-    concept Bytes = inherits<T, impl::bytes_tag>;
+    concept Bytes = python<T> && inherits<T, impl::bytes_tag>;
     template <typename T>
     concept BytesLike = has_python<T> && Bytes<python_type<T>>;
 
     template <typename T>
-    concept ByteArray = inherits<T, impl::bytearray_tag>;
+    concept ByteArray = python<T> && inherits<T, impl::bytearray_tag>;
     template <typename T>
     concept ByteArrayLike = has_python<T> && ByteArray<python_type<T>>;
 
     template <typename T>
-    concept Date = inherits<T, impl::date_tag>;
+    concept Date = python<T> && inherits<T, impl::date_tag>;
     template <typename T>
     concept DateLike = has_python<T> && Date<python_type<T>>;
 
     template <typename T>
-    concept Time = inherits<T, impl::time_tag>;
+    concept Time = python<T> && inherits<T, impl::time_tag>;
     template <typename T>
     concept TimeLike = has_python<T> && Time<python_type<T>>;
 
     template <typename T>
-    concept DateTime = inherits<T, impl::datetime_tag>;
+    concept DateTime = python<T> && inherits<T, impl::datetime_tag>;
     template <typename T>
     concept DateTimeLike = has_python<T> && DateTime<python_type<T>>;
 
     template <typename T>
-    concept Timedelta = inherits<T, impl::timedelta_tag>;
+    concept Timedelta = python<T> && inherits<T, impl::timedelta_tag>;
     template <typename T>
     concept TimedeltaLike = has_python<T> && Timedelta<python_type<T>>;
 
     template <typename T>
-    concept Timezone = inherits<T, impl::timezone_tag>;
+    concept Timezone = python<T> && inherits<T, impl::timezone_tag>;
     template <typename T>
     concept TimezoneLike = has_python<T> && Timezone<python_type<T>>;
 
     template <typename T>
-    concept Range = inherits<T, impl::range_tag>;
+    concept Range = python<T> && inherits<T, impl::range_tag>;
     template <typename T>
     concept RangeLike = has_python<T> && Range<python_type<T>>;
 
     template <typename T>
-    concept Tuple = inherits<T, impl::tuple_tag>;
+    concept Tuple = python<T> && inherits<T, impl::tuple_tag>;
     template <typename T>
     concept TupleLike = has_python<T> && Tuple<python_type<T>>;
 
     template <typename T>
-    concept List = inherits<T, impl::list_tag>;
+    concept List = python<T> && inherits<T, impl::list_tag>;
     template <typename T>
     concept ListLike = has_python<T> && List<python_type<T>>;
 
     template <typename T>
-    concept Set = inherits<T, impl::set_tag>;
+    concept Set = python<T> && inherits<T, impl::set_tag>;
     template <typename T>
     concept SetLike = has_python<T> && Set<python_type<T>>;
 
     template <typename T>
-    concept FrozenSet = inherits<T, impl::frozenset_tag>;
+    concept FrozenSet = python<T> && inherits<T, impl::frozenset_tag>;
     template <typename T>
     concept FrozenSetLike = has_python<T> && FrozenSet<python_type<T>>;
 
     template <typename T>
-    concept Dict = inherits<T, impl::dict_tag>;
+    concept Dict = python<T> && inherits<T, impl::dict_tag>;
     template <typename T>
     concept DictLike = has_python<T> && Dict<python_type<T>>;
 
     template <typename T>
-    concept KeyView = inherits<T, impl::key_view_tag>;
+    concept KeyView = python<T> && inherits<T, impl::key_view_tag>;
     template <typename T>
     concept KeyViewLike = has_python<T> && KeyView<python_type<T>>;
 
     template <typename T>
-    concept ValueView = inherits<T, impl::value_view_tag>;
+    concept ValueView = python<T> && inherits<T, impl::value_view_tag>;
     template <typename T>
     concept ValueViewLike = has_python<T> && ValueView<python_type<T>>;
 
     template <typename T>
-    concept ItemView = inherits<T, impl::item_view_tag>;
+    concept ItemView = python<T> && inherits<T, impl::item_view_tag>;
     template <typename T>
     concept ItemViewLike = has_python<T> && ItemView<python_type<T>>;
 
     template <typename T>
-    concept MappingProxy = inherits<T, impl::mapping_proxy_tag>;
+    concept MappingProxy = python<T> && inherits<T, impl::mapping_proxy_tag>;
     template <typename T>
     concept MappingProxyLike = has_python<T> && MappingProxy<python_type<T>>;
 
@@ -2707,19 +2720,18 @@ using Optional = Union<T, NoneType>;
 
 namespace meta {
 
-
     template <typename T>
-    concept global = inherits<T, impl::global_tag>;
+    concept global = python<T> && inherits<T, impl::global_tag>;
     template <global T>
     using global_type = std::remove_cvref_t<T>::type;
 
     template <typename T>
-    concept attr = inherits<T, impl::attr_tag>;
+    concept attr = python<T> && inherits<T, impl::attr_tag>;
     template <attr T>
     using attr_type = std::remove_cvref_t<T>::type;
 
     template <typename T>
-    concept item = inherits<T, impl::item_tag>;
+    concept item = python<T> && inherits<T, impl::item_tag>;
     template <item T>
     using item_type = std::remove_cvref_t<T>::type;
 

@@ -1849,6 +1849,17 @@ struct __getattr__<Self, Name> : returns<typename impl::UnionGetAttr<Self, Name>
 };
 
 
+template <meta::Union Self, static_str Name>
+    requires (__getattr__<Self, Name>::enable)
+struct __hasattr__<Self, Name> : returns<bool> {
+    static bool operator()(auto&& self) {
+        /// TODO: Python 3.13 introduces `PyObject_HasAttrWithError()`, which is
+        /// more robust when it comes to error handling.
+        return PyObject_HasAttr(ptr(self), impl::template_string<Name>());
+    }
+};
+
+
 template <meta::Union Self, static_str Name, typename Value>
     requires (impl::UnionSetAttr<Self, Name, Value>::enable)
 struct __setattr__<Self, Name, Value> : returns<void> {

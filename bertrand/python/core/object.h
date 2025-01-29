@@ -1167,6 +1167,12 @@ template <meta::Object Self, static_str Name, std::convertible_to<Object> Value>
 struct __setattr__<Self, Name, Value>                       : returns<void> {};
 template <meta::Object Self, static_str Name> requires (!meta::is_const<Self>)
 struct __delattr__<Self, Name>                              : returns<void> {};
+template <meta::Object Self, static_str Name>
+struct __hasattr__<Self, Name>                              : returns<bool> {
+    static bool operator()(auto&& self);
+};
+
+
 template <meta::Object Self, typename... Args> requires (meta::callable<
     Object(Arg<"*args", Object>, Arg<"**kwargs", Object>),
     Args...

@@ -785,6 +785,16 @@ void del(item<Self, Key...>&& item) {
 }
 
 
+/* `hasattr<"name">(Object)` forwards to a runtime `hasattr()` check that accounts for
+dynamic typing. */
+template <meta::Object Self, static_str Name>
+inline bool __hasattr__<Self, Name>::operator()(auto&& self) {
+    /// TODO: Python 3.13 introduces `PyObject_HasAttrWithError()`, which is
+    /// more robust when it comes to error handling.
+    return PyObject_HasAttr(ptr(self), impl::template_string<Name>());
+}
+
+
 /* Unary cast on a lazily-evaluated proxy redirects to the parent type, triggering a
 lookup. */
 template <meta::python T> requires (meta::lazily_evaluated<T>)
@@ -798,14 +808,30 @@ struct __cast__<T> : returns<std::remove_cvref_t<meta::lazy_type<T>>> {
 /* Equivalent to Python `hasattr(obj, name)` with a static attribute name. */
 template <meta::python Self, static_str Name>
 [[nodiscard]] constexpr bool hasattr() {
-    return __getattr__<Self, Name>::enable;
+    if constexpr (std::is_invocable_r_v<bool, __hasattr__<Self, Name>>) {
+        return __hasattr__<Self, Name>{}();
+    } else {
+        return __hasattr__<Self, Name>::enable;
+    }
 }
 
 
 /* Equivalent to Python `hasattr(obj, name)` with a static attribute name. */
 template <static_str Name, meta::python Self>
 [[nodiscard]] constexpr bool hasattr(Self&& obj) {
-    return __getattr__<Self, Name>::enable;
+    if constexpr (std::is_invocable_r_v<bool, __hasattr__<Self, Name>, Self>) {
+        return __hasattr__<Self, Name>{}(std::forward<Self>(obj));
+    } else {
+        return __hasattr__<Self, Name>::enable;
+    }
+    // constexpr bool enable = __getattr__<Self, Name>::enable;
+    // if constexpr (enable && meta::dynamic<Self>) {
+    //     /// TODO: Python 3.13 introduces `PyObject_HasAttrWithError()`, which is
+    //     /// more robust when it comes to error handling.
+    //     return PyObject_HasAttr(ptr(obj), ptr(impl::template_string<Name>()));
+    // } else {
+    //     return enable;
+    // }
 }
 
 
