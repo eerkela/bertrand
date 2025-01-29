@@ -20,6 +20,7 @@
 #include <ostream>
 #include <ranges>
 #include <set>
+#include <shared_mutex>
 #include <sstream>
 #include <stack>
 #include <stdexcept>
@@ -57,6 +58,7 @@ namespace bertrand {
 namespace impl {
     struct bertrand_tag {};
     struct empty_interface : bertrand_tag {};
+    struct global_tag : bertrand_tag {};
     struct iter_tag : bertrand_tag {};
     struct function_tag : bertrand_tag {};
     struct method_tag : bertrand_tag {};
@@ -2433,6 +2435,11 @@ namespace meta {
         python<T> &&
         is<python_type<T>, bertrand::Object>
     );
+
+    template <typename T>
+    concept global = inherits<T, impl::global_tag>;
+    template <typename T>
+    concept globalLike = has_python<T> && global<python_type<T>>;
 
     template <typename T>
     concept Iterator = inherits<T, impl::iter_tag>;

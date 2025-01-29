@@ -85,38 +85,144 @@ template <typename Self, typename... Key>
 void del(impl::Item<Self, Key...>&& item);
 
 
+/* Delete a global value for the current Python interpreter, forcing it to be
+recomputed from the initializer function when next accessed. */
+template <meta::global Global>
+void del(Global&& global);
+
+
+/* A proxy for a global Python object that respects per-interpreter state.  Each Python
+interpreter will see a unique value, obtained by searching the interpreter ID in an
+internal map.  If an ID is not present, then the initializer function will be invoked
+and its result stored in the map for future access.  A read/write lock is used to
+synchronize access between threads, such that read-only `get()` operations are
+non-blocking. */
+template <typename Func>
+    requires (
+        !meta::is_qualified<Func> &&
+        std::is_invocable_v<Func> &&
+        meta::python<typename std::invoke_result_t<Func>>
+    )
+struct global : std::remove_cvref_t<std::invoke_result_t<Func>>, impl::global_tag {
+    using type = std::remove_cvref_t<std::invoke_result_t<Func>>;
+
+private:
+    template <meta::global Global>
+    friend void bertrand::del(Global&& global);
+    template <meta::python T>
+    friend PyObject* bertrand::ptr(T&&);
+    template <meta::python T> requires (!meta::is_const<T>)
+    friend PyObject* bertrand::release(T&&);
+    template <meta::python T> requires (!meta::is_qualified<T>)
+    friend T bertrand::borrow(PyObject*);
+    template <meta::python T> requires (!meta::is_qualified<T>)
+    friend T bertrand::steal(PyObject*);
+    template <meta::python T> requires (meta::has_cpp<T>)
+    friend auto& impl::unwrap(T& obj);
+    template <meta::python T> requires (meta::has_cpp<T>)
+    friend const auto& impl::unwrap(const T& obj);
+
+    /* The global wrapper's `m_ptr` member is lazily evaluated to allow seamless
+    lookups.  Replacing it with a computed property will trigger a lookup against the
+    `m_values` map, which gets the value for the current Python interpreter every time.
+    Setting the pointer (e.g. as a part of `release()` is a no-op. */
+    __declspec(property(get = _get_ptr, put = _set_ptr)) PyObject* m_ptr;
+    void _set_ptr(PyObject* value) {}
+    PyObject* _get_ptr() {
+        std::shared_lock<std::shared_mutex> read(m_mutex);
+        PyInterpreterState* id = PyInterpreterState_Get();
+        auto it = m_values.find(id);
+        if (it != m_values.end()) {
+            return ptr(it->second);
+        }
+        read.unlock();
+        std::unique_lock<std::shared_mutex> write(m_mutex);
+        it = m_values.try_emplace(id, m_func()).first;
+        return ptr(it->second);
+    }
+
+    /* Similarly to `m_ptr`, replacing `m_index` with a computed property will trigger
+    a lookup against `m_values`, allowing the value to be an `bertrand::Union` or
+    `bertrand::Optional` type without any issues. */
+    __declspec(property(get = _get_index, put = _set_index)) size_t m_index;
+    void _set_index(size_t value) {}
+    size_t _get_index() {
+        if constexpr (meta::Union<type>) {
+            std::shared_lock<std::shared_mutex> read(m_mutex);
+            PyInterpreterState* id = PyInterpreterState_Get();
+            auto it = m_values.find(id);
+            if (it != m_values.end()) {
+                return it->second.index();
+            }
+            read.unlock();
+            std::unique_lock<std::shared_mutex> write(m_mutex);
+            it = m_values.try_emplace(id, m_func()).first;
+            return it->second.index();
+        } else {
+            return 0;
+        }
+    }
+
+    mutable std::shared_mutex m_mutex;
+    mutable std::unordered_map<PyInterpreterState*, type> m_values;
+    mutable Func m_func;
+
+public:
+    /* The global wrapper can only be constructed with an initializer function, which
+    must not accept any arguments, and must produce a Python object that will be stored
+    in the `m_values` map. */
+    template <meta::is<Func> F>
+    global(F&& func) :
+        type(nullptr, typename type::stolen_t{}),
+        m_func(std::forward<F>(func))
+    {}
+
+    /* Assigning to the globals wrapper will forward the assignment to the `m_values`
+    map in a thread-safe way. */
+    global& operator=(const type& value) {
+        if (static_cast<type*>(this) != &value) {
+            std::unique_lock<std::shared_mutex> write(m_mutex);
+            m_values[PyInterpreterState_Get()] = value;
+        }
+        return *this;
+    }
+
+    global& operator=(type&& value) {
+        if (static_cast<type*>(this) != &value) {
+            std::unique_lock<std::shared_mutex> write(m_mutex);
+            m_values[PyInterpreterState_Get()] = std::move(value);
+        }
+        return *this;
+    }
+};
+
+
+template <typename Func>
+    requires (
+        std::is_invocable_v<Func> &&
+        meta::python<typename std::invoke_result_t<Func>>
+    )
+global(Func&&) -> global<std::remove_cvref_t<Func>>;
+
+
 namespace impl {
 
-    /* A global map storing cached Python strings for the `template_string<"name">`
-    accessor.  This avoids the overhead of repeatedly creating identical strings for
-    attribute lookups, and replaces it with a simple, 2-level hash lookup with proper
-    per-interpreter state. */
-    inline std::unordered_map<
-        PyInterpreterState*,
-        std::unordered_map<const char*, Object>
-    > template_strings;
-
-    /* Convert a compile-time string into a Python unicode object. */
+    /* Convert a compile-time string into a Python unicode object.  This stores a
+    unique string per interpreter, which is lazily initialized the first time it is
+    needed and then reused, eliminating unnecessary allocations. */
     template <static_str name>
-    const Object& template_string() {
-        auto table = template_strings.find(PyInterpreterState_Get());
-        if (table == template_strings.end()) {
-            throw AssertionError(
-                "no template string table found for the current Python interpreter"
-            );
-        }
-        auto it = table->second.find(name);
-        if (it != table->second.end()) {
-            return it->second;
-        }
-        PyObject* result = PyUnicode_FromStringAndSize(name, name.size());
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return table->second.emplace(
-            name,
-            steal<Object>(result)
-        ).first->second;        
+    const auto& template_string() {
+        static global string = [] {
+            Object string = steal<Object>(PyUnicode_FromStringAndSize(
+                name,
+                name.size()
+            ));
+            if (string.is(nullptr)) {
+                Exception::from_python();
+            }
+            return string;
+        };
+        return string;
     }
 
     /* A proxy for the result of an attribute lookup that is controlled by the
@@ -189,6 +295,24 @@ namespace impl {
                 }
             }
             return Base::m_ptr;
+        }
+
+        /* The wrapper's `m_index` member is lazily evaluated just like `m_ptr` field.
+        This allows seamless integration with `bertrand::Union` and
+        `bertrand::Optional` types. */
+        __declspec(property(get = _get_index, put = _set_index)) size_t m_index;
+        void _set_index(size_t value) {
+            if constexpr (meta::Union<Base>) {
+                Base::m_index = value;
+            }
+        }
+        size_t _get_index() {
+            if constexpr (meta::Union<Base>) {
+                _get_ptr();
+                return Base::m_index;
+            } else {
+                return 0;
+            }
         }
 
     public:
@@ -347,6 +471,24 @@ namespace impl {
             return Base::m_ptr;
         }
 
+        /* The wrapper's `m_index` member is lazily evaluated just like `m_ptr` field.
+        This allows seamless integration with `bertrand::Union` and
+        `bertrand::Optional` types. */
+        __declspec(property(get = _get_index, put = _set_index)) size_t m_index;
+        void _set_index(size_t value) {
+            if constexpr (meta::Union<Base>) {
+                Base::m_index = value;
+            }
+        }
+        size_t _get_index() {
+            if constexpr (meta::Union<Base>) {
+                _get_ptr();
+                return Base::m_index;
+            } else {
+                return 0;
+            }
+        }
+
     public:
 
         Item(Self&& self, Key&&... key) :
@@ -418,6 +560,13 @@ namespace impl {
         }
     };
 
+}
+
+
+template <meta::global Global>
+void del(Global&& global) {
+    std::unique_lock<std::shared_mutex> write(global.m_mutex);
+    global.m_values.erase(PyInterpreterState_Get());
 }
 
 
@@ -771,18 +920,23 @@ template <meta::python Return> requires (!meta::is_qualified<Return>)
 struct Iterator<Return, void, void> : Object, interface<Iterator<Return, void, void>> {
     struct __python__ : cls<__python__, Iterator>, PyObject {
         static Type<Iterator> __import__() {
-            Object collections = steal<Object>(PyImport_Import(
-                ptr(impl::template_string<"collections.abc">())
+            // collections.abc.Iterator stored as a global variable computed once
+            // per interpreter.
+            static global iter = [] {
+                Object collections = steal<Object>(PyImport_Import(
+                    ptr(impl::template_string<"collections.abc">())
+                ));
+                if (collections.is(nullptr)) {
+                    Exception::from_python();
+                }
+                return getattr<"Iterator">(collections);
+            };
+
+            // use cached iterator type
+            Type<Iterator> result = steal<Type<Iterator>>(PyObject_GetItem(
+                ptr(iter),
+                ptr(Type<Return>())
             ));
-            if (collections.is(nullptr)) {
-                Exception::from_python();
-            }
-            Type<Iterator> result = steal<Type<Iterator>>(
-                PyObject_GetItem(
-                    ptr(getattr<"Iterator">(collections)),
-                    ptr(Type<Return>())
-                )
-            );
             if (result.is(nullptr)) {
                 Exception::from_python();
             }
