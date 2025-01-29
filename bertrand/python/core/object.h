@@ -872,7 +872,7 @@ public:
             );
 
         } else {
-            return impl::Item<Self, Key...>(
+            return item<Self, Key...>(
                 std::forward<Self>(self),
                 std::forward<Key>(key)...
             );
@@ -1180,8 +1180,8 @@ struct __reversed__<Self>                                   : returns<Object> {}
 /* Allow 2-argument `issubclass()` checks between dynamic objects. */
 template <meta::Object Derived, meta::Object Base>
 struct __issubclass__<Derived, Base>                        : returns<bool> {
-    static bool operator()(Derived derived) { return PyType_Check(ptr(derived)); }
-    static bool operator()(Derived derived, Base base) {
+    static bool operator()(auto&& derived) { return PyType_Check(ptr(derived)); }
+    static bool operator()(auto&& derived, auto&& base) {
         int result = PyObject_IsSubclass(
             ptr(derived),
             ptr(base)

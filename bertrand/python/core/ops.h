@@ -67,7 +67,7 @@ template <typename Self, static_str Name>
             !std::is_invocable_v<__delattr__<Self, Name>, Self>
         )
     )
-void del(impl::Attr<Self, Name>&& attr);
+void del(attr<Self, Name>&& attr);
 
 
 /* Replicates Python's `del` keyword for attribute and item deletion.  Note that the
@@ -82,7 +82,7 @@ template <typename Self, typename... Key>
             !std::is_invocable_v<__delitem__<Self, Key...>, Self, Key...>
         )
     )
-void del(impl::Item<Self, Key...>&& item);
+void del(item<Self, Key...>&& item);
 
 
 /* Delete a global value for the current Python interpreter, forcing it to be
@@ -112,12 +112,6 @@ namespace impl {
 }
 
 
-/* A proxy for a global Python object that respects per-interpreter state.  Each Python
-interpreter will see a unique value, obtained by searching the interpreter ID in an
-internal map.  If an ID is not present, then the initializer function will be invoked
-and its result stored in the map for future access.  A read/write lock is used to
-synchronize access between threads, such that read-only `get()` operations are
-non-blocking. */
 template <typename Func>
     requires (
         !meta::is_qualified<Func> &&
@@ -125,7 +119,7 @@ template <typename Func>
         meta::python<typename std::invoke_result_t<Func>>
     )
 struct global : std::remove_cvref_t<std::invoke_result_t<Func>>, impl::global_tag {
-    using type = meta::global_type<global>;
+    using type = std::remove_cvref_t<std::invoke_result_t<Func>>;
 
 private:
     template <meta::global Global>
@@ -368,343 +362,333 @@ namespace impl {
         }
         return module;
     };
-    
-    /* A proxy for the result of an attribute lookup that is controlled by the
-    `__getattr__`, `__setattr__`, and `__delattr__` control structs.
 
-    This is a simple extension of an Object type that intercepts `operator=` and
-    assigns the new value back to the attribute using the appropriate API.  Mutating
-    the object in any other way will also modify it in-place on the parent. */
-    template <typename Self, static_str Name>
+}
+
+
+template <typename Self, static_str Name>
+    requires (
+        __getattr__<Self, Name>::enable &&
+        meta::python<typename __getattr__<Self, Name>::type> &&
+        !meta::is_qualified<typename __getattr__<Self, Name>::type> && (
+            !std::is_invocable_v<__getattr__<Self, Name>, Self> ||
+            std::is_invocable_r_v<
+                typename __getattr__<Self, Name>::type,
+                __getattr__<Self, Name>,
+                Self
+            >
+        )
+    )
+struct attr : __getattr__<Self, Name>::type, impl::attr_tag {
+    using type = __getattr__<Self, Name>::type;
+
+private:
+    template <typename S, static_str N>
         requires (
-            __getattr__<Self, Name>::enable &&
-            meta::python<typename __getattr__<Self, Name>::type> &&
-            !meta::is_qualified<typename __getattr__<Self, Name>::type> && (
-                !std::is_invocable_v<__getattr__<Self, Name>, Self> ||
-                std::is_invocable_r_v<
-                    typename __getattr__<Self, Name>::type,
-                    __getattr__<Self, Name>,
-                    Self
-                >
+            __delattr__<S, N>::enable &&
+            meta::is_void<typename __delattr__<S, N>::type> && (
+                std::is_invocable_r_v<void, __delattr__<S, N>, S> ||
+                !std::is_invocable_v<__delattr__<S, N>, S>
             )
         )
-    struct Attr : __getattr__<Self, Name>::type {
-    private:
-        using Base = __getattr__<Self, Name>::type;
+    friend void bertrand::del(attr<S, N>&& item);
+    template <meta::python T>
+    friend PyObject* bertrand::ptr(T&&);
+    template <meta::python T> requires (!meta::is_const<T>)
+    friend PyObject* bertrand::release(T&&);
+    template <meta::python T> requires (!meta::is_qualified<T>)
+    friend T bertrand::borrow(PyObject*);
+    template <meta::python T> requires (!meta::is_qualified<T>)
+    friend T bertrand::steal(PyObject*);
+    template <meta::python T> requires (meta::has_cpp<T>)
+    friend auto& impl::unwrap(T& obj);
+    template <meta::python T> requires (meta::has_cpp<T>)
+    friend const auto& impl::unwrap(const T& obj);
 
-        template <typename S, static_str N>
-            requires (
-                __delattr__<S, N>::enable &&
-                meta::is_void<typename __delattr__<S, N>::type> && (
-                    std::is_invocable_r_v<void, __delattr__<S, N>, S> ||
-                    !std::is_invocable_v<__delattr__<S, N>, S>
-                )
-            )
-        friend void bertrand::del(Attr<S, N>&& item);
-        template <meta::python T>
-        friend PyObject* bertrand::ptr(T&&);
-        template <meta::python T> requires (!meta::is_const<T>)
-        friend PyObject* bertrand::release(T&&);
-        template <meta::python T> requires (!meta::is_qualified<T>)
-        friend T bertrand::borrow(PyObject*);
-        template <meta::python T> requires (!meta::is_qualified<T>)
-        friend T bertrand::steal(PyObject*);
-        template <meta::python T> requires (meta::has_cpp<T>)
-        friend auto& impl::unwrap(T& obj);
-        template <meta::python T> requires (meta::has_cpp<T>)
-        friend const auto& impl::unwrap(const T& obj);
+    /* m_self inherits the same const/volatile/reference qualifiers as the original
+    object. */
+    Self m_self;
 
-        /* m_self inherits the same const/volatile/reference qualifiers as the original
-        object. */
-        Self m_self;
-
-        /* The wrapper's `m_ptr` member is lazily evaluated to avoid repeated lookups.
-        Replacing it with a computed property will trigger a __getattr__ lookup the
-        first time it is accessed. */
-        __declspec(property(get = _get_ptr, put = _set_ptr)) PyObject* m_ptr;
-        void _set_ptr(PyObject* value) { Base::m_ptr = value; }
-        PyObject* _get_ptr() {
-            if (!Base::m_ptr) {
-                if constexpr (std::is_invocable_v<__getattr__<Self, Name>, Self>) {
-                    Base::m_ptr = release(__getattr__<Self, Name>{}(
-                        std::forward<Self>(m_self))
-                    );
-                } else {
-                    if (!(Base::m_ptr = PyObject_GetAttr(
-                        ptr(m_self),
-                        ptr(impl::template_string<Name>())
-                    ))) {
-                        Exception::from_python();
-                    }
-                }
-            }
-            return Base::m_ptr;
-        }
-
-        /* The wrapper's `m_index` member is lazily evaluated just like `m_ptr` field.
-        This allows seamless integration with `bertrand::Union` and
-        `bertrand::Optional` types. */
-        __declspec(property(get = _get_index, put = _set_index)) size_t m_index;
-        void _set_index(size_t value) {
-            if constexpr (meta::Union<Base>) {
-                Base::m_index = value;
-            }
-        }
-        size_t _get_index() {
-            if constexpr (meta::Union<Base>) {
-                _get_ptr();
-                return Base::m_index;
-            } else {
-                return 0;
-            }
-        }
-
-    public:
-
-        Attr(Self&& self) :
-            Base(nullptr, Object::stolen_t{}), m_self(std::forward<Self>(self))
-        {}
-        Attr(const Attr& other) = delete;
-        Attr(Attr&& other) = delete;
-
-        template <typename Value> requires (!__setattr__<Self, Name, Value>::enable)
-        Attr& operator=(Value&& value) = delete;
-        template <typename Value>
-            requires (
-                __setattr__<Self, Name, Value>::enable &&
-                meta::is_void<typename __setattr__<Self, Name, Value>::type> && (
-                    std::is_invocable_r_v<void, __setattr__<Self, Name, Value>, Self, Value> || (
-                        !std::is_invocable_v<__setattr__<Self, Name, Value>, Self, Value> &&
-                        meta::has_cpp<Base> &&
-                        std::is_assignable_v<meta::cpp_type<Base>&, Value>
-                    ) || (
-                        !std::is_invocable_v<__setattr__<Self, Name, Value>, Self, Value> &&
-                        !meta::has_cpp<Base>
-                    )
-                )
-            )
-        Attr& operator=(Value&& value) && {
-            if constexpr (std::is_invocable_v<__setattr__<Self, Name, Value>, Self, Value>) {
-                __setattr__<Self, Name, Value>{}(
-                    std::forward<Self>(m_self),
-                    std::forward<Value>(value)
+    /* The wrapper's `m_ptr` member is lazily evaluated to avoid repeated lookups.
+    Replacing it with a computed property will trigger a __getattr__ lookup the
+    first time it is accessed. */
+    __declspec(property(get = _get_ptr, put = _set_ptr)) PyObject* m_ptr;
+    void _set_ptr(PyObject* value) { type::m_ptr = value; }
+    PyObject* _get_ptr() {
+        if (!type::m_ptr) {
+            if constexpr (std::is_invocable_v<__getattr__<Self, Name>, Self>) {
+                type::m_ptr = release(__getattr__<Self, Name>{}(
+                    std::forward<Self>(m_self))
                 );
-
-            } else if constexpr (meta::has_cpp<Base>) {
-                from_python(*this) = std::forward<Value>(value);
-
             } else {
-                Base::operator=(std::forward<Value>(value));
-                if (PyObject_SetAttr(
+                if (!(type::m_ptr = PyObject_GetAttr(
                     ptr(m_self),
-                    ptr(impl::template_string<Name>()),
-                    Base::m_ptr
-                )) {
+                    ptr(impl::template_string<Name>())
+                ))) {
                     Exception::from_python();
                 }
             }
-            return *this;
         }
-    };
+        return type::m_ptr;
+    }
 
-    /* A proxy for an item in a Python container that is controlled by the
-    `__getitem__`, `__setitem__`, and `__delitem__` control structs.
+    /* The wrapper's `m_index` member is lazily evaluated just like `m_ptr` field.
+    This allows seamless integration with `bertrand::Union` and
+    `bertrand::Optional` types. */
+    __declspec(property(get = _get_index, put = _set_index)) size_t m_index;
+    void _set_index(size_t value) {
+        if constexpr (meta::Union<type>) {
+            type::m_index = value;
+        }
+    }
+    size_t _get_index() {
+        if constexpr (meta::Union<type>) {
+            _get_ptr();
+            return type::m_index;
+        } else {
+            return 0;
+        }
+    }
 
-    This is a simple extension of an Object type that intercepts `operator=` and
-    assigns the new value back to the container using the appropriate API.  Mutating
-    the object in any other way will also modify it in-place within the container. */
-    template <typename Self, typename... Key>
+public:
+
+    attr(Self&& self) :
+        type(nullptr, Object::stolen_t{}), m_self(std::forward<Self>(self))
+    {}
+    attr(const attr& other) = delete;
+    attr(attr&& other) = delete;
+
+    template <typename Value> requires (!__setattr__<Self, Name, Value>::enable)
+    attr& operator=(Value&& value) = delete;
+    template <typename Value>
         requires (
-            __getitem__<Self, Key...>::enable &&
-            meta::python<typename __getitem__<Self, Key...>::type> &&
-            !meta::is_qualified<typename __getitem__<Self, Key...>::type> && (
-                std::is_invocable_r_v<
-                    typename __getitem__<Self, Key...>::type,
-                    __getitem__<Self, Key...>,
-                    Self,
-                    Key...
-                > || (
-                    !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
-                    meta::has_cpp<Self> &&
-                    meta::lookup_yields<
-                        meta::cpp_type<Self>&,
-                        typename __getitem__<Self, Key...>::type,
-                        Key...
-                    >
+            __setattr__<Self, Name, Value>::enable &&
+            meta::is_void<typename __setattr__<Self, Name, Value>::type> && (
+                std::is_invocable_r_v<void, __setattr__<Self, Name, Value>, Self, Value> || (
+                    !std::is_invocable_v<__setattr__<Self, Name, Value>, Self, Value> &&
+                    meta::has_cpp<type> &&
+                    std::is_assignable_v<meta::cpp_type<type>&, Value>
                 ) || (
-                    !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
-                    !meta::has_cpp<Self>
+                    !std::is_invocable_v<__setattr__<Self, Name, Value>, Self, Value> &&
+                    !meta::has_cpp<type>
                 )
             )
         )
-    struct Item : __getitem__<Self, Key...>::type {
-    private:
-        using Base = __getitem__<Self, Key...>::type;
+    attr& operator=(Value&& value) && {
+        if constexpr (std::is_invocable_v<__setattr__<Self, Name, Value>, Self, Value>) {
+            __setattr__<Self, Name, Value>{}(
+                std::forward<Self>(m_self),
+                std::forward<Value>(value)
+            );
 
-        template <typename S, typename... K>
-            requires (
-                __delitem__<S, K...>::enable &&
-                meta::is_void<typename __delitem__<S, K...>::type> && (
-                    std::is_invocable_r_v<void, __delitem__<S, K...>, S, K...> ||
-                    !std::is_invocable_v<__delitem__<S, K...>, S, K...>
-                )
+        } else if constexpr (meta::has_cpp<type>) {
+            from_python(*this) = std::forward<Value>(value);
+
+        } else {
+            type::operator=(std::forward<Value>(value));
+            if (PyObject_SetAttr(
+                ptr(m_self),
+                ptr(impl::template_string<Name>()),
+                type::m_ptr
+            )) {
+                Exception::from_python();
+            }
+        }
+        return *this;
+    }
+};
+
+
+template <typename Self, typename... Key>
+    requires (
+        __getitem__<Self, Key...>::enable &&
+        meta::python<typename __getitem__<Self, Key...>::type> &&
+        !meta::is_qualified<typename __getitem__<Self, Key...>::type> && (
+            std::is_invocable_r_v<
+                typename __getitem__<Self, Key...>::type,
+                __getitem__<Self, Key...>,
+                Self,
+                Key...
+            > || (
+                !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
+                meta::has_cpp<Self> &&
+                meta::lookup_yields<
+                    meta::cpp_type<Self>&,
+                    typename __getitem__<Self, Key...>::type,
+                    Key...
+                >
+            ) || (
+                !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
+                !meta::has_cpp<Self>
             )
-        friend void bertrand::del(Item<S, K...>&& item);
-        template <meta::python T>
-        friend PyObject* bertrand::ptr(T&&);
-        template <meta::python T> requires (!meta::is_const<T>)
-        friend PyObject* bertrand::release(T&&);
-        template <meta::python T> requires (!meta::is_qualified<T>)
-        friend T bertrand::borrow(PyObject*);
-        template <meta::python T> requires (!meta::is_qualified<T>)
-        friend T bertrand::steal(PyObject*);
-        template <meta::python T> requires (meta::has_cpp<T>)
-        friend auto& impl::unwrap(T& obj);
-        template <meta::python T> requires (meta::has_cpp<T>)
-        friend const auto& impl::unwrap(const T& obj);
+        )
+    )
+struct item : __getitem__<Self, Key...>::type, impl::item_tag {
+    using type = __getitem__<Self, Key...>::type;
 
-        /* m_self inherits the same const/volatile/reference qualifiers as the original
-        object, and the keys are stored directly as members, retaining their original
-        value categories without any extra copies/moves. */
-        Self m_self;
-        args<Key...> m_key;
-
-        /* The wrapper's `m_ptr` member is lazily evaluated to avoid repeated lookups.
-        Replacing it with a computed property will trigger a __getitem__ lookup the
-        first time it is accessed. */
-        __declspec(property(get = _get_ptr, put = _set_ptr)) PyObject* m_ptr;
-        void _set_ptr(PyObject* value) { Base::m_ptr = value; }
-        PyObject* _get_ptr() {
-            if (!Base::m_ptr) {
-                Base::m_ptr = std::move(m_key)([&](Key... key) {
-                    if constexpr (std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...>) {
-                        return release(__getitem__<Self, Key...>{}(
-                            std::forward<Self>(m_self),
-                            std::forward<Key>(key)...
-                        ));
-
-                    } else if constexpr (sizeof...(Key) == 1) {
-                        PyObject* result = PyObject_GetItem(
-                            ptr(m_self),
-                            ptr(to_python(std::forward<Key>(key)))...
-                        );
-                        if (result == nullptr) {
-                            Exception::from_python();
-                        }
-                        return result;
-
-                    } else {
-                        Object tuple = steal<Object>(PyTuple_Pack(
-                            sizeof...(Key),
-                            ptr(to_python(std::forward<Key>(key)))...
-                        ));
-                        if (tuple.is(nullptr)) {
-                            Exception::from_python();
-                        }
-                        PyObject* result = PyObject_GetItem(
-                            ptr(m_self),
-                            ptr(tuple)
-                        );
-                        if (result == nullptr) {
-                            Exception::from_python();
-                        }
-                        return result;
-                    }
-                });
-            }
-            return Base::m_ptr;
-        }
-
-        /* The wrapper's `m_index` member is lazily evaluated just like `m_ptr` field.
-        This allows seamless integration with `bertrand::Union` and
-        `bertrand::Optional` types. */
-        __declspec(property(get = _get_index, put = _set_index)) size_t m_index;
-        void _set_index(size_t value) {
-            if constexpr (meta::Union<Base>) {
-                Base::m_index = value;
-            }
-        }
-        size_t _get_index() {
-            if constexpr (meta::Union<Base>) {
-                _get_ptr();
-                return Base::m_index;
-            } else {
-                return 0;
-            }
-        }
-
-    public:
-
-        Item(Self&& self, Key&&... key) :
-            Base(nullptr, Object::stolen_t{}),
-            m_self(std::forward<Self>(self)),
-            m_key(std::forward<Key>(key)...)
-        {}
-        Item(const Item& other) = delete;
-        Item(Item&& other) = delete;
-
-        template <typename Value> requires (!__setitem__<Self, Value, Key...>::enable)
-        Item& operator=(Value&& other) = delete;
-        template <typename Value>
-            requires (
-                __setitem__<Self, Value, Key...>::enable &&
-                meta::is_void<typename __setitem__<Self, Value, Key...>::type> && (
-                    std::is_invocable_r_v<void, __setitem__<Self, Value, Key...>, Self, Value, Key...> || (
-                        !std::is_invocable_v<__setitem__<Self, Value, Key...>, Self, Value, Key...> &&
-                        meta::has_cpp<Base> &&
-                        meta::supports_item_assignment<meta::cpp_type<Self>&, Value, Key...>
-                    ) || (
-                        !std::is_invocable_v<__setitem__<Self, Value, Key...>, Self, Value, Key...> &&
-                        !meta::has_cpp<Base>
-                    )
-                )
+private:
+    template <typename S, typename... K>
+        requires (
+            __delitem__<S, K...>::enable &&
+            meta::is_void<typename __delitem__<S, K...>::type> && (
+                std::is_invocable_r_v<void, __delitem__<S, K...>, S, K...> ||
+                !std::is_invocable_v<__delitem__<S, K...>, S, K...>
             )
-        Item& operator=(Value&& value) && {
-            std::move(m_key)([&](Key... key) {
-                if constexpr (std::is_invocable_v<__setitem__<Self, Value, Key...>, Self, Value, Key...>) {
-                    __setitem__<Self, Value, Key...>{}(
+        )
+    friend void bertrand::del(item<S, K...>&& item);
+    template <meta::python T>
+    friend PyObject* bertrand::ptr(T&&);
+    template <meta::python T> requires (!meta::is_const<T>)
+    friend PyObject* bertrand::release(T&&);
+    template <meta::python T> requires (!meta::is_qualified<T>)
+    friend T bertrand::borrow(PyObject*);
+    template <meta::python T> requires (!meta::is_qualified<T>)
+    friend T bertrand::steal(PyObject*);
+    template <meta::python T> requires (meta::has_cpp<T>)
+    friend auto& impl::unwrap(T& obj);
+    template <meta::python T> requires (meta::has_cpp<T>)
+    friend const auto& impl::unwrap(const T& obj);
+
+    /* m_self inherits the same const/volatile/reference qualifiers as the original
+    object, and the keys are stored directly as members, retaining their original
+    value categories without any extra copies/moves. */
+    Self m_self;
+    args<Key...> m_key;
+
+    /* The wrapper's `m_ptr` member is lazily evaluated to avoid repeated lookups.
+    Replacing it with a computed property will trigger a __getitem__ lookup the
+    first time it is accessed. */
+    __declspec(property(get = _get_ptr, put = _set_ptr)) PyObject* m_ptr;
+    void _set_ptr(PyObject* value) { type::m_ptr = value; }
+    PyObject* _get_ptr() {
+        if (!type::m_ptr) {
+            type::m_ptr = std::move(m_key)([&](Key... key) {
+                if constexpr (std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...>) {
+                    return release(__getitem__<Self, Key...>{}(
                         std::forward<Self>(m_self),
-                        std::forward<Value>(value),
                         std::forward<Key>(key)...
-                    );
-
-                } else if constexpr (meta::has_cpp<Base>) {
-                    from_python(std::forward<Self>(m_self))[std::forward<Key>(key)...] =
-                        std::forward<Value>(value);
+                    ));
 
                 } else if constexpr (sizeof...(Key) == 1) {
-                    Base::operator=(std::forward<Value>(value));
-                    if (PyObject_SetItem(
+                    PyObject* result = PyObject_GetItem(
                         ptr(m_self),
-                        ptr(to_python(key))...,
-                        Base::m_ptr
-                    )) {
+                        ptr(to_python(std::forward<Key>(key)))...
+                    );
+                    if (result == nullptr) {
                         Exception::from_python();
                     }
+                    return result;
 
                 } else {
-                    Base::operator=(std::forward<Value>(value));
                     Object tuple = steal<Object>(PyTuple_Pack(
                         sizeof...(Key),
-                        ptr(to_python(key))...
+                        ptr(to_python(std::forward<Key>(key)))...
                     ));
                     if (tuple.is(nullptr)) {
                         Exception::from_python();
                     }
-                    if (PyObject_SetItem(
+                    PyObject* result = PyObject_GetItem(
                         ptr(m_self),
-                        ptr(tuple),
-                        Base::m_ptr
-                    )) {
+                        ptr(tuple)
+                    );
+                    if (result == nullptr) {
                         Exception::from_python();
                     }
+                    return result;
                 }
             });
-            return *this;
         }
-    };
+        return type::m_ptr;
+    }
 
-}
+    /* The wrapper's `m_index` member is lazily evaluated just like `m_ptr` field.
+    This allows seamless integration with `bertrand::Union` and
+    `bertrand::Optional` types. */
+    __declspec(property(get = _get_index, put = _set_index)) size_t m_index;
+    void _set_index(size_t value) {
+        if constexpr (meta::Union<type>) {
+            type::m_index = value;
+        }
+    }
+    size_t _get_index() {
+        if constexpr (meta::Union<type>) {
+            _get_ptr();
+            return type::m_index;
+        } else {
+            return 0;
+        }
+    }
+
+public:
+
+    item(Self&& self, Key&&... key) :
+        type(nullptr, Object::stolen_t{}),
+        m_self(std::forward<Self>(self)),
+        m_key(std::forward<Key>(key)...)
+    {}
+    item(const item& other) = delete;
+    item(item&& other) = delete;
+
+    template <typename Value> requires (!__setitem__<Self, Value, Key...>::enable)
+    item& operator=(Value&& other) = delete;
+    template <typename Value>
+        requires (
+            __setitem__<Self, Value, Key...>::enable &&
+            meta::is_void<typename __setitem__<Self, Value, Key...>::type> && (
+                std::is_invocable_r_v<void, __setitem__<Self, Value, Key...>, Self, Value, Key...> || (
+                    !std::is_invocable_v<__setitem__<Self, Value, Key...>, Self, Value, Key...> &&
+                    meta::has_cpp<type> &&
+                    meta::supports_item_assignment<meta::cpp_type<Self>&, Value, Key...>
+                ) || (
+                    !std::is_invocable_v<__setitem__<Self, Value, Key...>, Self, Value, Key...> &&
+                    !meta::has_cpp<type>
+                )
+            )
+        )
+    item& operator=(Value&& value) && {
+        std::move(m_key)([&](Key... key) {
+            if constexpr (std::is_invocable_v<__setitem__<Self, Value, Key...>, Self, Value, Key...>) {
+                __setitem__<Self, Value, Key...>{}(
+                    std::forward<Self>(m_self),
+                    std::forward<Value>(value),
+                    std::forward<Key>(key)...
+                );
+
+            } else if constexpr (meta::has_cpp<type>) {
+                from_python(std::forward<Self>(m_self))[std::forward<Key>(key)...] =
+                    std::forward<Value>(value);
+
+            } else if constexpr (sizeof...(Key) == 1) {
+                type::operator=(std::forward<Value>(value));
+                if (PyObject_SetItem(
+                    ptr(m_self),
+                    ptr(to_python(key))...,
+                    type::m_ptr
+                )) {
+                    Exception::from_python();
+                }
+
+            } else {
+                type::operator=(std::forward<Value>(value));
+                Object tuple = steal<Object>(PyTuple_Pack(
+                    sizeof...(Key),
+                    ptr(to_python(key))...
+                ));
+                if (tuple.is(nullptr)) {
+                    Exception::from_python();
+                }
+                if (PyObject_SetItem(
+                    ptr(m_self),
+                    ptr(tuple),
+                    type::m_ptr
+                )) {
+                    Exception::from_python();
+                }
+            }
+        });
+        return *this;
+    }
+};
 
 
 template <meta::global Global>
@@ -723,7 +707,7 @@ template <typename Self, static_str Name>
             !std::is_invocable_v<__delattr__<Self, Name>, Self>
         )
     )
-void del(impl::Attr<Self, Name>&& attr) {
+void del(attr<Self, Name>&& attr) {
     if constexpr (std::is_invocable_v<__delattr__<Self, Name>, Self>) {
         __delattr__<Self, Name>{}(std::forward<Self>(attr.m_self));
 
@@ -749,7 +733,7 @@ template <typename Self, typename... Key>
             !std::is_invocable_v<__delitem__<Self, Key...>, Self, Key...>
         )
     )
-void del(impl::Item<Self, Key...>&& item) {
+void del(item<Self, Key...>&& item) {
     std::move(item.m_key)([&](auto&&... key) {
         if constexpr (std::is_invocable_v<__delitem__<Self, Key...>, Self, Key...>) {
             __delitem__<Self, Key...>{}(

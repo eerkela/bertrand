@@ -1320,7 +1320,7 @@ int main() {
     }
 
     /* Get the index of the current active element in the union. */
-    [[nodiscard]] size_t index() const noexcept { return m_index; }
+    [[nodiscard]] size_t index(this auto&& self) noexcept { return self.m_index; }
 };
 
 

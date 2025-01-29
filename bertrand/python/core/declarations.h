@@ -59,6 +59,8 @@ namespace impl {
     struct bertrand_tag {};
     struct empty_interface : bertrand_tag {};
     struct global_tag : bertrand_tag {};
+    struct attr_tag : bertrand_tag {};
+    struct item_tag : bertrand_tag {};
     struct iter_tag : bertrand_tag {};
     struct function_tag : bertrand_tag {};
     struct method_tag : bertrand_tag {};
@@ -2437,11 +2439,6 @@ namespace meta {
     );
 
     template <typename T>
-    concept global = inherits<T, impl::global_tag>;
-    template <typename T>
-    concept globalLike = has_python<T> && global<python_type<T>>;
-
-    template <typename T>
     concept Iterator = inherits<T, impl::iter_tag>;
     template <typename T>
     concept IteratorLike = has_python<T> && Iterator<python_type<T>>;
@@ -2629,13 +2626,6 @@ namespace meta {
 }  // namespace meta
 
 
-template <typename Func>
-    requires (
-        !meta::is_qualified<Func> &&
-        std::is_invocable_v<Func> &&
-        meta::python<typename std::invoke_result_t<Func>>
-    )
-struct global;
 template <typename Begin, typename End = void, typename Container = void>
     requires ((
         meta::python<Begin> &&
@@ -2716,6 +2706,22 @@ using Optional = Union<T, NoneType>;
 
 
 namespace meta {
+
+
+    template <typename T>
+    concept global = inherits<T, impl::global_tag>;
+    template <global T>
+    using global_type = std::remove_cvref_t<T>::type;
+
+    template <typename T>
+    concept attr = inherits<T, impl::attr_tag>;
+    template <attr T>
+    using attr_type = std::remove_cvref_t<T>::type;
+
+    template <typename T>
+    concept item = inherits<T, impl::item_tag>;
+    template <item T>
+    using item_type = std::remove_cvref_t<T>::type;
 
     namespace detail {
 
@@ -2815,6 +2821,15 @@ namespace meta {
             using type = std::remove_cvref_t<T>::__python__::__cpp__;
         };
 
+        template <typename T>
+        struct lazy_type {};
+        template <global T>
+        struct lazy_type<T> { using type = global_type<T>; };
+        template <attr T>
+        struct lazy_type<T> { using type = attr_type<T>; };
+        template <item T>
+        struct lazy_type<T> { using type = item_type<T>; };
+
     }  // namespace detail
 
     template <typename T>
@@ -2839,119 +2854,16 @@ namespace meta {
     template <has_cpp T>
     using cpp_type = detail::cpp<T>::type;
 
-}  // namespace meta
-
-
-namespace impl {
-
-    template <typename Self, static_str Name>
-        requires (
-            __getattr__<Self, Name>::enable &&
-            meta::python<typename __getattr__<Self, Name>::type> &&
-            !meta::is_qualified<typename __getattr__<Self, Name>::type> && (
-                !std::is_invocable_v<__getattr__<Self, Name>, Self> ||
-                std::is_invocable_r_v<
-                    typename __getattr__<Self, Name>::type,
-                    __getattr__<Self, Name>,
-                    Self
-                >
-            )
-        )
-    struct Attr;
-
-    template <typename Self, typename... Key>
-        requires (
-            __getitem__<Self, Key...>::enable &&
-            meta::python<typename __getitem__<Self, Key...>::type> &&
-            !meta::is_qualified<typename __getitem__<Self, Key...>::type> && (
-                std::is_invocable_r_v<
-                    typename __getitem__<Self, Key...>::type,
-                    __getitem__<Self, Key...>,
-                    Self,
-                    Key...
-                > || (
-                    !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
-                    meta::has_cpp<Self> &&
-                    meta::lookup_yields<
-                        meta::cpp_type<Self>&,
-                        typename __getitem__<Self, Key...>::type,
-                        Key...
-                    >
-                ) || (
-                    !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
-                    !meta::has_cpp<Self>
-                )
-            )
-        )
-    struct Item;
-
-}  // namespace impl
-
-
-namespace meta {
-
-    namespace detail {
-
-        template <typename T>
-        struct global { static constexpr bool enable = false; };
-        template <typename Func>
-        struct global<bertrand::global<Func>> {
-            static constexpr bool enable = true;
-            using type = std::remove_cvref_t<std::invoke_result_t<Func>>;
-        };
-
-        template <typename T>
-        struct attr { static constexpr bool enable = false; };
-        template <typename Self, bertrand::static_str Name>
-        struct attr<impl::Attr<Self, Name>> {
-            static constexpr bool enable = true;
-            using type = __getattr__<Self, Name>::type;
-        };
-
-        template <typename T>
-        struct item { static constexpr bool enable = false; };
-        template <typename Self, typename... Key>
-        struct item<impl::Item<Self, Key...>> {
-            static constexpr bool enable = true;
-            using type = __getitem__<Self, Key...>::type;
-        };
-
-        template <typename T>
-        struct lazy_type {};
-        template <typename T> requires (global<T>::enable)
-        struct lazy_type<T> { using type = global<T>::type; };
-        template <typename T> requires (attr<T>::enable)
-        struct lazy_type<T> { using type = attr<T>::type; };
-        template <typename T> requires (item<T>::enable)
-        struct lazy_type<T> { using type = item<T>::type; };
-
-    }  // namespace detail
-
-    template <typename T>
-    concept is_global = detail::global<std::remove_cvref_t<T>>::enable;
-    template <is_global T>
-    using global_type = detail::global<std::remove_cvref_t<T>>::type;
-
-    template <typename T>
-    concept is_attr = detail::attr<std::remove_cvref_t<T>>::enable;
-    template <is_attr T>
-    using attr_type = detail::attr<std::remove_cvref_t<T>>::type;
-
     template <typename T, bertrand::static_str Name, typename... Args>
     concept attr_is_callable_with =
         __getattr__<T, Name>::enable &&
         std::is_invocable_v<typename __getattr__<T, Name>::type, Args...>;
 
     template <typename T>
-    concept is_item = detail::item<std::remove_cvref_t<T>>::enable;
-    template <is_item T>
-    using item_type = detail::item<std::remove_cvref_t<T>>::type;
-
-    template <typename T>
-    concept lazily_evaluated = is_global<T> || is_attr<T> || is_item<T>;
+    concept lazily_evaluated = global<T> || attr<T> || item<T>;
 
     template <lazily_evaluated T>
-    using lazy_type = detail::lazy_type<std::remove_cvref_t<T>>::type;
+    using lazy_type = detail::lazy_type<T>::type;
 
     /* NOTE: some binary operators (such as lexicographic comparisons) accept generic
      * containers, which may be combined with containers of different types.  In these
@@ -3091,6 +3003,76 @@ namespace meta {
     };
 
 }  // namespace meta
+
+
+/* A proxy for a global Python object that respects per-interpreter state.  Each Python
+interpreter will see a unique value, obtained by searching the interpreter ID in an
+internal map.  If an ID is not present, then the initializer function will be invoked
+and its result stored in the map for future access.  A read/write lock is used to
+synchronize access between threads, such that read-only `get()` operations are
+non-blocking. */
+template <typename Func>
+    requires (
+        !meta::is_qualified<Func> &&
+        std::is_invocable_v<Func> &&
+        meta::python<typename std::invoke_result_t<Func>>
+    )
+struct global;
+
+
+/* A proxy for the result of an attribute lookup that is controlled by the
+`__getattr__`, `__setattr__`, and `__delattr__` control structs.
+
+This is a simple extension of an Object type that intercepts `operator=` and
+assigns the new value back to the attribute using the appropriate API.  Mutating
+the object in any other way will also modify it in-place on the parent. */
+template <typename Self, static_str Name>
+    requires (
+        __getattr__<Self, Name>::enable &&
+        meta::python<typename __getattr__<Self, Name>::type> &&
+        !meta::is_qualified<typename __getattr__<Self, Name>::type> && (
+            !std::is_invocable_v<__getattr__<Self, Name>, Self> ||
+            std::is_invocable_r_v<
+                typename __getattr__<Self, Name>::type,
+                __getattr__<Self, Name>,
+                Self
+            >
+        )
+    )
+struct attr;
+
+
+/* A proxy for an item in a Python container that is controlled by the
+`__getitem__`, `__setitem__`, and `__delitem__` control structs.
+
+This is a simple extension of an Object type that intercepts `operator=` and
+assigns the new value back to the container using the appropriate API.  Mutating
+the object in any other way will also modify it in-place within the container. */
+template <typename Self, typename... Key>
+    requires (
+        __getitem__<Self, Key...>::enable &&
+        meta::python<typename __getitem__<Self, Key...>::type> &&
+        !meta::is_qualified<typename __getitem__<Self, Key...>::type> && (
+            std::is_invocable_r_v<
+                typename __getitem__<Self, Key...>::type,
+                __getitem__<Self, Key...>,
+                Self,
+                Key...
+            > || (
+                !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
+                meta::has_cpp<Self> &&
+                meta::lookup_yields<
+                    meta::cpp_type<Self>&,
+                    typename __getitem__<Self, Key...>::type,
+                    Key...
+                >
+            ) || (
+                !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
+                !meta::has_cpp<Self>
+            )
+        )
+    )
+struct item;
 
 
 /* Allows anonymous access to a Python wrapper for a given C++ type, assuming it has
