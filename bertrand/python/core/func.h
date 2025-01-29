@@ -224,46 +224,6 @@ struct inspect {
 
 private:
 
-    static Object import_bertrand() {
-        PyObject* bertrand = PyImport_Import(
-            ptr(impl::template_string<"bertrand">())
-        );
-        if (bertrand == nullptr) {
-            Exception::from_python();
-        }
-        return steal<Object>(bertrand);
-    }
-
-    static Object import_inspect() {
-        PyObject* inspect = PyImport_Import(
-            ptr(impl::template_string<"inspect">())
-        );
-        if (inspect == nullptr) {
-            Exception::from_python();
-        }
-        return steal<Object>(inspect);
-    }
-
-    static Object import_typing() {
-        PyObject* typing = PyImport_Import(
-            ptr(impl::template_string<"typing">())
-        );
-        if (typing == nullptr) {
-            Exception::from_python();
-        }
-        return steal<Object>(typing);
-    }
-
-    static Object import_types() {
-        PyObject* types = PyImport_Import(
-            ptr(impl::template_string<"types">())
-        );
-        if (types == nullptr) {
-            Exception::from_python();
-        }
-        return steal<Object>(types);
-    }
-
     Object get_name() {
         Object str = impl::template_string<"__name__">();
         if (PyObject_HasAttr(ptr(m_func), ptr(str))) {
@@ -277,8 +237,8 @@ private:
     }
 
     struct init_imports {
-        Object inspect = import_inspect();
-        Object typing = import_typing();
+        Object inspect = impl::import_inspect;
+        Object typing = impl::import_typing;
         Object Parameter = getattr<"Parameter">(inspect);
         Object empty = getattr<"empty">(Parameter);
         Object POSITIONAL_ONLY = getattr<"POSITIONAL_ONLY">(Parameter);
@@ -981,7 +941,7 @@ public:
         } else if (keys.size() == 1) {
             return std::move(keys.back());
         } else {
-            Object bertrand = import_bertrand();
+            Object bertrand = impl::import_bertrand;
             Object key = steal<Object>(
                 PyTuple_New(keys.size())
             );
@@ -1013,7 +973,7 @@ public:
                 return;
             }
         }
-        Object typing = import_typing();
+        Object typing = impl::import_typing;
         Object origin = getattr<"get_origin">(typing)(hint);
         if (origin.is(getattr<"Annotated">(typing))) {
             parse(borrow<Object>(PyTuple_GET_ITEM(
@@ -1069,7 +1029,7 @@ public:
             "inspect.Parameter.empty",
             [](Object hint, std::vector<Object>& out) -> bool {
                 if (hint.is(getattr<"empty">(
-                    getattr<"Parameter">(import_inspect())
+                    getattr<"Parameter">(impl::import_inspect)
                 ))) {
                     out.emplace_back(borrow<Object>(
                         reinterpret_cast<PyObject*>(&PyBaseObject_Type)
@@ -1085,7 +1045,7 @@ public:
             /// forward declaration here.
             "types.GenericAlias",
             [](Object hint, std::vector<Object>& out) -> bool {
-                Object types = import_types();
+                Object types = impl::import_types;
                 int rc = PyObject_IsInstance(
                     ptr(hint),
                     ptr(getattr<"GenericAlias">(types))
@@ -1093,7 +1053,7 @@ public:
                 if (rc < 0) {
                     Exception::from_python();
                 } else if (rc) {
-                    Object typing = import_typing();
+                    Object typing = impl::import_typing;
                     Object origin = getattr<"get_origin">(typing)(hint);
                     /// TODO: search in type map or fall back to Object
                     Object args = getattr<"get_args">(typing)(hint);
@@ -1111,7 +1071,7 @@ public:
         {
             "types.UnionType",
             [](Object hint, std::vector<Object>& out) -> bool {
-                Object types = import_types();
+                Object types = impl::import_types;
                 int rc = PyObject_IsInstance(
                     ptr(hint),
                     ptr(getattr<"UnionType">(types))
@@ -1137,7 +1097,7 @@ public:
             /// implicitly cover `Optional` annotations for free.
             "typing.Union",
             [](Object hint, std::vector<Object>& out) -> bool {
-                Object typing = import_typing();
+                Object typing = impl::import_typing;
                 Object origin = getattr<"get_origin">(typing)(hint);
                 if (origin.is(nullptr)) {
                     Exception::from_python();
@@ -1157,7 +1117,7 @@ public:
         {
             "typing.Any",
             [](Object hint, std::vector<Object>& out) -> bool {
-                Object typing = import_typing();
+                Object typing = impl::import_typing;
                 Object origin = getattr<"get_origin">(typing)(hint);
                 if (origin.is(nullptr)) {
                     Exception::from_python();
@@ -1173,7 +1133,7 @@ public:
         {
             "typing.TypeAliasType",
             [](Object hint, std::vector<Object>& out) -> bool {
-                Object typing = import_typing();
+                Object typing = impl::import_typing;
                 int rc = PyObject_IsInstance(
                     ptr(hint),
                     ptr(getattr<"TypeAliasType">(typing))
@@ -1190,7 +1150,7 @@ public:
         {
             "typing.Literal",
             [](Object hint, std::vector<Object>& out) -> bool {
-                Object typing = import_typing();
+                Object typing = impl::import_typing;
                 Object origin = getattr<"get_origin">(typing)(hint);
                 if (origin.is(nullptr)) {
                     Exception::from_python();
@@ -1215,7 +1175,7 @@ public:
         {
             "typing.LiteralString",
             [](Object hint, std::vector<Object>& out) -> bool {
-                Object typing = import_typing();
+                Object typing = impl::import_typing;
                 if (hint.is(getattr<"LiteralString">(typing))) {
                     out.emplace_back(borrow<Object>(
                         reinterpret_cast<PyObject*>(&PyUnicode_Type)
@@ -1228,7 +1188,7 @@ public:
         {
             "typing.AnyStr",
             [](Object hint, std::vector<Object>& out) -> bool {
-                Object typing = import_typing();
+                Object typing = impl::import_typing;
                 if (hint.is(getattr<"AnyStr">(typing))) {
                     out.emplace_back(borrow<Object>(
                         reinterpret_cast<PyObject*>(&PyUnicode_Type)
@@ -1244,7 +1204,7 @@ public:
         {
             "typing.NoReturn",
             [](Object hint, std::vector<Object>& out) -> bool {
-                Object typing = import_typing();
+                Object typing = impl::import_typing;
                 if (
                     hint.is(getattr<"NoReturn">(typing)) ||
                     hint.is(getattr<"Never">(typing))
@@ -1259,7 +1219,7 @@ public:
         {
             "typing.TypeGuard",
             [](Object hint, std::vector<Object>& out) -> bool {
-                Object typing = import_typing();
+                Object typing = impl::import_typing;
                 Object origin = getattr<"get_origin">(typing)(hint);
                 if (origin.is(nullptr)) {
                     Exception::from_python();
@@ -1363,7 +1323,7 @@ public:
             return m_key;
         }
 
-        Object bertrand = import_bertrand();
+        Object bertrand = impl::import_bertrand;
         Object Arg = getattr<"Arg">(bertrand);
         Object partials = getattr<"__partial__">(m_func, None);
         Object self = getattr<"__self__">(m_func, None);
@@ -4953,12 +4913,7 @@ namespace impl {
                         "generating a template key"
                     );
                 }
-                Object bertrand = steal<Object>(PyImport_Import(
-                    ptr(impl::template_string<"bertrand">())
-                ));
-                if (bertrand.is(nullptr)) {
-                    Exception::from_python();
-                }
+                Object bertrand = impl::import_bertrand;
                 Object result = steal<Object>(PyTuple_New(base::size() + 1));
                 if (result.is(nullptr)) {
                     Exception::from_python();
@@ -5340,12 +5295,7 @@ namespace impl {
         allowing a corresponding function to be seamlessly introspected from Python. */
         template <meta::inherits<typename base::Defaults> D>
         [[nodiscard]] static Object to_python(D&& defaults) {
-            Object inspect = steal<Object>(PyImport_Import(
-                ptr(impl::template_string<"inspect">())
-            ));
-            if (inspect.is(nullptr)) {
-                Exception::from_python();
-            }
+            Object inspect = impl::import_inspect;
 
             // build the parameter annotations
             Object tuple = steal<Object>(PyTuple_New(base::size()));
@@ -7155,12 +7105,7 @@ namespace impl {
         /* Convert a C++ signature into a template key that can be used to specialize the
         `bertrand.Function` type on the Python side. */
         [[nodiscard]] static Object template_key() {
-            Object bertrand = steal<Object>(PyImport_Import(
-                ptr(impl::template_string<"bertrand">())
-            ));
-            if (bertrand.is(nullptr)) {
-                Exception::from_python();
-            }
+            Object bertrand = impl::import_bertrand;
             Object result = steal<Object>(PyTuple_New(base::size() + 1));
             if (result.is(nullptr)) {
                 Exception::from_python();
@@ -8117,12 +8062,7 @@ namespace impl {
     used to generate proper structural types using the `&` operator for bertrand
     functions. */
     inline Object get_intersection(const Object& name, const Object& obj) {
-        Object bertrand = steal<Object>(PyImport_Import(
-            ptr(impl::template_string<"bertrand">())
-        ));
-        if (bertrand.is(nullptr)) {
-            Exception::from_python();
-        }
+        Object bertrand = impl::import_bertrand;
         return getattr<"intersection">(bertrand)[
             getattr<"Arg">(bertrand)[name, obj]
         ];
@@ -9592,12 +9532,7 @@ structural type check.)doc";
                         self->fget = None;
                         return 0;
                     }
-                    Object bertrand = steal<Object>(PyImport_Import(
-                        ptr(template_string<"bertrand">())
-                    ));
-                    if (bertrand.is(nullptr)) {
-                        Exception::from_python();
-                    }
+                    Object bertrand = impl::import_bertrand;
                     Object func = getattr<"Function">(bertrand)(
                         borrow<Object>(value)
                     );
@@ -9659,12 +9594,7 @@ structural type check.)doc";
                         self->fset = None;
                         return 0;
                     }
-                    Object bertrand = steal<Object>(PyImport_Import(
-                        ptr(template_string<"bertrand">())
-                    ));
-                    if (bertrand.is(nullptr)) {
-                        Exception::from_python();
-                    }
+                    Object bertrand = impl::import_bertrand;
                     Object func = getattr<"Function">(bertrand)(
                         borrow<Object>(value)
                     );
@@ -9710,12 +9640,7 @@ structural type check.)doc";
                         self->fdel = None;
                         return 0;
                     }
-                    Object bertrand = steal<Object>(PyImport_Import(
-                        ptr(template_string<"bertrand">())
-                    ));
-                    if (bertrand.is(nullptr)) {
-                        Exception::from_python();
-                    }
+                    Object bertrand = impl::import_bertrand;
                     Object func = getattr<"Function">(bertrand)(
                         borrow<Object>(value)
                     );
@@ -10019,12 +9944,7 @@ structural type check.)doc";
         private:
 
             Object structural_type() const {
-                Object bertrand = steal<Object>(PyImport_Import(
-                    ptr(template_string<"bertrand">())
-                ));
-                if (bertrand.is(nullptr)) {
-                    Exception::from_python();
-                }
+                Object bertrand = impl::import_bertrand;
                 Object rtype = getattr<"_return_type">(fget);
                 if (rtype.is(None)) {
                     throw TypeError("getter must not return void");
@@ -11668,12 +11588,7 @@ parameter is a type object, and thus the method is a class method.)doc";
             }
 
             try {
-                Object inspect = steal<Object>(PyImport_Import(
-                    ptr(impl::template_string<"inspect">())
-                ));
-                if (inspect.is(nullptr)) {
-                    return nullptr;
-                }
+                Object inspect = impl::import_inspect;
 
                 // if this function captures a Python function, forward to it
                 if (!(self->pyfunc.is(None))) {
@@ -12129,12 +12044,7 @@ parameter is a type object, and thus the method is a class method.)doc";
         }
 
         Object structural_type() const {
-            Object bertrand = steal<Object>(PyImport_Import(
-                ptr(impl::template_string<"bertrand">())
-            ));
-            if (bertrand.is(nullptr)) {
-                Exception::from_python();
-            }
+            Object bertrand = impl::import_bertrand;
             Object cls = steal<Object>(_self_type(*this, nullptr));
             if (cls.is(None)) {
                 throw TypeError("function must accept at least one positional argument");
@@ -12766,12 +12676,7 @@ parameter is a type object, and thus the method is a class method.)doc";
 
         static PyObject* __signature__(PyFunction* self, void*) noexcept {
             try {
-                Object inspect = steal<Object>(PyImport_Import(
-                    ptr(impl::template_string<"inspect">())
-                ));
-                if (inspect.is(nullptr)) {
-                    return nullptr;
-                }
+                Object inspect = impl::import_inspect;
                 Object signature = PyObject_CallOneArg(
                     ptr(getattr<"signature">(inspect)),
                     self->__wrapped__

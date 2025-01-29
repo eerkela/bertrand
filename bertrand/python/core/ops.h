@@ -91,6 +91,27 @@ template <meta::global Global>
 void del(Global&& global);
 
 
+namespace impl {
+
+    /* A map holding callbacks that are used to clean up `globals` tables when the
+    `bertrand` module is unloaded from a given interpreter, such that the values are
+    garbage collected normally, without either leaking references or crashing due to
+    an invalid interpreter state. */
+    inline struct GlobalTable {
+        using Mutex = std::mutex;
+        using Key = PyInterpreterState*;
+        using Value = std::unordered_map<
+            const void* const,
+            std::function<void(PyInterpreterState*)>
+        >;
+        using Map = std::unordered_map<Key, Value>;
+        Mutex mutex;
+        Map map;
+    } unload_globals;
+
+}
+
+
 /* A proxy for a global Python object that respects per-interpreter state.  Each Python
 interpreter will see a unique value, obtained by searching the interpreter ID in an
 internal map.  If an ID is not present, then the initializer function will be invoked
@@ -104,7 +125,7 @@ template <typename Func>
         meta::python<typename std::invoke_result_t<Func>>
     )
 struct global : std::remove_cvref_t<std::invoke_result_t<Func>>, impl::global_tag {
-    using type = std::remove_cvref_t<std::invoke_result_t<Func>>;
+    using type = meta::global_type<global>;
 
 private:
     template <meta::global Global>
@@ -122,12 +143,65 @@ private:
     template <meta::python T> requires (meta::has_cpp<T>)
     friend const auto& impl::unwrap(const T& obj);
 
+    /* Register a callback in the `impl::unload_globals` table that will erase the
+    entry for the current interpreter when the `bertrand` module is unloaded. */
+    void register_unload() const {
+        std::unique_lock<typename impl::GlobalTable::Mutex> write(
+            impl::unload_globals.mutex
+        );
+        auto it = impl::unload_globals.map.try_emplace(
+            PyInterpreterState_Get(),
+            typename impl::GlobalTable::Value{}
+        ).first;
+        it->second.try_emplace(
+            this,
+            [this](PyInterpreterState* id) {
+                std::unique_lock<std::shared_mutex> write(m_mutex);
+                m_values.erase(id);
+            }
+        );
+    }
+
+    /* Remove a callback in the `impl::unload_globals` table when a value is deleted
+    or the `globals` proxy is destroyed. */
+    void unregister_unload() const {
+        std::unique_lock<typename impl::GlobalTable::Mutex> write(
+            impl::unload_globals.mutex
+        );
+        auto it = impl::unload_globals.map.find(PyInterpreterState_Get());
+        if (it != impl::unload_globals.map.end()) {
+            it->second.erase(this);
+            if (it->second.empty()) {
+                impl::unload_globals.map.erase(it);
+            }
+        }
+    }
+
     /* The global wrapper's `m_ptr` member is lazily evaluated to allow seamless
     lookups.  Replacing it with a computed property will trigger a lookup against the
     `m_values` map, which gets the value for the current Python interpreter every time.
     Setting the pointer (e.g. as a part of `release()` is a no-op. */
     __declspec(property(get = _get_ptr, put = _set_ptr)) PyObject* m_ptr;
-    void _set_ptr(PyObject* value) {}
+    void _set_ptr(PyObject* value) {
+        std::unique_lock<std::shared_mutex> write(m_mutex);
+        PyInterpreterState* id = PyInterpreterState_Get();
+        auto it = m_values.find(id);
+        if (it == m_values.end()) {
+            if (value) {
+                m_values.try_emplace(id, steal<type>(value));
+                register_unload();
+            }
+        } else {
+            if (value) {
+                it->second = steal<type>(value);
+                register_unload();
+            } else {
+                release(it->second);
+                m_values.erase(it);
+                unregister_unload();
+            }
+        }
+    }
     PyObject* _get_ptr() {
         std::shared_lock<std::shared_mutex> read(m_mutex);
         PyInterpreterState* id = PyInterpreterState_Get();
@@ -138,6 +212,7 @@ private:
         read.unlock();
         std::unique_lock<std::shared_mutex> write(m_mutex);
         it = m_values.try_emplace(id, m_func()).first;
+        register_unload();
         return ptr(it->second);
     }
 
@@ -157,6 +232,7 @@ private:
             read.unlock();
             std::unique_lock<std::shared_mutex> write(m_mutex);
             it = m_values.try_emplace(id, m_func()).first;
+            register_unload();
             return it->second.index();
         } else {
             return 0;
@@ -177,12 +253,31 @@ public:
         m_func(std::forward<F>(func))
     {}
 
+    /* If the `globals` object is destroyed, remove any callbacks associated with it
+    from the `impl::unload_globals` table. */
+    ~global() noexcept {
+        std::unique_lock<typename impl::GlobalTable::Mutex> write(
+            impl::unload_globals.mutex
+        );
+        auto it = impl::unload_globals.map.begin();
+        auto end = impl::unload_globals.map.end();
+        while (it != end) {
+            it->second.erase(this);
+            if (it->second.empty()) {
+                it = impl::unload_globals.map.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
     /* Assigning to the globals wrapper will forward the assignment to the `m_values`
     map in a thread-safe way. */
     global& operator=(const type& value) {
         if (static_cast<type*>(this) != &value) {
             std::unique_lock<std::shared_mutex> write(m_mutex);
             m_values[PyInterpreterState_Get()] = value;
+            register_unload();
         }
         return *this;
     }
@@ -191,6 +286,7 @@ public:
         if (static_cast<type*>(this) != &value) {
             std::unique_lock<std::shared_mutex> write(m_mutex);
             m_values[PyInterpreterState_Get()] = std::move(value);
+            register_unload();
         }
         return *this;
     }
@@ -225,6 +321,54 @@ namespace impl {
         return string;
     }
 
+    /* A global object representing an imported `bertrand` module for the current
+    interpreter. */
+    inline global import_bertrand = [] {
+        Object module = steal<Object>(PyImport_Import(
+            ptr(impl::template_string<"bertrand">())
+        ));
+        if (module.is(nullptr)) {
+            Exception::from_python();
+        }
+        return module;
+    };
+
+    /* A global object representing an imported `inspect` module for the current
+    interpreter. */
+    inline global import_inspect = [] {
+        Object module = steal<Object>(PyImport_Import(
+            ptr(impl::template_string<"inspect">())
+        ));
+        if (module.is(nullptr)) {
+            Exception::from_python();
+        }
+        return module;
+    };
+
+    /* A global object representing an imported `typing` module for the current
+    interpreter.  */
+    inline global import_typing = [] {
+        Object module = steal<Object>(PyImport_Import(
+            ptr(impl::template_string<"typing">())
+        ));
+        if (module.is(nullptr)) {
+            Exception::from_python();
+        }
+        return module;
+    };
+
+    /* A global object representing an imported `types` module for the current
+    interpreter. */
+    inline global import_types = [] {
+        Object module = steal<Object>(PyImport_Import(
+            ptr(impl::template_string<"types">())
+        ));
+        if (module.is(nullptr)) {
+            Exception::from_python();
+        }
+        return module;
+    };
+    
     /* A proxy for the result of an attribute lookup that is controlled by the
     `__getattr__`, `__setattr__`, and `__delattr__` control structs.
 
@@ -567,6 +711,7 @@ template <meta::global Global>
 void del(Global&& global) {
     std::unique_lock<std::shared_mutex> write(global.m_mutex);
     global.m_values.erase(PyInterpreterState_Get());
+    global.unregister_unload();
 }
 
 

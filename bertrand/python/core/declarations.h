@@ -2629,6 +2629,13 @@ namespace meta {
 }  // namespace meta
 
 
+template <typename Func>
+    requires (
+        !meta::is_qualified<Func> &&
+        std::is_invocable_v<Func> &&
+        meta::python<typename std::invoke_result_t<Func>>
+    )
+struct global;
 template <typename Begin, typename End = void, typename Container = void>
     requires ((
         meta::python<Begin> &&
@@ -2886,6 +2893,14 @@ namespace meta {
     namespace detail {
 
         template <typename T>
+        struct global { static constexpr bool enable = false; };
+        template <typename Func>
+        struct global<bertrand::global<Func>> {
+            static constexpr bool enable = true;
+            using type = std::remove_cvref_t<std::invoke_result_t<Func>>;
+        };
+
+        template <typename T>
         struct attr { static constexpr bool enable = false; };
         template <typename Self, bertrand::static_str Name>
         struct attr<impl::Attr<Self, Name>> {
@@ -2903,12 +2918,19 @@ namespace meta {
 
         template <typename T>
         struct lazy_type {};
+        template <typename T> requires (global<T>::enable)
+        struct lazy_type<T> { using type = global<T>::type; };
         template <typename T> requires (attr<T>::enable)
         struct lazy_type<T> { using type = attr<T>::type; };
         template <typename T> requires (item<T>::enable)
         struct lazy_type<T> { using type = item<T>::type; };
 
     }  // namespace detail
+
+    template <typename T>
+    concept is_global = detail::global<std::remove_cvref_t<T>>::enable;
+    template <is_global T>
+    using global_type = detail::global<std::remove_cvref_t<T>>::type;
 
     template <typename T>
     concept is_attr = detail::attr<std::remove_cvref_t<T>>::enable;
@@ -2926,7 +2948,7 @@ namespace meta {
     using item_type = detail::item<std::remove_cvref_t<T>>::type;
 
     template <typename T>
-    concept lazily_evaluated = is_attr<T> || is_item<T>;
+    concept lazily_evaluated = is_global<T> || is_attr<T> || is_item<T>;
 
     template <lazily_evaluated T>
     using lazy_type = detail::lazy_type<std::remove_cvref_t<T>>::type;
