@@ -719,6 +719,13 @@ public:
         std::forward<Args>(args)...
     ) {}
 
+    /// TODO: interpreter initialization check is not necessary if all static/global
+    /// variables are held in global<F> wrappers, since their lifetime will be tied to
+    /// that of the bertrand module itself.  It would be better if it were tied to
+    /// interpreter shutdown, but atexit() is not a guaranteed workaround.  I might be
+    /// able to hack it somehow though by using the pure-Python version of the module
+    /// rather than the C API.
+
     /* Destructor.  Allows any object to be stored with static duration. */
     ~Object() noexcept {
         /// NOTE: interpreter initialization check is necessary for the case where an
@@ -838,29 +845,27 @@ public:
     /* Index operator.  Specific key and element types can be controlled via the
     __getitem__, __setitem__, and __delitem__ control structs. */
     template <typename Self, typename... Key>
-        requires (
-            __getitem__<Self, Key...>::enable &&
-            std::convertible_to<typename __getitem__<Self, Key...>::type, Object> && (
-                std::is_invocable_r_v<
+        requires (__getitem__<Self, Key...>::enable && (
+            std::is_invocable_r_v<
+                typename __getitem__<Self, Key...>::type,
+                __getitem__<Self, Key...>,
+                Self,
+                Key...
+            > || (
+                !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
+                meta::has_cpp<Self> &&
+                meta::lookup_yields<
+                    meta::cpp_type<Self>&,
                     typename __getitem__<Self, Key...>::type,
-                    __getitem__<Self, Key...>,
-                    Self,
                     Key...
-                > || (
-                    !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
-                    meta::has_cpp<Self> &&
-                    meta::lookup_yields<
-                        meta::cpp_type<Self>&,
-                        typename __getitem__<Self, Key...>::type,
-                        Key...
-                    >
-                ) || (
-                    !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
-                    !meta::has_cpp<Self> &&
-                    std::derived_from<typename __getitem__<Self, Key...>::type, Object>
-                )
+                >
+            ) || (
+                !std::is_invocable_v<__getitem__<Self, Key...>, Self, Key...> &&
+                !meta::has_cpp<Self> &&
+                meta::python<typename __getitem__<Self, Key...>::type> &&
+                !meta::is_qualified<typename __getitem__<Self, Key...>::type>
             )
-        )
+        ))
     decltype(auto) operator[](this Self&& self, Key&&... key) {
         if constexpr (
             meta::has_cpp<Self> &&
@@ -883,31 +888,29 @@ public:
     types via the __call__ control struct, enabling static type safety for callable
     Python objects in C++. */
     template <typename Self, typename... Args>
-        requires (
-            __call__<Self, Args...>::enable &&
-            std::convertible_to<typename __call__<Self, Args...>::type, Object> && (
+        requires (__call__<Self, Args...>::enable && (
+            std::is_invocable_r_v<
+                typename __call__<Self, Args...>::type,
+                __call__<Self, Args...>,
+                Self,
+                Args...
+            > || (
+                !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
+                meta::has_cpp<Self> &&
                 std::is_invocable_r_v<
                     typename __call__<Self, Args...>::type,
-                    __call__<Self, Args...>,
-                    Self,
+                    meta::cpp_type<Self>,
                     Args...
-                > || (
-                    !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
-                    meta::has_cpp<Self> &&
-                    std::is_invocable_r_v<
-                        typename __call__<Self, Args...>::type,
-                        meta::cpp_type<Self>,
-                        Args...
-                    >
-                ) || (
-                    !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
-                    !meta::has_cpp<Self> &&
-                    std::derived_from<typename __call__<Self, Args...>::type, Object> &&
-                    __getattr__<Self, "__call__">::enable &&
-                    meta::Function<typename __getattr__<Self, "__call__">::type>
-                )
+                >
+            ) || (
+                !std::is_invocable_v<__call__<Self, Args...>, Self, Args...> &&
+                !meta::has_cpp<Self> &&
+                meta::python<typename __call__<Self, Args...>::type> &&
+                !meta::is_qualified<typename __call__<Self, Args...>::type> &&
+                __getattr__<Self, "__call__">::enable &&
+                meta::Function<typename __getattr__<Self, "__call__">::type>
             )
-        )
+        ))
     decltype(auto) operator()(this Self&& self, Args&&... args) {
         if constexpr (std::is_invocable_v<__call__<Self, Args...>, Self, Args...>) {
             return __call__<Self, Args...>{}(

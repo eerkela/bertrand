@@ -55,6 +55,27 @@ namespace bertrand {
 /////////////////////////////////////
 
 
+namespace impl {
+
+    /* A map holding callbacks that are used to clean up `globals` tables when the
+    `bertrand` module is unloaded from a given interpreter, such that the values are
+    garbage collected normally, without either leaking references or crashing due to
+    an invalid interpreter state. */
+    inline struct GlobalTable {
+        using Mutex = std::mutex;
+        using Key = PyInterpreterState*;
+        using Value = std::unordered_map<
+            const void* const,
+            std::function<void(PyInterpreterState*)>
+        >;
+        using Map = std::unordered_map<Key, Value>;
+        Mutex mutex;
+        Map map;
+    } unload_globals;
+
+}
+
+
 /* Replicates Python's `del` keyword for attribute and item deletion.  Note that the
 usage of `del` to dereference naked Python objects is not supported - only those uses
 which would translate to a `PyObject_DelAttr()` or `PyObject_DelItem()` are considered
@@ -89,27 +110,6 @@ void del(item<Self, Key...>&& item);
 recomputed from the initializer function when next accessed. */
 template <meta::global Global>
 void del(Global&& global);
-
-
-namespace impl {
-
-    /* A map holding callbacks that are used to clean up `globals` tables when the
-    `bertrand` module is unloaded from a given interpreter, such that the values are
-    garbage collected normally, without either leaking references or crashing due to
-    an invalid interpreter state. */
-    inline struct GlobalTable {
-        using Mutex = std::mutex;
-        using Key = PyInterpreterState*;
-        using Value = std::unordered_map<
-            const void* const,
-            std::function<void(PyInterpreterState*)>
-        >;
-        using Map = std::unordered_map<Key, Value>;
-        Mutex mutex;
-        Map map;
-    } unload_globals;
-
-}
 
 
 template <typename Func>
@@ -298,8 +298,10 @@ global(Func&&) -> global<std::remove_cvref_t<Func>>;
 namespace impl {
 
     /* Convert a compile-time string into a Python unicode object.  This stores a
-    unique string per interpreter, which is lazily initialized the first time it is
-    needed and then reused, eliminating unnecessary allocations. */
+    unique string per interpreter, which is reused as much as possible, eliminating
+    unnecessary allocations that would ordinarily be needed in C extensions.  The
+    string objects will be properly garbage collected when the `bertrand` module is
+    unloaded for each interpreter. */
     template <static_str name>
     const auto& template_string() {
         static global string = [] {
@@ -314,6 +316,24 @@ namespace impl {
         };
         return string;
     }
+
+    /// TODO: once `Module<"bertrand">` is defined, then I can export a global variable
+    /// named `bertrand::module` or `bertrand::import` that returns a
+    /// `Module<"bertrand">` object that can be used in downstream user code.  It might
+    /// be possible to use a `thread_local bool imported = [] { ... }();` value to
+    /// force the C++ `import` keyword to also load the `bertrand` module in Python,
+    /// which makes everything much easier to reason about, and likely safer.  Importing
+    /// any bertrand module would therefore load `bertrand` as a side effect, and
+    /// marking it thread local ensures that that happens every time a subinterpreter
+    /// is launched.  The module's multi-phase init destructor then ensures that all
+    /// global variables are properly cleaned up during interpreter shutdown, without
+    /// requiring me to include an explicit branch in the Object destructor.  I might
+    /// be able to keep that check around for debugging purposes, but it would be
+    /// compiled out in release mode.  The only way to test that is to have a
+    /// fully-functioning binding system, however.  If it works, then I should be able
+    /// to tell the AST parser to convert any global and/or static Python object into
+    /// a `global` wrapper, whose lifetime is handled appropriately, and which does not
+    /// interfere with subinterpreter isolation.
 
     /* A global object representing an imported `bertrand` module for the current
     interpreter. */
@@ -3401,7 +3421,6 @@ namespace impl {
             if (message == nullptr) {
                 Exception::from_python();
             }
-
             throw AssertionError(
                 "Exception::to_python() called while an active Python exception "
                 "already exists for the current interpreter:\n\n" +
@@ -3784,6 +3803,9 @@ namespace impl {
         template <typename T>
         static Object simple_to_python(const Exception& exception);
     };
+
+    /// TODO: exception_table may need to be guarded using a shared_mutex similar to
+    /// global<F>
 
     /* Stores the global map of exception tables for each Python interpreter.  The
     lifecycle of and access to these entries is managed by the constructor and
