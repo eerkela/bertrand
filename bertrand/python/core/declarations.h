@@ -30,6 +30,7 @@
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -2452,189 +2453,261 @@ namespace meta {
     );
 
     template <typename T>
-    concept Iterator = python<T> && inherits<T, impl::iter_tag>;
-    template <typename T>
-    concept IteratorLike = has_python<T> && Iterator<python_type<T>>;
-
-    template <typename T>
-    concept Function = python<T> && inherits<T, impl::function_tag>;
-    template <typename T>
-    concept FunctionLike = has_python<T> && Function<python_type<T>>;
-
-    template <typename T>
-    concept Method = python<T> && inherits<T, impl::method_tag>;
-    template <typename T>
-    concept MethodLike = has_python<T> && Method<python_type<T>>;
-
-    template <typename T>
-    concept ClassMethod = python<T> && inherits<T, impl::classmethod_tag>;
-    template <typename T>
-    concept ClassMethodLike = has_python<T> && ClassMethod<python_type<T>>;
-
-    template <typename T>
-    concept StaticMethod = python<T> && inherits<T, impl::staticmethod_tag>;
-    template <typename T>
-    concept StaticMethodLike = has_python<T> && StaticMethod<python_type<T>>;
-
-    template <typename T>
-    concept Property = python<T> && inherits<T, impl::property_tag>;
-    template <typename T>
-    concept PropertyLike = has_python<T> && Property<python_type<T>>;
-
-    template <typename T>
     concept Type = python<T> && inherits<T, impl::type_tag>;
     template <typename T>
     concept TypeLike = has_python<T> && Type<python_type<T>>;
 
     template <typename T>
+    concept Iterator = python<T> && inherits<T, impl::iter_tag>;
+    template <typename T>
+    concept IteratorLike = has_python<T> && Iterator<python_type<T>>;
+    template <typename T>
+    concept IteratorType = Type<T> && Iterator<typename std::remove_cvref_t<T>::type>;
+
+    template <typename T>
+    concept Function = python<T> && inherits<T, impl::function_tag>;
+    template <typename T>
+    concept FunctionLike = has_python<T> && Function<python_type<T>>;
+    template <typename T>
+    concept FunctionType = Type<T> && Function<typename std::remove_cvref_t<T>::type>;
+
+    template <typename T>
+    concept Method = python<T> && inherits<T, impl::method_tag>;
+    template <typename T>
+    concept MethodLike = has_python<T> && Method<python_type<T>>;
+    template <typename T>
+    concept MethodType = Type<T> && Method<typename std::remove_cvref_t<T>::type>;
+
+    template <typename T>
+    concept ClassMethod = python<T> && inherits<T, impl::classmethod_tag>;
+    template <typename T>
+    concept ClassMethodLike = has_python<T> && ClassMethod<python_type<T>>;
+    template <typename T>
+    concept ClassMethodType = Type<T> && ClassMethod<typename std::remove_cvref_t<T>::type>;
+
+    template <typename T>
+    concept StaticMethod = python<T> && inherits<T, impl::staticmethod_tag>;
+    template <typename T>
+    concept StaticMethodLike = has_python<T> && StaticMethod<python_type<T>>;
+    template <typename T>
+    concept StaticMethodType = Type<T> && StaticMethod<typename std::remove_cvref_t<T>::type>;
+
+    template <typename T>
+    concept Property = python<T> && inherits<T, impl::property_tag>;
+    template <typename T>
+    concept PropertyLike = has_python<T> && Property<python_type<T>>;
+    template <typename T>
+    concept PropertyType = Type<T> && Property<typename std::remove_cvref_t<T>::type>;
+
+    template <typename T>
     concept Module = python<T> && inherits<T, impl::module_tag>;
     template <typename T>
     concept ModuleLike = has_python<T> && Module<python_type<T>>;
+    template <typename T>
+    concept ModuleType = Type<T> && Module<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept Union = python<T> && inherits<T, impl::union_tag>;
     template <typename T>
     concept UnionLike = has_python<T> && Union<python_type<T>>;
+    template <typename T>
+    concept UnionType = Type<T> && Union<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept Optional = python<T> && inherits<T, impl::optional_tag>;
     template <typename T>
     concept OptionalLike = has_python<T> && Optional<python_type<T>>;
+    template <typename T>
+    concept OptionalType = Type<T> && Optional<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept Intersection = python<T> && inherits<T, impl::intersection_tag>;
     template <typename T>
     concept IntersectionLike = has_python<T> && Intersection<python_type<T>>;
+    template <typename T>
+    concept IntersectionType = Type<T> && Intersection<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept None = python<T> && inherits<T, impl::none_tag>;
     template <typename T>
     concept NoneLike = has_python<T> && None<python_type<T>>;
+    template <typename T>
+    concept NoneType = Type<T> && None<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept NotImplemented = python<T> && inherits<T, impl::notimplemented_tag>;
     template <typename T>
     concept NotImplementedLike = has_python<T> && NotImplemented<python_type<T>>;
+    template <typename T>
+    concept NotImplementedType = Type<T> && NotImplemented<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept Ellipsis = python<T> && inherits<T, impl::ellipsis_tag>;
     template <typename T>
     concept EllipsisLike = has_python<T> && Ellipsis<python_type<T>>;
+    template <typename T>
+    concept EllipsisType = Type<T> && Ellipsis<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept Slice = python<T> && inherits<T, impl::slice_tag>;
     template <typename T>
     concept SliceLike = has_python<T> && Slice<python_type<T>>;
+    template <typename T>
+    concept SliceType = Type<T> && Slice<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept Bool = python<T> && inherits<T, impl::bool_tag>;
     template <typename T>
     concept BoolLike = has_python<T> && Bool<python_type<T>>;
+    template <typename T>
+    concept BoolType = Type<T> && Bool<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept Int = python<T> && inherits<T, impl::int_tag>;
     template <typename T>
     concept IntLike = has_python<T> && Int<python_type<T>>;
+    template <typename T>
+    concept IntType = Type<T> && Int<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept Float = python<T> && inherits<T, impl::float_tag>;
     template <typename T>
     concept FloatLike = has_python<T> && Float<python_type<T>>;
+    template <typename T>
+    concept FloatType = Type<T> && Float<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept Complex = python<T> && inherits<T, impl::complex_tag>;
     template <typename T>
     concept ComplexLike = has_python<T> && Complex<python_type<T>>;
+    template <typename T>
+    concept ComplexType = Type<T> && Complex<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept Str = python<T> && inherits<T, impl::str_tag>;
     template <typename T>
     concept StrLike = has_python<T> && Str<python_type<T>>;
+    template <typename T>
+    concept StrType = Type<T> && Str<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept Bytes = python<T> && inherits<T, impl::bytes_tag>;
     template <typename T>
     concept BytesLike = has_python<T> && Bytes<python_type<T>>;
+    template <typename T>
+    concept BytesType = Type<T> && Bytes<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept ByteArray = python<T> && inherits<T, impl::bytearray_tag>;
     template <typename T>
     concept ByteArrayLike = has_python<T> && ByteArray<python_type<T>>;
+    template <typename T>
+    concept ByteArrayType = Type<T> && ByteArray<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept Date = python<T> && inherits<T, impl::date_tag>;
     template <typename T>
     concept DateLike = has_python<T> && Date<python_type<T>>;
+    template <typename T>
+    concept DateType = Type<T> && Date<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept Time = python<T> && inherits<T, impl::time_tag>;
     template <typename T>
     concept TimeLike = has_python<T> && Time<python_type<T>>;
+    template <typename T>
+    concept TimeType = Type<T> && Time<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept DateTime = python<T> && inherits<T, impl::datetime_tag>;
     template <typename T>
     concept DateTimeLike = has_python<T> && DateTime<python_type<T>>;
+    template <typename T>
+    concept DateTimeType = Type<T> && DateTime<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept Timedelta = python<T> && inherits<T, impl::timedelta_tag>;
     template <typename T>
     concept TimedeltaLike = has_python<T> && Timedelta<python_type<T>>;
+    template <typename T>
+    concept TimedeltaType = Type<T> && Timedelta<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept Timezone = python<T> && inherits<T, impl::timezone_tag>;
     template <typename T>
     concept TimezoneLike = has_python<T> && Timezone<python_type<T>>;
+    template <typename T>
+    concept TimezoneType = Type<T> && Timezone<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept Range = python<T> && inherits<T, impl::range_tag>;
     template <typename T>
     concept RangeLike = has_python<T> && Range<python_type<T>>;
+    template <typename T>
+    concept RangeType = Type<T> && Range<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept Tuple = python<T> && inherits<T, impl::tuple_tag>;
     template <typename T>
     concept TupleLike = has_python<T> && Tuple<python_type<T>>;
+    template <typename T>
+    concept TupleType = Type<T> && Tuple<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept List = python<T> && inherits<T, impl::list_tag>;
     template <typename T>
     concept ListLike = has_python<T> && List<python_type<T>>;
+    template <typename T>
+    concept ListType = Type<T> && List<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept Set = python<T> && inherits<T, impl::set_tag>;
     template <typename T>
     concept SetLike = has_python<T> && Set<python_type<T>>;
+    template <typename T>
+    concept SetType = Type<T> && Set<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept FrozenSet = python<T> && inherits<T, impl::frozenset_tag>;
     template <typename T>
     concept FrozenSetLike = has_python<T> && FrozenSet<python_type<T>>;
+    template <typename T>
+    concept FrozenSetType = Type<T> && FrozenSet<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept Dict = python<T> && inherits<T, impl::dict_tag>;
     template <typename T>
     concept DictLike = has_python<T> && Dict<python_type<T>>;
+    template <typename T>
+    concept DictType = Type<T> && Dict<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept KeyView = python<T> && inherits<T, impl::key_view_tag>;
     template <typename T>
     concept KeyViewLike = has_python<T> && KeyView<python_type<T>>;
+    template <typename T>
+    concept KeyViewType = Type<T> && KeyView<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept ValueView = python<T> && inherits<T, impl::value_view_tag>;
     template <typename T>
     concept ValueViewLike = has_python<T> && ValueView<python_type<T>>;
+    template <typename T>
+    concept ValueViewType = Type<T> && ValueView<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept ItemView = python<T> && inherits<T, impl::item_view_tag>;
     template <typename T>
     concept ItemViewLike = has_python<T> && ItemView<python_type<T>>;
+    template <typename T>
+    concept ItemViewType = Type<T> && ItemView<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
     concept MappingProxy = python<T> && inherits<T, impl::mapping_proxy_tag>;
     template <typename T>
     concept MappingProxyLike = has_python<T> && MappingProxy<python_type<T>>;
+    template <typename T>
+    concept MappingProxyType = Type<T> && MappingProxy<typename std::remove_cvref_t<T>::type>;
 
 }  // namespace meta
 
@@ -3038,7 +3111,7 @@ struct global;
 This is a simple extension of an Object type that intercepts `operator=` and
 assigns the new value back to the attribute using the appropriate API.  Mutating
 the object in any other way will also modify it in-place on the parent. */
-template <typename Self, static_str Name>
+template <meta::python Self, static_str Name>
     requires (
         __getattr__<Self, Name>::enable &&
         meta::python<typename __getattr__<Self, Name>::type> &&
@@ -3060,7 +3133,7 @@ struct attr;
 This is a simple extension of an Object type that intercepts `operator=` and
 assigns the new value back to the container using the appropriate API.  Mutating
 the object in any other way will also modify it in-place within the container. */
-template <typename Self, typename... Key>
+template <meta::python Self, typename... Key>
     requires (
         __getitem__<Self, Key...>::enable &&
         meta::python<typename __getitem__<Self, Key...>::type> &&
@@ -3093,6 +3166,215 @@ structure, and reflects the Python type that would be constructed if an instance
 were converted to `Object`. */
 template <meta::has_python T>
 using obj = meta::python_type<T>;
+
+
+/* A move-only RAII guard that releases the current Python interpreter's Global
+Interpreter Lock (GIL) and re-acquires it when the guard is destroyed.  Python code
+cannot be run while the GIL is released, but pure C++ code is unaffected, and can run
+truly in parallel within the guard's context. */
+struct no_gil {
+private:
+    PyThreadState* m_state;
+
+public:
+    no_gil() : m_state(PyEval_SaveThread()) {}
+
+    no_gil(no_gil&& other) : m_state(other.m_state) { other.m_state = nullptr; }
+    no_gil& operator=(no_gil&& other) {
+        if (this != &other) {
+            m_state = other.m_state;
+            other.m_state = nullptr;
+        }
+        return *this;
+    }
+
+    no_gil(const no_gil&) = delete;
+    no_gil& operator=(const no_gil&) = delete;
+
+    ~no_gil() noexcept {
+        if (m_state) {
+            PyEval_RestoreThread(m_state);
+        }
+    }
+
+    /* Re-acquire the GIL while the guard is still active.  Does nothing if the GIL
+    is already acquired. */
+    void acquire() noexcept {
+        if (m_state) {
+            PyEval_RestoreThread(m_state);
+            m_state = nullptr;
+        }
+    }
+
+    /* Re-release the GIL while the guard is still active.  Does nothing if the GIL
+    is already released. */
+    void release() noexcept {
+        if (!m_state) {
+            m_state = PyEval_SaveThread();
+        }
+    }
+
+    /* The current `PyThreadState` for which the GIL is held. */
+    PyThreadState* thread() const noexcept {
+        return m_state ? m_state : PyThreadState_Get();
+    }
+
+    /* Returns true if the GIL is currently released, or false if it has been
+    manually re-acquired. */
+    explicit operator bool() const noexcept {
+        return m_state;
+    }
+};
+
+
+/* A fully-isolated Python subinterpreter with its own execution thread and Global
+Interpreter Lock (GIL).  This is essentially just a thin wrapper around a `std::thread`
+that initializes a Python subinterpreter whenever a new thread is executed, and cleans
+it up when the thread is finished.
+
+This is currently an experimental feature based on future work in the CPython API, and
+may impose additional restrictions on the Python code that can be run within the
+subinterpreter, particularly as it relates to extension modules and cross-interpreter
+communication.  Bertrand modules should be safe to use in this context, but other
+extensions (particularly those built with single-phase initialization or unprotected
+global state) may not be.
+
+Note that the function that is executed by the subinterpreter must not return a value,
+and any lvalue arguments will be copied into its thread context.  If you'd like to
+reference the same object in both threads, you must wrap the input using `std::ref()`
+or `std::cref()`, as well as ensure that the referenced object stays alive for the
+duration of the thread and does not cause any race conditions with other threads.  If
+you'd like to return a value from the subinterpreter, you must use a `std::promise` or
+similar mechanism to communicate the result back to the parent thread.
+
+Note that Python objects cannot be shared between interpreters, meaning they cannot
+appear in the constructor arguments or return values of the threaded function. */
+struct interpreter {
+private:
+    mutable std::thread m_thread;
+
+    template <typename Func>
+    struct init_subinterpreter {
+        Func m_func;
+
+        template <typename F> requires (std::constructible_from<Func, F>)
+        init_subinterpreter(F&& func) : m_func(std::forward<F>(func)) {}
+
+        template <typename... A> requires (std::is_invocable_r_v<void, Func, A...>)
+        void operator()(A&&... args) {
+            // initialize a subinterpreter in the new thread
+            PyThreadState* thread = nullptr;
+            PyStatus rc = Py_NewInterpreterFromConfig(&thread, &config);
+            if (PyStatus_Exception(rc)) {
+                Py_ExitStatusException(rc);  // terminates the program
+            }
+            if (!thread) {
+                throw RuntimeError("failed to initialize subinterpreter");
+            }
+
+            // call the user-supplied function in the new interpreter thread
+            try {
+                m_func(std::forward<A>(args)...);
+            } catch (...) {
+                Py_EndInterpreter(thread);
+                throw;
+            }
+
+            // finalize the subinterpreter
+            Py_EndInterpreter(thread);
+        }
+    };
+
+    template <typename T>
+    static constexpr bool violates_isolation = false;
+    template <meta::python T>
+    static constexpr bool violates_isolation<T> = true;
+    template <meta::is_promise T>
+    static constexpr bool violates_isolation<T> = meta::python<meta::promise_type<T>>;
+
+public:
+    static constexpr PyInterpreterConfig config = {
+        .use_main_obmalloc = 0,  // use separate object allocator
+        .allow_fork = 0,  // disallow process forking from the subinterpreter thread
+        .allow_exec = 0,  // disallow replacing the current process via os.execv()
+        .allow_threads = 1,  // allow threading module to work from subinterpreter
+        .allow_daemon_threads = 0,  // disallow threading with daemon=True
+        .check_multi_interp_extensions = 1,  // disallow single-phase init modules
+        .gil = PyInterpreterConfig_OWN_GIL,  // use per-interpreter GIL
+    };
+
+    /* Initialize an empty interpreter that does nothing. */
+    interpreter() : m_thread() {}
+
+    /* Initialize a new interpreter in a separate thread and start executing the
+    supplied function using the given arguments.  The function must not return a value,
+    and any lvalue arguments will be copied into the new thread. */
+    template <typename F, typename... A>
+        requires (
+            !violates_isolation<F> &&
+            !(violates_isolation<A> || ...) &&
+            std::constructible_from<std::remove_cvref_t<F>, F> &&
+            std::is_invocable_r_v<void, std::remove_cvref_t<F>&, A...>
+        )
+    interpreter(F&& func, A&&... args) : m_thread(
+        init_subinterpreter<std::remove_cvref_t<F>>{
+            std::forward<F>(func)
+        },
+        std::forward<A>(args)...
+    ) {}
+
+    /* No two interpreters can refer to the same thread. */
+    interpreter(const interpreter&) = delete;
+    interpreter& operator=(const interpreter&) = delete;
+
+    /* Moving an active interpreter will initialize a new interpreter in a separate
+    thread, then block the calling thread until the previous interpreter is complete,
+    and then move the new thread into the current interpreter. */
+    interpreter(interpreter&& other) noexcept : m_thread(std::move(other.m_thread)) {}
+    interpreter& operator=(interpreter&& other) noexcept {
+        if (this != &other) {
+            if (m_thread.joinable()) {
+                m_thread.join();
+            }
+            m_thread = std::move(other.m_thread);
+        }
+        return *this;
+    }
+
+    /* Wait for the current thread to finish before destroying the interpreter. */
+    ~interpreter() noexcept {
+        if (m_thread.joinable()) {
+            m_thread.join();
+        }
+    }
+
+    /* Returns true if the interpreter is currently running in a separate thread, or
+    false if it is not. */
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return m_thread.joinable();
+    }
+
+    /* Returns the hardware thread ID for the interpreter. */
+    [[nodiscard]] std::thread::id id() const noexcept {
+        return m_thread.get_id();
+    }
+
+    /* Wait for the current thread to finish execution. */
+    void join() const {
+        if (m_thread.joinable()) {
+            m_thread.join();
+        }
+    }
+
+    /* Separate the subinterpreter from this interpreter handle, allowing execution
+    in a headless ("daemon") state.  The thread will continue until its function
+    returns, and then will clean itself up. */
+    void detach() {
+        if (m_thread.joinable()) {
+            m_thread.detach();
+        }
+    }
+};
 
 
 }  // namespace bertrand

@@ -5,6 +5,7 @@
 #include <concepts>
 #include <cstddef>
 #include <filesystem>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -405,6 +406,13 @@ namespace meta {
             using type = T;
         };
 
+        template <typename T>
+        struct promise { static constexpr bool enable = false; };
+        template <typename T>
+        struct promise<std::promise<T>> {
+            static constexpr bool enable = true;
+            using type = T;
+        };
     }
 
     /* Get the index of a particular type within a parameter pack.  Returns the pack's size
@@ -524,6 +532,11 @@ namespace meta {
     concept is_unique_ptr = detail::unique_ptr<std::remove_cvref_t<T>>::enable;
     template <is_unique_ptr T>
     using unique_ptr_type = detail::unique_ptr<std::remove_cvref_t<T>>::type;
+
+    template <typename T>
+    concept is_promise = detail::promise<std::remove_cvref_t<T>>::enable;
+    template <is_promise T>
+    using promise_type = detail::promise<std::remove_cvref_t<T>>::type;
 
     template <typename T>
     concept iterable = requires(T& t) {

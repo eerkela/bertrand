@@ -175,7 +175,21 @@ private:
     lookups.  Replacing it with a computed property will trigger a lookup against the
     `m_values` map, which gets the value for the current Python interpreter every time.
     Setting the pointer (e.g. as a part of `release()` is a no-op. */
-    __declspec(property(get = _get_ptr, put = _set_ptr)) PyObject* m_ptr;
+    __declspec(property(get = _get_ptr, put = _set_ptr))
+    PyObject* m_ptr;
+    PyObject* _get_ptr() {
+        std::shared_lock<std::shared_mutex> read(m_mutex);
+        PyInterpreterState* id = PyInterpreterState_Get();
+        auto it = m_values.find(id);
+        if (it != m_values.end()) {
+            return ptr(it->second);
+        }
+        read.unlock();
+        std::unique_lock<std::shared_mutex> write(m_mutex);
+        it = m_values.try_emplace(id, m_func()).first;
+        register_unload();
+        return ptr(it->second);
+    }
     void _set_ptr(PyObject* value) {
         std::unique_lock<std::shared_mutex> write(m_mutex);
         PyInterpreterState* id = PyInterpreterState_Get();
@@ -196,25 +210,12 @@ private:
             }
         }
     }
-    PyObject* _get_ptr() {
-        std::shared_lock<std::shared_mutex> read(m_mutex);
-        PyInterpreterState* id = PyInterpreterState_Get();
-        auto it = m_values.find(id);
-        if (it != m_values.end()) {
-            return ptr(it->second);
-        }
-        read.unlock();
-        std::unique_lock<std::shared_mutex> write(m_mutex);
-        it = m_values.try_emplace(id, m_func()).first;
-        register_unload();
-        return ptr(it->second);
-    }
 
     /* Similarly to `m_ptr`, replacing `m_index` with a computed property will trigger
     a lookup against `m_values`, allowing the value to be an `bertrand::Union` or
     `bertrand::Optional` type without any issues. */
-    __declspec(property(get = _get_index, put = _set_index)) size_t m_index;
-    void _set_index(size_t value) {}
+    __declspec(property(get = _get_index, put = _set_index))
+    size_t m_index;
     size_t _get_index() {
         if constexpr (meta::Union<type>) {
             std::shared_lock<std::shared_mutex> read(m_mutex);
@@ -232,6 +233,7 @@ private:
             return 0;
         }
     }
+    void _set_index(size_t value) {}
 
     mutable std::shared_mutex m_mutex;
     mutable std::unordered_map<PyInterpreterState*, type> m_values;
@@ -386,7 +388,7 @@ namespace impl {
 }
 
 
-template <typename Self, static_str Name>
+template <meta::python Self, static_str Name>
     requires (
         __getattr__<Self, Name>::enable &&
         meta::python<typename __getattr__<Self, Name>::type> &&
@@ -432,8 +434,8 @@ private:
     /* The wrapper's `m_ptr` member is lazily evaluated to avoid repeated lookups.
     Replacing it with a computed property will trigger a __getattr__ lookup the
     first time it is accessed. */
-    __declspec(property(get = _get_ptr, put = _set_ptr)) PyObject* m_ptr;
-    void _set_ptr(PyObject* value) { type::m_ptr = value; }
+    __declspec(property(get = _get_ptr, put = _set_ptr))
+    PyObject* m_ptr;
     PyObject* _get_ptr() {
         if (!type::m_ptr) {
             if constexpr (std::is_invocable_v<__getattr__<Self, Name>, Self>) {
@@ -451,16 +453,13 @@ private:
         }
         return type::m_ptr;
     }
+    void _set_ptr(PyObject* value) { type::m_ptr = value; }
 
     /* The wrapper's `m_index` member is lazily evaluated just like `m_ptr` field.
     This allows seamless integration with `bertrand::Union` and
     `bertrand::Optional` types. */
-    __declspec(property(get = _get_index, put = _set_index)) size_t m_index;
-    void _set_index(size_t value) {
-        if constexpr (meta::Union<type>) {
-            type::m_index = value;
-        }
-    }
+    __declspec(property(get = _get_index, put = _set_index))
+    size_t m_index;
     size_t _get_index() {
         if constexpr (meta::Union<type>) {
             _get_ptr();
@@ -469,11 +468,17 @@ private:
             return 0;
         }
     }
+    void _set_index(size_t value) {
+        if constexpr (meta::Union<type>) {
+            type::m_index = value;
+        }
+    }
 
 public:
 
-    attr(Self&& self) :
-        type(nullptr, Object::stolen_t{}), m_self(std::forward<Self>(self))
+    attr(Self self) :
+        type(nullptr, Object::stolen_t{}),
+        m_self(std::forward<Self>(self))
     {}
     attr(const attr& other) = delete;
     attr(attr&& other) = delete;
@@ -519,7 +524,7 @@ public:
 };
 
 
-template <typename Self, typename... Key>
+template <meta::python Self, typename... Key>
     requires (
         __getitem__<Self, Key...>::enable &&
         meta::python<typename __getitem__<Self, Key...>::type> &&
@@ -578,8 +583,8 @@ private:
     /* The wrapper's `m_ptr` member is lazily evaluated to avoid repeated lookups.
     Replacing it with a computed property will trigger a __getitem__ lookup the
     first time it is accessed. */
-    __declspec(property(get = _get_ptr, put = _set_ptr)) PyObject* m_ptr;
-    void _set_ptr(PyObject* value) { type::m_ptr = value; }
+    __declspec(property(get = _get_ptr, put = _set_ptr))
+    PyObject* m_ptr;
     PyObject* _get_ptr() {
         if (!type::m_ptr) {
             type::m_ptr = std::move(m_key)([&](Key... key) {
@@ -620,16 +625,13 @@ private:
         }
         return type::m_ptr;
     }
+    void _set_ptr(PyObject* value) { type::m_ptr = value; }
 
     /* The wrapper's `m_index` member is lazily evaluated just like `m_ptr` field.
     This allows seamless integration with `bertrand::Union` and
     `bertrand::Optional` types. */
-    __declspec(property(get = _get_index, put = _set_index)) size_t m_index;
-    void _set_index(size_t value) {
-        if constexpr (meta::Union<type>) {
-            type::m_index = value;
-        }
-    }
+    __declspec(property(get = _get_index, put = _set_index))
+    size_t m_index;
     size_t _get_index() {
         if constexpr (meta::Union<type>) {
             _get_ptr();
@@ -638,10 +640,15 @@ private:
             return 0;
         }
     }
+    void _set_index(size_t value) {
+        if constexpr (meta::Union<type>) {
+            type::m_index = value;
+        }
+    }
 
 public:
 
-    item(Self&& self, Key&&... key) :
+    item(Self self, Key&&... key) :
         type(nullptr, Object::stolen_t{}),
         m_self(std::forward<Self>(self)),
         m_key(std::forward<Key>(key)...)
@@ -824,14 +831,6 @@ template <static_str Name, meta::python Self>
     } else {
         return __hasattr__<Self, Name>::enable;
     }
-    // constexpr bool enable = __getattr__<Self, Name>::enable;
-    // if constexpr (enable && meta::dynamic<Self>) {
-    //     /// TODO: Python 3.13 introduces `PyObject_HasAttrWithError()`, which is
-    //     /// more robust when it comes to error handling.
-    //     return PyObject_HasAttr(ptr(obj), ptr(impl::template_string<Name>()));
-    // } else {
-    //     return enable;
-    // }
 }
 
 
@@ -905,6 +904,13 @@ template <static_str Name, meta::python Self>
     }
     if constexpr (std::is_invocable_v<__getattr__<Self, Name>, Self, const Return&>) {
         return __getattr__<Self, Name>{}(std::forward<Self>(self), default_value);
+
+    } else if constexpr (std::is_invocable_v<__getattr__<Self, Name>, Self>) {
+        try {
+            return __getattr__<Self, Name>{}(std::forward<Self>(self));
+        } catch (const AttributeError&) {
+            return default_value;
+        }
 
     } else {
         Return result = steal<Return>(PyObject_GetAttr(

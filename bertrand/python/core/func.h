@@ -185,6 +185,11 @@ template <meta::arg T> requires (meta::python<typename meta::arg_traits<T>::type
 struct __cast__<T> : returns<impl::py_arg<std::remove_cvref_t<T>>> {};
 
 
+/////////////////////////////////
+////    PYTHON SIGNATURES    ////
+/////////////////////////////////
+
+
 /// TODO: inspect.signature() intentionally leaves out partial arguments, so it might
 /// not be a bad idea to do the same here.  The problem is that I need the full
 /// signature to instantiate templates on both sides of the language divide, including
@@ -1773,6 +1778,13 @@ namespace std {
 
 
 namespace bertrand {
+
+
+//////////////////////////////
+////    C++ SIGNATURES    ////
+//////////////////////////////
+
+
 namespace impl {
 
     /* A single entry in a callback table, storing the argument name (which may be
@@ -7949,57 +7961,31 @@ template <typename L, typename R>
 }
 
 
-////////////////////////
-////    FUNCTION    ////
-////////////////////////
-
-
-template <typename F, typename... Partial>
-    requires (
-        meta::partially_callable<F, Partial...> &&
-        signature<F>::Defaults::empty()
-    )
-Function(F&&, Partial&&...)
-    -> Function<typename signature<F>::type>;
-
-
-template <typename F, typename... Partial>
-    requires (meta::partially_callable<F, Partial...>)
-Function(typename signature<F>::Defaults, F&&, Partial&&...)
-    -> Function<typename signature<F>::type>;
-
-
-template <typename F, typename... Partial>
-    requires (
-        meta::partially_callable<F, Partial...> &&
-        signature<F>::Defaults::empty()
-    )
-Function(std::string, F&&, Partial&&...)
-    -> Function<typename signature<F>::type>;
-
-
-template <typename F, typename... Partial>
-    requires (meta::partially_callable<F, Partial...>)
-Function(std::string, typename signature<F>::Defaults, F&&, Partial&&...)
-    -> Function<typename signature<F>::type>;
-
-
-template <typename F, typename... Partial>
-    requires (
-        meta::partially_callable<F, Partial...> &&
-        signature<F>::Defaults::empty()
-    )
-Function(std::string, std::string, F&&, Partial&&...)
-    -> Function<typename signature<F>::type>;
-
-
-template <typename F, typename... Partial>
-    requires (meta::partially_callable<F, Partial...>)
-Function(std::string, std::string, typename signature<F>::Defaults, F&&, Partial&&...)
-    -> Function<typename signature<F>::type>;
+//////////////////////////////////
+////    METHOD DESCRIPTORS    ////
+//////////////////////////////////
 
 
 namespace impl {
+
+    /* NOTE: descriptors are self-attaching when used as type decorators, meaning that
+     * they all implement a `__call__` operator that attaches the descriptor to the
+     * decorated type.  This is rather tricky, especially in C++, where we don't have
+     * the luxury of function capture, and must support usage both with and without
+     * arguments.  In Python, we would normally do this:
+     *
+     *      def decorator(_func=None, *, key1=value1, key2=value2, ...):
+     *          def inner(func):
+     *              ...  # Create and return a wrapper type, possibly using
+     *                     captured values (key1, key2, ...)
+     *
+     *          if _func is None:  # with arguments
+     *              return inner
+     *          else:
+     *              return inner(_func)  # without arguments
+     *
+     * The equivalent C++ code is substantially messier, but is effectively identical.
+     */
 
     /* An equivalent for `PyObject_GetAttr` that avoids invoking the descriptor
     protocol.  This is used during structural type checks to apply the check to the
@@ -8063,30 +8049,61 @@ namespace impl {
     functions. */
     inline Object get_intersection(const Object& name, const Object& obj) {
         Object bertrand = impl::import_bertrand;
-        return getattr<"intersection">(bertrand)[
+        return getattr<"Intersection">(bertrand)[
             getattr<"Arg">(bertrand)[name, obj]
         ];
     }
+
+    /// TODO: maybe Method<F>, ClassMethod<F>, StaticMethod<F>, and Property<F> should
+    /// be moved into the public namespace, so that they can be easily returned from
+    /// __getattr__ specializations that yield the descriptor itself (when accessed
+    /// from the type)?
+
+    /// TODO: the Method descriptor should be a special case that doesn't actually
+    /// attach the descriptor to the type, but instead attaches the unbound function
+    /// itself, which acts as a method descriptor just like Python functions, and
+    /// uses Python flags to optimize the __get__ call away in most cases, as an
+    /// optimization.
 
     /* A descriptor proxy for an unbound Bertrand function, which enables the
     `func.method` access specifier.  Unlike the others, this descriptor is never
     attached to a type, it merely forwards the underlying function to match Python's
     PyFunctionObject semantics, and leverage optimizations in the type flags, etc. */
     template <meta::py_function F>
-        requires (meta::normalized_signature<F> && signature<F>::Partial::empty())
+        requires (
+            meta::normalized_signature<F> &&
+            signature<F>::Partial::empty() &&
+            signature<F>::size() > 0 && (
+                meta::arg_traits<typename signature<F>::template at<0>>::pos() ||
+                meta::arg_traits<typename signature<F>::template at<0>>::args()
+            )
+        )
     struct Method;
+
+    /// TODO: perhaps classmethod requires the first argument to be a type?
+    /// -> This gets complicated for generic types.
 
     /* A `@classmethod` descriptor for a Bertrand function type, which references an
     unbound function and produces bound equivalents that pass the enclosing type as the
     first argument when accessed. */
     template <meta::py_function F>
-        requires (meta::normalized_signature<F> && signature<F>::Partial::empty())
+        requires (
+            meta::normalized_signature<F> &&
+            signature<F>::Partial::empty() &&
+            signature<F>::size() > 0 && (
+                meta::arg_traits<typename signature<F>::template at<0>>::pos() ||
+                meta::arg_traits<typename signature<F>::template at<0>>::args()
+            )
+        )
     struct ClassMethod;
 
     /* A `@staticmethod` descriptor for a C++ function type, which references an
     unbound function and directly forwards it when accessed. */
     template <meta::py_function F>
-        requires (meta::normalized_signature<F> && signature<F>::Partial::empty())
+        requires (
+            meta::normalized_signature<F> &&
+            signature<F>::Partial::empty()
+        )
     struct StaticMethod;
 
     /* A `@property` descriptor for a C++ function type that accepts a single
@@ -8094,78 +8111,70 @@ namespace impl {
     and deleters can also be registered with the same `self` parameter.  The setter can
     accept any type for the assigned value, allowing overloads. */
     template <meta::py_function F>
-        requires (meta::normalized_signature<F> && signature<F>::Partial::empty())
+        requires (
+            meta::normalized_signature<F> &&
+            signature<F>::Partial::empty() &&
+            signature<F>::size() == 1 && (
+                meta::arg_traits<typename signature<F>::template at<0>>::pos() ||
+                meta::arg_traits<typename signature<F>::template at<0>>::args()
+            )
+        )
     struct Property;
 
 }
 
 
+template <meta::Method M>
+struct __getattr__<M, "__wrapped__"> : returns<typename std::remove_cvref_t<M>::function> {
+    [[nodiscard]] std::remove_cvref_t<M>::function operator()(auto&& self) {
+        return view(self)->func;
+    }
+};
+
+
+/// TODO: filling in the interface for Type<Method<F>> is way trickier
+
+
 template <typename F>
 struct interface<impl::Method<F>> : impl::method_tag {
-    /// TODO: C++ interface for the `Method` descriptor
+    using function = Function<F>;
+
+    __declspec(property(get=_get_wrapped))
+    attr<impl::Method<F>, "__wrapped__"> __wrapped__;
+    attr<impl::Method<F>, "__wrapped__"> _get_wrapped(this auto&& self) {
+        return std::forward<decltype(self)>(self);
+    }
+
+    /// TODO: other C++ interface for the descriptor returned by func.method.
+
 };
 template <typename F>
 struct interface<Type<impl::Method<F>>> {
-    /// TODO: C++ interface for the `Type<Method>` descriptor
-};
 
+    /// TODO: maybe these are returned as properties when accessed from the type?
+    /// That way getattr<"__wrapped__">(Type(method)) would return the property
+    /// descriptor that would be invoked if method.__wrapped__ were accessed from
+    /// Python.
 
-template <typename F>
-struct interface<impl::ClassMethod<F>> : impl::classmethod_tag {
-    /// TODO: C++ interface for the `ClassMethod` descriptor
-};
-template <typename F>
-struct interface<Type<impl::ClassMethod<F>>> {
-    /// TODO: C++ interface for the `Type<ClassMethod>` descriptor
-};
+    template <meta::inherits<interface<impl::Method<F>>> Self>
+    attr<impl::Method<F>, "__wrapped__"> __wrapped__(Self&& self) {
+        return std::forward<Self>(self).__wrapped__;
+    }
 
-
-template <typename F>
-struct interface<impl::StaticMethod<F>> : impl::staticmethod_tag {
-    /// TODO: C++ interface for the `StaticMethod` descriptor
-};
-template <typename F>
-struct interface<Type<impl::StaticMethod<F>>> {
-    /// TODO: C++ interface for the `Type<StaticMethod>` descriptor
-};
-
-
-template <typename F>
-struct interface<impl::Property<F>> : impl::property_tag {
-    /// TODO: C++ interface for the `Property` descriptor
-};
-template <typename F>
-struct interface<Type<impl::Property<F>>> {
-    /// TODO: C++ interface for the `Type<Property>` descriptor
 };
 
 
 namespace impl {
 
-    /// TODO: in general, these descriptors should match their Python equivalents as
-    /// closely as possible, in order not to break existing code.
-
-    /* NOTE: descriptors are self-attaching when used as type decorators, meaning that
-     * they all implement a `__call__` operator that attaches the descriptor to the
-     * decorated type.  This is rather tricky, especially in C++, where we don't have
-     * the luxury of function capture, and must support usage both with and without
-     * arguments.  In Python, we would normally do this:
-     *
-     *      def decorator(_func=None, *, key1=value1, key2=value2, ...):
-     *          def inner(func):
-     *              ...  # Create and return a wrapper type, possibly using
-     *                     captured values (key1, key2, ...)
-     *
-     *          if _func is None:  # with arguments
-     *              return inner
-     *          else:
-     *              return inner(_func)  # without arguments
-     *
-     * The equivalent C++ code is substantially messier, but is effectively identical.
-     */
-
     template <meta::py_function F>
-        requires (meta::normalized_signature<F> && signature<F>::Partial::empty())
+        requires (
+            meta::normalized_signature<F> &&
+            signature<F>::Partial::empty() &&
+            signature<F>::size() > 0 && (
+                meta::arg_traits<typename signature<F>::template at<0>>::pos() ||
+                meta::arg_traits<typename signature<F>::template at<0>>::args()
+            )
+        )
     struct Method : Object, interface<Method<F>> {
         struct __python__ : cls<__python__, Method>, PyObject {
             static constexpr static_str __doc__ =
@@ -8590,8 +8599,46 @@ check.)doc";
         ) {}
     };
 
+}
+
+
+/// TODO: restrict this such that the incoming type matches the type of the first
+/// argument of the function.
+
+template <typename F, meta::Type T> requires (!meta::is_const<T>)
+struct __call__<impl::Method<F>, T>                         : returns<T> {
+    static T operator()(T type) {
+        /// TODO: attach the descriptor to the type from C++
+    }
+};
+
+
+///////////////////////////////////////
+////    CLASSMETHOD DESCRIPTORS    ////
+///////////////////////////////////////
+
+
+template <typename F>
+struct interface<impl::ClassMethod<F>> : impl::classmethod_tag {
+    /// TODO: mimic what's being done for Method<F>
+};
+template <typename F>
+struct interface<Type<impl::ClassMethod<F>>> {
+    /// TODO: C++ interface for the `Type<ClassMethod>` descriptor
+};
+
+
+namespace impl {
+
     template <meta::py_function F>
-        requires (meta::normalized_signature<F> && signature<F>::Partial::empty())
+        requires (
+            meta::normalized_signature<F> &&
+            signature<F>::Partial::empty() &&
+            signature<F>::size() > 0 && (
+                meta::arg_traits<typename signature<F>::template at<0>>::pos() ||
+                meta::arg_traits<typename signature<F>::template at<0>>::args()
+            )
+        )
     struct ClassMethod : Object, interface<ClassMethod<F>> {
         struct __python__ : cls<__python__, ClassMethod>, PyObject {
             static constexpr static_str __doc__ =
@@ -8994,8 +9041,39 @@ type check.)doc";
         ) {}
     };
 
+}
+
+
+template <typename F, meta::Type T> requires (!meta::is_const<T>)
+struct __call__<impl::ClassMethod<F>, T>                    : returns<T> {
+    static T operator()(T type) {
+        /// TODO: attach the descriptor to the type from C++
+    }
+};
+
+
+////////////////////////////////////////
+////    STATICMETHOD DESCRIPTORS    ////
+////////////////////////////////////////
+
+
+template <typename F>
+struct interface<impl::StaticMethod<F>> : impl::staticmethod_tag {
+    /// TODO: C++ interface for the `StaticMethod` descriptor
+};
+template <typename F>
+struct interface<Type<impl::StaticMethod<F>>> {
+    /// TODO: C++ interface for the `Type<StaticMethod>` descriptor
+};
+
+
+namespace impl {
+
     template <meta::py_function F>
-        requires (meta::normalized_signature<F> && signature<F>::Partial::empty())
+        requires (
+            meta::normalized_signature<F> &&
+            signature<F>::Partial::empty()
+        )
     struct StaticMethod : Object, interface<StaticMethod<F>> {
         struct __python__ : cls<__python__, StaticMethod>, PyObject {
             static constexpr static_str __doc__ =
@@ -9391,8 +9469,43 @@ type check.)doc";
         ) {}
     };
 
+}
+
+
+template <typename F, meta::Type T> requires (!meta::is_const<T>)
+struct __call__<impl::StaticMethod<F>, T>                   : returns<T> {
+    static T operator()(T type) {
+        /// TODO: attach the descriptor to the type from C++
+    }
+};
+
+
+////////////////////////////////////
+////    PROPERTY DESCRIPTORS    ////
+////////////////////////////////////
+
+
+template <typename F>
+struct interface<impl::Property<F>> : impl::property_tag {
+    /// TODO: C++ interface for the `Property` descriptor
+};
+template <typename F>
+struct interface<Type<impl::Property<F>>> {
+    /// TODO: C++ interface for the `Type<Property>` descriptor
+};
+
+
+namespace impl {
+
     template <meta::py_function F>
-        requires (meta::normalized_signature<F> && signature<F>::Partial::empty())
+        requires (
+            meta::normalized_signature<F> &&
+            signature<F>::Partial::empty() &&
+            signature<F>::size() == 1 && (
+                meta::arg_traits<typename signature<F>::template at<0>>::pos() ||
+                meta::arg_traits<typename signature<F>::template at<0>>::args()
+            )
+        )
     struct Property : Object, interface<Property<F>> {
         struct __python__ : cls<__python__, Property>, PyObject {
             static constexpr static_str __doc__ =
@@ -10084,9 +10197,26 @@ structural type check.)doc";
         ) {}
     };
 
+}
+
+
+template <typename F, meta::Type T> requires (!meta::is_const<T>)
+struct __call__<impl::Property<F>, T>                       : returns<T> {
+    static T operator()(T type) {
+        /// TODO: attach the descriptor to the type from C++
+    }
+};
+
+
+////////////////////////////////
+////    PYTHON FUNCTIONS    ////
+////////////////////////////////
+
+
+namespace impl {
+
     /// TODO: there really needs to be a universal way to generate these template
     /// stubs and allow for CTAD/template instantiation, etc.
-
 
     // /* The Python `bertrand.Function[]` template interface type, which holds all
     // instantiations, each of which inherit from this class, and allows for CTAD-like
@@ -10325,41 +10455,57 @@ structural type check.)doc";
 }  // namespace impl
 
 
-template <typename F, meta::Type T> requires (!meta::is_const<T>)
-struct __call__<impl::Method<F>, T>                         : returns<T> {
-    static T operator()(T type) {
-        /// TODO: attach the descriptor to the type from C++
-    }
-};
+template <typename F, typename... Partial>
+    requires (
+        meta::partially_callable<F, Partial...> &&
+        signature<F>::Defaults::empty()
+    )
+Function(F&&, Partial&&...)
+    -> Function<typename signature<F>::type>;
 
 
-template <typename F, meta::Type T> requires (!meta::is_const<T>)
-struct __call__<impl::ClassMethod<F>, T>                    : returns<T> {
-    static T operator()(T type) {
-        /// TODO: attach the descriptor to the type from C++
-    }
-};
+template <typename F, typename... Partial>
+    requires (meta::partially_callable<F, Partial...>)
+Function(typename signature<F>::Defaults, F&&, Partial&&...)
+    -> Function<typename signature<F>::type>;
 
 
-template <typename F, meta::Type T> requires (!meta::is_const<T>)
-struct __call__<impl::StaticMethod<F>, T>                   : returns<T> {
-    static T operator()(T type) {
-        /// TODO: attach the descriptor to the type from C++
-    }
-};
+template <typename F, typename... Partial>
+    requires (
+        meta::partially_callable<F, Partial...> &&
+        signature<F>::Defaults::empty()
+    )
+Function(std::string, F&&, Partial&&...)
+    -> Function<typename signature<F>::type>;
 
 
-template <typename F, meta::Type T> requires (!meta::is_const<T>)
-struct __call__<impl::Property<F>, T>                       : returns<T> {
-    static T operator()(T type) {
-        /// TODO: attach the descriptor to the type from C++
-    }
-};
+template <typename F, typename... Partial>
+    requires (meta::partially_callable<F, Partial...>)
+Function(std::string, typename signature<F>::Defaults, F&&, Partial&&...)
+    -> Function<typename signature<F>::type>;
 
 
+template <typename F, typename... Partial>
+    requires (
+        meta::partially_callable<F, Partial...> &&
+        signature<F>::Defaults::empty()
+    )
+Function(std::string, std::string, F&&, Partial&&...)
+    -> Function<typename signature<F>::type>;
 
 
+template <typename F, typename... Partial>
+    requires (meta::partially_callable<F, Partial...>)
+Function(std::string, std::string, typename signature<F>::Defaults, F&&, Partial&&...)
+    -> Function<typename signature<F>::type>;
 
+
+template <meta::Function F>
+struct signature<F> : std::remove_cvref_t<F>::signature {};
+
+
+/// TODO: a bunch of __getattr__ specializations to replicate the Python interface
+/// within C++.
 
 
 /* Interface for partial functions, which have some arguments pre-bound. */
@@ -10390,32 +10536,36 @@ struct interface<Function<F>> : impl::function_tag {
     /* A self-binding descriptor returned by the `.method` accessor. */
     using Method = impl::Method<F>;
 
-    __declspec(property(get = _method)) Method method;
-    [[nodiscard]] Method _method(this auto&& self) {
+    __declspec(property(get = _method))
+    Method method;
+    Method _method(this auto&& self) {
         return impl::construct<Method>(std::forward<decltype(self)>(self));
     }
 
     /* A self-binding descriptor returned by the `.classmethod` accessor. */
     using ClassMethod = impl::ClassMethod<F>;
 
-    __declspec(property(get = _classmethod)) ClassMethod classmethod;
-    [[nodiscard]] ClassMethod _classmethod(this auto&& self) {
+    __declspec(property(get = _classmethod))
+    ClassMethod classmethod;
+    ClassMethod _classmethod(this auto&& self) {
         return impl::construct<ClassMethod>(std::forward<decltype(self)>(self));
     }
 
     /* A self-binding descriptor returned by the `.staticmethod` accessor. */
     using StaticMethod = impl::StaticMethod<F>;
 
-    __declspec(property(get = _staticmethod)) StaticMethod staticmethod;
-    [[nodiscard]] StaticMethod _staticmethod(this auto&& self) {
+    __declspec(property(get = _staticmethod))
+    StaticMethod staticmethod;
+    StaticMethod _staticmethod(this auto&& self) {
         return impl::construct<StaticMethod>(std::forward<decltype(self)>(self));
     }
 
     /* A self-binding descriptor returned by the `.property` accessor. */
     using Property = impl::Property<F>;
 
-    __declspec(property(get = _property)) Property property;
-    [[nodiscard]] Property _property(this auto&& self) {
+    __declspec(property(get = _property))
+    Property property;
+    Property _property(this auto&& self) {
         /// TODO: func.property returns a descriptor whose call method self-attaches
         /// to the function, yet I still need some way of setting the setter and
         /// deleter.  Perhaps func.property.setter(fset).deleter(fdel), according to
@@ -10426,28 +10576,30 @@ struct interface<Function<F>> : impl::function_tag {
     /// TODO: when getting and setting these properties, do I need to use Attr
     /// proxies for consistency?
 
-    __declspec(property(get=_get_name, put=_set_name)) std::string __name__;
-    [[nodiscard]] std::string _get_name(this const auto& self);
+    __declspec(property(get=_get_name, put=_set_name))
+    std::string __name__;
+    std::string _get_name(this const auto& self);
     void _set_name(this auto& self, const std::string& name);
 
-    __declspec(property(get=_get_doc, put=_set_doc)) std::string __doc__;
-    [[nodiscard]] std::string _get_doc(this const auto& self);
+    __declspec(property(get=_get_doc, put=_set_doc))
+    std::string __doc__;
+    std::string _get_doc(this const auto& self);
     void _set_doc(this auto& self, const std::string& doc);
 
     /// TODO: __defaults__ should return a std::tuple of default values, as they are
     /// given in the signature.
 
     __declspec(property(get=_get_defaults, put=_set_defaults))
-        std::optional<Tuple<Object>> __defaults__;
-    [[nodiscard]] std::optional<Tuple<Object>> _get_defaults(this const auto& self);
+    std::optional<Tuple<Object>> __defaults__;
+    std::optional<Tuple<Object>> _get_defaults(this const auto& self);
     void _set_defaults(this auto& self, const Tuple<Object>& defaults);
 
     /// TODO: This should return a std::tuple of Python type annotations for each
     /// argument.
 
     __declspec(property(get=_get_annotations, put=_set_annotations))
-        std::optional<Dict<Str, Object>> __annotations__;
-    [[nodiscard]] std::optional<Dict<Str, Object>> _get_annotations(this const auto& self);
+    std::optional<Dict<Str, Object>> __annotations__;
+    std::optional<Dict<Str, Object>> _get_annotations(this const auto& self);
     void _set_annotations(this auto& self, const Dict<Str, Object>& annotations);
 
     /// TODO: __signature__, which returns a proper Python `inspect.Signature` object.
@@ -12834,10 +12986,6 @@ public:
 };
 
 
-template <meta::Function F>
-struct signature<F> : std::remove_cvref_t<F>::signature {};
-
-
 template <meta::inherits<impl::FunctionTag> F>
 struct __template__<F> {
     using Func = std::remove_reference_t<F>;
@@ -13075,11 +13223,6 @@ struct __template__<F> {
         return result;
     }
 };
-
-
-
-
-
 
 
 template <typename Return, typename... Target, typename Func, typename... Values>

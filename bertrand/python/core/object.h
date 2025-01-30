@@ -1270,6 +1270,8 @@ template <meta::has_python T>
         std::same_as<T, meta::python_type<T>>
     )
 struct Type<T> : Object, interface<Type<T>> {
+    using type = T;
+
     struct __python__ : cls<__python__, Type<T>>, PyTypeObject {
         /// TODO: how the hell does this work?
         static Type<Type<T>> __import__();
@@ -1571,48 +1573,57 @@ inline const EllipsisType Ellipsis;
 
 
 /// TODO: this must be declared after func.h
-// template <meta::inherits<impl::slice_tag> Self>
+// template <meta::Slice Self>
 // struct __getattr__<Self, "indices"> : returns<Function<
 //     Tuple<Int>(Arg<"length", const Int&>)
 // >> {};
-template <meta::inherits<impl::slice_tag> Self>
+template <meta::Slice Self>
 struct __getattr__<Self, "start">                           : returns<Object> {
-    static Object operator()(Self self) { return self.start; }
+    static Object operator()(auto&& self) {
+        return view(self)->start ?
+            borrow<Object>(view(self)->start) :
+            borrow<Object>(Py_None);
+        }
 };
-template <meta::inherits<impl::slice_tag> Self>
+template <meta::Slice Self>
 struct __getattr__<Self, "stop">                            : returns<Object> {
-    static Object operator()(Self self) { return self.stop; }
+    static Object operator()(auto&& self) {
+        return view(self)->stop ?
+            borrow<Object>(view(self)->stop) :
+            borrow<Object>(Py_None);
+    }
 };
-template <meta::inherits<impl::slice_tag> Self>
+template <meta::Slice Self>
 struct __getattr__<Self, "step">                            : returns<Object> {
-    static Object operator()(Self self) { return self.step; }
+    static Object operator()(auto&& self) {
+        return view(self)->step ?
+            borrow<Object>(view(self)->step) :
+            borrow<Object>(Py_None);
+    }
 };
 
 
 template <>
 struct interface<Slice> : impl::slice_tag {
     /* Get the start object of the slice.  Note that this might not be an integer. */
-    __declspec(property(get = _get_start)) Object start;
-    [[nodiscard]] Object _get_start(this auto&& self) {
-        return view(self)->start ?
-            borrow<Object>(view(self)->start) :
-            borrow<Object>(Py_None);
+    __declspec(property(get = _get_start))
+    Object start;
+    Object _get_start(this auto&& self) {
+        return getattr<"start">(std::forward<decltype(self)>(self));
     }
 
     /* Get the stop object of the slice.  Note that this might not be an integer. */
-    __declspec(property(get = _get_stop)) Object stop;
-    [[nodiscard]] Object _get_stop(this auto&& self) {
-        return view(self)->stop ?
-            borrow<Object>(view(self)->stop) :
-            borrow<Object>(Py_None);
+    __declspec(property(get = _get_stop))
+    Object stop;
+    Object _get_stop(this auto&& self) {
+        return getattr<"stop">(std::forward<decltype(self)>(self));
     }
 
     /* Get the step object of the slice.  Note that this might not be an integer. */
-    __declspec(property(get = _get_step)) Object step;
-    [[nodiscard]] Object _get_step(this auto&& self) {
-        return view(self)->step ?
-            borrow<Object>(view(self)->step) :
-            borrow<Object>(Py_None);
+    __declspec(property(get = _get_step))
+    Object step;
+    Object _get_step(this auto&& self) {
+        return getattr<"step">(std::forward<decltype(self)>(self));
     }
 
     /* C++-style `get<I>()` accessor for slices, to enable structured bindings. */
