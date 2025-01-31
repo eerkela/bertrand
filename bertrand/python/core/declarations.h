@@ -2915,13 +2915,6 @@ namespace meta {
         template <item T>
         struct lazy_type<T> { using type = item_type<T>; };
 
-        template <typename T>
-        static constexpr bool violates_isolation = false;
-        template <meta::python T>
-        static constexpr bool violates_isolation<T> = true;
-        template <meta::is_promise T>
-        static constexpr bool violates_isolation<T> = meta::python<meta::promise_type<T>>;
-
     }  // namespace detail
 
     template <typename T>
@@ -2956,9 +2949,6 @@ namespace meta {
 
     template <lazily_evaluated T>
     using lazy_type = detail::lazy_type<T>::type;
-
-    template <typename T>
-    concept violates_isolation = detail::violates_isolation<std::remove_cvref_t<T>>;
 
     /* NOTE: some binary operators (such as lexicographic comparisons) accept generic
      * containers, which may be combined with containers of different types.  In these

@@ -142,25 +142,29 @@ out parameters.  If you need to guarantee unique ownership for each thread, you 
 explicitly copy or move the referenced object when calling `submit()`.
 
 Note that Python objects cannot be shared between interpreters unless they are immortal
-(PEP 683), meaning the vast majority of Python types cannot appear in the return value
-or arguments passed to the `submit()` method, and must not be captured by the threaded
-function itself.  However, it is possible for the threaded function to list a Python
-object as a local parameter, in which case the object will be value-initialized within
-the subinterpreter context using the input provided to the `submit()` method.  It may
-not be possible to pass an actual Python object between threads, but it is possible to
-pass a C++ value that then initializes a Python object for the subinterpreter worker.
-In fact, if the original Python object is backed by a C++ value, then it is possible to
-unpack the underlying C++ value and pass *that* between threads, possibly
-reconstructing an equivalent Python wrapper on the subinterpreter side, although great
-care must be taken to ensure that the original object is not garbage collected in
-the meantime.
+(PEP 683), meaning the vast majority of Python types cannot appear within the inputs to
+`submit()` under any circumstances, neither as functions, arguments, or return values,
+or as nested members of any of the above.  However, it *is* possible for the threaded
+function to accept Python objects as local parameters, in which case the objects will
+be value-initialized within the subinterpreter context.  This provides a workaround to
+the sharing problem for types that have a C++ equivalent, wherein one can unwrap the
+underlying C++ value from one interpreter's context, pass that (possibly by reference)
+to the other interpreter, and then reconstruct a non-owning wrapper on the other side.
+Doing so requires that the original Python object not be garbage collected until the
+subinterpreter has finished executing, and that the subinterpreter either wraps the
+value in a non-owning equivalent or generates a copy within its own context.  If a
+non-owning wrapper is used, then it is possible for the worker thread to transparently
+modify the original Python object in the main thread's context without breaking
+Python-level interpreter isolation.
 
 WARNING: This is currently an experimental feature based on future work in the CPython
 API, and may impose additional restrictions on the Python code that can be run within
 the subinterpreter, particularly as it relates to extension modules and
-cross-interpreter communication.  Bertrand modules should be safe to use in this
-context, but other extensions (particularly those built with single-phase
-initialization or unprotected global state) may not be. */
+cross-interpreter communication.  Bertrand modules should always be safe to use by
+default, but other extensions (particularly those built using single-phase
+initialization or unprotected global state) may not be.  Implementers should see PEP
+630 for more details on how to properly isolate extensions such that they work with
+this feature. */
 template <size_t N = 1> requires (N > 0)
 struct interpreter {
 private:
@@ -406,9 +410,10 @@ public:
     during execution. */
     template <typename F, typename... A>
         requires (
-            !meta::violates_isolation<F> &&
-            !(meta::violates_isolation<A> || ...) &&
-            std::invocable<F, A...>
+            std::invocable<F, A...> &&
+            !meta::python<F> &&
+            !(meta::python<A> || ...) &&
+            !meta::python<std::invoke_result_t<F, A...>>
         )
     auto submit(F&& func, A&&... args) {
         std::future<std::invoke_result_t<F, A...>> result;
