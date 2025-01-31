@@ -2915,6 +2915,13 @@ namespace meta {
         template <item T>
         struct lazy_type<T> { using type = item_type<T>; };
 
+        template <typename T>
+        static constexpr bool violates_isolation = false;
+        template <meta::python T>
+        static constexpr bool violates_isolation<T> = true;
+        template <meta::is_promise T>
+        static constexpr bool violates_isolation<T> = meta::python<meta::promise_type<T>>;
+
     }  // namespace detail
 
     template <typename T>
@@ -2949,6 +2956,9 @@ namespace meta {
 
     template <lazily_evaluated T>
     using lazy_type = detail::lazy_type<T>::type;
+
+    template <typename T>
+    concept violates_isolation = detail::violates_isolation<std::remove_cvref_t<T>>;
 
     /* NOTE: some binary operators (such as lexicographic comparisons) accept generic
      * containers, which may be combined with containers of different types.  In these
@@ -3168,6 +3178,23 @@ template <meta::has_python T>
 using obj = meta::python_type<T>;
 
 
+namespace impl {
+
+    /* Config object that dictates properties of the subinterpreters spawned by an
+    `interpreter<N>` pool. */
+    constexpr PyInterpreterConfig subinterpreter_config = {
+        .use_main_obmalloc = 0,  // use separate object allocator per interpreter
+        .allow_fork = 0,  // disallow process forking from the subinterpreter thread
+        .allow_exec = 0,  // disallow replacing the current process via os.execv()
+        .allow_threads = 1,  // allow threading module to work from subinterpreter
+        .allow_daemon_threads = 0,  // disallow threading with daemon=True
+        .check_multi_interp_extensions = 1,  // disallow single-phase init modules
+        .gil = PyInterpreterConfig_OWN_GIL,  // use per-interpreter GIL
+    };
+
+}
+
+
 /* A move-only RAII guard that releases the current Python interpreter's Global
 Interpreter Lock (GIL) and re-acquires it when the guard is destroyed.  Python code
 cannot be run while the GIL is released, but pure C++ code is unaffected, and can run
@@ -3227,44 +3254,65 @@ public:
 };
 
 
-/* A fully-isolated Python subinterpreter with its own execution thread and Global
-Interpreter Lock (GIL).  This is essentially just a thin wrapper around a `std::thread`
-that initializes a Python subinterpreter whenever a new thread is executed, and cleans
-it up when the thread is finished.
+/* A pool of fully-isolated Python subinterpreters with their own execution threads and
+Global Interpreter Locks (GILs).  This is essentially just a thin wrapper around an
+array of `std::thread` and a task queue.  Threaded functions can freely return values
+or throw exceptions, which will be propagated back to the main thread via a
+`std::future` object returned by `submit()`.  C++ parameter passing rules apply to the
+threaded function like normal, meaning arguments will retain their original cvref
+qualifications, including lvalues, which share state between threads and can be used as
+out parameters.  If you need to guarantee unique ownership for each thread, you must
+explicitly copy or move the referenced object when calling `submit()`.
 
-This is currently an experimental feature based on future work in the CPython API, and
-may impose additional restrictions on the Python code that can be run within the
-subinterpreter, particularly as it relates to extension modules and cross-interpreter
-communication.  Bertrand modules should be safe to use in this context, but other
-extensions (particularly those built with single-phase initialization or unprotected
-global state) may not be.
+Note that Python objects cannot be shared between interpreters unless they are immortal
+(PEP 683), meaning the vast majority of Python types cannot appear in the return value
+or arguments of a threaded function, and must not be captured by the function itself.
 
-Note that the function that is executed by the subinterpreter must not return a value,
-and any lvalue arguments will be copied into its thread context.  If you'd like to
-reference the same object in both threads, you must wrap the input using `std::ref()`
-or `std::cref()`, as well as ensure that the referenced object stays alive for the
-duration of the thread and does not cause any race conditions with other threads.  If
-you'd like to return a value from the subinterpreter, you must use a `std::promise` or
-similar mechanism to communicate the result back to the parent thread.
-
-Note that Python objects cannot be shared between interpreters, meaning they cannot
-appear in the constructor arguments or return values of the threaded function. */
+WARNING: This is currently an experimental feature based on future work in the CPython
+API, and may impose additional restrictions on the Python code that can be run within
+the subinterpreter, particularly as it relates to extension modules and
+cross-interpreter communication.  Bertrand modules should be safe to use in this
+context, but other extensions (particularly those built with single-phase
+initialization or unprotected global state) may not be. */
+template <size_t N = 1> requires (N > 0)
 struct interpreter {
 private:
-    mutable std::thread m_thread;
+    static constexpr size_t DIGITS      = sizeof(size_t) * 8;
 
-    template <typename Func>
-    struct init_subinterpreter {
-        Func m_func;
+    /* STOP finishes all tasks and then finalizes each interpreter. */
+    static constexpr size_t STOP        = 1ULL << (DIGITS - 1);
 
-        template <typename F> requires (std::constructible_from<Func, F>)
-        init_subinterpreter(F&& func) : m_func(std::forward<F>(func)) {}
+    template <typename F, typename... A>
+    struct Task {
+        using Return = std::invoke_result_t<meta::remove_rvalue<F>&, A...>;
+        meta::remove_rvalue<F> func;
+        args<A...> args;
+        std::promise<Return> promise;
+        void operator()() {
+            try {
+                if constexpr (meta::is_void<Return>) {
+                    std::move(args)(func);
+                    promise.set_value();
+                } else {
+                    promise.set_value(std::move(args)(func));
+                }
+            } catch (...) {
+                promise.set_exception(std::current_exception());
+                return;
+            }
+        }
+    };
 
-        template <typename... A> requires (std::is_invocable_r_v<void, Func, A...>)
-        void operator()(A&&... args) {
-            // initialize a subinterpreter in the new thread
+    struct Worker {
+        interpreter* m_pool;
+        std::thread m_thread;
+        Worker(interpreter* pool) : m_pool(pool), m_thread([this] {
+            // 1. create a subinterpreter in the new thread
             PyThreadState* thread = nullptr;
-            PyStatus rc = Py_NewInterpreterFromConfig(&thread, &config);
+            PyStatus rc = Py_NewInterpreterFromConfig(
+                &thread,
+                &impl::subinterpreter_config
+            );
             if (PyStatus_Exception(rc)) {
                 Py_ExitStatusException(rc);  // terminates the program
             }
@@ -3272,107 +3320,183 @@ private:
                 throw RuntimeError("failed to initialize subinterpreter");
             }
 
-            // call the user-supplied function in the new interpreter thread
-            try {
-                m_func(std::forward<A>(args)...);
-            } catch (...) {
-                Py_EndInterpreter(thread);
-                throw;
+            // 2. main loop: fetch tasks from the queue and execute until pool is
+            //    stopped and task queue is empty
+            while (true) {
+                std::function<void()> task;
+                {
+                    std::unique_lock<std::mutex> lock(m_pool->m_mutex);
+
+                    // 2a. wait for a task to be available or STOP signal to be sent
+                    m_pool->m_available.wait(lock, [this] {
+                        return !m_pool->m_queue.empty() || (m_pool->m_state & STOP);
+                    });
+
+                    // 2b. if pool is shutting down and queue is empty, exit the thread
+                    if (m_pool->m_queue.empty() && (m_pool->m_state & STOP)) {
+                        break;
+                    }
+
+                    // 2c. otherwise, grab the next task from the queue
+                    task = std::move(m_pool->m_queue.front());
+                    m_pool->m_queue.pop_front();
+                    ++m_pool->m_state;
+                }
+
+                // 2d. run the task in the subinterpreter and fulfill promise
+                task();
+
+                // 2e. if this is the last active task, send the 'done' signal
+                std::unique_lock<std::mutex> lock(m_pool->m_mutex);
+                if ((--m_pool->m_state & ~STOP) == 0 && m_pool->m_queue.empty()) {
+                    m_pool->m_done.notify_all();
+                }
             }
 
-            // finalize the subinterpreter
+            // 3. finalize the subinterpreter and join the thread
             Py_EndInterpreter(thread);
-        }
+        }) {}
     };
 
-    template <typename T>
-    static constexpr bool violates_isolation = false;
-    template <meta::python T>
-    static constexpr bool violates_isolation<T> = true;
-    template <meta::is_promise T>
-    static constexpr bool violates_isolation<T> = meta::python<meta::promise_type<T>>;
+    /* High bits of state hold signals and low bits hold active task count. */
+    size_t m_state = 0;
+
+    /* Mutex protects access to the task queue, exceptions, and state machine via
+    condition variables. */
+    mutable std::mutex m_mutex;
+
+    /* Waits for new tasks or STOP signal to be sent. */
+    std::condition_variable m_available;
+
+    /* Waits for all threads to finish executing. */
+    std::condition_variable m_done;
+
+    /* Task queue contains type-erased closures that invoke the function with stored
+    arguments.  The arguments retain their original qualifications, including
+    reference types.  The user must explicitly copy if they want to pass by value. */
+    std::deque<std::function<void()>> m_queue;
+
+    /* Worker pool initializes a separate subinterpreter in each thread and then
+    waits for tasks to be sent to the queue. */
+    std::array<Worker, N> m_pool = []<size_t I = 0>(
+        this auto&& self,
+        interpreter* pool,
+        auto&&... workers
+    ) {
+        if constexpr (I < N) {
+            return std::forward<decltype(self)>(self).template operator()<I + 1>(
+                pool,
+                std::forward<decltype(workers)>(workers)...,
+                Worker{pool}
+            );
+        } else {
+            return std::array<Worker, N>{std::forward<decltype(workers)>(workers)...};
+        }
+    }(this);
+
+    /* Send the shutdown signal to all threads, wait for queue to empty, finalize
+    interpreters, and then propagate any errors. */
+    void shutdown() {
+        {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            m_state |= STOP;
+        }
+        m_available.notify_all();
+        for (Worker& worker : m_pool) {
+            worker.m_thread.join();
+        }
+    }
 
 public:
-    static constexpr PyInterpreterConfig config = {
-        .use_main_obmalloc = 0,  // use separate object allocator
-        .allow_fork = 0,  // disallow process forking from the subinterpreter thread
-        .allow_exec = 0,  // disallow replacing the current process via os.execv()
-        .allow_threads = 1,  // allow threading module to work from subinterpreter
-        .allow_daemon_threads = 0,  // disallow threading with daemon=True
-        .check_multi_interp_extensions = 1,  // disallow single-phase init modules
-        .gil = PyInterpreterConfig_OWN_GIL,  // use per-interpreter GIL
-    };
-
-    /* Initialize an empty interpreter that does nothing. */
-    interpreter() : m_thread() {}
-
-    /* Initialize a new interpreter in a separate thread and start executing the
-    supplied function using the given arguments.  The function must not return a value,
-    and any lvalue arguments will be copied into the new thread. */
-    template <typename F, typename... A>
-        requires (
-            !violates_isolation<F> &&
-            !(violates_isolation<A> || ...) &&
-            std::constructible_from<std::remove_cvref_t<F>, F> &&
-            std::is_invocable_r_v<void, std::remove_cvref_t<F>&, A...>
-        )
-    interpreter(F&& func, A&&... args) : m_thread(
-        init_subinterpreter<std::remove_cvref_t<F>>{
-            std::forward<F>(func)
-        },
-        std::forward<A>(args)...
-    ) {}
+    /* Initialize the interpreters and wait for tasks to be scheduled. */
+    interpreter() = default;
 
     /* No two interpreters can refer to the same thread. */
     interpreter(const interpreter&) = delete;
     interpreter& operator=(const interpreter&) = delete;
 
-    /* Moving an active interpreter will initialize a new interpreter in a separate
-    thread, then block the calling thread until the previous interpreter is complete,
-    and then move the new thread into the current interpreter. */
-    interpreter(interpreter&& other) noexcept : m_thread(std::move(other.m_thread)) {}
-    interpreter& operator=(interpreter&& other) noexcept {
+    /* Moving an active interpreter pool will initialize the new interpreters in
+    separate threads, block the calling thread until all previous interpreters are
+    complete, and then move the new threads into the current pool. */
+    interpreter(interpreter&& other) :
+        m_state(other.m_state),
+        m_mutex(std::move(other.m_mutex)),
+        m_available(std::move(other.m_available)),
+        m_queue(std::move(other.m_queue)),
+        m_pool(std::move(other.m_pool))
+    {}
+    interpreter& operator=(interpreter&& other) {
         if (this != &other) {
-            if (m_thread.joinable()) {
-                m_thread.join();
-            }
-            m_thread = std::move(other.m_thread);
+            shutdown();
+            m_state = other.m_state;
+            m_mutex = std::move(other.m_mutex);
+            m_available = std::move(other.m_available);
+            m_queue = std::move(other.m_queue);
+            m_pool = std::move(other.m_pool);
         }
         return *this;
     }
 
-    /* Wait for the current thread to finish before destroying the interpreter. */
-    ~interpreter() noexcept {
-        if (m_thread.joinable()) {
-            m_thread.join();
+    /* Wait for all threads to finish before destroying the interpreter pool. */
+    ~interpreter() { shutdown(); }
+
+    /* The total number of interpreters in the pool. */
+    [[nodiscard]] static constexpr size_t size() noexcept { return N; }
+
+    /* Returns true if there are any active or pending tasks in the pool (i.e. at
+    least one thread is currently executing). */
+    [[nodiscard]] explicit operator bool() const noexcept { return active() + pending(); }
+
+    /* The total number of tasks currently being executed. */
+    [[nodiscard]] size_t active() const noexcept { return m_state & ~STOP; }
+
+    /* The total number of pending tasks waiting to be executed. */
+    [[nodiscard]] size_t pending() const noexcept { return m_queue.size(); }
+
+    /* Returns true if the shutdown signal has been sent and the pool cannot
+    accept new tasks. */
+    [[nodiscard]] bool stopped() const noexcept { return m_state & STOP; }
+
+    /* Clear all pending tasks. */
+    void clear() {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_queue.clear();
+    }
+
+    /* Schedule a task for execution.  Returns a future that can be used to obtain
+    the result of the scheduled function or throw an exception if one was encountered
+    during execution. */
+    template <typename F, typename... A>
+        requires (
+            !meta::violates_isolation<F> &&
+            !(meta::violates_isolation<A> || ...) &&
+            std::is_invocable_v<F, A...>
+        )
+    auto submit(F&& func, A&&... args) -> std::future<std::invoke_result_t<F, A...>> {
+        std::future<std::invoke_result_t<F, A...>> result;
+        {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            if (m_state & STOP) {
+                throw RuntimeError(
+                    "interpreter pool is shutting down - cannot schedule new"
+                    "tasks"
+                );
+            }
+            Task<F, A...> task{
+                std::forward<F>(func),
+                std::forward<A>(args)...
+            };
+            result = task.promise.get_future();
+            m_queue.emplace_back(std::move(task));
         }
+        m_available.notify_one();  // wake one worker
+        return result;
     }
 
-    /* Returns true if the interpreter is currently running in a separate thread, or
-    false if it is not. */
-    [[nodiscard]] explicit operator bool() const noexcept {
-        return m_thread.joinable();
-    }
-
-    /* Returns the hardware thread ID for the interpreter. */
-    [[nodiscard]] std::thread::id id() const noexcept {
-        return m_thread.get_id();
-    }
-
-    /* Wait for the current thread to finish execution. */
-    void join() const {
-        if (m_thread.joinable()) {
-            m_thread.join();
-        }
-    }
-
-    /* Separate the subinterpreter from this interpreter handle, allowing execution
-    in a headless ("daemon") state.  The thread will continue until its function
-    returns, and then will clean itself up. */
-    void detach() {
-        if (m_thread.joinable()) {
-            m_thread.detach();
-        }
+    /* Block the current thread until all pending tasks have finished executing. */
+    void join() {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_done.wait(lock, [this]{ return m_queue.empty() && !active(); });
     }
 };
 
