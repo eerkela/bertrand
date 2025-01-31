@@ -143,7 +143,17 @@ explicitly copy or move the referenced object when calling `submit()`.
 
 Note that Python objects cannot be shared between interpreters unless they are immortal
 (PEP 683), meaning the vast majority of Python types cannot appear in the return value
-or arguments of a threaded function, and must not be captured by the function itself.
+or arguments passed to the `submit()` method, and must not be captured by the threaded
+function itself.  However, it is possible for the threaded function to list a Python
+object as a local parameter, in which case the object will be value-initialized within
+the subinterpreter context using the input provided to the `submit()` method.  It may
+not be possible to pass an actual Python object between threads, but it is possible to
+pass a C++ value that then initializes a Python object for the subinterpreter worker.
+In fact, if the original Python object is backed by a C++ value, then it is possible to
+unpack the underlying C++ value and pass *that* between threads, possibly
+reconstructing an equivalent Python wrapper on the subinterpreter side, although great
+care must be taken to ensure that the original object is not garbage collected in
+the meantime.
 
 WARNING: This is currently an experimental feature based on future work in the CPython
 API, and may impose additional restrictions on the Python code that can be run within
@@ -154,168 +164,219 @@ initialization or unprotected global state) may not be. */
 template <size_t N = 1> requires (N > 0)
 struct interpreter {
 private:
-    static constexpr size_t DIGITS      = sizeof(size_t) * 8;
 
-    /* STOP finishes all tasks and then finalizes each interpreter. */
-    static constexpr size_t STOP        = 1ULL << (DIGITS - 1);
+    /* Stores the task queue, workers, and state machine backing this interpreter
+    pool. */
+    struct Pool {
+        static constexpr size_t DIGITS      = sizeof(size_t) * 8;
 
-    template <typename F, typename... A>
-    struct Task {
-        using Return = std::invoke_result_t<meta::remove_rvalue<F>&, A...>;
-        meta::remove_rvalue<F> func;
-        args<A...> args;
-        std::promise<Return> promise;
-        void operator()() {
-            try {
-                if constexpr (meta::is_void<Return>) {
-                    std::move(args)(func);
-                    promise.set_value();
-                } else {
-                    promise.set_value(std::move(args)(func));
+        /* STOP finishes all tasks and then finalizes each interpreter. */
+        static constexpr size_t STOP        = 1ULL << (DIGITS - 1);
+
+        /* An item in the task queue, storing a function to call, stored arguments that
+        were provided to `submit`, and a promise in which to store an exception or
+        return value. */
+        template <typename F, typename... A>
+        struct Task {
+            using Return = std::invoke_result_t<meta::remove_rvalue<F>&, A...>;
+            meta::remove_rvalue<F> func;
+            args<A...> args;
+            std::promise<Return> promise;
+            void operator()() {
+                try {
+                    if constexpr (meta::is_void<Return>) {
+                        std::move(args)(func);
+                        promise.set_value();
+                    } else {
+                        promise.set_value(std::move(args)(func));
+                    }
+                } catch (...) {
+                    promise.set_exception(std::current_exception());
+                    return;
                 }
-            } catch (...) {
-                promise.set_exception(std::current_exception());
-                return;
             }
-        }
-    };
+        };
 
-    struct Worker {
-        interpreter* m_pool;
-        std::thread m_thread;
-        Worker(interpreter* pool) : m_pool(pool), m_thread([this] {
-            // 1. create a subinterpreter in the new thread
-            PyThreadState* thread = nullptr;
-            PyStatus rc = Py_NewInterpreterFromConfig(
-                &thread,
-                &impl::subinterpreter_config
-            );
-            if (PyStatus_Exception(rc)) {
-                Py_ExitStatusException(rc);  // terminates the program
-            }
-            if (!thread) {
-                throw RuntimeError("failed to initialize subinterpreter");
-            }
+        /* An introspectable wrapper around a `std::thread` that houses an isolated
+        Python subinterpreter with its own GIL. */
+        struct Worker {
+        private:
+            friend Pool;
+            Pool* m_pool;
+            PyThreadState* m_interpreter = nullptr;
+            std::thread m_thread;
+            bool m_executing = false;
 
-            // 2. main loop: fetch tasks from the queue and execute until pool is
-            //    stopped and task queue is empty
-            while (true) {
-                std::function<void()> task;
-                {
-                    std::unique_lock<std::mutex> lock(m_pool->m_mutex);
+            Worker(Pool* pool) : m_pool(pool), m_thread([this] {
+                // 1. create a subinterpreter in the new thread
+                PyStatus rc = Py_NewInterpreterFromConfig(
+                    &m_interpreter,
+                    &impl::subinterpreter_config
+                );
+                if (PyStatus_Exception(rc) || !m_interpreter) {
+                    // 1a. if the subinterpreter failed to initialize, then propagate the
+                    //     error to the main thread, rather than terminating the process
+                    std::unique_lock<std::mutex> lock(m_pool->mutex);
+                    if (!m_pool->exception) {
+                        // 1b. only propagate the first error
+                        std::string message = "failed to initialize subinterpreter";
+                        if (PyStatus_Exception(rc)) {
+                            message += " (exit code " + std::to_string(rc.exitcode) + ")";
+                            if (rc.func) {
+                                message += " in " + std::string(rc.func);
+                            }
+                            if (rc.err_msg) {
+                                message += " - " + std::string(rc.err_msg);
+                            }
+                        }
+                        m_pool->exception = std::make_exception_ptr(RuntimeError(
+                            message
+                        ));
+                    }
+                    return;
+                }
 
-                    // 2a. wait for a task to be available or STOP signal to be sent
-                    m_pool->m_available.wait(lock, [this] {
-                        return !m_pool->m_queue.empty() || (m_pool->m_state & STOP);
-                    });
+                // 2. main loop: fetch tasks from the queue and execute until pool is
+                //    stopped and task queue is empty
+                while (true) {
+                    std::function<void()> task;
+                    {
+                        std::unique_lock<std::mutex> lock(m_pool->mutex);
 
-                    // 2b. if pool is shutting down and queue is empty, exit the thread
-                    if (m_pool->m_queue.empty() && (m_pool->m_state & STOP)) {
-                        break;
+                        // 2a. wait for a task to be available or STOP signal to be sent
+                        m_pool->available.wait(lock, [this] {
+                            return !m_pool->queue.empty() || (m_pool->state & STOP);
+                        });
+
+                        // 2b. if pool is shutting down and queue is empty, exit the thread
+                        if (m_pool->queue.empty() && (m_pool->state & STOP)) {
+                            break;
+                        }
+
+                        // 2c. otherwise, grab the next task from the queue
+                        task = std::move(m_pool->queue.front());
+                        m_pool->queue.pop_front();
+                        ++m_pool->state;
                     }
 
-                    // 2c. otherwise, grab the next task from the queue
-                    task = std::move(m_pool->m_queue.front());
-                    m_pool->m_queue.pop_front();
-                    ++m_pool->m_state;
+                    // 2d. run the task in the subinterpreter and fulfill promise
+                    m_executing = true;
+                    task();
+                    m_executing = false;
+
+                    // 2e. if this is the last active task, send the 'done' signal
+                    std::unique_lock<std::mutex> lock(m_pool->mutex);
+                    if ((--m_pool->state & ~STOP) == 0 && m_pool->queue.empty()) {
+                        m_pool->done.notify_all();
+                    }
                 }
 
-                // 2d. run the task in the subinterpreter and fulfill promise
-                task();
+                // 3. finalize the subinterpreter and join the thread
+                Py_EndInterpreter(m_interpreter);
+            }) {}
 
-                // 2e. if this is the last active task, send the 'done' signal
-                std::unique_lock<std::mutex> lock(m_pool->m_mutex);
-                if ((--m_pool->m_state & ~STOP) == 0 && m_pool->m_queue.empty()) {
-                    m_pool->m_done.notify_all();
-                }
+        public:
+            Worker(const Worker&) = delete;
+            Worker& operator=(const Worker&) = delete;
+            Worker(Worker&&) = delete;
+            Worker& operator=(Worker&&) = delete;
+
+            /* Returns true if this thread is currently executing a task, or false if it
+            is idle. */
+            bool executing() const noexcept { return m_executing; }
+
+            /* Returns the thread state of the Python subinterpreter. */
+            PyThreadState* python() const noexcept { return m_interpreter; }
+
+            /* Returns a reference to the C++ thread hosting the subinterpreter. */
+            const std::thread& thread() const noexcept { return m_thread; }
+        };
+
+        /* High bits of state hold signals and low bits hold active task count. */
+        size_t state = 0;
+
+        /* Mutex protects access to the task queue, exceptions, and state machine via
+        condition variables. */
+        mutable std::mutex mutex;
+
+        /* Waits for new tasks or STOP signal to be sent. */
+        std::condition_variable available;
+
+        /* Waits for all threads to finish executing. */
+        std::condition_variable done;
+
+        /* If the creation of the pool fails to initialize a new subinterpreter, it's
+        possible for an error to crash the program unexpectedly.  In order to prevent
+        this, we can pre-emptively catch these errors and propagate them to the main
+        thread, where normal error handling mechanisms can be used, and unhandled
+        errors are given proper stack traces when reported to the user. */
+        std::exception_ptr exception;
+
+        /* Task queue contains type-erased closures that invoke the function with stored
+        arguments.  The arguments retain their original qualifications, including
+        reference types.  The user must explicitly copy if they want to pass by value. */
+        std::deque<std::function<void()>> queue;
+
+        /* Worker pool initializes a separate subinterpreter in each thread and then
+        waits for tasks to be sent to the queue. */
+        std::array<Worker, N> workers = []<size_t I = 0>(
+            this auto&& self,
+            Pool* pool,
+            auto&&... workers
+        ) {
+            if constexpr (I < N) {
+                return std::forward<decltype(self)>(self).template operator()<I + 1>(
+                    pool,
+                    std::forward<decltype(workers)>(workers)...,
+                    pool
+                );
+            } else {
+                return std::array<Worker, N>{std::forward<decltype(workers)>(workers)...};
             }
+        }(this);
 
-            // 3. finalize the subinterpreter and join the thread
-            Py_EndInterpreter(thread);
-        }) {}
+        /* Send the shutdown signal to all threads, wait for queue to empty, and then
+        finalize the subinterpreters. */
+        ~Pool() noexcept {
+            {
+                std::unique_lock<std::mutex> lock(mutex);
+                state |= STOP;
+            }
+            available.notify_all();
+            for (Worker& worker : workers) {
+                worker.m_thread.join();
+            }
+        }
     };
 
-    /* High bits of state hold signals and low bits hold active task count. */
-    size_t m_state = 0;
-
-    /* Mutex protects access to the task queue, exceptions, and state machine via
-    condition variables. */
-    mutable std::mutex m_mutex;
-
-    /* Waits for new tasks or STOP signal to be sent. */
-    std::condition_variable m_available;
-
-    /* Waits for all threads to finish executing. */
-    std::condition_variable m_done;
-
-    /* Task queue contains type-erased closures that invoke the function with stored
-    arguments.  The arguments retain their original qualifications, including
-    reference types.  The user must explicitly copy if they want to pass by value. */
-    std::deque<std::function<void()>> m_queue;
-
-    /* Worker pool initializes a separate subinterpreter in each thread and then
-    waits for tasks to be sent to the queue. */
-    std::array<Worker, N> m_pool = []<size_t I = 0>(
-        this auto&& self,
-        interpreter* pool,
-        auto&&... workers
-    ) {
-        if constexpr (I < N) {
-            return std::forward<decltype(self)>(self).template operator()<I + 1>(
-                pool,
-                std::forward<decltype(workers)>(workers)...,
-                Worker{pool}
-            );
-        } else {
-            return std::array<Worker, N>{std::forward<decltype(workers)>(workers)...};
-        }
-    }(this);
-
-    /* Send the shutdown signal to all threads, wait for queue to empty, finalize
-    interpreters, and then propagate any errors. */
-    void shutdown() {
-        {
-            std::unique_lock<std::mutex> lock(m_mutex);
-            m_state |= STOP;
-        }
-        m_available.notify_all();
-        for (Worker& worker : m_pool) {
-            worker.m_thread.join();
-        }
-    }
+    /* Thread pool is held in a unique pointer to allow for efficient moves without
+    interrupting the pool's workers. */
+    std::unique_ptr<Pool> m_pool;
 
 public:
     /* Initialize the interpreters and wait for tasks to be scheduled. */
-    interpreter() = default;
+    interpreter() : m_pool(std::make_unique<Pool>()) {
+        if (m_pool->exception) {
+            try {
+                std::rethrow_exception(m_pool->exception);
+            } catch (...) {
+                m_pool->exception = nullptr;
+                throw;
+            }
+        }
+    }
 
     /* No two interpreters can refer to the same thread. */
     interpreter(const interpreter&) = delete;
     interpreter& operator=(const interpreter&) = delete;
 
-    /* Moving an active interpreter pool will initialize the new interpreters in
-    separate threads, block the calling thread until all previous interpreters are
-    complete, and then move the new threads into the current pool. */
-    interpreter(interpreter&& other) :
-        m_state(other.m_state),
-        m_mutex(std::move(other.m_mutex)),
-        m_available(std::move(other.m_available)),
-        m_queue(std::move(other.m_queue)),
-        m_pool(std::move(other.m_pool))
-    {}
-    interpreter& operator=(interpreter&& other) {
-        if (this != &other) {
-            shutdown();
-            m_state = other.m_state;
-            m_mutex = std::move(other.m_mutex);
-            m_available = std::move(other.m_available);
-            m_queue = std::move(other.m_queue);
-            m_pool = std::move(other.m_pool);
-        }
-        return *this;
-    }
+    /* Move-constructing an interpreter pool will transfer ownership over the
+    workers in-flight. */
+    interpreter(interpreter&& other) = default;
 
-    /* Wait for all threads to finish before destroying the interpreter pool. */
-    ~interpreter() { shutdown(); }
+    /* Move-assigning an active interpreter pool will block until all threads in the
+    current pool have finished executing, and then transfer ownership. */
+    interpreter& operator=(interpreter&& other) = default;
 
     /* The total number of interpreters in the pool. */
     [[nodiscard]] static constexpr size_t size() noexcept { return N; }
@@ -325,19 +386,19 @@ public:
     [[nodiscard]] explicit operator bool() const noexcept { return active() + pending(); }
 
     /* The total number of tasks currently being executed. */
-    [[nodiscard]] size_t active() const noexcept { return m_state & ~STOP; }
+    [[nodiscard]] size_t active() const noexcept { return m_pool->state & ~Pool::STOP; }
 
     /* The total number of pending tasks waiting to be executed. */
-    [[nodiscard]] size_t pending() const noexcept { return m_queue.size(); }
+    [[nodiscard]] size_t pending() const noexcept { return m_pool->queue.size(); }
 
     /* Returns true if the shutdown signal has been sent and the pool cannot
     accept new tasks. */
-    [[nodiscard]] bool stopped() const noexcept { return m_state & STOP; }
+    [[nodiscard]] bool stopped() const noexcept { return m_pool->state & Pool::STOP; }
 
     /* Clear all pending tasks. */
-    void clear() {
-        std::unique_lock<std::mutex> lock(m_mutex);
-        m_queue.clear();
+    void clear() noexcept {
+        std::unique_lock<std::mutex> lock(m_pool->mutex);
+        m_pool->queue.clear();
     }
 
     /* Schedule a task for execution.  Returns a future that can be used to obtain
@@ -347,33 +408,53 @@ public:
         requires (
             !meta::violates_isolation<F> &&
             !(meta::violates_isolation<A> || ...) &&
-            std::is_invocable_v<F, A...>
+            std::invocable<F, A...>
         )
-    auto submit(F&& func, A&&... args) -> std::future<std::invoke_result_t<F, A...>> {
+    auto submit(F&& func, A&&... args) {
         std::future<std::invoke_result_t<F, A...>> result;
         {
-            std::unique_lock<std::mutex> lock(m_mutex);
-            if (m_state & STOP) {
+            std::unique_lock<std::mutex> lock(m_pool->mutex);
+            if (m_pool->state & Pool::STOP) {
                 throw RuntimeError(
                     "interpreter pool is shutting down - cannot schedule new"
                     "tasks"
                 );
             }
-            Task<F, A...> task{
+            typename Pool::template Task<F, A...> task{
                 std::forward<F>(func),
                 std::forward<A>(args)...
             };
             result = task.promise.get_future();
-            m_queue.emplace_back(std::move(task));
+            m_pool->queue.emplace_back(std::move(task));
         }
-        m_available.notify_one();  // wake one worker
+        m_pool->available.notify_one();  // wake one worker
         return result;
     }
 
     /* Block the current thread until all pending tasks have finished executing. */
-    void join() {
-        std::unique_lock<std::mutex> lock(m_mutex);
-        m_done.wait(lock, [this]{ return m_queue.empty() && !active(); });
+    void join() noexcept {
+        std::unique_lock<std::mutex> lock(m_pool->mutex);
+        m_pool->done.wait(lock, [this]{ return m_pool->queue.empty() && !active(); });
+    }
+
+    /* The individual threads can be iterated over for inspection, but cannot be
+    modified. */
+    auto begin() const noexcept { return m_pool->workers.cbegin(); }
+    auto cbegin() const noexcept { return m_pool->workers.cbegin(); }
+    auto rbegin() const noexcept { return m_pool->workers.crbegin(); }
+    auto crbegin() const noexcept { return m_pool->workers.crbegin(); }
+    auto end() const noexcept { return m_pool->workers.cend(); }
+    auto cend() const noexcept { return m_pool->workers.cend(); }
+    auto rend() const noexcept { return m_pool->workers.crend(); }
+    auto crend() const noexcept { return m_pool->workers.crend(); }
+
+    /* Returns a reference to the i-th thread in the pool.  Throws an `IndexError` if
+    the index is out of bounds. */
+    const auto& operator[](size_t i) const {
+        if (i >= N) {
+            throw IndexError(std::to_string(i));
+        }
+        return m_pool->workers[i];
     }
 };
 
