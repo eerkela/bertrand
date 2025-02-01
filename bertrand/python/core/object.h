@@ -299,6 +299,12 @@ template <meta::python Derived, meta::python Base>
 }
 
 
+/// TODO: perhaps I should put __doc__, __repr__, etc. into the object interface, so
+/// that all objects have them by default, and don't need to define them manually.
+/// They would work via the Python attribute protocol, so they would always have the
+/// correct behavior.
+
+
 template <>
 struct interface<Object> {};
 template <>
@@ -1270,9 +1276,9 @@ template <meta::has_python T>
         std::same_as<T, meta::python_type<T>>
     )
 struct Type<T> : Object, interface<Type<T>> {
-    using type = T;
+    using cls = T;
 
-    struct __python__ : cls<__python__, Type<T>>, PyTypeObject {
+    struct __python__ : Object::cls<__python__, Type<T>>, PyTypeObject {
         /// TODO: how the hell does this work?
         static Type<Type<T>> __import__();
     };
@@ -1352,7 +1358,7 @@ struct interface<Type<NoneType>> {};
 
 /* Represents the type of Python's `None` singleton in C++. */
 struct NoneType : Object, interface<NoneType> {
-    struct __python__ : cls<__python__, NoneType>, PyObject {
+    struct __python__ : Object::cls<__python__, NoneType>, PyObject {
         static Type<NoneType> __import__();
     };
 
@@ -1444,7 +1450,7 @@ struct interface<Type<NotImplementedType>> {};
 
 /* Represents the type of Python's `NotImplemented` singleton in C++. */
 struct NotImplementedType : Object, interface<NotImplementedType> {
-    struct __python__ : cls<__python__, NotImplementedType>, PyObject {
+    struct __python__ : Object::cls<__python__, NotImplementedType>, PyObject {
         static Type<NotImplementedType> __import__();
     };
 
@@ -1512,7 +1518,7 @@ struct interface<Type<EllipsisType>> {};
 
 /* Represents the type of Python's `Ellipsis` singleton in C++. */
 struct EllipsisType : Object, interface<EllipsisType> {
-    struct __python__ : cls<__python__, EllipsisType>, PyObject {
+    struct __python__ : Object::cls<__python__, EllipsisType>, PyObject {
         static Type<EllipsisType> __import__();
     };
 
@@ -1689,7 +1695,7 @@ struct interface<Type<Slice>> {
 /* Represents a statically-typed Python `slice` object in C++.  Note that the start,
 stop, and step values do not strictly need to be integers. */
 struct Slice : Object, interface<Slice> {
-    struct __python__ : cls<__python__, Slice>, PySliceObject {
+    struct __python__ : Object::cls<__python__, Slice>, PySliceObject {
         static Type<Slice> __import__();
     };
 

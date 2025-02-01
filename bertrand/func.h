@@ -17,12 +17,14 @@ namespace bertrand {
 template <typename... Ts>
 struct args;
 
+
 template <typename F, typename... Fs>
     requires (
         !std::is_reference_v<F> &&
         !(std::is_reference_v<Fs> || ...)
     )
 struct chain;
+
 
 /* Introspect an annotated C++ function signature to extract compile-time type
 information and allow matching functions to be called using Python-style conventions.
@@ -917,6 +919,22 @@ template <meta::iterable T> requires (meta::has_size<T>)
 arg_pack(T&&) -> arg_pack<T>;
 
 
+/* A placeholder for a C++ template argument that can be used to back a `bertrand::Arg`
+annotation.  Users can add custom predicates by inheriting from this type and
+overriding the `::enable` field, in order to model arbitrary C++ template constraints.
+The default always returns true, mimicking the unconstrained `typename`/`class`
+keywords in a C++ template declaration. 
+
+
+/// TODO: document precisely how this works
+
+*/
+struct generic {
+    template <typename... Args>
+    static constexpr bool enable = true;
+};
+
+
 /* A family of compile-time argument annotations that represent positional and/or
 keyword arguments to a Python-style function.  Modifiers can be added to an argument
 to indicate its kind, such as positional-only, keyword-only, optional, bound to a
@@ -1267,6 +1285,17 @@ public:
 };
 
 
+/* Specialization for generic args, which have no definite type until they are
+explicitly bound. */
+template <static_str Name, std::derived_from<generic> Check>
+    requires (meta::arg_name<Name>)
+struct Arg<Name, Check> {
+    /// TODO: same interface as other arguments, but cannot be constructed until
+    /// ::bind<T> is used, at which point it becomes a normal Arg<Name, T>.  This will
+    /// also have to be accounted for within the call logic somehow.
+};
+
+
 /* Specialization for variadic positional args, whose names are prefixed by a leading
 asterisk. */
 template <static_str Name, typename T> requires (meta::variadic_args_name<Name>)
@@ -1332,6 +1361,17 @@ public:
     [[nodiscard]] constexpr decltype(auto) operator[](vec::size_type i) const {
         return value[i];
     }
+};
+
+
+/* Specialization for variadic positional args with generic types, whose names are
+prefixed by a leading asterisk.  Like other generic arguments, these have no definite
+type until they are explicitly bound. */
+template <static_str Name, std::derived_from<generic> Check>
+    requires (meta::variadic_args_name<Name>)
+struct Arg<Name, Check> {
+    /// TODO: same interface as other arguments, but cannot be constructed until
+    /// ::bind<T> is used, at which point it becomes a normal Arg<Name, T>.  This will
 };
 
 
@@ -1401,6 +1441,17 @@ public:
         return value.at(std::move(key));
     }
 
+};
+
+
+/* Specialization for variadic keyword args with generic types, whose names are
+prefixed by 2 leading asterisks.  Like other generic arguments, these have no
+definite type until they are explicitly bound. */
+template <static_str Name, std::derived_from<generic> Check>
+    requires (meta::variadic_kwargs_name<Name>)
+struct Arg<Name, Check> {
+    /// TODO: same interface as other arguments, but cannot be constructed until
+    /// ::bind<T> is used, at which point it becomes a normal Arg<Name, T>.
 };
 
 

@@ -1513,7 +1513,7 @@ this class and avoid type safety issues, leave the return type set to `Object` (
 default), which will incur a runtime check on conversion. */
 template <meta::python Return> requires (!meta::is_qualified<Return>)
 struct Iterator<Return, void, void> : Object, interface<Iterator<Return, void, void>> {
-    struct __python__ : cls<__python__, Iterator>, PyObject {
+    struct __python__ : Object::cls<__python__, Iterator>, PyObject {
         static Type<Iterator> __import__() {
             // collections.abc.Iterator stored as a global variable computed once
             // per interpreter.
@@ -1570,7 +1570,7 @@ every combination of C++ iterators, forwarding to their respective `operator*()`
 template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
     requires (meta::has_python<decltype(*std::declval<Begin>())>)
 struct Iterator<Begin, End, void> : Object, interface<Iterator<Begin, End, void>> {
-    struct __python__ : cls<__python__, Iterator>, PyObject {
+    struct __python__ : Object::cls<__python__, Iterator>, PyObject {
         inline static bool initialized = false;
         static PyTypeObject __type__;
 
@@ -1684,7 +1684,7 @@ template <
 >
     requires (meta::has_python<decltype(*std::declval<Begin>())>)
 struct Iterator<Begin, End, Container> : Object, interface<Iterator<Begin, End, Container>> {
-    struct __python__ : cls<__python__, Iterator>, PyObject {
+    struct __python__ : Object::cls<__python__, Iterator>, PyObject {
         inline static bool initialized = false;
         static PyTypeObject __type__;
 
@@ -4268,7 +4268,7 @@ namespace impl {
     Python object without any additional allocations. */
     template <meta::inherits<Exception> T> requires (!meta::is_qualified<T>)
     struct py_err : T, Object {
-        struct __python__ : cls<__python__, py_err, T> {
+        struct __python__ : Object::cls<__python__, py_err, T> {
             /// TODO: export/import.  Figure this out when implementing types
             // template <static_str ModName>
             // static Type<py_err> __export__(Bindings<ModName> bind);

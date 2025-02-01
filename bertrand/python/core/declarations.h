@@ -2500,6 +2500,15 @@ namespace meta {
     concept PropertyType = Type<T> && Property<typename std::remove_cvref_t<T>::type>;
 
     template <typename T>
+    concept Descriptor = Method<T> || ClassMethod<T> || StaticMethod<T> || Property<T>;
+    template <typename T>
+    concept DescriptorLike =
+        MethodLike<T> || ClassMethodLike<T> || StaticMethodLike<T> || PropertyLike<T>;
+    template <typename T>
+    concept DescriptorType =
+        MethodType<T> || ClassMethodType<T> || StaticMethodType<T> || PropertyType<T>;
+
+    template <typename T>
     concept Module = python<T> && inherits<T, impl::module_tag>;
     template <typename T>
     concept ModuleLike = has_python<T> && Module<python_type<T>>;
@@ -2725,8 +2734,7 @@ template <typename Begin, typename End = void, typename Container = void>
         (meta::is_void<Container> || meta::iterable<Container>)
     ))
 struct Iterator;
-template <meta::py_function F = Object(Arg<"*args", Object>, Arg<"**kwargs", Object>)>
-    requires (meta::normalized_signature<F>)
+template <meta::py_function F> requires (meta::normalized_signature<F>)
 struct Function;
 template <meta::has_python T = Object>
 struct Type;
