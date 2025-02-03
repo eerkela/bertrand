@@ -959,7 +959,7 @@ arguments and/or return type of an equivalent Python-style function.  For exampl
         static constexpr bool enable = helper<Args...>::enable;
 
         template <typename... Args> requires (enable<Args...>)
-        using returns = helper<Args...>::type;
+        using Return = helper<Args...>::type;
     };
 
     using sig = constraint<int>(bertrand::Arg<"value", constraint<int>>);
@@ -970,11 +970,11 @@ arguments and/or return type of an equivalent Python-style function.  For exampl
     static_assert(wrapper(1) == 2);
     static_assert(wrapper(arg<"value"> = 2) == 3);
     static_assert(std::same_as<
-        bertrand::signature<sig>::Return,
+        bertrand::signature<decltype(wrapper)>::Return,
         constraint<int>
     >);
     static_assert(std::same_as<
-        bertrand::signature<sig>::template Bind<short>::Return,
+        bertrand::signature<decltype(wrapper)>::template Bind<short>::Return,
         short
     >);
 
@@ -1049,10 +1049,6 @@ struct Arg;
 ///     Arg<"x", const generic<int>&> -> Arg<"x", const int&>
 ///
 /// TODO: how is perfect forwarding handled in this case?
-
-
-/// TODO: with this unified approach, there needs to be some hook for arg_traits to
-/// determine whether a given argument is or is not generic.
 
 
 /* Specialization for standard args, with typical alphanumeric + underscore names. */
@@ -1393,6 +1389,10 @@ public:
         };
     };
 };
+
+
+/// TODO: add a specialization for generic<>, which cannot be marked as optional, which
+/// means I never need to account for that case when building a defaults tuple.
 
 
 /* Specialization for variadic positional args, whose names are prefixed by a leading
@@ -1918,6 +1918,22 @@ constexpr impl::ArgFactory<name> arg {};
 
 namespace meta {
 
+    namespace detail {
+
+        template <meta::generic T, typename U>
+        struct respec_generic {
+            template <typename>
+            struct helper;
+            template <template <typename> class constraint, typename V>
+            struct helper<constraint<V>> { using type = qualify<constraint<U>, T>; };
+            using type = helper<std::remove_cvref_t<T>>::type;
+        };
+
+    }
+
+    template <meta::generic T, typename U>
+    using respec_generic = detail::respec_generic<T, U>::type;
+
     /* Manipulate a C++ argument annotation at compile time.  Unannotated types are
     treated as anonymous, positional-only, and required in order to preserve C++ style. */
     template <typename T>
@@ -1927,6 +1943,11 @@ namespace meta {
         struct _with_name { using type = Arg<N, T>::pos; };
         template <bertrand::static_str N> requires (N.empty())
         struct _with_name<N> { using type = T; };
+
+        template <typename U, typename V>
+        struct _respec_generic { using type = U; };
+        template <meta::generic U, typename V>
+        struct _respec_generic<U, V> { using type = meta::respec_generic<U, V>; };
 
     public:
         using type                                  = T;
@@ -1961,6 +1982,8 @@ namespace meta {
         using with_name                             = _with_name<N>::type;
         template <typename V> requires (!meta::is_void<V>)
         using with_type                             = V;
+        template <typename V> requires (!meta::is_void<V>)
+        using respec_generic                        = _respec_generic<T, V>::type;
     };
 
     /* Manipulate a C++ argument annotation at compile time.  Forwards to the annotated
@@ -1974,6 +1997,11 @@ namespace meta {
         struct _with_name { using type = T2::template with_name<N>; };
         template <bertrand::static_str N> requires (N.empty())
         struct _with_name<N> { using type = T2::type; };
+
+        template <typename U, typename V>
+        struct _respec_generic { using type = U; };
+        template <meta::generic U, typename V>
+        struct _respec_generic<U, V> { using type = meta::respec_generic<U, V>; };
 
     public:
         using type                                  = T2::type;
@@ -2001,6 +2029,10 @@ namespace meta {
         using with_name                             = _with_name<N>::type;
         template <typename V> requires (!meta::is_void<V>)
         using with_type                             = T2::template with_type<V>;
+        template <typename V> requires (!meta::is_void<V>)
+        using respec_generic                        = T2::template with_type<
+            typename _respec_generic<T, V>::type
+        >;
     };
 
 }
@@ -2285,6 +2317,29 @@ namespace impl {
     }();
     template <typename... A>
     constexpr bool no_duplicate_args = _no_duplicate_args<0, A...>;
+
+    template <typename...>
+    struct _generics_are_consistent { static constexpr bool value = true; };
+    template <typename A, typename... As>
+    struct _generics_are_consistent<A, As...> {
+        static constexpr bool value = _generics_are_consistent<As...>::value;
+    };
+    template <typename A, typename... As> requires (meta::arg_traits<A>::generic())
+    struct _generics_are_consistent<A, As...> {
+        template <typename... Bs>
+        static constexpr bool _value = true;
+        template <typename B, typename... Bs>
+        static constexpr bool _value<B, Bs...> = _value<Bs...>;
+        template <typename B, typename... Bs> requires (meta::arg_traits<B>::generic())
+        static constexpr bool _value<B, Bs...> =
+            std::same_as<
+                typename meta::arg_traits<A>::template respec_generic<impl::generic_tag>,
+                typename meta::arg_traits<B>::template respec_generic<impl::generic_tag>
+            > && _value<Bs...>;
+        static constexpr bool value = _value<As...>;
+    };
+    template <typename... As>
+    constexpr bool generics_are_consistent = _generics_are_consistent<As...>::value;
 
     template <typename... A>
     constexpr bitset<MAX_ARGS> required = 0;
@@ -2912,6 +2967,11 @@ namespace impl {
         positional/keyword argument, respectively. */
         static constexpr bool no_duplicate_args = impl::no_duplicate_args<Args...>;
 
+        /* True if all generic arguments and return type in the signature apply the
+        same consistent constraint. */
+        static constexpr bool generics_are_consistent =
+            impl::generics_are_consistent<Return, Args...>;
+
         /* A bitmask with a 1 in the position of all of the required arguments in the
         parameter list.
 
@@ -3068,6 +3128,7 @@ namespace impl {
             template <typename... A>
                 requires (
                     !(meta::arg_traits<A>::variadic() || ...) &&
+                    !(meta::arg_traits<A>::generic() || ...) &&
                     Bind<A...>::proper_argument_order &&
                     Bind<A...>::no_qualified_arg_annotations &&
                     Bind<A...>::no_duplicate_args &&
@@ -3098,6 +3159,7 @@ namespace impl {
         template <typename... A>
             requires (
                 !(meta::arg_traits<A>::variadic() || ...) &&
+                !(meta::arg_traits<A>::generic() || ...) &&
                 Defaults::template Bind<A...>::proper_argument_order &&
                 Defaults::template Bind<A...>::no_qualified_arg_annotations &&
                 Defaults::template Bind<A...>::no_duplicate_args &&
@@ -3244,6 +3306,7 @@ namespace impl {
             template <typename... A>
                 requires (
                     !(meta::arg_traits<A>::variadic() || ...) &&
+                    !(meta::arg_traits<A>::generic() || ...) &&
                     Bind<A...>::proper_argument_order &&
                     Bind<A...>::no_qualified_arg_annotations &&
                     Bind<A...>::no_duplicate_args &&
@@ -3266,6 +3329,7 @@ namespace impl {
             template <typename... A>
                 requires (
                     !(meta::arg_traits<A>::variadic() || ...) &&
+                    !(meta::arg_traits<A>::generic() || ...) &&
                     CppSignature::Bind<A...>::proper_argument_order &&
                     CppSignature::Bind<A...>::no_qualified_arg_annotations &&
                     CppSignature::Bind<A...>::no_duplicate_args &&
@@ -3283,6 +3347,7 @@ namespace impl {
             template <typename... A>
                 requires (
                     !(meta::arg_traits<A>::variadic() || ...) &&
+                    !(meta::arg_traits<A>::generic() || ...) &&
                     CppSignature::Bind<A...>::proper_argument_order &&
                     CppSignature::Bind<A...>::no_qualified_arg_annotations &&
                     CppSignature::Bind<A...>::no_duplicate_args &&
@@ -3308,6 +3373,7 @@ namespace impl {
         template <typename... A>
             requires (
                 !(meta::arg_traits<A>::variadic() || ...) &&
+                !(meta::arg_traits<A>::generic() || ...) &&
                 Partial::template Bind<A...>::proper_argument_order &&
                 Partial::template Bind<A...>::no_qualified_arg_annotations &&
                 Partial::template Bind<A...>::no_duplicate_args &&
@@ -4660,6 +4726,10 @@ namespace impl {
             static constexpr bool satisfies_required_args =
                 _satisfies_required_args<0, 0>;
 
+            /// TODO: satisfies generic args, and does not possess any generic args as input.
+            /// The same should be applied to all subsequent locations where arguments
+            /// are checked.
+
             /* Invoke a C++ function from C++ using Python-style arguments. */
             template <meta::inherits<Partial> P, meta::inherits<Defaults> D, typename F>
                 requires (
@@ -4714,6 +4784,7 @@ namespace impl {
         >
             requires (
                 invocable<F> &&
+                !(meta::arg_traits<A>::generic() || ...) &&
                 Bind<A...>::proper_argument_order &&
                 Bind<A...>::no_qualified_arg_annotations &&
                 Bind<A...>::no_duplicate_args &&
@@ -4746,8 +4817,12 @@ namespace impl {
         [[nodiscard]] static constexpr auto capture(F&& func) {
             struct Func {
                 std::remove_cvref_t<F> func;
-                constexpr Return operator()(typename meta::arg_traits<Args>::unbind... args) const {
-                    return func(std::forward<typename meta::arg_traits<Args>::unbind>(args)...);
+                constexpr Return operator()(
+                    typename meta::arg_traits<Args>::unbind... args
+                ) const {
+                    return func(
+                        std::forward<typename meta::arg_traits<Args>::unbind>(args)...
+                    );
                 }
             };
             return Func{std::forward<F>(func)};
@@ -4921,9 +4996,9 @@ namespace impl {
     `call()` to be used on `def` statements and other bertrand function objects. */
     template <typename F>
     struct call_passthrough { static constexpr bool enable = false; };
-    template <meta::inherits<def_tag> F>
+    template <meta::def F>
     struct call_passthrough<F> { static constexpr bool enable = true; };
-    template <meta::inherits<chain_tag> F>
+    template <meta::chain F>
         requires (call_passthrough<typename std::remove_cvref_t<F>::template at<0>>::enable)
     struct call_passthrough<F> { static constexpr bool enable = true; };
 
@@ -5335,12 +5410,16 @@ template <typename L, typename R>
 
 
 namespace impl {
-
     template <meta::normalized_signature Sig, typename F>
-        requires (signature<Sig>::enable && signature<Sig>::template invocable<F>)
+        requires (
+            signature<Sig>::enable &&
+            signature<Sig>::Partial::empty() &&
+            signature<Sig>::proper_argument_order &&
+            signature<Sig>::no_qualified_arg_annotations &&
+            signature<Sig>::no_duplicate_args &&
+            signature<Sig>::template invocable<F>
+        )
     struct make_def {
-        using Signature = signature<Sig>;
-
         meta::remove_rvalue<F> func;
 
         template <typename Self, typename... Args>
@@ -5349,23 +5428,24 @@ namespace impl {
             return std::forward<Self>(self).func(std::forward<Args>(args)...);
         }
     };
-
 }
 
 
 namespace meta {
-
     namespace detail {
-
         template <typename T>
-        constexpr bool is_make_def = false;
+        struct make_def { static constexpr bool enable = false; };
         template <typename Sig, typename F>
-        constexpr bool is_make_def<impl::make_def<Sig, F>> = true;
-
+        struct make_def<impl::make_def<Sig, F>> {
+            static constexpr bool enable = true;
+            using type = bertrand::signature<Sig>;
+        };
     }
 
     template <typename T>
-    concept make_def = detail::is_make_def<std::remove_cvref_t<T>>;
+    concept make_def = detail::make_def<std::remove_cvref_t<T>>::enable;
+    template <make_def T>
+    using make_def_signature = detail::make_def<std::remove_cvref_t<T>>::type;
 
 }
 
@@ -5498,10 +5578,10 @@ constexpr auto make_def(
 }
 
 
-/* Make the inner template type for a `make_def` statement introspectable by
+/* Make the inner template type for a `make_def()` statement introspectable by
 `bertrand::signature<>`. */
 template <meta::make_def T>
-struct signature<T> : std::remove_reference_t<T>::Signature {};
+struct signature<T> : meta::make_def_signature<T> {};
 
 
 }  // namespace bertrand
@@ -5740,7 +5820,7 @@ namespace bertrand {
                 return *x - *y;
             }
         );
-        constexpr def div(
+        constexpr auto div = make_def<int(Arg<"x", int>, Arg<"y", int>::opt)>(
             { arg<"y"> = 2 },
             [](Arg<"x", int> x, Arg<"y", int>::opt y) {
                 return *x / *y;
