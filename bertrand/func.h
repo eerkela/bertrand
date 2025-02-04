@@ -11,6 +11,12 @@
 #include "bertrand/static_map.h"
 
 
+
+
+#include <any>
+#include <functional>
+
+
 namespace bertrand {
 
 
@@ -264,6 +270,124 @@ namespace meta {
 }
 
 
+/* A placeholder for a C++ template that can be used as a return and/or argument type
+in a `bertrand::signature` or `bertrand::def` statement.  Users can add custom
+predicates by inheriting from this class and overriding the `::enable` field to model
+arbitrary C++ constraints as well as specialize the `::Return` alias to pipe type
+information from the argument list into the return type.  This allows Python-style
+functions to reflect arbitrary C++ templates in a way that is minimally invasive to
+existing C++ code.
+
+Generally speaking, each C++ template function would be associated with a separate
+subclass of `generic`, which would then be used to annotate the arguments and/or return
+type of an equivalent Python-style function.  For example:
+
+    template <std::integral T = int>
+    constexpr T add_one(T value = 0) {
+        return value + 1;
+    }
+
+    template <typename T = bertrand::impl::generic_tag>
+    struct constraint : generic<T> {
+    private:
+        template <typename... Args>
+        struct helper { static constexpr bool enable = false; };
+        template <std::integral U>
+        struct helper<U> {
+            static constexpr bool enable = true;
+            using type = U;
+        };
+
+    public:
+        template <typename... Args>
+        static constexpr bool enable = helper<Args...>::enable;
+
+        template <typename... Args> requires (enable<Args...>)
+        using Return = helper<Args...>::type;
+    };
+
+    using sig = constraint<>(bertrand::Arg<"value", constraint<int>>::opt);
+    constexpr auto wrapper = bertrand::make_def<sig>(
+        { arg<"value"> = 0 },
+        [](auto&& value) {
+            return add_one(std::forward<decltype(value)>(value));
+        }
+    );
+
+    static_assert(wrapper() == 1);
+    static_assert(wrapper(1) == 2);
+    static_assert(wrapper(arg<"value"> = 2) == 3);
+    // static_assert(wrapper("not an integer"));  // fails to compile
+    static_assert(std::same_as<
+        bertrand::signature<sig>::Return,
+        constraint<>
+    >);
+    static_assert(std::same_as<
+        bertrand::signature<sig>::template Bind<>::Return,
+        int
+    >);
+    static_assert(std::same_as<
+        bertrand::signature<sig>::template Bind<short>::Return,
+        short
+    >);
+    static_assert(std::same_as<
+        bertrand::signature<sig>::template Bind<typename Arg<"value", long>::kw>::Return,
+        long
+    >);
+
+Note that subclasses must accept a single, unqualified template parameter that defaults
+to `bertrand::impl::generic_tag`, which represents the observed type of the generic
+placeholder (i.e. the `T` in a standard template declaration).  If defined in advance,
+it dictates a fallback type that is used if no other override is found, similar to a
+default in a C++ template.  The base value of `bertrand::impl::generic_tag` signifies
+an unconstrained template with no default type, similar to a blank `typename`/`class`
+keyword in standard C++.  Just like C++, such an argument cannot be marked as optional.
+
+The inner type within a `generic` wrapper must never contain cvref qualifications, such
+that expressions of the form `generic<const T&>` (or any other qualified `T`) are not
+allowed.  Such qualifications may, however, be applied to the `generic` type as a whole
+(e.g. `const generic<T>&`), in which case they are treated as if the `generic` wrapper
+did not exist.  In other words, `const generic<T>&` is expression-equivalent to
+`const T&` in normal C++ usage, and will be passed as such to the `::enable` predicate
+and `::Return` alias, which can parse them just as they would in standard C++.  Note
+that this includes the same caveats as C++ templates, meaning that annotations of the
+form `generic<T>&&` represent forwarding references that can bind to both lvalues and
+rvalues alike (NOT just rvalues).  If you want to bind to rvalues only, you must
+implement that within the constraint predicate using `std::is_rvalue_reference_v<T>` or
+a similar mechanism, just as you would in typical C++.  This is done to keep the
+semantics of `generic` as close to C++ as possible, such that existing template
+constraints can be transferred 1:1 into the `::enable` predicate and `::Return` alias,
+without changing their behavior. */
+template <typename T = impl::generic_tag> requires (!meta::is_qualified<T>)
+struct generic : impl::generic_tag {
+    /* The observed type for this generic placeholder. */
+    using type = T;
+
+    /* Template constraint predicate.  This must return either true or false based on
+    whether a completed argument list (contained in `Args...`) satisfies the generic's
+    constraints.  Note that only completed signatures will be passed to this predicate
+    (sans any non-generic parameters), such that the generic type can consider the full
+    context of the function signature when making its decision.  The default behavior
+    is to always return true, mirroring an unconstrained template function at the C++
+    level.
+
+    Constraints of this form are automatically evaluated whenever
+    `bertrand::signature<F>::Bind<Args...>` is requested, which checks the validity of
+    the arguments given at a function's call site.  Multiple arguments can be marked as
+    generic within a single signature, but they must all share the same generic class
+    for consistency, as well as to avoid ambiguities in return type/enabled status. */
+    template <typename... Args>
+    static constexpr bool enable = true;
+
+    /* Specifies the return type of an enabled generic signature.  Note that this only
+    applies if the return type of the generic function is also marked as generic.  In
+    that case, this alias allows template information from the argument list to be
+    piped into to the return type, which can be specialized accordingly. */
+    template <typename... Args> requires (enable<Args...>)
+    using Return = impl::generic_tag;
+};
+
+
 /* Save a set of input arguments for later use.  Returns an args<> container, which
 stores the arguments similar to a `std::tuple`, except that it is capable of storing
 references and cannot be copied or moved.  Calling the args pack as an rvalue will
@@ -477,310 +601,6 @@ template <typename... Ts>
 args(Ts&&...) -> args<Ts...>;
 
 
-/* A higher-order function that merges a sequence of component functions into a single
-operation.  When called, the chain will evaluate the first function with the input
-arguments, then pass the result to the next function, and so on, until the final result
-is returned. */
-template <typename F, typename... Fs>
-    requires (
-        !std::is_reference_v<F> &&
-        !(std::is_reference_v<Fs> || ...)
-    )
-struct chain : impl::chain_tag {
-private:
-    F func;
-
-public:
-    /* The number of component functions in the chain. */
-    [[nodiscard]] static constexpr size_t size() noexcept { return 1; }
-
-    /* Get the type of the component function at index I. */
-    template <size_t I> requires (I < size())
-    using at = F;
-
-    template <meta::is<F> First>
-    constexpr chain(First&& func) : func(std::forward<First>(func)) {}
-
-    /* Invoke the function chain, piping the return value from the first function into
-    the input for the second function, and so on. */
-    template <typename Self, typename... A> requires (std::invocable<F, A...>)
-    constexpr decltype(auto) operator()(this Self&& self, A&&... args) {
-        return std::forward<Self>(self).func(std::forward<A>(args)...);
-    }
-
-    /* Get the component function at index I. */
-    template <size_t I, typename Self> requires (I < size())
-    [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-        return std::forward<Self>(self).func;
-    }
-};
-
-
-template <typename F1, typename F2, typename... Fs>
-    requires (
-        !std::is_reference_v<F1> &&
-        !std::is_reference_v<F2> &&
-        !(std::is_reference_v<Fs> || ...)
-    )
-struct chain<F1, F2, Fs...> : chain<F2, Fs...> {
-private:
-    using base = chain<F2, Fs...>;
-
-    F1 func;
-
-    template <size_t I>
-    struct _at { using type = base::template at<I - 1>; };
-    template <>
-    struct _at<0> { using type = F1; };
-
-    template <typename R, typename...>
-    struct _chainable { static constexpr bool value = true; };
-    template <typename R, typename G, typename... Gs>
-    struct _chainable<R, G, Gs...> {
-        template <typename H>
-        static constexpr bool invoke = false;
-        template <typename H> requires (std::invocable<H, R>)
-        static constexpr bool invoke<H> =
-            _chainable<typename std::invoke_result_t<H, R>, Gs...>::value;
-        static constexpr bool value = invoke<G>;
-    };
-    template <typename... A>
-    static constexpr bool chainable =
-        _chainable<typename std::invoke_result_t<F1, A...>, F2, Fs...>::value;
-
-public:
-    /* The number of component functions in the chain. */
-    [[nodiscard]] static constexpr size_t size() noexcept { return base::size() + 1; }
-
-    /* Get the type of the component function at index I. */
-    template <size_t I> requires (I < size())
-    using at = _at<I>::type;
-
-    template <meta::is<F1> First, meta::is<F2> Next, meta::is<Fs>... Rest>
-    constexpr chain(First&& first, Next&& next, Rest&&... rest) :
-        base(std::forward<Next>(next), std::forward<Rest>(rest)...),
-        func(std::forward<First>(first))
-    {}
-
-    /* Invoke the function chain, piping the return value from the first function into
-    the input for the second function, and so on. */
-    template <typename Self, typename... A>
-        requires (std::invocable<F1, A...> && chainable<A...>)
-    constexpr decltype(auto) operator()(this Self&& self, A&&... args) {
-        return static_cast<meta::qualify<base, Self>>(std::forward<Self>(self))(
-            std::forward<Self>(self).func(std::forward<A>(args)...)
-        );
-    }
-
-    /* Get the component function at index I. */
-    template <size_t I, typename Self> requires (I < size())
-    [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-        if constexpr (I == 0) {
-            return std::forward<Self>(self).func;
-        } else {
-            using parent = meta::qualify<base, Self>;
-            return static_cast<parent>(std::forward<Self>(self)).template get<I - 1>();
-        }
-    }
-};
-
-
-template <typename F, typename... Fs>
-chain(F, Fs...) -> chain<F, Fs...>;
-
-
-template <meta::chain Self, meta::chain Next>
-[[nodiscard]] constexpr auto operator>>(Self&& self, Next&& next) {
-    return []<size_t... Is, size_t... Js>(
-        std::index_sequence<Is...>,
-        std::index_sequence<Js...>,
-        auto&& self,
-        auto&& next
-    ) {
-        return chain(
-            std::forward<decltype(self)>(self).template get<Is>()...,
-            std::forward<decltype(next)>(next).template get<Js>()...
-        );
-    }(
-        std::make_index_sequence<std::remove_cvref_t<Self>::size()>{},
-        std::make_index_sequence<std::remove_cvref_t<Next>::size()>{},
-        std::forward<Self>(self),
-        std::forward<Next>(next)
-    );
-}
-
-
-template <meta::chain Self, typename Next>
-[[nodiscard]] constexpr auto operator>>(Self&& self, Next&& next) {
-    return []<size_t... Is>(std::index_sequence<Is...>, auto&& self, auto&& next) {
-        return chain(
-            std::forward<decltype(self)>(self).template get<Is>()...,
-            std::forward<decltype(next)>(next)
-        );
-    }(
-        std::make_index_sequence<std::remove_cvref_t<Self>::size()>{},
-        std::forward<Self>(self),
-        std::forward<Next>(next)
-    );
-}
-
-
-template <typename Prev, meta::chain Self>
-[[nodiscard]] constexpr auto operator>>(Prev&& prev, Self&& self) {
-    return []<size_t... Is>(std::index_sequence<Is...>, auto&& prev, auto&& self) {
-        return chain(
-            std::forward<decltype(prev)>(prev),
-            std::forward<decltype(self)>(self).template get<Is>()...
-        );
-    }(
-        std::make_index_sequence<std::remove_cvref_t<Self>::size()>{},
-        std::forward<Prev>(prev),
-        std::forward<Self>(self)
-    );
-}
-
-
-/* A range adaptor returned by the `->*` operator, which allows for Python-style
-iterator comprehensions in C++.  This is essentially equivalent to a
-`std::views::transform_view`, but with the caveat that any function which returns
-another view will have its result flattened into the output, allowing for nested
-comprehensions and filtering according to Python semantics. */
-template <typename Range, typename Func> requires (meta::transformable<Range, Func>)
-struct comprehension :
-    std::ranges::view_interface<comprehension<Range, Func>>,
-    impl::comprehension_tag
-{
-private:
-    using View = decltype(std::views::transform(
-        std::declval<Range>(),
-        std::declval<Func>()
-    ));
-    using Value = std::ranges::range_value_t<View>;
-
-    View view;
-
-    template <typename>
-    struct iterator {
-        using Begin = std::ranges::iterator_t<const View>;
-        using End = std::ranges::sentinel_t<const View>;
-    };
-    template <typename Value> requires (std::ranges::view<std::remove_cvref_t<Value>>)
-    struct iterator<Value> {
-        struct Begin {
-            using iterator_category = std::input_iterator_tag;
-            using difference_type = std::ranges::range_difference_t<const Value>;
-            using value_type = std::ranges::range_value_t<const Value>;
-            using pointer = value_type*;
-            using reference = value_type&;
-
-            using Iter = std::ranges::iterator_t<const View>;
-            using End = std::ranges::sentinel_t<const View>;
-            Iter iter;
-            End end;
-            struct Inner {
-                using Iter = std::ranges::iterator_t<const Value>;
-                using End = std::ranges::sentinel_t<const Value>;
-                Value curr;
-                Iter iter = std::ranges::begin(curr);
-                End end = std::ranges::end(curr);
-            } inner;
-
-            Begin(Iter&& begin, End&& end) :
-                iter(std::move(begin)),
-                end(std::move(end)),
-                inner([](Iter& begin, End& end) -> Inner {
-                    while (begin != end) {
-                        Inner curr = {*begin};
-                        if (curr.iter != curr.end) {
-                            return curr;
-                        }
-                        ++begin;
-                    }
-                    return {};
-                }(this->iter, this->end))
-            {}
-
-            Begin& operator++() {
-                if (++inner.iter == inner.end) {
-                    while (++iter != end) {
-                        inner.curr = *iter;
-                        inner.iter = std::ranges::begin(inner.curr);
-                        inner.end = std::ranges::end(inner.curr);
-                        if (inner.iter != inner.end) {
-                            break;
-                        }
-                    }
-                }
-                return *this;
-            }
-
-            Begin operator++(int) {
-                Begin copy = *this;
-                ++(*this);
-                return copy;
-            }
-
-            decltype(auto) operator*() const { return *inner.iter; }
-            decltype(auto) operator->() const { return inner.iter.operator->(); }
-
-            friend bool operator==(const Begin& self, sentinel) {
-                return self.iter == self.end;
-            }
-
-            friend bool operator==(sentinel, const Begin& self) {
-                return self.iter == self.end;
-            }
-
-            friend bool operator!=(const Begin& self, sentinel) {
-                return self.iter != self.end;
-            }
-
-            friend bool operator!=(sentinel, const Begin& self) {
-                return self.iter != self.end;
-            }
-        };
-        using End = sentinel;
-    };
-
-    using Begin = iterator<Value>::Begin;
-    using End = iterator<Value>::End;
-
-public:
-    comprehension() = default;
-    comprehension(Range range, Func func) :
-        view(std::views::transform(
-            std::forward<Range>(range),
-            std::forward<Func>(func)
-        ))
-    {}
-
-    [[nodiscard]] Begin begin() const {
-        if constexpr (std::ranges::view<std::remove_cvref_t<Value>>) {
-            return {std::ranges::begin(view), std::ranges::end(view)};
-        } else {
-            return std::ranges::begin(view);
-        }
-    }
-
-    [[nodiscard]] End end() const {
-        if constexpr (std::ranges::view<std::remove_cvref_t<Value>>) {
-            return {};
-        } else {
-            return std::ranges::end(view);
-        }
-    }
-
-    /* Implicitly convert the comprehension into any type that can be constructed from
-    the iterator pair. */
-    template <typename T> requires (std::constructible_from<T, Begin, End>)
-    [[nodiscard]] operator T() const { return T(begin(), end()); }
-};
-
-
-template <typename Range, typename Func> requires (meta::transformable<Range, Func>)
-comprehension(Range&&, Func&&) -> comprehension<Range, Func>;
-
-
 /* A keyword parameter pack obtained by double-dereferencing a mapping-like container
 within a Python-style function call. */
 template <meta::mapping_like T>
@@ -928,89 +748,299 @@ template <meta::iterable T> requires (meta::has_size<T>)
 arg_pack(T&&) -> arg_pack<T>;
 
 
-/* A placeholder for a C++ template type that can be used as a return and/or argument
-type in a `bertrand::signature<>` or `bertrand::def<>` statement.  Users can add custom
-predicates by inheriting from this class and overriding the `::enable` field in order
-to model arbitrary C++ constraints, or specialize the `::Return` alias to pipe type
-information from the argument list into the return type.  This allows Python-style
-functions to reflect arbitrary C++ templates, in a way that is minimally invasive to
-existing C++ code.  Generally speaking, each C++ template function would be associated
-with a separate subclass of `generic`, which would then be used to annotate the
-arguments and/or return type of an equivalent Python-style function.  For example:
+namespace impl {
 
-    template <std::integral T = int>
-    constexpr T add_one(T value = 0) {
-        return value + 1;
-    }
+    /// TODO: when a variadic parameter argument is passed into the function context,
+    /// explicitly construct a concrete_storage type that holds the observed values
+    /// in type-erased form directly on the stack.  Then, the corresponding argument
+    /// annotation will accept a reference to the respective base class, which erases
+    /// the type information and allows it to be treated similar to Python.  Lifetimes
+    /// will remain valid throughout this process, since the arguments are guaranteed
+    /// to remain valid for the full duration of the function call.
 
-    template <typename T = bertrand::impl::generic_tag>
-    struct constraint : generic<T> {
+    /* A `std::any`-like wrapper for an opaque value of arbitrary type.  The only
+    differences are that this type does not require heap allocation, instead relying on
+    the user to manually manage the lifetime of the underlying value, and it stores a
+    conversion function pointer, which allows polymorphic conversion to the templated
+    type, and to any other type that may be convertible from that by extension.  The
+    conversion may involve a move from the underlying value, so the internal pointer is
+    always cleared immediately afterwards for safety. */
+    template <typename T = void>
+    struct any {
     private:
-        template <typename... Args>
-        struct helper { static constexpr bool enable = false; };
-        template <std::integral U>
-        struct helper<U> {
-            static constexpr bool enable = true;
-            using type = U;
-        };
+        void* m_value;
+        std::type_index m_type;
+        T(*m_convert)(void*);
 
     public:
-        template <typename... Args>
-        static constexpr bool enable = helper<Args...>::enable;
+        /* Construct the `any` wrapper in an uninitialized state. */
+        any() noexcept : m_value(nullptr), m_type(typeid(any)), m_convert(nullptr) {}
 
-        template <typename... Args> requires (enable<Args...>)
-        using Return = helper<Args...>::type;
+        /* Construct the `any` wrapper with a particular value, whose lifetime must be
+        managed externally. */
+        template <std::convertible_to<T> V>
+        any(V&& value) noexcept :
+            m_value(&value),
+            m_type(typeid(std::remove_cvref_t<V>)),
+            m_convert([](void* value) -> T {
+                if constexpr (meta::is_lvalue<V>) {
+                    return *static_cast<std::remove_cvref_t<V>*>(value);
+                } else {
+                    return std::move(*static_cast<std::remove_cvref_t<V>*>(value));
+                }
+            })
+        {}
+
+        /* Indicates whether the `any` wrapper currently holds a value. */
+        [[nodiscard]] explicit operator bool() const noexcept { return m_value; }
+
+        /* Returns an indicator for the type of value currently held by the `any`
+        wrapper. */
+        [[nodiscard]] std::type_index type() const noexcept { return m_type; }
+
+        /* Returns true if the `any` wrapper holds a value of the given type. */
+        template <typename V> requires (!meta::is_qualified<V>)
+        [[nodiscard]] bool holds() const noexcept { return m_type == typeid(V); }
+
+        /* Gets a reference to the value if it holds the given type.  Otherwise, throws
+        a `TypeError`. */
+        template <typename V> requires (!meta::is_qualified<V>)
+        [[nodiscard]] V& get() {
+            if (m_value) {
+                if (holds<V>()) {
+                    return *static_cast<V*>(m_value);
+                }
+                throw TypeError(
+                    "requested type '" + type_name<V> + "', but found '" +
+                    demangle(m_type.name()) + "'"
+                );   
+            } else {
+                throw TypeError("value has already been consumed");
+            }
+        }
+
+        /* Gets a reference to the value if it holds the given type.  Otherwise, throws
+        a `TypeError`. */
+        template <typename V> requires (!meta::is_qualified<V>)
+        [[nodiscard]] const V& get() const {
+            if (m_value) {
+                if (holds<V>()) {
+                    return *static_cast<V*>(m_value);
+                }
+                throw TypeError(
+                    "requested type '" + type_name<V> + "', but found '" +
+                    demangle(m_type.name()) + "'"
+                );
+            } else {
+                throw TypeError("value has already been consumed");
+            }
+        }
+
+        /* Gets a pointer to the value if it holds the given type.  Otherwise, returns
+        null. */
+        template <typename V> requires (!meta::is_qualified<V>)
+        [[nodiscard]] V* get_if() noexcept {
+            return holds<V>() ? static_cast<V*>(m_value) : nullptr;
+        }
+
+        /* Gets a pointer to the value if it holds the given type.  Otherwise, returns
+        null. */
+        template <typename V> requires (!meta::is_qualified<V>)
+        [[nodiscard]] const V* get_if() const noexcept {
+            return holds<V>() ? static_cast<V*>(m_value) : nullptr;
+        }
+
+        /* Apply the stored conversion.  This can only be done on an rvalue wrapper. */
+        template <typename To> requires (std::convertible_to<T, To>)
+        [[nodiscard]] operator To() && {
+            To result = m_convert(m_value);
+            m_value = nullptr;
+            return result;
+        }
     };
 
-    using sig = constraint<int>(bertrand::Arg<"value", constraint<int>>);
-    constexpr auto wrapper = bertrand::make_def<sig>([](auto&& value) {
-        return add_one(std::forward<decltype(value)>(value));
-    });
+    /* Specialization of `any` that omits the extra conversion logic, forcing
+    `std::any`-like access patterns. */
+    template <meta::is_void T>
+    struct any<T> {
+    private:
+        void* m_value;
+        std::type_index m_type;
 
-    static_assert(wrapper(1) == 2);
-    static_assert(wrapper(arg<"value"> = 2) == 3);
-    static_assert(std::same_as<
-        bertrand::signature<decltype(wrapper)>::Return,
-        constraint<int>
-    >);
-    static_assert(std::same_as<
-        bertrand::signature<decltype(wrapper)>::template Bind<short>::Return,
-        short
-    >);
+    public:
+        /* Construct the `any` wrapper in an uninitialized state. */
+        any() noexcept : m_value(nullptr), m_type(typeid(any)) {}
 
-Note that subclasses must also accept a single template parameter that defaults to
-`bertrand::impl::generic_tag`, which represents a fallback type that is assigned to the
-generic if no other override is found.  The default value signifies an unconstrained
-template with no default type, similar to a `typename` or `class` keyword in a C++
-template declaration. */
-template <typename T = impl::generic_tag> requires (!meta::is_qualified<T>)
-struct generic : impl::generic_tag {
-    /* The default type for this generic placeholder. */
-    using type = T;
+        /* Construct the `any` wrapper with a particular value, whose lifetime must be
+        managed externally. */
+        template <typename V>
+        any(V&& value) noexcept :
+            m_value(&value),
+            m_type(typeid(std::remove_cvref_t<V>))
+        {}
 
-    /* Template constraint predicate.  This must return either true or false based on
-    whether a completed argument list (contained in `Args...`) satisfies the generic's
-    constraints.  Note that only completed signatures will be passed to this predicate,
-    so the generic type can consider the full context of the function signature when
-    making its decision.  The default behavior is to always return true, mirroring an
-    unconstrained template function at the C++ level.
+        /* Indicates whether the `any` wrapper currently holds a value. */
+        [[nodiscard]] explicit operator bool() const noexcept { return m_value; }
 
-    Constraints of this form are automatically evaluated whenever
-    `bertrand::signature<F>::Bind<Args...>` is requested, which checks the validity of
-    the arguments given at a function's C++ call site.  Multiple arguments can be
-    marked as generic within a single signature, but they must all share the same
-    generic class for consistency, as well as to avoid ambiguities in return
-    type/enabled status. */
-    template <typename... Args>
-    static constexpr bool enable = true;
+        /* Returns an indicator for the type of value currently held by the `any`
+        wrapper. */
+        [[nodiscard]] std::type_index type() const noexcept { return m_type; }
 
-    /* Specifies the return type of an enabled generic signature.  Note that this only
-    applies if the return type of the generic function is also marked as generic.  In
-    that case, this alias allows template information from the argument list to be
-    fed to the return type, which can be specialized accordingly. */
-    template <typename... Args> requires (enable<Args...>)
-    using Return = impl::generic_tag;
-};
+        /* Returns true if the `any` wrapper holds a value of the given type. */
+        template <typename V> requires (!meta::is_qualified<V>)
+        [[nodiscard]] bool holds() const noexcept { return m_type == typeid(V); }
+
+        /* Gets a reference to the value if it holds the given type.  Otherwise, throws
+        a `TypeError`. */
+        template <typename V> requires (!meta::is_qualified<V>)
+        [[nodiscard]] V& get() {
+            if (m_value) {
+                if (holds<V>()) {
+                    return *static_cast<V*>(m_value);
+                }
+                throw TypeError(
+                    "requested type '" + type_name<V> + "', but found '" +
+                    demangle(m_type.name()) + "'"
+                );
+            } else {
+                throw TypeError("value has already been consumed");
+            }
+        }
+
+        /* Gets a reference to the value if it holds the given type.  Otherwise, throws
+        a `TypeError`. */
+        template <typename V> requires (!meta::is_qualified<V>)
+        [[nodiscard]] const V& get() const {
+            if (m_value) {
+                if (holds<V>()) {
+                    return *static_cast<V*>(m_value);
+                }
+                throw TypeError(
+                    "requested type '" + type_name<V> + "', but found '" +
+                    demangle(m_type.name()) + "'"
+                );
+            } else {
+                throw TypeError("value has already been consumed");
+            }
+        }
+
+        /* Gets a pointer to the value if it holds the given type.  Otherwise, returns
+        null. */
+        template <typename V> requires (!meta::is_qualified<V>)
+        [[nodiscard]] V* get_if() noexcept {
+            return holds<V>() ? static_cast<V*>(m_value) : nullptr;
+        }
+
+        /* Gets a pointer to the value if it holds the given type.  Otherwise, returns
+        null. */
+        template <typename V> requires (!meta::is_qualified<V>)
+        [[nodiscard]] const V* get_if() const noexcept {
+            return holds<V>() ? static_cast<V*>(m_value) : nullptr;
+        }
+    };
+
+    /* Type erasure is used to provide a standardized interface for the positional
+    parameter pack. */
+    template <typename T>
+    struct variadic_positional_storage {
+        using value_type = any<T>;
+        using size_type = size_t;
+        using difference_type = ptrdiff_t;
+        using reference = any<T>&;
+        using const_reference = const any<T>&;
+        using iterator = std::array<any<T>, 0>::iterator;
+        using const_iterator = std::array<any<T>, 0>::const_iterator;
+        using reverse_iterator = std::array<any<T>, 0>::reverse_iterator;
+        using const_reverse_iterator = std::array<any<T>, 0>::const_reverse_iterator;
+
+        virtual ~variadic_positional_storage() = default;
+
+        [[nodiscard]] bool empty() const noexcept { return !size(); }
+
+        [[nodiscard]] virtual any<T>& operator[](size_t i) = 0;
+        [[nodiscard]] virtual const any<T>& operator[](size_t i) const = 0;
+
+        [[nodiscard]] virtual size_t size() const noexcept = 0;
+        [[nodiscard]] virtual iterator begin() noexcept = 0;
+        [[nodiscard]] virtual const_iterator begin() const noexcept = 0;
+        [[nodiscard]] virtual const_iterator cbegin() const noexcept = 0;
+        [[nodiscard]] virtual iterator end() noexcept = 0;
+        [[nodiscard]] virtual const_iterator end() const noexcept = 0;
+        [[nodiscard]] virtual const_iterator cend() const noexcept = 0;
+        [[nodiscard]] virtual reverse_iterator rbegin() noexcept = 0;
+        [[nodiscard]] virtual const_reverse_iterator rbegin() const noexcept = 0;
+        [[nodiscard]] virtual const_reverse_iterator crbegin() const noexcept = 0;
+        [[nodiscard]] virtual reverse_iterator rend() noexcept = 0;
+        [[nodiscard]] virtual const_reverse_iterator rend() const noexcept = 0;
+        [[nodiscard]] virtual const_reverse_iterator crend() const noexcept = 0;
+        [[nodiscard]] virtual any<T>& front() noexcept = 0;
+        [[nodiscard]] virtual const any<T>& front() const noexcept = 0;
+        [[nodiscard]] virtual any<T>& back() noexcept = 0;
+        [[nodiscard]] virtual const any<T>& back() const noexcept = 0;
+        [[nodiscard]] virtual any<T>* data() noexcept = 0;
+        [[nodiscard]] virtual const any<T>* data() const noexcept = 0;
+    };
+
+    /* Values within the positional pack are stored as type-erased `args<>`, which are
+    heterogenously-typed, stored on the stack, and perfectly forward reference types. */
+    template <typename T, size_t N>
+    struct concrete_variadic_positional_storage : variadic_positional_storage<T> {
+    private:
+        using base = variadic_positional_storage<T>;
+
+    public:
+        using value_type = base::value_type;
+        using size_type = base::size_type;
+        using difference_type = base::difference_type;
+        using reference = base::reference;
+        using const_reference = base::const_reference;
+        using iterator = base::iterator;
+        using const_iterator = base::const_iterator;
+        using reverse_iterator = base::reverse_iterator;
+        using const_reverse_iterator = base::const_reverse_iterator;
+
+        std::array<any<T>, N> pack;
+
+        [[nodiscard]] any<T>& operator[](size_t i) override {
+            if (i < N) {
+                return pack[i];
+            }
+            throw IndexError(std::to_string(i));
+        }
+
+        [[nodiscard]] const any<T>& operator[](size_t i) const override {
+            if (i < N) {
+                return pack[i];
+            }
+            throw IndexError(std::to_string(i));
+        }
+
+        [[nodiscard]] size_t size() const noexcept override { return N; }
+        [[nodiscard]] iterator begin() { return pack.begin(); }
+        [[nodiscard]] const_iterator begin() const { return pack.begin(); }
+        [[nodiscard]] const_iterator cbegin() const { return pack.cbegin(); }
+        [[nodiscard]] iterator end() { return pack.end(); }
+        [[nodiscard]] const_iterator end() const { return pack.end(); }
+        [[nodiscard]] const_iterator cend() const { return pack.cend(); }
+        [[nodiscard]] reverse_iterator rbegin() { return pack.rbegin(); }
+        [[nodiscard]] const_reverse_iterator rbegin() const { return pack.rbegin(); }
+        [[nodiscard]] const_reverse_iterator crbegin() const { return pack.crbegin(); }
+        [[nodiscard]] reverse_iterator rend() { return pack.rend(); }
+        [[nodiscard]] const_reverse_iterator rend() const { return pack.rend(); }
+        [[nodiscard]] const_reverse_iterator crend() const { return pack.crend(); }
+        [[nodiscard]] any<T>& front() override { return pack.front(); }
+        [[nodiscard]] const any<T>& front() const override { return pack.front(); }
+        [[nodiscard]] any<T>& back() override { return pack.back(); }
+        [[nodiscard]] const any<T>& back() const override { return pack.back(); }
+        [[nodiscard]] any<T>* data() override { return pack.data(); }
+        [[nodiscard]] const any<T>* data() const override { return pack.data(); }
+    };
+
+    /// TODO: when I do this for kwargs, I should take advantage of my compile-time
+    /// perfect hash tables to avoid heap allocations and provide the fastest possible
+    /// performance for looking up arguments by name.
+
+}
 
 
 /* A family of compile-time argument annotations that represent positional and/or
@@ -1041,14 +1071,6 @@ struct Arg;
 /// temporaries correctly.  The alternative would be macros, complex template helpers,
 /// or inheritance, all of which obfuscate errors, are inflexible, and/or interfere
 /// with aggregate initialization.
-
-
-/// TODO: cvref qualifications that are applied to the generic check are always
-/// forwarded to the wrapped type.  So
-///
-///     Arg<"x", const generic<int>&> -> Arg<"x", const int&>
-///
-/// TODO: how is perfect forwarding handled in this case?
 
 
 /* Specialization for standard args, with typical alphanumeric + underscore names. */
@@ -1393,6 +1415,14 @@ public:
 
 /// TODO: add a specialization for generic<>, which cannot be marked as optional, which
 /// means I never need to account for that case when building a defaults tuple.
+
+
+/// TODO: how does `generic<>` interact with variadic arguments?  I can't create a
+/// container that holds heterogenous types.
+/// -> If I get very clever with type erasure, what I can do is store an args<> object
+/// in type-erased form, and then pass its address to this parameter when it is
+/// constructed.  That would use aggregate initialization as well, and would extend the
+/// lifetime of the `args<>` array for the duration of the call.
 
 
 /* Specialization for variadic positional args, whose names are prefixed by a leading
@@ -5198,6 +5228,310 @@ constexpr decltype(auto) call(
 }
 
 
+/* A higher-order function that merges a sequence of component functions into a single
+operation.  When called, the chain will evaluate the first function with the input
+arguments, then pass the result to the next function, and so on, until the final result
+is returned. */
+template <typename F, typename... Fs>
+    requires (
+        !std::is_reference_v<F> &&
+        !(std::is_reference_v<Fs> || ...)
+    )
+struct chain : impl::chain_tag {
+private:
+    F func;
+
+public:
+    /* The number of component functions in the chain. */
+    [[nodiscard]] static constexpr size_t size() noexcept { return 1; }
+
+    /* Get the type of the component function at index I. */
+    template <size_t I> requires (I < size())
+    using at = F;
+
+    template <meta::is<F> First>
+    constexpr chain(First&& func) : func(std::forward<First>(func)) {}
+
+    /* Invoke the function chain, piping the return value from the first function into
+    the input for the second function, and so on. */
+    template <typename Self, typename... A> requires (std::invocable<F, A...>)
+    constexpr decltype(auto) operator()(this Self&& self, A&&... args) {
+        return std::forward<Self>(self).func(std::forward<A>(args)...);
+    }
+
+    /* Get the component function at index I. */
+    template <size_t I, typename Self> requires (I < size())
+    [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
+        return std::forward<Self>(self).func;
+    }
+};
+
+
+template <typename F1, typename F2, typename... Fs>
+    requires (
+        !std::is_reference_v<F1> &&
+        !std::is_reference_v<F2> &&
+        !(std::is_reference_v<Fs> || ...)
+    )
+struct chain<F1, F2, Fs...> : chain<F2, Fs...> {
+private:
+    using base = chain<F2, Fs...>;
+
+    F1 func;
+
+    template <size_t I>
+    struct _at { using type = base::template at<I - 1>; };
+    template <>
+    struct _at<0> { using type = F1; };
+
+    template <typename R, typename...>
+    struct _chainable { static constexpr bool value = true; };
+    template <typename R, typename G, typename... Gs>
+    struct _chainable<R, G, Gs...> {
+        template <typename H>
+        static constexpr bool invoke = false;
+        template <typename H> requires (std::invocable<H, R>)
+        static constexpr bool invoke<H> =
+            _chainable<typename std::invoke_result_t<H, R>, Gs...>::value;
+        static constexpr bool value = invoke<G>;
+    };
+    template <typename... A>
+    static constexpr bool chainable =
+        _chainable<typename std::invoke_result_t<F1, A...>, F2, Fs...>::value;
+
+public:
+    /* The number of component functions in the chain. */
+    [[nodiscard]] static constexpr size_t size() noexcept { return base::size() + 1; }
+
+    /* Get the type of the component function at index I. */
+    template <size_t I> requires (I < size())
+    using at = _at<I>::type;
+
+    template <meta::is<F1> First, meta::is<F2> Next, meta::is<Fs>... Rest>
+    constexpr chain(First&& first, Next&& next, Rest&&... rest) :
+        base(std::forward<Next>(next), std::forward<Rest>(rest)...),
+        func(std::forward<First>(first))
+    {}
+
+    /* Invoke the function chain, piping the return value from the first function into
+    the input for the second function, and so on. */
+    template <typename Self, typename... A>
+        requires (std::invocable<F1, A...> && chainable<A...>)
+    constexpr decltype(auto) operator()(this Self&& self, A&&... args) {
+        return static_cast<meta::qualify<base, Self>>(std::forward<Self>(self))(
+            std::forward<Self>(self).func(std::forward<A>(args)...)
+        );
+    }
+
+    /* Get the component function at index I. */
+    template <size_t I, typename Self> requires (I < size())
+    [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
+        if constexpr (I == 0) {
+            return std::forward<Self>(self).func;
+        } else {
+            using parent = meta::qualify<base, Self>;
+            return static_cast<parent>(std::forward<Self>(self)).template get<I - 1>();
+        }
+    }
+};
+
+
+template <typename F, typename... Fs>
+chain(F, Fs...) -> chain<F, Fs...>;
+
+
+template <meta::chain Self, meta::chain Next>
+[[nodiscard]] constexpr auto operator>>(Self&& self, Next&& next) {
+    return []<size_t... Is, size_t... Js>(
+        std::index_sequence<Is...>,
+        std::index_sequence<Js...>,
+        auto&& self,
+        auto&& next
+    ) {
+        return chain(
+            std::forward<decltype(self)>(self).template get<Is>()...,
+            std::forward<decltype(next)>(next).template get<Js>()...
+        );
+    }(
+        std::make_index_sequence<std::remove_cvref_t<Self>::size()>{},
+        std::make_index_sequence<std::remove_cvref_t<Next>::size()>{},
+        std::forward<Self>(self),
+        std::forward<Next>(next)
+    );
+}
+
+
+template <meta::chain Self, typename Next>
+[[nodiscard]] constexpr auto operator>>(Self&& self, Next&& next) {
+    return []<size_t... Is>(std::index_sequence<Is...>, auto&& self, auto&& next) {
+        return chain(
+            std::forward<decltype(self)>(self).template get<Is>()...,
+            std::forward<decltype(next)>(next)
+        );
+    }(
+        std::make_index_sequence<std::remove_cvref_t<Self>::size()>{},
+        std::forward<Self>(self),
+        std::forward<Next>(next)
+    );
+}
+
+
+template <typename Prev, meta::chain Self>
+[[nodiscard]] constexpr auto operator>>(Prev&& prev, Self&& self) {
+    return []<size_t... Is>(std::index_sequence<Is...>, auto&& prev, auto&& self) {
+        return chain(
+            std::forward<decltype(prev)>(prev),
+            std::forward<decltype(self)>(self).template get<Is>()...
+        );
+    }(
+        std::make_index_sequence<std::remove_cvref_t<Self>::size()>{},
+        std::forward<Prev>(prev),
+        std::forward<Self>(self)
+    );
+}
+
+
+/* A range adaptor returned by the `->*` operator, which allows for Python-style
+iterator comprehensions in C++.  This is essentially equivalent to a
+`std::views::transform_view`, but with the caveat that any function which returns
+another view will have its result flattened into the output, allowing for nested
+comprehensions and filtering according to Python semantics. */
+template <typename Range, typename Func> requires (meta::transformable<Range, Func>)
+struct comprehension :
+    std::ranges::view_interface<comprehension<Range, Func>>,
+    impl::comprehension_tag
+{
+private:
+    using View = decltype(std::views::transform(
+        std::declval<Range>(),
+        std::declval<Func>()
+    ));
+    using Value = std::ranges::range_value_t<View>;
+
+    View view;
+
+    template <typename>
+    struct iterator {
+        using Begin = std::ranges::iterator_t<const View>;
+        using End = std::ranges::sentinel_t<const View>;
+    };
+    template <typename Value> requires (std::ranges::view<std::remove_cvref_t<Value>>)
+    struct iterator<Value> {
+        struct Begin {
+            using iterator_category = std::input_iterator_tag;
+            using difference_type = std::ranges::range_difference_t<const Value>;
+            using value_type = std::ranges::range_value_t<const Value>;
+            using pointer = value_type*;
+            using reference = value_type&;
+
+            using Iter = std::ranges::iterator_t<const View>;
+            using End = std::ranges::sentinel_t<const View>;
+            Iter iter;
+            End end;
+            struct Inner {
+                using Iter = std::ranges::iterator_t<const Value>;
+                using End = std::ranges::sentinel_t<const Value>;
+                Value curr;
+                Iter iter = std::ranges::begin(curr);
+                End end = std::ranges::end(curr);
+            } inner;
+
+            Begin(Iter&& begin, End&& end) :
+                iter(std::move(begin)),
+                end(std::move(end)),
+                inner([](Iter& begin, End& end) -> Inner {
+                    while (begin != end) {
+                        Inner curr = {*begin};
+                        if (curr.iter != curr.end) {
+                            return curr;
+                        }
+                        ++begin;
+                    }
+                    return {};
+                }(this->iter, this->end))
+            {}
+
+            Begin& operator++() {
+                if (++inner.iter == inner.end) {
+                    while (++iter != end) {
+                        inner.curr = *iter;
+                        inner.iter = std::ranges::begin(inner.curr);
+                        inner.end = std::ranges::end(inner.curr);
+                        if (inner.iter != inner.end) {
+                            break;
+                        }
+                    }
+                }
+                return *this;
+            }
+
+            Begin operator++(int) {
+                Begin copy = *this;
+                ++(*this);
+                return copy;
+            }
+
+            decltype(auto) operator*() const { return *inner.iter; }
+            decltype(auto) operator->() const { return inner.iter.operator->(); }
+
+            friend bool operator==(const Begin& self, sentinel) {
+                return self.iter == self.end;
+            }
+
+            friend bool operator==(sentinel, const Begin& self) {
+                return self.iter == self.end;
+            }
+
+            friend bool operator!=(const Begin& self, sentinel) {
+                return self.iter != self.end;
+            }
+
+            friend bool operator!=(sentinel, const Begin& self) {
+                return self.iter != self.end;
+            }
+        };
+        using End = sentinel;
+    };
+
+    using Begin = iterator<Value>::Begin;
+    using End = iterator<Value>::End;
+
+public:
+    comprehension() = default;
+    comprehension(Range range, Func func) :
+        view(std::views::transform(
+            std::forward<Range>(range),
+            std::forward<Func>(func)
+        ))
+    {}
+
+    [[nodiscard]] Begin begin() const {
+        if constexpr (std::ranges::view<std::remove_cvref_t<Value>>) {
+            return {std::ranges::begin(view), std::ranges::end(view)};
+        } else {
+            return std::ranges::begin(view);
+        }
+    }
+
+    [[nodiscard]] End end() const {
+        if constexpr (std::ranges::view<std::remove_cvref_t<Value>>) {
+            return {};
+        } else {
+            return std::ranges::end(view);
+        }
+    }
+
+    /* Implicitly convert the comprehension into any type that can be constructed from
+    the iterator pair. */
+    template <typename T> requires (std::constructible_from<T, Begin, End>)
+    [[nodiscard]] operator T() const { return T(begin(), end()); }
+};
+
+
+template <typename Range, typename Func> requires (meta::transformable<Range, Func>)
+comprehension(Range&&, Func&&) -> comprehension<Range, Func>;
+
+
 /* Construct a partial function object that captures a C++ function and a subset of its
 arguments, which can be used to invoke the function later with the remaining arguments.
 Arguments and default values are given in the same style as `call()`, and will be
@@ -5588,7 +5922,7 @@ struct signature<T> : meta::make_def_signature<T> {};
 
 
 /* Specializing `std::tuple_size`, `std::tuple_element`, and `std::get` allows
-argument packs, function chains, `def` objects, and signature tuples to be decomposed
+saved arguments, function chains, `def` objects, and signature tuples to be decomposed
 using structured bindings. */
 namespace std {
 

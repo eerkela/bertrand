@@ -4,7 +4,6 @@
 #include "declarations.h"
 #include "object.h"
 #include "ops.h"
-#include "pyerrors.h"
 
 
 /// NOTE: Beware all ye who enter here, for this is the point of no return!
