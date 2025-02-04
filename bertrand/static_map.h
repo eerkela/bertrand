@@ -490,6 +490,12 @@ private:
         };
     }
 
+    /// TODO: in order to support `**kwargs` iteration, this iterator type needs to
+    /// be consistent, and the only way to do that is to lift it out of this class and
+    /// have it store a pointer to the raw data, rather than a pointer to the table.
+    /// That also means I should be able to turn it into a random access iterator?
+    /// Maybe even a contiguous iterator?
+
     struct Iterator {
     private:
         const Table* m_table;

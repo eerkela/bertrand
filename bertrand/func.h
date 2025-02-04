@@ -768,13 +768,13 @@ namespace impl {
     template <typename T = void>
     struct any {
     private:
-        void* m_value;
-        std::type_index m_type;
-        T(*m_convert)(void*);
+        void* m_value = nullptr;
+        std::type_index m_type = typeid(any);
+        T(*m_convert)(void*) = nullptr;
 
     public:
         /* Construct the `any` wrapper in an uninitialized state. */
-        any() noexcept : m_value(nullptr), m_type(typeid(any)), m_convert(nullptr) {}
+        any() noexcept = default;
 
         /* Construct the `any` wrapper with a particular value, whose lifetime must be
         managed externally. */
@@ -790,6 +790,27 @@ namespace impl {
                 }
             })
         {}
+
+        any(const any&) = delete;
+        any& operator=(const any&) = delete;
+
+        any(any&& other) :
+            m_value(other.m_value),
+            m_type(other.m_type),
+            m_convert(other.m_convert)
+        {
+            other.m_value = nullptr;
+        }
+
+        any& operator=(any&& other) {
+            if (&other != this) {
+                m_value = other.m_value;
+                m_type = other.m_type;
+                m_convert = other.m_convert;
+                other.m_value = nullptr;
+            }
+            return *this;
+        }
 
         /* Indicates whether the `any` wrapper currently holds a value. */
         [[nodiscard]] explicit operator bool() const noexcept { return m_value; }
@@ -864,12 +885,12 @@ namespace impl {
     template <meta::is_void T>
     struct any<T> {
     private:
-        void* m_value;
-        std::type_index m_type;
+        void* m_value = nullptr;
+        std::type_index m_type = typeid(any);
 
     public:
         /* Construct the `any` wrapper in an uninitialized state. */
-        any() noexcept : m_value(nullptr), m_type(typeid(any)) {}
+        any() noexcept = default;
 
         /* Construct the `any` wrapper with a particular value, whose lifetime must be
         managed externally. */
@@ -878,6 +899,25 @@ namespace impl {
             m_value(&value),
             m_type(typeid(std::remove_cvref_t<V>))
         {}
+
+        any(const any&) = delete;
+        any& operator=(const any&) = delete;
+
+        any(any&& other) :
+            m_value(other.m_value),
+            m_type(other.m_type)
+        {
+            other.m_value = nullptr;
+        }
+
+        any& operator=(any&& other) {
+            if (&other != this) {
+                m_value = other.m_value;
+                m_type = other.m_type;
+                other.m_value = nullptr;
+            }
+            return *this;
+        }
 
         /* Indicates whether the `any` wrapper currently holds a value. */
         [[nodiscard]] explicit operator bool() const noexcept { return m_value; }
@@ -939,8 +979,7 @@ namespace impl {
         }
     };
 
-    /* Type erasure is used to provide a standardized interface for the positional
-    parameter pack. */
+    /* Virtual base reference stored by a variadic positional parameter. */
     template <typename T>
     struct variadic_positional_storage {
         using value_type = any<T>;
@@ -948,6 +987,8 @@ namespace impl {
         using difference_type = ptrdiff_t;
         using reference = any<T>&;
         using const_reference = const any<T>&;
+        using pointer = any<T>*;
+        using const_pointer = const any<T>*;
         using iterator = std::array<any<T>, 0>::iterator;
         using const_iterator = std::array<any<T>, 0>::const_iterator;
         using reverse_iterator = std::array<any<T>, 0>::reverse_iterator;
@@ -959,7 +1000,6 @@ namespace impl {
 
         [[nodiscard]] virtual any<T>& operator[](size_t i) = 0;
         [[nodiscard]] virtual const any<T>& operator[](size_t i) const = 0;
-
         [[nodiscard]] virtual size_t size() const noexcept = 0;
         [[nodiscard]] virtual iterator begin() noexcept = 0;
         [[nodiscard]] virtual const_iterator begin() const noexcept = 0;
@@ -973,16 +1013,12 @@ namespace impl {
         [[nodiscard]] virtual reverse_iterator rend() noexcept = 0;
         [[nodiscard]] virtual const_reverse_iterator rend() const noexcept = 0;
         [[nodiscard]] virtual const_reverse_iterator crend() const noexcept = 0;
-        [[nodiscard]] virtual any<T>& front() noexcept = 0;
-        [[nodiscard]] virtual const any<T>& front() const noexcept = 0;
-        [[nodiscard]] virtual any<T>& back() noexcept = 0;
-        [[nodiscard]] virtual const any<T>& back() const noexcept = 0;
         [[nodiscard]] virtual any<T>* data() noexcept = 0;
         [[nodiscard]] virtual const any<T>* data() const noexcept = 0;
     };
 
-    /* Values within the positional pack are stored as type-erased `args<>`, which are
-    heterogenously-typed, stored on the stack, and perfectly forward reference types. */
+    /* Concrete type that is initialized during call logic, stored entirely on the
+    stack. */
     template <typename T, size_t N>
     struct concrete_variadic_positional_storage : variadic_positional_storage<T> {
     private:
@@ -1000,41 +1036,292 @@ namespace impl {
         using const_reverse_iterator = base::const_reverse_iterator;
 
         std::array<any<T>, N> pack;
+        size_t length;
 
         [[nodiscard]] any<T>& operator[](size_t i) override {
-            if (i < N) {
+            if (i < length) {
                 return pack[i];
             }
             throw IndexError(std::to_string(i));
         }
 
         [[nodiscard]] const any<T>& operator[](size_t i) const override {
-            if (i < N) {
+            if (i < length) {
                 return pack[i];
             }
             throw IndexError(std::to_string(i));
         }
 
-        [[nodiscard]] size_t size() const noexcept override { return N; }
+        [[nodiscard]] size_t size() const noexcept override { return length; }
         [[nodiscard]] iterator begin() { return pack.begin(); }
         [[nodiscard]] const_iterator begin() const { return pack.begin(); }
         [[nodiscard]] const_iterator cbegin() const { return pack.cbegin(); }
-        [[nodiscard]] iterator end() { return pack.end(); }
-        [[nodiscard]] const_iterator end() const { return pack.end(); }
-        [[nodiscard]] const_iterator cend() const { return pack.cend(); }
-        [[nodiscard]] reverse_iterator rbegin() { return pack.rbegin(); }
-        [[nodiscard]] const_reverse_iterator rbegin() const { return pack.rbegin(); }
-        [[nodiscard]] const_reverse_iterator crbegin() const { return pack.crbegin(); }
+        [[nodiscard]] iterator end() { return pack.begin() + length; }
+        [[nodiscard]] const_iterator end() const { return pack.begin() + length; }
+        [[nodiscard]] const_iterator cend() const { return pack.cbegin() + length; }
+        [[nodiscard]] reverse_iterator rbegin() { return pack.rbegin() + (N - length); }
+        [[nodiscard]] const_reverse_iterator rbegin() const { return pack.rbegin() + (N - length); }
+        [[nodiscard]] const_reverse_iterator crbegin() const { return pack.crbegin() + (N - length); }
         [[nodiscard]] reverse_iterator rend() { return pack.rend(); }
         [[nodiscard]] const_reverse_iterator rend() const { return pack.rend(); }
         [[nodiscard]] const_reverse_iterator crend() const { return pack.crend(); }
-        [[nodiscard]] any<T>& front() override { return pack.front(); }
-        [[nodiscard]] const any<T>& front() const override { return pack.front(); }
-        [[nodiscard]] any<T>& back() override { return pack.back(); }
-        [[nodiscard]] const any<T>& back() const override { return pack.back(); }
         [[nodiscard]] any<T>* data() override { return pack.data(); }
         [[nodiscard]] const any<T>* data() const override { return pack.data(); }
     };
+
+    /* Virtual base reference stored by a variadic keyword parameter. */
+    template <typename T>
+    struct variadic_keyword_storage {
+        using key_type = std::string_view;
+        using mapped_type = any<T>;
+        using value_type = std::pair<std::string_view, any<T>>;
+        using size_type = size_t;
+        using difference_type = ptrdiff_t;
+        using reference = value_type&;
+        using const_reference = const value_type&;
+        using pointer = value_type*;
+        using const_pointer = const value_type*;
+
+
+        /// TODO: this approach using a union is by far the best as far as performance
+        /// and memory usage are concerned.  It just requires the static_map iterators
+        /// to be consistently typed no matter the specialization.
+
+        struct iterator {
+            using iterator_category = std::input_iterator_tag;
+            using difference_type = std::ptrdiff_t;
+            using value_type = std::pair<const std::string_view, any<T>&>;
+            using pointer = value_type*;
+            using reference = value_type&;
+
+        private:
+            using static_iter = static_map<any<T>>::iterator;
+
+            struct traverse {
+                std::array<std::pair<std::string, any<T>>, MAX_ARGS>* array;
+                size_t index;
+            };
+
+            union {
+                static_iter m_static;
+                traverse m_dynamic;
+            };
+            enum : uint8_t {
+                STATIC      = 0b1,
+                DYNAMIC     = 0b10,
+                END         = 0b100
+            } m_type;
+            alignas(value_type) unsigned char m_current[sizeof(value_type)];
+
+        public:
+            iterator(static_iter&& iter) :
+                m_static(std::move(iter)),
+                m_type(STATIC)
+            {
+                if (m_static != sentinel{}) {
+                    new (m_current) value_type{m_static->first, m_static->second};
+                } else {
+                    m_type |= END;
+                }
+            }
+
+            iterator(std::array<std::pair<std::string, any<T>>, MAX_ARGS>& array) :
+                m_dynamic(&array, 0), m_type(DYNAMIC)
+            {
+                bool found = false;
+                while (m_dynamic.index < array.size()) {
+                    auto& pair = array[m_dynamic.index];
+                    if (!pair.first.empty()) {
+                        found = true;
+                        new (m_current) value_type{pair.first, pair.second};
+                        break;
+                    } else {
+                        ++m_dynamic.index;
+                    }
+                }
+                if (!found) {
+                    m_type |= END;
+                }
+            }
+
+            iterator(const iterator& other) noexcept {
+                if (other != sentinel{}) {
+                    if (other.m_type & DYNAMIC) {
+                        m_dynamic = other.m_dynamic;
+                    } else {
+                        m_static = other.m_static;
+                    }
+                    m_type = other.m_type;
+                    new (m_current) value_type{*other};
+                }
+            }
+
+            iterator(iterator&& other) noexcept {
+                if (other != sentinel{}) {
+                    if (other.m_type & DYNAMIC) {
+                        m_dynamic = std::move(other.m_dynamic);
+                    } else {
+                        m_static = std::move(other.m_static);
+                    }
+                    m_type = other.m_type;
+                    new (m_current) value_type{std::move(*other)};
+                }
+            }
+
+            iterator& operator=(const iterator& other) noexcept {
+                if (&other != this) {
+                    if (other == sentinel{}) {
+                        m_type |= END;
+                    } else {
+                        if (m_type & DYNAMIC) {
+                            m_dynamic.~traverse();
+                        } else {
+                            m_static.~iterator();
+                        }
+                        m_type = other.m_type;
+                        if (m_type & DYNAMIC) {
+                            m_dynamic = other.m_dynamic;
+                        } else {
+                            m_static = other.m_static;
+                        }
+                        new (m_current) value_type(*other);
+                    }
+                }
+                return *this;
+            }
+
+            iterator& operator=(iterator&& other) noexcept {
+                if (&other != this) {
+                    if (other == sentinel{}) {
+                        m_type |= END;
+                    } else {
+                        if (m_type & DYNAMIC) {
+                            m_dynamic.~traverse();
+                        } else {
+                            m_static.~iterator();
+                        }
+                        m_type = other.m_type;
+                        if (m_type & DYNAMIC) {
+                            m_dynamic = std::move(other.m_dynamic);
+                        } else {
+                            m_static = std::move(other.m_static);
+                        }
+                        new (m_current) value_type(std::move(*other));
+                    }
+                }
+                return *this;
+            }
+
+            ~iterator() noexcept {
+                if (m_type & DYNAMIC) {
+                    m_dynamic.~traverse();
+                } else {
+                    m_static.~iterator();
+                }
+            }
+
+            [[nodiscard]] value_type& operator*() noexcept {
+                return reinterpret_cast<value_type&>(m_current);
+            }
+
+            [[nodiscard]] const value_type& operator*() const noexcept {
+                return reinterpret_cast<const value_type&>(m_current);
+            }
+
+            [[nodiscard]] value_type* operator->() noexcept {
+                return reinterpret_cast<value_type*>(&m_current);
+            }
+
+            [[nodiscard]] const value_type* operator->() const noexcept {
+                return reinterpret_cast<const value_type*>(&m_current);
+            }
+
+            iterator& operator++() noexcept {
+                if (m_type & DYNAMIC) {
+                    while (++m_dynamic.index < m_dynamic.array->size()) {
+                        auto& pair = (*m_dynamic.array)[m_dynamic.index];
+                        if (!pair.first.empty()) {
+                            new (m_current) value_type{pair.first, pair.second};
+                            return *this;
+                        }
+                    }
+                    m_type |= END;
+                    return *this;
+                }
+                if (++m_static != sentinel{}) {
+                    new (m_current) value_type{m_static->first, m_static->second};
+                } else {
+                    m_type |= END;
+                }
+                return *this;
+            }
+
+            [[nodiscard]] iterator operator++(int) noexcept {
+                iterator copy = *this;
+                ++(*this);
+                return copy;
+            }
+
+            [[nodiscard]] friend bool operator==(const iterator& lhs, sentinel) noexcept {
+                return lhs.m_type & END;
+            }
+
+            [[nodiscard]] friend bool operator==(sentinel, const iterator& rhs) noexcept {
+                return rhs.m_type & END;
+            }
+
+            [[nodiscard]] friend bool operator!=(const iterator& lhs, sentinel) noexcept {
+                return !(lhs == sentinel{});
+            }
+
+            [[nodiscard]] friend bool operator!=(sentinel, const iterator& rhs) noexcept {
+                return !(rhs == sentinel{});
+            }
+        };
+
+        struct const_iterator {
+        protected:
+
+            /// TODO: same as above, but with immutable any<T> references
+
+        public:
+
+        };
+
+    };
+
+    /// TODO: one issue with an implementation of this form is implementing iterators
+    /// that work with type erasure.  The table is publicly available for the perfect
+    /// hash maps, so I could just write a new iterator type that can be used in both
+    /// cases here.  It would skip any entry with an empty name, which might actually
+    /// obviate the need for an extra bitset.  This works, since every keyword argument
+    /// must not have an empty name.
+    /// -> The new iterator type will just create a new array of pairs, and then
+    /// iterate over that.
+    /// Actually, what if I just store a union with both cases, and a boolean
+    /// discriminator?  That would avoid any extra copies, and I would just store the
+    /// current value as a local variable of std::pair<std::string, any<T>&>, which may
+    /// use uninitialized storage in order to store the reference type and update it
+    /// accordingly.  At each iteration, I would destroy the current value and then
+    /// reconstruct it with the new one (with an updated reference).
+
+    /* Concrete type that is initialized during call logic, stored entirely on the
+    stack and using a compile-time perfect hash table formed from the given strings. */
+    template <typename T, bool dynamic, static_str... Names>
+    struct concrete_variadic_keyword_storage : variadic_keyword_storage<T> {
+        static_map<any<T>, Names...> m_table;
+
+    };
+
+    template <typename T, static_str... Names>
+    struct concrete_variadic_keyword_storage<T, true, Names...> {
+        /// TODO: the table cannot use std::string_view because the unpacked keywords
+        /// don't have a lifetime guarantee?
+        std::array<std::pair<std::string, any<T>>, MAX_ARGS> m_table;
+
+        /// TODO: simple hash table with linear probing and no deletions.
+    };
+
 
     /// TODO: when I do this for kwargs, I should take advantage of my compile-time
     /// perfect hash tables to avoid heap allocations and provide the fastest possible
