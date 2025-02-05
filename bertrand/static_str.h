@@ -631,8 +631,8 @@ public:
     explicit constexpr operator std::string_view() const { return {buffer, N}; }
 
     constexpr const char* data() const { return buffer; }
-    constexpr size_t size() const { return N; }
-    constexpr bool empty() const { return !N; }
+    static constexpr size_t size() { return N; }
+    static constexpr bool empty() { return !N; }
     Iterator begin() const { return {buffer, 0}; }
     Iterator cbegin() const { return begin(); }
     Iterator end() const { return {nullptr, N}; }
