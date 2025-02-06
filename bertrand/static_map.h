@@ -11,142 +11,26 @@ namespace bertrand {
 
 namespace impl {
 
-    /* A helper struct that computes a perfect FNV-1a hash function over the given
-    strings at compile time. */
-    template <static_str... Keys>
-    struct perfect_hash {
-    private:
-        using minmax_type = std::pair<size_t, size_t>;
-
-        template <size_t>
-        struct _minmax {
-            static constexpr minmax_type value = std::minmax({Keys.size()...});
-        };
-        template <>
-        struct _minmax<0> {
-            static constexpr minmax_type value = {0, 0};
-        };
-        static constexpr minmax_type minmax = _minmax<sizeof...(Keys)>::value;
-
-    public:
-        static constexpr size_t table_size = next_prime(
-            sizeof...(Keys) + (sizeof...(Keys) >> 1)
-        );
-        static constexpr size_t min_length = minmax.first;
-        static constexpr size_t max_length = minmax.second;
-
-        template <size_t I> requires (I < sizeof...(Keys))
-        static constexpr static_str at = meta::unpack_string<I, Keys...>;
-
-    private:
-        /* Check to see if the candidate seed and prime produce any collisions for the
-        target keyword arguments. */
-        template <static_str...>
-        struct collisions {
-            static constexpr bool operator()(size_t, size_t) {
-                return false;
-            }
-        };
-        template <static_str First, static_str... Rest>
-        struct collisions<First, Rest...> {
-            template <static_str...>
-            struct scan {
-                static constexpr bool operator()(size_t, size_t, size_t) {
-                    return false;
-                }
-            };
-            template <static_str F, static_str... Rs>
-            struct scan<F, Rs...> {
-                static constexpr bool operator()(size_t idx, size_t seed, size_t prime) {
-                    size_t hash = fnv1a(F, seed, prime);
-                    return ((hash % table_size) == idx) || scan<Rs...>{}(idx, seed, prime);
-                }
-            };
-
-            static constexpr bool operator()(size_t seed, size_t prime) {
-                size_t hash = fnv1a(First, seed, prime);
-                return scan<Rest...>{}(
-                    hash % table_size,
-                    seed,
-                    prime
-                ) || collisions<Rest...>{}(seed, prime);
-            }
-        };
-
-        /* Search for an FNV-1a seed and prime that perfectly hashes the argument names
-        with respect to the keyword table size. */
-        static constexpr auto hash_components = [] -> std::tuple<size_t, size_t, bool> {
-            constexpr size_t recursion_limit = 100;
-            size_t i = 0;
-            size_t j = 0;
-            size_t seed = fnv1a_seed;
-            size_t prime = fnv1a_prime;
-            while (collisions<Keys...>{}(seed, prime)) {
-                seed = prime * seed + 31;
-                if (++i >= recursion_limit) {
-                    if (++j >= recursion_limit) {
-                        return {0, 0, false};
-                    }
-                    seed = fnv1a_seed;
-                    prime = next_prime(prime);
-                }
-            }
-            return {seed, prime, true};
-        }();
-
-    public:
-        /* A template constraint that indicates whether the recursive algorithm could
-        find a perfect hash algorithm for the given keys. */
-        static constexpr bool exists = std::get<2>(hash_components);
-
-        /* A seed for an FNV-1a hash algorithm that was found to perfectly hash the
-        keyword argument names from the enclosing parameter list. */
-        static constexpr size_t seed = std::get<0>(hash_components);
-
-        /* A prime for an FNV-1a hash algorithm that was found to perfectly hash the
-        keyword argument names from the enclosing parameter list. */
-        static constexpr size_t prime = std::get<1>(hash_components);
-
-        template <typename T>
-        static constexpr bool hashable =
-            std::is_convertible_v<T, const char*> ||
-            std::is_convertible_v<T, std::string_view>;
-
-        /* Hash an arbitrary string according to the precomputed FNV-1a algorithm
-        that was found to perfectly hash the enclosing keyword arguments. */
-        static constexpr size_t hash(const char* str) noexcept {
-            return fnv1a(str, seed, prime);
-        }
-        static constexpr size_t hash(std::string_view str) noexcept {
-            return fnv1a(str.data(), seed, prime);
-        }
-    };
-
     /* A helper struct that computes a gperf-style minimal perfect hash function over
     the given strings at compile time.  Only the N most variable characters are
     considered, where N is minimized using an associative array containing relative
     weights for each character. */
     template <static_str... Keys>
     struct minimal_perfect_hash {
-    private:
-        using minmax_type = std::pair<size_t, size_t>;
+        static constexpr size_t table_size = sizeof...(Keys);
 
+    private:
         template <size_t>
-        struct _minmax {
-            static constexpr minmax_type value = std::minmax({Keys.size()...});
-        };
+        static constexpr std::pair<size_t, size_t> _minmax = std::minmax({Keys.size()...});
         template <>
-        struct _minmax<0> {
-            static constexpr minmax_type value = {0, 0};
-        };
-        static constexpr minmax_type minmax = _minmax<sizeof...(Keys)>::value;
+        static constexpr std::pair<size_t, size_t> _minmax<0> = {0, 0};
+        static constexpr auto minmax = _minmax<table_size>;
 
     public:
-        static constexpr size_t table_size = sizeof...(Keys);
         static constexpr size_t min_length = minmax.first;
         static constexpr size_t max_length = minmax.second;
 
-        template <size_t I> requires (I < sizeof...(Keys))
+        template <size_t I> requires (I < table_size)
         static constexpr static_str at = meta::unpack_string<I, Keys...>;
 
     private:
@@ -154,16 +38,12 @@ namespace impl {
 
         template <static_str...>
         struct _counts {
-            static constexpr size_t operator()(unsigned char, size_t) {
-                return 0;
-            }
+            static constexpr size_t operator()(unsigned char, size_t) { return 0; }
         };
         template <static_str First, static_str... Rest>
         struct _counts<First, Rest...> {
             static constexpr size_t operator()(unsigned char c, size_t pos) {
-                return
-                    _counts<Rest...>{}(c, pos) +
-                    (pos < First.size() && First[pos] == c);
+                return _counts<Rest...>{}(c, pos) + (pos < First.size() && First[pos] == c);
             }
         };
         static constexpr size_t counts(unsigned char c, size_t pos) {
@@ -316,8 +196,8 @@ namespace impl {
 
         template <typename T>
         static constexpr bool hashable =
-            std::is_convertible_v<T, const char*> ||
-            std::is_convertible_v<T, std::string_view>;
+            std::convertible_to<T, const char*> ||
+            std::convertible_to<T, std::string_view>;
 
         /* An array holding the positions of the significant characters for the
         associative value array, in traversal order. */
@@ -332,35 +212,33 @@ namespace impl {
 
         /* Hash a compile-time string according to the computed perfect hash algorithm. */
         template <meta::static_str Key>
-        static constexpr size_t hash(const Key& str) noexcept {
+        [[nodiscard]] static constexpr size_t hash(const Key& str) noexcept {
+            constexpr size_t len = std::remove_cvref_t<Key>::size();
             size_t out = 0;
             for (size_t pos : positions) {
-                unsigned char c = pos < str.size() ? str[pos] : 0;
-                out += weights[c];
+                out += weights[pos < len ? str[pos] : 0];
             }
             return out;
         }
 
         /* Hash a string literal according to the computed perfect hash algorithm. */
         template <size_t N>
-        static constexpr size_t hash(const char(&str)[N]) noexcept {
+        [[nodiscard]] static constexpr size_t hash(const char(&str)[N]) noexcept {
             constexpr size_t M = N - 1;
             size_t out = 0;
             for (size_t pos : positions) {
-                unsigned char c = pos < M ? str[pos] : 0;
-                out += weights[c];
+                out += weights[pos < M ? str[pos] : 0];
             }
             return out;
         }
 
         /* Hash a string literal according to the computed perfect hash algorithm. */
         template <size_t N>
-        static constexpr size_t hash(const char(&str)[N], size_t& len) noexcept {
+        [[nodiscard]] static constexpr size_t hash(const char(&str)[N], size_t& len) noexcept {
             constexpr size_t M = N - 1;
             size_t out = 0;
             for (size_t pos : positions) {
-                unsigned char c = pos < M ? str[pos] : 0;
-                out += weights[c];
+                out += weights[pos < M ? str[pos] : 0];
             }
             len = M;
             return out;
@@ -369,66 +247,67 @@ namespace impl {
         /* Hash a character buffer according to the computed perfect hash algorithm. */
         template <std::convertible_to<const char*> T>
             requires (!meta::static_str<T> && !meta::string_literal<T>)
-        static constexpr size_t hash(const T& str) noexcept {
+        [[nodiscard]] static constexpr size_t hash(const T& str) noexcept {
             const char* start = str;
             if constexpr (positions.empty()) {
                 return 0;
-            }
-            const char* ptr = start;
-            size_t out = 0;
-            size_t i = 0;
-            size_t next_pos = positions[i];
-            while (*ptr != '\0') {
-                if ((ptr - start) == next_pos) {
-                    out += weights[*ptr];
-                    if (++i >= positions.size()) {
-                        // early break if no characters left to probe
-                        return out;
+            } else {
+                const char* ptr = start;
+                size_t out = 0;
+                size_t i = 0;
+                size_t next_pos = positions[i];
+                while (*ptr != '\0') {
+                    if ((ptr - start) == next_pos) {
+                        out += weights[*ptr];
+                        if (++i >= positions.size()) {
+                            return out;  // early break if no characters left to probe
+                        }
+                        next_pos = positions[i];
                     }
-                    next_pos = positions[i];
+                    ++ptr;
                 }
-                ++ptr;
+                while (i < positions.size()) {
+                    out += weights[0];
+                    ++i;
+                }
+                return out;
             }
-            while (i < positions.size()) {
-                out += weights[0];
-                ++i;
-            }
-            return out;
         }
 
         /* Hash a character buffer according to the computed perfect hash algorithm and
         record its length as an out parameter. */
         template <std::convertible_to<const char*> T>
             requires (!meta::static_str<T> && !meta::string_literal<T>)
-        static constexpr size_t hash(const T& str, size_t& len) noexcept {
+        [[nodiscard]] static constexpr size_t hash(const T& str, size_t& len) noexcept {
             const char* start = str;
             const char* ptr = start;
             if constexpr (positions.empty()) {
                 while (*ptr != '\0') { ++ptr; }
                 len = ptr - start;
                 return 0;
-            }
-            size_t out = 0;
-            size_t i = 0;
-            size_t next_pos = positions[i];
-            while (*ptr != '\0') {
-                if ((ptr - start) == next_pos) {
-                    out += weights[*ptr];
-                    if (++i >= positions.size()) {
-                        // continue probing until end of string to get length
-                        next_pos = std::numeric_limits<size_t>::max();
-                    } else {
-                        next_pos = positions[i];
+            } else {
+                size_t out = 0;
+                size_t i = 0;
+                size_t next_pos = positions[i];
+                while (*ptr != '\0') {
+                    if ((ptr - start) == next_pos) {
+                        out += weights[*ptr];
+                        if (++i >= positions.size()) {
+                            // continue probing until end of string to get length
+                            next_pos = std::numeric_limits<size_t>::max();
+                        } else {
+                            next_pos = positions[i];
+                        }
                     }
+                    ++ptr;
                 }
-                ++ptr;
+                while (i < positions.size()) {
+                    out += weights[0];
+                    ++i;
+                }
+                len = ptr - start;
+                return out;
             }
-            while (i < positions.size()) {
-                out += weights[0];
-                ++i;
-            }
-            len = ptr - start;
-            return out;
         }
 
         /* Hash a string view according to the computed perfect hash algorithm. */
@@ -438,12 +317,11 @@ namespace impl {
                 !meta::string_literal<T> &&
                 !std::convertible_to<T, const char*>
             )
-        static constexpr size_t hash(const T& str) noexcept {
+        [[nodiscard]] static constexpr size_t hash(const T& str) noexcept {
             std::string_view s = str;
             size_t out = 0;
             for (size_t pos : positions) {
-                unsigned char c = pos < s.size() ? s[pos] : 0;
-                out += weights[c];
+                out += weights[pos < s.size() ? s[pos] : 0];
             }
             return out;
         }
@@ -820,6 +698,16 @@ namespace impl {
 }
 
 
+namespace meta {
+
+    template <bertrand::static_str... Keys>
+    concept perfectly_hashable =
+        strings_are_unique<Keys...> &&
+        impl::minimal_perfect_hash<Keys...>::exists;
+
+}
+
+
 /* A compile-time perfect hash table with a finite set of static strings as keys.  The
 data structure will compute a perfect hash function for the given strings at compile
 time, and will store the values in a fixed-size array that can be baked into the final
@@ -831,10 +719,7 @@ collision resolution is necessary, due to the perfect hash function.  If the sea
 string is also known at compile time, then even these can be optimized out, skipping
 straight to the final value with no intermediate computation. */
 template <typename Value, static_str... Keys>
-    requires (
-        meta::strings_are_unique<Keys...> &&
-        impl::minimal_perfect_hash<Keys...>::exists
-    )
+    requires (meta::perfectly_hashable<Keys...>)
 struct static_map : impl::minimal_perfect_hash<Keys...> {
     using key_type = const std::string_view;
     using mapped_type = Value;
@@ -1272,16 +1157,11 @@ public:
 };
 
 
-/* A specialization of static_map that does not hold any values.  Such a data structure
-is equivalent to a perfectly-hashed set of compile-time strings, which can be
-efficiently searched at runtime.  Rather than dereferencing to a value, the buckets
-and iterators will dereference to `string_view`s of the template key buffers. */
-template <static_str... Keys>
-    requires (
-        meta::strings_are_unique<Keys...> &&
-        impl::minimal_perfect_hash<Keys...>::exists
-    )
-struct static_map<void, Keys...> : impl::minimal_perfect_hash<Keys...> {
+/* Specialization of `static_map` for void values, which correspond to an instantiation
+of `static_set`. */
+template <meta::is_void Value, static_str... Keys>
+    requires (meta::perfectly_hashable<Keys...>)
+struct static_map<Value, Keys...> : impl::minimal_perfect_hash<Keys...> {
     using key_type = const std::string_view;
     using mapped_type = void;
     using value_type = key_type;
@@ -1575,6 +1455,10 @@ public:
 };
 
 
+/* A specialization of static_map that does not hold any values.  Such a data structure
+is equivalent to a perfectly-hashed set of compile-time strings, which can be
+efficiently searched at runtime.  Rather than dereferencing to a value, the buckets
+and iterators will dereference to `string_view`s of the template key buffers. */
 template <static_str... Keys>
 using static_set = static_map<void, Keys...>;
 
