@@ -21,10 +21,15 @@ namespace impl {
 
     private:
         template <size_t>
-        static constexpr std::pair<size_t, size_t> _minmax = std::minmax({Keys.size()...});
+        struct _minmax {
+            static constexpr std::pair<size_t, size_t> value =
+                std::minmax({Keys.size()...});
+        };
         template <>
-        static constexpr std::pair<size_t, size_t> _minmax<0> = {0, 0};
-        static constexpr auto minmax = _minmax<table_size>;
+        struct _minmax<0> {
+            static constexpr std::pair<size_t, size_t> value = {0, 0};
+        };
+        static constexpr auto minmax = _minmax<table_size>::value;
 
     public:
         static constexpr size_t min_length = minmax.first;
@@ -706,6 +711,10 @@ namespace meta {
         impl::minimal_perfect_hash<Keys...>::exists;
 
 }
+
+
+static_assert(meta::perfectly_hashable<"x", "y">);
+
 
 
 /* A compile-time perfect hash table with a finite set of static strings as keys.  The

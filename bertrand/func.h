@@ -1,6 +1,8 @@
 #ifndef BERTRAND_FUNC_H
 #define BERTRAND_FUNC_H
 
+#include <unordered_map>
+
 #include "bertrand/common.h"
 #include "bertrand/bitset.h"
 #include "bertrand/except.h"
@@ -16,6 +18,12 @@ information and allow matching functions to be called using Python-style convent
 Also defines supporting data structures to allow for partial function application. */
 template <typename T>
 struct signature { static constexpr bool enable = false; };
+
+
+/* CTAD guide to simplify signature introspection.  Uses a dummy constructor, meaning
+no work is done at runtime. */
+template <typename T> requires (signature<T>::enable)
+signature(const T&) -> signature<typename signature<T>::type>;
 
 
 namespace impl {
@@ -2320,176 +2328,6 @@ namespace impl {
         }
     };
 
-    template <typename R>
-    struct signature_base : signature_tag {
-        using Return = R;
-    };
-
-    inline std::string format_signature(
-        const std::string& prefix,
-        size_t max_width,
-        size_t indent,
-        std::vector<std::string>& components,
-        size_t last_posonly,
-        size_t first_kwonly
-    ) {
-        std::string param_open          = "(";
-        std::string param_close         = ") -> ";
-        std::string type_sep            = ": ";
-        std::string default_sep         = " = ";
-        std::string sep                 = ", ";
-        std::string tab                 = std::string(indent, ' ');
-        std::string line_sep            = "\n";
-        std::string kwonly_sep          = "*";
-        std::string posonly_sep         = "/";
-
-        components.front() += param_open;
-        components.back() = param_close + components.back();
-
-        // add delimiters to parameters and compute hypothetical one-liner length
-        size_t length = prefix.size() + components.front().size();
-        if (components.size() > 2) {
-            std::string& name = components[1];
-            std::string& type = components[2];
-            std::string& default_value = components[3];
-            type = type_sep + type;
-            if (!default_value.empty()) {
-                default_value = default_sep + default_value;
-            }
-            length += name.size() + type.size() + default_value.size();
-            if (length <= max_width) {
-                for (size_t i = 4, end = components.size() - 1; i < end; i += 3) {
-                    length += sep.size();
-                    std::string& name = components[i];
-                    std::string& type = components[i + 1];
-                    std::string& default_value = components[i + 2];
-                    name += type_sep;
-                    if (!default_value.empty()) {
-                        default_value = default_sep + default_value;
-                    }
-                    length += name.size() + type.size() + default_value.size();
-                    size_t adjusted = (i - 4) / 3;
-                    if (adjusted == last_posonly) {
-                        length += sep.size() + posonly_sep.size();
-                    } else if (adjusted == first_kwonly) {
-                        length += sep.size() + kwonly_sep.size();
-                    }
-                }
-            }
-        }
-        length += components.back().size();
-
-        // if the whole signature fits on one line, return it as such
-        if (length <= max_width) {
-            std::string out;
-            out.reserve(length);
-            out += prefix;
-            out += std::move(components.front());
-            if (components.size() > 2) {
-                size_t i = 1;
-                size_t j = 0;
-                if (j == first_kwonly) {
-                    out += kwonly_sep + sep;
-                }
-                out += std::move(components[i++]);
-                out += std::move(components[i++]);
-                out += std::move(components[i++]);
-                if (j == last_posonly) {
-                    out += sep + posonly_sep;
-                }
-                ++j;
-                for (size_t end = components.size() - 1; i < end; ++j) {
-                    out += sep;
-                    if (j == first_kwonly) {
-                        out += kwonly_sep + sep;
-                    }
-                    out += std::move(components[i++]);
-                    out += std::move(components[i++]);
-                    out += std::move(components[i++]);
-                    if (j == last_posonly) {
-                        out += sep + posonly_sep;
-                    }
-                }
-            }
-            out += std::move(components.back());
-            return out;
-        }
-
-        // otherwise, indent the parameters onto separate lines
-        std::string out = prefix + components.front() + line_sep;
-        std::string line = prefix + tab;
-        if (components.size() > 2) {
-            size_t i = 1;
-            size_t j = 0;
-            if (j == first_kwonly) {
-                out += line + kwonly_sep + sep + line_sep;
-            }
-            std::string& name = components[i++];
-            std::string& type = components[i++];
-            std::string& default_value = components[i++];
-            line += std::move(name);
-            if (line.size() + type.size() <= max_width) {
-                line += std::move(type);
-            } else {
-                out += std::move(line) + line_sep;
-                line = prefix + tab + tab + std::move(type);
-            }
-            if (line.size() + default_value.size() <= max_width) {
-                line += std::move(default_value);
-            } else {
-                out += std::move(line) + line_sep;
-                line = prefix + tab + tab +
-                    std::move(default_value).substr(1);  // remove leading space
-            }
-            out += line;
-            if (j == last_posonly) {
-                out += sep + line_sep + prefix + tab + posonly_sep;
-            }
-            for (size_t end = components.size() - 1; i < end; ++j) {
-                out += sep + line_sep;
-                line = prefix + tab;
-                if (j == first_kwonly) {
-                    out += line + kwonly_sep + sep + line_sep;
-                }
-                std::string& name = components[i++];
-                std::string& type = components[i++];
-                std::string& default_value = components[i++];
-                line += std::move(name);
-                if (line.size() + type.size() <= max_width) {
-                    line += std::move(type);
-                } else {
-                    out += std::move(line) + line_sep;
-                    line = prefix + tab + tab + std::move(type);
-                }
-                if (line.size() + default_value.size() <= max_width) {
-                    line += std::move(default_value);
-                } else {
-                    out += std::move(line) + line_sep;
-                    line = prefix + tab + tab +
-                        std::move(default_value).substr(1);  // remove leading space
-                }
-                out += std::move(line);
-                if (j == last_posonly) {
-                    out += sep + line_sep + prefix + tab + posonly_sep;
-                }
-            }
-            out += line_sep;
-        }
-        out += prefix + components.back();
-        return out;
-    }
-
-    template <typename R, typename C, size_t I>
-    struct chain_return_type { using type = R; };
-    template <typename R, typename C, size_t I> requires (I < C::size())
-    struct chain_return_type<R, C, I> {
-        using type = chain_return_type<
-            std::invoke_result_t<typename C::template at<I>, R>,
-            C,
-            I + 1
-        >::type;
-    };
-
     /// TODO: if the function being invoked in the Bind<> infrastructure is a
     /// make_def<> wrapper, then avoid constructing type-erased *args/**kwargs
     /// containers and just pass the arguments directly to the function, assuming it
@@ -2507,15 +2345,7 @@ namespace impl {
     /// just using the Python calling convention as a compile-time guide allowing
     /// for keyword arguments, unpacking, etc.
 
-    template <meta::normalized_signature Sig, typename F>
-        requires (
-            signature<Sig>::enable &&
-            signature<Sig>::Partial::empty() &&
-            signature<Sig>::proper_argument_order &&
-            signature<Sig>::no_qualified_arg_annotations &&
-            signature<Sig>::no_duplicate_args &&
-            signature<Sig>::template invocable<F>
-        )
+    template <typename Sig, typename F>
     struct make_def {
         meta::remove_rvalue<F> func;
 
@@ -2533,38 +2363,6 @@ namespace meta {
 
     namespace detail {
 
-        template <typename T>
-        struct make_def { static constexpr bool enable = false; };
-        template <typename Sig, typename F>
-        struct make_def<impl::make_def<Sig, F>> {
-            static constexpr bool enable = true;
-            using type = bertrand::signature<Sig>;
-        };
-
-    }
-
-    template <typename T>
-    concept make_def = detail::make_def<std::remove_cvref_t<T>>::enable;
-    template <make_def T>
-    using make_def_signature = detail::make_def<std::remove_cvref_t<T>>::type;
-
-}
-
-
-/* A compile-time factory for binding keyword arguments with Python syntax.  constexpr
-instances of this class can be used to provide an even more Pythonic syntax:
-
-    constexpr auto x = arg<"x">;
-    my_func(x = 42);
-*/
-template <static_str name> requires (meta::arg_name<name>)
-constexpr impl::ArgFactory<name> arg {};
-
-
-namespace meta {
-
-    namespace detail {
-
         template <meta::generic T, typename U>
         struct respec_generic {
             template <typename>
@@ -2572,6 +2370,14 @@ namespace meta {
             template <template <typename> class constraint, typename V>
             struct helper<constraint<V>> { using type = qualify<constraint<U>, T>; };
             using type = helper<std::remove_cvref_t<T>>::type;
+        };
+
+        template <typename T>
+        struct make_def { static constexpr bool enable = false; };
+        template <typename Sig, typename F>
+        struct make_def<impl::make_def<Sig, F>> {
+            static constexpr bool enable = true;
+            using type = bertrand::signature<Sig>;
         };
 
     }
@@ -2680,13 +2486,22 @@ namespace meta {
         >;
     };
 
+    template <typename T>
+    concept make_def = detail::make_def<std::remove_cvref_t<T>>::enable;
+    template <make_def T>
+    using make_def_signature = detail::make_def<std::remove_cvref_t<T>>::type;
+
 }
 
 
-/* CTAD guide to simplify signature introspection.  Uses a dummy constructor, meaning
-no work is done at runtime. */
-template <typename T> requires (signature<T>::enable)
-signature(const T&) -> signature<typename signature<T>::type>;
+/* A compile-time factory for binding keyword arguments with Python syntax.  constexpr
+instances of this class can be used to provide an even more Pythonic syntax:
+
+    constexpr auto x = arg<"x">;
+    my_func(x = 42);
+*/
+template <static_str name> requires (meta::arg_name<name>)
+constexpr impl::ArgFactory<name> arg;
 
 
 namespace impl {
@@ -2901,15 +2716,7 @@ namespace impl {
     constexpr bool has_kwargs = kwargs_idx<Ts...> < sizeof...(Ts);
 
     template <typename... A>
-    constexpr bool args_fit_within_bitset = sizeof...(A) <= MAX_ARGS;
-
-    template <typename... A>
-    constexpr bool no_qualified_args =
-        !(meta::is_qualified<typename meta::arg_traits<A>::type> || ...);
-
-    template <typename... A>
-    constexpr bool no_qualified_arg_annotations =
-        !((meta::arg<A> && meta::is_qualified<A>) || ...);
+    constexpr bool within_arg_limit = sizeof...(A) <= MAX_ARGS;
 
     template <size_t, typename...>
     constexpr bool _proper_argument_order = true;
@@ -2940,6 +2747,44 @@ namespace impl {
     template <typename... A>
     constexpr bool proper_argument_order = _proper_argument_order<0, A...>;
 
+    template <typename...>
+    struct _generics_are_consistent {
+        static constexpr bool value = true;
+        using type = void;
+    };
+    template <typename A, typename... As>
+    struct _generics_are_consistent<A, As...> {
+        static constexpr bool value = _generics_are_consistent<As...>::value;
+        using type = _generics_are_consistent<As...>::type;
+    };
+    template <typename A, typename... As> requires (meta::arg_traits<A>::generic())
+    struct _generics_are_consistent<A, As...> {
+        template <typename... Bs>
+        static constexpr bool _value = true;
+        template <typename B, typename... Bs>
+        static constexpr bool _value<B, Bs...> = _value<Bs...>;
+        template <typename B, typename... Bs> requires (meta::arg_traits<B>::generic())
+        static constexpr bool _value<B, Bs...> =
+            std::same_as<
+                typename meta::arg_traits<A>::template respec_generic<impl::generic_tag>,
+                typename meta::arg_traits<B>::template respec_generic<impl::generic_tag>
+            > && _value<Bs...>;
+        static constexpr bool value = _value<As...>;
+        using type = meta::arg_traits<A>::template respec_generic<impl::generic_tag>;
+    };
+    template <typename... As>
+    constexpr bool generics_are_consistent = _generics_are_consistent<As...>::value;
+    template <typename... As> requires (generics_are_consistent<As...>)
+    using consistent_generic_type = _generics_are_consistent<As...>::type;
+
+    template <typename... A>
+    constexpr bool no_qualified_args =
+        !(meta::is_qualified<typename meta::arg_traits<A>::type> || ...);
+
+    template <typename... A>
+    constexpr bool no_qualified_arg_annotations =
+        !((meta::arg<A> && meta::is_qualified<A>) || ...);
+
     template <size_t, typename...>
     constexpr bool _no_duplicate_args = true;
     template <size_t I, typename... A> requires (I < sizeof...(A))
@@ -2962,29 +2807,6 @@ namespace impl {
     }();
     template <typename... A>
     constexpr bool no_duplicate_args = _no_duplicate_args<0, A...>;
-
-    template <typename...>
-    struct _generics_are_consistent { static constexpr bool value = true; };
-    template <typename A, typename... As>
-    struct _generics_are_consistent<A, As...> {
-        static constexpr bool value = _generics_are_consistent<As...>::value;
-    };
-    template <typename A, typename... As> requires (meta::arg_traits<A>::generic())
-    struct _generics_are_consistent<A, As...> {
-        template <typename... Bs>
-        static constexpr bool _value = true;
-        template <typename B, typename... Bs>
-        static constexpr bool _value<B, Bs...> = _value<Bs...>;
-        template <typename B, typename... Bs> requires (meta::arg_traits<B>::generic())
-        static constexpr bool _value<B, Bs...> =
-            std::same_as<
-                typename meta::arg_traits<A>::template respec_generic<impl::generic_tag>,
-                typename meta::arg_traits<B>::template respec_generic<impl::generic_tag>
-            > && _value<Bs...>;
-        static constexpr bool value = _value<As...>;
-    };
-    template <typename... As>
-    constexpr bool generics_are_consistent = _generics_are_consistent<As...>::value;
 
     template <typename... A>
     constexpr bitset<MAX_ARGS> required = 0;
@@ -3351,6 +3173,171 @@ namespace impl {
     template <typename... A>
     using partial_tuple = _partial_tuple<std::tuple<>, 0, A...>::type;
 
+    template <typename R>
+    struct signature_base : signature_tag {
+        using Return = R;
+
+        /* Dummy constructor for CTAD purposes.  This will be automatically inherited
+        by all subclasses. */
+        template <typename T> requires (signature<T>::enable)
+        constexpr signature_base(const T&) noexcept {}
+        constexpr signature_base() noexcept = default;
+    };
+
+    inline std::string format_signature(
+        const std::string& prefix,
+        size_t max_width,
+        size_t indent,
+        std::vector<std::string>& components,
+        size_t last_posonly,
+        size_t first_kwonly
+    ) {
+        constexpr std::string param_open        = "(";
+        constexpr std::string param_close       = ") -> ";
+        constexpr std::string type_sep          = ": ";
+        constexpr std::string default_sep       = " = ";
+        constexpr std::string sep               = ", ";
+        std::string tab                         = std::string(indent, ' ');
+        constexpr std::string line_sep          = "\n";
+        constexpr std::string kwonly_sep        = "*";
+        constexpr std::string posonly_sep       = "/";
+
+        components.front() += param_open;
+        components.back() = param_close + components.back();
+
+        // add delimiters to parameters and compute hypothetical one-liner length
+        size_t length = prefix.size() + components.front().size();
+        if (components.size() > 2) {
+            std::string& name = components[1];
+            std::string& type = components[2];
+            std::string& default_value = components[3];
+            type = type_sep + type;
+            if (!default_value.empty()) {
+                default_value = default_sep + default_value;
+            }
+            length += name.size() + type.size() + default_value.size();
+            if (length <= max_width) {
+                for (size_t i = 4, end = components.size() - 1; i < end; i += 3) {
+                    length += sep.size();
+                    std::string& name = components[i];
+                    std::string& type = components[i + 1];
+                    std::string& default_value = components[i + 2];
+                    name += type_sep;
+                    if (!default_value.empty()) {
+                        default_value = default_sep + default_value;
+                    }
+                    length += name.size() + type.size() + default_value.size();
+                    size_t adjusted = (i - 4) / 3;
+                    if (adjusted == last_posonly) {
+                        length += sep.size() + posonly_sep.size();
+                    } else if (adjusted == first_kwonly) {
+                        length += sep.size() + kwonly_sep.size();
+                    }
+                }
+            }
+        }
+        length += components.back().size();
+
+        // if the whole signature fits on one line, return it as such
+        if (length <= max_width) {
+            std::string out;
+            out.reserve(length);
+            out += prefix;
+            out += std::move(components.front());
+            if (components.size() > 2) {
+                size_t i = 1;
+                size_t j = 0;
+                if (j == first_kwonly) {
+                    out += kwonly_sep + sep;
+                }
+                out += std::move(components[i++]);
+                out += std::move(components[i++]);
+                out += std::move(components[i++]);
+                if (j == last_posonly) {
+                    out += sep + posonly_sep;
+                }
+                ++j;
+                for (size_t end = components.size() - 1; i < end; ++j) {
+                    out += sep;
+                    if (j == first_kwonly) {
+                        out += kwonly_sep + sep;
+                    }
+                    out += std::move(components[i++]);
+                    out += std::move(components[i++]);
+                    out += std::move(components[i++]);
+                    if (j == last_posonly) {
+                        out += sep + posonly_sep;
+                    }
+                }
+            }
+            out += std::move(components.back());
+            return out;
+        }
+
+        // otherwise, indent the parameters onto separate lines
+        std::string out = prefix + components.front() + line_sep;
+        std::string line = prefix + tab;
+        if (components.size() > 2) {
+            size_t i = 1;
+            size_t j = 0;
+            if (j == first_kwonly) {
+                out += line + kwonly_sep + sep + line_sep;
+            }
+            std::string& name = components[i++];
+            std::string& type = components[i++];
+            std::string& default_value = components[i++];
+            line += std::move(name);
+            if (line.size() + type.size() <= max_width) {
+                line += std::move(type);
+            } else {
+                out += std::move(line) + line_sep;
+                line = prefix + tab + tab + std::move(type);
+            }
+            if (line.size() + default_value.size() <= max_width) {
+                line += std::move(default_value);
+            } else {
+                out += std::move(line) + line_sep;
+                line = prefix + tab + tab +
+                    std::move(default_value).substr(1);  // remove leading space
+            }
+            out += line;
+            if (j == last_posonly) {
+                out += sep + line_sep + prefix + tab + posonly_sep;
+            }
+            for (size_t end = components.size() - 1; i < end; ++j) {
+                out += sep + line_sep;
+                line = prefix + tab;
+                if (j == first_kwonly) {
+                    out += line + kwonly_sep + sep + line_sep;
+                }
+                std::string& name = components[i++];
+                std::string& type = components[i++];
+                std::string& default_value = components[i++];
+                line += std::move(name);
+                if (line.size() + type.size() <= max_width) {
+                    line += std::move(type);
+                } else {
+                    out += std::move(line) + line_sep;
+                    line = prefix + tab + tab + std::move(type);
+                }
+                if (line.size() + default_value.size() <= max_width) {
+                    line += std::move(default_value);
+                } else {
+                    out += std::move(line) + line_sep;
+                    line = prefix + tab + tab +
+                        std::move(default_value).substr(1);  // remove leading space
+                }
+                out += std::move(line);
+                if (j == last_posonly) {
+                    out += sep + line_sep + prefix + tab + posonly_sep;
+                }
+            }
+            out += line_sep;
+        }
+        out += prefix + components.back();
+        return out;
+    }
+
     /* A single entry in a signature's parameter table, storing the argument name
     (which may be empty), kind (positional-only, optional, variadic, etc.), and its
     position within the enclosing parameter list.  Such parameters are typically
@@ -3385,27 +3372,26 @@ namespace impl {
     avoid reimplementing C++ function logic internally. */
     template <typename Param, typename Return, typename... Args>
     struct CppSignature : signature_base<Return> {
-        using type = Return(Args...);
         static constexpr bool enable = true;
         static constexpr bool python = false;
         static constexpr bool convertible_to_python = false;
 
-        /* Dummy constructor for CTAD purposes.  This will be automatically inherited
-        by all subclasses. */
-        template <typename T> requires (signature<T>::enable)
-        constexpr CppSignature(const T&) noexcept {}
-        constexpr CppSignature() noexcept = default;
+        /* Normalized function type, which can be used to specialize `std::function`
+        and/or `bertrand::Function` (assuming all types are unqualified Python
+        wrappers). */
+        using type = Return(Args...);
 
         template <typename... Values>
         struct Bind;
 
     protected:
-        /* A flat array of callback objects whose indices are aligned to the enclosing
+        /* A flat array of Param objects whose indices are aligned to the enclosing
         parameter list. */
         using PositionalTable = std::array<Param, sizeof...(Args)>;
-        static constexpr auto positional_table = []<size_t... Is>(std::index_sequence<Is...>) {
-            return PositionalTable{Param::template create<Is, Args...>()...};
-        }(std::index_sequence_for<Args...>{});
+        static constexpr auto positional_table =
+            []<size_t... Is>(std::index_sequence<Is...>) {
+                return PositionalTable{Param::template create<Is, Args...>()...};
+            }(std::index_sequence_for<Args...>{});
 
         /* In order to avoid superfluous compile errors, the perfect keyword hash map
         should not be created unless the signature is well-formed. */
@@ -3420,8 +3406,7 @@ namespace impl {
             requires (
                 sizeof...(Ts) == 0 &&
                 I < MAX_ARGS &&
-                meta::strings_are_unique<meta::arg_traits<out>::name...> &&
-                impl::minimal_perfect_hash<meta::arg_traits<out>::name...>::exists
+                meta::perfectly_hashable<meta::arg_traits<out>::name...>
             )
         struct get_names<args<out...>, I, Ts...> {
             using type = static_map<const Param&, meta::arg_traits<out>::name...>;
@@ -3442,7 +3427,10 @@ namespace impl {
             struct filter<U> {
                 using type = args<out..., U>;
                 static constexpr auto operator()(const auto&... callbacks) noexcept {
-                    return get_names<type, I + 1, Ts...>{}(callbacks..., positional_table[I]);
+                    return get_names<type, I + 1, Ts...>{}(
+                        callbacks...,
+                        positional_table[I]
+                    );
                 }
             };
             using type = get_names<typename filter<T>::type, I + 1, Ts...>::type;
@@ -3451,25 +3439,48 @@ namespace impl {
             }
         };
 
+        /* A compile-time minimal perfect hash table mapping argument names to Param
+        objects shared with the positional table. */
         using NameTable = get_names<args<>, 0, Args...>::type;
         static constexpr NameTable name_table = get_names<args<>, 0, Args...>{}();
 
-        template <size_t I, typename T> requires (I < sizeof...(Args))
-        static constexpr auto to_arg(T&& value) -> meta::unpack_type<I, Args...> {
-            if constexpr (meta::arg<meta::unpack_type<I, Args...>>) {
-                return {std::forward<T>(value)};
-            } else {
-                return std::forward<T>(value);
-            }
-        };
-
         template <typename out, typename...>
         struct _Unbind;
-        template <typename R, typename... out, typename... Ts>
-        struct _Unbind<R(out...), Ts...> { using type = signature<R(out...)>; };
+        template <typename R, typename... out, typename... As>
+        struct _Unbind<R(out...), As...> { using type = signature<R(out...)>; };
         template <typename R, typename... out, typename A, typename... As>
         struct _Unbind<R(out...), A, As...> {
-            using type = _Unbind<R(out..., typename meta::arg_traits<A>::unbind), As...>::type;
+            using type = _Unbind<R(
+                out...,
+                typename meta::arg_traits<A>::unbind
+            ), As...>::type;
+        };
+
+        template <bool>
+        struct get_generic { using type = void; };
+        template <>
+        struct get_generic<true> {
+            using type = impl::consistent_generic_type<Return, Args...>;
+        };
+
+        template <typename Func>
+        static constexpr bool _invocable = std::is_invocable_r_v<Return, Func, Args...>;
+        template <meta::make_def Func>
+        static constexpr bool _invocable<Func> = true;  // not enough information yet
+
+        /// TODO: to_arg<I>(...) may need to account for generic arguments somehow.
+        /// -> It may not be necessary though if I'm going to end up passing the actual
+        /// values straight to the underlying C++ function.
+
+        /* Converts a raw C++ value into the corresponding argument annotation from the
+        enclosing signature. */
+        template <size_t I> requires (I < sizeof...(Args))
+        static constexpr auto to_arg(auto&& value) -> meta::unpack_type<I, Args...> {
+            if constexpr (meta::arg<meta::unpack_type<I, Args...>>) {
+                return {std::forward<decltype(value)>(value)};
+            } else {
+                return std::forward<decltype(value)>(value);
+            }
         };
 
     public:
@@ -3539,9 +3550,8 @@ namespace impl {
         [[nodiscard]] static constexpr const Param& get(size_t i) {
             if (i < size()) {
                 return positional_table[i];
-            } else {
-                throw IndexError(std::to_string(i));
             }
+            throw IndexError(std::to_string(i));
         }
 
         /* Look up the callback object associated with the named argument if it is present
@@ -3557,9 +3567,8 @@ namespace impl {
         [[nodiscard]] static constexpr const Param& get(T&& key) {
             if (const Param* result = name_table[std::forward<T>(key)]) {
                 return *result;
-            } else {
-                throw KeyError(key);
             }
+            throw KeyError(key);
         }
 
         /* Get a pointer to the callback object for a given argument.  Returns nullptr if
@@ -3588,18 +3597,17 @@ namespace impl {
         /* True if a given function can be called with this signature's arguments and
         returns a compatible type, after accounting for implicit conversions. */
         template <typename Func>
-        static constexpr bool invocable = std::is_invocable_r_v<Return, Func, Args...>;
+        static constexpr bool invocable = _invocable<Func>;
 
-        /* True if the return type lacks cvref qualifications. */
-        static constexpr bool no_qualified_return = !meta::is_qualified<Return>;
-
-        /* True if the arguments fit within the width of the bitset necessary to validate
-        them during overload resolution (64). */
-        static constexpr bool args_fit_within_bitset = impl::args_fit_within_bitset<Args...>;
+        /* True if the number of arguments is less than or equal to `MAX_ARGS`. */
+        static constexpr bool within_arg_limit = impl::within_arg_limit<Args...>;
 
         /* True if the arguments are given in the proper order (no positional after keyword,
         no required after optional, etc.). */
         static constexpr bool proper_argument_order = impl::proper_argument_order<Args...>;
+
+        /* True if the return type lacks cvref qualifications. */
+        static constexpr bool no_qualified_return = !meta::is_qualified<Return>;
 
         /* True if the argument types lack cvref qualifications. */
         static constexpr bool no_qualified_args = impl::no_qualified_args<Args...>;
@@ -3612,10 +3620,19 @@ namespace impl {
         positional/keyword argument, respectively. */
         static constexpr bool no_duplicate_args = impl::no_duplicate_args<Args...>;
 
-        /* True if all generic arguments and return type in the signature apply the
-        same consistent constraint. */
+        /* True if the signature contains generic return/argument types. */
+        static constexpr bool generic =
+            meta::generic<Return> || (meta::arg_traits<Args>::generic() || ...);
+
+        /* True if all generic return/argument types in the signature are of the same
+        family. */
         static constexpr bool generics_are_consistent =
             impl::generics_are_consistent<Return, Args...>;
+
+        /* If both `::generic` and `::generics_are_consistent` are true, evaluates to
+        the constraint type that should be applied when binding to this function.
+        Otherwise, evaluates to `void`. */
+        using generic_type = get_generic<generic && generics_are_consistent>::type;
 
         /* A bitmask with a 1 in the position of all of the required arguments in the
         parameter list.
@@ -3971,7 +3988,7 @@ namespace impl {
             existing partial arguments.  This method is chainable, and the arguments will
             be interpreted as if they were passed to the signature's call operator.  They
             cannot include positional or keyword parameter packs. */
-            template <typename... A>
+            template <typename Self, typename... A>
                 requires (
                     !(meta::arg_traits<A>::variadic() || ...) &&
                     !(meta::arg_traits<A>::generic() || ...) &&
@@ -3983,27 +4000,9 @@ namespace impl {
                     CppSignature::Bind<A...>::no_conflicting_values &&
                     CppSignature::Bind<A...>::can_convert
                 )
-            [[nodiscard]] constexpr auto bind(A&&... args) const {
+            [[nodiscard]] constexpr auto bind(this Self&& self, A&&... args) {
                 return CppSignature::Bind<A...>::template merge<0, 0, 0>::bind(
-                    *this,
-                    std::forward<A>(args)...
-                );
-            }
-            template <typename... A>
-                requires (
-                    !(meta::arg_traits<A>::variadic() || ...) &&
-                    !(meta::arg_traits<A>::generic() || ...) &&
-                    CppSignature::Bind<A...>::proper_argument_order &&
-                    CppSignature::Bind<A...>::no_qualified_arg_annotations &&
-                    CppSignature::Bind<A...>::no_duplicate_args &&
-                    CppSignature::Bind<A...>::no_extra_positional_args &&
-                    CppSignature::Bind<A...>::no_extra_keyword_args &&
-                    CppSignature::Bind<A...>::no_conflicting_values &&
-                    CppSignature::Bind<A...>::can_convert
-                )
-            [[nodiscard]] constexpr auto bind(A&&... args) && {
-                return CppSignature::Bind<A...>::template merge<0, 0, 0>::bind(
-                    std::move(*this),
+                    std::forward<Self>(self),
                     std::forward<A>(args)...
                 );
             }
@@ -4054,14 +4053,22 @@ namespace impl {
             static constexpr size_t kwargs_idx      = impl::kwargs_idx<Values...>;
 
             /* The total number of bound arguments. */
-            static constexpr size_t size() noexcept { return sizeof...(Values); }
-            static constexpr bool empty() noexcept { return !sizeof...(Values); }
+            [[nodiscard]] static constexpr size_t size() noexcept {
+                return sizeof...(Values);
+            }
+            [[nodiscard]] static constexpr bool empty() noexcept {
+                return !sizeof...(Values);
+            }
 
             /* Check whether a given index is within the bounds of the default value
             tuple. */
             template <size_t I>
-            [[nodiscard]] static constexpr bool contains() noexcept { return I < size(); }
-            [[nodiscard]] static constexpr bool contains(size_t i) noexcept {return i < size(); }
+            [[nodiscard]] static constexpr bool contains() noexcept {
+                return I < size();
+            }
+            [[nodiscard]] static constexpr bool contains(size_t i) noexcept {
+                return i < size();
+            }
 
             /* Check whether the named argument is contained within the default value
             tuple. */
@@ -4102,10 +4109,23 @@ namespace impl {
 
             template <size_t>
             static constexpr bool _no_extra_keyword_args = true;
-            template <size_t J> requires (J < kwargs_idx)
+            template <size_t J>
+                requires (
+                    J < kwargs_idx &&
+                    !CppSignature::contains<meta::arg_traits<at<J>>::name>()
+                )
+            static constexpr bool _no_extra_keyword_args<J> =
+                CppSignature::has_kwargs && _no_extra_keyword_args<J + 1>;
+            template <size_t J>
+                requires (
+                    J < kwargs_idx &&
+                    CppSignature::contains<meta::arg_traits<at<J>>::name>()
+                )
             static constexpr bool _no_extra_keyword_args<J> = [] {
                 return
-                    CppSignature::contains<meta::arg_traits<at<J>>::name>() &&
+                    meta::arg_traits<CppSignature::at<
+                        CppSignature::index<meta::arg_traits<at<J>>::name>()
+                    >>::kw() &&
                     _no_extra_keyword_args<J + 1>;
             }();
 
@@ -4306,8 +4326,21 @@ namespace impl {
                     }
                 }
 
+                template <typename F>
+                static constexpr decltype(auto) forward(auto&& value) {
+                    if constexpr (meta::make_def<F>) {
+                        if constexpr (meta::arg<decltype(value)>) {
+                            return *std::forward<decltype(value)>(value);
+                        } else {
+                            return std::forward<decltype(value)>(value);
+                        }
+                    } else {
+                        return to_arg<I>(std::forward<decltype(value)>(value));
+                    }
+                }
+
                 template <size_t... Prev, size_t... Next, typename F>
-                static constexpr std::invoke_result_t<F, Args...> forward_partial(
+                static constexpr decltype(auto) forward_partial(
                     std::index_sequence<Prev...>,
                     std::index_sequence<Next...>,
                     auto&& parts,
@@ -4322,7 +4355,7 @@ namespace impl {
                         meta::unpack_arg<Prev>(
                             std::forward<decltype(args)>(args)...
                         )...,
-                        to_arg<I>(std::forward<decltype(parts)>(
+                        forward<F>(std::forward<decltype(parts)>(
                             parts
                         ).template get<K>()),
                         meta::unpack_arg<J + Next>(
@@ -4332,7 +4365,7 @@ namespace impl {
                 }
 
                 template <size_t... Prev, size_t... Next, typename F>
-                static constexpr std::invoke_result_t<F, Args...> forward_default(
+                static constexpr decltype(auto) forward_default(
                     std::index_sequence<Prev...>,
                     std::index_sequence<Next...>,
                     auto&& parts,
@@ -4347,7 +4380,7 @@ namespace impl {
                         meta::unpack_arg<Prev>(
                             std::forward<decltype(args)>(args)...
                         )...,
-                        to_arg<I>(std::forward<decltype(defaults)>(
+                        forward<F>(std::forward<decltype(defaults)>(
                             defaults
                         ).template get<Defaults::template find<I>>()),
                         meta::unpack_arg<J + Next>(
@@ -4357,7 +4390,7 @@ namespace impl {
                 }
 
                 template <size_t... Prev, size_t... Next, typename F>
-                static constexpr std::invoke_result_t<F, Args...> forward_positional(
+                static constexpr decltype(auto) forward_positional(
                     std::index_sequence<Prev...>,
                     std::index_sequence<Next...>,
                     auto&& parts,
@@ -4372,7 +4405,7 @@ namespace impl {
                         meta::unpack_arg<Prev>(
                             std::forward<decltype(args)>(args)...
                         )...,
-                        to_arg<I>(meta::unpack_arg<J>(
+                        forward<F>(meta::unpack_arg<J>(
                             std::forward<decltype(args)>(args)...
                         )),
                         meta::unpack_arg<J + 1 + Next>(
@@ -4382,7 +4415,7 @@ namespace impl {
                 }
 
                 template <size_t... Prev, size_t... Next, size_t... Rest, typename F>
-                static constexpr std::invoke_result_t<F, Args...> forward_keyword(
+                static constexpr decltype(auto) forward_keyword(
                     std::index_sequence<Prev...>,
                     std::index_sequence<Next...>,
                     std::index_sequence<Rest...>,
@@ -4399,7 +4432,7 @@ namespace impl {
                         meta::unpack_arg<Prev>(
                             std::forward<decltype(args)>(args)...
                         )...,
-                        to_arg<I>(meta::unpack_arg<idx>(
+                        forward<F>(meta::unpack_arg<idx>(
                             std::forward<decltype(args)>(args)...
                         )),
                         meta::unpack_arg<J + Next>(
@@ -4412,7 +4445,7 @@ namespace impl {
                 }
 
                 template <size_t... Prev, size_t... Next, typename F>
-                static constexpr std::invoke_result_t<F, Args...> forward_from_pos_pack(
+                static constexpr decltype(auto) forward_from_pos_pack(
                     std::index_sequence<Prev...>,
                     std::index_sequence<Next...>,
                     auto&& parts,
@@ -4430,7 +4463,7 @@ namespace impl {
                         meta::unpack_arg<Prev>(
                             std::forward<decltype(args)>(args)...
                         )...,
-                        to_arg<I>(pack.value()),
+                        forward<F>(pack.value()),
                         meta::unpack_arg<J + Next>(
                             std::forward<decltype(args)>(args)...
                         )...
@@ -4438,7 +4471,7 @@ namespace impl {
                 }
 
                 template <size_t... Prev, size_t... Next, typename F>
-                static constexpr std::invoke_result_t<F, Args...> forward_from_kw_pack(
+                static constexpr decltype(auto) forward_from_kw_pack(
                     auto&& node,
                     std::index_sequence<Prev...>,
                     std::index_sequence<Next...>,
@@ -4454,7 +4487,7 @@ namespace impl {
                         meta::unpack_arg<Prev>(
                             std::forward<decltype(args)>(args)...
                         )...,
-                        to_arg<I>(std::forward<typename meta::arg_traits<T>::type>(
+                        forward<F>(std::forward<typename meta::arg_traits<T>::type>(
                             node.mapped()
                         )),
                         meta::unpack_arg<J + Next>(
@@ -4464,7 +4497,7 @@ namespace impl {
                 }
 
                 template <size_t... Prev, size_t... Next, typename F>
-                static constexpr std::invoke_result_t<F, Args...> drop_empty_pack(
+                static constexpr decltype(auto) drop_empty_pack(
                     std::index_sequence<Prev...>,
                     std::index_sequence<Next...>,
                     auto&& parts,
@@ -4771,7 +4804,7 @@ namespace impl {
                 parameters from the argument list at compile time using index sequences and
                 fold expressions, which can be inlined into the final call. */
                 template <typename P, typename D, typename F, typename... A>
-                static constexpr std::invoke_result_t<F, Args...> operator()(
+                static constexpr decltype(auto) operator()(
                     P&& parts,
                     D&& defaults,
                     F&& func,
@@ -5017,41 +5050,151 @@ namespace impl {
                         }
 
                     } else if constexpr (meta::arg_traits<T>::args()) {
-                        static constexpr size_t cutoff = std::min(
-                            impl::kw_idx<A...>,
-                            impl::kwargs_idx<A...>
-                        );
-                        return []<size_t... Prev, size_t... Next>(
-                            std::index_sequence<Prev...>,
-                            std::index_sequence<Next...>,
-                            auto&& parts,
-                            auto&& defaults,
-                            auto&& func,
-                            auto&&... args
-                        ) {
-                            return merge<I + 1, J + 1, K + consecutive<K>>{}(
-                                std::forward<decltype(parts)>(parts),
-                                std::forward<decltype(defaults)>(defaults),
-                                std::forward<decltype(func)>(func),
-                                meta::unpack_arg<Prev>(
-                                    std::forward<decltype(args)>(args)...
-                                )...,
-                                to_arg<I>(variadic_positional(
-                                    std::forward<decltype(parts)>(parts),
-                                    std::forward<decltype(args)>(args)...
-                                )),
-                                meta::unpack_arg<cutoff + Next>(
-                                    std::forward<decltype(args)>(args)...
-                                )...
+                        if constexpr (meta::make_def<F>) {
+                            return []<size_t... Prev, size_t... Next>(
+                                std::index_sequence<Prev...>,
+                                std::index_sequence<Next...>,
+                                auto&& parts,
+                                auto&& defaults,
+                                auto&& func,
+                                auto&&... args
+                            ) {
+                                if constexpr (use_partial<K>) {
+                                    return merge<I, J + 1, K + 1>{}(
+                                        std::forward<decltype(parts)>(parts),
+                                        std::forward<decltype(defaults)>(defaults),
+                                        std::forward<decltype(func)>(func),
+                                        meta::unpack_arg<Prev>(
+                                            std::forward<decltype(args)>(args)...
+                                        )...,
+                                        forward<F>(std::forward<decltype(parts)>(
+                                            parts
+                                        ).template get<K>()),
+                                        meta::unpack_arg<J + Next>(
+                                            std::forward<decltype(args)>(args)...
+                                        )...
+                                    );
+                                } else if constexpr (J == impl::args_idx<decltype(args)...>) {
+                                    auto&& pack = meta::unpack_arg<J>(
+                                        std::forward<decltype(args)>(args)...
+                                    );
+                                    if (pack.has_value()) {
+                                        if constexpr (std::is_invocable_v<
+                                            F,
+                                            decltype(args)...,
+                                            decltype(pack.value())
+                                        >) {
+                                            return merge<I, J + 1, K>{}(
+                                                std::forward<decltype(parts)>(parts),
+                                                std::forward<decltype(defaults)>(defaults),
+                                                std::forward<decltype(func)>(func),
+                                                meta::unpack_arg<Prev>(
+                                                    std::forward<decltype(args)>(args)...
+                                                )...,
+                                                forward<F>(pack.value()),
+                                                meta::unpack_arg<J + Next>(
+                                                    std::forward<decltype(args)>(args)...
+                                                )...
+                                            );
+                                        } else {
+                                            std::string message =
+                                                "too many arguments in positional parameter "
+                                                "pack: ['" + repr(pack.value());
+                                            while (pack.has_value()) {
+                                                message += ", '" + repr(pack.value());
+                                            }
+                                            message += "']";
+                                            throw TypeError(message);
+                                        }
+                                    } else {
+                                        return drop_empty_pack(
+                                            std::index_sequence<Prev...>(),
+                                            std::index_sequence<Next...>(),
+                                            std::forward<decltype(parts)>(parts),
+                                            std::forward<decltype(defaults)>(defaults),
+                                            std::forward<decltype(func)>(func),
+                                            std::forward<decltype(args)>(args)...
+                                        );
+                                    }
+                                } else {
+                                    static constexpr size_t cutoff = std::min(
+                                        impl::kw_idx<decltype(args)...>,
+                                        impl::kwargs_idx<decltype(args)...>
+                                    );
+                                    if constexpr (J < cutoff) {
+                                        return merge<I, J + 1, K>{}(
+                                            std::forward<decltype(parts)>(parts),
+                                            std::forward<decltype(defaults)>(defaults),
+                                            std::forward<decltype(func)>(func),
+                                            meta::unpack_arg<Prev>(
+                                                std::forward<decltype(args)>(args)...
+                                            )...,
+                                            forward<F>(meta::unpack_arg<J>(
+                                                std::forward<decltype(args)>(args)...
+                                            )),
+                                            meta::unpack_arg<J + Next>(
+                                                std::forward<decltype(args)>(args)...
+                                            )...
+                                        );
+                                    } else {
+                                        return merge<I + 1, J, K>{}(
+                                            std::forward<decltype(parts)>(parts),
+                                            std::forward<decltype(defaults)>(defaults),
+                                            std::forward<decltype(func)>(func),
+                                            meta::unpack_arg<Prev>(
+                                                std::forward<decltype(args)>(args)...
+                                            )...,
+                                            meta::unpack_arg<J + Next>(
+                                                std::forward<decltype(args)>(args)...
+                                            )...
+                                        );
+                                    }
+                                }
+                            }(
+                                std::make_index_sequence<J>{},
+                                std::make_index_sequence<sizeof...(A) - J>{},
+                                std::forward<P>(parts),
+                                std::forward<D>(defaults),
+                                std::forward<F>(func),
+                                std::forward<A>(args)...
                             );
-                        }(
-                            std::make_index_sequence<J>{},
-                            std::make_index_sequence<sizeof...(A) - cutoff>{},
-                            std::forward<P>(parts),
-                            std::forward<D>(defaults),
-                            std::forward<F>(func),
-                            std::forward<A>(args)...
-                        );
+                        } else {
+                            static constexpr size_t cutoff = std::min(
+                                impl::kw_idx<A...>,
+                                impl::kwargs_idx<A...>
+                            );
+                            return []<size_t... Prev, size_t... Next>(
+                                std::index_sequence<Prev...>,
+                                std::index_sequence<Next...>,
+                                auto&& parts,
+                                auto&& defaults,
+                                auto&& func,
+                                auto&&... args
+                            ) {
+                                return merge<I + 1, J + 1, K + consecutive<K>>{}(
+                                    std::forward<decltype(parts)>(parts),
+                                    std::forward<decltype(defaults)>(defaults),
+                                    std::forward<decltype(func)>(func),
+                                    meta::unpack_arg<Prev>(
+                                        std::forward<decltype(args)>(args)...
+                                    )...,
+                                    to_arg<I>(variadic_positional(
+                                        std::forward<decltype(parts)>(parts),
+                                        std::forward<decltype(args)>(args)...
+                                    )),
+                                    meta::unpack_arg<cutoff + Next>(
+                                        std::forward<decltype(args)>(args)...
+                                    )...
+                                );
+                            }(
+                                std::make_index_sequence<J>{},
+                                std::make_index_sequence<sizeof...(A) - cutoff>{},
+                                std::forward<P>(parts),
+                                std::forward<D>(defaults),
+                                std::forward<F>(func),
+                                std::forward<A>(args)...
+                            );
+                        }
 
                     } else if constexpr (meta::arg_traits<T>::kwargs()) {
                         return []<size_t... Prev>(
@@ -5263,7 +5406,7 @@ namespace impl {
                 }
 
                 template <typename P, typename D, typename F, typename... A>
-                static constexpr std::invoke_result_t<F, Args...> operator()(
+                static constexpr decltype(auto) operator()(
                     P&& parts,
                     D&& defaults,
                     F&& func,
@@ -5633,6 +5776,17 @@ namespace impl {
                 first_kwonly
             );
         }
+    };
+
+    template <typename R, typename C, size_t I>
+    struct chain_return_type { using type = R; };
+    template <typename R, typename C, size_t I> requires (I < C::size())
+    struct chain_return_type<R, C, I> {
+        using type = chain_return_type<
+            std::invoke_result_t<typename C::template at<I>, R>,
+            C,
+            I + 1
+        >::type;
     };
 
     /* If this control structure is enabled, the unary `call()` operator will accept
@@ -6034,7 +6188,7 @@ namespace meta {
     template <typename F, typename... Args>
     concept callable =
         bertrand::signature<F>::enable &&
-        bertrand::signature<F>::args_fit_within_bitset &&
+        bertrand::signature<F>::within_arg_limit &&
         bertrand::signature<F>::proper_argument_order &&
         bertrand::signature<F>::no_qualified_arg_annotations &&
         bertrand::signature<F>::no_duplicate_args &&
@@ -6070,7 +6224,7 @@ namespace meta {
     concept py_function =
         bertrand::signature<F>::enable &&
         bertrand::signature<F>::python &&
-        bertrand::signature<F>::args_fit_within_bitset &&
+        bertrand::signature<F>::within_arg_limit &&
         bertrand::signature<F>::proper_argument_order &&
         bertrand::signature<F>::no_qualified_args &&
         bertrand::signature<F>::no_qualified_arg_annotations &&
@@ -6389,10 +6543,11 @@ arguments). */
 template <meta::normalized_signature Sig, typename F, typename... Args>
     requires (
         signature<Sig>::enable &&
+        !signature<Sig>::has_kwonly &&
+        !signature<Sig>::has_kwargs &&
         signature<Sig>::Defaults::empty() &&
         signature<Sig>::Partial::empty() &&
-        meta::partially_callable<Sig, Args...> &&
-        signature<Sig>::template invocable<F>
+        meta::partially_callable<Sig, Args...>
     )
 constexpr auto make_def(F&& func, Args&&... args) {
     return def(
@@ -6429,9 +6584,10 @@ arguments). */
 template <meta::normalized_signature Sig, typename F, typename... Args>
     requires (
         signature<Sig>::enable &&
+        !signature<Sig>::has_kwonly &&
+        !signature<Sig>::has_kwargs &&
         signature<Sig>::Partial::empty() &&
-        meta::partially_callable<Sig, Args...> &&
-        signature<Sig>::template invocable<F>
+        meta::partially_callable<Sig, Args...>
     )
 constexpr auto make_def(
     const typename signature<Sig>::Defaults& defaults,
@@ -6473,9 +6629,10 @@ arguments). */
 template <meta::normalized_signature Sig, typename F, typename... Args>
     requires (
         signature<Sig>::enable &&
+        !signature<Sig>::has_kwonly &&
+        !signature<Sig>::has_kwargs &&
         signature<Sig>::Partial::empty() &&
-        meta::partially_callable<Sig, Args...> &&
-        signature<Sig>::template invocable<F>
+        meta::partially_callable<Sig, Args...>
     )
 constexpr auto make_def(
     typename signature<Sig>::Defaults&& defaults,
@@ -6730,18 +6887,18 @@ namespace bertrand {
         );
         constexpr auto div = make_def<int(Arg<"x", int>, Arg<"y", int>::opt)>(
             { arg<"y"> = 2 },
-            [](Arg<"x", int> x, Arg<"y", int>::opt y) {
-                return *x / *y;
+            [](auto&& x, auto&& y) {
+                return x / y;
             }
         );
         static_assert(sub(10, 2) == 8);
 
         // constexpr auto chain = sub >> div.bind(arg<"y"> = 2) >> div;
-        constexpr auto chain = sub >> div.bind(arg<"y"> = 2) >>  [](auto&& x) {
+        constexpr auto chain = sub >> div.bind(arg<"y"> = 2) >> [](auto&& x) {
             return std::forward<decltype(x)>(x);
         };
         static_assert(chain(10, 2) == 4);
-        static_assert(chain.get<1>().defaults.size() == 1);
+        static_assert(chain.template get<1>().defaults.size() == 1);
 
         std::vector vec = {1, 2, 3};
         std::vector<int> new_vec = vec->*[](int x) { return x * 2; };
