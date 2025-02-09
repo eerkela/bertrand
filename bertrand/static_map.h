@@ -713,10 +713,6 @@ namespace meta {
 }
 
 
-static_assert(meta::perfectly_hashable<"x", "y">);
-
-
-
 /* A compile-time perfect hash table with a finite set of static strings as keys.  The
 data structure will compute a perfect hash function for the given strings at compile
 time, and will store the values in a fixed-size array that can be baked into the final

@@ -3463,6 +3463,9 @@ namespace impl {
             using type = impl::consistent_generic_type<Return, Args...>;
         };
 
+        /// TODO: if I get smarter about how and when I check invocable<>, then this
+        /// explicit specialization might not be necessary?
+
         template <typename Func>
         static constexpr bool _invocable = std::is_invocable_r_v<Return, Func, Args...>;
         template <meta::make_def Func>
@@ -5595,6 +5598,8 @@ namespace impl {
                 std::forward<A>(args)...
             );
         }
+
+        /// TODO: capture() is no longer necessary?  Just use make_def() instead?
 
         /* Capture a C++ function and generate a new function object that exactly matches
         the enclosing signature, without any partial arguments.  A function of this form

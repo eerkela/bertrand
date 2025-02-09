@@ -9,13 +9,13 @@
 #include <limits>
 #include <optional>
 #include <sstream>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
 #include <utility>
 
 #include "bertrand/common.h"
+#include "bertrand/except.h"
 
 
 // required for demangling
@@ -44,35 +44,35 @@ struct static_str;
 namespace impl {
     struct static_str_tag {};
 
-    static constexpr bool char_islower(char c) {
+    constexpr bool char_islower(char c) noexcept {
         return c >= 'a' && c <= 'z';
     }
 
-    static constexpr bool char_isupper(char c) {
+    constexpr bool char_isupper(char c) noexcept {
         return c >= 'A' && c <= 'Z';
     }
 
-    static constexpr bool char_isalpha(char c) {
+    constexpr bool char_isalpha(char c) noexcept {
         return char_islower(c) || char_isupper(c);
     }
 
-    static constexpr bool char_isdigit(char c) {
+    constexpr bool char_isdigit(char c) noexcept {
         return c >= '0' && c <= '9';
     }
 
-    static constexpr bool char_isalnum(char c) {
+    constexpr bool char_isalnum(char c) noexcept {
         return char_isalpha(c) || char_isdigit(c);
     }
 
-    static constexpr bool char_isascii(char c) {
+    constexpr bool char_isascii(char c) noexcept {
         return c >= 0 && c <= 127;
     }
 
-    static constexpr bool char_isspace(char c) {
+    constexpr bool char_isspace(char c) noexcept {
         return c == ' ' || (c >= '\t' && c <= '\r');
     }
 
-    static constexpr bool char_isdelimeter(char c) {
+    constexpr bool char_isdelimeter(char c) noexcept {
         switch (c) {
             case ' ':
             case '\t':
@@ -108,7 +108,7 @@ namespace impl {
         }
     }
 
-    static constexpr bool char_islinebreak(char c) {
+    constexpr bool char_islinebreak(char c) noexcept {
         switch (c) {
             case '\n':
             case '\r':
@@ -124,11 +124,11 @@ namespace impl {
         }
     }
 
-    static constexpr char char_tolower(char c) {
+    constexpr char char_tolower(char c) noexcept {
         return char_isupper(c) ? c + ('a' - 'A') : c;
     }
 
-    static constexpr char char_toupper(char c) {
+    constexpr char char_toupper(char c) noexcept {
         return char_islower(c) ? c + ('A' - 'a') : c;
     }
 
@@ -158,6 +158,124 @@ namespace impl {
         constexpr size_t N = name.size();
         return static_str<N>{name.data()};
     }
+
+    struct static_str_iterator {
+        const char* m_ptr = nullptr;
+        ssize_t m_index = 0;
+        ssize_t m_length = 0;
+
+        using iterator = static_str_iterator;
+
+    public:
+        using iterator_category             = std::contiguous_iterator_tag;
+        using difference_type               = std::ptrdiff_t;
+        using value_type                    = const char;
+        using pointer                       = value_type*;
+        using reference                     = value_type&;
+
+        constexpr static_str_iterator() noexcept = default;
+        constexpr static_str_iterator(
+            const char* ptr,
+            ssize_t index,
+            ssize_t length
+        ) noexcept :
+            m_ptr(ptr),
+            m_index(index),
+            m_length(length)
+        {}
+
+        [[nodiscard]] constexpr value_type operator*() const {
+            if (m_index >= 0 && m_index < m_length) {
+                return m_ptr[m_index];
+            }
+            throw IndexError(std::to_string(m_index));
+        }
+
+        [[nodiscard]] constexpr pointer operator->() const {
+            if (m_index >= 0 && m_index < m_length) {
+                return m_ptr + m_index;
+            }
+            throw IndexError(std::to_string(m_index));
+        }
+
+        [[nodiscard]] constexpr value_type operator[](difference_type n) const {
+            ssize_t index = m_index + n;
+            if (index >= 0 && index < m_length) {
+                return m_ptr[index];
+            }
+            throw IndexError(std::to_string(index));
+        }
+
+        constexpr iterator& operator++() noexcept {
+            ++m_index;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr iterator operator++(int) noexcept {
+            iterator copy = *this;
+            ++(*this);
+            return copy;
+        }
+
+        constexpr iterator& operator+=(difference_type n) noexcept {
+            m_index += n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr iterator operator+(difference_type n) const noexcept {
+            return {m_ptr, m_index + n, m_length};
+        }
+
+        constexpr iterator& operator--() noexcept {
+            --m_index;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr iterator operator--(int) noexcept {
+            iterator copy = *this;
+            --(*this);
+            return copy;
+        }
+
+        constexpr iterator& operator-=(difference_type n) noexcept {
+            m_index -= n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr iterator operator-(difference_type n) const noexcept {
+            return {m_ptr, m_index - n, m_length};
+        }
+
+        [[nodiscard]] constexpr difference_type operator-(
+            const iterator& other
+        ) const noexcept {
+            return m_index - other.m_index;
+        }
+
+        [[nodiscard]] constexpr bool operator<(const iterator& other) const noexcept {
+            return m_ptr == other.m_ptr && m_index < other.m_index;
+        }
+
+        [[nodiscard]] constexpr bool operator<=(const iterator& other) const noexcept {
+            return m_ptr == other.m_ptr && m_index <= other.m_index;
+        }
+
+        [[nodiscard]] constexpr bool operator==(const iterator& other) const noexcept {
+            return m_ptr == other.m_ptr && m_index == other.m_index;
+        }
+
+        [[nodiscard]] constexpr bool operator!=(const iterator& other) const noexcept {
+            return !(*this == other);
+        }
+
+        [[nodiscard]] constexpr bool operator>=(const iterator& other) const noexcept {
+            return m_ptr == other.m_ptr && m_index >= other.m_index;
+        }
+
+        [[nodiscard]] constexpr bool operator>(const iterator& other) const noexcept {
+            return m_ptr == other.m_ptr && m_index > other.m_index;
+        }
+    };
 
 }
 
@@ -197,7 +315,6 @@ namespace meta {
 }
 
 
-
 /* CTAD guide allows static_str to be used as a template parameter accepting string
 literals with arbitrary length. */
 template <size_t N>
@@ -227,212 +344,20 @@ struct static_strings {
 template <size_t N = 0>
 struct static_str : impl::static_str_tag {
 private:
-
     template <size_t M>
     friend class static_str;
 
-    struct Iterator {
-        const char* ptr;
-        ssize_t index;
-
-    public:
-        using iterator_category             = std::random_access_iterator_tag;
-        using difference_type               = std::ptrdiff_t;
-        using value_type                    = const char;
-        using pointer                       = value_type*;
-        using reference                     = value_type&;
-
-        Iterator(const char* ptr, ssize_t index) : ptr(ptr), index(index) {}
-        Iterator(const Iterator& other) : ptr(other.ptr), index(other.index) {}
-        Iterator(Iterator&& other) : ptr(other.ptr), index(other.index) {}
-
-        Iterator& operator=(const Iterator& other) {
-            ptr = other.ptr;
-            index = other.index;
-            return *this;
-        }
-
-        Iterator& operator=(Iterator&& other) {
-            ptr = other.ptr;
-            index = other.index;
-            return *this;
-        }
-
-        value_type operator*() const {
-            if (ptr == nullptr) {
-                throw std::out_of_range("attempt to dereference a null iterator");
-            }
-            return *ptr;
-        }
-
-        pointer operator->() const {
-            return &(**this);
-        }
-
-        Iterator& operator++() {
-            ++index;
-            if (index >= 0 && index < N) {
-                ++ptr;
-            } else {
-                ptr = nullptr;
-            }
-            return *this;
-        }
-
-        Iterator operator++(int) {
-            Iterator copy = *this;
-            ++(*this);
-            return copy;
-        }
-
-        Iterator& operator--() {
-            --index;
-            if (index >= 0 && index < N) {
-                --ptr;
-            } else {
-                ptr = nullptr;
-            }
-            return *this;
-        }
-
-        Iterator operator--(int) {
-            Iterator copy = *this;
-            --(*this);
-            return copy;
-        }
-
-        Iterator& operator+=(difference_type n) {
-            index += n;
-            if (index >= 0 && index < N) {
-                ptr += n;
-            } else {
-                ptr = nullptr;
-            }
-            return *this;
-        }
-
-        Iterator operator+(difference_type n) const {
-            Iterator copy = *this;
-            copy += n;
-            return copy;
-        }
-
-        Iterator& operator-=(difference_type n) {
-            index -= n;
-            if (index >= 0 && index < N) {
-                ptr -= n;
-            } else {
-                ptr = nullptr;
-            }
-            return *this;
-        }
-
-        Iterator operator-(difference_type n) const {
-            Iterator copy = *this;
-            copy -= n;
-            return copy;
-        }
-
-        difference_type operator-(const Iterator& other) const {
-            return index - other.index;
-        }
-
-        value_type operator[](difference_type n) const {
-            return *(*this + n);
-        }
-
-        bool operator<(const Iterator& other) const {
-            return ptr != nullptr && (*this - other) < 0;
-        }
-
-        bool operator<=(const Iterator& other) const {
-            return ptr != nullptr && (*this - other) <= 0;
-        }
-
-        bool operator==(const Iterator& other) const {
-            return ptr == other.ptr;
-        }
-
-        bool operator!=(const Iterator& other) const {
-            return ptr != other.ptr;
-        }
-
-        bool operator>=(const Iterator& other) const {
-            return ptr == nullptr || (*this - other) >= 0;
-        }
-
-        bool operator>(const Iterator& other) const {
-            return ptr == nullptr || (*this - other) > 0;
-        }
-
+    static constexpr ssize_t normalize_index(ssize_t i) noexcept {
+        return i + N * (i < 0);
     };
-
-    struct ReverseIterator : public Iterator {
-        using Iterator::Iterator;
-
-        ReverseIterator& operator++() {
-            Iterator::operator--();
-            return *this;
-        }
-
-        ReverseIterator operator++(int) {
-            ReverseIterator copy = *this;
-            Iterator::operator--();
-            return copy;
-        }
-
-        ReverseIterator& operator--() {
-            Iterator::operator++();
-            return *this;
-        }
-
-        ReverseIterator operator--(int) {
-            ReverseIterator copy = *this;
-            Iterator::operator++();
-            return copy;
-        }
-
-        ReverseIterator& operator+=(typename Iterator::difference_type n) {
-            Iterator::operator-=(n);
-            return *this;
-        }
-
-        ReverseIterator operator+(typename Iterator::difference_type n) const {
-            ReverseIterator copy = *this;
-            copy -= n;
-            return copy;
-        }
-
-        ReverseIterator& operator-=(typename Iterator::difference_type n) {
-            Iterator::operator+=(n);
-            return *this;
-        }
-
-        ReverseIterator operator-(typename Iterator::difference_type n) const {
-            ReverseIterator copy = *this;
-            Iterator::operator+=(n);
-            return copy;
-        }
-
-    };
-
-    static constexpr ssize_t normalize_index(ssize_t i) { return i + N * (i < 0); };
-
-    static constexpr char char_tolower(char c) {
-        return impl::char_isupper(c) ? c + ('a' - 'A') : c;
-    }
-
-    static constexpr char char_toupper(char c) {
-        return impl::char_islower(c) ? c + ('A' - 'a') : c;
-    }
 
     template <bertrand::static_str self, bertrand::static_str chars>
-    static consteval size_t first_non_stripped() {
+    static consteval size_t first_non_stripped() noexcept {
         for (size_t i = 0; i < self.size(); ++i) {
-            char c = self[i];
+            char c = self.buffer[i];
             size_t j = 0;
             while (j < chars.size()) {
-                if (chars[j++] == c) {
+                if (chars.buffer[j++] == c) {
                     break;
                 } else if (j == chars.size()) {
                     return i;
@@ -443,13 +368,13 @@ private:
     }
 
     template <bertrand::static_str self, bertrand::static_str chars>
-    static consteval size_t last_non_stripped() {
+    static consteval size_t last_non_stripped() noexcept {
         for (size_t i = 0; i < self.size(); ++i) {
             size_t idx = self.size() - i - 1;
-            char c = self[idx];
+            char c = self.buffer[idx];
             size_t j = 0;
             while (j < chars.size()) {
-                if (chars[j++] == c) {
+                if (chars.buffer[j++] == c) {
                     break;
                 } else if (j == chars.size()) {
                     return idx;
@@ -489,7 +414,7 @@ private:
     template <typename T> requires (sizeof(T) == 8)
     struct bit_view<T> { using type = uint64_t; };
 
-    static constexpr bool sign_bit(double num) {
+    static constexpr bool sign_bit(double num) noexcept {
         using Int = bit_view<double>::type;
         return std::bit_cast<Int>(num) >> (8 * sizeof(double) - 1);
     };
@@ -513,12 +438,24 @@ private:
     constexpr static_str() = default;
 
 public:
+    using value_type = const char;
+    using reference = value_type&;
+    using const_reference = reference;
+    using pointer = value_type*;
+    using const_pointer = pointer;
+    using size_type = size_t;
+    using difference_type = std::ptrdiff_t;
+    using iterator = impl::static_str_iterator;
+    using const_iterator = iterator;
+    using reverse_iterator = std::reverse_iterator<iterator>;
+    using const_reverse_iterator = std::reverse_iterator<const_iterator>;
+
     /* A placeholder index returned when a substring is not present. */
     static constexpr size_t missing = std::numeric_limits<size_t>::max();
 
     char buffer[N + 1];  // +1 for null terminator
 
-    consteval static_str(const char* arr) : buffer{} {
+    consteval static_str(const char* arr) noexcept : buffer{} {
         for (size_t i = 0; i < N; ++i) {
             buffer[i] = arr[i];
         }
@@ -625,42 +562,58 @@ public:
         return result;
     }();
 
-    constexpr operator const char*() const { return buffer; }
-    explicit constexpr operator bool() const { return !empty(); }
-    explicit constexpr operator std::string() const { return {buffer, N}; }
-    explicit constexpr operator std::string_view() const { return {buffer, N}; }
+    [[nodiscard]] constexpr operator const char*() const noexcept { return buffer; }
+    [[nodiscard]] explicit constexpr operator bool() const noexcept { return N; }
+    [[nodiscard]] explicit constexpr operator std::string() const { return {buffer, N}; }
+    [[nodiscard]] explicit constexpr operator std::string_view() const noexcept {
+        return {buffer, N};
+    }
 
-    constexpr const char* data() const { return buffer; }
-    static constexpr size_t size() { return N; }
-    static constexpr bool empty() { return !N; }
-    Iterator begin() const { return {buffer, 0}; }
-    Iterator cbegin() const { return begin(); }
-    Iterator end() const { return {nullptr, N}; }
-    Iterator cend() const { return end(); }
-    ReverseIterator rbegin() const { return {buffer + N - 1, N - 1}; }
-    ReverseIterator crbegin() const { return rbegin(); }
-    ReverseIterator rend() const { return {nullptr, -1}; }
-    ReverseIterator crend() const { return rend(); }
+    [[nodiscard]] static constexpr size_t size() noexcept { return N; }
+    [[nodiscard]] static constexpr bool empty() noexcept { return !N; }
 
-    /* Access a character within the underlying buffer. */
-    constexpr const char operator[](ssize_t i) const {
-        ssize_t norm = normalize_index(i);
-        return (norm >= 0 && norm < N) ? buffer[norm] : '\0';
+    [[nodiscard]] constexpr const char* data() const noexcept { return buffer; }
+    [[nodiscard]] constexpr iterator begin() const noexcept { return {buffer, 0, N}; }
+    [[nodiscard]] constexpr iterator cbegin() const noexcept { return {buffer, 0, N}; }
+    [[nodiscard]] constexpr iterator end() const noexcept { return {buffer, N, N}; }
+    [[nodiscard]] constexpr iterator cend() const noexcept { return {buffer, N, N}; }
+    [[nodiscard]] constexpr reverse_iterator rbegin() const noexcept {
+        return std::make_reverse_iterator(end());
+    }
+    [[nodiscard]] constexpr reverse_iterator crbegin() const noexcept {
+        return std::make_reverse_iterator(cend());
+    }
+    [[nodiscard]] constexpr reverse_iterator rend() const noexcept {
+        return std::make_reverse_iterator(begin());
+    }
+    [[nodiscard]] constexpr reverse_iterator crend() const noexcept {
+        return std::make_reverse_iterator(cbegin());
+    }
+
+    /* Access a character within the underlying buffer.  Applies Python-style
+    wraparound for negative indices. */
+    [[nodiscard]] constexpr const char operator[](ssize_t i) const noexcept {
+        ssize_t index = normalize_index(i);
+        if (index >= 0 && index < N) {
+            return buffer[index];
+        }
+        throw IndexError(std::to_string(i));
     }
 
     /* Slice operator utilizing `std::initializer_list`.  Up to 3 indices may be
     supplied according to Python semantics, with `std::nullopt` equating to `None`. */
-    constexpr std::string operator[](
+    [[nodiscard]] constexpr std::string operator[](
         std::initializer_list<std::optional<ssize_t>> slice
     ) const {
         if (slice.size() > 3) {
-            throw std::runtime_error(
-                "Slices must be of the form {start[, stop[, step]]}"
-            );
+            throw TypeError("Slices must be of the form {start[, stop[, step]]}");
         }
 
         // fill in missing indices
-        auto indices = []<size_t... Is>(std::index_sequence<Is...>, const auto& slice) {
+        constexpr auto indices = []<size_t... Is>(
+            std::index_sequence<Is...>,
+            const auto& slice
+        ) {
             return std::array<std::optional<ssize_t>, 3>{
                 Is < slice.size() ? std::data(slice)[Is] : std::nullopt...
             };
@@ -669,23 +622,23 @@ public:
         // normalize step
         ssize_t step = indices[2].value_or(1);
         if (step == 0) {
-            throw std::runtime_error("slice step cannot be zero");
+            throw ValueError("slice step cannot be zero");
         }
 
         // normalize start/stop based on sign of step and populate result
-        std::optional<ssize_t> istart = indices[0];
-        std::optional<ssize_t> istop = indices[1];
+        std::optional<ssize_t> opt_start = indices[0];
+        std::optional<ssize_t> opt_stop = indices[1];
         if (step > 0) {
-            ssize_t start = !istart.has_value() ? 0 : normalize_index(istart.value());
-            ssize_t stop = !istop.has_value() ? N : normalize_index(istop.value());
+            ssize_t start = opt_start ? normalize_index(*opt_start) : 0;
+            ssize_t stop = opt_stop ? normalize_index(*opt_stop) : N;
             std::string result((stop - start) * (stop > start) / step, '\0');
             for (ssize_t i = start, j = 0; i < stop; i += step) {
                 result[j++] = buffer[i];
             }
             return result;
         } else {
-            ssize_t start = !istart.has_value() ? N - 1 : normalize_index(istart.value());
-            ssize_t stop = !istop.has_value() ? -1 : normalize_index(istop.value());
+            ssize_t start = opt_start ? normalize_index(*opt_start) : N - 1;
+            ssize_t stop = opt_stop ? normalize_index(*opt_stop) : -1;
             ssize_t delta = (stop - start) * (stop < start);  // needed for floor
             std::string result(delta / step + (delta % step != 0), '\0');
             for (ssize_t i = start, j = 0; i > stop; i += step) {
@@ -697,11 +650,11 @@ public:
 
     /* Equivalent to Python `str.capitalize()`. */
     template <bertrand::static_str self>
-    static consteval auto capitalize() {
+    [[nodiscard]] static consteval auto capitalize() noexcept {
         static_str<self.size()> result;
         bool capitalized = false;
         for (size_t i = 0; i < self.size(); ++i) {
-            char c = self[i];
+            char c = self.buffer[i];
             if (impl::char_isalpha(c)) {
                 if (capitalized) {
                     result.buffer[i] = impl::char_tolower(c);
@@ -719,7 +672,7 @@ public:
 
     /* Equivalent to Python `str.center(width[, fillchar])`. */
     template <bertrand::static_str self, size_t width, char fillchar = ' '>
-    static consteval auto center() {
+    [[nodiscard]] static consteval auto center() noexcept {
         if constexpr (width <= self.size()) {
             return self;
         } else {
@@ -745,7 +698,7 @@ public:
         ssize_t start = 0,
         ssize_t stop = self.size()
     >
-    static consteval size_t count() {
+    [[nodiscard]] static consteval size_t count() noexcept {
         ssize_t nstart = std::max(
             normalize_index(start),
             static_cast<ssize_t>(0)
@@ -765,7 +718,7 @@ public:
 
     /* Equivalent to Python `str.endswith(suffix)`. */
     template <bertrand::static_str self, bertrand::static_str suffix>
-    static consteval bool endswith() {
+    [[nodiscard]] static consteval bool endswith() noexcept {
         return suffix.size() <= self.size() && std::equal(
             suffix.buffer,
             suffix.buffer + suffix.size(),
@@ -775,12 +728,12 @@ public:
 
     /* Equivalent to Python `str.expandtabs([tabsize])`. */
     template <bertrand::static_str self, size_t tabsize = 8>
-    static consteval auto expandtabs() {
+    [[nodiscard]] static consteval auto expandtabs() noexcept {
         constexpr size_t n = count<self, "\t">();
         static_str<self.size() - n + n * tabsize> result;
         size_t offset = 0;
         for (size_t i = 0; i < self.size(); ++i) {
-            char c = self[i];
+            char c = self.buffer[i];
             if (c == '\t') {
                 std::fill_n(result.buffer + offset, tabsize, ' ');
                 offset += tabsize;
@@ -800,7 +753,7 @@ public:
         ssize_t start = 0,
         ssize_t stop = self.size()
     >
-    static consteval size_t find() {
+    [[nodiscard]] static consteval size_t find() noexcept {
         constexpr ssize_t nstart =
             std::max(normalize_index(start), static_cast<ssize_t>(0));
         constexpr ssize_t nstop =
@@ -821,15 +774,15 @@ public:
         ssize_t start = 0,
         ssize_t stop = self.size()
     > requires (find<self, sub, start, stop>() != missing)
-    static consteval size_t index() {
+    [[nodiscard]] static consteval size_t index() noexcept {
         return find<self, sub, start, stop>();
     }
 
     /* Equivalent to Python `str.isalpha()`. */
     template <bertrand::static_str self>
-    static consteval bool isalpha() {
+    [[nodiscard]] static consteval bool isalpha() noexcept {
         for (size_t i = 0; i < self.size(); ++i) {
-            if (!impl::char_isalpha(self[i])) {
+            if (!impl::char_isalpha(self.buffer[i])) {
                 return false;
             }
         }
@@ -838,9 +791,9 @@ public:
 
     /* Equivalent to Python `str.isalnum()`. */
     template <bertrand::static_str self>
-    static consteval bool isalnum() {
+    [[nodiscard]] static consteval bool isalnum() noexcept {
         for (size_t i = 0; i < self.size(); ++i) {
-            if (!impl::char_isalnum(self[i])) {
+            if (!impl::char_isalnum(self.buffer[i])) {
                 return false;
             }
         }
@@ -849,9 +802,9 @@ public:
 
     /* Equivalent to Python `str.isascii_()`. */
     template <bertrand::static_str self>
-    static consteval bool isascii_() {
+    [[nodiscard]] static consteval bool isascii_() noexcept {
         for (size_t i = 0; i < self.size(); ++i) {
-            if (!impl::char_isascii(self[i])) {
+            if (!impl::char_isascii(self.buffer[i])) {
                 return false;
             }
         }
@@ -860,9 +813,9 @@ public:
 
     /* Equivalent to Python `str.isdigit()`. */
     template <bertrand::static_str self>
-    static consteval bool isdigit() {
+    [[nodiscard]] static consteval bool isdigit() noexcept {
         for (size_t i = 0; i < self.size(); ++i) {
-            if (!impl::char_isdigit(self[i])) {
+            if (!impl::char_isdigit(self.buffer[i])) {
                 return false;
             }
         }
@@ -871,9 +824,9 @@ public:
 
     /* Equivalent to Python `str.islower()`. */
     template <bertrand::static_str self>
-    static consteval bool islower() {
+    [[nodiscard]] static consteval bool islower() noexcept {
         for (size_t i = 0; i < self.size(); ++i) {
-            if (!impl::char_islower(self[i])) {
+            if (!impl::char_islower(self.buffer[i])) {
                 return false;
             }
         }
@@ -882,9 +835,9 @@ public:
 
     /* Equivalent to Python `str.isspace()`. */
     template <bertrand::static_str self>
-    static consteval bool isspace() {
+    [[nodiscard]] static consteval bool isspace() noexcept {
         for (size_t i = 0; i < self.size(); ++i) {
-            if (!impl::char_isspace(self[i])) {
+            if (!impl::char_isspace(self.buffer[i])) {
                 return false;
             }
         }
@@ -893,10 +846,10 @@ public:
 
     /* Equivalent to Python `str.istitle()`. */
     template <bertrand::static_str self>
-    static consteval bool istitle() {
+    [[nodiscard]] static consteval bool istitle() noexcept {
         bool last_was_delimeter = true;
         for (size_t i = 0; i < self.size(); ++i) {
-            char c = self[i];
+            char c = self.buffer[i];
             if (last_was_delimeter && impl::char_islower(c)) {
                 return false;
             }
@@ -907,9 +860,9 @@ public:
 
     /* Equivalent to Python `str.isupper()`. */
     template <bertrand::static_str self>
-    static consteval bool isupper() {
+    [[nodiscard]] static consteval bool isupper() noexcept {
         for (size_t i = 0; i < self.size(); ++i) {
-            if (!impl::char_isupper(self[i])) {
+            if (!impl::char_isupper(self.buffer[i])) {
                 return false;
             }
         }
@@ -922,7 +875,7 @@ public:
         bertrand::static_str first,
         bertrand::static_str... rest
     >
-    static consteval auto join() {
+    [[nodiscard]] static consteval auto join() noexcept {
         static_str<first.size() + (0 + ... + (self.size() + rest.size()))> result;
         std::copy_n(first.buffer, first.size(), result.buffer);
         size_t offset = first.size();
@@ -949,7 +902,7 @@ public:
 
     /* Equivalent to Python `str.ljust(width[, fillchar])`. */
     template <bertrand::static_str self, size_t width, char fillchar = ' '>
-    static consteval auto ljust() {
+    [[nodiscard]] static consteval auto ljust() noexcept {
         if constexpr (width <= self.size()) {
             return self;
         } else {
@@ -967,10 +920,10 @@ public:
 
     /* Equivalent to Python `str.lower()`. */
     template <bertrand::static_str self>
-    static consteval auto lower() {
+    [[nodiscard]] static consteval auto lower() noexcept {
         static_str<self.size()> result;
         for (size_t i = 0; i < self.size(); ++i) {
-            result.buffer[i] = impl::char_tolower(self[i]);
+            result.buffer[i] = impl::char_tolower(self.buffer[i]);
         }
         result.buffer[self.size()] = '\0';
         return result;
@@ -978,7 +931,7 @@ public:
 
     /* Equivalent to Python `str.lstrip([chars])`. */
     template <bertrand::static_str self, bertrand::static_str chars = " \t\n\r\f\v">
-    static consteval auto lstrip() {
+    [[nodiscard]] static consteval auto lstrip() noexcept {
         constexpr size_t start = first_non_stripped<self, chars>();
         if constexpr (start == missing) {
             return bertrand::static_str{""};
@@ -993,7 +946,7 @@ public:
 
     /* Equivalent to Python `str.partition(sep)`. */
     template <bertrand::static_str self, bertrand::static_str sep>
-    static consteval auto partition() {
+    [[nodiscard]] static consteval auto partition() noexcept {
         constexpr size_t index = find<self, sep>();
         if constexpr (index == missing) {
             return std::make_tuple(
@@ -1024,7 +977,7 @@ public:
         bertrand::static_str repl,
         size_t max_count = missing
     >
-    static consteval auto replace() {
+    [[nodiscard]] static consteval auto replace() noexcept {
         constexpr size_t freq = count<self, sub>();
         constexpr size_t n = freq < max_count ? freq : max_count;
         static_str<self.size() - (n * sub.size()) + (n * repl.size())> result;
@@ -1055,7 +1008,7 @@ public:
         ssize_t start = 0,
         ssize_t stop = self.size()
     >
-    static consteval size_t rfind() {
+    [[nodiscard]] static consteval size_t rfind() noexcept {
         constexpr ssize_t nstart =
             std::min(normalize_index(stop), static_cast<ssize_t>(self.size())) - 1;
         constexpr ssize_t nstop =
@@ -1076,13 +1029,13 @@ public:
         ssize_t start = 0,
         ssize_t stop = self.size()
     > requires (rfind<self, sub, start, stop>() != missing)
-    static consteval size_t rindex() {
+    [[nodiscard]] static consteval size_t rindex() noexcept {
         return rfind<self, sub, start, stop>();
     }
 
     /* Equivalent to Python `str.rjust(width[, fillchar])`. */
     template <bertrand::static_str self, size_t width, char fillchar = ' '>
-    static consteval auto rjust() {
+    [[nodiscard]] static consteval auto rjust() noexcept {
         if constexpr (width <= self.size()) {
             return self;
         } else {
@@ -1104,7 +1057,7 @@ public:
 
     /* Equivalent to Python `str.rpartition(sep)`. */
     template <bertrand::static_str self, bertrand::static_str sep>
-    static consteval auto rpartition() {
+    [[nodiscard]] static consteval auto rpartition() noexcept {
         constexpr size_t index = rfind<self, sep>();
         if constexpr (index == missing) {
             return std::make_tuple(
@@ -1134,7 +1087,7 @@ public:
         bertrand::static_str sep,
         size_t maxsplit = missing
     > requires (sep.size() > 0)
-    static consteval auto rsplit() {
+    [[nodiscard]] static consteval auto rsplit() noexcept {
         constexpr size_t freq = count<self, sep>();
         if constexpr (freq == 0) {
             return std::make_tuple(self);
@@ -1179,7 +1132,7 @@ public:
 
     /* Equivalent to Python `str.rstrip([chars])`. */
     template <bertrand::static_str self, bertrand::static_str chars = " \t\n\r\f\v">
-    static consteval auto rstrip() {
+    [[nodiscard]] static consteval auto rstrip() noexcept {
         constexpr size_t stop = last_non_stripped<self, chars>();
         if constexpr (stop == missing) {
             return bertrand::static_str{""};
@@ -1198,7 +1151,7 @@ public:
         bertrand::static_str sep,
         size_t maxsplit = missing
     > requires (sep.size() > 0)
-    static consteval auto split() {
+    [[nodiscard]] static consteval auto split() noexcept {
         constexpr size_t freq = count<self, sep>();
         if constexpr (freq == 0) {
             return std::make_tuple(self);
@@ -1244,17 +1197,17 @@ public:
 
     /* Equivalent to Python `str.splitlines([keepends])`. */
     template <bertrand::static_str self, bool keepends = false>
-    static consteval auto splitlines() {
+    [[nodiscard]] static consteval auto splitlines() noexcept {
         constexpr size_t n = [] {
             if constexpr (self.size() == 0) {
                 return 0;
             } else {
                 size_t total = 1;
                 for (size_t i = 0; i < self.size(); ++i) {
-                    char c = self[i];
+                    char c = self.buffer[i];
                     if (c == '\r') {
                         ++total;
-                        if (self[i + 1] == '\n') {
+                        if (self.buffer[i + 1] == '\n') {
                             ++i;  // skip newline character
                         }
                     } else if (impl::char_islinebreak(c)) {
@@ -1272,8 +1225,8 @@ public:
                     std::array<size_t, n> result;
                     size_t prev = 0;
                     for (size_t i = prev, j = 0; j < n - 1;) {
-                        char c = self[i];
-                        if (c == '\r' && self[i + 1] == '\n') {
+                        char c = self.buffer[i];
+                        if (c == '\r' && self.buffer[i + 1] == '\n') {
                             if constexpr (keepends) {
                                 i += 2;
                                 result[j++] = i - prev;
@@ -1331,7 +1284,7 @@ public:
     /* Equivalent to Python `str.startswith(prefix)`, but evaluated statically at
     compile time. */
     template <bertrand::static_str self, bertrand::static_str prefix>
-    static consteval bool startswith() {
+    [[nodiscard]] static consteval bool startswith() noexcept {
         return (
             prefix.size() <= self.size() &&
             std::equal(prefix.buffer, prefix.buffer + prefix.size(), self.buffer)
@@ -1341,7 +1294,7 @@ public:
     /* Equivalent to Python `str.strip([chars])`, but evaluated statically at compile
     time. */
     template <bertrand::static_str self, bertrand::static_str chars = " \t\n\r\f\v">
-    static consteval auto strip() {
+    [[nodiscard]] static consteval auto strip() noexcept {
         constexpr size_t start = first_non_stripped<self, chars>();
         if constexpr (start == missing) {
             return bertrand::static_str{""};
@@ -1358,10 +1311,10 @@ public:
     /* Equivalent to Python `str.swapcase()`, but evaluated statically at compile
     time. */
     template <bertrand::static_str self>
-    static consteval auto swapcase() {
+    [[nodiscard]] static consteval auto swapcase() noexcept {
         static_str<self.size()> result;
         for (size_t i = 0; i < self.size(); ++i) {
-            char c = self[i];
+            char c = self.buffer[i];
             if (impl::char_islower(c)) {
                 result.buffer[i] = impl::char_toupper(c);
             } else if (impl::char_isupper(c)) {
@@ -1376,11 +1329,11 @@ public:
 
     /* Equivalent to Python `str.title()`, but evaluated statically at compile time. */
     template <bertrand::static_str self>
-    static consteval auto title() {
+    [[nodiscard]] static consteval auto title() noexcept {
         static_str<self.size()> result;
         bool capitalize_next = true;
         for (size_t i = 0; i < self.size(); ++i) {
-            char c = self[i];
+            char c = self.buffer[i];
             if (impl::char_isalpha(c)) {
                 if (capitalize_next) {
                     result.buffer[i] = impl::char_toupper(c);
@@ -1401,10 +1354,10 @@ public:
 
     /* Equivalent to Python `str.upper()`, but evaluated statically at compile time. */
     template <bertrand::static_str self>
-    static consteval auto upper() {
+    [[nodiscard]] static consteval auto upper() noexcept {
         static_str<self.size()> result;
         for (size_t i = 0; i < self.size(); ++i) {
-            result.buffer[i] = impl::char_toupper(self[i]);
+            result.buffer[i] = impl::char_toupper(self.buffer[i]);
         }
         result.buffer[self.size()] = '\0';
         return result;
@@ -1413,14 +1366,19 @@ public:
     /* Equivalent to Python `str.zfill(width)`, but evaluated statically at compile
     time. */
     template <bertrand::static_str self, size_t width>
-    static consteval auto zfill() {
+    [[nodiscard]] static consteval auto zfill() noexcept {
         if constexpr (width <= self.size()) {
             return self;
+        } else if constexpr (self.empty()) {
+            static_str<width> result;
+            std::fill_n(result.buffer, width, '0');
+            result.buffer[width] = '\0';
+            return result;
         } else {
             static_str<width> result;
             size_t start = 0;
-            if (self[0] == '+' || self[0] == '-') {
-                result.buffer[0] = self[0];
+            if (self.buffer[0] == '+' || self.buffer[0] == '-') {
+                result.buffer[0] = self.buffer[0];
                 start = 1;
             }
             std::fill_n(
@@ -1441,7 +1399,7 @@ public:
     /* Equivalent to Python `str.removeprefix()`, but evaluated statically at compile
     time. */
     template <bertrand::static_str self, bertrand::static_str prefix>
-    static consteval auto removeprefix() {
+    [[nodiscard]] static consteval auto removeprefix() noexcept {
         if constexpr (startswith<self, prefix>()) {
             static_str<self.size() - prefix.size()> result;
             std::copy_n(
@@ -1459,7 +1417,7 @@ public:
     /* Equivalent to Python `str.removesuffix()`, but evaluated statically at compile
     time. */
     template <bertrand::static_str self, bertrand::static_str suffix>
-    static consteval auto removesuffix() {
+    [[nodiscard]] static consteval auto removesuffix() noexcept {
         if constexpr (endswith<self, suffix>()) {
             static_str<self.size() - suffix.size()> result;
             std::copy_n(
@@ -1475,14 +1433,14 @@ public:
     }
 
     template <size_t M>
-    friend consteval bool operator<(
+    [[nodiscard]] friend consteval bool operator<(
         const static_str& self,
         const static_str<M>& other
-    ) {
+    ) noexcept {
         size_t i = 0;
         while (i < self.size() && i < other.size()) {
-            const char x = self[i];
-            const char y = other[i];
+            const char x = self.buffer[i];
+            const char y = other.buffer[i];
             if (x < y) {
                 return true;
             } else if (y < x) {
@@ -1493,13 +1451,13 @@ public:
         return i == self.size() && i != other.size();
     }
     template <size_t M>
-    friend consteval bool operator<(
+    [[nodiscard]] friend consteval bool operator<(
         const static_str& self,
         const char(&other)[M]
-    ) {
+    ) noexcept {
         size_t i = 0;
         while (i < self.size() && i < (M - 1)) {
-            const char x = self[i];
+            const char x = self.buffer[i];
             const char y = other[i];
             if (x < y) {
                 return true;
@@ -1511,14 +1469,14 @@ public:
         return i == self.size() && i != (M - 1);
     }
     template <size_t M>
-    friend consteval bool operator<(
+    [[nodiscard]] friend consteval bool operator<(
         const char(&other)[M],
         const static_str& self
-    ) {
+    ) noexcept {
         size_t i = 0;
         while (i < self.size() && i < (M - 1)) {
             const char x = other[i];
-            const char y = self[i];
+            const char y = self.buffer[i];
             if (x < y) {
                 return true;
             } else if (y < x) {
@@ -1530,14 +1488,14 @@ public:
     }
 
     template <size_t M>
-    friend consteval bool operator<=(
+    [[nodiscard]] friend consteval bool operator<=(
         const static_str& self,
         const static_str<M>& other
-    ) {
+    ) noexcept {
         size_t i = 0;
         while (i < self.size() && i < other.size()) {
-            const char x = self[i];
-            const char y = other[i];
+            const char x = self.buffer[i];
+            const char y = other.buffer[i];
             if (x < y) {
                 return true;
             } else if (y < x) {
@@ -1548,13 +1506,13 @@ public:
         return i == self.size();
     }
     template <size_t M>
-    friend consteval bool operator<=(
+    [[nodiscard]] friend consteval bool operator<=(
         const static_str& self,
         const char(&other)[M]
-    ) {
+    ) noexcept {
         size_t i = 0;
         while (i < self.size() && i < (M - 1)) {
-            const char x = self[i];
+            const char x = self.buffer[i];
             const char y = other[i];
             if (x < y) {
                 return true;
@@ -1566,14 +1524,14 @@ public:
         return i == self.size();
     }
     template <size_t M>
-    friend consteval bool operator<=(
+    [[nodiscard]] friend consteval bool operator<=(
         const char(&other)[M],
         const static_str& self
-    ) {
+    ) noexcept {
         size_t i = 0;
         while (i < self.size() && i < (M - 1)) {
             const char x = other[i];
-            const char y = self[i];
+            const char y = self.buffer[i];
             if (x < y) {
                 return true;
             } else if (y < x) {
@@ -1585,13 +1543,13 @@ public:
     }
 
     template <size_t M>
-    friend consteval bool operator==(
+    [[nodiscard]] friend consteval bool operator==(
         const static_str& self,
         const static_str<M>& other
-    ) {
+    ) noexcept {
         if constexpr (N == M) {
             for (size_t i = 0; i < N; ++i) {
-                if (self[i] != other[i]) {
+                if (self.buffer[i] != other.buffer[i]) {
                     return false;
                 }
             }
@@ -1600,13 +1558,13 @@ public:
         return false;
     }
     template <size_t M>
-    friend consteval bool operator==(
+    [[nodiscard]] friend consteval bool operator==(
         const static_str& self,
         const char(&other)[M]
-    ) {
+    ) noexcept {
         if constexpr (N == (M - 1)) {
             for (size_t i = 0; i < N; ++i) {
-                if (self[i] != other[i]) {
+                if (self.buffer[i] != other[i]) {
                     return false;
                 }
             }
@@ -1615,13 +1573,13 @@ public:
         return false;
     }
     template <size_t M>
-    friend consteval bool operator==(
+    [[nodiscard]] friend consteval bool operator==(
         const char(&other)[M],
         const static_str& self
-    ) {
+    ) noexcept {
         if constexpr (N == (M - 1)) {
             for (size_t i = 0; i < N; ++i) {
-                if (self[i] != other[i]) {
+                if (self.buffer[i] != other[i]) {
                     return false;
                 }
             }
@@ -1630,13 +1588,13 @@ public:
     }
 
     template <size_t M>
-    friend consteval bool operator!=(
+    [[nodiscard]] friend consteval bool operator!=(
         const static_str& self,
         const static_str<M>& other
-    ) {
+    ) noexcept {
         if constexpr (N == M) {
             for (size_t i = 0; i < N; ++i) {
-                if (self[i] != other[i]) {
+                if (self.buffer[i] != other.buffer[i]) {
                     return true;
                 }
             }
@@ -1645,13 +1603,13 @@ public:
         return true;
     }
     template <size_t M>
-    friend consteval bool operator!=(
+    [[nodiscard]] friend consteval bool operator!=(
         const static_str& self,
         const char(&other)[M]
-    ) {
+    ) noexcept {
         if constexpr (N == (M - 1)) {
             for (size_t i = 0; i < N; ++i) {
-                if (self[i] != other[i]) {
+                if (self.buffer[i] != other[i]) {
                     return true;
                 }
             }
@@ -1660,13 +1618,13 @@ public:
         return true;
     }
     template <size_t M>
-    friend consteval bool operator!=(
+    [[nodiscard]] friend consteval bool operator!=(
         const char(&other)[M],
         const static_str& self
-    ) {
+    ) noexcept {
         if constexpr (N == (M - 1)) {
             for (size_t i = 0; i < N; ++i) {
-                if (self[i] != other[i]) {
+                if (self.buffer[i] != other[i]) {
                     return true;
                 }
             }
@@ -1676,14 +1634,14 @@ public:
     }
 
     template <size_t M>
-    friend consteval bool operator>=(
+    [[nodiscard]] friend consteval bool operator>=(
         const static_str& self,
         const static_str<M>& other
-    ) {
+    ) noexcept {
         size_t i = 0;
         while (i < self.size() && i < other.size()) {
-            const char x = self[i];
-            const char y = other[i];
+            const char x = self.buffer[i];
+            const char y = other.buffer[i];
             if (x > y) {
                 return true;
             } else if (y > x) {
@@ -1694,13 +1652,13 @@ public:
         return i == self.size();
     }
     template <size_t M>
-    friend consteval bool operator>=(
+    [[nodiscard]] friend consteval bool operator>=(
         const static_str& self,
         const char(&other)[M]
-    ) {
+    ) noexcept {
         size_t i = 0;
         while (i < self.size() && i < (M - 1)) {
-            const char x = self[i];
+            const char x = self.buffer[i];
             const char y = other[i];
             if (x > y) {
                 return true;
@@ -1712,14 +1670,14 @@ public:
         return i == self.size();
     }
     template <size_t M>
-    friend consteval bool operator>=(
+    [[nodiscard]] friend consteval bool operator>=(
         const char(&other)[M],
         const static_str& self
-    ) {
+    ) noexcept {
         size_t i = 0;
         while (i < self.size() && i < (M - 1)) {
             const char x = other[i];
-            const char y = self[i];
+            const char y = self.buffer[i];
             if (x > y) {
                 return true;
             } else if (y > x) {
@@ -1731,14 +1689,14 @@ public:
     }
 
     template <size_t M>
-    friend consteval bool operator>(
+    [[nodiscard]] friend consteval bool operator>(
         const static_str& self,
         const static_str<M>& other
-    ) {
+    ) noexcept {
         size_t i = 0;
         while (i < self.size() && i < other.size()) {
-            const char x = self[i];
-            const char y = other[i];
+            const char x = self.buffer[i];
+            const char y = other.buffer[i];
             if (x > y) {
                 return true;
             } else if (y > x) {
@@ -1749,13 +1707,13 @@ public:
         return i != self.size() && i == other.size();
     }
     template <size_t M>
-    friend consteval bool operator>(
+    [[nodiscard]] friend consteval bool operator>(
         const static_str& self,
         const char(&other)[M]
-    ) {
+    ) noexcept {
         size_t i = 0;
         while (i < self.size() && i < (M - 1)) {
-            const char x = self[i];
+            const char x = self.buffer[i];
             const char y = other[i];
             if (x > y) {
                 return true;
@@ -1767,14 +1725,14 @@ public:
         return i != self.size() && i == (M - 1);
     }
     template <size_t M>
-    friend consteval bool operator>(
+    [[nodiscard]] friend consteval bool operator>(
         const char(&other)[M],
         const static_str& self
-    ) {
+    ) noexcept {
         size_t i = 0;
         while (i < self.size() && i < (M - 1)) {
             const char x = other[i];
-            const char y = self[i];
+            const char y = self.buffer[i];
             if (x > y) {
                 return true;
             } else if (y > x) {
@@ -1786,10 +1744,10 @@ public:
     }
 
     template <size_t M>
-    friend consteval static_str<N + M> operator+(
+    [[nodiscard]] friend consteval static_str<N + M> operator+(
         const static_str<N>& self,
         const static_str<M>& other
-    ) {
+    ) noexcept {
         static_str<N + M> result;
         std::copy_n(self.buffer, self.size(), result.buffer);
         std::copy_n(other.buffer, other.size(), result.buffer + self.size());
@@ -1797,10 +1755,10 @@ public:
         return result;
     }
     template <size_t M>
-    friend consteval static_str<N + M - 1> operator+(
+    [[nodiscard]] friend consteval static_str<N + M - 1> operator+(
         const static_str<N>& self,
         const char(&other)[M]
-    ) {
+    ) noexcept {
         static_str<N + M - 1> result;
         std::copy_n(self.buffer, self.size(), result.buffer);
         std::copy_n(other, M - 1, result.buffer + self.size());
@@ -1808,10 +1766,10 @@ public:
         return result;
     }
     template <size_t M>
-    friend consteval static_str<N + M - 1> operator+(
+    [[nodiscard]] friend consteval static_str<N + M - 1> operator+(
         const char(&other)[M],
         const static_str<N>& self
-    ) {
+    ) noexcept {
         static_str<N + M - 1> result;
         std::copy_n(other, M - 1, result.buffer);
         std::copy_n(self.buffer, self.size(), result.buffer + M - 1);
@@ -1825,7 +1783,10 @@ public:
     /// must be a compile-time constant, and can therefore be used to determine the
     /// size of the resulting string.
 
-    friend constexpr std::string operator*(const static_str& self, size_t reps) {
+    [[nodiscard]] friend constexpr std::string operator*(
+        const static_str& self,
+        size_t reps
+    ) noexcept {
         if (reps <= 0) {
             return {};
         } else {
@@ -1836,7 +1797,10 @@ public:
             return result;
         }
     }
-    friend constexpr std::string operator*(size_t reps, const static_str& self) {
+    [[nodiscard]] friend constexpr std::string operator*(
+        size_t reps,
+        const static_str& self
+    ) noexcept {
         if (reps <= 0) {
             return {};
         } else {
@@ -1847,7 +1811,6 @@ public:
             return result;
         }
     }
-
 };
 
 
