@@ -592,7 +592,7 @@ public:
 
     /* Access a character within the underlying buffer.  Applies Python-style
     wraparound for negative indices. */
-    [[nodiscard]] constexpr const char operator[](ssize_t i) const noexcept {
+    [[nodiscard]] constexpr const char operator[](ssize_t i) const {
         ssize_t index = normalize_index(i);
         if (index >= 0 && index < N) {
             return buffer[index];

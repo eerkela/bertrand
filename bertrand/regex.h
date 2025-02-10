@@ -16,11 +16,9 @@
 #define PCRE2_CODE_UNIT_WIDTH 8  // for UTF8/ASCII strings
 #include "pcre2.h"
 
-
-#include <iostream>
-
-
-#include <pybind11/pybind11.h>
+#include "bertrand/common.h"
+#include "bertrand/except.h"
+#include "bertrand/static_str.h"
 
 
 // TODO: compile-time regular expressions are in fact possible using PCRE.
@@ -28,18 +26,713 @@
 // https://github.com/hanickadot/compile-time-regular-expressions
 
 
-
 namespace bertrand {
 
 
-namespace detail {
+namespace impl {
+    struct regex_tag {};
+
+    /* Convert a PCRE2 error code into a corresponding runtime error with a proper
+    traceback. */
+    inline RuntimeError pcre_error(int err_code) noexcept {
+        PCRE2_UCHAR buffer[256];
+        int rc = pcre2_get_error_message(err_code, buffer, sizeof(buffer));
+        if (rc < 0) {  // error while retrieving error
+            return RuntimeError(
+                "pcre2_get_error_message() returned error code " +
+                std::to_string(rc)
+            );
+        }
+        return RuntimeError(std::string(reinterpret_cast<char*>(buffer), rc));
+    }
+
+    /* A regex match object allowing easy access to capture groups and match
+    information for a given input string. */
+    template <typename CRTP>
+    struct regex_match {
+    protected:
+        std::shared_ptr<pcre2_code> m_code;
+        std::shared_ptr<pcre2_match_data> m_match;
+        PCRE2_SIZE* m_ovector = nullptr;
+        size_t m_count = 0;
+
+        /* Get the group number associated with a named capture group. */
+        int groupnum(const char* name) const noexcept {
+            return pcre2_substring_number_from_name(
+                m_code.get(),
+                reinterpret_cast<PCRE2_SPTR>(name)
+            );
+        }
+
+        regex_match(
+            std::shared_ptr<pcre2_code> code,
+            std::shared_ptr<pcre2_match_data> match
+        ) :
+            m_code(code),
+            m_match(match)
+        {
+            if (m_match) {
+                m_ovector = pcre2_get_ovector_pointer(match.get());
+                m_count = pcre2_get_ovector_count(match.get());
+            }
+        }
+
+    public:
+        regex_match() = default;
+
+        /* Returns true if the pattern matches the input string. */
+        [[nodiscard]] explicit operator bool() const noexcept {
+            return m_match != nullptr;
+        }
+
+        /* Get the number of captured substrings, including the full match. */
+        [[nodiscard]] size_t count() const noexcept {
+            return m_count;
+        }
+
+        /* Get a capture group's name from its index number or nullopt if the numbered
+        group is out of bounds. */
+        [[nodiscard]] auto groupname(size_t index) const noexcept
+            -> std::optional<std::string_view>
+        {
+            if (m_match == nullptr || index >= m_count) {
+                return std::nullopt;
+            }
+
+            // retrieve name table
+            PCRE2_SPTR table;
+            uint32_t name_count;
+            uint32_t name_entry_size;
+            pcre2_pattern_info(m_code.get(), PCRE2_INFO_NAMETABLE, &table);
+            pcre2_pattern_info(m_code.get(), PCRE2_INFO_NAMECOUNT, &name_count);
+            pcre2_pattern_info(m_code.get(), PCRE2_INFO_NAMEENTRYSIZE, &name_entry_size);
+
+            /// TODO: this is a linear search, can we do better?  Would need to look at
+            /// how PCRE2 actually stores the data, if it's sequential, etc.
+
+            // search for the name
+            for (uint32_t i = 0; i < name_count; ++i) {
+                uint16_t group_number = (table[0] << 8) | table[1];
+                if (group_number == index) {
+                    size_t idx = index * 2;
+                    return std::string_view{
+                        reinterpret_cast<const char*>(table + 2),
+                        m_ovector[idx + 1] - m_ovector[idx]
+                    };
+                }
+                table += name_entry_size;
+            }
+            return std::nullopt;
+        }
+
+        /* Extract all named capture groups into a std::unordered_map. */
+        [[nodiscard]] auto groupdict() const noexcept {
+            std::unordered_map<std::string_view, std::optional<std::string_view>> result;
+            if (m_match == nullptr) {
+                return result;
+            }
+
+            // retrieve name table
+            PCRE2_SPTR table;
+            uint32_t name_count;
+            uint32_t name_entry_size;
+            pcre2_pattern_info(m_code.get(), PCRE2_INFO_NAMETABLE, &table);
+            pcre2_pattern_info(m_code.get(), PCRE2_INFO_NAMECOUNT, &name_count);
+            pcre2_pattern_info(m_code.get(), PCRE2_INFO_NAMEENTRYSIZE, &name_entry_size);
+
+            // extract all named capture groups
+            for (uint32_t i = 0; i < name_count; ++i) {
+                uint16_t group_number = (table[0] << 8) | table[1];
+                auto g = group(group_number);
+                auto [it, inserted] = result.try_emplace(
+                    std::string_view{
+                        reinterpret_cast<const char*>(table + 2),
+                        m_ovector[group_number * 2 + 1] - m_ovector[group_number * 2]
+                    },
+                    g
+                );
+                if (!inserted) {
+                    throw RuntimeError("duplicate group name: " + std::string(it->first));
+                }
+                table += name_entry_size;
+            }
+            return result;
+        }
+
+        /* Extract all named capture groups into a std::unordered_map. */
+        [[nodiscard]] auto groupdict(std::string_view default_value) const noexcept {
+            std::unordered_map<std::string_view, std::optional<std::string_view>> result;
+            if (m_match == nullptr) {
+                return result;
+            }
+
+            // retrieve name table
+            PCRE2_SPTR table;
+            uint32_t name_count;
+            uint32_t name_entry_size;
+            pcre2_pattern_info(m_code.get(), PCRE2_INFO_NAMETABLE, &table);
+            pcre2_pattern_info(m_code.get(), PCRE2_INFO_NAMECOUNT, &name_count);
+            pcre2_pattern_info(m_code.get(), PCRE2_INFO_NAMEENTRYSIZE, &name_entry_size);
+
+            // extract all named capture groups
+            for (uint32_t i = 0; i < name_count; ++i) {
+                uint16_t group_number = (table[0] << 8) | table[1];
+                auto g = group(group_number);
+                auto [it, inserted] = result.try_emplace(
+                    std::string_view{
+                        reinterpret_cast<const char*>(table + 2),
+                        m_ovector[group_number * 2 + 1] - m_ovector[group_number * 2]
+                    },
+                    g.value_or(default_value)
+                );
+                if (!inserted) {
+                    throw RuntimeError("duplicate group name: " + std::string(it->first));
+                }
+                table += name_entry_size;
+            }
+            return result;
+        }
+
+        /* Get the start index of a numbered capture group or nullopt if the numbered
+        group is out of bounds. */
+        [[nodiscard]] std::optional<size_t> start(size_t index = 0) const noexcept {
+            if (m_match == nullptr || index >= m_count) {
+                return std::nullopt;
+            }
+            return m_ovector[index * 2];
+        }
+
+        /* Get the start index of a named capture group or nullopt if the named group
+        is not present. */
+        [[nodiscard]] std::optional<size_t> start(const char* name) const noexcept {
+            int number = groupnum(name);
+            if (number == PCRE2_ERROR_NOSUBSTRING) {
+                return std::nullopt;
+            }
+            return start(number);
+        }
+
+        /* Get the start index of a named capture group or nullopt if the named group
+        is not present. */
+        [[nodiscard]] std::optional<size_t> start(std::string_view name) const noexcept {
+            return start(name.data());
+        }
+
+        /* Get the stop index of a numbered capture group or nullopt if the numbered
+        group is out of bounds. */
+        [[nodiscard]] std::optional<size_t> stop(size_t index = 0) const noexcept {
+            if (m_match == nullptr || index >= m_count) {
+                return std::nullopt;
+            }
+            return m_ovector[index * 2 + 1];
+        }
+
+        /* Get the stop index of a named capture group or nullopt if the named group
+        is not present. */
+        [[nodiscard]] std::optional<size_t> stop(const char* name) const noexcept {
+            int number = groupnum(name);
+            if (number == PCRE2_ERROR_NOSUBSTRING) {
+                return std::nullopt;
+            }
+            return stop(number);
+        }
+
+        /* Get the stop index of a named capture group or nullopt if the named group
+        is not present. */
+        [[nodiscard]] std::optional<size_t> stop(std::string_view name) const noexcept {
+            return stop(name.data());
+        }
+
+        /* Return a pair containing both the start and end indices of a numbered
+        capture group or nullopt if the numbered group is out of bounds. */
+        [[nodiscard]] auto span(size_t index = 0) const noexcept
+            -> std::optional<std::pair<size_t, size_t>>
+        {
+            if (m_match == nullptr || index >= m_count) {
+                return std::nullopt;
+            }
+            size_t idx = index * 2;
+            return std::make_pair(m_ovector[idx], m_ovector[idx + 1]);
+        }
+
+        /* Return a pair containing both the start and end indices of a named
+        capture group or nullopt if the named group is not present. */
+        [[nodiscard]] auto span(const char* name) const noexcept
+            -> std::optional<std::pair<size_t, size_t>>
+        {
+            int number = groupnum(name);
+            if (number == PCRE2_ERROR_NOSUBSTRING) {
+                return std::nullopt;
+            }
+            return span(number);
+        }
+
+        /* Return a pair containing both the start and end indices of a named
+        capture group or nullopt if the named group is not present. */
+        [[nodiscard]] auto span(std::string_view name) const noexcept
+            -> std::optional<std::pair<size_t, size_t>>
+        {
+            return span(name.data());
+        }
+
+        /// TODO: pipe this into the iterator class as its dereference operator.  The
+        /// iterator can then just maintain a pointer to the ovector and the current
+        /// index
+
+        /* Extract a numbered capture group or nullopt if the numbered group is out
+        of bounds. */
+        [[nodiscard]] auto group(size_t index = 0) const noexcept
+            -> std::optional<std::string_view>
+        {
+            if (m_match == nullptr || index >= count()) {
+                return std::nullopt;
+            }
+            size_t idx = index * 2;
+            size_t start = m_ovector[idx];
+            size_t end = m_ovector[idx + 1];
+            return std::string_view{
+                static_cast<const CRTP*>(this)->subject.data() + start,
+                end - start
+            };
+        }
+
+        /* Extract a named capture group or nullopt if the named group is not
+        present. */
+        [[nodiscard]] auto group(const char* name) const noexcept
+            -> std::optional<std::string_view>
+        {
+            int number = groupnum(name);
+            if (number == PCRE2_ERROR_NOSUBSTRING) {
+                return std::nullopt;
+            }
+            return group(number);
+        }
+
+        /* Extract a named capture group or nullopt if the named group is not
+        present. */
+        [[nodiscard]] auto group(std::string_view name) const noexcept
+            -> std::optional<std::string_view>
+        {
+            return group(name.data());
+        }
+
+
+
+
+
+
+
+        
+        // /* Extract several capture groups at once using an initializer list. */
+        // inline std::vector<std::optional<std::string>> group(
+        //     const std::initializer_list<std::variant<size_t, const char*>>& groups
+        // ) const noexcept {
+        //     std::vector<std::optional<std::string>> result;
+        //     result.reserve(groups.size());
+        //     for (auto&& item : groups) {
+        //         std::visit(
+        //             [&result, this](auto&& arg) {
+        //                 result.push_back(group(arg));
+        //             },
+        //             item
+        //         );
+        //     }
+        //     return result;
+        // }
+
+        // /* Extract several capture groups at once, as called from Python using variadic
+        // positional arguments. */
+        // inline auto group(const pybind11::args& args) const
+        //     -> std::vector<std::optional<std::string>>;
+
+        // /* Extract all capture groups into a std::vector. */
+        // inline std::vector<std::optional<std::string>> groups(
+        //     std::optional<std::string> default_value = std::nullopt
+        // ) const noexcept {
+        //     std::vector<std::optional<std::string>> result;
+        //     size_t n = count();
+        //     result.reserve(n);
+        //     for (size_t i = 0; i < n; ++i) {
+        //         std::optional<std::string> grp = group(i);
+        //         result.push_back(grp.has_value() ? grp : default_value);
+        //     }
+        //     return result;
+        // }
+
+        // /* Iterator over the non-empty capture groups that were found in the subject
+        // string.  Yields pairs where the first value is the group index and the second
+        // is the matching substring. */
+        // class GroupIter {
+        //     friend Match;
+        //     const Match& match;
+        //     size_t index;
+        //     size_t count;
+
+        //     GroupIter(const Match& match, size_t index) :
+        //         match(match), index(index), count(match.count())
+        //     {}
+
+        //     GroupIter(const Match& match) :
+        //         match(match), index(match.count()), count(index)
+        //     {}
+
+        // public:
+        //     using iterator_category     = std::input_iterator_tag;
+        //     using difference_type       = std::ptrdiff_t;
+        //     using value_type            = std::pair<size_t, std::string>;
+        //     using pointer               = value_type*;
+        //     using reference             = value_type&;
+
+        //     GroupIter(const GroupIter& other) :
+        //         match(other.match), index(other.index), count(other.count)
+        //     {}
+
+        //     GroupIter(GroupIter&& other) :
+        //         match(other.match), index(other.index), count(other.count)
+        //     {}
+
+        //     // GroupIter& operator=(const GroupIter& other) {
+        //     //     if (&other != this) {
+        //     //         match = other.match;
+        //     //         index = other.index;
+        //     //         count = other.count;
+        //     //     }
+        //     //     return *this;
+        //     // }
+
+        //     // GroupIter& operator=(GroupIter&& other) {
+        //     //     if (&other != this) {
+        //     //         match = other.match;
+        //     //         index = other.index;
+        //     //         count = other.count;
+        //     //     }
+        //     //     return *this;
+        //     // }
+
+        //     /* Dereference to access the current capture group. */
+        //     inline value_type operator*() const {
+        //         return {index, match[index].value()};  // current group is never empty
+        //     }
+
+        //     /* Dereference to access an attribute on the current capture group. */
+        //     inline value_type operator->() const {
+        //         return {index, match[index].value()};  // current group is never empty
+        //     }
+
+        //     /* Increment to advance to the next non-empty capture group. */
+        //     inline GroupIter& operator++() {
+        //         while (!match[++index].has_value() && index < count) {
+        //             // skip empty capture groups
+        //         }
+        //         return *this;
+        //     }
+
+        //     inline GroupIter operator++(int) {
+        //         GroupIter copy = *this;
+        //         ++(*this);
+        //         return copy;
+        //     }
+
+        //     /* Equality comparison to terminate the sequence. */
+        //     inline bool operator==(const GroupIter& other) const noexcept {
+        //         return index == other.index;
+        //     }
+
+        //     /* Inequality comparison to terminate the sequence. */
+        //     inline bool operator!=(const GroupIter& other) const noexcept {
+        //         return index != other.index;
+        //     }
+
+        // };
+
+        // inline GroupIter begin() const noexcept {
+        //     return {*this, 0};
+        // }
+
+        // inline GroupIter end() const noexcept {
+        //     return {*this};
+        // }
+
+        // /* Syntactic sugar for match.group(). */
+        // inline std::optional<std::string> operator[](size_t index) const {
+        //     return group(index);
+        // }
+
+        // /* Syntactic sugar for match.group(). */
+        // inline std::optional<std::string> operator[](const char* name) const {
+        //     return group(name);
+        // }
+
+        // /* Syntactic sugar for match.group(). */
+        // inline std::optional<std::string> operator[](const std::string& name) const {
+        //     return group(name);
+        // }
+
+        // /* Syntactic sugar for match.group(). */
+        // inline std::optional<std::string> operator[](const std::string_view& name) const {
+        //     return group(name);
+        // }
+
+        // /* Syntactic sugar for match.group() using an initializer list to extract
+        // multiple groups. */
+        // inline std::vector<std::optional<std::string>> operator[](
+        //     const std::initializer_list<std::variant<size_t, const char*>>& groups
+        // ) {
+        //     return group(groups);
+        // }
+
+        // /* Dump a string representation of a match object to an output stream. */
+        // inline friend std::ostream& operator<<(std::ostream& stream, const Match& match) {
+        //     if (!match) {
+        //         stream << "<No Match>";
+        //         return stream;
+        //     }
+
+        //     std::optional<std::pair<size_t, size_t>> span = match.span();
+        //     if (!span.has_value()) {
+        //         stream << "<Match span=(), groups=()>";
+        //         return stream;
+        //     }
+
+        //     stream << "<Match span=(" << span->first << ", " << span->second << "), groups=(";
+        //     auto it = match.begin();
+        //     auto end = match.end();
+        //     if (it != end) {
+        //         stream << (*it).second;
+        //         ++it;
+        //         while (it != end) {
+        //             stream << ", " << (*it).second;
+        //             ++it;
+        //         }
+        //     }
+        //     stream << ")>";
+        //     return stream;
+        // }
+    };
+
+    /* A regex match that owns the underlying input string, requiring an extra
+    allocation. */
+    struct regex_owning_match : regex_match<regex_owning_match> {
+        std::string subject;
+        regex_owning_match() = default;
+        regex_owning_match(
+            std::string subject,
+            std::shared_ptr<pcre2_code> code,
+            std::shared_ptr<pcre2_match_data> match
+        ) : regex_match<regex_owning_match>(code, match), subject(std::move(subject)) {}
+    };
+
+    /* A regex match that references an external input string, whose lifetime is
+    guaranteed to exceed that of the match itself. */
+    struct regex_borrowed_match : regex_match<regex_borrowed_match> {
+        std::string_view subject;
+        regex_borrowed_match() = default;
+        regex_borrowed_match(
+            std::string_view subject,
+            std::shared_ptr<pcre2_code> code,
+            std::shared_ptr<pcre2_match_data> match
+        ) : regex_match<regex_borrowed_match>(code, match), subject(std::move(subject)) {}
+    };
+
+    /* An iterator over an input string that yields match objects for every
+    non-overlapping match against the given pattern. */
+    template <typename CRTP>
+    struct regex_range {
+    protected:
+        std::shared_ptr<pcre2_code> m_code;
+        size_t m_start;
+        size_t m_stop;
+
+        regex_range() = default;
+        regex_range(
+            std::shared_ptr<pcre2_code> code,
+            size_t start,
+            size_t stop
+        ) : 
+            m_code(code),
+            m_start(start),
+            m_stop(stop)
+        {}
+
+    public:
+
+        struct iterator {
+        private:
+            friend regex_range;
+            std::shared_ptr<pcre2_code> m_code;
+            std::shared_ptr<pcre2_match_data> m_match;
+            std::string_view subject;
+            size_t stop = 0;
+            regex_borrowed_match m_current;
+
+            iterator(
+                std::string_view subject,
+                std::shared_ptr<pcre2_code> code,
+                size_t start,
+                size_t stop
+            ) :
+                m_code(code),
+                m_match(
+                    pcre2_match_data_create_from_pattern(
+                        code.get(),
+                        nullptr  // use default memory manager
+                    ),
+                    pcre2_match_data_free
+                ),
+                subject(subject),
+                stop(stop)
+            {
+                if (m_match == nullptr) {
+                    throw MemoryError();
+                }
+                int rc = pcre2_match(
+                    m_code.get(),
+                    reinterpret_cast<PCRE2_SPTR>(subject.data()),
+                    stop,
+                    start,
+                    0,  // use default options
+                    m_match.get(),  // preallocated block for the result
+                    nullptr  // use default match context
+                );
+                if (rc < 0) {
+                    if (rc == PCRE2_ERROR_NOMATCH) {
+                        m_match.reset();
+                    } else {
+                        throw impl::pcre_error(rc);
+                    }
+                }
+            }
+
+        public:
+            using iterator_category = std::input_iterator_tag;
+            using difference_type = std::ptrdiff_t;
+            using value_type = regex_borrowed_match;
+            using pointer = value_type*;
+            using reference = value_type&;
+
+            iterator() = default;
+
+            [[nodiscard]] regex_borrowed_match& operator*() noexcept {
+                return m_current;
+            }
+            [[nodiscard]] const regex_borrowed_match& operator*() const noexcept {
+                return m_current;
+            }
+
+            [[nodiscard]] regex_borrowed_match* operator->() noexcept {
+                return &m_current;
+            }
+            [[nodiscard]] const regex_borrowed_match* operator->() const noexcept {
+                return &m_current;
+            }
+
+            iterator& operator++() {
+                PCRE2_SIZE* ovector = pcre2_get_ovector_pointer(m_match.get());
+                PCRE2_SIZE start = ovector[1];
+                if (start == ovector[0]) {
+                    ++start;  // correct for zero-length matches
+                }
+                int rc = pcre2_match(
+                    m_code.get(),
+                    reinterpret_cast<PCRE2_SPTR>(subject.data()),
+                    stop,
+                    start,
+                    0,  // use default options
+                    m_match.get(),  // preallocated block for the result
+                    nullptr  // use default match context
+                );
+                if (rc < 0) {
+                    if (rc == PCRE2_ERROR_NOMATCH) {
+                        m_match.reset();
+                    } else {
+                        throw impl::pcre_error(rc);
+                    }
+                } else {
+                    m_current = regex_borrowed_match{
+                        subject,
+                        m_code,
+                        m_match
+                    };
+                }
+                return *this;
+            }
+
+            [[nodiscard]] iterator operator++(int) {
+                iterator copy = *this;
+                ++(*this);
+                return copy;
+            }
+
+            [[nodiscard]] friend bool operator==(const iterator& self, sentinel) noexcept {
+                return self.m_match == nullptr;
+            }
+
+            [[nodiscard]] friend bool operator==(sentinel, const iterator& self) noexcept {
+                return self.m_match == nullptr;
+            }
+
+            [[nodiscard]] friend bool operator!=(const iterator& self, sentinel) noexcept {
+                return self.m_match != nullptr;
+            }
+
+            [[nodiscard]] friend bool operator!=(sentinel, const iterator& self) noexcept {
+                return self.m_match != nullptr;
+            }
+        };
+
+        [[nodiscard]] iterator begin() const noexcept {
+            return {static_cast<const CRTP*>(this)->subject, m_code, m_start, m_stop};
+        }
+
+        [[nodiscard]] iterator cbegin() const noexcept { return begin(); }
+        [[nodiscard]] sentinel end() const noexcept { return {}; }
+        [[nodiscard]] sentinel cend() const noexcept { return {}; }
+    };
+
+    /* A regex match iterator that owns the underlying input string, requiring an
+    extra allocation. */
+    struct regex_owning_range : regex_range<regex_owning_range> {
+        std::string subject;
+        regex_owning_range() = default;
+        regex_owning_range(
+            std::string subject,
+            std::shared_ptr<pcre2_code> code,
+            size_t start,
+            size_t stop
+        ) :
+            regex_range<regex_owning_range>(code, start, stop),
+            subject(std::move(subject))
+        {}
+    };
+
+    /* A regex match iterator that references an external input string, whose lifetime
+    is guaranteed to exceed that of the match itself. */
+    struct regex_borrowed_range : regex_range<regex_borrowed_range> {
+        std::string_view subject;
+        regex_borrowed_range() = default;
+        regex_borrowed_range(
+            std::string_view subject,
+            std::shared_ptr<pcre2_code> code,
+            size_t start,
+            size_t stop
+        ) :
+            regex_range<regex_borrowed_range>(code, start, stop),
+            subject(std::move(subject))
+        {}
+    };
+
+}
+
+
+namespace meta {
 
     template <typename T>
-    concept group_id =
+    concept regex = inherits<T, impl::regex_tag>;
+
+    template <typename T>
+    concept regex_group_id =
         std::convertible_to<T, size_t> ||
-        std::convertible_to<T, const char*> ||
-        std::convertible_to<T, const std::string&> ||
-        std::convertible_to<T, const std::string_view&>;
+        std::convertible_to<T, std::string_view>;
 
 }
 
@@ -72,6 +765,523 @@ recursive patterns.
 PCRE2 reference:
 https://www.pcre.org/current/doc/html/index.html
 */
+template <static_str Pattern, uint32_t Flags = PCRE2_JIT_COMPLETE>
+struct regex : impl::regex_tag {
+    using borrowed_match = impl::regex_borrowed_match;
+    using borrowed_range = impl::regex_borrowed_range;
+    using owning_match = impl::regex_owning_match;
+    using owning_range = impl::regex_owning_range;
+
+private:
+    std::shared_ptr<pcre2_code> m_code;
+
+    static bool normalize_indices(size_t size, ssize_t& start, ssize_t& stop) {
+        if (start < 0) {
+            start += size;
+            if (start < 0) {
+                start = 0;
+            }
+        } else if (start >= size) {
+            return false;
+        }
+        if (stop < 0) {
+            stop += size;
+            if (stop < 0) {
+                return false;
+            }
+        } else if (stop > size) {
+            stop = size;
+        }
+        return stop >= start;
+    }
+
+    template <typename Match>
+    Match match_impl(auto&& subject, size_t start, size_t stop) const {
+        std::shared_ptr<pcre2_match_data> data{
+            pcre2_match_data_create_from_pattern(
+                m_code.get(),
+                nullptr  // use default memory allocator
+            ),
+            pcre2_match_data_free
+        };
+        if (!data) {
+            throw MemoryError();
+        }
+        int rc = pcre2_match(
+            m_code.get(),
+            reinterpret_cast<PCRE2_SPTR>(subject.data()),
+            stop,
+            start,
+            0,  // use default options
+            data.get(),  // preallocated block for the result
+            nullptr  // use default match context
+        );
+        if (rc < 0) {
+            if (rc == PCRE2_ERROR_NOMATCH) {
+                return {};
+            }
+            throw impl::pcre_error(rc);
+        }
+        return {std::forward<decltype(subject)>(subject), m_code, std::move(data)};
+    }
+
+public:
+
+    /* Compile the pattern into a PCRE2 regular expression. */
+    template <typename T>
+    regex() : m_code([] {
+        int err;
+        PCRE2_SIZE err_offset;
+
+        // compile the pattern
+        std::shared_ptr<pcre2_code> result {
+            pcre2_compile(
+                reinterpret_cast<PCRE2_SPTR>(Pattern.data()),
+                Pattern.size(),
+                Flags,
+                &err,
+                &err_offset,
+                nullptr  // use default compile context
+            ),
+            pcre2_code_free
+        };
+
+        // pretty print errors
+        if (!result) {
+            PCRE2_UCHAR pcre_err[256];
+            pcre2_get_error_message(err, pcre_err, sizeof(pcre_err));
+            throw RuntimeError(
+                "[invalid regex] " + std::string(reinterpret_cast<char*>(pcre_err)) +
+                "\n\n    " + Pattern + "\n    " + std::string(err_offset, ' ') +
+                "^"
+            );
+        }
+
+        // JIT compile the expression if possible
+        uint32_t jit_flags = Flags & (
+            PCRE2_JIT_COMPLETE | PCRE2_JIT_PARTIAL_SOFT | PCRE2_JIT_PARTIAL_HARD
+        );
+        if (jit_flags) {
+            int rc = pcre2_jit_compile(result.get(), jit_flags);
+            if (rc < 0 && rc != PCRE2_ERROR_JIT_BADOPTION) {
+                throw impl::pcre_error(rc);
+            }
+        }
+        return result;
+    }()) {}
+
+    /* Get the pattern used to construct the regular expression as read-only memory. */
+    [[nodiscard]] constexpr const auto& pattern() const noexcept {
+        return Pattern;
+    }
+
+    /* Get the PCRE flags that were used to build the regular expression. */
+    [[nodiscard]] constexpr uint32_t flags() const noexcept {
+        return Flags;
+    }
+
+    /* Check whether a particular combination of flags are set for the regular
+    expression. */
+    [[nodiscard]] constexpr bool has_flag(uint32_t flags) const noexcept {
+        return Flags & flags;
+    }
+
+    /* Get the number of capture groups in the regular expression. */
+    [[nodiscard]] size_t groupcount() const noexcept {
+        if (m_code) {
+            uint32_t count;
+            pcre2_pattern_info(m_code.get(), PCRE2_INFO_CAPTURECOUNT, &count);
+            return count;
+        }
+        return 0;
+    }
+
+    /* Get a dictionary mapping capture group names to their corresponding indices. */
+    [[nodiscard]] auto groupindex() const {
+        std::unordered_map<std::string_view, size_t> result;
+        if (m_code == nullptr) {
+            return result;
+        }
+
+        // retrieve name table
+        PCRE2_SPTR table;
+        uint32_t name_count;
+        uint32_t name_entry_size;
+        pcre2_pattern_info(m_code.get(), PCRE2_INFO_NAMETABLE, &table);
+        pcre2_pattern_info(m_code.get(), PCRE2_INFO_NAMECOUNT, &name_count);
+        pcre2_pattern_info(m_code.get(), PCRE2_INFO_NAMEENTRYSIZE, &name_entry_size);
+
+        // extract all named capture groups
+        for (uint32_t i = 0; i < name_count; ++i) {
+            uint16_t group_number = (table[0] << 8) | table[1];
+            const char* name = reinterpret_cast<const char*>(table + 2);
+            auto [it, inserted] = result.try_emplace(name, group_number);
+            if (!inserted) {
+                throw RuntimeError(
+                    "duplicate group name: " + std::string(it->first)
+                );
+            }
+            table += name_entry_size;
+        }
+        return result;
+    }
+
+    /* Evaluate the regular expression against a target string and return the first
+    match.  Returns a (possibly false) Match struct that can be used to access and
+    iterate over capture groups.  If the input is given as a string literal, a
+    `bertrand::static_str` instance, or a `std::string_view`, the match will store a
+    non-owning view of the input string, which must be guaranteed to outlive the match
+    itself.  Otherwise, the match will own a local copy of the input string. */
+    template <size_t N>
+    [[nodiscard]] borrowed_match match(const char (&subject)[N]) const {
+        return match_impl<borrowed_match>(
+            std::string_view(subject, N - 1),
+            0,
+            subject.size()
+        );
+    }
+
+    /* Evaluate the regular expression against a target string and return the first
+    match.  Returns a (possibly false) Match struct that can be used to access and
+    iterate over capture groups.  If the input is given as a string literal, a
+    `bertrand::static_str` instance, or a `std::string_view`, the match will store a
+    non-owning view of the input string, which must be guaranteed to outlive the match
+    itself.  Otherwise, the match will own a local copy of the input string. */
+    template <meta::static_str Str>
+    [[nodiscard]] borrowed_match match(const Str& subject) const {
+        return match_impl<borrowed_match>(
+            std::string_view(subject),
+            0,
+            subject.size()
+        );
+    }
+
+    /* Evaluate the regular expression against a target string and return the first
+    match.  Returns a (possibly false) Match struct that can be used to access and
+    iterate over capture groups.  If the input is given as a string literal, a
+    `bertrand::static_str` instance, or a `std::string_view`, the match will store a
+    non-owning view of the input string, which must be guaranteed to outlive the match
+    itself.  Otherwise, the match will own a local copy of the input string. */
+    template <meta::inherits<std::string_view> Str>
+    [[nodiscard]] borrowed_match match(Str&& subject) const {
+        return match_impl<borrowed_match>(
+            std::forward<Str>(subject),
+            0,
+            subject.size()
+        );
+    }
+
+    /* Evaluate the regular expression against a target string and return the first
+    match.  Returns a (possibly false) Match struct that can be used to access and
+    iterate over capture groups.  If the input is given as a string literal, a
+    `bertrand::static_str` instance, or a `std::string_view`, the match will store a
+    non-owning view of the input string, which must be guaranteed to outlive the match
+    itself.  Otherwise, the match will own a local copy of the input string. */
+    template <std::convertible_to<std::string> Str>
+        requires (
+            !meta::string_literal<Str> &&
+            !meta::static_str<Str> &&
+            !meta::is<std::string_view, Str>
+        )
+    [[nodiscard]] owning_match match(Str&& subject) const {
+        return match_impl<owning_match>(
+            std::forward<Str>(subject),
+            0,
+            subject.size()
+        );
+    }
+
+    /* Evaluate the regular expression against a target string and return the first
+    match.  Returns a (possibly false) Match struct that can be used to access and
+    iterate over capture groups.  If the input is given as a string literal, a
+    `bertrand::static_str` instance, or a `std::string_view`, the match will store a
+    non-owning view of the input string, which must be guaranteed to outlive the match
+    itself.  Otherwise, the match will own a local copy of the input string. */
+    template <size_t N>
+    [[nodiscard]] borrowed_match match(
+        const char (&subject)[N],
+        ssize_t start,
+        ssize_t stop = -1
+    ) const {
+        if (!normalize_indices(N - 1, start, stop)) {
+            return {};
+        }
+        return match_impl<borrowed_match>(
+            std::string_view(subject, N - 1),
+            static_cast<size_t>(start),
+            static_cast<size_t>(stop)
+        );
+    }
+
+    /* Evaluate the regular expression against a target string and return the first
+    match.  Returns a (possibly false) Match struct that can be used to access and
+    iterate over capture groups.  If the input is given as a string literal, a
+    `bertrand::static_str` instance, or a `std::string_view`, the match will store a
+    non-owning view of the input string, which must be guaranteed to outlive the match
+    itself.  Otherwise, the match will own a local copy of the input string. */
+    template <meta::static_str Str>
+    [[nodiscard]] borrowed_match match(
+        const Str& subject,
+        ssize_t start,
+        ssize_t stop = -1
+    ) const {
+        if (!normalize_indices(subject.size(), start, stop)) {
+            return {};
+        }
+        return match_impl<borrowed_match>(
+            std::string_view(subject),
+            static_cast<size_t>(start),
+            static_cast<size_t>(stop)
+        );
+    }
+
+    /* Evaluate the regular expression against a target string and return the first
+    match.  Returns a (possibly false) Match struct that can be used to access and
+    iterate over capture groups.  If the input is given as a string literal, a
+    `bertrand::static_str` instance, or a `std::string_view`, the match will store a
+    non-owning view of the input string, which must be guaranteed to outlive the match
+    itself.  Otherwise, the match will own a local copy of the input string. */
+    template <meta::inherits<std::string_view> Str>
+    [[nodiscard]] borrowed_match match(
+        Str&& subject,
+        ssize_t start,
+        ssize_t stop = -1
+    ) const {
+        if (!normalize_indices(subject.size(), start, stop)) {
+            return {};
+        }
+        return match_impl<borrowed_match>(
+            std::forward<Str>(subject),
+            static_cast<size_t>(start),
+            static_cast<size_t>(stop)
+        );
+    }
+
+    /* Evaluate the regular expression against a target string and return the first
+    match.  Returns a (possibly false) Match struct that can be used to access and
+    iterate over capture groups.  If the input is given as a string literal, a
+    `bertrand::static_str` instance, or a `std::string_view`, the match will store a
+    non-owning view of the input string, which must be guaranteed to outlive the match
+    itself.  Otherwise, the match will own a local copy of the input string. */
+    template <std::convertible_to<std::string> Str>
+        requires (
+            !meta::string_literal<Str> &&
+            !meta::static_str<Str> &&
+            !meta::is<std::string_view, Str>
+        )
+    [[nodiscard]] owning_match match(
+        Str&& subject,
+        ssize_t start,
+        ssize_t stop = -1
+    ) const {
+        if (!normalize_indices(subject.size(), start, stop)) {
+            return {};
+        }
+        return match_impl<owning_match>(
+            std::forward<Str>(subject),
+            static_cast<size_t>(start),
+            static_cast<size_t>(stop)
+        );
+    }
+
+    /* Evaluate the regular expression against a target string, returning a range
+    yielding each non-overlapping match from left to right.  If the input string is
+    given as a string literal, a `bertrand::static_str` instance, or a
+    `std::string_view`, the range will store a non-owning view of the input string,
+    which must be guaranteed to outlive the match itself.  Otherwise, the match will
+    own a local copy of the input string. */
+    template <size_t N>
+    [[nodiscard]] borrowed_range finditer(const char (&subject)[N]) const {
+        return {
+            std::string_view(subject, N - 1),
+            m_code,
+            0,
+            N - 1
+        };
+    }
+
+    /* Evaluate the regular expression against a target string, returning a range
+    yielding each non-overlapping match from left to right.  If the input string is
+    given as a string literal, a `bertrand::static_str` instance, or a
+    `std::string_view`, the range will store a non-owning view of the input string,
+    which must be guaranteed to outlive the match itself.  Otherwise, the match will
+    own a local copy of the input string. */
+    template <meta::static_str Str>
+    [[nodiscard]] borrowed_range finditer(const Str& subject) const {
+        return {
+            std::string_view(subject),
+            m_code,
+            0,
+            subject.size()
+        };
+    }
+
+    /* Evaluate the regular expression against a target string, returning a range
+    yielding each non-overlapping match from left to right.  If the input string is
+    given as a string literal, a `bertrand::static_str` instance, or a
+    `std::string_view`, the range will store a non-owning view of the input string,
+    which must be guaranteed to outlive the match itself.  Otherwise, the match will
+    own a local copy of the input string. */
+    template <meta::inherits<std::string_view> Str>
+    [[nodiscard]] borrowed_range finditer(Str&& subject) const {
+        return {
+            std::string_view(subject),
+            m_code,
+            0,
+            subject.size()
+        };
+    }
+
+    /* Evaluate the regular expression against a target string and return the first
+    match.  Returns a (possibly false) Match struct that can be used to access and
+    iterate over capture groups.  If the input is given as a string literal, a
+    `bertrand::static_str` instance, or a `std::string_view`, the match will store a
+    non-owning view of the input string, which must be guaranteed to outlive the match
+    itself.  Otherwise, the match will own a local copy of the input string. */
+    template <std::convertible_to<std::string> Str>
+        requires (
+            !meta::string_literal<Str> &&
+            !meta::static_str<Str> &&
+            !meta::is<std::string_view, Str>
+        )
+    [[nodiscard]] owning_range finditer(Str&& subject) const {
+        return {
+            std::forward<Str>(subject),
+            m_code,
+            0,
+            subject.size()
+        };
+    }
+
+    /* Evaluate the regular expression against a target string, returning a range
+    yielding each non-overlapping match from left to right.  If the input string is
+    given as a string literal, a `bertrand::static_str` instance, or a
+    `std::string_view`, the range will store a non-owning view of the input string,
+    which must be guaranteed to outlive the match itself.  Otherwise, the match will
+    own a local copy of the input string. */
+    template <size_t N>
+    [[nodiscard]] borrowed_range finditer(
+        const char (&subject)[N],
+        ssize_t start,
+        ssize_t stop = -1
+    ) const {
+        if (!normalize_indices(N - 1, start, stop)) {
+            return {};
+        }
+        return {
+            std::string_view(subject, N - 1),
+            m_code,
+            static_cast<size_t>(start),
+            static_cast<size_t>(stop)
+        };
+    }
+
+    /* Evaluate the regular expression against a target string, returning a range
+    yielding each non-overlapping match from left to right.  If the input string is
+    given as a string literal, a `bertrand::static_str` instance, or a
+    `std::string_view`, the range will store a non-owning view of the input string,
+    which must be guaranteed to outlive the match itself.  Otherwise, the match will
+    own a local copy of the input string. */
+    template <meta::static_str Str>
+    [[nodiscard]] borrowed_range finditer(
+        const Str& subject,
+        ssize_t start,
+        ssize_t stop = -1
+    ) const {
+        if (!normalize_indices(subject.size(), start, stop)) {
+            return {};
+        }
+        return {
+            std::string_view(subject),
+            m_code,
+            static_cast<size_t>(start),
+            static_cast<size_t>(stop)
+        };
+    }
+
+    /* Evaluate the regular expression against a target string, returning a range
+    yielding each non-overlapping match from left to right.  If the input string is
+    given as a string literal, a `bertrand::static_str` instance, or a
+    `std::string_view`, the range will store a non-owning view of the input string,
+    which must be guaranteed to outlive the match itself.  Otherwise, the match will
+    own a local copy of the input string. */
+    template <meta::inherits<std::string_view> Str>
+    [[nodiscard]] borrowed_range finditer(
+        Str&& subject,
+        ssize_t start,
+        ssize_t stop = -1
+    ) const {
+        if (!normalize_indices(subject.size(), start, stop)) {
+            return {};
+        }
+        return {
+            std::string_view(subject),
+            m_code,
+            static_cast<size_t>(start),
+            static_cast<size_t>(stop)
+        };
+    }
+
+    /* Evaluate the regular expression against a target string and return the first
+    match.  Returns a (possibly false) Match struct that can be used to access and
+    iterate over capture groups.  If the input is given as a string literal, a
+    `bertrand::static_str` instance, or a `std::string_view`, the match will store a
+    non-owning view of the input string, which must be guaranteed to outlive the match
+    itself.  Otherwise, the match will own a local copy of the input string. */
+    template <std::convertible_to<std::string> Str>
+        requires (
+            !meta::string_literal<Str> &&
+            !meta::static_str<Str> &&
+            !meta::is<std::string_view, Str>
+        )
+    [[nodiscard]] owning_range finditer(
+        Str&& subject,
+        ssize_t start,
+        ssize_t stop = -1
+    ) const {
+        if (!normalize_indices(subject.size(), start, stop)) {
+            return {};
+        }
+        return {
+            std::forward<Str>(subject),
+            m_code,
+            static_cast<size_t>(start),
+            static_cast<size_t>(stop)
+        };
+    }
+
+
+
+
+    /// TODO: just template this on the input to finditer().  Maybe this always
+    /// uses a borrowed range, regardless of input?
+
+    /* Extract all matches of the regular expression against an input string.  Returns
+    a vector containing each of the extracted strings. */
+    [[nodiscard]] std::vector<std::string> findall(auto&&... args) const {
+        std::vector<std::string> result;
+        for (auto match : finditer(std::forward<decltype(args)>(args)...)) {
+            result.emplace_back(match.group().value());
+        }
+        return result;
+    }
+
+
+
+    /// TODO: findall(), split(), sub(), subn(), operator<<()
+
+
+
+
+    /// TODO: index into the regex with an integer or string to get the substring
+    /// corresponding to that group in the pattern.  Can possibly iterate over that
+    /// as well.
+
+};
+
+
+
+
 class Regex {
     std::string _pattern;
     uint32_t _flags;

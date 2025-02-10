@@ -2516,13 +2516,15 @@ namespace impl {
     constexpr size_t n_opt_posonly = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_opt_posonly<T, Ts...> =
-        n_opt_posonly<Ts...> + (meta::arg_traits<T>::posonly() && meta::arg_traits<T>::opt());
+        n_opt_posonly<Ts...> +
+        (meta::arg_traits<T>::posonly() && meta::arg_traits<T>::opt());
 
     template <typename...>
     constexpr size_t n_partial_posonly = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_partial_posonly<T, Ts...> =
-        n_partial_posonly<Ts...> + (meta::arg_traits<T>::posonly() && meta::arg_traits<T>::bound());
+        n_partial_posonly<Ts...> +
+        (meta::arg_traits<T>::posonly() && meta::arg_traits<T>::bound());
 
     template <typename...>
     constexpr size_t n_pos = 0;
@@ -2534,19 +2536,23 @@ namespace impl {
     constexpr size_t n_opt_pos = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_opt_pos<T, Ts...> =
-        n_opt_pos<Ts...> + (meta::arg_traits<T>::pos() && meta::arg_traits<T>::opt());
+        n_opt_pos<Ts...> +
+        (meta::arg_traits<T>::pos() && meta::arg_traits<T>::opt());
 
     template <typename...>
     constexpr size_t n_partial_pos = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_partial_pos<T, Ts...> =
-        n_partial_pos<Ts...> + (meta::arg_traits<T>::pos() && meta::arg_traits<T>::bound());
+        n_partial_pos<Ts...> +
+        (meta::arg_traits<T>::pos() && meta::arg_traits<T>::bound());
 
     template <typename...>
     constexpr size_t n_partial_args = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_partial_args<T, Ts...> =
-        meta::arg_traits<T>::args() ? meta::arg_traits<T>::bound_to::size() : n_partial_args<Ts...>;
+        meta::arg_traits<T>::args() ?
+            meta::arg_traits<T>::bound_to::size() :
+            n_partial_args<Ts...>;
 
     template <typename...>
     constexpr size_t n_kw = 0;
@@ -2564,7 +2570,8 @@ namespace impl {
     constexpr size_t n_partial_kw = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_partial_kw<T, Ts...> =
-        n_partial_kw<Ts...> + (meta::arg_traits<T>::kw() && meta::arg_traits<T>::bound());
+        n_partial_kw<Ts...> +
+        (meta::arg_traits<T>::kw() && meta::arg_traits<T>::bound());
 
     template <typename...>
     constexpr size_t n_kwonly = 0;
@@ -2576,19 +2583,23 @@ namespace impl {
     constexpr size_t n_opt_kwonly = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_opt_kwonly<T, Ts...> =
-        n_opt_kwonly<Ts...> + (meta::arg_traits<T>::kwonly() && meta::arg_traits<T>::opt());
+        n_opt_kwonly<Ts...> +
+        (meta::arg_traits<T>::kwonly() && meta::arg_traits<T>::opt());
 
     template <typename...>
     constexpr size_t n_partial_kwonly = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_partial_kwonly<T, Ts...> =
-        n_partial_kwonly<Ts...> + (meta::arg_traits<T>::kwonly() && meta::arg_traits<T>::bound());
+        n_partial_kwonly<Ts...> +
+        (meta::arg_traits<T>::kwonly() && meta::arg_traits<T>::bound());
 
     template <typename...>
     constexpr size_t n_partial_kwargs = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_partial_kwargs<T, Ts...> =
-        meta::arg_traits<T>::kwargs() ? meta::arg_traits<T>::bound_to::size() : n_partial_kwargs<Ts...>;
+        meta::arg_traits<T>::kwargs() ?
+            meta::arg_traits<T>::bound_to::size() :
+            n_partial_kwargs<Ts...>;
 
     template <typename...>
     constexpr size_t posonly_idx = 0;
@@ -2600,13 +2611,15 @@ namespace impl {
     constexpr size_t opt_posonly_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t opt_posonly_idx<T, Ts...> =
-        meta::arg_traits<T>::posonly() && meta::arg_traits<T>::opt() ? 0 : opt_posonly_idx<Ts...> + 1;
+        meta::arg_traits<T>::posonly() &&
+        meta::arg_traits<T>::opt() ? 0 : opt_posonly_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t partial_posonly_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t partial_posonly_idx<T, Ts...> =
-        meta::arg_traits<T>::posonly() && meta::arg_traits<T>::bound() ? 0 : partial_posonly_idx<Ts...> + 1;
+        meta::arg_traits<T>::posonly() &&
+        meta::arg_traits<T>::bound() ? 0 : partial_posonly_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t pos_idx = 0;
@@ -2618,13 +2631,15 @@ namespace impl {
     constexpr size_t opt_pos_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t opt_pos_idx<T, Ts...> =
-        meta::arg_traits<T>::pos() && meta::arg_traits<T>::opt() ? 0 : opt_pos_idx<Ts...> + 1;
+        meta::arg_traits<T>::pos() &&
+        meta::arg_traits<T>::opt() ? 0 : opt_pos_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t partial_pos_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t partial_pos_idx<T, Ts...> =
-        meta::arg_traits<T>::pos() && meta::arg_traits<T>::bound() ? 0 : partial_pos_idx<Ts...> + 1;
+        meta::arg_traits<T>::pos() &&
+        meta::arg_traits<T>::bound() ? 0 : partial_pos_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t args_idx = 0;
@@ -2642,13 +2657,15 @@ namespace impl {
     constexpr size_t opt_kw_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t opt_kw_idx<T, Ts...> =
-        meta::arg_traits<T>::kw() && meta::arg_traits<T>::opt() ? 0 : opt_kw_idx<Ts...> + 1;
+        meta::arg_traits<T>::kw() &&
+        meta::arg_traits<T>::opt() ? 0 : opt_kw_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t partial_kw_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t partial_kw_idx<T, Ts...> =
-        meta::arg_traits<T>::kw() && meta::arg_traits<T>::bound() ? 0 : partial_kw_idx<Ts...> + 1;
+        meta::arg_traits<T>::kw() &&
+        meta::arg_traits<T>::bound() ? 0 : partial_kw_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t kwonly_idx = 0;
@@ -2660,13 +2677,15 @@ namespace impl {
     constexpr size_t opt_kwonly_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t opt_kwonly_idx<T, Ts...> =
-        meta::arg_traits<T>::kwonly() && meta::arg_traits<T>::opt() ? 0 : opt_kwonly_idx<Ts...> + 1;
+        meta::arg_traits<T>::kwonly() &&
+        meta::arg_traits<T>::opt() ? 0 : opt_kwonly_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t partial_kwonly_idx = 0;
     template <typename T, typename... Ts>
     constexpr size_t partial_kwonly_idx<T, Ts...> =
-        meta::arg_traits<T>::kwonly() && meta::arg_traits<T>::bound() ? 0 : partial_kwonly_idx<Ts...> + 1;
+        meta::arg_traits<T>::kwonly() &&
+        meta::arg_traits<T>::bound() ? 0 : partial_kwonly_idx<Ts...> + 1;
 
     template <typename...>
     constexpr size_t kwargs_idx = 0;
@@ -2812,7 +2831,9 @@ namespace impl {
     constexpr bitset<MAX_ARGS> required = 0;
     template <typename A, typename... As>
     constexpr bitset<MAX_ARGS> required<A, As...> =
-        (required<As...> << 1) | !(meta::arg_traits<A>::opt() || meta::arg_traits<A>::variadic());
+        (required<As...> << 1) | !(
+            meta::arg_traits<A>::opt() || meta::arg_traits<A>::variadic()
+        );
 
     /* A temporary container describing the contents of a `*` unpacking operator at a
     function's call site.  Encloses an iterator over the unpacked container, which is
@@ -2873,6 +2894,10 @@ namespace impl {
         }
     };
 
+    /// TODO: maybe keyword packs can use a stack-allocated hash map with
+    /// size = MAX_ARGS and linear probing?  That avoids extra heap allocations at
+    /// least, but only for **kwargs packs in the call site.
+
     /* A temporary container describing the contents of a `**` unpacking operator at a
     function's call site.  Encloses an unordered map of strings to values, which is
     destructively searched every time an argument is consumed from the pack.  If the
@@ -2894,7 +2919,10 @@ namespace impl {
 
         struct Equal {
             using is_transparent = void;
-            static constexpr bool operator()(std::string_view lhs, std::string_view rhs) {
+            static constexpr bool operator()(
+                std::string_view lhs,
+                std::string_view rhs
+            ) {
                 return lhs == rhs;
             }
         };
@@ -3070,7 +3098,7 @@ namespace impl {
     template <typename, typename...>
     struct _defaults_signature;
     template <typename... out, typename... Ts>
-    struct _defaults_signature<args<out...>, Ts...> { using type = signature<void(out...)>; };
+    struct _defaults_signature<args<out...>, Ts...> {using type = signature<void(out...)>; };
     template <typename... out, typename A, typename... As>
     struct _defaults_signature<args<out...>, A, As...> {
         template <typename>
@@ -3172,17 +3200,6 @@ namespace impl {
     };
     template <typename... A>
     using partial_tuple = _partial_tuple<std::tuple<>, 0, A...>::type;
-
-    template <typename R>
-    struct signature_base : signature_tag {
-        using Return = R;
-
-        /* Dummy constructor for CTAD purposes.  This will be automatically inherited
-        by all subclasses. */
-        template <typename T> requires (signature<T>::enable)
-        constexpr signature_base(const T&) noexcept {}
-        constexpr signature_base() noexcept = default;
-    };
 
     inline std::string format_signature(
         const std::string& prefix,
@@ -3365,6 +3382,17 @@ namespace impl {
         [[nodiscard]] constexpr bool kwargs() const noexcept { return kind.kwargs(); }
         [[nodiscard]] constexpr bool opt() const noexcept { return kind.opt(); }
         [[nodiscard]] constexpr bool variadic() const noexcept { return kind.variadic(); }
+    };
+
+    template <typename R>
+    struct signature_base : signature_tag {
+        using Return = R;
+
+        /* Dummy constructor for CTAD purposes.  This will be automatically inherited
+        by all subclasses. */
+        template <typename T> requires (signature<T>::enable)
+        constexpr signature_base(const T&) noexcept {}
+        constexpr signature_base() noexcept = default;
     };
 
     /* Backs the pure-C++ `signature` class in a way that prevents unnecessary code
@@ -5803,7 +5831,9 @@ namespace impl {
     template <meta::def F>
     struct call_passthrough<F> { static constexpr bool enable = true; };
     template <meta::chain F>
-        requires (call_passthrough<typename std::remove_cvref_t<F>::template at<0>>::enable)
+        requires (call_passthrough<
+            typename std::remove_cvref_t<F>::template at<0>
+        >::enable)
     struct call_passthrough<F> { static constexpr bool enable = true; };
 
 }
