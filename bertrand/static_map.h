@@ -774,6 +774,10 @@ private:
     }
 
 public:
+    template <typename Self = static_map>
+        requires (std::is_default_constructible_v<typename Self::mapped_type>)
+    constexpr static_map() {}
+
     template <typename... Values>
         requires (
             sizeof...(Values) == size() &&
