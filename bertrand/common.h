@@ -11,6 +11,7 @@
 #include <optional>
 #include <ranges>
 #include <string>
+#include <type_traits>
 #include <variant>
 
 
@@ -486,8 +487,12 @@ namespace meta {
     template <typename T>
     concept is_ptr = std::is_pointer_v<std::remove_reference_t<T>>;
 
+    /// TODO: remove is_ prefix from most of these where possible
     template <typename T>
     concept is_qualified = std::is_reference_v<T> || is_const<T> || is_volatile<T>;
+
+    template <typename T>
+    concept unqualified = !is_qualified<T>;
 
     template <typename T>
     concept is_void = std::is_void_v<std::remove_cvref_t<T>>;
@@ -1036,6 +1041,30 @@ namespace meta {
     concept ixor_returns = requires(L& l, R r) {
         { l ^= r } -> std::convertible_to<Return>;
     };
+
+    template <class A, class T>
+    concept allocator_for =
+        // 1) A must have member alias value_type which equals T
+        requires { typename A::value_type; } &&
+        std::same_as<typename A::value_type, T> &&
+
+        // 2) A must be copy and move constructible/assignable
+        std::is_copy_constructible_v<A> &&
+        std::is_copy_assignable_v<A> &&
+        std::is_move_constructible_v<A> &&
+        std::is_move_assignable_v<A> &&
+
+        // 3) A must be equality comparable
+        requires(A a, A b) {
+            { a == b } -> std::convertible_to<bool>;
+            { a != b } -> std::convertible_to<bool>;
+        } &&
+
+        // 4) A must be able to allocate and deallocate
+        requires(A a, T* ptr, size_t n) {
+            { a.allocate(n) } -> std::convertible_to<T*>;
+            { a.deallocate(ptr, n) };
+        };
 
 }
 
