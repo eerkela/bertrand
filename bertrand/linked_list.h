@@ -11,10 +11,8 @@ namespace bertrand {
 
 namespace impl {
     struct linked_node_tag {};
-    struct single_node_tag : linked_node_tag {};
-    struct double_node_tag : linked_node_tag {};
-    struct keyed_node_tag : linked_node_tag {};
-    struct hashed_node_tag : linked_node_tag {};
+    struct list_view_tag {};
+    struct hash_view_tag {};
 }
 
 
@@ -22,312 +20,220 @@ namespace meta {
 
     template <typename T>
     concept linked_node = meta::inherits<T, impl::linked_node_tag>;
-    template <typename T>
-    concept singly_linked_node = meta::inherits<T, impl::single_node_tag>;
-    template <typename T>
-    concept doubly_linked_node = meta::inherits<T, impl::double_node_tag>;
-    template <typename T>
-    concept keyed_linked_node = meta::inherits<T, impl::keyed_node_tag>;
-    template <typename T>
-    concept hashed_linked_node = meta::inherits<T, impl::hashed_node_tag>;
 
-    namespace detail {
-
-        template <typename T>
-        struct linked_hash_element {
-            using type = qualify<typename std::remove_cvref_t<T>::value_type, T>;
-        };
-        template <keyed_linked_node T>
-        struct linked_hash_element<T> {
-            using type = qualify<typename std::remove_cvref_t<T>::key_type, T>;
-        };
-
-    }
-
-    template <linked_node T>
-    using linked_hash_element = detail::linked_hash_element<T>::type;
+    template <typename T>
+    concept hashed_node = linked_node<T> && requires(T node) {
+        { node.hash } -> std::convertible_to<size_t>;
+    };
 
 }
 
 
 namespace impl {
 
-    /* A node in a singly-linked list. */
+    /* Node type used to store each value in a linked data structure.  Note that
+    constructors/assignment operators do not modify links between nodes, which must be
+    manually assigned. */
     template <typename T>
-    struct single_node : single_node_tag {
+    struct linked_node : linked_node_tag {
         using value_type = T;
 
         value_type value;
-        single_node* next;
+        linked_node* prev = nullptr;
+        linked_node* next = nullptr;
 
-        template <std::convertible_to<value_type> U>
-        single_node(U&& value, single_node* next = nullptr) :
-            value(std::forward<U>(value)), next(next)
-        {}
-
-        /* Insert the node between its neighbors to form a singly-linked list.  `curr`
-        must not be null, but `prev` and `next` can be. */
-        static void link(
-            single_node* prev,
-            single_node* curr,
-            single_node* next
-        ) noexcept {
-            if (prev) {
-                prev->next = curr;
+        template <typename... Args> requires (std::constructible_from<value_type, Args...>)
+        linked_node(Args&&... args) : value(std::forward<Args>(args)...) {}
+        linked_node(const linked_node& other) : value(other.value) {}
+        linked_node(linked_node&& other) : value(std::move(other.value)) {}
+        linked_node& operator=(const linked_node& other) {
+            if (this != &other) {
+                value = other.value;
             }
-            curr->next = next;
+            return *this;
         }
-
-        /* Unlink the node from its neighbors without breaking the list. `curr` must
-        not be null, but `prev` and `next` can be. */
-        static void unlink(
-            single_node* prev,
-            single_node* curr,
-            single_node* next
-        ) noexcept {
-            if (prev) {
-                prev->next = next;
+        linked_node& operator=(linked_node&& other) {
+            if (this != &other) {
+                value = std::move(other.value);
             }
-        }
-
-        /* Break a linked list at the specified nodes, splitting it in two. */
-        static void split(single_node* prev, single_node* curr) noexcept {
-            if (prev) {
-                prev->next = nullptr;
-            }
-        }
-
-        /* Join a linked list at the specified nodes. */
-        static void join(single_node* prev, single_node* curr) noexcept {
-            if (prev) {
-                prev->next = curr;
-            }
-        }
-
-    };
-
-    /* A node in a doubly-linked list. */
-    template <typename T>
-    struct double_node : double_node_tag {
-        using value_type = T;
-
-        value_type value;
-        double_node* next;
-        double_node* prev;
-
-        template <std::convertible_to<value_type> U>
-        double_node(
-            U&& value,
-            double_node* prev = nullptr,
-            double_node* next = nullptr
-        ) :
-            value(std::forward<U>(value)),
-            prev(prev),
-            next(next)
-        {}
-
-        /* Insert the node between its neighbors to form a doubly-linked list. */
-        static void link(
-            double_node* prev,
-            double_node* curr,
-            double_node* next
-        ) noexcept {
-            if (prev) {
-                prev->next = curr;
-            }
-            curr->prev = prev;
-            curr->next = next;
-            if (next) {
-                next->prev = curr;
-            }
-        }
-
-        /* Unlink the node from its neighbors without breaking the list. */
-        static void unlink(
-            double_node* prev,
-            double_node* curr,
-            double_node* next
-        ) noexcept {
-            if (prev) {
-                prev->next = next;
-            }
-            if (next) {
-                next->prev = prev;
-            }
-        }
-
-        /* Break a linked list at the specified nodes, splitting it in two. */
-        static void split(double_node* prev, double_node* curr) noexcept {
-            if (prev) {
-                prev->next = nullptr;
-            }
-            if (curr) {
-                curr->prev = nullptr;
-            }
-        }
-
-        /* Join a linked list at the specified nodes. */
-        static void join(double_node* prev, double_node* curr) noexcept {
-            if (prev) {
-                prev->next = curr;
-            }
-            if (curr) {
-                curr->prev = prev;
-            }
+            return *this;
         }
     };
 
-    /* A node adaptor that adds space for a separate key to a given node type. */
-    template <typename Key, meta::inherits<linked_node_tag> Node>
-        requires (!meta::is_qualified<Node>)
-    struct keyed_node : Node, keyed_node_tag {
-        using key_type = Key;
-        using value_type = Node::value_type;
-
-        key_type key;
-
-        template <std::convertible_to<key_type> K, typename... Args>
-            requires (std::constructible_from<Node, Args...>)
-        keyed_node(K&& key, Args&&... args) :
-            Node(std::forward<Args>(args)...),
-            key(std::forward<K>(key))
-        {}
-    };
-
-    /* A node adaptor that adds space to store a hash of the underlying key/value. */
-    template <meta::inherits<linked_node_tag> Node, typename Hash>
+    /* A modified node type that automatically computes a hash for the underlying value
+    using a customizable hash function.  Note that constructors/assignment operators do
+    not modify links between nodes, which must be manually assigned. */
+    template <typename T, typename Hash>
         requires (
-            !meta::is_qualified<Node> &&
-            !meta::is_qualified<Node> &&
-            std::is_invocable_r_v<size_t, Hash, meta::linked_hash_element<Node>>
+            std::is_default_constructible_v<Hash> &&
+            std::is_invocable_r_v<size_t, Hash, T>
         )
-    struct hashed_node : Node, hashed_node_tag {
+    struct hashed_node : linked_node_tag {
+        using value_type = T;
         using hasher = Hash;
 
+        value_type value;
         size_t hash;
+        hashed_node* prev = nullptr;
+        hashed_node* next = nullptr;
 
         template <typename... Args>
-            requires (std::constructible_from<Node, Args...>)
+            requires (std::constructible_from<value_type, Args...>)
         hashed_node(Args&&... args) :
-            Node(std::forward<Args>(args)...),
-            hash([this] {
-                if constexpr (meta::inherits<Node, keyed_node_tag>) {
-                    return hasher{}(this->key);
-                } else {
-                    return hasher{}(this->value);
-                }
-            }())
+            value(std::forward<Args>(args)...),
+            hash(hasher{}(this->value))
         {}
+
+        hashed_node(const hashed_node& other) : value(other.value) {}
+        hashed_node(hashed_node&& other) : value(std::move(other.value)) {}
+        hashed_node& operator=(const hashed_node& other) {
+            if (this != &other) {
+                value = other.value;
+            }
+            return *this;
+        }
+        hashed_node& operator=(hashed_node&& other) {
+            if (this != &other) {
+                value = std::move(other.value);
+            }
+            return *this;
+        }
     };
 
-
-
     /* A simple, bidirectional iterator over a linked list data structure. */
-    template <meta::linked_node node> requires (meta::unqualified<node>)
-    struct linked_iterator {
+    template <meta::linked_node Node> requires (!std::is_reference_v<Node>)
+    struct linked_node_iterator {
         using iterator_category = std::bidirectional_iterator_tag;
         using difference_type = std::ptrdiff_t;
-        using value_type = node;
-        using reference = node&;
-        using pointer = node*;
+        using value_type = Node;
+        using reference = Node&;
+        using pointer = Node*;
 
     private:
-    node* curr;
+        Node* curr;
 
     public:
-        linked_iterator(node* curr = nullptr) : curr(curr) {}
+        linked_node_iterator(Node* curr = nullptr) noexcept : curr(curr) {}
 
-        [[nodiscard]] node& operator*() noexcept { return *curr; }
-        [[nodiscard]] const node& operator*() const noexcept { return *curr; }
-        [[nodiscard]] node* operator->() noexcept { return curr; }
-        [[nodiscard]] const node* operator->() const noexcept { return curr; }
+        [[nodiscard]] Node& operator*() noexcept { return *curr; }
+        [[nodiscard]] const Node& operator*() const noexcept { return *curr; }
+        [[nodiscard]] Node* operator->() noexcept { return curr; }
+        [[nodiscard]] const Node* operator->() const noexcept { return curr; }
 
-        linked_iterator& operator++() noexcept {
+        linked_node_iterator& operator++() noexcept {
             curr = curr->next;
             return *this;
         }
 
-        linked_iterator operator++(int) noexcept {
-            linked_iterator temp = *this;
+        [[nodiscard]] linked_node_iterator operator++(int) noexcept {
+            linked_node_iterator temp = *this;
             ++(*this);
             return temp;
         }
 
-        linked_iterator& operator--() noexcept {
+        linked_node_iterator& operator--() noexcept {
             curr = curr->prev;
             return *this;
         }
 
-        linked_iterator operator--(int) noexcept {
-            linked_iterator temp = *this;
+        [[nodiscard]] linked_node_iterator operator--(int) noexcept {
+            linked_node_iterator temp = *this;
             --(*this);
             return temp;
         }
 
-        [[nodiscard]] bool operator==(const linked_iterator& other) const noexcept {
+        [[nodiscard]] bool operator==(const linked_node_iterator& other) const noexcept {
             return curr == other.curr;
         }
 
-        [[nodiscard]] bool operator!=(const linked_iterator& other) const noexcept {
+        [[nodiscard]] bool operator!=(const linked_node_iterator& other) const noexcept {
             return curr != other.curr;
         }
     };
 
-
-
-    /* A wrapper around a node allocator for a linked data structure, which keeps
-    track of the head and tail, as well as the current occupancy and dynamic
-    capacity. */
-    template <meta::unqualified Node, size_t N, typename Alloc>
-        requires ((N > 0 && meta::is_void<Alloc>) || meta::allocator_for<Alloc, Node>)
-    struct linked_view {
-
-        /* Indicates whether the data structure has a constant capacity (true) or
-        supports reallocations (false).  If true, then the contents are guaranteed to
-        have stable addresses. */
-        static constexpr bool STATIC = N > 0;
-
-    protected:
-        Alloc allocator;
-
-        /* Invoke the stored allocator to retrieve a block of nodes of a specified
-        size. */
-        Node* allocate(size_t n) {
-            Node* data = std::allocator_traits<Alloc>::allocate(allocator, n);
-            if (!data) {
-                throw MemoryError();
-            }
-            return data;
-        }
-
-        /* Invoke the stored allocator to destroy a block of nodes of a specified
-        size. */
-        void deallocate(Node* data, size_t n) {
-            std::allocator_traits<Alloc>::deallocate(allocator, data, n);
-        }
+    /* A reversed version of the above iterator.  Inheritance allows a forward iterator
+    to be converted into a reverse iterator and vice versa. */
+    template <meta::linked_node Node> requires (!std::is_reference_v<Node>)
+    struct reverse_linked_node_iterator : linked_node_iterator<Node> {
+    private:
+        using base = linked_node_iterator<Node>;
 
     public:
-        template <typename... Args> requires (std::constructible_from<Alloc, Args...>)
-        linked_view(Args&&... args) : allocator(std::forward<Args>(args)...) {}
+        using base::base;
+
+        reverse_linked_node_iterator& operator++() noexcept {
+            base::operator--();
+            return *this;
+        }
+
+        [[nodiscard]] reverse_linked_node_iterator operator++(int) noexcept {
+            reverse_linked_node_iterator temp = *this;
+            ++(*this);
+            return temp;
+        }
+
+        reverse_linked_node_iterator& operator--() noexcept {
+            base::operator++();
+            return *this;
+        }
+
+        [[nodiscard]] reverse_linked_node_iterator operator--(int) noexcept {
+            reverse_linked_node_iterator temp = *this;
+            --(*this);
+            return temp;
+        }
     };
 
-    /* A wrapper around a node allocator for a linked list data structure, which
-    keeps track of the head and tail, as well as the current occupancy and dynamic
-    capacity.  Uses a free list to track deleted nodes, which will be reused when a
-    new node is added according to FIFO order. */
-    template <meta::unqualified Node, size_t N, typename Alloc>
-        requires ((N > 0 && meta::is_void<Alloc>) || meta::allocator_for<Alloc, Node>)
-    struct list_view : linked_view<Node, N, Alloc> {
+    /// TODO: set propagate_on_container_copy_assignment, etc. for better stdlib
+    /// compatibility/performance
 
-        /* Indicates the minimum size for a dynamic array, to prevent thrashing.  This
-        has no effect if the array is statically-sized (N > 0) */
+    /* A wrapper around a node allocator for a linked list data structure, which
+    keeps track of the head, tail, size, and capacity of the underlying array, along
+    with several helper methods for low-level memory management.
+
+    The memory is laid out as a contiguous array of nodes similar to a `std::vector`,
+    but with added `prev` and `next` pointers between nodes.  The array block is
+    allocated using the provided allocator, and is filled up from left to right,
+    maintaining contiguous order.  If a node is removed from the list, it is added to a
+    singly-linked free list composed of the `next` pointers of the removed nodes, which
+    is checked when allocating new nodes.  This allows the contiguous condition to be
+    violated, fragmenting the array and allowing O(1) reordering.  In order to maximize
+    cache locality, the array is automatically defragmented (returned to contiguous
+    order) whenever it is copied, emptied, or resized.  Manual defragments can also be
+    done via the `defragment()` method.
+
+    If `N` is greater than zero, then the array will be allocated on the stack with a
+    fixed size of `N` elements.  Such an array cannot be resized and will throw an
+    exception if filled past capacity, or if the `reserve()`, `defragment()`, or
+    `shrink()` methods are called.  All elements in the array are guaranteed to have
+    stable addresses for their full duration within the list.  Defragmentation will
+    only occur on copy or upon removing the last element of the list. */
+    template <meta::unqualified Node, size_t N, meta::unqualified Alloc>
+        requires (meta::linked_node<Node> && meta::allocator_for<Alloc, Node>)
+    struct list_view : list_view_tag {
+        using allocator_type = Alloc;
+        using size_type = size_t;
+        using difference_type = std::ptrdiff_t;
+        using value_type = Node;
+        using reference = Node&;
+        using const_reference = const Node&;
+        using pointer = Node*;
+        using const_pointer = const Node*;
+        using iterator = linked_node_iterator<Node>;
+        using const_iterator = linked_node_iterator<const Node>;
+        using reverse_iterator = reverse_linked_node_iterator<Node>;
+        using const_reverse_iterator = reverse_linked_node_iterator<const Node>;
+
+        /* Indicates whether the data structure has a fixed capacity (true) or supports
+        reallocations (false).  If true, then the contents are guaranteed to retain
+        stable addresses. */
+        static constexpr bool STATIC = N > 0;
+
+        /* The minimum size for a dynamic array, to prevent thrashing.  This has no
+        effect if the array has a fixed capacity (N > 0) */
         static constexpr size_t MIN_SIZE = 8;
 
     protected:
-        using base = linked_view<Node, N, Alloc>;
-        using base::allocate;
-        using base::deallocate;
-
         /* A static array, which is preallocated to a fixed size and does not interact
         with the heap in any way. */
         template <size_t M>
@@ -354,15 +260,22 @@ namespace impl {
             Node* tail = nullptr;
         };
 
+        Alloc allocator;
+        Node* freelist = nullptr;
         Array<N> array;
 
-        /* Free list tracking removed nodes that can be recycled. */
-        struct Freelist {
-            Node* head = nullptr;
-            Node* tail = nullptr;
-        } freelist;
+        Node* allocate(size_t n) {
+            Node* data = std::allocator_traits<Alloc>::allocate(allocator, n);
+            if (!data) {
+                throw MemoryError();
+            }
+            return data;
+        }
 
-        /* Allocate a new array of a given size and transfer the contents. */
+        void deallocate(Node* data, size_t n) {
+            std::allocator_traits<Alloc>::deallocate(allocator, data, n);
+        }
+
         void resize(size_t cap) {
             if constexpr (N) {
                 throw MemoryError(
@@ -383,13 +296,12 @@ namespace impl {
                     if (array.data) {
                         deallocate(array.data, array.capacity);
                     }
+                    freelist = nullptr;
                     array.capacity = 0;
                     array.size = 0;
                     array.data = nullptr;
                     array.head = nullptr;
                     array.tail = nullptr;
-                    freelist.head = nullptr;
-                    freelist.tail = nullptr;
                     return;
                 }
     
@@ -431,11 +343,21 @@ namespace impl {
             }
         }
 
+        size_t normalize_index(ssize_t i) {
+            if (i < 0) {
+                i += array.size;
+            }
+            if (i < 0 || i >= array.size) {
+                throw IndexError(std::to_string(i));
+            }
+            return static_cast<size_t>(i);
+        }
+
     public:
         template <typename... Args> requires (std::constructible_from<Alloc, Args...>)
-        list_view(Args&&... args) : base(std::forward<Args>(args)...) {}
+        list_view(Args&&... args) : allocator(std::forward<Args>(args)...) {}
 
-        list_view(const list_view& other) : base(other) {
+        list_view(const list_view& other) : allocator(other.allocator) {
             if (other.empty()) {
                 return;
             }
@@ -474,7 +396,8 @@ namespace impl {
             }
         }
 
-        list_view(list_view&& other) : base(std::move(other)) {
+        list_view(list_view&& other) : allocator(std::move(other.allocator)) {
+            // if the array has fixed size, then we need to move each element manually
             if constexpr (N) {
                 if (other.empty()) {
                     return;
@@ -498,7 +421,7 @@ namespace impl {
 
                 // If a move constructor fails, replace the previous values
                 } catch (...) {
-                    Node* orig = array.head;
+                    Node* orig = other.array.head;
                     for (size_t i = 0; i < array.size; ++i) {
                         Node& curr = array.data[i];
                         *orig = std::move(curr);
@@ -507,16 +430,17 @@ namespace impl {
                     }
                     throw;
                 }
+
+            // otherwise, we can just transfer ownership
             } else {
-                array = other.array;
                 freelist = other.freelist;
+                array = other.array;
+                other.freelist = nullptr;
                 other.array.capacity = 0;
-                other.array.data = nullptr;
                 other.array.size = 0;
+                other.array.data = nullptr;
                 other.array.head = nullptr;
                 other.array.tail = nullptr;
-                other.freelist.head = nullptr;
-                other.freelist.tail = nullptr;
             }
         }
 
@@ -535,16 +459,15 @@ namespace impl {
                     }
                 }
 
-                base::allocator = other.allocator;
+                allocator = other.allocator;
                 if constexpr (N == 0) {
                     array.capacity = 0;
                     array.data = nullptr;
                 }
+                freelist = nullptr;
                 array.size = 0;
                 array.head = nullptr;
                 array.tail = nullptr;
-                freelist.head = nullptr;
-                freelist.tail = nullptr;
 
                 // avoid allocation if other list is empty
                 if (!other.empty()) {
@@ -591,8 +514,6 @@ namespace impl {
 
         list_view& operator=(list_view&& other) {
             if (this != &other) {
-                /// TODO: same as move constructor for static/dynamic cases
-
                 if (array.data) {
                     Node* curr = array.head;
                     while (curr) {
@@ -600,18 +521,62 @@ namespace impl {
                         curr->~Node();
                         curr = next;
                     }
-                    deallocate(array.data, array.capacity);
+                    if constexpr (N == 0) {
+                        deallocate(array.data, array.capacity);
+                    }
                 }
-                base::allocator = std::move(other.allocator);
-                array = other.array;
-                freelist = other.freelist;
-                other.array.data = nullptr;
-                other.array.head = nullptr;
-                other.array.tail = nullptr;
-                other.array.size = 0;
-                other.array.capacity = 0;
-                other.freelist.head = nullptr;
-                other.freelist.tail = nullptr;
+
+                allocator = std::move(other.allocator);
+
+                // if the array has fixed size, then we need to move each element manually
+                if constexpr (N) {
+                    freelist = nullptr;
+                    array.size = 0;
+                    if (other.empty()) {
+                        array.head = nullptr;
+                        array.tail = nullptr;
+                        return *this;
+                    }
+                    array.head = &array.data[0];
+                    array.tail = array.head;
+
+                    // construct the first node, then continue with intermediate links
+                    try {
+                        new (array.head) Node(*std::move(other.array.head));
+                        ++array.size;
+                        Node* curr = other.array.head->next;
+                        while (curr) {
+                            array.tail->next = &array.data[array.size];
+                            new (array.tail->next) Node(*std::move(curr));
+                            array.tail->next->prev = array.tail;
+                            array.tail = array.tail->next;
+                            curr = curr->next;
+                            ++array.size;
+                        }
+
+                    // If a move constructor fails, replace the previous values
+                    } catch (...) {
+                        Node* orig = other.array.head;
+                        for (size_t i = 0; i < array.size; ++i) {
+                            Node& curr = array.data[i];
+                            *orig = std::move(curr);
+                            curr.~Node();
+                            orig = orig->next;  // move constructors don't alter original links
+                        }
+                        throw;
+                    }
+
+                // otherwise, we can just transfer ownership
+                } else {
+                    freelist = other.freelist;
+                    array = other.array;
+                    other.array.capacity = 0;
+                    other.array.size = 0;
+                    other.array.data = nullptr;
+                    other.array.head = nullptr;
+                    other.array.tail = nullptr;
+                    other.freelist = nullptr;
+                }
             }
             return *this;
         }
@@ -642,6 +607,9 @@ namespace impl {
         /* True if the list has zero size.  False otherwise. */
         [[nodiscard]] bool empty() const noexcept { return !array.size; }
 
+        /* True if the list has nonzero size.  False otherwise. */
+        [[nodiscard]] explicit operator bool() const noexcept { return !empty(); }
+
         /* The total number of nodes the array can store before resizing. */
         [[nodiscard]] size_t capacity() const noexcept { return array.capacity; }
 
@@ -651,20 +619,18 @@ namespace impl {
         }
 
         /* Initialize a new node for the list.  The result has null `prev` and `next`
-        pointers, and is initially disconnected from all other nodes.  It is included
-        in `size()`, however. */
+        pointers, and is initially disconnected from all other nodes, though it is
+        included in `size()`.  This can cause the array to grow if it does not have a
+        fixed capacity, otherwise this method will throw a `MemoryError`. */
         template <typename... Args> requires (std::constructible_from<Node, Args...>)
         [[nodiscard]] Node* create(Args&&... args) {
             // check free list for recycled nodes
-            if (freelist.head) {
-                Node* node = freelist.head;
-                Node* next = node->next;
+            if (freelist) {
+                Node* node = freelist;
+                Node* next = freelist->next;
                 new (node) Node(std::forward<Args>(args)...);
                 ++array.size;
-                freelist.head = next;
-                if (!next) {
-                    freelist.tail = nullptr;
-                }
+                freelist = next;
                 return node;
             }
 
@@ -688,9 +654,10 @@ namespace impl {
             return node;
         }
 
-        /* Destroy a node from the list, returning it to the dynamic array.  Note that
+        /* Destroy a node from the list, inserting it into the free list.  Note that
         the node should be disconnected from all other nodes before calling this
-        method, and the node must have been allocated from this view. */
+        method, and the node must have been allocated from this view.  Also defragments
+        the array if this is the last node in the list. */
         void recycle(Node* node) {
             if constexpr (DEBUG) {
                 if (node < array.data || node >= array.data + array.capacity) {
@@ -713,17 +680,19 @@ namespace impl {
             }
             node->~Node();
             --array.size;
-            if (freelist.head) {
-                freelist.tail->next = node;
-                freelist.tail = node;
+
+            // if this was the last node, reset the freelist to naturally defragment
+            // the array.  Otherwise, append to freelist.
+            if (!array.size) {
+                freelist = nullptr;
             } else {
-                freelist.head = node;
-                freelist.tail = node;
+                node->next = freelist;
+                freelist = node;
             }
         }
 
         /* Remove all nodes from the list, resetting the size to zero, but leaving the
-        capacity unchanged. */
+        capacity unchanged.  Also defragments the array. */
         void clear() {
             Node* curr = array.head;
             while (curr) {
@@ -731,14 +700,14 @@ namespace impl {
                 curr->~Node();
                 curr = next;
             }
+            freelist = nullptr;
             array.size = 0;
             array.head = nullptr;
             array.tail = nullptr;
-            freelist.head = nullptr;
-            freelist.tail = nullptr;
         }
 
-        /* Resize the allocator to store at least the given number of nodes. */
+        /* Resize the allocator to store at least the given number of nodes.  Throws
+        a `MemoryError` if used on a list with fixed capacity. */
         void reserve(size_t n) {
             if constexpr (N) {
                 throw MemoryError(
@@ -754,13 +723,12 @@ namespace impl {
 
         /* Rearrange the nodes in memory to reflect their current list order, without
         changing the capacity.  This is done automatically whenever the underlying
-        array grows or shrinks, but may be triggered manually as an optimization. */
+        array grows or shrinks, but may be triggered manually as an optimization.
+        Throws a `MemoryError` if used on a list with fixed capacity. */
         void defragment() {
             if constexpr (N) {
-                /// TODO: I might be able to defragment a static array by moving values
-                /// into a temporary array.  It's just complicated.
                 throw MemoryError(
-                    "cannot defragment a list with fixed capacity (" +
+                    "cannot resize a list with fixed capacity (" +
                     static_str<>::from_int<N> + ")"
                 );
             } else {
@@ -773,7 +741,7 @@ namespace impl {
         /* Shrink the capacity to the current size.  If the list is empty, then the
         underlying array will be deleted and the capacity set to zero.  Otherwise, if
         there are fewer than `MIN_SIZE` nodes, the capacity is set to `MIN_SIZE`
-        instead. */
+        instead.  Throws a `MemoryError` if used on a list with fixed capacity. */
         void shrink() {
             if constexpr (N) {
                 throw MemoryError(
@@ -784,22 +752,111 @@ namespace impl {
                 resize(array.size);
             }
         }
+
+        [[nodiscard]] iterator begin() noexcept { return {array.head}; }
+        [[nodiscard]] const_iterator begin() const noexcept { return {array.head}; }
+        [[nodiscard]] const_iterator cbegin() const noexcept { return {array.head}; }
+        [[nodiscard]] iterator end() noexcept { return {nullptr}; }
+        [[nodiscard]] const_iterator end() const noexcept { return {nullptr}; }
+        [[nodiscard]] const_iterator cend() const noexcept { return {nullptr}; }
+        [[nodiscard]] reverse_iterator rbegin() noexcept { return {array.tail}; }
+        [[nodiscard]] const_reverse_iterator rbegin() const noexcept { return {array.tail}; }
+        [[nodiscard]] const_reverse_iterator crbegin() const noexcept { return {array.tail}; }
+        [[nodiscard]] reverse_iterator rend() noexcept { return {nullptr}; }
+        [[nodiscard]] const_reverse_iterator rend() const noexcept { return {nullptr}; }
+        [[nodiscard]] const_reverse_iterator crend() const noexcept { return {nullptr}; }
+
+        /* Index into the list, returning an iterator to the specified element.  Allows
+        Python-style negative indexing, and throws an `IndexError` if it is out of
+        bounds after normalization.  Has a time compexity of O(n/2) following the links
+        between each node starting from the nearest edge. */
+        [[nodiscard]] iterator operator[](ssize_t i) {
+            size_t idx = normalize_index(i);
+
+            // if the index is closer to the head of the list, start there.
+            if (idx <= array.size / 2) {
+                iterator it {array.head};
+                for (size_t j = 0; j++ < idx;) {
+                    ++it;
+                }
+                return it;
+            }
+
+            // otherwise, start at the tail of the list
+            iterator it = {array.tail};
+            ++idx;
+            for (size_t j = array.size; j-- > idx;) {
+                --it;
+            }
+            return it;
+        }
+
+        /* Index into the list, returning an iterator to the specified element.  Allows
+        Python-style negative indexing, and throws an `IndexError` if it is out of
+        bounds after normalization.  Has a time compexity of O(n/2) following the links
+        between each node starting from the nearest edge. */
+        [[nodiscard]] const_iterator operator[](ssize_t i) const {
+            size_t idx = normalize_index(i);
+
+            // if the index is closer to the head of the list, start there.
+            if (idx <= array.size / 2) {
+                const_iterator it {array.head};
+                for (size_t j = 0; j++ < idx;) {
+                    ++it;
+                }
+                return it;
+            }
+
+            // otherwise, start at the tail of the list
+            const_iterator it = {array.tail};
+            ++idx;
+            for (size_t j = array.size; j-- > idx;) {
+                --it;
+            }
+            return it;
+        }
     };
-
-
 
     /* A wrapper around a node allocator for a linked set or map. */
-    template <typename Node>
-    struct hash_view {
+    template <meta::unqualified Node, size_t N, meta::unqualified Alloc>
+        requires (meta::hashed_node<Node> && meta::allocator_for<Alloc, Node>)
+    struct hash_view : hash_view_tag {
+        /// TODO: reimplement the hopscotch hashing algorithm
 
     };
 
+}
 
 
-    /// TODO: allocator views.  These should take a `std::allocator` type as a template
-    /// parameter.  This is really where most of the engineering effort would be.
+namespace meta {
+
+    template <typename T>
+    concept list_view = meta::inherits<T, impl::list_view_tag>;
+
+    template <typename T>
+    concept hash_view = meta::inherits<T, impl::hash_view_tag>;
 
 }
+
+
+/// TODO: maybe all the algorithms can be placed here under the impl:: namespace?
+/// They'll take up a fair amount of space, but that would mean the entire linked
+/// data structure ecosystem would be stored in just a single file here, which makes
+/// it easier to test with syntax highlighting.
+
+
+
+/// TODO: Less{} converts a list or set into a binary search tree (red-black tree)
+/// that maintains sorted order, and is contiguous in memory.  Neither case interferes
+/// with the view allocators I wrote above, since they only concern the links between
+/// nodes.  BSTs are almost always preferable to skip lists, and I can do it with
+/// relatively little fuss, just by modifying the node type to add a `parent` pointer.
+/// That doesn't require the elements to be strictly unique, so a linked_list that
+/// uses a binary search tree for ordering will remain contiguous in memory, and would
+/// be usable as a list with O(1) lookups.  On the set/map side, you would be able to
+/// use custom ordering conditions (like MFU/LFU) with guaranteed ordering at all times,
+/// and reinserts would be O(log n) instead of O(n).  In-order traversals would also
+/// benefit from contiguity at all times.
 
 
 
@@ -816,34 +873,10 @@ struct linked_list {
     using const_pointer = const value_type*;
 
 protected:
-
-    /* Node type used to store each value.  Note that constructors/assignment operators
-    do not modify links between nodes, which must be manually assigned. */
-    struct Node {
-        value_type value;
-        Node* prev = nullptr;
-        Node* next = nullptr;
-
-        template <typename... Args>
-            requires (std::constructible_from<value_type, Args...>)
-        Node(Args&&... args) : value(std::forward<Args>(args)...) {}
-        Node(const Node& other) : value(other.value) {}
-        Node(Node&& other) : value(std::move(other.value)) {}
-        Node& operator=(const Node& other) {
-            if (this != &other) {
-                value = other.value;
-            }
-            return *this;
-        }
-        Node& operator=(Node&& other) {
-            if (this != &other) {
-                value = std::move(other.value);
-            }
-            return *this;
-        }
-    };
-
+    using Node = impl::linked_node<T>;
     using Allocator = std::allocator_traits<Alloc>::template rebind_alloc<Node>;
+
+    impl::list_view<Node, N, Allocator> view;
 
 public:
 
