@@ -10,23 +10,38 @@ namespace bertrand {
 
 
 namespace impl::linked {
+
     struct node_tag {};
     struct view_tag {};
-}
+
+    constexpr uintptr_t NODE_ALIGNMENT = 8;
+
+}  // namespace impl::linked
 
 
 namespace meta {
 
     template <typename T>
-    concept linked_node = meta::inherits<T, impl::linked::node_tag>;
+    concept linked_node = meta::inherits<T, impl::linked::node_tag> && requires(T node) {
+        typename std::remove_cvref_t<T>::value_type;
+        { node.prev } -> std::convertible_to<std::add_pointer_t<T>>;
+        { node.next } -> std::convertible_to<std::add_pointer_t<T>>;
+        { node.value } -> std::convertible_to<typename std::remove_cvref_t<T>::value_type>;
+    };
 
     template <typename T>
     concept bst_node = linked_node<T> && requires(T node) {
-        { node.parent } -> std::convertible_to<std::add_pointer_t<T>>;
+        typename std::remove_cvref_t<T>::less_type;
+        !meta::is_void<typename std::remove_cvref_t<T>::less_type>;
+        { node.prev_thread } -> std::convertible_to<bool>;
+        { node.next_thread } -> std::convertible_to<bool>;
+        { node.red } -> std::convertible_to<bool>;
     };
 
     template <typename T>
     concept hash_node = linked_node<T> && requires(T node) {
+        typename std::remove_cvref_t<T>::hash_type;
+        !meta::is_void<typename std::remove_cvref_t<T>::hash_type>;
         { node.hash } -> std::convertible_to<size_t>;
     };
 
@@ -42,190 +57,490 @@ namespace meta {
     template <typename T>
     concept hash_view = linked_view<T> && hash_node<node_type<T>>;
 
-}
+}  // namespace meta
 
 
 namespace impl::linked {
-
-    /// TODO: BST nodes may not be compatible with algorithms that expect prev/next,
-    /// since the algorithm isn't quite that simple.  It will probably need special
-    /// handling in the algorithms that use it, and maybe also in the view itself to
-    /// allow proper copies/moves/resizing.
-    /// -> There is a way to do this by using a "threaded" BST, which only requires
-    /// two pointers per node, plus an extra enum for tagging info.  That means I can
-    /// apply all the same algorithms to the BST as I do to the linked list, without
-    /// any duplicated logic.
 
     /// NOTE: node constructors/assignment operators do not modify links between nodes,
     /// which are not safe to copy.  Instead, they initialize to null, and must be
     /// manually assigned by the user to prevent dangling pointers.
 
-    /* Node type used to store each value in a linked data structure. */
-    template <typename T>
-    struct node : node_tag {
-        using value_type = T;
+    /// NOTE: Binary search tree (BST) nodes are implemented according to a threaded,
+    /// top-down red-black design, which encodes the extra threading and color bits
+    /// directly into the `prev` and `next` pointers by forcing 8-byte alignment at
+    /// all times.  This means that in-order traversals can be done without a `parent`
+    /// pointer, recursive stack, or auxiliary data structure, just by following the
+    /// pointers like an ordinary doubly-linked list.  This both minimizes memory usage
+    /// and allows many of the same algorithms to be used interchangeably for both data
+    /// structures, without any extra work.
 
-        value_type value;
-        node* prev = nullptr;
-        node* next = nullptr;
-
-        template <typename... Args> requires (std::constructible_from<value_type, Args...>)
-        node(Args&&... args) : value(std::forward<Args>(args)...) {}
-        node(const node& other) : value(other.value) {}
-        node(node&& other) : value(std::move(other.value)) {}
-        node& operator=(const node& other) {
-            if (this != &other) {
-                value = other.value;
-            }
-            return *this;
-        }
-        node& operator=(node&& other) {
-            if (this != &other) {
-                value = std::move(other.value);
-            }
-            return *this;
-        }
-    };
-
-    /* A modified node type used to store each value in a binary search tree data
-    structure.  This follows a threaded, red-black design, such that each node contains
-    purely in-order `prev` and `next` pointers, just like a doubly-linked list.  This
-    allows the same algorithms and allocators to be used in both cases. */
-    template <typename T, typename Less>
-        requires (
+    /* Node type for hashed BST nodes. */
+    template <typename T, typename Hash = void, typename Less = void>
+        requires ((meta::is_void<Hash> || (
+            std::is_default_constructible_v<Hash> &&
+            std::is_invocable_r_v<size_t, Hash, const T&>
+        )) && (meta::is_void<Less> || (
             std::is_default_constructible_v<Less> &&
             std::is_invocable_r_v<bool, Less, const T&, const T&>
-        )
-    struct bst_node : node_tag {
-        using value_type = T;
+        )))
+    struct alignas(NODE_ALIGNMENT) node : node_tag {
+    private:
 
-        /* Extra flag bits are stored alongside the allocator array in order to
-        compress them as much as possible.  They are accessed through an abstract
-        interface within the allocator itself. */
-        enum Flags : uint8_t {
-            PREV_THREAD     = 0b1,  // if set, `prev` is not a real child of this node
-            NEXT_THREAD     = 0b10,  // if set, `next` is not a real child of this node
-            RED             = 0b100,  // colors this node during red-black rebalancing
+        template <typename U>
+        struct _unwrap_node { using type = U; };
+        template <meta::linked_node U>
+        struct _unwrap_node<U> { using type = meta::node_type<U>; };
+        template <typename U>
+        using unwrap_node = _unwrap_node<U>::type;
+
+        /* BSTs use a tagged pointer to store the `prev` and `next` pointers, which
+        encode the thread bits and red/black color bit into the pointer itself, to
+        avoid auxiliary data structures and padding. */
+        enum Flags : uintptr_t {
+            THREAD          = 0b1,  // if set, pointer is not a real child of this node
+            RED             = 0b10,  // colors this node during red-black balancing
+            MASK            = THREAD | RED,
         };
 
+        uintptr_t m_prev = 0;
+        uintptr_t m_next = 0;
+
+    public:
+        using value_type = T;
+        using hash_type = Hash;
+        using less_type = Less;
+
+        /* The `prev` pointer can be read from and assigned to just like normal. */
+        __declspec(property(get = _get_prev, put = _set_prev))
+        node* prev;
+        [[nodiscard, gnu::always_inline]] node* _get_prev() const noexcept {
+            return reinterpret_cast<node*>(m_prev & ~MASK);
+        }
+        [[gnu::always_inline]] void _set_prev(node* p) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (reinterpret_cast<uintptr_t>(p) & MASK) {
+                    throw MemoryError(
+                        "node->prev cannot be assigned to a pointer that is not "
+                        "8-byte aligned: " + std::to_string(
+                            reinterpret_cast<uintptr_t>(p)
+                        )
+                    );
+                }
+            }
+            m_prev &= MASK;
+            m_prev |= reinterpret_cast<uintptr_t>(p);
+        }
+
+        /* The `next` pointer can be read from and assigned to just like normal. */
+        __declspec(property(get = _get_next, put = _set_next))
+        node* next;
+        [[nodiscard, gnu::always_inline]] node* _get_next() const noexcept {
+            return reinterpret_cast<node*>(m_next & ~MASK);
+        }
+        [[gnu::always_inline]] void _set_next(node* p) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (reinterpret_cast<uintptr_t>(p) & MASK) {
+                    throw MemoryError(
+                        "node->next cannot be assigned to a pointer that is not "
+                        "8-byte aligned: " + std::to_string(
+                            reinterpret_cast<uintptr_t>(p)
+                        )
+                    );
+                }
+            }
+            m_next &= MASK;
+            m_next |= reinterpret_cast<uintptr_t>(p);
+        }
+
+        /* `node->prev_thread` uses an internal tag bit to tell whether the `prev`
+        pointer is a BST thread, and not a true child of this node. */
+        __declspec(property(get = _get_prev_thread, put = _set_prev_thread))
+        bool prev_thread;
+        [[nodiscard, gnu::always_inline]] bool _get_prev_thread() const noexcept {
+            return m_prev & Flags::THREAD;
+        }
+        [[gnu::always_inline]] void _set_prev_thread(bool b) noexcept {
+            m_prev &= ~Flags::THREAD;
+            m_prev |= Flags::THREAD * b;
+        }
+
+        /* `node->next_thread` uses an internal tag bit to tell whether the `next`
+        pointer is a BST thread, and not a true child of this node. */
+        __declspec(property(get = _get_next_thread, put = _set_next_thread))
+        bool next_thread;
+        [[nodiscard, gnu::always_inline]] bool _get_next_thread() const noexcept {
+            return m_next & Flags::THREAD;
+        }
+        [[gnu::always_inline]] void _set_next_thread(bool b) noexcept {
+            m_next &= ~Flags::THREAD;
+            m_next |= Flags::THREAD * b;
+        }
+
+        /* `node->red` returns the state of an extra color bit stored in the `prev`
+        pointer. */
+        __declspec(property(get = _get_red, put = _set_red))
+        bool red;
+        [[nodiscard, gnu::always_inline]] bool _get_red() const noexcept {
+            return m_prev & Flags::RED;
+        }
+        [[gnu::always_inline]] void _set_red(bool b) noexcept {
+            m_prev &= ~Flags::RED;
+            m_prev |= Flags::RED * b;
+        }
+
         value_type value;
-        bst_node* prev = nullptr;  // in-order predecessor
-        bst_node* next = nullptr;  // in-order successor
-        bst_node* parent = nullptr;  // for rotations and upward rebalancing
+        size_t hash;
 
         template <typename... Args> requires (std::constructible_from<value_type, Args...>)
-        bst_node(Args&&... args) : value(std::forward<Args>(args)...) {}
-        bst_node(const bst_node& other) : value(other.value) {}
-        bst_node(bst_node&& other) : value(std::move(other.value)) {}
-        bst_node& operator=(const bst_node& other) {
-            if (this != &other) {
-                value = other.value;
-            }
-            return *this;
-        }
-        bst_node& operator=(bst_node&& other) {
-            if (this != &other) {
-                value = std::move(other.value);
-            }
-            return *this;
-        }
-
-        [[nodiscard]] bool operator<(const bst_node& other) const noexcept {
-            return Less{}(value, other.value);
-        }
-    };
-
-    /* A modified node type that automatically computes a hash for each node in a
-    linked data structure. */
-    template <typename T, typename Hash>
-        requires (
-            std::is_default_constructible_v<Hash> &&
-            std::is_invocable_r_v<size_t, Hash, T>
-        )
-    struct hash_node : node_tag {
-        using value_type = T;
-        using hasher = Hash;
-
-        value_type value;
-        hash_node* prev = nullptr;
-        hash_node* next = nullptr;
-        size_t hash;
-
-        template <typename... Args>
-            requires (std::constructible_from<value_type, Args...>)
-            hash_node(Args&&... args) :
+        node(Args&&... args) noexcept(
+            noexcept(value_type(std::forward<Args>(args)...)) &&
+            noexcept(hash_type{}(value))
+        ) :
             value(std::forward<Args>(args)...),
-            hash(hasher{}(this->value))
+            hash(hash_type{}(value))
         {}
 
-        hash_node(const hash_node& other) : value(other.value) {}
-        hash_node(hash_node&& other) : value(std::move(other.value)) {}
-        hash_node& operator=(const hash_node& other) {
+        node(const node& other) noexcept(noexcept(value_type(other.value))) :
+            value(other.value),
+            hash(other.hash)
+        {}
+
+        node(node&& other) noexcept(noexcept(value_type(std::move(other.value)))) :
+            value(std::move(other.value)),
+            hash(other.hash)
+        {}
+
+        node& operator=(const node& other) noexcept(noexcept(value = other.value)) {
             if (this != &other) {
                 value = other.value;
+                hash = other.hash;
             }
             return *this;
         }
-        hash_node& operator=(hash_node&& other) {
+
+        node& operator=(node&& other) noexcept(noexcept(value = std::move(other.value))) {
             if (this != &other) {
                 value = std::move(other.value);
+                hash = other.hash;
             }
             return *this;
+        }
+
+        template <typename U>
+            requires (
+                std::is_invocable_r_v<
+                    bool,
+                    less_type,
+                    const value_type&,
+                    const unwrap_node<U>&
+                >
+            )
+        [[nodiscard]] friend bool operator<(const node& lhs, const U& rhs) noexcept(
+            std::is_nothrow_invocable_r_v<
+                bool,
+                less_type,
+                const value_type&,
+                const unwrap_node<U>&
+            >
+        ) {
+            if constexpr (meta::linked_node<U>) {
+                return less_type{}(lhs.value, rhs.value);
+            } else {
+                return less_type{}(lhs.value, rhs);
+            }
+        }
+
+        template <typename U>
+            requires (std::is_invocable_r_v<
+                bool,
+                less_type,
+                const unwrap_node<U>&,
+                const value_type&
+            >)
+        [[nodiscard]] friend bool operator<(const U& rhs, const node& lhs) noexcept(
+            std::is_nothrow_invocable_r_v<
+                bool,
+                less_type,
+                const unwrap_node<U>&,
+                const value_type&
+            >
+        ) {
+            if constexpr (meta::linked_node<U>) {
+                return less_type{}(rhs.value, lhs.value);
+            } else {
+                return less_type{}(rhs, lhs.value);
+            }
         }
     };
 
-    /* A modified node type that automatically computes a hash for each node in a
-    binary search tree data structure. */
-    template <typename T, typename Hash, typename Less>
-        requires (
-            std::is_default_constructible_v<Hash> &&
-            std::is_invocable_r_v<size_t, Hash, T> &&
-            std::is_default_constructible_v<Less> &&
-            std::is_invocable_r_v<bool, Less, T, T>
-        )
-    struct hashed_bst_node : node_tag {
-        using value_type = T;
-        using hasher = Hash;
+    /* Node type for non-hashed BST nodes. */
+    template <typename T, typename Less>
+    struct alignas(NODE_ALIGNMENT) node<T, void, Less> : node_tag {
+        private:
 
-        /* Extra flag bits are stored alongside the allocator array in order to
-        compress them as much as possible.  They are accessed through an abstract
-        interface within the allocator itself. */
-        enum Flags : uint8_t {
-            PREV_THREAD     = 0b1,  // if set, `prev` is not a real child of this node
-            NEXT_THREAD     = 0b10,  // if set, `next` is not a real child of this node
-            RED             = 0b100,  // colors this node during red-black rebalancing
+        template <typename U>
+        struct _unwrap_node { using type = U; };
+        template <meta::linked_node U>
+        struct _unwrap_node<U> { using type = meta::node_type<U>; };
+        template <typename U>
+        using unwrap_node = _unwrap_node<U>::type;
+
+        /* BSTs use a tagged pointer to store the `prev` and `next` pointers, which
+        encode the thread bits and red/black color bit into the pointer itself, to
+        avoid auxiliary data structures and padding. */
+        enum Flags : uintptr_t {
+            THREAD          = 0b1,  // if set, pointer is not a real child of this node
+            RED             = 0b10,  // colors this node during red-black balancing
+            MASK            = THREAD | RED,
         };
 
-        value_type value;
-        hashed_bst_node* prev = nullptr;  // left subtree
-        hashed_bst_node* next = nullptr;  // right subtree
-        hashed_bst_node* parent = nullptr;
-        size_t hash;
+        uintptr_t m_prev = 0;
+        uintptr_t m_next = 0;
 
-        template <typename... Args>
-            requires (std::constructible_from<value_type, Args...>)
-        hashed_bst_node(Args&&... args) :
-            value(std::forward<Args>(args)...),
-            hash(hasher{}(this->value))
+    public:
+        using value_type = T;
+        using hash_type = void;
+        using less_type = Less;
+
+        /* The `prev` pointer can be read from and assigned to just like normal. */
+        __declspec(property(get = _get_prev, put = _set_prev))
+        node* prev;
+        [[nodiscard, gnu::always_inline]] node* _get_prev() const noexcept {
+            return reinterpret_cast<node*>(m_prev & ~MASK);
+        }
+        [[gnu::always_inline]] void _set_prev(node* p) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (reinterpret_cast<uintptr_t>(p) & MASK) {
+                    throw MemoryError(
+                        "node->prev cannot be assigned to a pointer that is not "
+                        "8-byte aligned: " + std::to_string(
+                            reinterpret_cast<uintptr_t>(p)
+                        )
+                    );
+                }
+            }
+            m_prev &= MASK;
+            m_prev |= reinterpret_cast<uintptr_t>(p);
+        }
+
+        /* The `next` pointer can be read from and assigned to just like normal. */
+        __declspec(property(get = _get_next, put = _set_next))
+        node* next;
+        [[nodiscard, gnu::always_inline]] node* _get_next() const noexcept {
+            return reinterpret_cast<node*>(m_next & ~MASK);
+        }
+        [[gnu::always_inline]] void _set_next(node* p) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (reinterpret_cast<uintptr_t>(p) & MASK) {
+                    throw MemoryError(
+                        "node->next cannot be assigned to a pointer that is not "
+                        "8-byte aligned: " + std::to_string(
+                            reinterpret_cast<uintptr_t>(p)
+                        )
+                    );
+                }
+            }
+            m_next &= MASK;
+            m_next |= reinterpret_cast<uintptr_t>(p);
+        }
+
+        /* `node->prev_thread` uses an internal tag bit to tell whether the `prev`
+        pointer is a BST thread, and not a true child of this node. */
+        __declspec(property(get = _get_prev_thread, put = _set_prev_thread))
+        bool prev_thread;
+        [[nodiscard, gnu::always_inline]] bool _get_prev_thread() const noexcept {
+            return m_prev & Flags::THREAD;
+        }
+        [[gnu::always_inline]] void _set_prev_thread(bool b) noexcept {
+            m_prev &= ~Flags::THREAD;
+            m_prev |= Flags::THREAD * b;
+        }
+
+        /* `node->next_thread` uses an internal tag bit to tell whether the `next`
+        pointer is a BST thread, and not a true child of this node. */
+        __declspec(property(get = _get_next_thread, put = _set_next_thread))
+        bool next_thread;
+        [[nodiscard, gnu::always_inline]] bool _get_next_thread() const noexcept {
+            return m_next & Flags::THREAD;
+        }
+        [[gnu::always_inline]] void _set_next_thread(bool b) noexcept {
+            m_next &= ~Flags::THREAD;
+            m_next |= Flags::THREAD * b;
+        }
+
+        /* `node->red` returns the state of an extra color bit stored in the `prev`
+        pointer. */
+        __declspec(property(get = _get_red, put = _set_red))
+        bool red;
+        [[nodiscard, gnu::always_inline]] bool _get_red() const noexcept {
+            return m_prev & Flags::RED;
+        }
+        [[gnu::always_inline]] void _set_red(bool b) noexcept {
+            m_prev &= ~Flags::RED;
+            m_prev |= Flags::RED * b;
+        }
+
+        value_type value;
+
+        template <typename... Args> requires (std::constructible_from<value_type, Args...>)
+        node(Args&&... args) noexcept(noexcept(value_type(std::forward<Args>(args)...))) :
+            value(std::forward<Args>(args)...)
         {}
 
-        hashed_bst_node(const hashed_bst_node& other) : value(other.value) {}
-        hashed_bst_node(hashed_bst_node&& other) : value(std::move(other.value)) {}
-        hashed_bst_node& operator=(const hashed_bst_node& other) {
+        node(const node& other) noexcept(noexcept(value_type(other.value))) :
+            value(other.value)
+        {}
+
+        node(node&& other) noexcept(noexcept(value_type(std::move(other.value)))) :
+            value(std::move(other.value))
+        {}
+
+        node& operator=(const node& other) noexcept(noexcept(value = other.value)) {
             if (this != &other) {
                 value = other.value;
             }
             return *this;
         }
-        hashed_bst_node& operator=(hashed_bst_node&& other) {
+
+        node& operator=(node&& other) noexcept(noexcept(value = std::move(other.value))) {
             if (this != &other) {
                 value = std::move(other.value);
             }
             return *this;
         }
 
-        [[nodiscard]] bool operator<(const hashed_bst_node& other) const noexcept {
-            return Less{}(value, other.value);
+        template <typename U>
+            requires (
+                std::is_invocable_r_v<
+                    bool,
+                    less_type,
+                    const value_type&,
+                    const unwrap_node<U>&
+                >
+            )
+        [[nodiscard]] friend bool operator<(const node& lhs, const U& rhs) noexcept(
+            std::is_nothrow_invocable_r_v<
+                bool,
+                less_type,
+                const value_type&,
+                const unwrap_node<U>&
+            >
+        ) {
+            if constexpr (meta::linked_node<U>) {
+                return less_type{}(lhs.value, rhs.value);
+            } else {
+                return less_type{}(lhs.value, rhs);
+            }
+        }
+
+        template <typename U>
+            requires (std::is_invocable_r_v<
+                bool,
+                less_type,
+                const unwrap_node<U>&,
+                const value_type&
+            >)
+        [[nodiscard]] friend bool operator<(const U& rhs, const node& lhs) noexcept(
+            std::is_nothrow_invocable_r_v<
+                bool,
+                less_type,
+                const unwrap_node<U>&,
+                const value_type&
+            >
+        ) {
+            if constexpr (meta::linked_node<U>) {
+                return less_type{}(rhs.value, lhs.value);
+            } else {
+                return less_type{}(rhs, lhs.value);
+            }
+        }
+    };
+
+    /* Node type for hashed, non-BST nodes. */
+    template <typename T, typename Hash>
+    struct alignas(NODE_ALIGNMENT) node<T, Hash, void> : node_tag {
+        using value_type = T;
+        using hash_type = Hash;
+        using less_type = void;
+
+        node* prev = nullptr;
+        node* next = nullptr;
+        value_type value;
+        size_t hash;
+
+        template <typename... Args> requires (std::constructible_from<value_type, Args...>)
+        node(Args&&... args) noexcept(
+            noexcept(value_type(std::forward<Args>(args)...)) &&
+            noexcept(hash_type{}(value))
+        ) :
+            value(std::forward<Args>(args)...),
+            hash(hash_type{}(this->value))
+        {}
+
+        node(const node& other) noexcept(noexcept(value_type(other.value))) :
+            value(other.value),
+            hash(other.hash)
+        {}
+
+        node(node&& other) noexcept(noexcept(value_type(std::move(other.value)))) :
+            value(std::move(other.value)),
+            hash(other.hash)
+        {}
+
+        node& operator=(const node& other) noexcept(noexcept(value = other.value)) {
+            if (this != &other) {
+                value = other.value;
+                hash = other.hash;
+            }
+            return *this;
+        }
+
+        node& operator=(node&& other) noexcept(noexcept(value = std::move(other.value))) {
+            if (this != &other) {
+                value = std::move(other.value);
+                hash = other.hash;
+            }
+            return *this;
+        }
+    };
+
+    /* Node type for non-hashed, non-BST nodes. */
+    template <typename T>
+    struct alignas(NODE_ALIGNMENT) node<T, void, void> : node_tag {
+        using value_type = T;
+        using hash_type = void;
+        using less_type = void;
+
+        node* prev = nullptr;
+        node* next = nullptr;
+        value_type value;
+
+        template <typename... Args> requires (std::constructible_from<value_type, Args...>)
+        node(Args&&... args) noexcept(noexcept(value_type(std::forward<Args>(args)...))) :
+            value(std::forward<Args>(args)...)
+        {}
+
+        node(const node& other) noexcept(noexcept(value_type(other.value))) :
+            value(other.value)
+        {}
+
+        node(node&& other) noexcept(noexcept(value_type(std::move(other.value)))) :
+            value(std::move(other.value))
+        {}
+
+        node& operator=(const node& other) noexcept(noexcept(value = other.value)) {
+            if (this != &other) {
+                value = other.value;
+            }
+            return *this;
+        }
+
+        node& operator=(node&& other) noexcept(noexcept(value = std::move(other.value))) {
+            if (this != &other) {
+                value = std::move(other.value);
+            }
+            return *this;
         }
     };
 
@@ -282,7 +597,7 @@ namespace impl::linked {
 
     /* A reversed version of the above iterator. */
     template <meta::linked_node Node> requires (!std::is_reference_v<Node>)
-    struct reverse_node_iterator : node_iterator<Node> {
+    struct reverse_node_iterator {
         using iterator_category = std::bidirectional_iterator_tag;
         using difference_type = std::ptrdiff_t;
         using value_type = Node;
@@ -331,8 +646,8 @@ namespace impl::linked {
         }
     };
 
-    /* Helper class adds an extra `root` pointer, in addition to `head` and `tail` for
-    the threaded BST case. */
+    /* Helper class adds an extra `root` pointer for BST views, in addition to `head`
+    and `tail`. */
     template <typename Node>
     struct view_base : view_tag {};
     template <meta::bst_node Node>
@@ -340,9 +655,10 @@ namespace impl::linked {
         Node* root = nullptr;
     };
 
-    /* A wrapper around a node allocator for a linked list data structure, which
-    keeps track of the head, tail, size, and capacity of the underlying array, along
-    with several helper methods for low-level memory management.
+    /* A wrapper around a node allocator for a linked list data structure or unhashed
+    BST, which keeps track of the head, tail, (root), size, and capacity of the
+    underlying array, along with several helper methods for low-level memory
+    management.
 
     The memory is laid out as a contiguous array of nodes similar to a `std::vector`,
     but with added `prev` and `next` pointers between nodes.  The array block is
@@ -351,9 +667,9 @@ namespace impl::linked {
     singly-linked free list composed of the `next` pointers of the removed nodes, which
     is checked when allocating new nodes.  This allows the contiguous condition to be
     violated, fragmenting the array and allowing O(1) reordering.  In order to maximize
-    cache locality, the array is automatically defragmented (returned to contiguous
-    order) whenever it is copied, emptied, or resized.  Manual defragments can also be
-    done via the `defragment()` method.
+    cache locality, the array is trivially defragmented (returned to contiguous order)
+    whenever it is copied, emptied, or resized, as part of the same operation.  Manual,
+    O(n) defragments can also be done via the `defragment()` method.
 
     If `N` is greater than zero, then the array will be allocated on the stack with a
     fixed capacity of `N` elements.  Such an array cannot be resized and will throw an
@@ -405,78 +721,15 @@ namespace impl::linked {
         /* Controls whether `swap(a, b)` causes the underlying allocators to also be
         swapped.  Equivalent to the same field on `std::allocator_traits<Alloc>`.  If
         false (the default), then `a` and `b` will retain their original allocators,
-        and only swap the underlying array if they compare equal.  Otherwise, two
-        new arrays will be allocated, and the existing contents will be swapped on an
-        elementwise basis. */
+        and only swap the underlying array if they compare equal.  Otherwise, a 3-way
+        move will be performed using a temporary list. */
         static constexpr bool PROPAGATE_ON_SWAP =
             std::allocator_traits<Alloc>::propagate_on_container_swap::value;
 
     protected:
-
-        template <typename NodeType>
-        struct flag_traits {};
-        template <meta::bst_node NodeType>
-        struct flag_traits<NodeType> {
-            using Flags = Node::Flags;
-            static constexpr size_t BITS_PER_NODE = 3;
-            static constexpr size_t BITS_PER_CHUNK = sizeof(size_t) * 8;
-            static constexpr size_t MASK = (1 << BITS_PER_NODE) - 1;
-
-            /* Retrieve the extra flag bits that are set for the given node. */
-            static Flags get_flags(
-                size_t* bitflags,
-                Node* data,
-                Node* node
-            ) noexcept {
-                size_t index = BITS_PER_NODE * (node - data);
-                size_t quotient = index / BITS_PER_CHUNK;
-                size_t remainder = index % BITS_PER_CHUNK;
-                size_t chunk = bitflags[quotient];
-                if ((BITS_PER_CHUNK - remainder) >= BITS_PER_NODE) {
-                    return chunk & (MASK << remainder);
-                }
-    
-                // it's possible for a flag set to be split across two chunks, so
-                // we need to handle that case separately.
-                Flags flags = chunk & (MASK << remainder);
-                flags |= (bitflags[quotient + 1] & (MASK >> (BITS_PER_CHUNK - remainder)));
-                return flags;
-            }
-    
-            /* Assign the extra flag bits for the given node. */
-            static void set_flags(
-                size_t* bitflags,
-                Node* data,
-                Node* node,
-                Flags flags
-            ) noexcept {
-                size_t index = BITS_PER_NODE * (node - data);
-                size_t quotient = index / BITS_PER_CHUNK;
-                size_t remainder = index % BITS_PER_CHUNK;
-                size_t chunk = bitflags[quotient];
-                if ((BITS_PER_CHUNK - remainder) >= BITS_PER_NODE) {
-                    chunk &= ~(MASK << remainder);
-                    chunk |= size_t(flags) << remainder;
-                    bitflags[quotient] = chunk;
-                    return;
-                }
-    
-                // it's possible for a flag set to be split across two chunks, so
-                // we need to handle that case separately.
-                chunk &= ~(MASK << remainder);
-                chunk |= size_t(flags) << remainder;
-                bitflags[quotient++] = chunk;
-                chunk = bitflags[quotient];
-                remainder = BITS_PER_CHUNK - remainder;
-                chunk &= ~(MASK >> remainder);
-                chunk |= (flags & MASK) >> remainder;
-                bitflags[quotient] = chunk;
-            }
-        };
-
         /* A static array, which is preallocated to a fixed size and does not interact
         with the heap in any way. */
-        template <size_t M, typename Dummy = void>
+        template <size_t M>
         struct Array {
         private:
             friend list_view;
@@ -490,46 +743,9 @@ namespace impl::linked {
             explicit operator bool() const noexcept { return M; }
         };
 
-        /* A variation of a static array that maintains an extra packed bitset storing
-        BST flags aligned to the indices of the allocator array. */
-        template <size_t M, typename Dummy> requires (meta::bst_node<Node>)
-        struct Array<M, Dummy> {
-        private:
-            friend list_view;
-            using traits = flag_traits<Node>;
-
-            alignas(Node) unsigned char storage[M * sizeof(Node)];  // uninitialized
-            size_t bitflags[(
-                traits::BITS_PER_NODE * M + traits::BITS_PER_CHUNK - 1
-            ) / traits::BITS_PER_CHUNK];  // uninitialized
-
-        public:
-            size_t capacity = M;
-            size_t size = 0;
-            Node* data = reinterpret_cast<Node*>(storage);
-            Node* freelist = nullptr;
-            explicit operator bool() const noexcept { return M; }
-        };
-
         /* A dynamic array, which can grow and shrink as needed. */
-        template <typename Dummy> requires (!meta::bst_node<Node>)
-        struct Array<0, Dummy> {
-            size_t capacity = 0;
-            size_t size = 0;
-            Node* data = nullptr;
-            Node* freelist = nullptr;
-            explicit operator bool() const noexcept { return capacity; }
-        };
-
-        /* A variation of a dynamic array that allocates the BST flags alongside the
-        node array. */
-        template <typename Dummy> requires (meta::bst_node<Node>)
-        struct Array<0, Dummy> {
-        private:
-            friend list_view;
-            size_t* bitflags = nullptr;
-
-        public:
+        template <>
+        struct Array<0> {
             size_t capacity = 0;
             size_t size = 0;
             Node* data = nullptr;
@@ -543,33 +759,26 @@ namespace impl::linked {
         Array<N> allocate(size_t n) {
             static_assert(N == 0);
             size_t cap = n < MIN_SIZE ? MIN_SIZE : n;
-            if constexpr (meta::bst_node<Node>) {
-                using traits = flag_traits<Node>;
-                Array<N> array {
-                    .bitflags = new size_t[(
-                        traits::BITS_PER_NODE * cap + traits::BITS_PER_CHUNK - 1
-                    ) / traits::BITS_PER_CHUNK],
-                    .capacity = cap,
-                    .size = 0,
-                    .data = std::allocator_traits<Alloc>::allocate(allocator, cap),
-                    .freelist = nullptr
-                };
-                if (!array.data) {
-                    throw MemoryError();
-                }
-                return array;
-            } else {
-                Array<N> array {
-                    .capacity = cap,
-                    .size = 0,
-                    .data = std::allocator_traits<Alloc>::allocate(allocator, cap),
-                    .freelist = nullptr
-                };
-                if (!array.data) {
-                    throw MemoryError();
-                }
-                return array;
+            Array<N> array {
+                .capacity = cap,
+                .size = 0,
+                .data = std::allocator_traits<Alloc>::allocate(allocator, cap),
+                .freelist = nullptr
+            };
+            if (!array.data) {
+                throw MemoryError();
             }
+            if constexpr (DEBUG) {
+                if (reinterpret_cast<uintptr_t>(array.data) & (NODE_ALIGNMENT - 1)) {
+                    throw MemoryError(
+                        "allocated array is not " + static_str<>::from_int<NODE_ALIGNMENT> +
+                        "-byte aligned: " + std::to_string(
+                            reinterpret_cast<uintptr_t>(array.data)
+                        )
+                    );
+                }
+            }
+            return array;
         }
 
         void deallocate(Array<N>& array) noexcept(
@@ -585,10 +794,6 @@ namespace impl::linked {
                 array.data,
                 array.capacity
             );
-            if constexpr (meta::bst_node<Node>) {
-                delete[] array.bitflags;
-                array.bitflags = nullptr;
-            }
             array.capacity = 0;
             array.size = 0;
             array.data = nullptr;
@@ -608,9 +813,6 @@ namespace impl::linked {
                 p,
                 std::forward<Args>(args)...
             );
-            if constexpr (meta::bst_node<Node>) {
-                set_flags(p, 0);
-            }
         }
 
         void destroy(Node* p) noexcept(
@@ -642,6 +844,11 @@ namespace impl::linked {
                 array.size = 0;
                 array.freelist = nullptr;
             }
+            this->head = nullptr;
+            this->tail = nullptr;
+            if constexpr (meta::bst_node<Node>) {
+                this->root = nullptr;
+            }
         }
 
         /// TODO: resize(), as well as copy/move/swap will have to maintain the flags
@@ -659,69 +866,126 @@ namespace impl::linked {
                 );
             }
 
-            // if requested capacity is zero, delete the array to save space
+            // 1) if requested capacity is zero, delete the array to save space
             if (cap == 0) {
-                if (array) {
-                    deallocate(array);
-                }
-                head = nullptr;
-                tail = nullptr;
+                destroy_list(array, head);
                 return;
             }
 
-            // if there are no elements to transfer, just replace with the new array
+            // 2) if there are no elements to transfer, just replace with the new array
             Array<N> temp = allocate(cap);
             if (array.size == 0) {
-                if (array) {
-                    deallocate(array);
-                }
+                destroy_list(array, head);
                 array = temp;
-                head = nullptr;
-                tail = nullptr;
                 return;
             }
 
-            // transfer existing contents
+            // 3) transfer existing contents
             Node* new_head = temp.data;
             Node* new_tail = new_head;
+            Node* new_root;
             try {
                 Node* prev = head;
                 Node* curr = head->next;
+                bool prev_thread;
+                bool next_thread;
+                bool red;
+                if constexpr (meta::bst_node<Node>) {
+                    prev_thread = head->prev_thread;
+                    next_thread = head->next_thread;
+                    red = head->red;
+                }
 
-                // move the underlying value and initialize prev/next to null, then
-                // destroy the moved-from value while retaining links between nodes
+                // 3a) move the underlying value and initialize prev/next to null,
+                // copying the original link/color info
                 construct(new_head, std::move(*head));
+                if constexpr (meta::bst_node<Node>) {
+                    new_head->prev_thread = prev_thread;
+                    new_head->next_thread = next_thread;
+                    new_head->red = red;
+                    if (head == this->root) {
+                        new_root = new_head;
+                    }
+                }
+
+                // 3b) destroy the moved-from value, and then posthumously restore
+                // original link/color info
                 destroy(head);
                 head->prev = nullptr;
                 head->next = curr;
+                if constexpr (meta::bst_node<Node>) {
+                    head->prev_thread = prev_thread;
+                    head->next_thread = next_thread;
+                    head->red = red;
+                }
                 ++temp.size;
 
-                // continue with intermediate links
+                // 3c) continue with intermediate links
                 while (curr) {
+                    if constexpr (meta::bst_node<Node>) {
+                        prev_thread = curr->prev_thread;
+                        next_thread = curr->next_thread;
+                        red = curr->red;
+                    }
                     Node* next = curr->next;
+
+                    // 3d) move the value into the node at the end of the contiguously-
+                    // allocated section, link it to the previous node, and copy the
+                    // original link/color flags
                     new_tail->next = temp.data + temp.size;
                     construct(new_tail->next, std::move(*curr));
                     new_tail->next->prev = new_tail;
                     new_tail = new_tail->next;
+                    if constexpr (meta::bst_node<Node>) {
+                        new_tail->prev_thread = prev_thread;
+                        new_tail->next_thread = next_thread;
+                        new_tail->red = red;
+                        if (curr == this->root) {
+                            new_root = new_tail;
+                        }
+                    }
+
+                    // 3e) destroy the moved-from node, and then posthumously restore
+                    // original link/color info
                     destroy(curr);
                     curr->prev = prev;
                     curr->next = next;
+                    if constexpr (meta::bst_node<Node>) {
+                        curr->prev_thread = prev_thread;
+                        curr->next_thread = next_thread;
+                        curr->red = red;
+                    }
+
+                    // 3f) advance for next iteration
                     prev = curr;
                     curr = next;
                     ++temp.size;
                 }
 
-            // If a move constructor fails, replace the previous values
+            // 4) If a move constructor fails, replace the previous values
             } catch (...) {
                 Node* prev = nullptr;
                 Node* curr = head;
+                bool prev_thread;
+                bool next_thread;
+                bool red;
                 for (size_t i = 0; i < temp.size; ++i) {
+                    if constexpr (meta::bst_node<Node>) {
+                        prev_thread = curr->prev_thread;
+                        next_thread = curr->next_thread;
+                        red = curr->red;
+                    }
                     Node* next = curr->next;
                     Node* node = temp.data + i;
                     construct(curr, std::move(*node));
                     destroy(node);
                     curr->prev = prev;
                     curr->next = next;
+                    if constexpr (meta::bst_node<Node>) {
+                        curr->prev_thread = prev_thread;
+                        curr->next_thread = next_thread;
+                        curr->red = red;
+                    }
                     prev = curr;
                     curr = next;
                 }
@@ -729,13 +993,16 @@ namespace impl::linked {
                 throw;
             }
 
-            // replace the old array
+            // 5) replace the old array
             if (array) {
                 deallocate(array);
             }
             array = temp;
             head = new_head;
             tail = new_tail;
+            if constexpr (meta::bst_node<Node>) {
+                this->root = new_root;
+            }
         }
 
         size_t normalize_index(ssize_t i) {
@@ -760,12 +1027,14 @@ namespace impl::linked {
         {}
 
         list_view(const list_view& other) noexcept(
-            N &&
             noexcept(Alloc(other.allocator)) &&
-            noexcept(construct(head, *other.head))
+            N &&
+            noexcept(construct(head, *other.head)) &&
+            (!meta::bst_node<Node> || !DEBUG)
         ) :
             allocator(other.allocator)
         {
+            // if the other array is empty, then we can avoid allocating
             if (other.empty()) {
                 return;
             }
@@ -780,6 +1049,14 @@ namespace impl::linked {
             // construct the first node, then continue with intermediate links
             try {
                 construct(head, *other.head);
+                if constexpr (meta::bst_node<Node>) {
+                    head->prev_thread = other.head->prev_thread;
+                    head->next_thread = other.head->next_thread;
+                    head->red = other.head->red;
+                    if (other.head == other.root) {
+                        this->root = head;
+                    }
+                }
                 ++array.size;
                 Node* curr = other.head->next;
                 while (curr) {
@@ -787,6 +1064,14 @@ namespace impl::linked {
                     construct(tail->next, *curr);
                     tail->next->prev = tail;
                     tail = tail->next;
+                    if constexpr (meta::bst_node<Node>) {
+                        tail->prev_thread = curr->prev_thread;
+                        tail->next_thread = curr->next_thread;
+                        tail->red = curr->red;
+                        if (curr == other.root) {
+                            this->root = tail;
+                        }
+                    }
                     curr = curr->next;
                     ++array.size;
                 }
@@ -805,7 +1090,10 @@ namespace impl::linked {
 
         list_view(list_view&& other) noexcept (
             noexcept(Alloc(std::move(other.allocator))) &&
-            noexcept(construct(head, std::move(*other.head)))
+            (N == 0 || (
+                noexcept(construct(head, std::move(*other.head))) &&
+                (!meta::bst_node<Node> || !DEBUG)
+            ))
         ) :
             allocator(std::move(other.allocator))
         {
@@ -820,6 +1108,14 @@ namespace impl::linked {
                 // construct the first node, then continue with intermediate links
                 try {
                     construct(head, std::move(*other.head));
+                    if constexpr (meta::bst_node<Node>) {
+                        head->prev_thread = other.head->prev_thread;
+                        head->next_thread = other.head->next_thread;
+                        head->red = other.head->red;
+                        if (other.head == other.root) {
+                            this->root = head;
+                        }
+                    }
                     ++array.size;
                     Node* curr = other.head->next;
                     while (curr) {
@@ -827,6 +1123,14 @@ namespace impl::linked {
                         construct(tail->next, std::move(*curr));
                         tail->next->prev = tail;
                         tail = tail->next;
+                        if constexpr (meta::bst_node<Node>) {
+                            tail->prev_thread = curr->prev_thread;
+                            tail->next_thread = curr->next_thread;
+                            tail->red = curr->red;
+                            if (curr == other.root) {
+                                this->root = tail;
+                            }
+                        }
                         curr = curr->next;
                         ++array.size;
                     }
@@ -846,12 +1150,20 @@ namespace impl::linked {
             // otherwise, we can just transfer ownership
             } else {
                 array = other.array;
+                head = other.head;
+                tail = other.tail;
+                if constexpr (meta::bst_node<Node>) {
+                    this->root = other.root;
+                }
                 other.array.capacity = 0;
                 other.array.size = 0;
                 other.array.data = nullptr;
                 other.array.freelist = nullptr;
                 other.head = nullptr;
                 other.tail = nullptr;
+                if constexpr (meta::bst_node<Node>) {
+                    other.root = nullptr;
+                }
             }
         }
 
@@ -859,7 +1171,8 @@ namespace impl::linked {
             N &&
             noexcept(destroy_list(array, head)) &&
             (!PROPAGATE_ON_COPY_ASSIGNMENT || noexcept(allocator = other.allocator)) &&
-            noexcept(construct(head, *other.head))
+            noexcept(construct(head, *other.head)) &&
+            (!meta::bst_node<Node> || !DEBUG)
         ) {
             if (this == &other) {
                 return *this;
@@ -873,8 +1186,6 @@ namespace impl::linked {
 
             // if other list is empty, return without allocating
             if (other.empty()) {
-                head = nullptr;
-                tail = nullptr;
                 return *this;
             }
 
@@ -888,6 +1199,14 @@ namespace impl::linked {
             // construct the first node, then continue with intermediate links
             try {
                 construct(head, *other.head);
+                if constexpr (meta::bst_node<Node>) {
+                    head->prev_thread = other.head->prev_thread;
+                    head->next_thread = other.head->next_thread;
+                    head->red = other.head->red;
+                    if (other.head == other.root) {
+                        this->root = head;
+                    }
+                }
                 ++array.size;
                 Node* curr = other.head->next;
                 while (curr) {
@@ -895,6 +1214,14 @@ namespace impl::linked {
                     construct(tail->next, *curr);
                     tail->next->prev = tail;
                     tail = tail->next;
+                    if constexpr (meta::bst_node<Node>) {
+                        tail->prev_thread = curr->prev_thread;
+                        tail->next_thread = curr->next_thread;
+                        tail->red = curr->red;
+                        if (curr == other.root) {
+                            this->root = tail;
+                        }
+                    }
                     curr = curr->next;
                     ++array.size;
                 }
@@ -908,6 +1235,11 @@ namespace impl::linked {
                     deallocate(array);
                 } else {
                     array.size = 0;
+                    head = nullptr;
+                    tail = nullptr;
+                    if constexpr (meta::bst_node<Node>) {
+                        this->root = nullptr;
+                    }
                 }
                 throw;
             }
@@ -922,7 +1254,8 @@ namespace impl::linked {
             (N || PROPAGATE_ON_MOVE_ASSIGNMENT) &&
             noexcept(destroy_list(array, head)) &&
             (!PROPAGATE_ON_MOVE_ASSIGNMENT || noexcept(allocator = std::move(other.allocator))) &&
-            noexcept(construct(head, std::move(*other.head)))
+            noexcept(construct(head, std::move(*other.head))) &&
+            (!meta::bst_node<Node> || !DEBUG)
         ) {
             if (this == &other) {
                 return *this;
@@ -937,8 +1270,6 @@ namespace impl::linked {
                     allocator = std::move(other.allocator);
                 }
                 if (other.empty()) {
-                    head = nullptr;
-                    tail = nullptr;
                     return *this;
                 }
                 head = array.data;
@@ -947,6 +1278,14 @@ namespace impl::linked {
                 // construct the first node, then continue with intermediate links
                 try {
                     construct(head, std::move(*other.head));
+                    if constexpr (meta::bst_node<Node>) {
+                        head->prev_thread = other.head->prev_thread;
+                        head->next_thread = other.head->next_thread;
+                        head->red = other.head->red;
+                        if (other.head == other.root) {
+                            this->root = head;
+                        }
+                    }
                     ++array.size;
                     Node* curr = other.head->next;
                     while (curr) {
@@ -954,6 +1293,14 @@ namespace impl::linked {
                         construct(tail->next, std::move(*curr));
                         tail->next->prev = tail;
                         tail = tail->next;
+                        if constexpr (meta::bst_node<Node>) {
+                            tail->prev_thread = curr->prev_thread;
+                            tail->next_thread = curr->next_thread;
+                            tail->red = curr->red;
+                            if (curr == other.root) {
+                                this->root = tail;
+                            }
+                        }
                         curr = curr->next;
                         ++array.size;
                     }
@@ -970,6 +1317,9 @@ namespace impl::linked {
                     array.size = 0;
                     head = nullptr;
                     tail = nullptr;
+                    if constexpr (meta::bst_node<Node>) {
+                        this->root = nullptr;
+                    }
                     throw;
                 }
 
@@ -977,30 +1327,44 @@ namespace impl::linked {
             } else if constexpr (PROPAGATE_ON_MOVE_ASSIGNMENT) {
                 allocator = std::move(other.allocator);
                 array = other.array;
+                head = other.head;
+                tail = other.tail;
+                if constexpr (meta::bst_node<Node>) {
+                    this->root = other.root;
+                }
                 other.array.capacity = 0;
                 other.array.size = 0;
                 other.array.data = nullptr;
                 other.array.freelist = nullptr;
                 other.head = nullptr;
                 other.tail = nullptr;
+                if constexpr (meta::bst_node<Node>) {
+                    other.root = nullptr;
+                }
 
             // otherwise, allocators must compare equal to trivially move
             } else {
                 if (allocator == other.allocator) {
                     array = other.array;
+                    head = other.head;
+                    tail = other.tail;
+                    if constexpr (meta::bst_node<Node>) {
+                        this->root = other.root;
+                    }
                     other.array.capacity = 0;
                     other.array.size = 0;
                     other.array.data = nullptr;
                     other.array.freelist = nullptr;
                     other.head = nullptr;
                     other.tail = nullptr;
+                    if constexpr (meta::bst_node<Node>) {
+                        other.root = nullptr;
+                    }
                     return *this;
                 }
 
                 // if the other list is empty, return without allocating
                 if (other.empty()) {
-                    head = nullptr;
-                    tail = nullptr;
                     return *this;
                 }
                 array = allocate(other.size());
@@ -1010,6 +1374,14 @@ namespace impl::linked {
                 // construct the first node, then continue with intermediate links
                 try {
                     construct(head, std::move(*other.head));
+                    if constexpr (meta::bst_node<Node>) {
+                        head->prev_thread = other.head->prev_thread;
+                        head->next_thread = other.head->next_thread;
+                        head->red = other.head->red;
+                        if (other.head == other.root) {
+                            this->root = head;
+                        }
+                    }
                     ++array.size;
                     Node* curr = other.head->next;
                     while (curr) {
@@ -1017,6 +1389,14 @@ namespace impl::linked {
                         construct(tail->next, std::move(*curr));
                         tail->next->prev = tail;
                         tail = tail->next;
+                        if constexpr (meta::bst_node<Node>) {
+                            tail->prev_thread = curr->prev_thread;
+                            tail->next_thread = curr->next_thread;
+                            tail->red = curr->red;
+                            if (curr == other.root) {
+                                this->root = tail;
+                            }
+                        }
                         curr = curr->next;
                         ++array.size;
                     }
@@ -1031,6 +1411,11 @@ namespace impl::linked {
                         node = node->next;
                     }
                     deallocate(array);
+                    head = nullptr;
+                    tail = nullptr;
+                    if constexpr (meta::bst_node<Node>) {
+                        this->root = nullptr;
+                    }
                     throw;
                 }
             }
@@ -1145,57 +1530,6 @@ namespace impl::linked {
             return sizeof(list_view) + capacity() * sizeof(Node);
         }
 
-        /* Retrieve the BST flags for a given node, which must have been allocated
-        from this list, and cannot be null.  The result is a `Node::Flags` enum with 3
-        flags, as follows:
-        
-            `Node::PREV_THREAD`
-                set if the previous pointer is a thread pointer and not a member of
-                the node's left subtree.
-            `Node::NEXT_THREAD`
-                set if the next pointer is a thread pointer and not a member of
-                the node's right subtree.
-            `Node::RED`
-                used during red-black balancing to color the node.
-        */
-        template <meta::bst_node NodeType = Node>
-        [[nodiscard]] NodeType::Flags get_flags(Node* node) const noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (node == nullptr) {
-                    throw MemoryError("node cannot be null");
-                }
-                if (node < array.data || node >= array.data + array.capacity) {
-                    throw MemoryError("node was not allocated from this view");
-                }
-            }
-            return flag_traits<NodeType>::get_flags(
-                array.bitflags,
-                array.data,
-                node
-            );
-        }
-
-        /* Set the BST flags for a given node, which must have been allocated from
-        this list, and cannot be null.  This overwrites any existing flags with the
-        new values. */
-        template <meta::bst_node NodeType = Node>
-        void set_flags(Node* node, NodeType::Flags flags) noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (node == nullptr) {
-                    throw MemoryError("node cannot be null");
-                }
-                if (node < array.data || node >= array.data + array.capacity) {
-                    throw MemoryError("node was not allocated from this view");
-                }
-            }
-            flag_traits<NodeType>::set_flags(
-                array.bitflags,
-                array.data,
-                node,
-                flags
-            );
-        }
-
         /* Initialize a new node for the list.  The result has null `prev` and `next`
         pointers, and is initially disconnected from all other nodes, though it is
         included in `size()`.  This can cause the array to grow if it does not have a
@@ -1234,7 +1568,7 @@ namespace impl::linked {
 
         /* Destroy a node from the list, inserting it into the free list.  Note that
         the node should be disconnected from all other nodes before calling this
-        method, and the node must have been allocated from this view.  Naturally
+        method, and the node must have been allocated from this view.  Trivially
         defragments the array if this is the last node in the list. */
         void recycle(Node* node) noexcept(!DEBUG && noexcept(destroy(node))) {
             if constexpr (DEBUG) {
@@ -1270,7 +1604,7 @@ namespace impl::linked {
         }
 
         /* Remove all nodes from the list, resetting the size to zero, but leaving the
-        capacity unchanged.  Also defragments the array. */
+        capacity unchanged.  Also trivially defragments the array. */
         void clear() noexcept(noexcept(destroy(head))) {
             Node* curr = head;
             while (curr) {
@@ -1282,6 +1616,9 @@ namespace impl::linked {
             array.freelist = nullptr;
             head = nullptr;
             tail = nullptr;
+            if constexpr (meta::bst_node<Node>) {
+                this->root = nullptr;
+            }
         }
 
         /* Resize the allocator to store at least the given number of nodes.  Throws
@@ -1301,7 +1638,7 @@ namespace impl::linked {
 
         /* Rearrange the nodes in memory to reflect their current list order, without
         changing the capacity.  This is done automatically whenever the underlying
-        array grows or shrinks, but may be triggered manually as an optimization.
+        array grows or shrinks, and may be triggered manually as an optimization.
         Throws a `MemoryError` if used on a list with fixed capacity. */
         void defragment() {
             if constexpr (N) {
@@ -1345,9 +1682,9 @@ namespace impl::linked {
         [[nodiscard]] const_reverse_iterator crend() const noexcept { return {nullptr}; }
 
         /* Return an iterator to the specified index of the list.  Allows Python-style
-        negative indexing, and throws an `IndexError` if it is out of bounds after
-        normalization.  Has a time compexity of O(n/2) following the links between each
-        node, starting from the nearest edge. */
+        negative indexing, and throws an `IndexError` if the index is out of bounds
+        after normalization.  Has a time compexity of O(n/2) following the links
+        between each node, starting from the nearest edge. */
         [[nodiscard]] iterator operator[](ssize_t i) {
             size_t idx = normalize_index(i);
 
@@ -1370,9 +1707,9 @@ namespace impl::linked {
         }
 
         /* Return an iterator to the specified index of the list.  Allows Python-style
-        negative indexing, and throws an `IndexError` if it is out of bounds after
-        normalization.  Has a time compexity of O(n/2) following the links between each
-        node, starting from the nearest edge. */
+        negative indexing, and throws an `IndexError` if the index is out of bounds
+        after normalization.  Has a time compexity of O(n/2) following the links
+        between each node, starting from the nearest edge. */
         [[nodiscard]] const_iterator operator[](ssize_t i) const {
             size_t idx = normalize_index(i);
 

@@ -32,6 +32,10 @@
 namespace bertrand {
 
 
+/// TODO: noexcept specifiers may need to be conditional for operations like
+/// concatenation/slicing, etc.  Anything that can't be done strictly at compile time
+
+
 /* C++20 expands support for non-type template parameters, including compile-time
 strings.  This helper class allows ASCII string literals to be encoded directly as
 template parameters, and for them to be manipulated entirely at compile-time using
@@ -1775,6 +1779,22 @@ public:
         std::copy_n(self.buffer, self.size(), result.buffer + M - 1);
         result.buffer[N + M - 1] = '\0';
         return result;
+    }
+    template <std::convertible_to<std::string> T>
+        requires (!meta::string_literal<T> && !meta::static_str<T>)
+    [[nodiscard]] friend constexpr std::string operator+(
+        const static_str& self,
+        T&& other
+    ) {
+        return std::string(self) + std::forward<T>(other);
+    }
+    template <std::convertible_to<std::string> T>
+        requires (!meta::string_literal<T> && !meta::static_str<T>)
+    [[nodiscard]] friend constexpr std::string operator+(
+        T&& other,
+        const static_str& self
+    ) {
+        return std::forward<T>(other) + std::string(self);
     }
 
     /// NOTE: due to language limitations, the * operator cannot return another
