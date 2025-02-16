@@ -4,6 +4,7 @@
 #include "bertrand/common.h"
 #include "bertrand/except.h"
 #include "bertrand/static_str.h"
+#include <type_traits>
 
 
 namespace bertrand {
@@ -48,19 +49,226 @@ namespace meta {
     template <typename T>
     concept linked_view = meta::inherits<T, impl::linked::view_tag>;
 
-    template <linked_view T>
-    using node_type = std::remove_cvref_t<T>::value_type;
+    template <typename T>
+    concept bst_view =
+        linked_view<T> && bst_node<typename std::remove_cvref_t<T>::node_type>;
 
     template <typename T>
-    concept bst_view = linked_view<T> && bst_node<node_type<T>>;
-
-    template <typename T>
-    concept hash_view = linked_view<T> && hash_node<node_type<T>>;
+    concept hash_view =
+        linked_view<T> && hash_node<typename std::remove_cvref_t<T>::node_type>;
 
 }  // namespace meta
 
 
 namespace impl::linked {
+
+    /* Check if the index is closer to the tail of the list than the head. */
+    inline bool closer_to_tail(size_t size, size_t i) noexcept {
+        return i >= (size + 1) / 2;
+    }
+
+    /* Apply Python-style wraparound to an index of a container.  Throws an
+    `IndexError` if the index is still out of range after normalization. */
+    inline size_t normalize_index(size_t size, ssize_t i) {
+        if (i < 0) {
+            i += size;
+        }
+        if (i < 0 || i >= size) {
+            throw IndexError(std::to_string(i));
+        }
+        return static_cast<size_t>(i);
+    }
+
+    /* A variation of `normalize_index` that also records whether the index is closer
+    to the tail of the list as opposed to the head, indicating a backward traversal. */
+    inline size_t normalize_index(size_t size, ssize_t i, bool& backward) {
+        if (i < 0) {
+            i += size;
+        }
+        if (i < 0 || i >= size) {
+            throw IndexError(std::to_string(i));
+        }
+        backward = closer_to_tail(size, i);
+        return static_cast<size_t>(i);
+    }
+
+    /* Apply Python-style wraparound to an index of a container.  Truncates to the
+    bounds of the container if the index is still out of range after normalization.
+    Note that the input size must not be zero. */
+    inline size_t truncate_index(size_t size, ssize_t i) noexcept(!DEBUG) {
+        if constexpr (DEBUG) {
+            if (size == 0) {
+                throw ValueError("size must not be zero");
+            }
+        }
+        if (i < 0) {
+            i += size;
+            if (i < 0) {
+                i = 0;
+            }
+        } else if (i >= ssize_t(size)) {
+            i = size - 1;
+        }
+        return static_cast<size_t>(i);
+    }
+
+    /* A variation of `truncate_index` that also records whether the index is closer
+    to the tail of the list as opposed to the head, indicating a backward traversal. */
+    inline size_t truncate_index(size_t size, ssize_t i, bool& backward) noexcept(!DEBUG) {
+        if constexpr (DEBUG) {
+            if (size == 0) {
+                throw ValueError("size must not be zero");
+            }
+        }
+        if (i < 0) {
+            i += size;
+            if (i < 0) {
+                i = 0;
+            }
+        } else if (i >= ssize_t(size)) {
+            i = size - 1;
+        }
+        backward = closer_to_tail(size, i);
+        return static_cast<size_t>(i);
+    }
+
+    /* Normalize a slice of the form `{start, stop, step}`, where each element is
+    optional, against a container of a specified size such that no backtracking occurs
+    when iterating over it. */
+    struct normalize_slice {
+        ssize_t step = 0;  // normalized step
+        ssize_t start = 0;  // normalized start
+        ssize_t stop = 0;  // normalized stop
+        size_t length = 0;  // total number of elements in the slice
+        size_t abs_step = 0;  // absolute value of step (for iterating)
+        size_t first = 0;  // first index included in the slice
+        size_t last = 0;  // last index included in the slice
+        bool inverted = false;  // true if iterating over the slice in reverse order
+        bool backward = false;  // true if iterating from the tail of the list
+
+        normalize_slice(
+            ssize_t size,
+            std::optional<ssize_t> start = std::nullopt,
+            std::optional<ssize_t> stop = std::nullopt
+        ) noexcept : step(1) {
+            // normalize start, correcting for negative indices and truncating to bounds
+            if (!start) {
+                this->start = 0;
+            } else {
+                this->start = *start;
+                if (this->start < 0) {
+                    this->start += size;
+                    if (this->start < 0) {
+                        this->start = 0;
+                    }
+                } else if (this->start > size) {
+                    this->start = size;
+                }
+            }
+
+            // normalize stop, correcting for negative indices and truncating to bounds
+            if (!stop) {
+                this->stop = size;
+            } else {
+                this->stop = *stop;
+                if (this->stop < 0) {
+                    this->stop += size;
+                    if (this->stop < 0) {
+                        this->stop = 0;
+                    }
+                } else if (this->stop > size) {
+                    this->stop = size;
+                }
+            }
+
+            // compute remaining fields
+            normalize(size);
+        }
+
+        normalize_slice(
+            ssize_t size,
+            std::optional<ssize_t> start,
+            std::optional<ssize_t> stop,
+            std::optional<ssize_t> step
+        ) {
+            // normalize step, defaulting to 1
+            this->step = step.value_or(1);
+            if (this->step == 0) {
+                throw ValueError("slice step cannot be zero");
+            };
+            bool neg = this->step < 0;
+
+            // normalize start, correcting for negative indices and truncating to bounds
+            if (!start) {
+                this->start = neg ? size - 1 : 0;  // neg: size - 1 | pos: 0
+            } else {
+                this->start = *start;
+                if (this->start < 0) {
+                    this->start += size;
+                    if (this->start < 0) {
+                        this->start = -neg;  // neg: -1 | pos: 0 
+                    }
+                } else if (this->start >= size) {
+                    this->start = size - neg;  // neg: size - 1 | pos: size
+                }
+            }
+
+            // normalize stop, correcting for negative indices and truncating to bounds
+            if (!stop) {
+                this->stop = neg ? -1 : size;  // neg: -1 | pos: size
+            } else {
+                this->stop = *stop;
+                if (this->stop < 0) {
+                    this->stop += size;
+                    if (this->stop < 0) {
+                        this->stop = -neg;  // neg: -1 | pos: 0
+                    }
+                } else if (this->stop >= size) {
+                    this->stop = size - neg;  // neg: size - 1 | pos: size
+                }
+            }
+
+            // compute remaining fields
+            normalize(size);
+        }
+
+    private:
+
+        void normalize(ssize_t size) noexcept {
+            bool neg = step < 0;
+
+            // compute # of elements => round((stop - start) / step) away from 0
+            ssize_t delta = stop - start;
+            ssize_t bias = step + (neg ? 1 : -1);
+            length = (delta < 0) ^ neg ? size_t(0) : size_t((delta + bias) / step);
+            if (length) {
+                abs_step = neg ? -step : step;
+
+                // convert from half-open [start, stop) to closed interval [start, stop]
+                ssize_t mod = impl::pymod(delta, step);
+                ssize_t closed = stop - (mod ? mod : step);
+
+                // flip start/stop based on which is closer to its respective end
+                if (neg) {
+                    ssize_t distance_from_head = closed;
+                    ssize_t distance_from_tail = (size - 1) - start;
+                    inverted = distance_from_head < distance_from_tail;
+                } else {
+                    ssize_t distance_from_head = start;
+                    ssize_t distance_from_tail = (size - 1) - closed;
+                    inverted = distance_from_tail < distance_from_head;
+                }
+                if (inverted) {
+                    first = closed;
+                    last = start;
+                } else {
+                    first = start;
+                    last = closed;
+                }
+                backward = first > last || (first == last && closer_to_tail(size, first));
+            }
+        }
+    };
 
     /// NOTE: node constructors/assignment operators do not modify links between nodes,
     /// which are not safe to copy.  Instead, they initialize to null, and must be
@@ -90,7 +298,7 @@ namespace impl::linked {
         template <typename U>
         struct _unwrap_node { using type = U; };
         template <meta::linked_node U>
-        struct _unwrap_node<U> { using type = meta::node_type<U>; };
+        struct _unwrap_node<U> { using type = std::remove_cvref_t<U>::value_type; };
         template <typename U>
         using unwrap_node = _unwrap_node<U>::type;
 
@@ -117,17 +325,7 @@ namespace impl::linked {
         [[nodiscard, gnu::always_inline]] node* _get_prev() const noexcept {
             return reinterpret_cast<node*>(m_prev & ~MASK);
         }
-        [[gnu::always_inline]] void _set_prev(node* p) noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (reinterpret_cast<uintptr_t>(p) & MASK) {
-                    throw MemoryError(
-                        "node->prev cannot be assigned to a pointer that is not "
-                        "8-byte aligned: " + std::to_string(
-                            reinterpret_cast<uintptr_t>(p)
-                        )
-                    );
-                }
-            }
+        [[gnu::always_inline]] void _set_prev(node* p) noexcept {
             m_prev &= MASK;
             m_prev |= reinterpret_cast<uintptr_t>(p);
         }
@@ -138,17 +336,7 @@ namespace impl::linked {
         [[nodiscard, gnu::always_inline]] node* _get_next() const noexcept {
             return reinterpret_cast<node*>(m_next & ~MASK);
         }
-        [[gnu::always_inline]] void _set_next(node* p) noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (reinterpret_cast<uintptr_t>(p) & MASK) {
-                    throw MemoryError(
-                        "node->next cannot be assigned to a pointer that is not "
-                        "8-byte aligned: " + std::to_string(
-                            reinterpret_cast<uintptr_t>(p)
-                        )
-                    );
-                }
-            }
+        [[gnu::always_inline]] void _set_next(node* p) noexcept {
             m_next &= MASK;
             m_next |= reinterpret_cast<uintptr_t>(p);
         }
@@ -282,7 +470,7 @@ namespace impl::linked {
         template <typename U>
         struct _unwrap_node { using type = U; };
         template <meta::linked_node U>
-        struct _unwrap_node<U> { using type = meta::node_type<U>; };
+        struct _unwrap_node<U> { using type = std::remove_cvref_t<U>::value_type; };
         template <typename U>
         using unwrap_node = _unwrap_node<U>::type;
 
@@ -309,17 +497,7 @@ namespace impl::linked {
         [[nodiscard, gnu::always_inline]] node* _get_prev() const noexcept {
             return reinterpret_cast<node*>(m_prev & ~MASK);
         }
-        [[gnu::always_inline]] void _set_prev(node* p) noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (reinterpret_cast<uintptr_t>(p) & MASK) {
-                    throw MemoryError(
-                        "node->prev cannot be assigned to a pointer that is not "
-                        "8-byte aligned: " + std::to_string(
-                            reinterpret_cast<uintptr_t>(p)
-                        )
-                    );
-                }
-            }
+        [[gnu::always_inline]] void _set_prev(node* p) noexcept {
             m_prev &= MASK;
             m_prev |= reinterpret_cast<uintptr_t>(p);
         }
@@ -330,17 +508,7 @@ namespace impl::linked {
         [[nodiscard, gnu::always_inline]] node* _get_next() const noexcept {
             return reinterpret_cast<node*>(m_next & ~MASK);
         }
-        [[gnu::always_inline]] void _set_next(node* p) noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (reinterpret_cast<uintptr_t>(p) & MASK) {
-                    throw MemoryError(
-                        "node->next cannot be assigned to a pointer that is not "
-                        "8-byte aligned: " + std::to_string(
-                            reinterpret_cast<uintptr_t>(p)
-                        )
-                    );
-                }
-            }
+        [[gnu::always_inline]] void _set_next(node* p) noexcept {
             m_next &= MASK;
             m_next |= reinterpret_cast<uintptr_t>(p);
         }
@@ -655,6 +823,10 @@ namespace impl::linked {
         Node* root = nullptr;
     };
 
+    /// TODO: it may be necessary to constrain the copy/move constructors/assignment
+    /// operators to only copy/move if the allocator and node values are
+    /// copyable/movable, which also applies to the swap() method, etc.
+
     /* A wrapper around a node allocator for a linked list data structure or unhashed
     BST, which keeps track of the head, tail, (root), size, and capacity of the
     underlying array, along with several helper methods for low-level memory
@@ -680,25 +852,26 @@ namespace impl::linked {
     template <meta::unqualified Node, size_t N, meta::unqualified Alloc>
         requires (meta::linked_node<Node> && meta::allocator_for<Alloc, Node>)
     struct list_view : view_base<Node> {
+        using node_type = Node;
         using allocator_type = Alloc;
         using size_type = size_t;
         using difference_type = std::ptrdiff_t;
-        using value_type = Node;
-        using reference = Node&;
-        using const_reference = const Node&;
-        using pointer = Node*;
-        using const_pointer = const Node*;
-        using iterator = node_iterator<Node>;
-        using const_iterator = node_iterator<const Node>;
-        using reverse_iterator = reverse_node_iterator<Node>;
-        using const_reverse_iterator = reverse_node_iterator<const Node>;
+        using value_type = Node::value_type;
+        using reference = value_type&;
+        using const_reference = const value_type&;
+        using pointer = value_type*;
+        using const_pointer = const value_type*;
+        using iterator = node_iterator<node_type>;
+        using const_iterator = node_iterator<const node_type>;
+        using reverse_iterator = reverse_node_iterator<node_type>;
+        using const_reverse_iterator = reverse_node_iterator<const node_type>;
 
         /* Indicates whether the data structure has a fixed capacity (true) or supports
-        reallocations (false).  If true, then the contents are guaranteed to retain
-        stable addresses. */
-        static constexpr bool STATIC = N > 0;
+        reallocations (false).  If true, then the value indicates the max capacity of
+        the data structure. */
+        static constexpr size_t STATIC = N;
 
-        /* The minimum size for a dynamic array, to prevent thrashing.  This has no
+        /* The minimum capacity for a dynamic array, to prevent thrashing.  This has no
         effect if the array has a fixed capacity (N > 0) */
         static constexpr size_t MIN_SIZE = 8;
 
@@ -851,12 +1024,6 @@ namespace impl::linked {
             }
         }
 
-        /// TODO: resize(), as well as copy/move/swap will have to maintain the flags
-        /// when copying/moving the nodes.  This is a bit tricky, but shouldn't be
-        /// too bad, and allows the list allocator to also be used as a BST allocator
-        /// at the same time.  It will also have to do the same bookeeping for `root`,
-        /// which is a bit more complicated, but still doable.
-
         void resize(size_t cap) {
             static_assert(N == 0);
             if (cap < array.size) {
@@ -1003,16 +1170,6 @@ namespace impl::linked {
             if constexpr (meta::bst_node<Node>) {
                 this->root = new_root;
             }
-        }
-
-        size_t normalize_index(ssize_t i) {
-            if (i < 0) {
-                i += array.size;
-            }
-            if (i < 0 || i >= array.size) {
-                throw IndexError(std::to_string(i));
-            }
-            return static_cast<size_t>(i);
         }
 
     public:
@@ -1591,6 +1748,13 @@ namespace impl::linked {
                 }
             }
             destroy(node);
+            node->prev = nullptr;
+            node->next = nullptr;
+            if constexpr (meta::bst_node<Node>) {
+                node->prev_thread = false;
+                node->next_thread = false;
+                node->red = false;
+            }
             --array.size;
 
             // if this was the last node, reset the freelist to naturally defragment
@@ -1686,22 +1850,23 @@ namespace impl::linked {
         after normalization.  Has a time compexity of O(n/2) following the links
         between each node, starting from the nearest edge. */
         [[nodiscard]] iterator operator[](ssize_t i) {
-            size_t idx = normalize_index(i);
+            bool backward;
+            size_t idx = normalize_index(array.size, i, backward);
 
-            // if the index is closer to the head of the list, start there.
-            if (idx <= array.size / 2) {
-                iterator it {head};
-                for (size_t j = 0; j++ < idx;) {
-                    ++it;
+            // if the index is closer to the tail of the list, start there.
+            if (backward) {
+                iterator it = {tail};
+                ++idx;  // correct for zero indexing
+                for (size_t j = array.size; j-- > idx;) {
+                    --it;
                 }
                 return it;
             }
 
-            // otherwise, start at the tail of the list
-            iterator it = {tail};
-            ++idx;
-            for (size_t j = array.size; j-- > idx;) {
-                --it;
+            // otherwise, start at the head
+            iterator it {head};
+            for (size_t j = 0; j++ < idx;) {
+                ++it;
             }
             return it;
         }
@@ -1711,25 +1876,27 @@ namespace impl::linked {
         after normalization.  Has a time compexity of O(n/2) following the links
         between each node, starting from the nearest edge. */
         [[nodiscard]] const_iterator operator[](ssize_t i) const {
-            size_t idx = normalize_index(i);
+            bool backward;
+            size_t idx = normalize_index(array.size, i);
 
-            // if the index is closer to the head of the list, start there.
-            if (idx <= array.size / 2) {
-                const_iterator it {head};
-                for (size_t j = 0; j++ < idx;) {
-                    ++it;
+            // if the index is closer to the tail of the list, start there.
+            if (backward) {
+                const_iterator it = {tail};
+                ++idx;  // correct for zero indexing
+                for (size_t j = array.size; j-- > idx;) {
+                    --it;
                 }
                 return it;
             }
 
-            // otherwise, start at the tail of the list
-            const_iterator it = {tail};
-            ++idx;
-            for (size_t j = array.size; j-- > idx;) {
-                --it;
+            // otherwise, start at the head
+            const_iterator it {head};
+            for (size_t j = 0; j++ < idx;) {
+                ++it;
             }
             return it;
         }
+
     };
 
     /* A wrapper around a node allocator for a linked set or map. */
@@ -1738,30 +1905,172 @@ namespace impl::linked {
     struct hash_view : view_base<Node> {
         /// TODO: reimplement the hopscotch hashing algorithm, which can also be
         /// composed with a BST representation for automatic sorting.
+
+
+        /// TODO: create(...) may want to return an existing node one already exists
+        /// in the table, in which case we would need a way to discriminate between
+        /// fresh and existing nodes in the output of create().
+
+        // /* Indicates whether the given node is reachable from this view.  This should
+        // only be false for newly-allocated nodes returned from `create()`. */
+        // template <meta::linked_view V>
+        // [[nodiscard]] bool contains(Node* node) const noexcept(!DEBUG) {
+        //     if constexpr (DEBUG) {
+        //         if (node < array.data || node >= array.data + array.capacity) {
+        //             throw MemoryError("node was not allocated from this view");
+        //         }
+        //     }
+        //     return (node->prev || head == node) && (node->next || tail == node);
+        // }
     };
+
+    /* Base class for `bertrand::linked_list` containing shared behavior for both
+    lists and BSTs. */
+    template <typename T, size_t N, typename Less, typename Alloc>
+    struct linked_list_base {
+        using node_type = node<T, void, Less>;
+        using allocator_type = std::allocator_traits<Alloc>::template rebind_alloc<node_type>;
+        using size_type = size_t;
+        using difference_type = ptrdiff_t;
+        using value_type = node_type::value_type;
+        using reference = value_type&;
+        using const_reference = const value_type&;
+        using pointer = value_type*;
+        using const_pointer = const value_type*;
+
+    protected:
+        using view_type = list_view<node_type, N, allocator_type>;
+
+        view_type view;
+
+    public:
+
+        /* Indicates whether the list has a fixed capacity (true) or supports
+        reallocations (false).  If true, then the value indicates the capacity of the
+        list. */
+        static constexpr size_t STATIC = view_type::STATIC;
+
+        /* The minimum capacity for the underlying array, to prevent thrashing.  This
+        has no effect if the list has a fixed capacity (N > 0) */
+        static constexpr size_t MIN_SIZE = view_type::MIN_SIZE;
+
+        /* The number of elements in the list. */
+        [[nodiscard]] size_type size() const noexcept(noexcept(view.size())) {
+            return view.size();
+        }
+
+        /* True if the list has zero size.  False otherwise. */
+        [[nodiscard]] bool empty() const noexcept(noexcept(view.empty())) {
+            return view.empty();
+        }
+
+        /* True if the list has nonzero size.  False otherwise. */
+        [[nodiscard]] explicit operator bool() const noexcept(noexcept(empty())) {
+            return !empty();
+        }
+
+        /* The total number of elements the list can store before resizing. */
+        [[nodiscard]] size_type capacity() const noexcept(noexcept(view.capacity())) {
+            return view.capacity();
+        }
+
+        /* Estimate the overall memory usage of the list in bytes. */
+        [[nodiscard]] size_t memory_usage() const noexcept(noexcept(view.memory_usage())) {
+            return view.memory_usage();
+        }
+
+        /* Remove all elements from the list, resetting the size to zero, but leaving
+        the capacity unchanged. */
+        void clear() noexcept(noexcept(view.clear())) {
+            view.clear();
+        }
+
+        /* A reference to the first element in the list. */
+        [[nodiscard]] value_type& front() {
+            if (view.head) {
+                return view.head->value;
+            }
+            throw IndexError("list is empty");
+        }
+
+        /* A reference to the first element in the list. */
+        [[nodiscard]] const value_type& front() const {
+            if (view.head) {
+                return view.head->value;
+            }
+            throw IndexError("list is empty");
+        }
+
+        /* A reference to the last element in the list. */
+        [[nodiscard]] value_type& back() {
+            if (view.tail) {
+                return view.tail->value;
+            }
+            throw IndexError("list is empty");
+        }
+
+        /* A reference to the last element in the list. */
+        [[nodiscard]] const value_type& back() const {
+            if (view.tail) {
+                return view.tail->value;
+            }
+            throw IndexError("list is empty");
+        }
+    };
+
+    /* Intermediate class that adds `reserve()`, `defragment()`, and `shrink()` methods
+    to linked lists with N == 0. */
+    template <typename T, size_t N, typename Less, typename Alloc>
+    struct dynamic_list : linked_list_base<T, N, Less, Alloc> {};
+    template <typename T, typename Less, typename Alloc>
+    struct dynamic_list<T, 0, Less, Alloc> : linked_list_base<T, 0, Less, Alloc> {
+        /* Increase the capacity of the list to store at least the given number of
+        elements.  Not available for fixed-capacity lists (N > 0). */
+        void reserve(size_t n) noexcept(noexcept(this->view.reserve(n))) {
+            this->view.reserve(n);
+        }
+
+        /* Rearrange the nodes in memory to reflect their current list order, without
+        changing the capacity.  This is done automatically whenever the underlying
+        array grows or shrinks, and may be triggered manually as an optimization. */
+        void defragment() noexcept(noexcept(this->view.defragment())) {
+            this->view.defragment();
+        }
+
+        /* Shrink the capacity to the current size.  If the list is empty, then the
+        underlying array will be deleted and the capacity set to zero.  Otherwise, if
+        there are fewer than `MIN_SIZE` nodes, the capacity is set to `MIN_SIZE`
+        instead.  Not available for fixed-capacity lists (N > 0). */
+        void shrink() noexcept(noexcept(this->view.shrink())) {
+            this->view.shrink();
+        }
+    };
+
 
 
 }  // namespace impl::linked
 
 
-/// TODO: maybe all the algorithms can be placed here under the impl:: namespace?
-/// They'll take up a fair amount of space, but that would mean the entire linked
-/// data structure ecosystem would be stored in just a single file here, which makes
-/// it easier to test with syntax highlighting.
-/// -> C++ classes would then just compose whatever algorithms were needed, which
-/// would be templated to work at the view level, and therefore be compatible between
-/// views.
-
-
-
 namespace impl::linked {
+
+    /// TODO: noexcept specifiers are hard to fully model in this case
+
+    //////////////////////
+    ////    APPEND    ////
+    //////////////////////
+
+    /// TODO: there might be problems using append() on hash tables, depending on how
+    /// view.create() works in that case.  It probably just errors, so this should be
+    /// basically fine?  Maybe I should suppress the error though, and just move the
+    /// requested item to the back of the set/map?
 
     template <meta::linked_view View, typename... Args>
         requires (
             !meta::bst_view<View> &&
-            std::constructible_from<meta::node_type<View>, Args...>
+            !meta::hash_view<View> &&
+            std::constructible_from<typename View::node_type, Args...>
         )
-    void append(View&& view, Args&&... args) {
+    void append(View& view, Args&&... args) {
         auto* node = std::forward<View>(view).create(std::forward<Args>(args)...);
         if (view.tail) {
             view.tail->next = node;
@@ -1773,12 +2082,17 @@ namespace impl::linked {
         }
     }
 
+    ///////////////////////
+    ////    PREPEND    ////
+    ///////////////////////
+
     template <meta::linked_view View, typename... Args>
         requires (
             !meta::bst_view<View> &&
-            std::constructible_from<meta::node_type<View>, Args...>
+            !meta::hash_view<View> &&
+            std::constructible_from<typename View::node_type, Args...>
         )
-    void prepend(View&& view, Args&&... args) {
+    void prepend(View& view, Args&&... args) {
         auto* node = std::forward<View>(view).create(std::forward<Args>(args)...);
         if (view.head) {
             view.head->prev = node;
@@ -1790,47 +2104,775 @@ namespace impl::linked {
         }
     }
 
-}
+    //////////////////////
+    ////    EXTEND    ////
+    //////////////////////
+
+    template <meta::linked_view View, meta::iterable Range>
+        requires (
+            !meta::bst_view<View> &&
+            !meta::hash_view<View> &&
+            std::convertible_to<meta::iter_type<Range>, typename View::value_type>
+        )
+    void extend(View& view, Range&& range) {
+        auto it = std::ranges::begin(range);
+        auto end = std::ranges::end(range);
+        if (it == end) {
+            return;
+        }
+
+        size_t orig_size = view.size();
+        if constexpr (!View::STATIC && meta::has_size<Range>) {
+            view.reserve(orig_size + std::ranges::size(range));
+        }
+
+        try {
+            if (view.empty()) {
+                view.head = view.create(*it);
+                view.tail = view.head;
+                ++it;
+            }
+            while (it != end) {
+                view.tail->next = view.create(*it);
+                view.tail->next->prev = view.tail;
+                view.tail = view.tail->next;
+                ++it;
+            }
+
+        } catch (...) {
+            size_t diff = view.size() - orig_size;
+            if (diff) {
+                for (size_t i = 0; i < diff; ++i) {
+                    auto* prev = view.tail->prev;
+                    try {
+                        view.recycle(view.tail);
+                    } catch (...) {
+                        if (prev) {
+                            prev->next = nullptr;
+                            view.tail = prev;
+                        } else {
+                            view.head = nullptr;
+                        }
+                        throw;
+                    }
+                    view.tail = prev;
+                }
+                if (view.tail) {
+                    view.tail->next = nullptr;
+                } else {
+                    view.head = nullptr;
+                }
+            }
+            throw;
+        }
+    }
+
+    template <
+        meta::linked_view View,
+        std::input_or_output_iterator Begin,
+        std::sentinel_for<Begin> End
+    >
+        requires (
+            !meta::bst_view<View> &&
+            !meta::hash_view<View> &&
+            std::convertible_to<
+                decltype(*std::declval<std::add_lvalue_reference_t<Begin>>()),
+                typename View::value_type
+            >
+        )
+    void extend(View& view, Begin&& it, End&& end) {
+        if (it == end) {
+            return;
+        }
+
+        size_t orig_size = view.size();
+        if constexpr (!View::STATIC && meta::sub_returns<End, Begin, size_t>) {
+            view.reserve(orig_size + size_t(end - it));
+        }
+
+        try {
+            if (view.empty()) {
+                view.head = view.create(*it);
+                view.tail = view.head;
+                ++it;
+            }
+            while (it != end) {
+                view.tail->next = view.create(*it);
+                view.tail->next->prev = view.tail;
+                view.tail = view.tail->next;
+                ++it;
+            }
+
+        } catch (...) {
+            size_t diff = view.size() - orig_size;
+            if (diff) {
+                for (size_t i = 0; i < diff; ++i) {
+                    auto* prev = view.tail->prev;
+                    try {
+                        view.recycle(view.tail);
+                    } catch (...) {
+                        if (prev) {
+                            prev->next = nullptr;
+                            view.tail = prev;
+                        } else {
+                            view.head = nullptr;
+                        }
+                        throw;
+                    }
+                    view.tail = prev;
+                }
+                if (view.tail) {
+                    view.tail->next = nullptr;
+                } else {
+                    view.head = nullptr;
+                }
+            }
+            throw;
+        }
+    }
+
+    //////////////////////////
+    ////    EXTENDLEFT    ////
+    //////////////////////////
+
+    template <meta::linked_view View, meta::iterable Range>
+        requires (
+            !meta::bst_view<View> &&
+            !meta::hash_view<View> &&
+            std::convertible_to<meta::iter_type<Range>, typename View::value_type>
+        )
+    void extendleft(View& view, const Range& range) {
+        auto it = std::ranges::begin(range);
+        auto end = std::ranges::end(range);
+        if (it == end) {
+            return;
+        }
+
+        size_t orig_size = view.size();
+        if constexpr (!View::STATIC && meta::has_size<Range>) {
+            view.reserve(orig_size + std::ranges::size(range));
+        }
+
+        try {
+            if (view.empty()) {
+                view.tail = view.create(*it);
+                view.head = view.tail;
+                ++it;
+            }
+            while (it != end) {
+                view.head->prev = view.create(*it);
+                view.head->prev->next = view.head;
+                view.head = view.head->prev;
+                ++it;
+            }
+
+        } catch (...) {
+            size_t diff = view.size() - orig_size;
+            if (diff) {
+                for (size_t i = 0; i < diff; ++i) {
+                    auto* next = view.head->next;
+                    try {
+                        view.recycle(view.head);
+                    } catch (...) {
+                        if (next) {
+                            next->prev = nullptr;
+                            view.head = next;
+                        } else {
+                            view.tail = nullptr;
+                        }
+                        throw;
+                    }
+                    view.head = next;
+                }
+                if (view.head) {
+                    view.head->prev = nullptr;
+                } else {
+                    view.tail = nullptr;
+                }
+            }
+            throw;
+        }
+    }
+
+    template <
+        meta::linked_view View,
+        std::input_or_output_iterator Begin,
+        std::sentinel_for<Begin> End
+    >
+        requires (
+            !meta::bst_view<View> &&
+            !meta::hash_view<View> &&
+            std::convertible_to<
+                decltype(*std::declval<std::add_lvalue_reference_t<Begin>>()),
+                typename View::value_type
+            >
+        )
+    void extendleft(View& view, Begin&& it, End&& end) {
+        if (it == end) {
+            return;
+        }
+
+        size_t orig_size = view.size();
+        if constexpr (!View::STATIC && meta::sub_returns<End, Begin, size_t>) {
+            view.reserve(orig_size + size_t(end - it));
+        }
+
+        try {
+            if (view.empty()) {
+                view.tail = view.create(*it);
+                view.head = view.tail;
+                ++it;
+            }
+            while (it != end) {
+                view.head->prev = view.create(*it);
+                view.head->prev->next = view.head;
+                view.head = view.head->prev;
+                ++it;
+            }
+
+        } catch (...) {
+            size_t diff = view.size() - orig_size;
+            if (diff) {
+                for (size_t i = 0; i < diff; ++i) {
+                    auto* next = view.head->next;
+                    try {
+                        view.recycle(view.head);
+                    } catch (...) {
+                        if (next) {
+                            next->prev = nullptr;
+                            view.head = next;
+                        } else {
+                            view.tail = nullptr;
+                        }
+                        throw;
+                    }
+                    view.head = next;
+                }
+                if (view.head) {
+                    view.head->prev = nullptr;
+                } else {
+                    view.tail = nullptr;
+                }
+            }
+            throw;
+        }
+    }
+
+    ////////////////////////
+    ////    CONTAINS    ////
+    ////////////////////////
+
+    template <meta::linked_view View, typename T>
+        requires (
+            !meta::bst_view<View> &&
+            !meta::hash_view<View> &&
+            meta::eq_returns<const typename View::value_type&, const T&, bool>
+        )
+    [[nodiscard]] bool contains(const View& view, const T& value) noexcept(
+        noexcept(std::declval<const typename View::value_type&>() == value)
+    ) {
+        for (const auto& node : view) {
+            if (node.value == value) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // template <meta::bst_view View, typename T>
+    //     requires (
+    //         !meta::hash_view<View>
+    //         /// TODO: confirm less_type is callable with the value_type
+    //     )
+    // [[nodiscard]] bool contains(View&& view, T&& value) {
+    //     /// TODO: binary search
+    // }
+
+    // template <meta::hash_view View, typename T>
+    //     requires (
+
+    //     )
+    // [[nodiscard]] bool contains(View&& view, T&& value) {
+
+    // }
+
+    /////////////////////
+    ////    COUNT    ////
+    /////////////////////
+
+    template <meta::linked_view View, typename T>
+        requires (
+            !meta::bst_view<View> &&
+            !meta::hash_view<View> &&
+            meta::eq_returns<const typename View::value_type&, const T&, bool>
+        )
+    [[nodiscard]] size_t count(const View& view, const T& value) noexcept(
+        noexcept(std::declval<const typename View::value_type&>() == value)
+    ) {
+        size_t count = 0;
+        for (const auto& node : view) {
+            count += node.value == value;
+        }
+        return count;
+    }
+
+    template <meta::linked_view View, typename T>
+        requires (
+            !meta::bst_view<View> &&
+            !meta::hash_view<View> &&
+            meta::eq_returns<const typename View::value_type&, const T&, bool>
+        )
+    [[nodiscard]] size_t count(
+        const View& view,
+        const T& value,
+        std::optional<ssize_t> start,
+        std::optional<ssize_t> stop
+    ) noexcept(
+        noexcept(normalize_slice(view.size(), start, stop)) &&
+        noexcept(std::declval<const typename View::value_type&>() == value)
+    ) {
+        if (view.empty()) {
+            return 0;
+        }
+
+        normalize_slice indices(view.size(), start, stop);
+        if (indices.length == 0) {
+            return 0;
+        }
+
+        size_t count = 0;
+        if (indices.backward) {
+            auto it = view.rbegin();
+            size_t i = view.size();
+            for (; i-- > indices.last; ++it);
+            for (; i >= indices.first; --i, ++it) {
+                count += it->value == value;
+            }
+        } else {
+            auto it = view.begin();
+            size_t i = 0;
+            for (; i < indices.first; ++i, ++it);
+            for (; i <= indices.last; ++i, ++it) {
+                count += it->value == value;
+            }
+        }
+        return count;
+    }
+
+    /////////////////////
+    ////    INDEX    ////
+    /////////////////////
 
 
+    ///////////////////////
+    ////    REVERSE    ////
+    ///////////////////////
 
-/// TODO: Less{} converts a list or set into a binary search tree (red-black tree)
-/// that maintains sorted order, and is contiguous in memory.  Neither case interferes
-/// with the view allocators I wrote above, since they only concern the links between
-/// nodes.  BSTs are almost always preferable to skip lists, and I can do it with
-/// relatively little fuss, just by modifying the node type to add a `parent` pointer.
-/// That doesn't require the elements to be strictly unique, so a linked_list that
-/// uses a binary search tree for ordering will remain contiguous in memory, and would
-/// be usable as a list with O(1) lookups.  On the set/map side, you would be able to
-/// use custom ordering conditions (like MFU/LFU) with guaranteed ordering at all times,
-/// and reinserts would be O(log n) instead of O(n).  In-order traversals would also
-/// benefit from contiguity at all times.
+    template <meta::linked_view View> requires (!meta::bst_view<View>)
+    void reverse(View& view) noexcept {
+        auto* head = view.head;
+        auto* curr = head;
+        while (curr) {
+            auto* next = curr->next;
+            curr->next = curr->prev;
+            curr->prev = next;
+            curr = next;
+        }
+        view.head = view.tail;
+        view.tail = head;
+    }
+
+    //////////////////////
+    ////    ROTATE    ////
+    //////////////////////
+
+    template <meta::linked_view View> requires (!meta::bst_view<View>)
+    void rotate(View& view, ssize_t n) noexcept {
+        if (view.empty()) {
+            return;
+        }
+        size_t steps = size_t(n < 0 ? -n : n) % view.size();
+        if (steps == 0) {
+            return;
+        }
+
+        size_t index;
+        if (n < 0) {
+            index = steps;
+        } else {
+            index = view.size() - steps;
+        }
+
+        if (closer_to_tail(view.size(), index)) {
+            auto* new_head = view.tail;
+            for (size_t i = view.size() - 1; i > index; --i) {
+                new_head = new_head->prev;
+            }
+            auto* new_tail = new_head->prev;
+            view.tail->next = view.head;
+            view.head->prev = view.tail;
+            view.tail = new_tail;
+            view.head = new_head;
+        } else {
+            auto* new_tail = view.head;
+            for (size_t i = 1; i < index; ++i) {
+                new_tail = new_tail->next;
+            }
+            auto* new_head = new_tail->next;
+            view.tail->next = view.head;
+            view.head->prev = view.tail;
+            view.tail = new_tail;
+            view.head = new_head;
+        }
+    }
+
+}  // namespace impl::linked
 
 
+/* A generic, doubly-linked list with optional ordering.
 
-template <typename T, size_t N = 0, typename Less = void, typename Alloc = std::allocator<T>>
+Unlike traditional linked lists, this implementation uses a single, contiguous array of
+nodes to store the contents, similar to a `std::vector`.  This greatly increases cache
+locality compared to a `std::list` or similar data structure, and yields overall
+iteration performance comparable to a naked array, without sacrificing the fast
+insertions and deletions that linked lists are known for.  It comes at the cost of
+unconditional address stability in the dynamic case, since the node array may be
+reallocated if the list grows larger than the current capacity.  However, that can be
+fully mitigated by carefully controlling the growth of the list, or by setting a fixed
+capacity at compile time, in which case no reallocations will ever occur, and the
+addresses of the contents will remain stable over the lifetime of the list.
+
+If `N` is set to zero (the default), the list array will be dynamically allocated using
+the supplied (STL-compliant) allocator, and will grow as needed, mirroring the
+semantics of `std::vector`.  Just like `std::vector`, growth occurs when `size()` is
+equal to `capacity()` and a new item is added to the list, which triggers the
+allocation of a new array and an O(n) move of the existing contents, invalidating any
+pointers/iterators to the previous values.
+
+If `N` is non-zero, then the list will be stack-allocated with a fixed capacity equal
+to `N`, and will never grow or shrink beyond that capacity.  In fact, it will never
+interact with the allocator at all except to `construct()` or `destroy()` nodes via
+placement new or in-place destructor calls, respectively.  This recovers most of the
+traditional address stability of a linked list (outside of explicit copies/moves/swaps)
+while retaining the cache locality of a contiguous array, making such a list suitable
+for use in cases where the heap is not available, such as in embedded systems or kernel
+modules.
+
+If a non-void `Less` type is provided, then the list will be trivially converted into a
+binary search tree (BST) with the given ordering, similar to a `std::set`, but
+allowing duplicate values.  `Less` is expected to be a default-constructible function
+object whose call operator implements a less-than comparison between arbitrary values,
+minimally including the contained type `T`.  This mirrors the same `Less` type used in
+STL containers like `std::set`, except that `Less::is_transparent` is assumed to be
+true by default in order to simplify downstream user code.  If you'd like to pass
+through to the typical `<` operator for `T`, you can use `std::less<>` or
+`std::less<void>`, just as you would with an STL container.
+
+Binary search trees of this form are implemented using a threaded, top-down, red-black
+balancing scheme, which requires no extra memory to store.  The necessary thread and
+color bits are encoded directly into the `prev` and `next` pointers using pointer
+tagging, allowing efficient in-order traversals without requiring a recursive stack or
+`parent` pointer.  They support all of the same algorithms as an ordinary linked list,
+except for those that modify the order of the nodes, such as `append()`, `sort()`,
+`reverse()`, etc. */
+template <
+    typename T,
+    size_t N = 0,
+    typename Less = void,
+    typename Alloc = std::allocator<T>
+>
     requires (
-        /// TODO: T can be a reference?
+        !std::is_reference_v<T> &&
+        (meta::is_void<Less> || (
+            std::is_default_constructible_v<Less> &&
+            std::is_invocable_r_v<bool, Less, const T&, const T&>
+        )) &&
         meta::allocator_for<Alloc, T>
     )
-struct linked_list {
-    using value_type = T;
-    using reference = value_type&;
-    using const_reference = const value_type&;
-    using pointer = value_type*;
-    using const_pointer = const value_type*;
-
-protected:
-    using Node = impl::linked::node<T>;
-    using Allocator = std::allocator_traits<Alloc>::template rebind_alloc<Node>;
-
-    impl::linked::list_view<Node, N, Allocator> view;
+struct linked_list : impl::linked::dynamic_list<T, N, Less, Alloc> {
+private:
+    using base = impl::linked::dynamic_list<T, N, Less, Alloc>;
 
 public:
+    using node_type = base::node_type;
+    using allocator_type = base::allocator_type;
+    using size_type = base::size_type;
+    using difference_type = base::difference_type;
+    using value_type = base::value_type;
+    using reference = base::reference;
+    using const_reference = base::const_reference;
+    using pointer = base::pointer;
+    using const_pointer = base::const_pointer;
 
-    /// TODO: separate specialization for Less = void
+protected:
+    using View = base::View;
+
+    View view;
+
+public:
+    using base::base;
+
+    /// TODO: iterators, etc.
 
 };
+
+
+/* Specialization for pure, non-BST linked lists, without any strict ordering. */
+template <typename T, size_t N, typename Alloc>
+struct linked_list<T, N, void, Alloc> : impl::linked::dynamic_list<T, N, void, Alloc> {
+private:
+    using base = impl::linked::dynamic_list<T, N, void, Alloc>;
+
+public:
+    using node_type = base::node_type;
+    using allocator_type = base::allocator_type;
+    using size_type = base::size_type;
+    using difference_type = base::difference_type;
+    using value_type = base::value_type;
+    using reference = base::reference;
+    using const_reference = base::const_reference;
+    using pointer = base::pointer;
+    using const_pointer = base::const_pointer;
+
+    using base::STATIC;
+    using base::MIN_SIZE;
+
+protected:
+    using base::view;
+
+public:
+    linked_list() = default;
+
+    /* Construct a linked list from the contents of an iterable range.  Invokes
+    implicit conversions to the contained type for each item.  If called with an
+    extra boolean, the order of the range will be implicitly reversed, even if the
+    incoming container does not support reverse iteration.  This is more efficient
+    than constructing the list and then calling `list.reverse()` in-place. */
+    template <meta::iterable Range>
+        requires (std::convertible_to<meta::iter_type<Range>, value_type>)
+    explicit linked_list(Range&& range, bool reverse = false) {
+        auto it = std::ranges::begin(range);
+        auto end = std::ranges::end(range);
+        if (it == end) {
+            return;
+        }
+        if constexpr (!base::STATIC && meta::has_size<Range>) {
+            view.reserve(std::ranges::size(range));
+        }
+        view.head = view.create(*it);
+        view.tail = view.head;
+        ++it;
+        if (reverse) {
+            while (it != end) {
+                view.head->prev = view.create(*it);
+                view.head->prev->next = view.head;
+                view.head = view.head->prev;
+                ++it;
+            }
+        } else {
+            while (it != end) {
+                view.tail->next = view.create(*it);
+                view.tail->next->prev = view.tail;
+                view.tail = view.tail->next;
+                ++it;
+            }
+        }
+    }
+
+    /* Construct a linked list from the contents of an iterable range.  Invokes
+    implicit conversions to the contained type for each item.  If called with an
+    extra boolean, the order of the range will be implicitly reversed, even if the
+    incoming iterators do not support reverse iteration.  This is more efficient
+    than constructing the list and then calling `list.reverse()` in-place. */
+    template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
+        requires (std::convertible_to<
+            decltype(*std::declval<std::add_lvalue_reference_t<Begin>>()),
+            value_type
+        >)
+    linked_list(Begin&& it, End&& end, bool reverse = false) {
+        if (it == end) {
+            return;
+        }
+        if constexpr (!base::STATIC && meta::sub_returns<End, Begin, size_t>) {
+            view.reserve(size_t(end - it));
+        }
+        view.head = view.create(*it);
+        view.tail = view.head;
+        ++it;
+        if (reverse) {
+            while (it != end) {
+                view.head->prev = view.create(*it);
+                view.head->prev->next = view.head;
+                view.head = view.head->prev;
+                ++it;
+            }
+        } else {
+            while (it != end) {
+                view.tail->next = view.create(*it);
+                view.tail->next->prev = view.tail;
+                view.tail = view.tail->next;
+                ++it;
+            }
+        }
+    }
+
+    /* Construct a linked list from an explicit initializer.  Invokes implicit
+    conversions to the contained type for each item. */
+    linked_list(const std::initializer_list<T>& values) {
+        if (values.size() == 0) {
+            return;
+        }
+        if constexpr (!base::STATIC) {
+            view.reserve(values.size());
+        }
+        auto it = values.begin();
+        view.head = view.create(*it);
+        view.tail = view.head;
+        ++it;
+        while (it != values.end()) {
+            view.tail->next = view.create(*it);
+            view.tail->next->prev = view.tail;
+            view.tail = view.tail->next;
+            ++it;
+        }
+    }
+
+    /* Add an item to the end of the list.  Any arguments are passed directly to the
+    constructor for `T`. */
+    template <typename... Args> requires (std::constructible_from<node_type, Args...>)
+    void append(Args&&... args) noexcept(
+        noexcept(impl::linked::append(view, std::forward<Args>(args)...))
+    ) {
+        impl::linked::append(view, std::forward<Args>(args)...);
+    }
+
+    /* Add an item to the front of the list.  Any arguments are passed directly to the
+    constructor for `T`. */
+    template <typename... Args> requires (std::constructible_from<node_type, Args...>)
+    void prepend(Args&&... args) noexcept(
+        noexcept(impl::linked::prepend(view, std::forward<Args>(args)...))
+    ) {
+        impl::linked::prepend(view, std::forward<Args>(args)...);
+    }
+
+    /* Grow the list from the tail, appending all items from an iterable range.
+    Invokes implicit conversions to the contained type for each item.  In the event of
+    an error, the list will be rolled back to its original state. */
+    template <meta::iterable Range>
+        requires (std::convertible_to<meta::iter_type<Range>, value_type>)
+    void extend(Range&& range) noexcept(
+        noexcept(impl::linked::extend(view, std::forward<Range>(range)))
+    ) {
+        impl::linked::extend(view, std::forward<Range>(range));
+    }
+
+    /* Grow the list from the tail, appending all items from an iterable range.
+    Invokes implicit conversions to the contained type for each item.  In the event of
+    an error, the list will be rolled back to its original state. */
+    template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
+        requires (std::convertible_to<
+            decltype(*std::declval<std::add_lvalue_reference_t<Begin>>()),
+            value_type
+        >)
+    void extend(Begin&& it, End&& end) noexcept(
+        noexcept(impl::linked::extend(view, std::forward<Begin>(it), std::forward<End>(end)))
+    ) {
+        impl::linked::extend(view, std::forward<Begin>(it), std::forward<End>(end));
+    }
+
+    /* Grow the list from the head, prepending all items from an iterable range.
+    Invokes implicit conversions to the contained type for each item.  Note that due
+    to the logic of `prepend()`, this method will implicitly reverse the contents of
+    the range upon insertion.  In the event of an error, the list will be rolled back
+    to its original state. */
+    template <meta::iterable Range>
+        requires (std::convertible_to<meta::iter_type<Range>, value_type>)
+    void extendleft(Range&& range) noexcept(
+        noexcept(impl::linked::extendleft(view, std::forward<Range>(range)))
+    ) {
+        impl::linked::extendleft(view, std::forward<Range>(range));
+    }
+
+    /* Grow the list from the head, prepending all items from an iterable range.
+    Invokes implicit conversions to the contained type for each item.  Note that due
+    to the logic of `prepend()`, this method will implicitly reverse the contents of
+    the range upon insertion.  In the event of an error, the list will be rolled back
+    to its original state. */
+    template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
+        requires (std::convertible_to<
+            decltype(*std::declval<std::add_lvalue_reference_t<Begin>>()),
+            value_type
+        >)
+    void extendleft(Begin&& it, End&& end) noexcept(
+        noexcept(impl::linked::extendleft(view, std::forward<Begin>(it), std::forward<End>(end)))
+    ) {
+        impl::linked::extendleft(view, std::forward<Begin>(it), std::forward<End>(end));
+    }
+
+    /* Return true if the list contains the given value.  This performs a linear search
+    through the list with an O(n) time complexity.  If the list is sorted, then this
+    can be improved to O(log n) using a binary search. */
+    template <typename V> requires (meta::eq_returns<const value_type&, const V&, bool>)
+    [[nodiscard]] bool contains(const V& value) const noexcept(
+        noexcept(impl::linked::contains(view, value))
+    ) {
+        return impl::linked::contains(view, value);
+    }
+
+    /* Count the number of occurrences of a given value in the list.  By default, this
+    will loop over the whole list and compare against each value, but additional
+    [start, stop) indices can be given to specify only a subrange, which will be
+    scanned starting from the nearest end. */
+    template <typename V> requires (meta::eq_returns<const value_type&, const V&, bool>)
+    [[nodiscard]] size_t count(const V& value) const noexcept(
+        noexcept(impl::linked::count(view, value))
+    ) {
+        return impl::linked::count(view, value);
+    }
+
+    /* Count the number of occurrences of a given value in the list.  By default, this
+    will loop over the whole list and compare against each value, but additional
+    [start, stop) indices can be given to specify only a subrange, which will be
+    scanned starting from the nearest end.  The subrange indices may be negative or
+    `std::nullopt`, following Python wraparound semantics. */
+    template <typename V> requires (meta::eq_returns<const value_type&, const V&, bool>)
+    [[nodiscard]] size_t count(
+        const V& value,
+        std::optional<ssize_t> start,
+        std::optional<ssize_t> stop = std::nullopt
+    ) const noexcept(noexcept(impl::linked::count(view, value, start, stop))) {
+        return impl::linked::count(view, value, start, stop);
+    }
+
+    /// TODO: sort(), remove(), pop_back(), pop_front(), index(), operator*(), operator+()
+    // index(), repr(), insert(), operator[]
+
+    /* Reverse the order of the list's elements in-place. */
+    void reverse() noexcept(noexcept(impl::linked::reverse(view))) {
+        impl::linked::reverse(view);
+    }
+
+    /* Shift all elements in the list to the right by the specified number of steps.
+    Negative values will shift to the left instead. */
+    void rotate(ssize_t n = 1) noexcept(noexcept(impl::linked::rotate(view, n))) {
+        impl::linked::rotate(view, n);
+    }
+
+    /// TODO: iterators, which are just thin wrappers around the underlying node
+    /// iterators that yield values, not nodes.
+
+};
+
+
+
+
+
+
+
+
+
+
+
 
 
 template <typename T>
@@ -1852,6 +2894,10 @@ struct linked_map {
 
 
 /// TODO: specific LRU variations
+
+
+/// TODO: a non-member swap() function in the same namespace that swaps the resources
+/// owned by two lists/sets/maps
 
 
 
