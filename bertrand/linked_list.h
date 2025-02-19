@@ -10,8 +10,34 @@
 namespace bertrand {
 
 
+template <
+    typename T,
+    size_t N = 0,
+    typename Less = void,
+    typename Equal = void,
+    typename Alloc = std::allocator<T>
+>
+    requires (
+        !std::is_reference_v<T> &&
+        (meta::is_void<Less> || (
+            std::is_default_constructible_v<Less> &&
+            std::is_invocable_r_v<bool, Less, const T&, const T&>
+        )) &&
+        (meta::is_void<Equal> || (
+            std::is_default_constructible_v<Equal> &&
+            std::is_invocable_r_v<bool, Equal, const T&, const T&>
+        )) &&
+        meta::allocator_for<Alloc, T>
+    )
+struct linked_list;
+
+
 namespace impl::linked {
 
+    struct linked_tag {};
+    struct list_tag : linked_tag {};
+    struct set_tag : linked_tag {};
+    struct map_tag : linked_tag {};
     struct node_tag {};
     struct view_tag {};
     struct iterator_tag {};
@@ -80,6 +106,22 @@ namespace meta {
     concept hash_view =
         linked_view<T> && hash_node<typename std::remove_cvref_t<T>::node_type>;
 
+    template <typename T>
+    concept linked = meta::inherits<T, impl::linked::linked_tag>;
+
+    template <typename T>
+    concept bst = linked<T> && bst_view<typename std::remove_cvref_t<T>::view_type>;
+
+    template <typename T>
+    concept linked_list = linked<T> && meta::inherits<T, impl::linked::list_tag>;
+
+    template <typename T>
+    concept linked_set = linked<T> && meta::inherits<T, impl::linked::set_tag>;
+
+    template <typename T>
+    concept linked_map = linked<T> && meta::inherits<T, impl::linked::map_tag>;
+    
+
 }  // namespace meta
 
 
@@ -99,24 +141,24 @@ namespace impl::linked {
     /// structures, without any extra work.
 
     /* Node type for hashed BST nodes. */
-    template <typename T, typename Hash = void, typename Less = void>
-        requires ((meta::is_void<Hash> || (
-            std::is_default_constructible_v<Hash> &&
-            std::is_invocable_r_v<size_t, Hash, const T&>
-        )) && (meta::is_void<Less> || (
+    template <
+        typename T,
+        typename Less = void,
+        typename Hash = void,
+        typename Equal = void
+    >
+        requires ((meta::is_void<Less> || (
             std::is_default_constructible_v<Less> &&
             std::is_invocable_r_v<bool, Less, const T&, const T&>
+        )) && (meta::is_void<Hash> || (
+            std::is_default_constructible_v<Hash> &&
+            std::is_invocable_r_v<size_t, Hash, const T&>
+        )) && (meta::is_void<Equal> || (
+            std::is_default_constructible_v<Equal> &&
+            std::is_invocable_r_v<bool, Equal, const T&, const T&>
         )))
     struct alignas(NODE_ALIGNMENT) node : node_tag {
     private:
-
-        template <typename U>
-        struct _unwrap_node { using type = U; };
-        template <meta::linked_node U>
-        struct _unwrap_node<U> { using type = std::remove_cvref_t<U>::value_type; };
-        template <typename U>
-        using unwrap_node = _unwrap_node<U>::type;
-
         /* BSTs use a tagged pointer to store the `prev` and `next` pointers, which
         encode the thread bits and red/black color bit into the pointer itself, to
         avoid auxiliary data structures and padding. */
@@ -131,8 +173,9 @@ namespace impl::linked {
 
     public:
         using value_type = T;
-        using hash_type = Hash;
-        using less_type = Less;
+        using less_func = Less;
+        using hash_func = Hash;
+        using equal_func = Equal;
 
         /* The `prev` pointer can be read from and assigned to just like normal. */
         __declspec(property(get = _get_prev, put = _set_prev))
@@ -198,10 +241,10 @@ namespace impl::linked {
         template <typename... Args> requires (std::constructible_from<value_type, Args...>)
         node(Args&&... args) noexcept(
             noexcept(value_type(std::forward<Args>(args)...)) &&
-            noexcept(hash_type{}(value))
+            noexcept(hash_func{}(value))
         ) :
             value(std::forward<Args>(args)...),
-            hash(hash_type{}(value))
+            hash(hash_func{}(value))
         {}
 
         node(const node& other) noexcept(noexcept(value_type(other.value))) :
@@ -229,58 +272,12 @@ namespace impl::linked {
             }
             return *this;
         }
-
-        template <typename U>
-            requires (
-                std::is_invocable_r_v<
-                    bool,
-                    less_type,
-                    const value_type&,
-                    const unwrap_node<U>&
-                >
-            )
-        [[nodiscard]] friend bool operator<(const node& lhs, const U& rhs) noexcept(
-            std::is_nothrow_invocable_r_v<
-                bool,
-                less_type,
-                const value_type&,
-                const unwrap_node<U>&
-            >
-        ) {
-            if constexpr (meta::linked_node<U>) {
-                return less_type{}(lhs.value, rhs.value);
-            } else {
-                return less_type{}(lhs.value, rhs);
-            }
-        }
-
-        template <typename U>
-            requires (std::is_invocable_r_v<
-                bool,
-                less_type,
-                const unwrap_node<U>&,
-                const value_type&
-            >)
-        [[nodiscard]] friend bool operator<(const U& rhs, const node& lhs) noexcept(
-            std::is_nothrow_invocable_r_v<
-                bool,
-                less_type,
-                const unwrap_node<U>&,
-                const value_type&
-            >
-        ) {
-            if constexpr (meta::linked_node<U>) {
-                return less_type{}(rhs.value, lhs.value);
-            } else {
-                return less_type{}(rhs, lhs.value);
-            }
-        }
     };
 
     /* Node type for non-hashed BST nodes. */
-    template <typename T, typename Less>
-    struct alignas(NODE_ALIGNMENT) node<T, void, Less> : node_tag {
-        private:
+    template <typename T, typename Less, typename Equal>
+    struct alignas(NODE_ALIGNMENT) node<T, Less, void, Equal> : node_tag {
+    private:
 
         template <typename U>
         struct _unwrap_node { using type = U; };
@@ -303,8 +300,9 @@ namespace impl::linked {
 
     public:
         using value_type = T;
-        using hash_type = void;
-        using less_type = Less;
+        using less_func = Less;
+        using hash_func = void;
+        using equal_func = Equal;
 
         /* The `prev` pointer can be read from and assigned to just like normal. */
         __declspec(property(get = _get_prev, put = _set_prev))
@@ -392,60 +390,15 @@ namespace impl::linked {
             }
             return *this;
         }
-
-        template <typename U>
-            requires (
-                std::is_invocable_r_v<
-                    bool,
-                    less_type,
-                    const value_type&,
-                    const unwrap_node<U>&
-                >
-            )
-        [[nodiscard]] friend bool operator<(const node& lhs, const U& rhs) noexcept(
-            std::is_nothrow_invocable_r_v<
-                bool,
-                less_type,
-                const value_type&,
-                const unwrap_node<U>&
-            >
-        ) {
-            if constexpr (meta::linked_node<U>) {
-                return less_type{}(lhs.value, rhs.value);
-            } else {
-                return less_type{}(lhs.value, rhs);
-            }
-        }
-
-        template <typename U>
-            requires (std::is_invocable_r_v<
-                bool,
-                less_type,
-                const unwrap_node<U>&,
-                const value_type&
-            >)
-        [[nodiscard]] friend bool operator<(const U& rhs, const node& lhs) noexcept(
-            std::is_nothrow_invocable_r_v<
-                bool,
-                less_type,
-                const unwrap_node<U>&,
-                const value_type&
-            >
-        ) {
-            if constexpr (meta::linked_node<U>) {
-                return less_type{}(rhs.value, lhs.value);
-            } else {
-                return less_type{}(rhs, lhs.value);
-            }
-        }
     };
 
     /* Node type for hashed, non-BST nodes. */
-    template <typename T, typename Hash>
-    struct alignas(NODE_ALIGNMENT) node<T, Hash, void> : node_tag {
+    template <typename T, typename Hash, typename Equal>
+    struct alignas(NODE_ALIGNMENT) node<T, void, Hash, Equal> : node_tag {
         using value_type = T;
-        using hash_type = Hash;
-        using less_type = void;
+        using less_func = void;
+        using hash_func = Hash;
+        using equal_func = Equal;
 
         node* prev = nullptr;
         node* next = nullptr;
@@ -455,10 +408,10 @@ namespace impl::linked {
         template <typename... Args> requires (std::constructible_from<value_type, Args...>)
         node(Args&&... args) noexcept(
             noexcept(value_type(std::forward<Args>(args)...)) &&
-            noexcept(hash_type{}(value))
+            noexcept(hash_func{}(value))
         ) :
             value(std::forward<Args>(args)...),
-            hash(hash_type{}(this->value))
+            hash(hash_func{}(this->value))
         {}
 
         node(const node& other) noexcept(noexcept(value_type(other.value))) :
@@ -489,11 +442,12 @@ namespace impl::linked {
     };
 
     /* Node type for non-hashed, non-BST nodes. */
-    template <typename T>
-    struct alignas(NODE_ALIGNMENT) node<T, void, void> : node_tag {
+    template <typename T, typename Equal>
+    struct alignas(NODE_ALIGNMENT) node<T, void, void, Equal> : node_tag {
         using value_type = T;
-        using hash_type = void;
-        using less_type = void;
+        using less_func = void;
+        using hash_func = void;
+        using equal_func = Equal;
 
         node* prev = nullptr;
         node* next = nullptr;
@@ -547,25 +501,103 @@ namespace impl::linked {
         [[nodiscard]] Node* operator->() noexcept { return curr; }
         [[nodiscard]] const Node* operator->() const noexcept { return curr; }
 
-        node_iterator& operator++() noexcept {
+        node_iterator& operator++() noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (curr == nullptr) {
+                    throw MemoryError("cannot advance a null iterator");
+                }
+            }
             curr = curr->next;
             return *this;
         }
 
-        [[nodiscard]] node_iterator operator++(int) noexcept {
+        [[nodiscard]] node_iterator operator++(int) noexcept(!DEBUG) {
             node_iterator temp = *this;
             ++(*this);
             return temp;
         }
 
-        node_iterator& operator--() noexcept {
+        node_iterator& operator+=(difference_type n) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (curr == nullptr) {
+                    throw MemoryError("cannot advance a null iterator");
+                }
+            }
+            if (n > 0) {
+                for (difference_type i = 0; i < n; ++i) {
+                    if constexpr (DEBUG) {
+                        if (curr == nullptr) {
+                            throw MemoryError("cannot advance a null iterator");
+                        }
+                    }
+                    curr = curr->next;
+                }
+            } else {
+                for (difference_type i = 0; i > n; --i) {
+                    if constexpr (DEBUG) {
+                        if (curr == nullptr) {
+                            throw MemoryError("cannot advance a null iterator");
+                        }
+                    }
+                    curr = curr->prev;
+                }
+            }
+            return *this;
+        }
+
+        [[nodiscard]] node_iterator operator+(difference_type n) const noexcept(!DEBUG) {
+            node_iterator temp = *this;
+            temp += n;
+            return temp;
+        }
+
+        node_iterator& operator--() noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (curr == nullptr) {
+                    throw MemoryError("cannot advance a null iterator");
+                }
+            }
             curr = curr->prev;
             return *this;
         }
 
-        [[nodiscard]] node_iterator operator--(int) noexcept {
+        [[nodiscard]] node_iterator operator--(int) noexcept(!DEBUG) {
             node_iterator temp = *this;
             --(*this);
+            return temp;
+        }
+
+        node_iterator& operator-=(difference_type n) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (curr == nullptr) {
+                    throw MemoryError("cannot advance a null iterator");
+                }
+            }
+            if (n > 0) {
+                for (difference_type i = 0; i < n; ++i) {
+                    if constexpr (DEBUG) {
+                        if (curr == nullptr) {
+                            throw MemoryError("cannot advance a null iterator");
+                        }
+                    }
+                    curr = curr->prev;
+                }
+            } else {
+                for (difference_type i = 0; i > n; --i) {
+                    if constexpr (DEBUG) {
+                        if (curr == nullptr) {
+                            throw MemoryError("cannot advance a null iterator");
+                        }
+                    }
+                    curr = curr->next;
+                }
+            }
+            return *this;
+        }
+
+        [[nodiscard]] node_iterator operator-(difference_type n) const noexcept {
+            node_iterator temp = *this;
+            temp -= n;
             return temp;
         }
 
@@ -598,25 +630,103 @@ namespace impl::linked {
         [[nodiscard]] Node* operator->() noexcept { return curr; }
         [[nodiscard]] const Node* operator->() const noexcept { return curr; }
 
-        reverse_node_iterator& operator++() noexcept {
+        reverse_node_iterator& operator++() noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (curr == nullptr) {
+                    throw MemoryError("cannot advance a null iterator");
+                }
+            }
             curr = curr->prev;
             return *this;
         }
 
-        [[nodiscard]] reverse_node_iterator operator++(int) noexcept {
+        [[nodiscard]] reverse_node_iterator operator++(int) noexcept(!DEBUG) {
             reverse_node_iterator temp = *this;
             ++(*this);
             return temp;
         }
 
-        reverse_node_iterator& operator--() noexcept {
+        reverse_node_iterator& operator+=(difference_type n) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (curr == nullptr) {
+                    throw MemoryError("cannot advance a null iterator");
+                }
+            }
+            if (n > 0) {
+                for (difference_type i = 0; i < n; ++i) {
+                    if constexpr (DEBUG) {
+                        if (curr == nullptr) {
+                            throw MemoryError("cannot advance a null iterator");
+                        }
+                    }
+                    curr = curr->prev;
+                }
+            } else {
+                for (difference_type i = 0; i > n; --i) {
+                    if constexpr (DEBUG) {
+                        if (curr == nullptr) {
+                            throw MemoryError("cannot advance a null iterator");
+                        }
+                    }
+                    curr = curr->next;
+                }
+            }
+            return *this;
+        }
+
+        [[nodiscard]] reverse_node_iterator operator+(difference_type n) const noexcept(!DEBUG) {
+            reverse_node_iterator temp = *this;
+            temp += n;
+            return temp;
+        }
+
+        reverse_node_iterator& operator--() noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (curr == nullptr) {
+                    throw MemoryError("cannot advance a null iterator");
+                }
+            }
             curr = curr->next;
             return *this;
         }
 
-        [[nodiscard]] reverse_node_iterator operator--(int) noexcept {
+        [[nodiscard]] reverse_node_iterator operator--(int) noexcept(!DEBUG) {
             reverse_node_iterator temp = *this;
             --(*this);
+            return temp;
+        }
+
+        reverse_node_iterator& operator-=(difference_type n) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (curr == nullptr) {
+                    throw MemoryError("cannot advance a null iterator");
+                }
+            }
+            if (n > 0) {
+                for (difference_type i = 0; i < n; ++i) {
+                    if constexpr (DEBUG) {
+                        if (curr == nullptr) {
+                            throw MemoryError("cannot advance a null iterator");
+                        }
+                    }
+                    curr = curr->next;
+                }
+            } else {
+                for (difference_type i = 0; i > n; --i) {
+                    if constexpr (DEBUG) {
+                        if (curr == nullptr) {
+                            throw MemoryError("cannot advance a null iterator");
+                        }
+                    }
+                    curr = curr->prev;
+                }
+            }
+            return *this;
+        }
+
+        [[nodiscard]] reverse_node_iterator operator-(difference_type n) const noexcept(!DEBUG) {
+            reverse_node_iterator temp = *this;
+            temp -= n;
             return temp;
         }
 
@@ -662,30 +772,15 @@ namespace impl::linked {
         }
 
         [[nodiscard]] value_type& operator*() noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (this->curr == nullptr) {
-                    throw MemoryError("cannot dereference a null iterator");
-                }
-            }
-            return this->curr->value;
+            return T::operator*()->value;
         }
 
         [[nodiscard]] const value_type& operator*() const noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (this->curr == nullptr) {
-                    throw MemoryError("cannot dereference a null iterator");
-                }
-            }
-            return this->curr->value;
+            return T::operator*()->value;
         }
 
         [[nodiscard]] value_type* operator->() noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (this->curr == nullptr) {
-                    throw MemoryError("cannot dereference a null iterator");
-                }
-            }
-            return &this->curr->value;
+            return &T::operator->()->value;
         }
 
         [[nodiscard]] const value_type* operator->() const noexcept(!DEBUG) {
@@ -698,11 +793,6 @@ namespace impl::linked {
         }
 
         value_iterator& operator++() noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (this->curr == nullptr) {
-                    throw MemoryError("cannot advance a null iterator");
-                }
-            }
             T::operator++();
             return *this;
         }
@@ -711,6 +801,47 @@ namespace impl::linked {
             value_iterator temp = *this;
             ++(*this);
             return temp;
+        }
+
+        value_iterator& operator+=(difference_type n) noexcept(!DEBUG) {
+            T::operator+=(n);
+            return *this;
+        }
+
+        [[nodiscard]] value_iterator operator+(difference_type n) const noexcept(!DEBUG) {
+            value_iterator temp = *this;
+            temp += n;
+            return temp;
+        }
+
+        value_iterator& operator--() noexcept(!DEBUG) {
+            T::operator--();
+            return *this;
+        }
+
+        [[nodiscard]] value_iterator operator--(int) noexcept(!DEBUG) {
+            value_iterator temp = *this;
+            --(*this);
+            return temp;
+        }
+
+        value_iterator& operator-=(difference_type n) noexcept(!DEBUG) {
+            T::operator-=(n);
+            return *this;
+        }
+
+        [[nodiscard]] value_iterator operator-(difference_type n) const noexcept(!DEBUG) {
+            value_iterator temp = *this;
+            temp -= n;
+            return temp;
+        }
+
+        [[nodiscard]] bool operator==(const value_iterator& other) const noexcept {
+            return this->curr == other.curr;
+        }
+
+        [[nodiscard]] bool operator!=(const value_iterator& other) const noexcept {
+            return this->curr != other.curr;
         }
 
         template <typename V> requires (std::convertible_to<value_type&, V>)
@@ -987,375 +1118,183 @@ namespace impl::linked {
         }
     };
 
-    template <meta::unqualified View> requires (meta::linked_view<View>)
-    struct slice_iterator {
-    private:
-        using view_iter = View::const_iterator;
-
-        view_iter it;
-        size_t idx = 0;
-        size_t last = 0;
-        ssize_t step = 0;
-        bool reverse = false;
-
-    public:
-        using iterator_category = std::input_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using value_type = View::value_type;
-        using reference = value_type&;
-        using pointer = value_type*;
-
-        slice_iterator() = default;
-
-        slice_iterator(const View& view, normalize_slice indices, bool ok) {
-            // if the slice is empty, return an empty iterator
-            if (indices.length == 0) {
-                return;
-            }
-
-            step = indices.abs_step;
-            if (indices.backward) {
-                // if ok, then the slice already has the correct logic.  Otherwise, we
-                // need to reverse it.
-                if (ok) {
-                    it = {view.tail};
-                    for (size_t i = view.size() - 1; i > indices.first; --i, --it);
-                    idx = indices.first;
-                    last = indices.last;
-                    reverse = true;
-
-                // if the last index is closer to the head of the list than the tail,
-                // then we iterate from the head
-                } else if (indices.last < (view.size() - 1 - indices.last)) {
-                    it = {view.head};
-                    for (size_t i = 0; i < indices.last; ++i, ++it);
-                    idx = indices.last;
-                    last = indices.first;
-                    reverse = false;
-
-                // otherwise, backtracking wins out, and we traverse the slice twice
-                } else {
-                    it = {view.tail};
-                    for (size_t i = view.size() - 1; i > indices.last; --i, --it);
-                    idx = indices.last;
-                    last = indices.first;
-                    reverse = false;
-                }
-
-            } else {
-                // if ok, then the slice already has the correct logic.  Otherwise, we
-                // need to reverse it.
-                if (ok) {
-                    it = {view.head};
-                    for (size_t i = 0; i < indices.first; ++i, ++it);
-                    idx = indices.first;
-                    last = indices.last;
-                    reverse = false;
-
-                // if the last index is closer to the tail of the list than the head,
-                // then we iterate from the tail
-                } else if ((view.size() - 1 - indices.last) < indices.last) {
-                    it = {view.tail};
-                    for (size_t i = view.size() - 1; i > indices.last; --i, --it);
-                    idx = indices.last;
-                    last = indices.first;
-                    reverse = true;
-
-                // otherwise, backtracking wins out, and we traverse the slice twice
-                } else {
-                    it = {view.head};
-                    for (size_t i = 0; i < indices.last; ++i, ++it);
-                    idx = indices.last;
-                    last = indices.first;
-                    reverse = true;
-                }
-            }
-        }
-
-        [[nodiscard]] value_type& operator*() noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (*it == nullptr) {
-                    throw MemoryError("cannot dereference a null iterator");
-                }
-            }
-            return it->value;
-        }
-
-        [[nodiscard]] const value_type& operator*() const noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (*it == nullptr) {
-                    throw MemoryError("cannot dereference a null iterator");
-                }
-            }
-            return it->value;
-        }
-
-        [[nodiscard]] value_type* operator->() noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (*it == nullptr) {
-                    throw MemoryError("cannot dereference a null iterator");
-                }
-            }
-            return &it->value;
-        }
-
-        [[nodiscard]] const value_type* operator->() const noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (*it == nullptr) {
-                    throw MemoryError("cannot dereference a null iterator");
-                }
-            }
-            return &it->value;
-        }
-
-        slice_iterator& operator++() noexcept(!DEBUG) {
-            if (reverse) {
-                for (size_t i = 0; i < step; ++i) {
-                    if constexpr (DEBUG) {
-                        if (*it == nullptr) {
-                            throw MemoryError("cannot dereference a null iterator");
-                        }
-                    }
-                    --it;
-                }
-                idx -= step;
-            } else {
-                for (size_t i = 0; i < step; ++i) {
-                    if constexpr (DEBUG) {
-                        if (*it == nullptr) {
-                            throw MemoryError("cannot dereference a null iterator");
-                        }
-                    }
-                    ++it;
-                }
-                idx += step;
-            }
-            return *this;
-        }
-
-        [[nodiscard]] slice_iterator operator++(int) noexcept(!DEBUG) {
-            slice_iterator temp = *this;
-            ++(*this);
-            return temp;
-        }
-
-        [[nodiscard]] friend bool operator==(
-            const slice_iterator& self,
-            sentinel
-        ) noexcept {
-            return self.reverse ? self.idx < self.last : self.idx > self.last;
-        }
-
-        [[nodiscard]] friend bool operator==(
-            sentinel,
-            const slice_iterator& self
-        ) noexcept {
-            return self.reverse ? self.idx < self.last : self.idx > self.last;
-        }
-
-        [[nodiscard]] friend bool operator!=(
-            const slice_iterator& self,
-            sentinel
-        ) noexcept {
-            return self.reverse ? self.idx >= self.last : self.idx <= self.last;
-        }
-
-        [[nodiscard]] friend bool operator!=(
-            sentinel,
-            const slice_iterator& self
-        ) noexcept {
-            return self.reverse ? self.idx >= self.last : self.idx <= self.last;
-        }
-    };
-
-    template <meta::unqualified View> requires (meta::linked_view<View>)
-    struct const_slice_iterator {
-    private:
-        using view_iter = View::const_iterator;
-
-        view_iter it;
-        size_t idx = 0;
-        size_t last = 0;
-        ssize_t step = 0;
-        bool reverse = false;
-
-    public:
-        using iterator_category = std::input_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using value_type = const View::value_type;
-        using reference = value_type&;
-        using pointer = value_type*;
-
-        const_slice_iterator() = default;
-
-        const_slice_iterator(const View& view, normalize_slice indices, bool ok) {
-            // if the slice is empty, return an empty iterator
-            if (indices.length == 0) {
-                return;
-            }
-
-            step = indices.abs_step;
-            if (indices.backward) {
-                // if ok, then the slice already has the correct logic.  Otherwise, we
-                // need to reverse it.
-                if (ok) {
-                    it = {view.tail};
-                    for (size_t i = view.size() - 1; i > indices.first; --i, --it);
-                    idx = indices.first;
-                    last = indices.last;
-                    reverse = true;
-
-                // if the last index is closer to the head of the list than the tail,
-                // then we iterate from the head
-                } else if (indices.last < (view.size() - 1 - indices.last)) {
-                    it = {view.head};
-                    for (size_t i = 0; i < indices.last; ++i, ++it);
-                    idx = indices.last;
-                    last = indices.first;
-                    reverse = false;
-
-                // otherwise, backtracking wins out, and we traverse the slice twice
-                } else {
-                    it = {view.tail};
-                    for (size_t i = view.size() - 1; i > indices.last; --i, --it);
-                    idx = indices.last;
-                    last = indices.first;
-                    reverse = false;
-                }
-
-            } else {
-                // if ok, then the slice already has the correct logic.  Otherwise, we
-                // need to reverse it.
-                if (ok) {
-                    it = {view.head};
-                    for (size_t i = 0; i < indices.first; ++i, ++it);
-                    idx = indices.first;
-                    last = indices.last;
-                    reverse = false;
-
-                // if the last index is closer to the tail of the list than the head,
-                // then we iterate from the tail
-                } else if ((view.size() - 1 - indices.last) < indices.last) {
-                    it = {view.tail};
-                    for (size_t i = view.size() - 1; i > indices.last; --i, --it);
-                    idx = indices.last;
-                    last = indices.first;
-                    reverse = true;
-
-                // otherwise, backtracking wins out, and we traverse the slice twice
-                } else {
-                    it = {view.head};
-                    for (size_t i = 0; i < indices.last; ++i, ++it);
-                    idx = indices.last;
-                    last = indices.first;
-                    reverse = true;
-                }
-            }
-        }
-
-        [[nodiscard]] const value_type& operator*() const noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (*it == nullptr) {
-                    throw MemoryError("cannot dereference a null iterator");
-                }
-            }
-            return it->value;
-        }
-
-        [[nodiscard]] const value_type* operator->() const noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (*it == nullptr) {
-                    throw MemoryError("cannot dereference a null iterator");
-                }
-            }
-            return &it->value;
-        }
-
-        const_slice_iterator& operator++() noexcept(!DEBUG) {
-            if (reverse) {
-                for (size_t i = 0; i < step; ++i) {
-                    if constexpr (DEBUG) {
-                        if (*it == nullptr) {
-                            throw MemoryError("cannot dereference a null iterator");
-                        }
-                    }
-                    --it;
-                }
-                idx -= step;
-            } else {
-                for (size_t i = 0; i < step; ++i) {
-                    if constexpr (DEBUG) {
-                        if (*it == nullptr) {
-                            throw MemoryError("cannot dereference a null iterator");
-                        }
-                    }
-                    ++it;
-                }
-                idx += step;
-            }
-            return *this;
-        }
-
-        [[nodiscard]] const_slice_iterator operator++(int) noexcept(!DEBUG) {
-            const_slice_iterator temp = *this;
-            ++(*this);
-            return temp;
-        }
-
-        [[nodiscard]] friend bool operator==(
-            const const_slice_iterator& self,
-            sentinel
-        ) noexcept {
-            return self.reverse ? self.idx < self.last : self.idx > self.last;
-        }
-
-        [[nodiscard]] friend bool operator==(
-            sentinel,
-            const const_slice_iterator& self
-        ) noexcept {
-            return self.reverse ? self.idx < self.last : self.idx > self.last;
-        }
-
-        [[nodiscard]] friend bool operator!=(
-            const const_slice_iterator& self,
-            sentinel
-        ) noexcept {
-            return self.reverse ? self.idx >= self.last : self.idx <= self.last;
-        }
-
-        [[nodiscard]] friend bool operator!=(
-            sentinel,
-            const const_slice_iterator& self
-        ) noexcept {
-            return self.reverse ? self.idx >= self.last : self.idx <= self.last;
-        }
-    };
-
-    template <meta::unqualified View> requires (meta::linked_view<View>)
+    /* A range over an immutable slice of a linked data structure.  The slice can be
+    efficiently iterated over and/or copied from its original list via implicit
+    conversion (possibly with CTAD). */
+    template <meta::linked T>
     struct const_slice : const_slice_tag {
     private:
-        const View* view = nullptr;
+        using view = std::remove_cvref_t<T>::view_type;
+        using node_iter = view::const_iterator;
+
+        std::add_pointer_t<T> self = nullptr;
         normalize_slice indices;
 
     public:
-        using iterator = const_slice_iterator<View>;
-        using const_iterator = const_slice_iterator<View>;
+        struct iterator {
+        private:
+            node_iter it;
+            size_t idx = 0;
+            size_t last = 0;
+            ssize_t step = 0;
+            bool reverse = false;
+    
+        public:
+            using iterator_category = std::input_iterator_tag;
+            using difference_type = std::ptrdiff_t;
+            using value_type = const view::value_type;
+            using reference = value_type&;
+            using pointer = value_type*;
+    
+            iterator() = default;
+    
+            iterator(const view& self, const normalize_slice& indices, bool ok) {
+                // if the slice is empty, return an empty iterator
+                if (indices.length == 0) {
+                    return;
+                }
+    
+                step = indices.abs_step;
+                if (indices.backward) {
+                    // if ok, then the slice already has the correct logic.  Otherwise, we
+                    // need to reverse it.
+                    if (ok) {
+                        it = {self.tail};
+                        for (size_t i = self.size() - 1; i > indices.first; --i, --it);
+                        idx = indices.first;
+                        last = indices.last;
+                        reverse = true;
+    
+                    // if the last index is closer to the head of the list than the tail,
+                    // then we iterate from the head
+                    } else if (indices.last < (self.size() - 1 - indices.last)) {
+                        it = {self.head};
+                        for (size_t i = 0; i < indices.last; ++i, ++it);
+                        idx = indices.last;
+                        last = indices.first;
+                        reverse = false;
+    
+                    // otherwise, backtracking wins out, and we traverse the slice twice
+                    } else {
+                        it = {self.tail};
+                        for (size_t i = self.size() - 1; i > indices.last; --i, --it);
+                        idx = indices.last;
+                        last = indices.first;
+                        reverse = false;
+                    }
+    
+                } else {
+                    // if ok, then the slice already has the correct logic.  Otherwise, we
+                    // need to reverse it.
+                    if (ok) {
+                        it = {self.head};
+                        for (size_t i = 0; i < indices.first; ++i, ++it);
+                        idx = indices.first;
+                        last = indices.last;
+                        reverse = false;
+    
+                    // if the last index is closer to the tail of the list than the head,
+                    // then we iterate from the tail
+                    } else if ((self.size() - 1 - indices.last) < indices.last) {
+                        it = {self.tail};
+                        for (size_t i = self.size() - 1; i > indices.last; --i, --it);
+                        idx = indices.last;
+                        last = indices.first;
+                        reverse = true;
+    
+                    // otherwise, backtracking wins out, and we traverse the slice twice
+                    } else {
+                        it = {self.head};
+                        for (size_t i = 0; i < indices.last; ++i, ++it);
+                        idx = indices.last;
+                        last = indices.first;
+                        reverse = true;
+                    }
+                }
+            }
+    
+            [[nodiscard]] const value_type& operator*() const noexcept(!DEBUG) {
+                if constexpr (DEBUG) {
+                    if (*it == nullptr) {
+                        throw MemoryError("cannot dereference a null iterator");
+                    }
+                }
+                return it->value;
+            }
+    
+            [[nodiscard]] const value_type* operator->() const noexcept(!DEBUG) {
+                if constexpr (DEBUG) {
+                    if (*it == nullptr) {
+                        throw MemoryError("cannot dereference a null iterator");
+                    }
+                }
+                return &it->value;
+            }
+    
+            iterator& operator++() noexcept(!DEBUG) {
+                if (reverse) {
+                    for (size_t i = 0; i < step; ++i) {
+                        if constexpr (DEBUG) {
+                            if (*it == nullptr) {
+                                throw MemoryError("cannot dereference a null iterator");
+                            }
+                        }
+                        --it;
+                    }
+                    idx -= step;
+                } else {
+                    for (size_t i = 0; i < step; ++i) {
+                        if constexpr (DEBUG) {
+                            if (*it == nullptr) {
+                                throw MemoryError("cannot dereference a null iterator");
+                            }
+                        }
+                        ++it;
+                    }
+                    idx += step;
+                }
+                return *this;
+            }
+    
+            [[nodiscard]] iterator operator++(int) noexcept(!DEBUG) {
+                iterator temp = *this;
+                ++(*this);
+                return temp;
+            }
+    
+            [[nodiscard]] friend bool operator==(const iterator& self, sentinel) noexcept {
+                return self.reverse ? self.idx < self.last : self.idx > self.last;
+            }
+    
+            [[nodiscard]] friend bool operator==(sentinel, const iterator& self) noexcept {
+                return self.reverse ? self.idx < self.last : self.idx > self.last;
+            }
+    
+            [[nodiscard]] friend bool operator!=(const iterator& self, sentinel) noexcept {
+                return self.reverse ? self.idx >= self.last : self.idx <= self.last;
+            }
+    
+            [[nodiscard]] friend bool operator!=(sentinel, const iterator& self) noexcept {
+                return self.reverse ? self.idx >= self.last : self.idx <= self.last;
+            }
+        };
+
+        using const_iterator = iterator;
 
         const_slice() = default;
-
         const_slice(
-            const View* view,
+            std::add_pointer_t<T> self,
             const std::initializer_list<std::optional<ssize_t>>& indices
         ) :
-            view(view),
-            indices([](const View* view, const auto& indices) {
+            self(self),
+            indices([](std::add_pointer_t<T> self, const auto& indices) {
                 if constexpr (DEBUG) {
-                    if (view == nullptr) {
+                    if (self == nullptr) {
                         throw MemoryError("slice references a null view");
                     }
                 }
-                return normalize_slice(view->size(), indices);
-            }(this->view, indices))
+                return normalize_slice(self->size(), indices);
+            }(self, indices))
         {}
 
         const_slice(const const_slice&) = delete;
@@ -1382,14 +1321,16 @@ namespace impl::linked {
         /* The normalized step size that was given to the index operator. */
         [[nodiscard]] ssize_t step() const noexcept { return indices.step; }
 
+        /// TODO: count(), index()
+
         /* Forward iterate over the slice contents as efficiently as possible. */
         [[nodiscard]] const_iterator begin() const noexcept {
             if constexpr (DEBUG) {
-                if (view == nullptr) {
+                if (self == nullptr) {
                     throw MemoryError("slice references a null view");
                 }
             }
-            return {*view, indices, !indices.inverted};
+            return {self->view, indices, !indices.inverted};
         }
         [[nodiscard]] const_iterator cbegin() const noexcept { return begin(); }
         [[nodiscard]] sentinel end() const noexcept { return {}; }
@@ -1398,45 +1339,309 @@ namespace impl::linked {
         /* Reverse iterate over the slice contents as efficiently as possible. */
         [[nodiscard]] const_iterator rbegin() const noexcept {
             if constexpr (DEBUG) {
-                if (view == nullptr) {
+                if (self == nullptr) {
                     throw MemoryError("slice references a null view");
                 }
             }
-            return {*view, indices, indices.inverted};
+            return {self->view, indices, indices.inverted};
         }
         [[nodiscard]] const_iterator crbegin() const noexcept { return rbegin(); }
         [[nodiscard]] sentinel rend() const noexcept { return {}; }
         [[nodiscard]] sentinel crend() const noexcept { return {}; }
 
-        /// TODO: implicit conversion to any linked data structure?  Also CTAD to
-        /// automatically deduce it.  If iterating over the list in inverted order,
-        /// I would just reverse the list again when constructing it, so that I never
-        /// backtrack.
+        /* Copy the contents of the slice into a new linked container with the same
+        configuration as the original. */
+        [[nodiscard]] operator std::remove_cvref_t<T>() const {
+            if constexpr (DEBUG) {
+                if (self == nullptr) {
+                    throw MemoryError("slice references a null view");
+                }
+            }
 
+            // copy the original allocator and reserve to the needed size
+            std::remove_cvref_t<T> result {self->view.allocator};
+            if (indices.length == 0) {
+                return result;
+            }
+            if constexpr (!view::STATIC) {
+                result.reserve(indices.length);       
+            }
+
+            // extract values without backtracking.  This can cause us to iterate over
+            // the slice in the opposite order than we would expect, but that can be
+            // reversed by appending to the head of the list rather than the tail.
+            // Note that if the original container was a BST, then we always have to
+            // produce results as if the step size were positive in order to maintain
+            // the strict ordering guarantee.
+            if (indices.backward) {
+                node_iterator it {self->view.tail};
+                size_t idx = self->view.size() - 1;
+                for (; idx > indices.first; --idx, --it);
+                result.view.head = result.view.create(it->value);
+                result.view.tail = result.view.head;
+                if constexpr (meta::bst_view<view>) {
+                    while (idx > indices.last) {
+                        for(size_t j = 0; j < indices.abs_step; ++j, --it);
+                        idx -= indices.abs_step;
+                        result.view.head->prev = result.view.create(it->value);
+                        result.view.head->prev->next = result.view.head;
+                        result.view.head = result.view.head->prev;
+                    }
+                } else {
+                    if (indices.inverted) {
+                        while (idx > indices.last) {
+                            for(size_t j = 0; j < indices.abs_step; ++j, --it);
+                            idx -= indices.abs_step;
+                            result.view.head->prev = result.view.create(it->value);
+                            result.view.head->prev->next = result.view.head;
+                            result.view.head = result.view.head->prev;
+                        }
+                    } else {
+                        while (idx > indices.last) {
+                            for(size_t j = 0; j < indices.abs_step; ++j, --it);
+                            idx -= indices.abs_step;
+                            result.view.tail->next = result.view.create(it->value);
+                            result.view.tail->next->prev = result.view.tail;
+                            result.view.tail = result.view.tail->next;
+                        }
+                    }
+                }
+            } else {
+                node_iterator it {self->view.head};
+                size_t idx = 0;
+                for (; idx < indices.first; ++idx, ++it);
+                result.view.head = result.view.create(it->value);
+                result.view.tail = result.view.head;
+                if constexpr (meta::bst_view<view>) {
+                    while (idx < indices.last) {
+                        for (size_t j = 0; j < indices.abs_step; ++j, ++it);
+                        idx += indices.abs_step;
+                        result.view.tail->next = result.view.create(it->value);
+                        result.view.tail->next->prev = result.view.tail;
+                        result.view.tail = result.view.tail->next;
+                    }
+                } else {
+                    if (indices.inverted) {
+                        while (idx < indices.last) {
+                            for (size_t j = 0; j < indices.abs_step; ++j, ++it);
+                            idx += indices.abs_step;
+                            result.view.head->prev = result.view.create(it->value);
+                            result.view.head->prev->next = result.view.head;
+                            result.view.head = result.view.head->prev;
+                        }
+                    } else {
+                        while (idx < indices.last) {
+                            for (size_t j = 0; j < indices.abs_step; ++j, ++it);
+                            idx += indices.abs_step;
+                            result.view.tail->next = result.view.create(it->value);
+                            result.view.tail->next->prev = result.view.tail;
+                            result.view.tail = result.view.tail->next;
+                        }
+                    }
+                }
+            }
+            if constexpr (meta::bst_view<view>) {
+                /// TODO: this is where I would rebalance a new BST
+            }
+            return result;
+        }
     };
 
-    template <meta::unqualified View> requires (meta::linked_view<View>)
+    /* A range over a mutable slice of a linked data structure.  The slice can be
+    efficiently iterated over, copied/moved from its original list, deleted from said
+    list, or assigned using arbitrary iterables. */
+    template <meta::linked T>
     struct slice : slice_tag {
     private:
-        View* view;
+        using view = std::remove_cvref_t<T>::view_type;
+        using node_iter = view::iterator;
+
+        std::add_pointer_t<T> self;
         normalize_slice indices;
 
     public:
-        using iterator = slice_iterator<View>;
-        using const_iterator = const_slice_iterator<View>;
+        struct iterator {
+        private:
+            node_iter it;
+            size_t idx = 0;
+            size_t last = 0;
+            ssize_t step = 0;
+            bool reverse = false;
+    
+        public:
+            using iterator_category = std::input_iterator_tag;
+            using difference_type = std::ptrdiff_t;
+            using value_type = view::value_type;
+            using reference = value_type&;
+            using pointer = value_type*;
+    
+            iterator() = default;
+    
+            iterator(const view& self, const normalize_slice& indices, bool ok) {
+                // if the slice is empty, return an empty iterator
+                if (indices.length == 0) {
+                    return;
+                }
+    
+                step = indices.abs_step;
+                if (indices.backward) {
+                    // if ok, then the slice already has the correct logic.  Otherwise, we
+                    // need to reverse it.
+                    if (ok) {
+                        it = {self.tail};
+                        for (size_t i = self.size() - 1; i > indices.first; --i, --it);
+                        idx = indices.first;
+                        last = indices.last;
+                        reverse = true;
+    
+                    // if the last index is closer to the head of the list than the tail,
+                    // then we iterate from the head
+                    } else if (indices.last < (self.size() - 1 - indices.last)) {
+                        it = {self.head};
+                        for (size_t i = 0; i < indices.last; ++i, ++it);
+                        idx = indices.last;
+                        last = indices.first;
+                        reverse = false;
+    
+                    // otherwise, backtracking wins out, and we traverse the slice twice
+                    } else {
+                        it = {self.tail};
+                        for (size_t i = self.size() - 1; i > indices.last; --i, --it);
+                        idx = indices.last;
+                        last = indices.first;
+                        reverse = false;
+                    }
+    
+                } else {
+                    // if ok, then the slice already has the correct logic.  Otherwise, we
+                    // need to reverse it.
+                    if (ok) {
+                        it = {self.head};
+                        for (size_t i = 0; i < indices.first; ++i, ++it);
+                        idx = indices.first;
+                        last = indices.last;
+                        reverse = false;
+    
+                    // if the last index is closer to the tail of the list than the head,
+                    // then we iterate from the tail
+                    } else if ((self.size() - 1 - indices.last) < indices.last) {
+                        it = {self.tail};
+                        for (size_t i = self.size() - 1; i > indices.last; --i, --it);
+                        idx = indices.last;
+                        last = indices.first;
+                        reverse = true;
+    
+                    // otherwise, backtracking wins out, and we traverse the slice twice
+                    } else {
+                        it = {self.head};
+                        for (size_t i = 0; i < indices.last; ++i, ++it);
+                        idx = indices.last;
+                        last = indices.first;
+                        reverse = true;
+                    }
+                }
+            }
+    
+            [[nodiscard]] value_type& operator*() noexcept(!DEBUG) {
+                if constexpr (DEBUG) {
+                    if (*it == nullptr) {
+                        throw MemoryError("cannot dereference a null iterator");
+                    }
+                }
+                return it->value;
+            }
+    
+            [[nodiscard]] const value_type& operator*() const noexcept(!DEBUG) {
+                if constexpr (DEBUG) {
+                    if (*it == nullptr) {
+                        throw MemoryError("cannot dereference a null iterator");
+                    }
+                }
+                return it->value;
+            }
+    
+            [[nodiscard]] value_type* operator->() noexcept(!DEBUG) {
+                if constexpr (DEBUG) {
+                    if (*it == nullptr) {
+                        throw MemoryError("cannot dereference a null iterator");
+                    }
+                }
+                return &it->value;
+            }
+    
+            [[nodiscard]] const value_type* operator->() const noexcept(!DEBUG) {
+                if constexpr (DEBUG) {
+                    if (*it == nullptr) {
+                        throw MemoryError("cannot dereference a null iterator");
+                    }
+                }
+                return &it->value;
+            }
+    
+            iterator& operator++() noexcept(!DEBUG) {
+                if (reverse) {
+                    for (size_t i = 0; i < step; ++i) {
+                        if constexpr (DEBUG) {
+                            if (*it == nullptr) {
+                                throw MemoryError("cannot dereference a null iterator");
+                            }
+                        }
+                        --it;
+                    }
+                    idx -= step;
+                } else {
+                    for (size_t i = 0; i < step; ++i) {
+                        if constexpr (DEBUG) {
+                            if (*it == nullptr) {
+                                throw MemoryError("cannot dereference a null iterator");
+                            }
+                        }
+                        ++it;
+                    }
+                    idx += step;
+                }
+                return *this;
+            }
+    
+            [[nodiscard]] iterator operator++(int) noexcept(!DEBUG) {
+                iterator temp = *this;
+                ++(*this);
+                return temp;
+            }
+    
+            [[nodiscard]] friend bool operator==(const iterator& self, sentinel) noexcept {
+                return self.reverse ? self.idx < self.last : self.idx > self.last;
+            }
+    
+            [[nodiscard]] friend bool operator==(sentinel, const iterator& self) noexcept {
+                return self.reverse ? self.idx < self.last : self.idx > self.last;
+            }
+    
+            [[nodiscard]] friend bool operator!=(const iterator& self, sentinel) noexcept {
+                return self.reverse ? self.idx >= self.last : self.idx <= self.last;
+            }
+    
+            [[nodiscard]] friend bool operator!=(sentinel, const iterator& self) noexcept {
+                return self.reverse ? self.idx >= self.last : self.idx <= self.last;
+            }
+        };
+
+        using const_iterator = const_slice<T>::iterator;
 
         slice() = default;
-
-        slice(View* view, const std::initializer_list<std::optional<ssize_t>>& indices) :
-            view(view),
-            indices([](View* view, const auto& indices) {
+        slice(
+            std::add_pointer_t<T> self,
+            const std::initializer_list<std::optional<ssize_t>>& indices
+        ) :
+            self(self),
+            indices([](std::add_pointer_t<T> self, const auto& indices) {
                 if constexpr (DEBUG) {
-                    if (view == nullptr) {
+                    if (self == nullptr) {
                         throw MemoryError("slice references a null view");
                     }
                 }
-                return normalize_slice(view->size(), indices);
-            }(this->view, indices))
+                return normalize_slice(self->size(), indices);
+            }(self, indices))
         {}
 
         slice(const slice&) = delete;
@@ -1466,19 +1671,19 @@ namespace impl::linked {
         /* Forward iterate over the slice contents as efficiently as possible. */
         [[nodiscard]] iterator begin() noexcept {
             if constexpr (DEBUG) {
-                if (view == nullptr) {
+                if (self == nullptr) {
                     throw MemoryError("slice references a null view");
                 }
             }
-            return {*view, indices, !indices.inverted};
+            return {self->view, indices, !indices.inverted};
         }
         [[nodiscard]] const_iterator begin() const noexcept {
             if constexpr (DEBUG) {
-                if (view == nullptr) {
+                if (self == nullptr) {
                     throw MemoryError("slice references a null view");
                 }
             }
-            return {*view, indices, !indices.inverted};
+            return {self->view, indices, !indices.inverted};
         }
         [[nodiscard]] const_iterator cbegin() const noexcept { return begin(); }
         [[nodiscard]] sentinel end() noexcept { return {}; }
@@ -1488,31 +1693,579 @@ namespace impl::linked {
         /* Reverse iterate over the slice contents as efficiently as possible. */
         [[nodiscard]] iterator rbegin() noexcept {
             if constexpr (DEBUG) {
-                if (view == nullptr) {
+                if (self == nullptr) {
                     throw MemoryError("slice references a null view");
                 }
             }
-            return {*view, indices, indices.inverted};
+            return {self->view, indices, indices.inverted};
         }
         [[nodiscard]] const_iterator rbegin() const noexcept {
             if constexpr (DEBUG) {
-                if (view == nullptr) {
+                if (self == nullptr) {
                     throw MemoryError("slice references a null view");
                 }
             }
-            return {*view, indices, indices.inverted};
+            return {self->view, indices, indices.inverted};
         }
         [[nodiscard]] const_iterator crbegin() const noexcept { return rbegin(); }
         [[nodiscard]] sentinel rend() noexcept { return {}; }
         [[nodiscard]] sentinel rend() const noexcept { return {}; }
         [[nodiscard]] sentinel crend() const noexcept { return {}; }
 
-        /// TODO: inherit from const_slice and make it mutable by allowing it to be
-        /// assigned to and passed to remove() + pop()
-
         /// TODO: allow implicit conversions, assignment and passing to pop() and
         /// remove().  Assignment should only be allowed for non-BST views, since the
         /// ordering is controlled externally.
+
+        /* Copy or move the contents of the slice into a new linked container with
+        the same configuration as the original. */
+        [[nodiscard]] operator std::remove_cvref_t<T>() const {
+            if constexpr (DEBUG) {
+                if (self == nullptr) {
+                    throw MemoryError("slice references a null view");
+                }
+            }
+
+            constexpr auto forward = [](auto& value) -> decltype(auto) {
+                if constexpr (std::is_lvalue_reference_v<T>) {
+                    return value;
+                } else {
+                    return std::move(value);
+                }
+            };
+
+            // copy/move the original allocator and reserve to the needed size
+            std::remove_cvref_t<T> result {forward(self->view.allocator)};
+            if (indices.length == 0) {
+                return result;
+            }
+            if constexpr (!view::STATIC) {
+                result.reserve(indices.length);       
+            }
+
+            // extract values without backtracking.  This can cause us to iterate over
+            // the slice in the opposite order than we would expect, but that can be
+            // reversed by appending to the head of the list rather than the tail.
+            // Note that if the original container was a BST, then we always have to
+            // produce results as if the step size were positive in order to maintain
+            // the strict ordering guarantee.
+            if (indices.backward) {
+                node_iterator it {self->view.tail};
+                size_t idx = self->view.size() - 1;
+                for (; idx > indices.first; --idx, --it);
+                result.view.head = result.view.create(it->value);
+                result.view.tail = result.view.head;
+                if constexpr (meta::bst_view<view>) {
+                    while (idx > indices.last) {
+                        for(size_t j = 0; j < indices.abs_step; ++j, --it);
+                        idx -= indices.abs_step;
+                        result.view.head->prev = result.view.create(forward(it->value));
+                        result.view.head->prev->next = result.view.head;
+                        result.view.head = result.view.head->prev;
+                    }
+                } else {
+                    if (indices.inverted) {
+                        while (idx > indices.last) {
+                            for(size_t j = 0; j < indices.abs_step; ++j, --it);
+                            idx -= indices.abs_step;
+                            result.view.head->prev = result.view.create(forward(it->value));
+                            result.view.head->prev->next = result.view.head;
+                            result.view.head = result.view.head->prev;
+                        }
+                    } else {
+                        while (idx > indices.last) {
+                            for(size_t j = 0; j < indices.abs_step; ++j, --it);
+                            idx -= indices.abs_step;
+                            result.view.tail->next = result.view.create(forward(it->value));
+                            result.view.tail->next->prev = result.view.tail;
+                            result.view.tail = result.view.tail->next;
+                        }
+                    }
+                }
+            } else {
+                node_iterator it {self->view.head};
+                size_t idx = 0;
+                for (; idx < indices.first; ++idx, ++it);
+                result.view.head = result.view.create(it->value);
+                result.view.tail = result.view.head;
+                if constexpr (meta::bst_view<view>) {
+                    while (idx < indices.last) {
+                        for (size_t j = 0; j < indices.abs_step; ++j, ++it);
+                        idx += indices.abs_step;
+                        result.view.tail->next = result.view.create(forward(it->value));
+                        result.view.tail->next->prev = result.view.tail;
+                        result.view.tail = result.view.tail->next;
+                    }
+                } else {
+                    if (indices.inverted) {
+                        while (idx < indices.last) {
+                            for (size_t j = 0; j < indices.abs_step; ++j, ++it);
+                            idx += indices.abs_step;
+                            result.view.head->prev = result.view.create(forward(it->value));
+                            result.view.head->prev->next = result.view.head;
+                            result.view.head = result.view.head->prev;
+                        }
+                    } else {
+                        while (idx < indices.last) {
+                            for (size_t j = 0; j < indices.abs_step; ++j, ++it);
+                            idx += indices.abs_step;
+                            result.view.tail->next = result.view.create(forward(it->value));
+                            result.view.tail->next->prev = result.view.tail;
+                            result.view.tail = result.view.tail->next;
+                        }
+                    }
+                }
+            }
+            if constexpr (meta::bst_view<view>) {
+                /// TODO: this is where I would rebalance a new BST
+            }
+            return result;
+        }
+
+        /// TODO: assignment operator always works by removing the values from the
+        /// original list before inserting the new ones, so it's possible that BSTs
+        /// can compensate for it to some degree, although that may be better expressed
+        /// by deleting the values from that list first, and then updating with the
+        /// new values.
+
+        /// TODO: this probably doesn't apply for hash views, since I can just remove
+        /// the existing values, then insert the new ones in their places.
+    };
+
+    /* A specialized iterator that carries the current node with it as it moves,
+    translating the node along the list. */
+    template <meta::linked Self>
+        requires (meta::is_lvalue<Self> && !meta::is_const<Self> && !meta::bst<Self>)
+    struct move : std::remove_cvref_t<Self>::iterator {
+    private:
+        using iterator = std::remove_cvref_t<Self>::iterator;
+
+        std::add_pointer_t<Self> self = nullptr;
+
+    public:
+        using iterator_category = iterator::iterator_category;
+        using difference_type = iterator::difference_type;
+        using value_type = iterator::value_type;
+        using reference = iterator::reference;
+        using pointer = iterator::pointer;
+
+        move() = default;
+
+        move(std::add_pointer_t<Self> self, iterator it) noexcept(!DEBUG) :
+            iterator(std::move(it)), self(self)
+        {
+            if constexpr (DEBUG) {
+                if (this->curr == nullptr) {
+                    throw MemoryError("cannot move a null iterator");
+                }
+                if (
+                    this->curr < self->view.data() ||
+                    this->curr >= self->view.data() + self->capacity()
+                ) {
+                    throw MemoryError("node was not allocated from this view");
+                }
+            }
+        }
+
+        move& operator++() noexcept(noexcept(iterator::operator++())) {
+            auto* node = this->curr;
+            iterator::operator++();
+            auto* curr = this->curr;
+            if (curr) {
+                node->next = curr->next;
+                if (curr->next) {
+                    curr->next->prev = node;
+                } else {
+                    self->view.tail = node;
+                }
+                curr->next = node;
+                curr->prev = node->prev;
+                node->prev = curr;
+            }
+            return *this;
+        }
+
+        move& operator++(int) noexcept(noexcept(++*this)) {
+            return ++*this;
+        }
+
+        move& operator+=(difference_type n) noexcept(noexcept(iterator::operator+=(n))) {
+            if (n == 0) {
+                return *this;
+            }
+            auto* from = this->curr;
+            iterator::operator+=(n);
+            auto* to = this->curr;
+            if (to && to != from) {
+                if (n > 0) {
+                    // remove node from current position
+                    from->next->prev = from->prev;
+                    if (from->prev) {
+                        from->prev->next = from->next;
+                    } else {
+                        self->view.head = from->next;
+                    }
+
+                    // insert between curr and next
+                    if (to->next) {
+                        from->next = to->next;
+                        to->next->prev = from;
+                    } else {
+                        from->next = nullptr;
+                        self->view.tail = from;
+                    }
+                    from->prev = to;
+                    to->next = from;
+                } else {
+                    // remove the node from its current location
+                    from->prev->next = from->next;
+                    if (from->next) {
+                        from->next->prev = from->prev;
+                    } else {
+                        self->view.tail = from->prev;
+                    }
+
+                    // insert between curr and prev
+                    if (to->prev) {
+                        to->prev->next = from;
+                        from->prev = to->prev;
+                    } else {
+                        from->prev = nullptr;
+                        self->view.head = from;
+                    }
+                    from->next = to;
+                    to->prev = from;
+                }
+            }
+            return *this;
+        }
+
+        move& operator+(difference_type n) noexcept(noexcept(*this += n)) {
+            return *this += n;
+        }
+
+        move& operator--() noexcept(noexcept(iterator::operator--())) {
+            auto* node = this->curr;
+            iterator::operator--();
+            auto* curr = this->curr;
+            if (curr) {
+                node->prev = curr->prev;
+                if (curr->prev) {
+                    curr->prev->next = node;
+                } else {
+                    self->view.head = node;
+                }
+                curr->prev = node;
+                curr->next = node->next;
+                node->next = curr;
+            }
+            return *this;
+        }
+
+        move& operator--(int) noexcept(noexcept(--*this)) {
+            return --*this;
+        }
+
+        move& operator-=(difference_type n) noexcept(noexcept(iterator::operator-=(n))) {
+            if (n == 0) {
+                return *this;
+            }
+            auto* from = this->curr;
+            iterator::operator-=(n);
+            auto* to = this->curr;
+            if (to && to != from) {
+                if (n > 0) {
+                    // remove the node from its current location
+                    from->prev->next = from->next;
+                    if (from->next) {
+                        from->next->prev = from->prev;
+                    } else {
+                        self->view.tail = from->prev;
+                    }
+
+                    // insert between curr and prev
+                    if (to->prev) {
+                        to->prev->next = from;
+                        from->prev = to->prev;
+                    } else {
+                        from->prev = nullptr;
+                        self->view.head = from;
+                    }
+                    from->next = to;
+                    to->prev = from;
+                } else {
+                    // remove node from current position
+                    from->next->prev = from->prev;
+                    if (from->prev) {
+                        from->prev->next = from->next;
+                    } else {
+                        self->view.head = from->next;
+                    }
+
+                    // insert between curr and next
+                    if (to->next) {
+                        from->next = to->next;
+                        to->next->prev = from;
+                    } else {
+                        from->next = nullptr;
+                        self->view.tail = from;
+                    }
+                    from->prev = to;
+                    to->next = from;
+                }
+            }
+            return *this;
+        }
+
+        move& operator-(difference_type n) noexcept(noexcept(*this -= n)) {
+            return *this -= n;
+        }
+
+        /* Move the current value to the space immediately before another value. */
+        move& before(const iterator& other) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (this->curr == nullptr) {
+                    throw MemoryError("cannot move a null iterator");
+                }
+                if (other.curr == nullptr) {
+                    throw MemoryError(
+                        "cannot move with respect to a null iterator"
+                    );
+                }
+                if (
+                    other.curr < self->view.data() ||
+                    other.curr >= self->view.data() + self->capacity()
+                ) {
+                    throw MemoryError(
+                        "other iterator was not allocated from this view"
+                    );
+                }
+            }
+            if (*this == other || this->curr->prev == other.curr) {
+                return *this;
+            }
+            auto* from = this->curr;
+            auto* to = other.curr;
+
+            // remove the node from its current location
+            from->prev->next = from->next;
+            if (from->next) {
+                from->next->prev = from->prev;
+            } else {
+                self->view.tail = from->prev;
+            }
+
+            // insert between curr and prev
+            if (to->prev) {
+                to->prev->next = from;
+                from->prev = to->prev;
+            } else {
+                from->prev = nullptr;
+                self->view.head = from;
+            }
+            from->next = to;
+            to->prev = from;
+            return *this;
+        }
+
+        /* Move the current value to the space immediately after another value. */
+        move& after(const iterator& other) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (this->curr == nullptr) {
+                    throw MemoryError("cannot move a null iterator");
+                }
+                if (other.curr == nullptr) {
+                    throw MemoryError(
+                        "cannot move with respect to a null iterator"
+                    );
+                }
+                if (
+                    other.curr < self->view.data() ||
+                    other.curr >= self->view.data() + self->capacity()
+                ) {
+                    throw MemoryError(
+                        "other iterator was not allocated from this view"
+                    );
+                }
+            }
+            if (*this == other || this->curr->next == other.curr) {
+                return *this;
+            }
+            auto* from = this->curr;
+            auto* to = other.curr;
+
+            // remove the node from its current location
+            from->next->prev = from->prev;
+            if (from->prev) {
+                from->prev->next = from->next;
+            } else {
+                self->view.head = from->next;
+            }
+
+            // insert between curr and next
+            if (to->next) {
+                to->next->prev = from;
+                from->next = to->next;
+            } else {
+                from->next = nullptr;
+                self->view.tail = from;
+            }
+            from->prev = to;
+            to->next = from;
+            return *this;
+        }
+
+        /* Move the current value to the head of the list. */
+        move& to_front() noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (this->curr == nullptr) {
+                    throw MemoryError("cannot move a null iterator");
+                }
+                if (
+                    this->curr < self->view.data() ||
+                    this->curr >= self->view.data() + self->capacity()
+                ) {
+                    throw MemoryError("node was not allocated from this view");
+                }
+            }
+            auto* from = this->curr;
+            if (from != self->view.head) {
+                if (from->next) {
+                    from->next->prev = from->prev;
+                } else {
+                    self->view.tail = from->prev;
+                }
+                from->prev->next = from->next;
+                from->prev = nullptr;
+                from->next = self->view.head;
+                self->view.head->prev = from;
+                self->view.head = from;
+            }
+            return *this;
+        }
+
+        /* Move the current value to the tail of the list. */
+        move& to_back() noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (this->curr == nullptr) {
+                    throw MemoryError("cannot move a null iterator");
+                }
+                if (
+                    this->curr < self->view.data() ||
+                    this->curr >= self->view.data() + self->capacity()
+                ) {
+                    throw MemoryError("node was not allocated from this view");
+                }
+            }
+            auto* from = this->curr;
+            if (from != self.view.tail) {
+                if (from->prev) {
+                    from->prev->next = from->next;
+                } else {
+                    self->view.head = from->next;
+                }
+                from->next->prev = from->prev;
+                from->next = nullptr;
+                from->prev = self->view.tail;
+                self->view.tail->next = from;
+                self->view.tail = from;
+            }
+            return *this;
+        }
+
+        /* Move the current value to a specific index of the list.  Allows Python-style
+        negative indexing, and throws an `IndexError` if the requested index is out of
+        bounds.  The move is always done in such a way that the value is placed exactly
+        at the requested index, and all items between it and the target index will be
+        shifted one index to the left or right to accomodate this. */
+        move& to(ssize_t i) {
+            if constexpr (DEBUG) {
+                if (this->curr == nullptr) {
+                    throw MemoryError("cannot move a null iterator");
+                }
+                if (
+                    this->curr < self->view.data() ||
+                    this->curr >= self->view.data() + self->capacity()
+                ) {
+                    throw MemoryError("node was not allocated from this view");
+                }
+            }
+            bool backward;
+            size_t idx = normalize_index(self->size(), i, backward);
+
+            static constexpr auto before = [](auto* self, auto* from, auto* to) {
+                from->prev->next = from->next;
+                if (from->next) {
+                    from->next->prev = from->prev;
+                } else {
+                    self->view.tail = from->prev;
+                }
+                if (to->prev) {
+                    to->prev->next = from;
+                    from->prev = to->prev;
+                } else {
+                    from->prev = nullptr;
+                    self->view.head = from;
+                }
+                from->next = to;
+                to->prev = from;
+            };
+
+            static constexpr auto after = [](auto* self, auto* from, auto* to) {
+                from->next->prev = from->prev;
+                if (from->prev) {
+                    from->prev->next = from->next;
+                } else {
+                    self->view.head = from->next;
+                }
+                if (to->next) {
+                    to->next->prev = from;
+                    from->next = to->next;
+                } else {
+                    from->next = nullptr;
+                    self->view.tail = from;
+                }
+                from->prev = to;
+                to->next = from;
+            };
+
+            auto* from = this->curr;
+            if (backward) {
+                iterator it {self->view.tail};
+                bool found = (*this == it);
+                for (size_t i = self->view.size() - 1; i > idx; --i) {
+                    --it;
+                    if (*this == it) {
+                        found = true;
+                    }
+                }
+                auto* to = it.curr;
+                if (found) {
+                    if (*this != it) {
+                        before(self, from, to);
+                    }
+                } else {
+                    after(self, from, to);
+                }
+
+            } else {
+                iterator it {self->view.head};
+                bool found = (*this == it);
+                for (size_t i = 0; i < idx; ++i) {
+                    ++it;
+                    if (*this == it) {
+                        found = true;
+                    }
+                }
+                if (found) {
+                    if (*this != it) {
+                        after(self, from, it.curr);
+                    }
+                } else {
+                    before(self, from, it.curr);
+                }
+            }
+            return *this;
+        }
     };
 
     template <typename Node>
@@ -1552,6 +2305,9 @@ namespace impl::linked {
         requires (meta::linked_node<Node> && meta::allocator_for<Alloc, Node>)
     struct list_view : view_base<Node> {
         using node_type = Node;
+        using less_func = node_type::less_func;
+        using hash_func = node_type::hash_func;
+        using equal_func = node_type::equal_func;
         using allocator_type = Alloc;
         using size_type = size_t;
         using difference_type = std::ptrdiff_t;
@@ -2107,9 +2863,28 @@ namespace impl::linked {
         /* The total number of nodes the array can store before resizing. */
         [[nodiscard]] size_t capacity() const noexcept { return array.capacity; }
 
+        /* The raw data array backing the view. */
+        [[nodiscard]] Node* data() noexcept { return array.data; }
+        [[nodiscard]] const Node* data() const noexcept { return array.data; }
+
         /* Estimate the overall memory usage of the list in bytes. */
         [[nodiscard]] size_t memory_usage() const noexcept {
             return sizeof(list_view) + capacity() * sizeof(Node);
+        }
+
+        /* Returns true if the given node is reachable from elsewhere in the list.
+        This is a quick check to see if the node is properly linked to its neighbors,
+        and will return true for all elements of the list.  It returns false if the
+        node is orphaned in some way, possibly  */
+        [[nodiscard]] bool contains(Node* node) const noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (node < array.data || node >= array.data + array.capacity) {
+                    throw MemoryError("node was not allocated from this view");
+                }
+            }
+            return
+                (node == head || (node->prev && node->prev->next == node)) &&
+                (node == tail || (node->next && node->next->prev == node));
         }
 
         /* Initialize a new node for the list.  The result has null `prev` and `next`
@@ -2137,7 +2912,7 @@ namespace impl::linked {
                     );
                 } else {
                     // growth factor of 1.5 minimizes fragmentation
-                    resize(array.capacity + array.capacity / 2);
+                    resize(array.capacity + (array.capacity / 2));
                 }
             }
 
@@ -2213,15 +2988,9 @@ namespace impl::linked {
         /* Resize the allocator to store at least the given number of nodes.  Throws
         a `MemoryError` if used on a list with fixed capacity. */
         void reserve(size_t n) {
-            if constexpr (N) {
-                throw MemoryError(
-                    "cannot resize a list with fixed capacity (" +
-                    static_str<>::from_int<N> + ")"
-                );
-            } else {
-                if (n > array.capacity) {
-                    resize(n);
-                }
+            static_assert(N == 0, "cannot resize a list with fixed capacity");
+            if (n > array.capacity) {
+                resize(n);
             }
         }
 
@@ -2230,15 +2999,9 @@ namespace impl::linked {
         array grows or shrinks, and may be triggered manually as an optimization.
         Throws a `MemoryError` if used on a list with fixed capacity. */
         void defragment() {
-            if constexpr (N) {
-                throw MemoryError(
-                    "cannot resize a list with fixed capacity (" +
-                    static_str<>::from_int<N> + ")"
-                );
-            } else {
-                if (array.capacity) {
-                    resize(array.capacity);
-                }
+            static_assert(N == 0, "cannot resize a list with fixed capacity");
+            if (array.capacity) {
+                resize(array.capacity);
             }
         }
 
@@ -2247,14 +3010,8 @@ namespace impl::linked {
         there are fewer than `MIN_SIZE` nodes, the capacity is set to `MIN_SIZE`
         instead.  Throws a `MemoryError` if used on a list with fixed capacity. */
         void shrink() {
-            if constexpr (N) {
-                throw MemoryError(
-                    "cannot resize a list with fixed capacity (" +
-                    static_str<>::from_int<N> + ")"
-                );
-            } else {
-                resize(array.size);
-            }
+            static_assert(N == 0, "cannot resize a list with fixed capacity");
+            resize(array.size);
         }
 
         [[nodiscard]] iterator begin() noexcept { return {head}; }
@@ -2351,7 +3108,6 @@ namespace impl::linked {
         };
 
         Array<N> array;
-        Alloc allocator;
 
         Array<N> allocate(size_t n) {
             static_assert(N == 0);
@@ -2595,6 +3351,9 @@ namespace impl::linked {
                 this->root = new_root;
             }
         }
+
+    public:
+        Alloc allocator;
     };
 
     /* A wrapper around a node allocator for a linked set or map. */
@@ -2622,39 +3381,815 @@ namespace impl::linked {
         // }
     };
 
+    /* True if a given type T can be transparently checked for equality against a
+    linked container's value type. */
+    template <typename Self, typename T>
+    concept equality_comparable =
+        meta::linked<Self> &&
+        (
+            !meta::is_void<typename std::remove_cvref_t<Self>::equal_func> &&
+            std::is_invocable_r_v<
+                bool,
+                typename std::remove_cvref_t<Self>::equal_func,
+                const typename std::remove_cvref_t<Self>::value_type&,
+                const T&
+            >
+        ) || (
+            meta::is_void<typename std::remove_cvref_t<Self>::equal_func> &&
+            meta::eq_returns<
+                const typename std::remove_cvref_t<Self>::value_type&,
+                const T&,
+                bool
+            >
+        );
+
+    /* True if equality comparing the given type T against the linked container's
+    value type can be done without throwing an exception. */
+    template <typename Self, typename T>
+    concept nothrow_equality_comparable =
+        equality_comparable<Self, T> &&
+        (
+            !meta::is_void<typename std::remove_cvref_t<Self>::equal_func> &&
+            std::is_nothrow_invocable_r_v<
+                bool,
+                typename std::remove_cvref_t<Self>::equal_func,
+                const typename std::remove_cvref_t<Self>::value_type&,
+                const T&
+            >
+        ) || (
+            meta::is_void<typename std::remove_cvref_t<Self>::equal_func> &&
+            meta::has_nothrow_eq<
+                const typename std::remove_cvref_t<Self>::value_type&,
+                const T&
+            >
+        );
+
+    /* True if a given type T can be transparently hashed and checked for equality
+    against a linked container's value type. */
+    template <typename Self, typename T>
+    concept hashable =
+        meta::linked<Self> &&
+        !meta::is_void<typename std::remove_cvref_t<Self>::hash_func> &&
+        std::is_invocable_r_v<
+            bool,
+            typename std::remove_cvref_t<Self>::hash_func,
+            const T&
+        > && equality_comparable<Self, T>;
+
+    /* True if hashing the given type T and equality comparing against the linked
+    container's value type can be done without throwing an exception. */
+    template <typename Self, typename T>
+    concept nothrow_hashable =
+        hashable<Self, T> &&
+        std::is_nothrow_invocable_r_v<
+            typename std::remove_cvref_t<Self>::hash_func,
+            const T&
+        > && nothrow_equality_comparable<Self, T>;
+
+    /* True if a given type T can be transparently less-than compared against a binary
+    search tree's value type. */
+    template <typename Self, typename T>
+    concept searchable =
+        meta::linked<Self> &&
+        !meta::is_void<typename std::remove_cvref_t<Self>::less_func> &&
+        std::is_invocable_r_v<
+            bool,
+            typename std::remove_cvref_t<Self>::less_func,
+            const typename std::remove_cvref_t<Self>::value_type&,
+            const T&
+        > &&
+        std::is_invocable_r_v<
+            bool,
+            typename std::remove_cvref_t<Self>::less_func,
+            const T&,
+            const typename std::remove_cvref_t<Self>::value_type&
+        >;
+
+    /* True if less-than comparing the given type T against the binary search tree's
+    value type can be done without throwing an exception. */
+    template <typename Self, typename T>
+    concept nothrow_searchable =
+        searchable<Self, T> &&
+        std::is_nothrow_invocable_r_v<
+            typename std::remove_cvref_t<Self>::less_func,
+            const typename std::remove_cvref_t<Self>::value_type&,
+            const T&
+        > &&
+        std::is_nothrow_invocable_r_v<
+            typename std::remove_cvref_t<Self>::less_func,
+            const T&,
+            const typename std::remove_cvref_t<Self>::value_type&
+        >;
+
+    //////////////////////
+    ////    APPEND    ////
+    //////////////////////
+
+    /// TODO: append() and prepend() should always move the value to the end of the
+    /// list, so you don't have to?  That would be an easy way to implement an LRU
+    /// cache.  You'd just use a void create and visit callback, and an evict callback
+    /// that removes the last item from the list.  Then, you'd use prepend() every
+    /// time you need to access a value.  Or maybe this can be avoided by providing a
+    /// move to front function
+
+    template <meta::linked Self, typename... Args>
+        requires (
+            !meta::bst<Self> &&
+            std::constructible_from<typename Self::value_type, Args...>
+        )
+    std::pair<typename Self::iterator, bool> append(Self& self, Args&&... args) {
+        auto* node = std::forward<Self>(self).view.create(std::forward<Args>(args)...);
+        typename Self::iterator it {node};
+
+        // hash tables may return an existing node, in which case we should invoke a
+        // visitor function if one is detected
+        if constexpr (meta::hash_view<typename Self::view_type>) {
+            if (self.view.contains(node)) {
+                if constexpr (!meta::is_void<typename Self::visit_type>) {
+                    typename Self::visit_type{}(self, it);
+                }
+                return {std::move(it), false};
+            }
+        }
+
+        // otherwise, the node was newly allocated, and we should invoke a create
+        // function if one is detected
+        if (self.view.tail) {
+            self.view.tail->next = node;
+            node->prev = self.view.tail;
+            self.view.tail = node;
+        } else {
+            self.view.head = node;
+            self.view.tail = node;
+        }
+        if constexpr (!meta::is_void<typename Self::create_type>) {
+            typename Self::create_type{}(self, it);
+        }
+        return {std::move(it), true};
+    }
+
+    ///////////////////////
+    ////    PREPEND    ////
+    ///////////////////////
+
+    template <meta::linked Self, typename... Args>
+        requires (
+            !meta::bst<Self> &&
+            std::constructible_from<typename Self::value_type, Args...>
+        )
+    std::pair<typename Self::iterator, bool> prepend(Self& self, Args&&... args) {
+        auto* node = std::forward<Self>(self).view.create(std::forward<Args>(args)...);
+        typename Self::iterator it {node};
+
+        // hash tables may return an existing node, in which case we should invoke a
+        // visitor function if one is detected
+        if constexpr (meta::hash_view<typename Self::view_type>) {
+            if (self.view.contains(node)) {
+                if constexpr (!meta::is_void<typename Self::visit_type>) {
+                    typename Self::visit_type{}(self, it);
+                }
+                return {std::move(it), false};
+            }
+        }
+
+        // otherwise, the node was newly allocated, and we should invoke a create
+        // function if one is detected
+        if (self.view.head) {
+            self.view.head->prev = node;
+            node->next = self.view.head;
+            self.view.head = node;
+        } else {
+            self.view.head = node;
+            self.view.tail = node;
+        }
+        if constexpr (!meta::is_void<typename Self::create_type>) {
+            typename Self::create_type{}(self, it);
+        }
+        return {std::move(it), true};
+    }
+
+    //////////////////////
+    ////    EXTEND    ////
+    //////////////////////
+
+    /// TODO: extending for a set or map does make sense, and will just ignore
+    /// duplicates.  That's what update() does for Python sets and maps, which will
+    /// overwrite previous values with any duplicates.
+
+    /// TODO: extend() and extendleft() need to account for insertion into hashed
+    /// containers (but not BSTs).
+
+    template <meta::linked Self, meta::iterable Range>
+        requires (
+            !meta::bst<Self> &&
+            std::convertible_to<meta::iter_type<Range>, typename Self::value_type>
+        )
+    size_t extend(Self& self, Range&& range) {
+        auto it = std::ranges::begin(range);
+        auto end = std::ranges::end(range);
+        if (it == end) {
+            return 0;
+        }
+
+        size_t orig_size = self.size();
+        if constexpr (!Self::STATIC && meta::has_size<Range>) {
+            self.reserve(orig_size + std::ranges::size(range));
+        }
+
+        try {
+            if (self.empty()) {
+                self.view.head = self.view.create(*it);
+                self.view.tail = self.view.head;
+                ++it;
+            }
+            while (it != end) {
+                auto* node = self.view.create(*it);
+                if constexpr (meta::linked_list<Self>) {
+                    self.view.tail->next = node;
+                    node->prev = self.view.tail;
+                    self.view.tail = node;
+                } else {
+                    bool inserted = !self.view.contains(node);
+                    if (inserted) {
+                        self.view.tail->next = node;
+                        node->prev = self.view.tail;
+                        self.view.tail = node;
+                    } else if (node != self.view.tail) {
+                        node->next->prev = node->prev;
+                        if (node->prev) {
+                            node->prev->next = node->next;
+                        }
+                        node->next = nullptr;
+                        node->prev = self.view.tail;
+                        self.view.tail->next = node;
+                        self.view.tail = node;
+                    }
+                }
+                ++it;
+            }
+
+        } catch (...) {
+            /// TODO: this method of error recovery is incorrect for linked sets and
+            /// maps, which might reuse existing nodes and reorder them, jumbling
+            /// this approach.  Maybe it's a better idea to just leave the nodes where
+            /// they are?
+
+            size_t diff = self.size() - orig_size;
+            if (diff) {
+                for (size_t i = 0; i < diff; ++i) {
+                    auto* prev = self.view.tail->prev;
+                    try {
+                        self.view.recycle(self.view.tail);
+                    } catch (...) {
+                        if (prev) {
+                            prev->next = nullptr;
+                            self.view.tail = prev;
+                        } else {
+                            self.view.head = nullptr;
+                        }
+                        throw;
+                    }
+                    self.view.tail = prev;
+                }
+                if (self.view.tail) {
+                    self.view.tail->next = nullptr;
+                } else {
+                    self.view.head = nullptr;
+                }
+            }
+            throw;
+        }
+
+        return self.size() - orig_size;
+    }
+
+    template <
+        meta::linked Self,
+        std::input_or_output_iterator Begin,
+        std::sentinel_for<Begin> End
+    >
+        requires (
+            !meta::bst<Self> &&
+            std::convertible_to<
+                decltype(*std::declval<std::add_lvalue_reference_t<Begin>>()),
+                typename Self::value_type
+            >
+        )
+    size_t extend(Self& self, Begin&& it, End&& end) {
+        if (it == end) {
+            return 0;
+        }
+
+        size_t orig_size = self.size();
+        if constexpr (!Self::STATIC && meta::sub_returns<End, Begin, size_t>) {
+            self.reserve(orig_size + size_t(end - it));
+        }
+
+        try {
+            if (self.empty()) {
+                self.view.head = self.view.create(*it);
+                self.view.tail = self.view.head;
+                ++it;
+            }
+            while (it != end) {
+                self.view.tail->next = self.view.create(*it);
+                self.view.tail->next->prev = self.view.tail;
+                self.view.tail = self.view.tail->next;
+                ++it;
+            }
+
+        } catch (...) {
+            size_t diff = self.size() - orig_size;
+            if (diff) {
+                for (size_t i = 0; i < diff; ++i) {
+                    auto* prev = self.view.tail->prev;
+                    try {
+                        self.view.recycle(self.view.tail);
+                    } catch (...) {
+                        if (prev) {
+                            prev->next = nullptr;
+                            self.view.tail = prev;
+                        } else {
+                            self.view.head = nullptr;
+                        }
+                        throw;
+                    }
+                    self.view.tail = prev;
+                }
+                if (self.view.tail) {
+                    self.view.tail->next = nullptr;
+                } else {
+                    self.view.head = nullptr;
+                }
+            }
+            throw;
+        }
+
+        return self.size() - orig_size;
+    }
+
+    //////////////////////////
+    ////    EXTENDLEFT    ////
+    //////////////////////////
+
+    template <meta::linked Self, meta::iterable Range>
+        requires (
+            !meta::bst<Self> &&
+            std::convertible_to<meta::iter_type<Range>, typename Self::value_type>
+        )
+    size_t extendleft(Self& self, const Range& range) {
+        auto it = std::ranges::begin(range);
+        auto end = std::ranges::end(range);
+        if (it == end) {
+            return 0;
+        }
+
+        size_t orig_size = self.size();
+        if constexpr (!Self::STATIC && meta::has_size<Range>) {
+            self.reserve(orig_size + std::ranges::size(range));
+        }
+
+        try {
+            if (self.empty()) {
+                self.view.tail = self.view.create(*it);
+                self.view.head = self.view.tail;
+                ++it;
+            }
+            while (it != end) {
+                self.view.head->prev = self.view.create(*it);
+                self.view.head->prev->next = self.view.head;
+                self.view.head = self.view.head->prev;
+                ++it;
+            }
+
+        } catch (...) {
+            size_t diff = self.size() - orig_size;
+            if (diff) {
+                for (size_t i = 0; i < diff; ++i) {
+                    auto* next = self.view.head->next;
+                    try {
+                        self.view.recycle(self.view.head);
+                    } catch (...) {
+                        if (next) {
+                            next->prev = nullptr;
+                            self.view.head = next;
+                        } else {
+                            self.view.tail = nullptr;
+                        }
+                        throw;
+                    }
+                    self.view.head = next;
+                }
+                if (self.view.head) {
+                    self.view.head->prev = nullptr;
+                } else {
+                    self.view.tail = nullptr;
+                }
+            }
+            throw;
+        }
+
+        return self.size() - orig_size;
+    }
+
+    template <
+        meta::linked Self,
+        std::input_or_output_iterator Begin,
+        std::sentinel_for<Begin> End
+    >
+        requires (
+            !meta::bst<Self> &&
+            std::convertible_to<
+                decltype(*std::declval<std::add_lvalue_reference_t<Begin>>()),
+                typename Self::value_type
+            >
+        )
+    size_t extendleft(Self& self, Begin&& it, End&& end) {
+        if (it == end) {
+            return 0;
+        }
+
+        size_t orig_size = self.size();
+        if constexpr (!Self::STATIC && meta::sub_returns<End, Begin, size_t>) {
+            self.reserve(orig_size + size_t(end - it));
+        }
+
+        try {
+            if (self.empty()) {
+                self.view.tail = self.view.create(*it);
+                self.view.head = self.view.tail;
+                ++it;
+            }
+            while (it != end) {
+                self.view.head->prev = self.view.create(*it);
+                self.view.head->prev->next = self.view.head;
+                self.view.head = self.view.head->prev;
+                ++it;
+            }
+
+        } catch (...) {
+            size_t diff = self.size() - orig_size;
+            if (diff) {
+                for (size_t i = 0; i < diff; ++i) {
+                    auto* next = self.view.head->next;
+                    try {
+                        self.view.recycle(self.view.head);
+                    } catch (...) {
+                        if (next) {
+                            next->prev = nullptr;
+                            self.view.head = next;
+                        } else {
+                            self.view.tail = nullptr;
+                        }
+                        throw;
+                    }
+                    self.view.head = next;
+                }
+                if (self.view.head) {
+                    self.view.head->prev = nullptr;
+                } else {
+                    self.view.tail = nullptr;
+                }
+            }
+            throw;
+        }
+
+        return self.size() - orig_size;
+    }
+
+
+    //////////////////////
+    ////    INSERT    ////
+    //////////////////////
+
+    /// TODO: only need insert_before() and insert_after()?
+
+    /// TODO: naked insert() would be used for BST insertion, along with an update()
+    /// method, equivalent to extend()/extendleft()
+
+
+    //////////////////////
+    ////    REMOVE    ////
+    //////////////////////
+
+    template <meta::linked Self>
+    size_t remove(Self& self, typename Self::view_type::iterator it) noexcept(
+        noexcept(self.view.recycle(*it))
+    ) {
+        if (it == self.end()) {
+            return 0;
+        }
+        /// TODO: what to do if the iterator represents a node in a BST?  I would need
+        /// to rebalance the BST accordingly, which needs to be implemented here.
+
+        if (it->prev) {
+            it->prev->next = it->next;
+        } else {
+            self.view.head = it->next;
+        }
+        if (it->next) {
+            it->next->prev = it->prev;
+        } else {
+            self.view.tail = it->prev;
+        }
+        self.view.recycle(*it);
+        return 1;
+    }
+
+    ///////////////////
+    ////    POP    ////
+    ///////////////////
+
+    template <meta::linked Self>
+    auto pop(Self& self, typename Self::view_type::iterator it) noexcept(
+        noexcept(self.view.recycle(*it)) &&
+        noexcept(std::optional<typename Self::value_type>(std::move(it->value)))
+    ) -> std::optional<typename Self::value_type> {
+        if (it == self.end()) {
+            return std::nullopt;
+        }
+        /// TODO: what to do if the iterator represents a node in a BST?  I would need
+        /// to rebalance the BST accordingly, which needs to be implemented here.
+
+        if (it->prev) {
+            it->prev->next = it->next;
+        } else {
+            self.view.head = it->next;
+        }
+        if (it->next) {
+            it->next->prev = it->prev;
+        } else {
+            self.view.tail = it->prev;
+        }
+        std::optional<typename Self::value_type> result {std::move(it->value)};
+        self.view.recycle(*it);
+        return result;
+    }
+
+    ////////////////////////
+    ////    CONTAINS    ////
+    ////////////////////////
+
+    template <meta::linked Self, typename T>
+        requires (
+            hashable<Self, T> ||
+            (!hashable<Self, T> && searchable<Self, T>) ||
+            (!hashable<Self, T> && !searchable<Self, T> && equality_comparable<Self, T>)
+        )
+    [[nodiscard]] bool contains(const Self& self, const T& value) noexcept(
+        nothrow_hashable<Self, T> ||
+        nothrow_searchable<Self, T> ||
+        nothrow_equality_comparable<Self, T>
+    ) {
+        using hash = Self::hash_func;
+        using less = Self::less_func;
+        using equal = Self::equal_func;
+
+        // if the container is hashed, then we can do an O(1) search and compare
+        if constexpr (hashable<Self, T>) {
+            /// TODO: implement this
+
+
+        // if the container is a BST, then we can use the tree for a log(n) search
+        } else if constexpr (searchable<Self, T>) {
+            auto* curr = self.view.root;
+            while (curr) {
+                if (less{}(value, curr->value)) {
+                    curr = curr->prev_thread ? nullptr : curr->prev;
+                } else if (less{}(curr->value, value)) {
+                    curr = curr->next_thread ? nullptr : curr->next;
+                } else {
+                    return true;
+                }
+            }
+
+        // otherwise, we have to do a linear scan
+        } else {
+            auto* curr = self.view.head;
+            while (curr) {
+                if constexpr (!meta::is_void<equal>) {
+                    if (equal{}(curr->value, value)) {
+                        return true;
+                    }
+                } else {
+                    if (curr->value == value) {
+                        return true;
+                    }
+                }
+                curr = curr->next;
+            }
+        }
+        return false;
+    }
+
+    /////////////////////
+    ////    COUNT    ////
+    /////////////////////
+
+    /// TODO: count() and index() should not take slice arguments.  Instead, you'd
+    /// just use the .count(), .countains(), and .index() methods on the slice itself.
+
+    template <meta::linked Self, typename T>
+        requires (
+            hashable<Self, T> ||
+            (!hashable<Self, T> && searchable<Self, T>) ||
+            (!hashable<Self, T> && !searchable<Self, T> && equality_comparable<Self, T>)
+        )
+    [[nodiscard]] size_t count(const Self& self, const T& value) noexcept(
+        nothrow_hashable<Self, T> ||
+        nothrow_searchable<Self, T> ||
+        nothrow_equality_comparable<Self, T>
+    ) {
+        using hash = Self::hash_func;
+        using less = Self::less_func;
+        using equal = Self::equal_func;
+
+        size_t count = 0;
+
+        // if the container is hashed, then we can do an O(1) search and compare
+        if constexpr (hashable<Self, T>) {
+            /// TODO: implement this
+
+        // if the container is a BST, then we can use the tree for a log(n) search
+        } else if constexpr (searchable<Self, T>) {
+            auto* curr = self.view.root;
+            while (curr) {
+                if (less{}(value, curr->value)) {
+                    curr = curr->prev_thread ? nullptr : curr->prev;
+                } else if (less{}(curr->value, value)) {
+                    curr = curr->next_thread ? nullptr : curr->next;
+                } else {
+                    /// TODO: once the first value is found, forward iterate until
+                    /// the first larger value is found, and return the count
+                }
+            }
+
+        // otherwise, we have to do a linear scan
+        } else {
+            auto* curr = self.view.head;
+            while (curr) {
+                if constexpr (!meta::is_void<equal>) {
+                    count += equal{}(curr->value, value);
+                } else {
+                    count += (curr->value == value);
+                }
+                curr = curr->next;
+            }
+        }
+        return count;
+    }
+
+    /////////////////////
+    ////    INDEX    ////
+    /////////////////////
+
+    template <meta::linked Self, typename T>
+        requires (
+            hashable<Self, T> ||
+            (!hashable<Self, T> && searchable<Self, T>) ||
+            (!hashable<Self, T> && !searchable<Self, T> && equality_comparable<Self, T>)
+        )
+    [[nodiscard]] std::optional<size_t> index(const Self& self, const T& value) noexcept(
+        nothrow_hashable<Self, T> ||
+        nothrow_searchable<Self, T> ||
+        nothrow_equality_comparable<Self, T>
+    ) {
+        using hash = Self::hash_func;
+        using less = Self::less_func;
+        using equal = Self::equal_func;
+
+        // if the container is hashed, then we can do an O(1) search and compare
+        if constexpr (hashable<Self, T>) {
+            /// TODO: implement this as an O(1) lookup and then a reverse iteration to
+            /// find the index.
+
+        // if the container is a BST, then we can use the tree for a log(n) search
+        } else if constexpr (searchable<Self, T>) {
+            auto* curr = self.view.root;
+            while (curr) {
+                if (less{}(value, curr->value)) {
+                    curr = curr->prev_thread ? nullptr : curr->prev;
+                } else if (less{}(curr->value, value)) {
+                    curr = curr->next_thread ? nullptr : curr->next;
+                } else {
+                    /// TODO: once the first value is found, reverse iterate until
+                    /// the start of the list to get the index
+                }
+            }
+
+        // otherwise, we have to do a linear scan
+        } else {
+            auto* curr = self.view.head;
+            size_t idx = 0;
+            while (curr) {
+                if constexpr (!meta::is_void<equal>) {
+                    if (equal{}(curr->value, value)) {
+                        return idx;
+                    }
+                } else {
+                    if (curr->value == value) {
+                        return idx;
+                    }
+                }
+                curr = curr->next;
+                ++idx;
+            }
+        }
+        return std::nullopt;
+    }
+
+    ///////////////////////
+    ////    REVERSE    ////
+    ///////////////////////
+
+    template <meta::linked Self> requires (!meta::bst<Self>)
+    void reverse(Self& self) noexcept {
+        auto* head = self.view.head;
+        auto* curr = head;
+        while (curr) {
+            auto* next = curr->next;
+            curr->next = curr->prev;
+            curr->prev = next;
+            curr = next;
+        }
+        self.view.head = self.view.tail;
+        self.view.tail = head;
+    }
+
+    //////////////////////
+    ////    ROTATE    ////
+    //////////////////////
+
+    template <meta::linked Self> requires (!meta::bst<Self>)
+    void rotate(Self& self, ssize_t n) noexcept {
+        if (self.empty()) {
+            return;
+        }
+        size_t steps = size_t(n < 0 ? -n : n) % self.size();
+        if (steps == 0) {
+            return;
+        }
+
+        size_t pivot = n < 0 ? steps : self.size() - steps;
+        if (closer_to_tail(self.size(), pivot)) {
+            auto* new_head = self.view.tail;
+            for (size_t i = self.size() - 1; i > pivot; --i) {
+                new_head = new_head->prev;
+            }
+            auto* new_tail = new_head->prev;
+            self.view.tail->next = self.view.head;
+            self.view.head->prev = self.view.tail;
+            self.view.tail = new_tail;
+            self.view.head = new_head;
+        } else {
+            auto* new_tail = self.view.head;
+            for (size_t i = 1; i < pivot; ++i) {
+                new_tail = new_tail->next;
+            }
+            auto* new_head = new_tail->next;
+            self.view.tail->next = self.view.head;
+            self.view.head->prev = self.view.tail;
+            self.view.tail = new_tail;
+            self.view.head = new_head;
+        }
+    }
+
+    ////////////////////
+    ////    SORT    ////
+    ////////////////////
+
+
+
+
     /// TODO: this list class could maybe be a base class for all linked data
     /// structures, which all expose things like size(), front(), back(), etc.
     /// -> rename to container<view>? So all the data structures need to do is
     /// figure out the correct view type, and then inherit the basic functionality
     /// and add any extras they might need.
 
-    template <typename T, size_t N, typename Less, typename Alloc>
-    struct list {
-    protected:
-        using node_type = node<T, void, Less>;
-
-    public:
+    template <typename T, size_t N, typename Less, typename Equal, typename Alloc>
+    struct list : list_tag {
+        using node_type = node<T, Less, void, Equal>;
         using allocator_type = std::allocator_traits<Alloc>::template rebind_alloc<node_type>;
+        using view_type = list_view<node_type, N, allocator_type>;
         using size_type = size_t;
-        using difference_type = ptrdiff_t;
+        using difference_type = std::ptrdiff_t;
         using value_type = node_type::value_type;
         using reference = value_type&;
         using const_reference = const value_type&;
         using pointer = value_type*;
         using const_pointer = const value_type*;
-
-    protected:
-        using view_type = list_view<node_type, N, allocator_type>;
-
-        view_type view;
-
-    public:
         using iterator = value_iterator<typename view_type::iterator>;
         using const_iterator = value_iterator<typename view_type::const_iterator>;
         using reverse_iterator = value_iterator<typename view_type::reverse_iterator>;
         using const_reverse_iterator = value_iterator<typename view_type::const_reverse_iterator>;
-        using slice = linked::slice<view_type>;
-        using const_slice = linked::const_slice<view_type>;
+
+        /* Allows access to the container's internal representation, including the
+        head, tail, and root pointers (for BSTs), and low-level memory management.
+        This is publicly available in order to simplify the implementation of custom
+        algorithms, but should be used with caution, as it is easy to leave the
+        container in an invalid state, or accidentally violate one of its invariants. */
+        view_type view;
 
         template <typename... Args> requires (std::constructible_from<view_type, Args...>)
         list(Args&&... args) noexcept(noexcept(view_type(std::forward<Args>(args)...))) :
@@ -2754,10 +4289,10 @@ namespace impl::linked {
     /// would then deduce the correct view type and inherit from
     /// dynamic_container<view>, with all the extra logic held internally.
 
-    template <typename T, size_t N, typename Less, typename Alloc>
-    struct dynamic_list : list<T, N, Less, Alloc> {};
-    template <typename T, typename Less, typename Alloc>
-    struct dynamic_list<T, 0, Less, Alloc> : list<T, 0, Less, Alloc> {
+    template <typename T, size_t N, typename Less, typename Equal, typename Alloc>
+    struct dynamic_list : list<T, N, Less, Equal, Alloc> {};
+    template <typename T, typename Less, typename Equal, typename Alloc>
+    struct dynamic_list<T, 0, Less, Equal, Alloc> : list<T, 0, Less, Equal, Alloc> {
         /* Increase the capacity of the list to store at least the given number of
         elements.  Not available for fixed-capacity lists (N > 0). */
         void reserve(size_t n) noexcept(noexcept(this->view.reserve(n))) {
@@ -2786,560 +4321,6 @@ namespace impl::linked {
     template <meta::unqualified T, meta::linked_view View>
         requires (std::constructible_from<T, View>)
     [[nodiscard]] T make(View&& view) { return T(std::forward<View>(view)); }
-
-}  // namespace impl::linked
-
-
-namespace impl::linked {
-
-    /// TODO: noexcept specifiers are hard to fully model in this case
-
-    //////////////////////
-    ////    APPEND    ////
-    //////////////////////
-
-    /// TODO: there might be problems using append() on hash tables, depending on how
-    /// view.create() works in that case.  It probably just errors, so this should be
-    /// basically fine?  Maybe I should suppress the error though, and just move the
-    /// requested item to the back of the set/map?
-
-    template <meta::linked_view View, typename... Args>
-        requires (
-            !meta::bst_view<View> &&
-            !meta::hash_view<View> &&
-            std::constructible_from<typename View::value_type, Args...>
-        )
-    void append(View& view, Args&&... args) {
-        auto* node = std::forward<View>(view).create(std::forward<Args>(args)...);
-        if (view.tail) {
-            view.tail->next = node;
-            node->prev = view.tail;
-            view.tail = node;
-        } else {
-            view.head = node;
-            view.tail = node;
-        }
-    }
-
-    ///////////////////////
-    ////    PREPEND    ////
-    ///////////////////////
-
-    template <meta::linked_view View, typename... Args>
-        requires (
-            !meta::bst_view<View> &&
-            !meta::hash_view<View> &&
-            std::constructible_from<typename View::value_type, Args...>
-        )
-    void prepend(View& view, Args&&... args) {
-        auto* node = std::forward<View>(view).create(std::forward<Args>(args)...);
-        if (view.head) {
-            view.head->prev = node;
-            node->next = view.head;
-            view.head = node;
-        } else {
-            view.head = node;
-            view.tail = node;
-        }
-    }
-
-    //////////////////////
-    ////    EXTEND    ////
-    //////////////////////
-
-    template <meta::linked_view View, meta::iterable Range>
-        requires (
-            !meta::bst_view<View> &&
-            !meta::hash_view<View> &&
-            std::convertible_to<meta::iter_type<Range>, typename View::value_type>
-        )
-    void extend(View& view, Range&& range) {
-        auto it = std::ranges::begin(range);
-        auto end = std::ranges::end(range);
-        if (it == end) {
-            return;
-        }
-
-        size_t orig_size = view.size();
-        if constexpr (!View::STATIC && meta::has_size<Range>) {
-            view.reserve(orig_size + std::ranges::size(range));
-        }
-
-        try {
-            if (view.empty()) {
-                view.head = view.create(*it);
-                view.tail = view.head;
-                ++it;
-            }
-            while (it != end) {
-                view.tail->next = view.create(*it);
-                view.tail->next->prev = view.tail;
-                view.tail = view.tail->next;
-                ++it;
-            }
-
-        } catch (...) {
-            size_t diff = view.size() - orig_size;
-            if (diff) {
-                for (size_t i = 0; i < diff; ++i) {
-                    auto* prev = view.tail->prev;
-                    try {
-                        view.recycle(view.tail);
-                    } catch (...) {
-                        if (prev) {
-                            prev->next = nullptr;
-                            view.tail = prev;
-                        } else {
-                            view.head = nullptr;
-                        }
-                        throw;
-                    }
-                    view.tail = prev;
-                }
-                if (view.tail) {
-                    view.tail->next = nullptr;
-                } else {
-                    view.head = nullptr;
-                }
-            }
-            throw;
-        }
-    }
-
-    template <
-        meta::linked_view View,
-        std::input_or_output_iterator Begin,
-        std::sentinel_for<Begin> End
-    >
-        requires (
-            !meta::bst_view<View> &&
-            !meta::hash_view<View> &&
-            std::convertible_to<
-                decltype(*std::declval<std::add_lvalue_reference_t<Begin>>()),
-                typename View::value_type
-            >
-        )
-    void extend(View& view, Begin&& it, End&& end) {
-        if (it == end) {
-            return;
-        }
-
-        size_t orig_size = view.size();
-        if constexpr (!View::STATIC && meta::sub_returns<End, Begin, size_t>) {
-            view.reserve(orig_size + size_t(end - it));
-        }
-
-        try {
-            if (view.empty()) {
-                view.head = view.create(*it);
-                view.tail = view.head;
-                ++it;
-            }
-            while (it != end) {
-                view.tail->next = view.create(*it);
-                view.tail->next->prev = view.tail;
-                view.tail = view.tail->next;
-                ++it;
-            }
-
-        } catch (...) {
-            size_t diff = view.size() - orig_size;
-            if (diff) {
-                for (size_t i = 0; i < diff; ++i) {
-                    auto* prev = view.tail->prev;
-                    try {
-                        view.recycle(view.tail);
-                    } catch (...) {
-                        if (prev) {
-                            prev->next = nullptr;
-                            view.tail = prev;
-                        } else {
-                            view.head = nullptr;
-                        }
-                        throw;
-                    }
-                    view.tail = prev;
-                }
-                if (view.tail) {
-                    view.tail->next = nullptr;
-                } else {
-                    view.head = nullptr;
-                }
-            }
-            throw;
-        }
-    }
-
-    //////////////////////////
-    ////    EXTENDLEFT    ////
-    //////////////////////////
-
-    template <meta::linked_view View, meta::iterable Range>
-        requires (
-            !meta::bst_view<View> &&
-            !meta::hash_view<View> &&
-            std::convertible_to<meta::iter_type<Range>, typename View::value_type>
-        )
-    void extendleft(View& view, const Range& range) {
-        auto it = std::ranges::begin(range);
-        auto end = std::ranges::end(range);
-        if (it == end) {
-            return;
-        }
-
-        size_t orig_size = view.size();
-        if constexpr (!View::STATIC && meta::has_size<Range>) {
-            view.reserve(orig_size + std::ranges::size(range));
-        }
-
-        try {
-            if (view.empty()) {
-                view.tail = view.create(*it);
-                view.head = view.tail;
-                ++it;
-            }
-            while (it != end) {
-                view.head->prev = view.create(*it);
-                view.head->prev->next = view.head;
-                view.head = view.head->prev;
-                ++it;
-            }
-
-        } catch (...) {
-            size_t diff = view.size() - orig_size;
-            if (diff) {
-                for (size_t i = 0; i < diff; ++i) {
-                    auto* next = view.head->next;
-                    try {
-                        view.recycle(view.head);
-                    } catch (...) {
-                        if (next) {
-                            next->prev = nullptr;
-                            view.head = next;
-                        } else {
-                            view.tail = nullptr;
-                        }
-                        throw;
-                    }
-                    view.head = next;
-                }
-                if (view.head) {
-                    view.head->prev = nullptr;
-                } else {
-                    view.tail = nullptr;
-                }
-            }
-            throw;
-        }
-    }
-
-    template <
-        meta::linked_view View,
-        std::input_or_output_iterator Begin,
-        std::sentinel_for<Begin> End
-    >
-        requires (
-            !meta::bst_view<View> &&
-            !meta::hash_view<View> &&
-            std::convertible_to<
-                decltype(*std::declval<std::add_lvalue_reference_t<Begin>>()),
-                typename View::value_type
-            >
-        )
-    void extendleft(View& view, Begin&& it, End&& end) {
-        if (it == end) {
-            return;
-        }
-
-        size_t orig_size = view.size();
-        if constexpr (!View::STATIC && meta::sub_returns<End, Begin, size_t>) {
-            view.reserve(orig_size + size_t(end - it));
-        }
-
-        try {
-            if (view.empty()) {
-                view.tail = view.create(*it);
-                view.head = view.tail;
-                ++it;
-            }
-            while (it != end) {
-                view.head->prev = view.create(*it);
-                view.head->prev->next = view.head;
-                view.head = view.head->prev;
-                ++it;
-            }
-
-        } catch (...) {
-            size_t diff = view.size() - orig_size;
-            if (diff) {
-                for (size_t i = 0; i < diff; ++i) {
-                    auto* next = view.head->next;
-                    try {
-                        view.recycle(view.head);
-                    } catch (...) {
-                        if (next) {
-                            next->prev = nullptr;
-                            view.head = next;
-                        } else {
-                            view.tail = nullptr;
-                        }
-                        throw;
-                    }
-                    view.head = next;
-                }
-                if (view.head) {
-                    view.head->prev = nullptr;
-                } else {
-                    view.tail = nullptr;
-                }
-            }
-            throw;
-        }
-    }
-
-    ////////////////////////
-    ////    CONTAINS    ////
-    ////////////////////////
-
-    template <meta::linked_view View, typename T>
-        requires (
-            !meta::bst_view<View> &&
-            !meta::hash_view<View> &&
-            meta::eq_returns<const typename View::value_type&, const T&, bool>
-        )
-    [[nodiscard]] bool contains(const View& view, const T& value) noexcept(
-        noexcept(std::declval<const typename View::value_type&>() == value)
-    ) {
-        for (const auto& node : view) {
-            if (node.value == value) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // template <meta::bst_view View, typename T>
-    //     requires (
-    //         !meta::hash_view<View>
-    //         /// TODO: confirm less_type is callable with the value_type
-    //     )
-    // [[nodiscard]] bool contains(View&& view, T&& value) {
-    //     /// TODO: binary search
-    // }
-
-    // template <meta::hash_view View, typename T>
-    //     requires (
-
-    //     )
-    // [[nodiscard]] bool contains(View&& view, T&& value) {
-
-    // }
-
-    /////////////////////
-    ////    COUNT    ////
-    /////////////////////
-
-    template <meta::linked_view View, typename T>
-        requires (
-            !meta::bst_view<View> &&
-            !meta::hash_view<View> &&
-            meta::eq_returns<const typename View::value_type&, const T&, bool>
-        )
-    [[nodiscard]] size_t count(const View& view, const T& value) noexcept(
-        noexcept(std::declval<const typename View::value_type&>() == value)
-    ) {
-        size_t count = 0;
-        for (const auto& node : view) {
-            count += node.value == value;
-        }
-        return count;
-    }
-
-    template <meta::linked_view View, typename T>
-        requires (
-            !meta::bst_view<View> &&
-            !meta::hash_view<View> &&
-            meta::eq_returns<const typename View::value_type&, const T&, bool>
-        )
-    [[nodiscard]] size_t count(
-        const View& view,
-        const T& value,
-        std::optional<ssize_t> start,
-        std::optional<ssize_t> stop
-    ) noexcept(
-        noexcept(normalize_slice(view.size(), start, stop)) &&
-        noexcept(std::declval<const typename View::value_type&>() == value)
-    ) {
-        if (view.empty()) {
-            return 0;
-        }
-
-        normalize_slice indices(view.size(), start, stop);
-        if (indices.length == 0) {
-            return 0;
-        }
-
-        size_t count = 0;
-        if (indices.backward) {
-            auto it = view.rbegin();
-            size_t i = view.size();
-            for (; i-- > indices.last; ++it);
-            for (; i >= indices.first; --i, ++it) {
-                count += it->value == value;
-            }
-        } else {
-            auto it = view.begin();
-            size_t i = 0;
-            for (; i < indices.first; ++i, ++it);
-            for (; i <= indices.last; ++i, ++it) {
-                count += it->value == value;
-            }
-        }
-        return count;
-    }
-
-    /////////////////////
-    ////    INDEX    ////
-    /////////////////////
-
-
-    ///////////////////////
-    ////    REVERSE    ////
-    ///////////////////////
-
-    template <meta::linked_view View> requires (!meta::bst_view<View>)
-    void reverse(View& view) noexcept {
-        auto* head = view.head;
-        auto* curr = head;
-        while (curr) {
-            auto* next = curr->next;
-            curr->next = curr->prev;
-            curr->prev = next;
-            curr = next;
-        }
-        view.head = view.tail;
-        view.tail = head;
-    }
-
-    //////////////////////
-    ////    ROTATE    ////
-    //////////////////////
-
-    template <meta::linked_view View> requires (!meta::bst_view<View>)
-    void rotate(View& view, ssize_t n) noexcept {
-        if (view.empty()) {
-            return;
-        }
-        size_t steps = size_t(n < 0 ? -n : n) % view.size();
-        if (steps == 0) {
-            return;
-        }
-
-        size_t index;
-        if (n < 0) {
-            index = steps;
-        } else {
-            index = view.size() - steps;
-        }
-
-        if (closer_to_tail(view.size(), index)) {
-            auto* new_head = view.tail;
-            for (size_t i = view.size() - 1; i > index; --i) {
-                new_head = new_head->prev;
-            }
-            auto* new_tail = new_head->prev;
-            view.tail->next = view.head;
-            view.head->prev = view.tail;
-            view.tail = new_tail;
-            view.head = new_head;
-        } else {
-            auto* new_tail = view.head;
-            for (size_t i = 1; i < index; ++i) {
-                new_tail = new_tail->next;
-            }
-            auto* new_head = new_tail->next;
-            view.tail->next = view.head;
-            view.head->prev = view.tail;
-            view.tail = new_tail;
-            view.head = new_head;
-        }
-    }
-
-    //////////////////////
-    ////    REMOVE    ////
-    //////////////////////
-
-    template <meta::linked_view View> requires (!meta::bst_view<View>)
-    void remove_front(View& view) {
-        if (view.empty()) {
-            throw IndexError("list is empty");
-        }
-        auto* node = view.head;
-        view.head = node->next;
-        if (view.head) {
-            view.head->prev = nullptr;
-        } else {
-            view.tail = nullptr;
-        }
-        view.recycle(node);
-    }
-
-    template <meta::linked_view View> requires (!meta::bst_view<View>)
-    void remove_back(View& view) {
-        if (view.empty()) {
-            throw IndexError("list is empty");
-        }
-        auto* node = view.tail;
-        view.tail = node->prev;
-        if (view.tail) {
-            view.tail->next = nullptr;
-        } else {
-            view.head = nullptr;
-        }
-        view.recycle(node);
-    }
-
-    /// TODO: remove() taking an iterator?  Maybe also a slice?
-
-    ///////////////////
-    ////    POP    ////
-    ///////////////////
-
-    template <meta::linked_view View> requires (!meta::bst_view<View>)
-    auto pop_front(View& view) {
-        if (view.empty()) {
-            throw IndexError("list is empty");
-        }
-        auto* node = view.head;
-        view.head = node->next;
-        if (view.head) {
-            view.head->prev = nullptr;
-        } else {
-            view.tail = nullptr;
-        }
-        auto value = std::move(node->value);
-        view.recycle(node);
-        return value;
-    }
-
-    template <meta::linked_view View> requires (!meta::bst_view<View>)
-    auto pop_back(View& view) {
-        if (view.empty()) {
-            throw IndexError("list is empty");
-        }
-        auto* node = view.tail;
-        view.tail = node->prev;
-        if (view.tail) {
-            view.tail->next = nullptr;
-        } else {
-            view.head = nullptr;
-        }
-        auto value = std::move(node->value);
-        view.recycle(node);
-        return value;
-    }
-
-    /// TODO: pop() taking an iterator?
 
 
 }  // namespace impl::linked
@@ -3391,23 +4372,22 @@ tagging, allowing efficient in-order traversals without requiring a recursive st
 `parent` pointer.  They support all of the same algorithms as an ordinary linked list,
 except for those that modify the order of the nodes, such as `append()`, `sort()`,
 `reverse()`, etc. */
-template <
-    typename T,
-    size_t N = 0,
-    typename Less = void,
-    typename Alloc = std::allocator<T>
->
+template <typename T, size_t N, typename Less, typename Equal, typename Alloc>
     requires (
         !std::is_reference_v<T> &&
         (meta::is_void<Less> || (
             std::is_default_constructible_v<Less> &&
             std::is_invocable_r_v<bool, Less, const T&, const T&>
         )) &&
+        (meta::is_void<Equal> || (
+            std::is_default_constructible_v<Equal> &&
+            std::is_invocable_r_v<bool, Equal, const T&, const T&>
+        )) &&
         meta::allocator_for<Alloc, T>
     )
-struct linked_list : impl::linked::dynamic_list<T, N, Less, Alloc> {
+struct linked_list : impl::linked::dynamic_list<T, N, Less, Equal, Alloc> {
 private:
-    using base = impl::linked::dynamic_list<T, N, Less, Alloc>;
+    using base = impl::linked::dynamic_list<T, N, Less, Equal, Alloc>;
 
 public:
     using allocator_type = base::allocator_type;
@@ -3433,12 +4413,15 @@ public:
 
 
 /* Specialization for pure, non-BST linked lists, without any strict ordering. */
-template <typename T, size_t N, typename Alloc>
-struct linked_list<T, N, void, Alloc> : impl::linked::dynamic_list<T, N, void, Alloc> {
+template <typename T, size_t N, typename Equal, typename Alloc>
+struct linked_list<T, N, void, Equal, Alloc> :
+    impl::linked::dynamic_list<T, N, void, Equal, Alloc>
+{
 private:
-    using base = impl::linked::dynamic_list<T, N, void, Alloc>;
+    using base = impl::linked::dynamic_list<T, N, void, Equal, Alloc>;
 
 public:
+    using node_type = base::node_type;
     using allocator_type = base::allocator_type;
     using size_type = base::size_type;
     using difference_type = base::difference_type;
@@ -3451,8 +4434,6 @@ public:
     using const_iterator = base::const_iterator;
     using reverse_iterator = base::reverse_iterator;
     using const_reverse_iterator = base::const_reverse_iterator;
-    using slice = base::slice;
-    using const_slice = base::const_slice;
 
     using base::STATIC;
     using base::MIN_SIZE;
@@ -3481,124 +4462,13 @@ protected:
         }
     }
 
-    template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
-        requires (std::convertible_to<
-            decltype(*std::declval<std::add_lvalue_reference_t<Begin>>()),
-            value_type
-        >)
-    void construct(Begin& it, End& end, bool reverse) {
-        view.head = view.create(*it);
-        view.tail = view.head;
-        ++it;
-        if (reverse) {
-            while (it != end) {
-                view.head->prev = view.create(*it);
-                view.head->prev->next = view.head;
-                view.head = view.head->prev;
-                ++it;
-            }
-        } else {
-            while (it != end) {
-                view.tail->next = view.create(*it);
-                view.tail->next->prev = view.tail;
-                view.tail = view.tail->next;
-                ++it;
-            }
-        }
-    }
-
     explicit linked_list(typename base::view_type&& view) : base(std::move(view)) {}
     explicit linked_list(const typename base::view_type& view) : base(view) {}
 
 public:
-    linked_list(allocator_type&& alloc = {}) : base(std::move(alloc)) {}
+    linked_list() = default;
+    linked_list(allocator_type&& alloc) : base(std::move(alloc)) {}
     linked_list(const allocator_type& alloc) : base(alloc) {}
-
-    /* Construct a linked list from the contents of an iterable range.  Invokes
-    implicit conversions to the contained type for each item.  If called with an
-    extra boolean, the order of the range will be implicitly reversed, even if the
-    incoming container does not support reverse iteration.  This is more efficient
-    than constructing the list and then calling `list.reverse()` in-place. */
-    template <meta::iterable Range>
-        requires (std::convertible_to<meta::iter_type<Range>, value_type>)
-    explicit linked_list(Range&& range, bool reverse = false, allocator_type&& alloc = {}) :
-        base(std::move(alloc))
-    {
-        auto it = std::ranges::begin(range);
-        auto end = std::ranges::end(range);
-        if (it == end) {
-            return;
-        }
-        if constexpr (!base::STATIC && meta::has_size<Range>) {
-            view.reserve(std::ranges::size(range));
-        }
-        construct(it, end, reverse);
-    }
-
-    /* Construct a linked list from the contents of an iterable range.  Invokes
-    implicit conversions to the contained type for each item.  If called with an
-    extra boolean, the order of the range will be implicitly reversed, even if the
-    incoming container does not support reverse iteration.  This is more efficient
-    than constructing the list and then calling `list.reverse()` in-place. */
-    template <meta::iterable Range>
-        requires (std::convertible_to<meta::iter_type<Range>, value_type>)
-    explicit linked_list(Range&& range, bool reverse, const allocator_type& alloc) :
-        base(alloc)
-    {
-        auto it = std::ranges::begin(range);
-        auto end = std::ranges::end(range);
-        if (it == end) {
-            return;
-        }
-        if constexpr (!base::STATIC && meta::has_size<Range>) {
-            view.reserve(std::ranges::size(range));
-        }
-        construct(it, end, reverse);
-    }
-
-    /* Construct a linked list from the contents of an iterable range.  Invokes
-    implicit conversions to the contained type for each item.  If called with an
-    extra boolean, the order of the range will be implicitly reversed, even if the
-    incoming iterators do not support reverse iteration.  This is more efficient
-    than constructing the list and then calling `list.reverse()` in-place. */
-    template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
-        requires (std::convertible_to<
-            decltype(*std::declval<std::add_lvalue_reference_t<Begin>>()),
-            value_type
-        >)
-    linked_list(Begin&& it, End&& end, bool reverse = false, allocator_type&& alloc = {}) :
-        base(std::move(alloc))
-    {
-        if (it == end) {
-            return;
-        }
-        if constexpr (!base::STATIC && meta::sub_returns<End, Begin, size_t>) {
-            view.reserve(size_t(end - it));
-        }
-        construct(it, end, reverse);
-    }
-
-    /* Construct a linked list from the contents of an iterable range.  Invokes
-    implicit conversions to the contained type for each item.  If called with an
-    extra boolean, the order of the range will be implicitly reversed, even if the
-    incoming iterators do not support reverse iteration.  This is more efficient
-    than constructing the list and then calling `list.reverse()` in-place. */
-    template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
-        requires (std::convertible_to<
-            decltype(*std::declval<std::add_lvalue_reference_t<Begin>>()),
-            value_type
-        >)
-    linked_list(Begin&& it, End&& end, bool reverse, const allocator_type& alloc) :
-        base(alloc)
-    {
-        if (it == end) {
-            return;
-        }
-        if constexpr (!base::STATIC && meta::sub_returns<End, Begin, size_t>) {
-            view.reserve(size_t(end - it));
-        }
-        construct(it, end, reverse);
-    }
 
     /* Construct a linked list from an explicit initializer.  Invokes implicit
     conversions to the contained type for each item. */
@@ -3632,23 +4502,114 @@ public:
         construct(it, end);
     }
 
+    /* Construct a linked list from the contents of an iterable range.  Invokes
+    implicit conversions to the contained type for each item.  If called with an
+    extra boolean, the order of the range will be implicitly reversed, even if the
+    incoming container does not support reverse iteration.  This is more efficient
+    than constructing the list and then calling `list.reverse()` in-place. */
+    template <meta::iterable Range>
+        requires (std::convertible_to<meta::iter_type<Range>, value_type>)
+    explicit linked_list(Range&& range, allocator_type&& alloc = {}) :
+        base(std::move(alloc))
+    {
+        auto it = std::ranges::begin(range);
+        auto end = std::ranges::end(range);
+        if (it == end) {
+            return;
+        }
+        if constexpr (!base::STATIC && meta::has_size<Range>) {
+            view.reserve(std::ranges::size(range));
+        }
+        construct(it, end);
+    }
+
+    /* Construct a linked list from the contents of an iterable range.  Invokes
+    implicit conversions to the contained type for each item.  If called with an
+    extra boolean, the order of the range will be implicitly reversed, even if the
+    incoming container does not support reverse iteration.  This is more efficient
+    than constructing the list and then calling `list.reverse()` in-place. */
+    template <meta::iterable Range>
+        requires (std::convertible_to<meta::iter_type<Range>, value_type>)
+    explicit linked_list(Range&& range, const allocator_type& alloc) :
+        base(alloc)
+    {
+        auto it = std::ranges::begin(range);
+        auto end = std::ranges::end(range);
+        if (it == end) {
+            return;
+        }
+        if constexpr (!base::STATIC && meta::has_size<Range>) {
+            view.reserve(std::ranges::size(range));
+        }
+        construct(it, end);
+    }
+
+    /* Construct a linked list from the contents of an iterable range.  Invokes
+    implicit conversions to the contained type for each item.  If called with an
+    extra boolean, the order of the range will be implicitly reversed, even if the
+    incoming iterators do not support reverse iteration.  This is more efficient
+    than constructing the list and then calling `list.reverse()` in-place. */
+    template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
+        requires (std::convertible_to<
+            decltype(*std::declval<std::add_lvalue_reference_t<Begin>>()),
+            value_type
+        >)
+    explicit linked_list(Begin&& it, End&& end, allocator_type&& alloc = {}) :
+        base(std::move(alloc))
+    {
+        if (it == end) {
+            return;
+        }
+        if constexpr (!base::STATIC && meta::sub_returns<End, Begin, size_t>) {
+            view.reserve(size_t(end - it));
+        }
+        construct(it, end);
+    }
+
+    /* Construct a linked list from the contents of an iterable range.  Invokes
+    implicit conversions to the contained type for each item.  If called with an
+    extra boolean, the order of the range will be implicitly reversed, even if the
+    incoming iterators do not support reverse iteration.  This is more efficient
+    than constructing the list and then calling `list.reverse()` in-place. */
+    template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
+        requires (std::convertible_to<
+            decltype(*std::declval<std::add_lvalue_reference_t<Begin>>()),
+            value_type
+        >)
+    explicit linked_list(Begin&& it, End&& end, const allocator_type& alloc) :
+        base(alloc)
+    {
+        if (it == end) {
+            return;
+        }
+        if constexpr (!base::STATIC && meta::sub_returns<End, Begin, size_t>) {
+            view.reserve(size_t(end - it));
+        }
+        construct(it, end);
+    }
+
     /* Add an item to the end of the list.  Any arguments are passed directly to the
     constructor for `T`. */
     template <typename... Args> requires (std::constructible_from<value_type, Args...>)
-    void append(Args&&... args) noexcept(
-        noexcept(impl::linked::append(view, std::forward<Args>(args)...))
+    [[maybe_unused]] std::pair<iterator, bool> append(Args&&... args) noexcept(
+        noexcept(impl::linked::append(*this, std::forward<Args>(args)...))
     ) {
-        impl::linked::append(view, std::forward<Args>(args)...);
+        return impl::linked::append(*this, std::forward<Args>(args)...);
     }
 
     /* Add an item to the front of the list.  Any arguments are passed directly to the
     constructor for `T`. */
     template <typename... Args> requires (std::constructible_from<value_type, Args...>)
-    void prepend(Args&&... args) noexcept(
-        noexcept(impl::linked::prepend(view, std::forward<Args>(args)...))
+    [[maybe_unused]] std::pair<iterator, bool> prepend(Args&&... args) noexcept(
+        noexcept(impl::linked::prepend(*this, std::forward<Args>(args)...))
     ) {
-        impl::linked::prepend(view, std::forward<Args>(args)...);
+        return impl::linked::prepend(*this, std::forward<Args>(args)...);
     }
+
+    /// TODO: insert, insert_after(), insert_before().  The last two can be all that I
+    /// need.
+
+    /// TODO: extend() should maybe return the number of nodes that were inserted?
 
     /* Grow the list from the tail, appending all items from an iterable range.
     Invokes implicit conversions to the contained type for each item.  In the event of
@@ -3656,9 +4617,9 @@ public:
     template <meta::iterable Range>
         requires (std::convertible_to<meta::iter_type<Range>, value_type>)
     void extend(Range&& range) noexcept(
-        noexcept(impl::linked::extend(view, std::forward<Range>(range)))
+        noexcept(impl::linked::extend(*this, std::forward<Range>(range)))
     ) {
-        impl::linked::extend(view, std::forward<Range>(range));
+        impl::linked::extend(*this, std::forward<Range>(range));
     }
 
     /* Grow the list from the tail, appending all items from an iterable range.
@@ -3670,9 +4631,9 @@ public:
             value_type
         >)
     void extend(Begin&& it, End&& end) noexcept(
-        noexcept(impl::linked::extend(view, std::forward<Begin>(it), std::forward<End>(end)))
+        noexcept(impl::linked::extend(*this, std::forward<Begin>(it), std::forward<End>(end)))
     ) {
-        impl::linked::extend(view, std::forward<Begin>(it), std::forward<End>(end));
+        impl::linked::extend(*this, std::forward<Begin>(it), std::forward<End>(end));
     }
 
     /* Grow the list from the head, prepending all items from an iterable range.
@@ -3683,9 +4644,9 @@ public:
     template <meta::iterable Range>
         requires (std::convertible_to<meta::iter_type<Range>, value_type>)
     void extendleft(Range&& range) noexcept(
-        noexcept(impl::linked::extendleft(view, std::forward<Range>(range)))
+        noexcept(impl::linked::extendleft(*this, std::forward<Range>(range)))
     ) {
-        impl::linked::extendleft(view, std::forward<Range>(range));
+        impl::linked::extendleft(*this, std::forward<Range>(range));
     }
 
     /* Grow the list from the head, prepending all items from an iterable range.
@@ -3699,59 +4660,117 @@ public:
             value_type
         >)
     void extendleft(Begin&& it, End&& end) noexcept(
-        noexcept(impl::linked::extendleft(view, std::forward<Begin>(it), std::forward<End>(end)))
+        noexcept(impl::linked::extendleft(*this, std::forward<Begin>(it), std::forward<End>(end)))
     ) {
-        impl::linked::extendleft(view, std::forward<Begin>(it), std::forward<End>(end));
+        impl::linked::extendleft(*this, std::forward<Begin>(it), std::forward<End>(end));
     }
+
+    /* Remove the item at the specified position.  Returns the number of items that
+    were removed, which is always 0 if the input iterator is a sentinel, or 1 if a
+    value was successfully removed. */
+    [[maybe_unused]] size_t remove(iterator it) noexcept(
+        noexcept(impl::linked::remove(*this, it))
+    ) {
+        return impl::linked::remove(*this, it);
+    }
+
+    /* Remove a slice from the list.  This is equivalent to calling `remove()` on the
+    slice itself.  Returns the number of items that were removed, which may be zero
+    if the input slice is empty. */
+    [[maybe_unused]] size_t remove(impl::linked::slice<linked_list&>&& slice) noexcept(
+        noexcept(impl::linked::remove(*this, std::move(slice)))
+    ) {
+        return impl::linked::remove(*this, std::move(slice));
+    }
+
+    /* Remove the item at the specified position and return it to the user.  Returns an
+    optional, which may be empty if the input iterator is a sentinel.  Otherwise, its
+    value is moved into the optional.  */
+    [[nodiscard]] std::optional<value_type> pop(iterator it) noexcept(
+        noexcept(impl::linked::pop(*this, it))
+    ) {
+        return impl::linked::pop(*this, it);
+    }
+
+    /* Remove a slice from the list, extracting the values into a new list.  This is
+    equivalent to calling `pop()` on the slice itself.  Returns a container of the same
+    type, whose values are moved from the original.  */
+    [[nodiscard]] linked_list pop(impl::linked::slice<linked_list&>&& slice) noexcept(
+        noexcept(std::move(slice).pop())
+    ) {
+        return std::move(slice).pop();
+    }
+
+    /// TODO: repr()
+
+    /// TODO: contains(), count(), index() can probably be placed in a generalized
+    /// base class for all containers.
 
     /* Return true if the list contains the given value.  This performs a linear search
     through the list with an O(n) time complexity.  If the list is sorted, then this
     can be improved to O(log n) using a binary search. */
-    template <typename V> requires (meta::eq_returns<const value_type&, const V&, bool>)
+    template <typename V>
+        requires (impl::linked::searchable<const linked_list&, const V&> || (
+            !impl::linked::searchable<const linked_list&, const V&> &&
+            impl::linked::equality_comparable<const linked_list&, const V&>
+        ))
     [[nodiscard]] bool contains(const V& value) const noexcept(
-        noexcept(impl::linked::contains(view, value))
+        noexcept(impl::linked::contains(*this, value))
     ) {
-        return impl::linked::contains(view, value);
+        return impl::linked::contains(*this, value);
     }
 
     /* Count the number of occurrences of a given value in the list.  By default, this
     will loop over the whole list and compare against each value, but additional
     [start, stop) indices can be given to specify only a subrange, which will be
     scanned starting from the nearest end. */
-    template <typename V> requires (meta::eq_returns<const value_type&, const V&, bool>)
+    template <typename V>
+        requires (impl::linked::searchable<const linked_list&, const V&> || (
+            !impl::linked::searchable<const linked_list&, const V&> &&
+            impl::linked::equality_comparable<const linked_list&, const V&>
+        ))
     [[nodiscard]] size_t count(const V& value) const noexcept(
-        noexcept(impl::linked::count(view, value))
+        noexcept(impl::linked::count(*this, value))
     ) {
-        return impl::linked::count(view, value);
+        return impl::linked::count(*this, value);
     }
 
-    /* Count the number of occurrences of a given value in the list.  By default, this
-    will loop over the whole list and compare against each value, but additional
-    [start, stop) indices can be given to specify only a subrange, which will be
-    scanned starting from the nearest end.  The subrange indices may be negative or
-    `std::nullopt`, following Python wraparound semantics. */
-    template <typename V> requires (meta::eq_returns<const value_type&, const V&, bool>)
-    [[nodiscard]] size_t count(
-        const V& value,
-        std::optional<ssize_t> start,
-        std::optional<ssize_t> stop = std::nullopt
-    ) const noexcept(noexcept(impl::linked::count(view, value, start, stop))) {
-        return impl::linked::count(view, value, start, stop);
+    /* Get the index of the first occurrence of the given value in the list. */
+    template <typename V>
+        requires (impl::linked::searchable<const linked_list&, const V&> || (
+            !impl::linked::searchable<const linked_list&, const V&> &&
+            impl::linked::equality_comparable<const linked_list&, const V&>
+        ))
+    [[nodiscard]] std::optional<size_t> index(const V& value) const noexcept(
+        noexcept(impl::linked::index(*this, value))
+    ) {
+        return impl::linked::index(*this, value);
     }
 
     /* Reverse the order of the list's elements in-place. */
-    void reverse() noexcept(noexcept(impl::linked::reverse(view))) {
-        impl::linked::reverse(view);
+    void reverse() noexcept(
+        noexcept(impl::linked::reverse(*this))
+    ) {
+        impl::linked::reverse(*this);
     }
 
     /* Shift all elements in the list to the right by the specified number of steps.
     Negative values will shift to the left instead. */
-    void rotate(ssize_t n = 1) noexcept(noexcept(impl::linked::rotate(view, n))) {
-        impl::linked::rotate(view, n);
+    void rotate(ssize_t n = 1) noexcept(
+        noexcept(impl::linked::rotate(*this, n))
+    ) {
+        impl::linked::rotate(*this, n);
     }
 
-    /// TODO: sort(), remove(), pop_back(), pop_front(), index(), operator*(), operator+()
-    // index(), repr(), insert()
+    /* Produce a specialized iterator that allows an individual element to be easily
+    translated forward and backward along the list, relative to other values.  */
+    [[nodiscard]] auto move(iterator it) & noexcept(
+        noexcept(impl::linked::move<linked_list&>{this, it})
+    ) -> impl::linked::move<linked_list&> {
+        return {this, it};
+    }
+
+    /// TODO: sort()
 
     /* Return an iterator to the specified index of the list.  Allows Python-style
     negative indexing, and throws an `IndexError` if the index is out of bounds
@@ -3794,10 +4813,11 @@ public:
     or `list.pop()`, each element will be dropped from the list, modifying it in-place.
     If `pop()` is used, the previous values will be moved into a new list with the same
     configuration as the current list, which is returned to the caller. */
-    [[nodiscard]] slice operator[](
+    [[nodiscard]] auto operator[](
         std::initializer_list<std::optional<ssize_t>> indices
-    ) noexcept {
-        return {view, indices};
+    ) & -> impl::linked::slice<linked_list&>
+    {
+        return {this, indices};
     }
 
     /* Return a range over a slice within the list, using the contents of a C++
@@ -3825,10 +4845,43 @@ public:
     or `list.pop()`, each element will be dropped from the list, modifying it in-place.
     If `pop()` is used, the previous values will be moved into a new list with the same
     configuration as the current list, which is returned to the caller. */
-    [[nodiscard]] const_slice operator[](
+    [[nodiscard]] auto operator[](
         std::initializer_list<std::optional<ssize_t>> indices
-    ) const noexcept {
-        return {view, indices};
+    ) && -> impl::linked::slice<linked_list&&>
+    {
+        return {this, indices};
+    }
+
+    /* Return a range over a slice within the list, using the contents of a C++
+    initializer list as Python-style start, stop, and step indices.  Each index can be
+    `std::nullopt` (corresponding to `None` or an empty index in Python) or negative,
+    applying the same wraparound as for scalar indexing.  Any out-of-bounds indices
+    will be truncated to the nearest edge, possibly resulting in an empty slice.  Empty
+    slices may also be returned if the start and stop indices do not conform to the
+    given step size (e.g. if `start < stop`, but `step` is negative, or vice versa).
+
+    A slice's natural iteration order is dictated by the step size, which defaults to
+    1.  Forward iterating over it always yields values in that order, while reverse
+    iterating will yield the same values, but in the opposite order.  This is distinct
+    from using a negative step size, as the latter requires changes to the start/stop
+    indices in order to yield the same contents following Python's half-open slice
+    semantics.
+
+    Slices can also be implicitly converted to a new list with arbitrary template
+    parameters, as long as the underlying type is convertible.  If used, CTAD will
+    always deduce to a dynamic list of the same type in this case, but the user can
+    explicitly specify the template to convert to a fixed-size list of a different
+    type, etc.  Conversely, assigning an iterable to the slice will trigger a traversal
+    of the contents, assigning the values from the iterable to each element, provided
+    the underlying element type supports it.  If a slice is passed to `list.remove()`
+    or `list.pop()`, each element will be dropped from the list, modifying it in-place.
+    If `pop()` is used, the previous values will be moved into a new list with the same
+    configuration as the current list, which is returned to the caller. */
+    [[nodiscard]] auto operator[](
+        std::initializer_list<std::optional<ssize_t>> indices
+    ) const -> impl::linked::const_slice<const linked_list&>
+    {
+        return {this, indices};
     }
 
     /// TODO: repetition, concatenation
@@ -3836,7 +4889,7 @@ public:
 };
 
 
-
+/// TODO: CTAD for constructing a linked_list from a slice?
 
 
 
