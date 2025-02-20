@@ -18,6 +18,25 @@
 namespace bertrand {
 
 
+#ifdef _WIN32
+    constexpr bool WINDOWS = true;
+    constexpr bool UNIX = false;
+    constexpr bool APPLE = false;
+#elifdef __unix__
+    constexpr bool WINDOWS = false;
+    constexpr bool UNIX = true;
+    #ifdef __APPLE__
+        constexpr bool APPLE = true;
+    #else
+        constexpr bool APPLE = false;
+    #endif
+#else
+    constexpr bool WINDOWS = false;
+    constexpr bool UNIX = false;
+    constexpr bool APPLE = false;
+#endif
+
+
 #ifdef BERTRAND_DEBUG
     constexpr bool DEBUG = true;
 #else
