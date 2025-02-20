@@ -127,6 +127,106 @@ namespace meta {
 
 namespace impl::linked {
 
+    /* True if a given type T can be transparently checked for equality against a
+    linked container's value type. */
+    template <typename Self, typename T>
+    concept equality_comparable =
+        (meta::linked<Self> || meta::linked_view<Self>) &&
+        (
+            !meta::is_void<typename std::remove_cvref_t<Self>::equal_func> &&
+            std::is_invocable_r_v<
+                bool,
+                typename std::remove_cvref_t<Self>::equal_func,
+                const typename std::remove_cvref_t<Self>::value_type&,
+                const T&
+            >
+        ) || (
+            meta::is_void<typename std::remove_cvref_t<Self>::equal_func> &&
+            meta::eq_returns<
+                const typename std::remove_cvref_t<Self>::value_type&,
+                const T&,
+                bool
+            >
+        );
+
+    /* True if equality comparing the given type T against the linked container's
+    value type can be done without throwing an exception. */
+    template <typename Self, typename T>
+    concept nothrow_equality_comparable =
+        equality_comparable<Self, T> &&
+        (
+            !meta::is_void<typename std::remove_cvref_t<Self>::equal_func> &&
+            std::is_nothrow_invocable_r_v<
+                bool,
+                typename std::remove_cvref_t<Self>::equal_func,
+                const typename std::remove_cvref_t<Self>::value_type&,
+                const T&
+            >
+        ) || (
+            meta::is_void<typename std::remove_cvref_t<Self>::equal_func> &&
+            meta::has_nothrow_eq<
+                const typename std::remove_cvref_t<Self>::value_type&,
+                const T&
+            >
+        );
+
+    /* True if a given type T can be transparently hashed and checked for equality
+    against a linked container's value type. */
+    template <typename Self, typename T>
+    concept hashable =
+        (meta::linked<Self> || meta::linked_view<Self>) &&
+        !meta::is_void<typename std::remove_cvref_t<Self>::hash_func> &&
+        std::is_invocable_r_v<
+            bool,
+            typename std::remove_cvref_t<Self>::hash_func,
+            const T&
+        > && equality_comparable<Self, T>;
+
+    /* True if hashing the given type T and equality comparing against the linked
+    container's value type can be done without throwing an exception. */
+    template <typename Self, typename T>
+    concept nothrow_hashable =
+        hashable<Self, T> &&
+        std::is_nothrow_invocable_r_v<
+            typename std::remove_cvref_t<Self>::hash_func,
+            const T&
+        > && nothrow_equality_comparable<Self, T>;
+
+    /* True if a given type T can be transparently less-than compared against a binary
+    search tree's value type. */
+    template <typename Self, typename T>
+    concept searchable =
+        (meta::linked<Self> || meta::linked_view<Self>) &&
+        !meta::is_void<typename std::remove_cvref_t<Self>::less_func> &&
+        std::is_invocable_r_v<
+            bool,
+            typename std::remove_cvref_t<Self>::less_func,
+            const typename std::remove_cvref_t<Self>::value_type&,
+            const T&
+        > &&
+        std::is_invocable_r_v<
+            bool,
+            typename std::remove_cvref_t<Self>::less_func,
+            const T&,
+            const typename std::remove_cvref_t<Self>::value_type&
+        >;
+
+    /* True if less-than comparing the given type T against the binary search tree's
+    value type can be done without throwing an exception. */
+    template <typename Self, typename T>
+    concept nothrow_searchable =
+        searchable<Self, T> &&
+        std::is_nothrow_invocable_r_v<
+            typename std::remove_cvref_t<Self>::less_func,
+            const typename std::remove_cvref_t<Self>::value_type&,
+            const T&
+        > &&
+        std::is_nothrow_invocable_r_v<
+            typename std::remove_cvref_t<Self>::less_func,
+            const T&,
+            const typename std::remove_cvref_t<Self>::value_type&
+        >;
+
     /// NOTE: node constructors/assignment operators do not modify links between nodes,
     /// which are not safe to copy.  Instead, they initialize to null, and must be
     /// manually assigned by the user to prevent dangling pointers.
@@ -742,6 +842,8 @@ namespace impl::linked {
     /* Converts a node iterator into a value iterator, hiding the node internals. */
     template <meta::unqualified T> requires (meta::linked_iterator<T>)
     struct value_iterator : T {
+        using wrapped = T;
+
         using iterator_category = T::iterator_category;
         using difference_type = T::difference_type;
         using value_type = T::value_type::value_type;
@@ -1121,16 +1223,22 @@ namespace impl::linked {
     /* A range over an immutable slice of a linked data structure.  The slice can be
     efficiently iterated over and/or copied from its original list via implicit
     conversion (possibly with CTAD). */
-    template <meta::linked T>
+    template <meta::linked Self>
     struct const_slice : const_slice_tag {
     private:
-        using view = std::remove_cvref_t<T>::view_type;
-        using node_iter = view::const_iterator;
+        using view_type = std::remove_cvref_t<Self>::view_type;
+        using node_type = view_type::node_type;
+        using node_iter = view_type::const_iterator;
 
-        std::add_pointer_t<T> self = nullptr;
+        std::add_pointer_t<Self> self;
         normalize_slice indices;
 
     public:
+        using container_type = std::remove_cvref_t<Self>;
+        using value_type = container_type::value_type;
+        using reference = value_type&;
+        using pointer = value_type*;
+
         struct iterator {
         private:
             node_iter it;
@@ -1142,13 +1250,13 @@ namespace impl::linked {
         public:
             using iterator_category = std::input_iterator_tag;
             using difference_type = std::ptrdiff_t;
-            using value_type = const view::value_type;
+            using value_type = const view_type::value_type;
             using reference = value_type&;
             using pointer = value_type*;
     
             iterator() = default;
     
-            iterator(const view& self, const normalize_slice& indices, bool ok) {
+            iterator(const view_type& self, const normalize_slice& indices, bool ok) {
                 // if the slice is empty, return an empty iterator
                 if (indices.length == 0) {
                     return;
@@ -1281,13 +1389,13 @@ namespace impl::linked {
 
         using const_iterator = iterator;
 
-        const_slice() = default;
+        const_slice() noexcept : self(nullptr) {}
         const_slice(
-            std::add_pointer_t<T> self,
+            std::add_pointer_t<Self> self,
             const std::initializer_list<std::optional<ssize_t>>& indices
         ) :
             self(self),
-            indices([](std::add_pointer_t<T> self, const auto& indices) {
+            indices([](std::add_pointer_t<Self> self, const auto& indices) {
                 if constexpr (DEBUG) {
                     if (self == nullptr) {
                         throw MemoryError("slice references a null view");
@@ -1321,7 +1429,263 @@ namespace impl::linked {
         /* The normalized step size that was given to the index operator. */
         [[nodiscard]] ssize_t step() const noexcept { return indices.step; }
 
-        /// TODO: count(), index()
+        /* Check whether the given value appears within the slice. */
+        template <typename T>
+            requires (
+                hashable<Self, T> &&
+                (!hashable<Self, T> && searchable<Self, T>) ||
+                (!hashable<Self, T> && !searchable<Self, T> && equality_comparable<Self, T>)
+            )
+        [[nodiscard]] bool contains(const T& value) const noexcept(
+            nothrow_hashable<Self, T> ||
+            nothrow_searchable<Self, T> ||
+            nothrow_equality_comparable<Self, T>
+        ) {
+            using hash = container_type::hash_func;
+            using less = container_type::less_func;
+            using equal = container_type::equal_func;
+
+            if (indices.length == 0) {
+                return false;
+            }
+
+            // if the container is hashed, then we can do an O(1) search and compare
+            if constexpr (hashable<Self, T>) {
+                /// TODO: search the hash table.  If not found, return 0.  Otherwise,
+                /// count backwards to the head of the list and assert that the
+                /// resulting index is within the slice.
+
+            // if the container is a BST, then we can use the tree for a log(n) search
+            } else if constexpr (searchable<Self, T>) {
+                node_type* node = self->view.root;
+                while (node) {
+                    if (less{}(value, node->value)) {
+                        node = node->prev_thread ? nullptr : node->prev;
+                    } else if (less{}(node->value, value)) {
+                        node = node->next_thread ? nullptr : node->next;
+                    } else {
+                        size_t limit = 1;
+                        node_type* next = node->next;
+                        while (next && less{}(value, next->value)) {
+                            ++limit;
+                            next = next->next;
+                        }
+                        size_t idx = 0;
+                        while ((node = node->prev)) {
+                            ++idx;
+                        }
+                        limit += idx;
+                        if (indices.backward) {
+                            while (idx < limit) {
+                                if (
+                                    (idx >= indices.last && idx <= indices.first) &&
+                                    ((idx - indices.last) % indices.abs_step == 0)
+                                ) {
+                                    return true;
+                                }
+                                ++idx;
+                            }
+                        } else {
+                            while (idx < limit) {
+                                if (
+                                    (idx >= indices.first && idx <= indices.last) &&
+                                    ((idx - indices.first) % indices.abs_step == 0)
+                                ) {
+                                    return true;
+                                }
+                                ++idx;
+                            }
+                        }
+                        return false;
+                    }
+                }
+
+            // otherwise, we have to do a linear scan
+            } else {
+                if (indices.backward) {
+                    node_iter it {self->view.tail};
+                    size_t idx = self->view.size() - 1;
+                    for (; idx > indices.first; --idx, --it);
+                    while (idx >= indices.last) {
+                        if constexpr (meta::is_void<equal>) {
+                            if (it->value == value) {
+                                return true;
+                            };
+                        } else {
+                            if (equal{}(it->value, value)) {
+                                return true;
+                            };
+                        }
+                        for(size_t j = 0; j < indices.abs_step; ++j, --it);
+                        idx -= indices.abs_step;
+                    }
+                } else {
+                    node_iter it {self->view.head};
+                    size_t idx = 0;
+                    for (; idx < indices.first; ++idx, ++it);
+                    while (idx <= indices.last) {
+                        if constexpr (meta::is_void<equal>) {
+                            if (it->value == value) {
+                                return true;
+                            };
+                        } else {
+                            if (equal{}(it->value, value)) {
+                                return true;
+                            };
+                        }
+                        for(size_t j = 0; j < indices.abs_step; ++j, ++it);
+                        idx += indices.abs_step;
+                    }
+                }
+            }
+            return false;
+        }
+
+        /* Check how many occurrences of the given value occur within the slice. */
+        template <typename T>
+            requires (
+                hashable<Self, T> &&
+                (!hashable<Self, T> && searchable<Self, T>) ||
+                (!hashable<Self, T> && !searchable<Self, T> && equality_comparable<Self, T>)
+            )
+        [[nodiscard]] size_t count(const T& value) const noexcept(
+            nothrow_hashable<Self, T> ||
+            nothrow_searchable<Self, T> ||
+            nothrow_equality_comparable<Self, T>
+        ) {
+            using hash = container_type::hash_func;
+            using less = container_type::less_func;
+            using equal = container_type::equal_func;
+
+            size_t result = 0;
+            if (indices.length == 0) {
+                return result;
+            }
+
+            // if the container is hashed, then we can do an O(1) search and compare
+            if constexpr (hashable<Self, T>) {
+                /// TODO: search the hash table.  If not found, return 0.  Otherwise,
+                /// count backwards to the head of the list and assert that the
+                /// resulting index is within the slice.
+
+            // if the container is a BST, then we can use the tree for a log(n) search
+            } else if constexpr (searchable<Self, T>) {
+                /// TODO: do a binary search on the tree, then count forward for all
+                /// occurrences of the value.  Then, count backwards and assert that
+                /// one of the observed indices is included in the slice.
+
+            // otherwise, we have to do a linear scan
+            } else {
+                if (indices.backward) {
+                    node_iter it {self->view.tail};
+                    size_t idx = self->view.size() - 1;
+                    for (; idx > indices.first; --idx, --it);
+                    while (idx >= indices.last) {
+                        if constexpr (!meta::is_void<equal>) {
+                            result += equal{}(it->value, value);
+                        } else {
+                            result += it->value == value;
+                        }
+                        for(size_t j = 0; j < indices.abs_step; ++j, --it);
+                        idx -= indices.abs_step;
+                    }
+                } else {
+                    node_iter it {self->view.head};
+                    size_t idx = 0;
+                    for (; idx < indices.first; ++idx, ++it);
+                    while (idx <= indices.last) {
+                        if constexpr (!meta::is_void<equal>) {
+                            result += equal{}(it->value, value);
+                        } else {
+                            result += it->value == value;
+                        }
+                        for(size_t j = 0; j < indices.abs_step; ++j, ++it);
+                        idx += indices.abs_step;
+                    }
+                }
+            }
+            return result;
+        }
+
+        /* Find the index of the first occurrence of the given value within the slice.
+        Returns the index relative to the start of the list, not the slice.  If the
+        value is not found, then returns `std::nullopt`. */
+        template <typename T>
+            requires (
+                hashable<Self, T> &&
+                (!hashable<Self, T> && searchable<Self, T>) ||
+                (!hashable<Self, T> && !searchable<Self, T> && equality_comparable<Self, T>)
+            )
+        [[nodiscard]] std::optional<size_t> index(const T& value) const noexcept(
+            nothrow_hashable<Self, T> ||
+            nothrow_searchable<Self, T> ||
+            nothrow_equality_comparable<Self, T>
+        ) {
+            using hash = container_type::hash_func;
+            using less = container_type::less_func;
+            using equal = container_type::equal_func;
+
+            if (indices.length == 0) {
+                return std::nullopt;
+            }
+
+            // if the container is hashed, then we can do an O(1) search and compare
+            if constexpr (hashable<Self, T>) {
+                /// TODO: search the hash table.  If not found, return 0.  Otherwise,
+                /// count backwards to the head of the list and assert that the
+                /// resulting index is within the slice.
+
+            // if the container is a BST, then we can use the tree for a log(n) search
+            } else if constexpr (searchable<Self, T>) {
+                /// TODO: do a binary search on the tree, then count forward for all
+                /// occurrences of the value.  Then, count backwards and assert that
+                /// one of the observed indices is included in the slice.
+
+            // otherwise, we have to do a linear scan
+            } else {
+                if (indices.backward) {
+                    node_iter it {self->view.tail};
+                    size_t idx = self->view.size() - 1;
+                    for (; idx > indices.first; --idx, --it);
+                    while (idx >= indices.last) {
+                        if constexpr (!meta::is_void<equal>) {
+                            if (equal{}(it->value, value)) {
+                                /// TODO: this should always count from the side
+                                /// nearest to the head of the list.
+                                return idx;
+                            }
+                        } else {
+                            if (it->value == value) {
+                                /// TODO: above
+                                return idx;
+                            };
+                        }
+                        for(size_t j = 0; j < indices.abs_step; ++j, --it);
+                        idx -= indices.abs_step;
+                    }
+                } else {
+                    node_iter it {self->view.head};
+                    size_t idx = 0;
+                    for (; idx < indices.first; ++idx, ++it);
+                    while (idx <= indices.last) {
+                        if constexpr (!meta::is_void<equal>) {
+                            if (equal{}(it->value, value)) {
+                                /// TODO: above
+                                return idx;
+                            };
+                        } else {
+                            if (it->value == value) {
+                                /// TODO: above
+                                return idx;
+                            };
+                        }
+                        for(size_t j = 0; j < indices.abs_step; ++j, ++it);
+                        idx += indices.abs_step;
+                    }
+                }
+            }
+            return std::nullopt;
+        }
 
         /* Forward iterate over the slice contents as efficiently as possible. */
         [[nodiscard]] const_iterator begin() const noexcept {
@@ -1351,7 +1715,7 @@ namespace impl::linked {
 
         /* Copy the contents of the slice into a new linked container with the same
         configuration as the original. */
-        [[nodiscard]] operator std::remove_cvref_t<T>() const {
+        [[nodiscard]] operator container_type() const {
             if constexpr (DEBUG) {
                 if (self == nullptr) {
                     throw MemoryError("slice references a null view");
@@ -1359,11 +1723,11 @@ namespace impl::linked {
             }
 
             // copy the original allocator and reserve to the needed size
-            std::remove_cvref_t<T> result {self->view.allocator};
+            container_type result {self->view.allocator};
             if (indices.length == 0) {
                 return result;
             }
-            if constexpr (!view::STATIC) {
+            if constexpr (!view_type::STATIC) {
                 result.reserve(indices.length);       
             }
 
@@ -1374,18 +1738,20 @@ namespace impl::linked {
             // produce results as if the step size were positive in order to maintain
             // the strict ordering guarantee.
             if (indices.backward) {
-                node_iterator it {self->view.tail};
+                node_iter it {self->view.tail};
                 size_t idx = self->view.size() - 1;
                 for (; idx > indices.first; --idx, --it);
                 result.view.head = result.view.create(it->value);
                 result.view.tail = result.view.head;
-                if constexpr (meta::bst_view<view>) {
+                if constexpr (meta::bst<Self>) {
+                    result.view.root = result.view.head;
                     while (idx > indices.last) {
                         for(size_t j = 0; j < indices.abs_step; ++j, --it);
                         idx -= indices.abs_step;
                         result.view.head->prev = result.view.create(it->value);
                         result.view.head->prev->next = result.view.head;
                         result.view.head = result.view.head->prev;
+                        /// TODO: insert into BST
                     }
                 } else {
                     if (indices.inverted) {
@@ -1407,18 +1773,20 @@ namespace impl::linked {
                     }
                 }
             } else {
-                node_iterator it {self->view.head};
+                node_iter it {self->view.head};
                 size_t idx = 0;
                 for (; idx < indices.first; ++idx, ++it);
                 result.view.head = result.view.create(it->value);
                 result.view.tail = result.view.head;
-                if constexpr (meta::bst_view<view>) {
+                if constexpr (meta::bst<Self>) {
+                    result.view.root = result.view.head;
                     while (idx < indices.last) {
                         for (size_t j = 0; j < indices.abs_step; ++j, ++it);
                         idx += indices.abs_step;
                         result.view.tail->next = result.view.create(it->value);
                         result.view.tail->next->prev = result.view.tail;
                         result.view.tail = result.view.tail->next;
+                        /// TODO: insert into BST
                     }
                 } else {
                     if (indices.inverted) {
@@ -1440,9 +1808,6 @@ namespace impl::linked {
                     }
                 }
             }
-            if constexpr (meta::bst_view<view>) {
-                /// TODO: this is where I would rebalance a new BST
-            }
             return result;
         }
     };
@@ -1450,16 +1815,44 @@ namespace impl::linked {
     /* A range over a mutable slice of a linked data structure.  The slice can be
     efficiently iterated over, copied/moved from its original list, deleted from said
     list, or assigned using arbitrary iterables. */
-    template <meta::linked T>
-    struct slice : slice_tag {
+    template <meta::linked Self>
+    struct slice : const_slice<Self>, slice_tag {
     private:
-        using view = std::remove_cvref_t<T>::view_type;
-        using node_iter = view::iterator;
+        using view_type = std::remove_cvref_t<Self>::view_type;
+        using node_type = view_type::node_type;
+        using node_iter = view_type::iterator;
 
-        std::add_pointer_t<T> self;
-        normalize_slice indices;
+        using const_slice<Self>::self;
+        using const_slice<Self>::indices;
+
+        static decltype(auto) forward(auto& value) {
+            if constexpr (std::is_lvalue_reference_v<Self>) {
+                return value;
+            } else {
+                return std::move(value);
+            }
+        };
+
+        void destroy(node_type* node) noexcept(noexcept(self->view.destroy(node))) {
+            if (node->prev) {
+                node->prev->next = node->next;
+            } else {
+                self->view.head = node->next;
+            }
+            if (node->next) {
+                node->next->prev = node->prev;
+            } else {
+                self->view.tail = node->prev;
+            }
+            node->prev = nullptr;
+            node->next = nullptr;
+            self->view.recycle(node);
+        }
 
     public:
+        using container_type = const_slice<Self>::container_type;
+        using value_type = const_slice<Self>::value_type;
+
         struct iterator {
         private:
             node_iter it;
@@ -1471,13 +1864,13 @@ namespace impl::linked {
         public:
             using iterator_category = std::input_iterator_tag;
             using difference_type = std::ptrdiff_t;
-            using value_type = view::value_type;
+            using value_type = view_type::value_type;
             using reference = value_type&;
             using pointer = value_type*;
     
             iterator() = default;
     
-            iterator(const view& self, const normalize_slice& indices, bool ok) {
+            iterator(const view_type& self, const normalize_slice& indices, bool ok) {
                 // if the slice is empty, return an empty iterator
                 if (indices.length == 0) {
                     return;
@@ -1626,47 +2019,11 @@ namespace impl::linked {
             }
         };
 
-        using const_iterator = const_slice<T>::iterator;
-
-        slice() = default;
-        slice(
-            std::add_pointer_t<T> self,
-            const std::initializer_list<std::optional<ssize_t>>& indices
-        ) :
-            self(self),
-            indices([](std::add_pointer_t<T> self, const auto& indices) {
-                if constexpr (DEBUG) {
-                    if (self == nullptr) {
-                        throw MemoryError("slice references a null view");
-                    }
-                }
-                return normalize_slice(self->size(), indices);
-            }(self, indices))
-        {}
-
-        slice(const slice&) = delete;
-        slice& operator=(const slice&) = delete;
-
-        slice(slice&&) = default;
-        slice& operator=(slice&&) = default;
-
-        /* The total number of elements included in the slice. */
-        [[nodiscard]] size_t size() const noexcept { return indices.length; }
-
-        /* True if the slice has zero size.  False otherwise. */
-        [[nodiscard]] bool empty() const noexcept { return size() == 0; }
-
-        /* True if the slice has non-zero size.  False otherwise. */
-        [[nodiscard]] explicit operator bool() const noexcept { return !empty(); }
-
-        /* The normalized start index that was given to the index operator. */
-        [[nodiscard]] ssize_t start() const noexcept { return indices.start; }
-
-        /* The normalized stop index that was given to the index operator. */
-        [[nodiscard]] ssize_t stop() const noexcept { return indices.stop; }
-
-        /* The normalized step size that was given to the index operator. */
-        [[nodiscard]] ssize_t step() const noexcept { return indices.step; }
+        using const_slice<Self>::const_slice;
+        using const_slice<Self>::operator=;
+        using const_slice<Self>::operator container_type;
+        using const_slice<Self>::begin;
+        using const_slice<Self>::rbegin;
 
         /* Forward iterate over the slice contents as efficiently as possible. */
         [[nodiscard]] iterator begin() noexcept {
@@ -1677,18 +2034,6 @@ namespace impl::linked {
             }
             return {self->view, indices, !indices.inverted};
         }
-        [[nodiscard]] const_iterator begin() const noexcept {
-            if constexpr (DEBUG) {
-                if (self == nullptr) {
-                    throw MemoryError("slice references a null view");
-                }
-            }
-            return {self->view, indices, !indices.inverted};
-        }
-        [[nodiscard]] const_iterator cbegin() const noexcept { return begin(); }
-        [[nodiscard]] sentinel end() noexcept { return {}; }
-        [[nodiscard]] sentinel end() const noexcept { return {}; }
-        [[nodiscard]] sentinel cend() const noexcept { return {}; }
 
         /* Reverse iterate over the slice contents as efficiently as possible. */
         [[nodiscard]] iterator rbegin() noexcept {
@@ -1699,46 +2044,22 @@ namespace impl::linked {
             }
             return {self->view, indices, indices.inverted};
         }
-        [[nodiscard]] const_iterator rbegin() const noexcept {
-            if constexpr (DEBUG) {
-                if (self == nullptr) {
-                    throw MemoryError("slice references a null view");
-                }
-            }
-            return {self->view, indices, indices.inverted};
-        }
-        [[nodiscard]] const_iterator crbegin() const noexcept { return rbegin(); }
-        [[nodiscard]] sentinel rend() noexcept { return {}; }
-        [[nodiscard]] sentinel rend() const noexcept { return {}; }
-        [[nodiscard]] sentinel crend() const noexcept { return {}; }
-
-        /// TODO: allow implicit conversions, assignment and passing to pop() and
-        /// remove().  Assignment should only be allowed for non-BST views, since the
-        /// ordering is controlled externally.
 
         /* Copy or move the contents of the slice into a new linked container with
         the same configuration as the original. */
-        [[nodiscard]] operator std::remove_cvref_t<T>() const {
+        [[nodiscard]] operator container_type() {
             if constexpr (DEBUG) {
                 if (self == nullptr) {
                     throw MemoryError("slice references a null view");
                 }
             }
 
-            constexpr auto forward = [](auto& value) -> decltype(auto) {
-                if constexpr (std::is_lvalue_reference_v<T>) {
-                    return value;
-                } else {
-                    return std::move(value);
-                }
-            };
-
             // copy/move the original allocator and reserve to the needed size
-            std::remove_cvref_t<T> result {forward(self->view.allocator)};
+            container_type result {forward(self->view.allocator)};
             if (indices.length == 0) {
                 return result;
             }
-            if constexpr (!view::STATIC) {
+            if constexpr (!view_type::STATIC) {
                 result.reserve(indices.length);       
             }
 
@@ -1749,58 +2070,72 @@ namespace impl::linked {
             // produce results as if the step size were positive in order to maintain
             // the strict ordering guarantee.
             if (indices.backward) {
-                node_iterator it {self->view.tail};
+                node_iter it {self->view.tail};
                 size_t idx = self->view.size() - 1;
                 for (; idx > indices.first; --idx, --it);
                 result.view.head = result.view.create(it->value);
                 result.view.tail = result.view.head;
-                if constexpr (meta::bst_view<view>) {
+                if constexpr (meta::bst<Self>) {
+                    result.view.root = result.view.head;
                     while (idx > indices.last) {
-                        for(size_t j = 0; j < indices.abs_step; ++j, --it);
+                        for (size_t j = 0; j < indices.abs_step; ++j, --it);
                         idx -= indices.abs_step;
-                        result.view.head->prev = result.view.create(forward(it->value));
+                        result.view.head->prev = result.view.create(
+                            forward(it->value)
+                        );
                         result.view.head->prev->next = result.view.head;
                         result.view.head = result.view.head->prev;
+                        /// TODO: insert into BST with rebalancing
                     }
                 } else {
                     if (indices.inverted) {
                         while (idx > indices.last) {
-                            for(size_t j = 0; j < indices.abs_step; ++j, --it);
+                            for (size_t j = 0; j < indices.abs_step; ++j, --it);
                             idx -= indices.abs_step;
-                            result.view.head->prev = result.view.create(forward(it->value));
+                            result.view.head->prev = result.view.create(
+                                forward(it->value)
+                            );
                             result.view.head->prev->next = result.view.head;
                             result.view.head = result.view.head->prev;
                         }
                     } else {
                         while (idx > indices.last) {
-                            for(size_t j = 0; j < indices.abs_step; ++j, --it);
+                            for (size_t j = 0; j < indices.abs_step; ++j, --it);
                             idx -= indices.abs_step;
-                            result.view.tail->next = result.view.create(forward(it->value));
+                            result.view.tail->next = result.view.create(
+                                forward(it->value)
+                            );
                             result.view.tail->next->prev = result.view.tail;
                             result.view.tail = result.view.tail->next;
                         }
                     }
                 }
             } else {
-                node_iterator it {self->view.head};
+                node_iter it {self->view.head};
                 size_t idx = 0;
                 for (; idx < indices.first; ++idx, ++it);
                 result.view.head = result.view.create(it->value);
                 result.view.tail = result.view.head;
-                if constexpr (meta::bst_view<view>) {
+                if constexpr (meta::bst<Self>) {
+                    result.view.root = result.view.head;
                     while (idx < indices.last) {
                         for (size_t j = 0; j < indices.abs_step; ++j, ++it);
                         idx += indices.abs_step;
-                        result.view.tail->next = result.view.create(forward(it->value));
+                        result.view.tail->next = result.view.create(
+                            forward(it->value)
+                        );
                         result.view.tail->next->prev = result.view.tail;
                         result.view.tail = result.view.tail->next;
+                        /// TODO: insert into BST with rebalancing
                     }
                 } else {
                     if (indices.inverted) {
                         while (idx < indices.last) {
                             for (size_t j = 0; j < indices.abs_step; ++j, ++it);
                             idx += indices.abs_step;
-                            result.view.head->prev = result.view.create(forward(it->value));
+                            result.view.head->prev = result.view.create(
+                                forward(it->value)
+                            );
                             result.view.head->prev->next = result.view.head;
                             result.view.head = result.view.head->prev;
                         }
@@ -1808,15 +2143,14 @@ namespace impl::linked {
                         while (idx < indices.last) {
                             for (size_t j = 0; j < indices.abs_step; ++j, ++it);
                             idx += indices.abs_step;
-                            result.view.tail->next = result.view.create(forward(it->value));
+                            result.view.tail->next = result.view.create(
+                                forward(it->value)
+                            );
                             result.view.tail->next->prev = result.view.tail;
                             result.view.tail = result.view.tail->next;
                         }
                     }
                 }
-            }
-            if constexpr (meta::bst_view<view>) {
-                /// TODO: this is where I would rebalance a new BST
             }
             return result;
         }
@@ -1829,6 +2163,180 @@ namespace impl::linked {
 
         /// TODO: this probably doesn't apply for hash views, since I can just remove
         /// the existing values, then insert the new ones in their places.
+
+        /* Assign the contents of an iterable to the slice, overwriting the current
+        values. */
+        template <meta::yields<value_type> U> requires (!meta::bst<Self>)
+        slice& operator=(U&& iterable) {
+            /// TODO: implement this
+        }
+
+        /* Remove the slice from the original list, returning the number of elements
+        that were removed */
+        [[maybe_unused]] size_t remove() noexcept(
+            noexcept(!DEBUG) &&
+            noexcept(*std::declval<node_iter&>()--) &&
+            noexcept(*std::declval<node_iter&>()++) &&
+            noexcept(--std::declval<node_iter&>()) &&
+            noexcept(++std::declval<node_iter&>()) &&
+            noexcept(destroy(std::declval<node_type*>()))
+        ) {
+            if constexpr (DEBUG) {
+                if (self == nullptr) {
+                    throw MemoryError("slice references a null view");
+                }
+            }
+            if (indices.length == 0) {
+                return 0;
+            }
+            size_t count = 0;
+
+            if (indices.backward) {
+                node_iter it {self->view.tail};
+                size_t idx = self->view.size() - 1;
+                for (; idx > indices.first; --idx, --it);
+                while (idx > indices.last) {
+                    destroy(*it--);
+                    ++count;
+                    for (size_t j = 1; j < indices.abs_step; ++j, --it);
+                    idx -= indices.abs_step;
+                }
+            } else {
+                node_iter it {self->view.head};
+                size_t idx = 0;
+                for (; idx < indices.first; ++idx, ++it);
+                while (idx < indices.last) {
+                    destroy(*it++);
+                    ++count;
+                    for (size_t j = 1; j < indices.abs_step; ++j, ++it);
+                    idx += indices.abs_step;
+                }
+            }
+            if constexpr (meta::bst<Self>) {
+                /// TODO: this is where I would rebalance the existing BST.  This
+                /// procedure gets very complicated, and I might need to revisit it
+            }
+            return count;
+        }
+
+        /* Remove the slice from the original list, extracting its contents into a
+        new list. */
+        [[nodiscard]] container_type pop() {
+            if constexpr (DEBUG) {
+                if (self == nullptr) {
+                    throw MemoryError("slice references a null view");
+                }
+            }
+
+            // copy/move the original allocator and reserve to the needed size
+            container_type result {forward(self->view.allocator)};
+            if (indices.length == 0) {
+                return result;
+            }
+            if constexpr (!view_type::STATIC) {
+                result.reserve(indices.length);
+            }
+
+            // extract values without backtracking.  This can cause us to iterate over
+            // the slice in the opposite order than we would expect, but that can be
+            // reversed by appending to the head of the list rather than the tail.
+            // Note that if the original container was a BST, then we always have to
+            // produce results as if the step size were positive in order to maintain
+            // the strict ordering guarantee.
+            if (indices.backward) {
+                node_iter it {self->view.tail};
+                size_t idx = self->view.size() - 1;
+                for (; idx > indices.first; --idx, --it);
+                result.view.head = result.view.create(std::move(it->value));
+                result.view.tail = result.view.head;
+                destroy(*it--);
+                if constexpr (meta::bst<Self>) {
+                    while (idx > indices.last) {
+                        for (size_t j = 1; j < indices.abs_step; ++j, --it);
+                        idx -= indices.abs_step;
+                        result.view.head->prev = result.view.create(
+                            std::move(it->value)
+                        );
+                        result.view.head->prev->next = result.view.head;
+                        result.view.head = result.view.head->prev;
+                        destroy(*it--);
+                    }
+                } else {
+                    if (indices.inverted) {
+                        while (idx > indices.last) {
+                            for (size_t j = 1; j < indices.abs_step; ++j, --it);
+                            idx -= indices.abs_step;
+                            result.view.head->prev = result.view.create(
+                                std::move(it->value)
+                            );
+                            result.view.head->prev->next = result.view.head;
+                            result.view.head = result.view.head->prev;
+                            destroy(*it--);
+                        }
+                    } else {
+                        while (idx > indices.last) {
+                            for (size_t j = 1; j < indices.abs_step; ++j, --it);
+                            idx -= indices.abs_step;
+                            result.view.tail->next = result.view.create(
+                                std::move(it->value)
+                            );
+                            result.view.tail->next->prev = result.view.tail;
+                            result.view.tail = result.view.tail->next;
+                            destroy(*it--);
+                        }
+                    }
+                }
+
+            } else {
+                node_iter it {self->view.head};
+                size_t idx = 0;
+                for (; idx < indices.first; ++idx, ++it);
+                result.view.head = result.view.create(std::move(it->value));
+                result.view.tail = result.view.head;
+                destroy(*it++);
+                if constexpr (meta::bst<Self>) {
+                    while (idx < indices.last) {
+                        for (size_t j = 1; j < indices.abs_step; ++j, ++it);
+                        idx += indices.abs_step;
+                        result.view.tail->next = result.view.create(
+                            std::move(it->value)
+                        );
+                        result.view.tail->next->prev = result.view.tail;
+                        result.view.tail = result.view.tail->next;
+                        destroy(*it++);
+                    }
+                } else {
+                    if (indices.inverted) {
+                        while (idx < indices.last) {
+                            for (size_t j = 1; j < indices.abs_step; ++j, ++it);
+                            idx += indices.abs_step;
+                            result.view.head->prev = result.view.create(
+                                std::move(it->value)
+                            );
+                            result.view.head->prev->next = result.view.head;
+                            result.view.head = result.view.head->prev;
+                            destroy(*it++);
+                        }
+                    } else {
+                        while (idx < indices.last) {
+                            for (size_t j = 1; j < indices.abs_step; ++j, ++it);
+                            idx += indices.abs_step;
+                            result.view.tail->next = result.view.create(
+                                std::move(it->value)
+                            );
+                            result.view.tail->next->prev = result.view.tail;
+                            result.view.tail = result.view.tail->next;
+                            destroy(*it++);
+                        }
+                    }
+                }
+            }
+
+            if constexpr (meta::bst<Self>) {
+                /// TODO: this is where I would rebalance a new BST
+            }
+            return result;
+        }
     };
 
     /* A specialized iterator that carries the current node with it as it moves,
@@ -1839,7 +2347,7 @@ namespace impl::linked {
     private:
         using iterator = std::remove_cvref_t<Self>::iterator;
 
-        std::add_pointer_t<Self> self = nullptr;
+        std::add_pointer_t<Self> self;
 
     public:
         using iterator_category = iterator::iterator_category;
@@ -1848,8 +2356,7 @@ namespace impl::linked {
         using reference = iterator::reference;
         using pointer = iterator::pointer;
 
-        move() = default;
-
+        move() : self(nullptr) {}
         move(std::add_pointer_t<Self> self, iterator it) noexcept(!DEBUG) :
             iterator(std::move(it)), self(self)
         {
@@ -3381,106 +3888,6 @@ namespace impl::linked {
         // }
     };
 
-    /* True if a given type T can be transparently checked for equality against a
-    linked container's value type. */
-    template <typename Self, typename T>
-    concept equality_comparable =
-        meta::linked<Self> &&
-        (
-            !meta::is_void<typename std::remove_cvref_t<Self>::equal_func> &&
-            std::is_invocable_r_v<
-                bool,
-                typename std::remove_cvref_t<Self>::equal_func,
-                const typename std::remove_cvref_t<Self>::value_type&,
-                const T&
-            >
-        ) || (
-            meta::is_void<typename std::remove_cvref_t<Self>::equal_func> &&
-            meta::eq_returns<
-                const typename std::remove_cvref_t<Self>::value_type&,
-                const T&,
-                bool
-            >
-        );
-
-    /* True if equality comparing the given type T against the linked container's
-    value type can be done without throwing an exception. */
-    template <typename Self, typename T>
-    concept nothrow_equality_comparable =
-        equality_comparable<Self, T> &&
-        (
-            !meta::is_void<typename std::remove_cvref_t<Self>::equal_func> &&
-            std::is_nothrow_invocable_r_v<
-                bool,
-                typename std::remove_cvref_t<Self>::equal_func,
-                const typename std::remove_cvref_t<Self>::value_type&,
-                const T&
-            >
-        ) || (
-            meta::is_void<typename std::remove_cvref_t<Self>::equal_func> &&
-            meta::has_nothrow_eq<
-                const typename std::remove_cvref_t<Self>::value_type&,
-                const T&
-            >
-        );
-
-    /* True if a given type T can be transparently hashed and checked for equality
-    against a linked container's value type. */
-    template <typename Self, typename T>
-    concept hashable =
-        meta::linked<Self> &&
-        !meta::is_void<typename std::remove_cvref_t<Self>::hash_func> &&
-        std::is_invocable_r_v<
-            bool,
-            typename std::remove_cvref_t<Self>::hash_func,
-            const T&
-        > && equality_comparable<Self, T>;
-
-    /* True if hashing the given type T and equality comparing against the linked
-    container's value type can be done without throwing an exception. */
-    template <typename Self, typename T>
-    concept nothrow_hashable =
-        hashable<Self, T> &&
-        std::is_nothrow_invocable_r_v<
-            typename std::remove_cvref_t<Self>::hash_func,
-            const T&
-        > && nothrow_equality_comparable<Self, T>;
-
-    /* True if a given type T can be transparently less-than compared against a binary
-    search tree's value type. */
-    template <typename Self, typename T>
-    concept searchable =
-        meta::linked<Self> &&
-        !meta::is_void<typename std::remove_cvref_t<Self>::less_func> &&
-        std::is_invocable_r_v<
-            bool,
-            typename std::remove_cvref_t<Self>::less_func,
-            const typename std::remove_cvref_t<Self>::value_type&,
-            const T&
-        > &&
-        std::is_invocable_r_v<
-            bool,
-            typename std::remove_cvref_t<Self>::less_func,
-            const T&,
-            const typename std::remove_cvref_t<Self>::value_type&
-        >;
-
-    /* True if less-than comparing the given type T against the binary search tree's
-    value type can be done without throwing an exception. */
-    template <typename Self, typename T>
-    concept nothrow_searchable =
-        searchable<Self, T> &&
-        std::is_nothrow_invocable_r_v<
-            typename std::remove_cvref_t<Self>::less_func,
-            const typename std::remove_cvref_t<Self>::value_type&,
-            const T&
-        > &&
-        std::is_nothrow_invocable_r_v<
-            typename std::remove_cvref_t<Self>::less_func,
-            const T&,
-            const typename std::remove_cvref_t<Self>::value_type&
-        >;
-
     //////////////////////
     ////    APPEND    ////
     //////////////////////
@@ -3857,7 +4264,6 @@ namespace impl::linked {
         return self.size() - orig_size;
     }
 
-
     //////////////////////
     ////    INSERT    ////
     //////////////////////
@@ -3871,28 +4277,42 @@ namespace impl::linked {
     //////////////////////
     ////    REMOVE    ////
     //////////////////////
-
-    template <meta::linked Self>
-    size_t remove(Self& self, typename Self::view_type::iterator it) noexcept(
-        noexcept(self.view.recycle(*it))
+    
+    template <meta::linked Self, typename Iter>
+        requires (!meta::is_const<Iter> && (
+            meta::is<Iter, typename Self::iterator> ||
+            meta::is<Iter, typename Self::reverse_iterator>
+        ))
+    size_t remove(Self& self, Iter&& it) noexcept(
+        noexcept(self.view.recycle(*typename std::remove_cvref_t<Iter>::wrapped{it++}))
     ) {
-        if (it == self.end()) {
-            return 0;
+        if constexpr (meta::is<Iter, typename Self::iterator>) {
+            if (it == self.end()) {
+                return 0;
+            }
+        } else {
+            if (it == self.rend()) {
+                return 0;
+            }
         }
+
         /// TODO: what to do if the iterator represents a node in a BST?  I would need
         /// to rebalance the BST accordingly, which needs to be implemented here.
 
-        if (it->prev) {
-            it->prev->next = it->next;
+        typename std::remove_cvref_t<Iter>::wrapped node {it++};
+        if (node->prev) {
+            node->prev->next = it->next;
         } else {
             self.view.head = it->next;
         }
-        if (it->next) {
-            it->next->prev = it->prev;
+        if (node->next) {
+            node->next->prev = it->prev;
         } else {
             self.view.tail = it->prev;
         }
-        self.view.recycle(*it);
+        node->prev = nullptr;
+        node->next = nullptr;
+        self.view.recycle(*node);
         return 1;
     }
 
@@ -3900,29 +4320,40 @@ namespace impl::linked {
     ////    POP    ////
     ///////////////////
 
-    template <meta::linked Self>
-    auto pop(Self& self, typename Self::view_type::iterator it) noexcept(
-        noexcept(self.view.recycle(*it)) &&
-        noexcept(std::optional<typename Self::value_type>(std::move(it->value)))
-    ) -> std::optional<typename Self::value_type> {
-        if (it == self.end()) {
-            return std::nullopt;
+    template <meta::linked Self, typename Iter>
+        requires (!meta::is_const<Iter> && (
+            meta::is<Iter, typename Self::iterator> ||
+            meta::is<Iter, typename Self::reverse_iterator>
+        ))
+    auto pop(Self& self, Iter&& it) {
+        if constexpr (meta::is<Iter, typename Self::iterator>) {
+            if (it == self.end()) {
+                throw IndexError("cannot pop from a null iterator");
+            }
+        } else {
+            if (it == self.rend()) {
+                throw IndexError("cannot pop from a null iterator");
+            }
         }
+
         /// TODO: what to do if the iterator represents a node in a BST?  I would need
         /// to rebalance the BST accordingly, which needs to be implemented here.
 
-        if (it->prev) {
-            it->prev->next = it->next;
+        typename Self::value_type result {std::move(*it)};
+        typename std::remove_cvref_t<Iter>::wrapped node {it++};
+        if (node->prev) {
+            node->prev->next = node->next;
         } else {
-            self.view.head = it->next;
+            self.view.head = node->next;
         }
-        if (it->next) {
-            it->next->prev = it->prev;
+        if (node->next) {
+            node->next->prev = node->prev;
         } else {
-            self.view.tail = it->prev;
+            self.view.tail = node->prev;
         }
-        std::optional<typename Self::value_type> result {std::move(it->value)};
-        self.view.recycle(*it);
+        node->prev = nullptr;
+        node->next = nullptr;
+        self.view.recycle(*node);
         return result;
     }
 
@@ -4161,6 +4592,11 @@ namespace impl::linked {
 
 
 
+
+    /// TODO: if I convert list<...> to container<view>, then I can place all
+    /// shared methods there.
+
+
     /// TODO: this list class could maybe be a base class for all linked data
     /// structures, which all expose things like size(), front(), back(), etc.
     /// -> rename to container<view>? So all the data structures need to do is
@@ -4321,7 +4757,6 @@ namespace impl::linked {
     template <meta::unqualified T, meta::linked_view View>
         requires (std::constructible_from<T, View>)
     [[nodiscard]] T make(View&& view) { return T(std::forward<View>(view)); }
-
 
 }  // namespace impl::linked
 
@@ -4507,8 +4942,7 @@ public:
     extra boolean, the order of the range will be implicitly reversed, even if the
     incoming container does not support reverse iteration.  This is more efficient
     than constructing the list and then calling `list.reverse()` in-place. */
-    template <meta::iterable Range>
-        requires (std::convertible_to<meta::iter_type<Range>, value_type>)
+    template <meta::yields<value_type> Range>
     explicit linked_list(Range&& range, allocator_type&& alloc = {}) :
         base(std::move(alloc))
     {
@@ -4528,8 +4962,7 @@ public:
     extra boolean, the order of the range will be implicitly reversed, even if the
     incoming container does not support reverse iteration.  This is more efficient
     than constructing the list and then calling `list.reverse()` in-place. */
-    template <meta::iterable Range>
-        requires (std::convertible_to<meta::iter_type<Range>, value_type>)
+    template <meta::yields<value_type> Range>
     explicit linked_list(Range&& range, const allocator_type& alloc) :
         base(alloc)
     {
@@ -4550,10 +4983,7 @@ public:
     incoming iterators do not support reverse iteration.  This is more efficient
     than constructing the list and then calling `list.reverse()` in-place. */
     template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
-        requires (std::convertible_to<
-            decltype(*std::declval<std::add_lvalue_reference_t<Begin>>()),
-            value_type
-        >)
+        requires (meta::dereferences_to<Begin, value_type>)
     explicit linked_list(Begin&& it, End&& end, allocator_type&& alloc = {}) :
         base(std::move(alloc))
     {
@@ -4572,10 +5002,7 @@ public:
     incoming iterators do not support reverse iteration.  This is more efficient
     than constructing the list and then calling `list.reverse()` in-place. */
     template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
-        requires (std::convertible_to<
-            decltype(*std::declval<std::add_lvalue_reference_t<Begin>>()),
-            value_type
-        >)
+        requires (meta::dereferences_to<Begin, value_type>)
     explicit linked_list(Begin&& it, End&& end, const allocator_type& alloc) :
         base(alloc)
     {
@@ -4614,8 +5041,7 @@ public:
     /* Grow the list from the tail, appending all items from an iterable range.
     Invokes implicit conversions to the contained type for each item.  In the event of
     an error, the list will be rolled back to its original state. */
-    template <meta::iterable Range>
-        requires (std::convertible_to<meta::iter_type<Range>, value_type>)
+    template <meta::yields<value_type> Range>
     void extend(Range&& range) noexcept(
         noexcept(impl::linked::extend(*this, std::forward<Range>(range)))
     ) {
@@ -4626,10 +5052,7 @@ public:
     Invokes implicit conversions to the contained type for each item.  In the event of
     an error, the list will be rolled back to its original state. */
     template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
-        requires (std::convertible_to<
-            decltype(*std::declval<std::add_lvalue_reference_t<Begin>>()),
-            value_type
-        >)
+        requires (meta::dereferences_to<Begin, value_type>)
     void extend(Begin&& it, End&& end) noexcept(
         noexcept(impl::linked::extend(*this, std::forward<Begin>(it), std::forward<End>(end)))
     ) {
@@ -4641,8 +5064,7 @@ public:
     to the logic of `prepend()`, this method will implicitly reverse the contents of
     the range upon insertion.  In the event of an error, the list will be rolled back
     to its original state. */
-    template <meta::iterable Range>
-        requires (std::convertible_to<meta::iter_type<Range>, value_type>)
+    template <meta::yields<value_type> Range>
     void extendleft(Range&& range) noexcept(
         noexcept(impl::linked::extendleft(*this, std::forward<Range>(range)))
     ) {
@@ -4655,10 +5077,7 @@ public:
     the range upon insertion.  In the event of an error, the list will be rolled back
     to its original state. */
     template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
-        requires (std::convertible_to<
-            decltype(*std::declval<std::add_lvalue_reference_t<Begin>>()),
-            value_type
-        >)
+        requires (meta::dereferences_to<Begin, value_type>)
     void extendleft(Begin&& it, End&& end) noexcept(
         noexcept(impl::linked::extendleft(*this, std::forward<Begin>(it), std::forward<End>(end)))
     ) {
@@ -4667,35 +5086,56 @@ public:
 
     /* Remove the item at the specified position.  Returns the number of items that
     were removed, which is always 0 if the input iterator is a sentinel, or 1 if a
-    value was successfully removed. */
-    [[maybe_unused]] size_t remove(iterator it) noexcept(
-        noexcept(impl::linked::remove(*this, it))
+    value was successfully removed, in which case the input iterator will be implicitly
+    advanced to the next element. */
+    template <typename Iter>
+        requires (!meta::is_const<Iter> && (
+            meta::is<Iter, iterator> ||
+            meta::is<Iter, reverse_iterator>
+        ))
+    [[maybe_unused]] size_t remove(Iter&& it) noexcept(
+        noexcept(impl::linked::remove(*this, std::forward<Iter>(it)))
     ) {
-        return impl::linked::remove(*this, it);
+        return impl::linked::remove(*this, std::forward<Iter>(it));
     }
 
     /* Remove a slice from the list.  This is equivalent to calling `remove()` on the
     slice itself.  Returns the number of items that were removed, which may be zero
     if the input slice is empty. */
-    [[maybe_unused]] size_t remove(impl::linked::slice<linked_list&>&& slice) noexcept(
+    template <typename Slice>
+        requires (!meta::is_const<Slice> && !meta::is_lvalue<Slice> && (
+            meta::is<Slice, impl::linked::slice<linked_list&>> ||
+            meta::is<Slice, impl::linked::slice<linked_list&&>>
+        ))
+    [[maybe_unused]] size_t remove(Slice&& slice) noexcept(
         noexcept(impl::linked::remove(*this, std::move(slice)))
     ) {
-        return impl::linked::remove(*this, std::move(slice));
+        return std::move(slice).remove();
     }
 
     /* Remove the item at the specified position and return it to the user.  Returns an
     optional, which may be empty if the input iterator is a sentinel.  Otherwise, its
     value is moved into the optional.  */
-    [[nodiscard]] std::optional<value_type> pop(iterator it) noexcept(
-        noexcept(impl::linked::pop(*this, it))
+    template <typename Iter>
+        requires (!meta::is_const<Iter> && (
+            meta::is<Iter, iterator> ||
+            meta::is<Iter, reverse_iterator>
+        ))
+    [[nodiscard]] value_type pop(Iter&& it) noexcept(
+        noexcept(impl::linked::pop(*this, std::forward<Iter>(it)))
     ) {
-        return impl::linked::pop(*this, it);
+        return impl::linked::pop(*this, std::forward<Iter>(it));
     }
 
     /* Remove a slice from the list, extracting the values into a new list.  This is
     equivalent to calling `pop()` on the slice itself.  Returns a container of the same
     type, whose values are moved from the original.  */
-    [[nodiscard]] linked_list pop(impl::linked::slice<linked_list&>&& slice) noexcept(
+    template <typename Slice>
+        requires (!meta::is_const<Slice> && !meta::is_lvalue<Slice> && (
+            meta::is<Slice, impl::linked::slice<linked_list&>> ||
+            meta::is<Slice, impl::linked::slice<linked_list&&>>
+        ))
+    [[nodiscard]] linked_list pop(Slice&& slice) noexcept(
         noexcept(std::move(slice).pop())
     ) {
         return std::move(slice).pop();
@@ -4704,7 +5144,7 @@ public:
     /// TODO: repr()
 
     /// TODO: contains(), count(), index() can probably be placed in a generalized
-    /// base class for all containers.
+    /// base class for all containers. 
 
     /* Return true if the list contains the given value.  This performs a linear search
     through the list with an O(n) time complexity.  If the list is sorted, then this
@@ -4815,8 +5255,7 @@ public:
     configuration as the current list, which is returned to the caller. */
     [[nodiscard]] auto operator[](
         std::initializer_list<std::optional<ssize_t>> indices
-    ) & -> impl::linked::slice<linked_list&>
-    {
+    ) & -> impl::linked::slice<linked_list&> {
         return {this, indices};
     }
 
@@ -4847,8 +5286,7 @@ public:
     configuration as the current list, which is returned to the caller. */
     [[nodiscard]] auto operator[](
         std::initializer_list<std::optional<ssize_t>> indices
-    ) && -> impl::linked::slice<linked_list&&>
-    {
+    ) && -> impl::linked::slice<linked_list&&> {
         return {this, indices};
     }
 
@@ -4879,8 +5317,7 @@ public:
     configuration as the current list, which is returned to the caller. */
     [[nodiscard]] auto operator[](
         std::initializer_list<std::optional<ssize_t>> indices
-    ) const -> impl::linked::const_slice<const linked_list&>
-    {
+    ) const -> impl::linked::const_slice<const linked_list&> {
         return {this, indices};
     }
 

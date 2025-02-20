@@ -321,6 +321,11 @@ inline const impl::virtualenv VIRTUAL_ENV = impl::get_virtual_environment();
 
 namespace meta {
 
+    namespace nothrow {
+        /// TODO: maybe what I should do is put all the nothrow concepts into their own
+        /// namespace, so that they can alias the equivalents in meta::?
+    }
+
     namespace detail {
 
         template <typename Search, size_t I, typename... Ts>
@@ -598,6 +603,14 @@ namespace meta {
     concept yields_reverse =
         reverse_iterable<T> && std::convertible_to<reverse_iter_type<T>, Value>;
 
+    template <typename T, typename Value>
+    concept dereferences_to = requires(T t) {
+        { *t } -> std::convertible_to<Value>;
+    };
+    template <typename T, typename Value>
+    concept nothrow_dereferences_to =
+        dereferences_to<T, Value> && noexcept(*std::declval<T>());
+
     template <iterable Container>
     struct iter_traits {
         using begin = decltype(std::ranges::begin(
@@ -608,7 +621,7 @@ namespace meta {
         ));
         using container = std::remove_reference_t<Container>;
     };
-    template <meta::iterable Container> requires (std::is_lvalue_reference_v<Container>)
+    template <meta::iterable Container> requires (is_lvalue<Container>)
     struct iter_traits<Container> {
         using begin = decltype(std::ranges::begin(std::declval<Container>()));
         using end = decltype(std::ranges::end(std::declval<Container>()));
