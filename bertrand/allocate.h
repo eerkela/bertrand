@@ -4,6 +4,7 @@
 
 #include "bertrand/common.h"
 #include "bertrand/except.h"
+#include <cstddef>
 
 
 #ifdef _WIN32
@@ -22,6 +23,7 @@ namespace bertrand {
 
 namespace impl {
     struct address_space_tag {};
+    struct physical_space_tag {};
 
     /* Backs the `address_space<T>` constructor.  `size` is interpreted as a raw
     number of bytes.  Returns null if the allocation failed. */
@@ -65,10 +67,14 @@ namespace impl {
         #endif
     }
 
-    /* Backs the `address_space<T>.commit()` method.  `ptr` is a pointer returned by
+    /* Backs the `address_space<T>.allocate()` method.  `ptr` is a pointer returned by
     `reserve_address_space()` and `offset` and `size` are interpreted as a raw number
     of bytes into that address. */
-    inline void* commit_address_space(void* ptr, size_t offset, size_t length) noexcept {
+    [[gnu::malloc]] inline void* commit_address_space(
+        void* ptr,
+        size_t offset,
+        size_t length
+    ) noexcept {
         void* p = reinterpret_cast<char*>(ptr) + offset;
         #ifdef _WIN32
             LPVOID result = VirtualAlloc(
@@ -93,9 +99,9 @@ namespace impl {
         #endif
     }
 
-    /* Backs the `address_space<T>.decommit()` method.  `ptr` is a pointer returned by
-    `reserve_address_space()` and `offset` and `size` are interpreted as a raw number
-    of bytes into that address. */
+    /* Backs the `address_space<T>.deallocate()` method.  `ptr` is a pointer returned
+    by `reserve_address_space()` and `offset` and `size` are interpreted as a raw
+    number of bytes into that address. */
     inline bool decommit_address_space(void* ptr, size_t offset, size_t length) noexcept {
         void* p = reinterpret_cast<char*>(ptr) + offset;
         #ifdef _WIN32
@@ -124,13 +130,43 @@ namespace impl {
         };
     }
 
+    template <typename T>
+    constexpr size_t DEFAULT_ADDRESS_CAPACITY =
+        (bytes::MiB * 32 + sizeof(T) - 1) / sizeof(T);
+    template <meta::is_void T>
+    constexpr size_t DEFAULT_ADDRESS_CAPACITY<T> = (bytes::MiB * 32);
+
 }
 
 
 namespace meta {
 
-    template <typename T>
-    concept address_space = inherits<T, impl::address_space_tag>;
+    template <typename Alloc>
+    concept address_space = inherits<Alloc, impl::address_space_tag>;
+
+    template <typename Alloc, typename T>
+    concept address_space_for =
+        address_space<Alloc> &&
+        std::same_as<typename std::remove_cvref_t<Alloc>::type, T>;
+
+    template <typename Alloc>
+    concept physical_space = inherits<Alloc, impl::physical_space_tag>;
+
+    template <typename Alloc, typename T>
+    concept physical_space_for =
+        physical_space<Alloc> &&
+        std::same_as<typename std::remove_cvref_t<Alloc>::type, T>;
+
+    template <typename Alloc>
+    concept space = address_space<Alloc> || physical_space<Alloc>;
+
+    template <typename Alloc, typename T>
+    concept space_for = address_space_for<Alloc, T> || physical_space_for<Alloc, T>;
+
+    template <typename Alloc, typename T>
+    concept allocator_or_space_for =
+        allocator_for<Alloc, T> ||
+        space_for<Alloc, T>;
 
 }
 
@@ -152,7 +188,7 @@ inline size_t PAGE_SIZE = [] {
 
 /* True if the current system supports virtual address reservation.  False
 otherwise. */
-inline bool SUPPORTS_VIRTUAL_ADDRESS = [] {
+inline bool HAS_ADDRESS_SPACE = [] {
     if (PAGE_SIZE == 0) {
         return false;
     }
@@ -164,74 +200,89 @@ inline bool SUPPORTS_VIRTUAL_ADDRESS = [] {
 }();
 
 
-/* A contiguous space of reserved virtual addresses (pointers), into which physical
+/* A contiguous region of reserved virtual addresses (pointers), into which physical
 memory can be allocated.
 
 Note that this does not allocate memory by itself.  Instead, it denotes a range of
 forbidden pointer values that the operating system will not assign to any other source
 within the same process.  Physical memory can then be requested to back these addresses
-as needed, which will cause the operating system to allocate physical memory and map it
-into the reserved virtual address space using the CPU's Memory Management Unit (MMU).
-Such hardware is not guaranteed to be present on all systems (particularly for embedded
-systems), in which case this class will simply do nothing, and will always evaluate to
-`false` under boolean logic to indicate an empty address space.  Otherwise, the address
-space will have been reserved, and any physical pages assigned to it will be
-automatically released when the address space is destroyed.
+as needed, which will cause the operating system to allocate individual pages and map
+them into the virtual address space using the CPU's Memory Management Unit (MMU).  Such
+hardware is not guaranteed to be present on all systems (particularly for embedded
+systems), in which case a `MemoryError` will be raised upon construction.  Otherwise,
+the address space will have been reserved, and any physical pages assigned to it will
+be automatically released when the address space is destroyed.
 
 The template parameter `T` can be used to specify the type of data that will be stored
-in the address space, defaulting to `void`.  The address space itself is held as a `T*`
-pointer, and the size used to construct it indicates how many instances of `T` can be
-stored within the space (e.g. `address_space<Foo>(5)` reserves enough space for 5
-complete instances of `Foo`).  If `T = void`, then the size is interpreted as a raw
-number of bytes, which can be used to store arbitrary data.
+inside the address space.  The space itself is held as a `T*` pointer, and the size
+used to construct it indicates how many instances of `T` can be stored within.  If
+`T = void`, then the size is interpreted as a raw number of bytes, which can be used
+to store arbitrary data.
 
-This class is primarily used to implement low-level memory allocation for arena
+The template parameter `N` indicates the size of space to reserve in units of `T`, as
+described above.  The default value equates to roughly 32 MiB of contiguous address
+space, subdivided into segments of type `T`.  This is usually sufficient for small to
+medium-sized data structures, but can be increased arbitrarily if necessary, up to the
+system's maximum virtual address (~256 TiB on most 64-bit systems).  If `N` is set to
+zero, then the size may instead be given as a runtime parameter to the constructor
+in order to model dynamic address spaces.
+
+This class is primarily meant to implement low-level memory allocation for arena
 allocators and dynamic data structures, such as high-performance vectors.  Since the
-virtual address space is reserved in advance and decoupled from physical memory, it is
-possible to implement these data structures without ever relocating objects in memory,
-which is ordinarily a costly operation that results in memory fragmentation and
-possible dangling pointers.  By using a virtual address space, the data structure can
-be trivially resized by simply allocating additional pages of physical memory, without
-changing the addresses of existing objects.  This improves both performance and safety,
-since there is no risk of pointer invalidation or memory leaks due to growth of the
-data structure itself (although invalidation can still occur if relocation occurs for
-other reasons, such as by removing an element from the middle of a vector, for
-example).
+virtual address space is reserved ahead of time and decoupled from physical memory, it
+is possible to implement these data structures without ever needing to relocate objects
+in memory, which is ordinarily a costly operation that results in memory fragmentation
+and possible dangling pointers.  By using a virtual address space, the data structure
+can be trivially resized by simply allocating additional pages of physical memory
+within the same address space, without changing the address of existing objects.  This
+improves both performance and safety, since there is no risk of pointer invalidation or
+memory leaks due to growth of the data structure (although invalidation can still occur
+if relocation occurs for other reasons, such as by removing an element from the middle
+of a vector).
 
 Address spaces are not thread-safe by default, and must be protected by a lock if
-multiple threads are expected to access them concurrently. */
-template <meta::unqualified T, size_t N = 0>
+multiple threads are expected to allocate data concurrently. */
+template <meta::unqualified T, size_t N = impl::DEFAULT_ADDRESS_CAPACITY<T>>
 struct address_space : impl::address_space_tag {
-private:
-    T* m_ptr;
-
-public:
+    using size_type = size_t;
+    using difference_type = ptrdiff_t;
     using type = T;
-    static constexpr size_t STATIC = N;
+    using value_type = std::conditional_t<meta::is_void<T>, std::byte, T>;
+    using reference = value_type&;
+    using const_reference = const value_type&;
+    using pointer = value_type*;
+    using const_pointer = const value_type*;
+    using iterator = pointer;
+    using const_iterator = const_pointer;
+    using reverse_iterator = std::reverse_iterator<iterator>;
+    using const_reverse_iterator = const std::reverse_iterator<const_iterator>;
 
-    enum : size_t {
+    enum : size_type {
         B = impl::bytes::B,
         KiB = impl::bytes::KiB,
         MiB = impl::bytes::MiB,
         GiB = impl::bytes::GiB,
     };
 
+    /* The default capacity to reserve if no template override is given.  This defaults
+    to ~32 MiB of total storage, evenly divided into contiguous segments of type T. */
+    static constexpr size_type DEFAULT_CAPACITY = impl::DEFAULT_ADDRESS_CAPACITY<T>;
+
+    /* False if the address space's total capacity can only be known at runtime.
+    Otherwise, equal to `N`, which is the maximum capacity of the address space in
+    units of `T`.  If `T` is void, then this refers to the total memory (in bytes) that
+    are reserved for the address space. */
+    static constexpr size_type STATIC = N;
+
     /* Default constructor.  Reserves address space, but does not commit any memory. */
-    [[nodiscard]] address_space() noexcept(!DEBUG) {
-        if constexpr (meta::is_void<T>) {
-            m_ptr = impl::reserve_address_space(N);
-        } else {
-            m_ptr = impl::reserve_address_space(N * sizeof(T));
-        }
+    [[nodiscard]] address_space() noexcept(!DEBUG) :
+        m_ptr(reinterpret_cast<pointer>(impl::reserve_address_space(nbytes())))
+    {
         if constexpr (DEBUG) {
             if (m_ptr == nullptr) {
-                double capacity = N;
-                if constexpr (!meta::is_void<T>) {
-                    capacity *= sizeof(T);
-                }
                 throw MemoryError(std::format(
-                    "Failed to reserve virtual address space of size {:.2e} MiB",
-                    capacity / double(impl::bytes::MiB)
+                    "failed to reserve virtual address space of size {:.2e} MiB",
+                    double(nbytes()) / double(impl::bytes::MiB)
                 ));
             }
         }
@@ -247,19 +298,15 @@ public:
     address_space& operator=(address_space&& other) noexcept(!DEBUG) {
         if (this != &other) {
             if (m_ptr) {
-                size_t size = N;
-                if constexpr (!meta::is_void<T>) {
-                    size *= sizeof(T);
-                }
-                bool rc = impl::free_address_space(m_ptr, size);
+                bool rc = impl::free_address_space(m_ptr, nbytes());
                 if constexpr (DEBUG) {
                     if (rc) {
                         throw MemoryError(std::format(
-                            "Failed to unreserve virtual address space starting "
+                            "failed to unreserve virtual address space starting "
                             "at address {:#x} and ending at address {:#x} ({:.2e} MiB)",
                             reinterpret_cast<uintptr_t>(m_ptr),
-                            reinterpret_cast<uintptr_t>(m_ptr) + size,
-                            double(size) / double(impl::bytes::MiB)
+                            reinterpret_cast<uintptr_t>(m_ptr) + nbytes(),
+                            double(nbytes()) / double(impl::bytes::MiB)
                         ));
                     }
                 }
@@ -274,19 +321,15 @@ public:
     reuse the reserved addresses for future allocations. */
     ~address_space() noexcept(!DEBUG) {
         if (m_ptr) {
-            size_t size = N;
-            if constexpr (!meta::is_void<T>) {
-                size *= sizeof(T);
-            }
-            bool rc = impl::free_address_space(m_ptr, size);
+            bool rc = impl::free_address_space(m_ptr, nbytes());
             if constexpr (DEBUG) {
                 if (rc) {
                     throw MemoryError(std::format(
-                        "Failed to unreserve virtual address space starting at "
+                        "failed to unreserve virtual address space starting at "
                         "address {:#x} and ending at address {:#x} ({:.2e} MiB)",
                         reinterpret_cast<uintptr_t>(m_ptr),
-                        reinterpret_cast<uintptr_t>(m_ptr) + size,
-                        double(size) / double(impl::bytes::MiB)
+                        reinterpret_cast<uintptr_t>(m_ptr) + nbytes(),
+                        double(nbytes()) / double(impl::bytes::MiB)
                     ));
                 }
             }
@@ -294,22 +337,40 @@ public:
         }
     }
 
-    /* False if the address space is empty.  True otherwise. */
-    explicit operator bool() const noexcept { return m_ptr; }
+    /* True if the address space was properly initialized and is not empty.  False
+    otherwise. */
+    [[nodiscard]] explicit operator bool() const noexcept { return m_ptr; }
 
     /* Return the maximum size of the virtual address space in units of `T`.  If
     `T` is void, then this refers to the total size (in bytes) of the address space
     itself. */
-    [[nodiscard]] static constexpr size_t size() noexcept { return N; }
+    [[nodiscard]] static constexpr size_type size() noexcept { return N; }
 
-    [[nodiscard]] T* data() noexcept { return m_ptr; }
-    [[nodiscard]] T* begin() noexcept { return m_ptr; }
-    [[nodiscard]] T* end() noexcept { return m_ptr + N; }
-    [[nodiscard]] const T* data() const noexcept { return m_ptr; }
-    [[nodiscard]] const T* begin() const noexcept { return m_ptr; }
-    [[nodiscard]] const T* end() const noexcept { return m_ptr + N; }
+    /* Return the maximum size of the address space in bytes.  If `T` is void, then
+    this is equivalent to `size()`. */
+    [[nodiscard]] static constexpr size_type nbytes() noexcept { return N * sizeof(value_type); }
 
-    /* Manually commit physical memory to the address space.  If `T` is not void,
+    /* Get a pointer to the beginning of the reserved address space.  If `T` is void,
+    then the pointer will be returned as `std::byte*`. */
+    [[nodiscard]] pointer data() noexcept { return m_ptr; }
+    [[nodiscard]] const_pointer data() const noexcept { return m_ptr; }
+
+    /* Iterate over the reserved addresses.  If `T` is void, then each element is
+    represented as a `std::byte`. */
+    [[nodiscard]] iterator begin() noexcept { return m_ptr; }
+    [[nodiscard]] const_iterator begin() const noexcept { return m_ptr; }
+    [[nodiscard]] const_iterator cbegin() const noexcept { return m_ptr;}
+    [[nodiscard]] iterator end() noexcept { return begin() + N; }
+    [[nodiscard]] const_iterator end() const noexcept { return begin() + N; }
+    [[nodiscard]] const_iterator cend() const noexcept { return begin() + N; }
+    [[nodiscard]] reverse_iterator rbegin() noexcept { return {end()}; }
+    [[nodiscard]] const_reverse_iterator rbegin() const noexcept { return {end()}; }
+    [[nodiscard]] const_reverse_iterator crbegin() const noexcept { return {end()}; }
+    [[nodiscard]] reverse_iterator rend() noexcept { return {begin()}; }
+    [[nodiscard]] const_reverse_iterator rend() const noexcept { return {begin()}; }
+    [[nodiscard]] const_reverse_iterator crend() const noexcept { return {begin()}; }
+
+    /* Manually commit physical memory to the address space.  If `T` is not void, then
     `offset` and `length` are both multiplied by `sizeof(T)` to determine the actual
     offsets for the relevant syscall.  The result is either a pointer to the start of
     the committed memory, or `nullptr` if the commit failed in some (unspecified) way.
@@ -317,11 +378,14 @@ public:
     Individual arena implementations are expected to wrap this method to make the
     interface more convenient.  This simply abstracts the low-level OS hooks to make
     them cross-platform. */
-    [[nodiscard]] T* commit(size_t offset, size_t length) noexcept(!DEBUG) {
+    [[nodiscard, gnu::malloc]] pointer allocate(
+        size_type offset,
+        size_type length
+    ) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
             if (offset + length > N) {
                 throw MemoryError(std::format(
-                    "Attempted to commit memory at offset {} with length {}, "
+                    "attempted to commit memory at offset {} with length {}, "
                     "which exceeds the size of the virtual address space starting "
                     "at address {:#x} and ending at address {:#x} ({:.2e} MiB)",
                     offset,
@@ -332,30 +396,28 @@ public:
                 ));
             }
         }
-        if constexpr (!meta::is_void<T>) {
-            offset *= sizeof(T);
-            length *= sizeof(T);
-        }
-        return reinterpret_cast<T*>(
+        offset *= sizeof(value_type);
+        length *= sizeof(value_type);
+        return reinterpret_cast<iterator>(
             impl::commit_address_space(m_ptr, offset, length)
         );
     }
 
     /* Manually release physical memory from the address space.  If `T` is not void,
-    `offset` and `length` are both multiplied by `sizeof(T)` to determine the actual
-    offsets for the relevant syscall.  The result is false if an (unspecified) error
-    occurred during the release operation.  Note that this does not unreserve addresses
-    from the space itself, merely the physical memory backing them.
+    then `offset` and `length` are both multiplied by `sizeof(T)` to determine the
+    actual offsets for the relevant syscall.  The result is false if an (unspecified)
+    error occurred during the release operation.  Note that this does not unreserve
+    addresses from the space itself, merely the physical memory backing them.
 
     Individual arena implementations are expected to wrap this method to make the
     interface more convenient.  This simply abstracts the low-level OS hooks to make
     them cross-platform.  Note that this does not unreserve the address space itself,
     which is done automatically by the destructor. */
-    [[nodiscard]] bool decommit(size_t offset, size_t length) noexcept(!DEBUG) {
+    [[nodiscard]] bool deallocate(size_type offset, size_type length) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
             if (offset + length > N) {
                 throw MemoryError(std::format(
-                    "Attempted to decommit memory at offset {} with length {}, "
+                    "attempted to decommit memory at offset {} with length {}, "
                     "which exceeds the size of the virtual address space starting "
                     "at address {:#x} and ending at address {:#x} ({:.2e} MiB)",
                     offset,
@@ -366,57 +428,108 @@ public:
                 ));
             }
         }
-        if constexpr (!meta::is_void<T>) {
-            offset *= sizeof(T);
-            length *= sizeof(T);
-        }
+        offset *= sizeof(value_type);
+        length *= sizeof(value_type);
         return impl::decommit_address_space(m_ptr, offset, length);
     }
+
+    /* Construct a value that was allocated from this address space using placement
+    new. */
+    template <typename... Args>
+        requires (!meta::is_void<T> && std::constructible_from<T, Args...>)
+    void construct(pointer p, Args&&... args) noexcept(
+        !DEBUG && noexcept(new (p) T(std::forward<Args>(args)...))
+    ) {
+        if constexpr (DEBUG) {
+            if (p < begin() || p >= end()) {
+                throw MemoryError(std::format(
+                    "pointer at address {:#x} was not allocated from the virtual "
+                    "address space starting at address {:#x} and ending at "
+                    "address {:#x} ({:.2e} MiB)",
+                    reinterpret_cast<uintptr_t>(p),
+                    reinterpret_cast<uintptr_t>(m_ptr),
+                    reinterpret_cast<uintptr_t>(m_ptr) + nbytes(),
+                    double(nbytes()) / double(impl::bytes::MiB)
+                ));
+            }
+        }
+        new (p) T(std::forward<Args>(args)...);
+    }
+
+    /* Destroy a value that was allocated from this address space by calling its
+    destructor in-place.  Note that this does not deallocate the memory itself.  This
+    only occurs when the address space is destroyed, or when physical memory is
+    explicitly decommitted using the `deallocate()` method. */
+    void destroy(pointer p) noexcept(!DEBUG && noexcept(p->~T())) {
+        if constexpr (DEBUG) {
+            if (p < begin() || p >= end()) {
+                throw MemoryError(std::format(
+                    "pointer at address {:#x} was not allocated from the virtual "
+                    "address space starting at address {:#x} and ending at "
+                    "address {:#x} ({:.2e} MiB)",
+                    reinterpret_cast<uintptr_t>(p),
+                    reinterpret_cast<uintptr_t>(m_ptr),
+                    reinterpret_cast<uintptr_t>(m_ptr) + nbytes(),
+                    double(nbytes()) / double(impl::bytes::MiB)
+                ));
+            }
+        }
+        p->~T();
+    }
+
+private:
+    pointer m_ptr;
 };
 
 
-/* A specialization of `address_space<T>` which can dynamically grow based on an
-initial runtime capacity.  When growth is triggered, an attempt will be made to extend
-the virtual address space in-place, in which case no relocations need occur.  If that
-fails, then a new address space will be reserved, and the existing contents must be
-relocated to that space, invalidating the previous pointers. */
+/* A specialization of `address_space<T>` whose capacity is only known at runtime.
+Such spaces have all the same characteristics as a statically-sized address space, but
+can potentially be extended to larger sizes if necessary, as long as no other
+allocations have been made within the extended region. */
 template <meta::unqualified T>
 struct address_space<T, 0> : impl::address_space_tag {
-private:
-    T* m_ptr;
-    size_t m_capacity;
-
-public:
+    using size_type = size_t;
+    using difference_type = ptrdiff_t;
     using type = T;
-    static constexpr size_t STATIC = 0;
+    using value_type = std::conditional_t<meta::is_void<T>, std::byte, T>;
+    using reference = value_type&;
+    using const_reference = const value_type&;
+    using pointer = value_type*;
+    using const_pointer = const value_type*;
+    using iterator = pointer;
+    using const_iterator = const_pointer;
+    using reverse_iterator = std::reverse_iterator<iterator>;
+    using const_reverse_iterator = const std::reverse_iterator<const_iterator>;
 
-    enum : size_t {
+    enum : size_type {
         B = impl::bytes::B,
         KiB = impl::bytes::KiB,
         MiB = impl::bytes::MiB,
         GiB = impl::bytes::GiB,
     };
 
+    /* The default capacity to reserve if no template override is given.  This defaults
+    to ~32 MiB of total storage, evenly divided into contiguous segments of type T. */
+    static constexpr size_type DEFAULT_CAPACITY = impl::DEFAULT_ADDRESS_CAPACITY<T>;
+
+    /* False if the address space's total capacity can only be known at runtime.
+    Otherwise, equal to `N`, which is the maximum capacity of the address space in
+    units of `T`.  If `T` is void, then this refers to the total memory (in bytes) that
+    are reserved for the address space. */
+    static constexpr size_type STATIC = 0;
+
     /* Reserve enough address space to store `capacity` instances of type `T`.  If
     `T` is void, `capacity` refers to a raw number of bytes to reserve. */
-    [[nodiscard]] address_space(size_t capacity = 0) noexcept(!DEBUG) :
+    [[nodiscard]] address_space(size_type capacity = 0) noexcept(!DEBUG) :
         m_ptr(nullptr), m_capacity(capacity)
     {
         if (capacity) {
-            if constexpr (meta::is_void<T>) {
-                m_ptr = impl::reserve_address_space(capacity);
-            } else {
-                m_ptr = impl::reserve_address_space(capacity * sizeof(T));
-            }
+            m_ptr = impl::reserve_address_space(nbytes());
             if constexpr (!DEBUG) {
                 if (m_ptr == nullptr) {
-                    double capacity = m_capacity;
-                    if constexpr (!meta::is_void<T>) {
-                        capacity *= sizeof(T);
-                    }
                     throw MemoryError(std::format(
-                        "Failed to reserve virtual address space of size {:.2e} MiB",
-                        capacity / double(impl::bytes::MiB)
+                        "failed to reserve virtual address space of size {:.2e} MiB",
+                        double(nbytes()) / double(impl::bytes::MiB)
                     ));
                 }
             }
@@ -436,19 +549,15 @@ public:
     address_space& operator=(address_space&& other) noexcept(!DEBUG) {
         if (this != &other) {
             if (m_ptr) {
-                size_t size = m_capacity;
-                if constexpr (!meta::is_void<T>) {
-                    size *= sizeof(T);
-                }
-                bool rc = impl::free_address_space(m_ptr, size);
+                bool rc = impl::free_address_space(m_ptr, nbytes());
                 if constexpr (DEBUG) {
                     if (rc) {
                         throw MemoryError(std::format(
-                            "Failed to unreserve virtual address space starting "
+                            "failed to unreserve virtual address space starting "
                             "at address {:#x} and ending at address {:#x} ({:.2e} MiB)",
                             reinterpret_cast<uintptr_t>(m_ptr),
-                            reinterpret_cast<uintptr_t>(m_ptr) + size,
-                            double(size) / double(impl::bytes::MiB)
+                            reinterpret_cast<uintptr_t>(m_ptr) + nbytes(),
+                            double(nbytes()) / double(impl::bytes::MiB)
                         ));
                     }
                 }
@@ -465,19 +574,15 @@ public:
     reuse the reserved addresses for future allocations. */
     ~address_space() noexcept(!DEBUG) {
         if (m_ptr) {
-            size_t size = m_capacity;
-            if constexpr (!meta::is_void<T>) {
-                size *= sizeof(T);
-            }
-            bool rc = impl::free_address_space(m_ptr, size);
+            bool rc = impl::free_address_space(m_ptr, nbytes());
             if constexpr (DEBUG) {
                 if (rc) {
                     throw MemoryError(std::format(
-                        "Failed to unreserve virtual address space starting at "
+                        "failed to unreserve virtual address space starting at "
                         "address {:#x} and ending at address {:#x} ({:.2e} MiB)",
                         reinterpret_cast<uintptr_t>(m_ptr),
-                        reinterpret_cast<uintptr_t>(m_ptr) + size,
-                        double(size) / double(impl::bytes::MiB)
+                        reinterpret_cast<uintptr_t>(m_ptr) + nbytes(),
+                        double(nbytes()) / double(impl::bytes::MiB)
                     ));
                 }
             }
@@ -486,46 +591,56 @@ public:
         }
     }
 
-    /* False if the address space is empty.  True otherwise. */
-    explicit operator bool() const noexcept { return m_ptr; }
+    /* True if the address space was properly initialized and is not empty.  False
+    otherwise. */
+    [[nodiscard]] explicit operator bool() const noexcept { return m_ptr; }
 
     /* Return the maximum size of the virtual address space in units of `T`.  If
     `T` is void, then this refers to the total size (in bytes) of the address space
     itself. */
-    [[nodiscard]] size_t size() const noexcept { return m_capacity; }
+    [[nodiscard]] size_type size() const noexcept { return m_capacity; }
 
-    [[nodiscard]] T* data() noexcept { return m_ptr; }
-    [[nodiscard]] T* begin() noexcept { return m_ptr; }
-    [[nodiscard]] T* end() noexcept { return m_ptr + m_capacity; }
-    [[nodiscard]] const T* data() const noexcept { return m_ptr; }
-    [[nodiscard]] const T* begin() const noexcept { return m_ptr; }
-    [[nodiscard]] const T* end() const noexcept { return m_ptr + m_capacity; }
+    /* Return the maximum size of the address space in bytes.  If `T` is void, then
+    this is equivalent to `size()`. */
+    [[nodiscard]] size_type nbytes() const noexcept { return m_capacity * sizeof(value_type); }
 
-    /// TODO: maybe these take extra parameters to check whether the address space
-    /// was relocated?  Or maybe they still raise errors like normal, and it's up to
-    /// the caller to check whether they need to relocate or grow the array?  I
-    /// could probably add an `extend()` operation that attempts to grow the address
-    /// space in-place, and returns true/false if that was successful.  The caller
-    /// would then check whether the new size of the container is greater than the
-    /// size of the address space, and if so, they would attempt to call `extend()` and
-    /// only relocate if that returns false.  Otherwise, they can continue placing
-    /// contents into the address space starting from the end of the existing contents,
-    /// without relocating.
+    /* Get a pointer to the beginning of the reserved address space.  If `T` is void,
+    then the pointer will be returned as `std::byte*`. */
+    [[nodiscard]] pointer data() noexcept { return m_ptr; }
+    [[nodiscard]] const_pointer data() const noexcept { return m_ptr; }
+
+    /* Iterate over the reserved addresses.  If `T` is void, then each element is
+    represented as a `std::byte`. */
+    [[nodiscard]] iterator begin() noexcept { return m_ptr; }
+    [[nodiscard]] const_iterator begin() const noexcept { return m_ptr; }
+    [[nodiscard]] const_iterator cbegin() const noexcept { return m_ptr;}
+    [[nodiscard]] iterator end() noexcept { return begin() + m_capacity; }
+    [[nodiscard]] const_iterator end() const noexcept { return begin() + m_capacity; }
+    [[nodiscard]] const_iterator cend() const noexcept { return begin() + m_capacity; }
+    [[nodiscard]] reverse_iterator rbegin() noexcept { return {end()}; }
+    [[nodiscard]] const_reverse_iterator rbegin() const noexcept { return {end()}; }
+    [[nodiscard]] const_reverse_iterator crbegin() const noexcept { return {end()}; }
+    [[nodiscard]] reverse_iterator rend() noexcept { return {begin()}; }
+    [[nodiscard]] const_reverse_iterator rend() const noexcept { return {begin()}; }
+    [[nodiscard]] const_reverse_iterator crend() const noexcept { return {begin()}; }
 
     /* Manually commit physical memory to the address space.  If `T` is not void,
     `offset` and `length` are both multiplied by `sizeof(T)` to determine the actual
     offsets for the relevant syscall.  The result is either a pointer to the start
     of the committed memory, or `nullptr` if the commit failed in some (unspacified)
     way.
-    
+
     Individual arena implementations are expected to wrap this method to make the
     interface more convenient.  This simply abstracts the low-level OS hooks to make
     them cross-platform. */
-    [[nodiscard]] T* commit(size_t offset, size_t length) noexcept (!DEBUG) {
+    [[nodiscard, gnu::malloc]] pointer allocate(
+        size_type offset,
+        size_type length
+    ) noexcept (!DEBUG) {
         if constexpr (DEBUG) {
             if (offset + length > m_capacity) {
                 throw MemoryError(std::format(
-                    "Attempted to commit memory at offset {} with length {}, "
+                    "attempted to commit memory at offset {} with length {}, "
                     "which exceeds the size of the virtual address space starting "
                     "at address {:#x} and ending at address {:#x} ({:.2e} MiB)",
                     offset,
@@ -536,11 +651,9 @@ public:
                 ));
             }
         }
-        if constexpr (!meta::is_void<T>) {
-            offset *= sizeof(T);
-            length *= sizeof(T);
-        }
-        return reinterpret_cast<T*>(
+        offset *= sizeof(value_type);
+        length *= sizeof(value_type);
+        return reinterpret_cast<iterator>(
             impl::commit_address_space(m_ptr, offset, length)
         );
     }
@@ -555,11 +668,11 @@ public:
     interface more convenient.  This simply abstracts the low-level OS hooks to make
     them cross-platform.  Note that this does not unreserve the address space itself,
     which is done automatically by the destructor. */
-    [[nodiscard]] bool decommit(size_t offset, size_t length) noexcept(!DEBUG) {
+    [[nodiscard]] bool deallocate(size_type offset, size_type length) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
             if (offset + length > m_capacity) {
                 throw MemoryError(std::format(
-                    "Attempted to decommit memory at offset {} with length {}, "
+                    "attempted to decommit memory at offset {} with length {}, "
                     "which exceeds the size of the virtual address space starting "
                     "at address {:#x} and ending at address {:#x} ({:.2e} MiB)",
                     offset,
@@ -570,18 +683,25 @@ public:
                 ));
             }
         }
-        if constexpr (!meta::is_void<T>) {
-            offset *= sizeof(T);
-            length *= sizeof(T);
-        }
+        offset *= sizeof(value_type);
+        length *= sizeof(value_type);
         return impl::decommit_address_space(m_ptr, offset, length);
     }
 
     /* Attempt to extend the reserved address space in-place.  Returns true if the
     extension was successful, or false if the resize requires a relocation.  Note that
     in the latter case, the address space will not be extended, and it is up to the
-    user to relocate the elements as needed. */
-    [[nodiscard]] bool resize(size_t capacity) noexcept(!DEBUG) {
+    user to manually relocate the elements as needed.
+
+    `capacity` is interpreted according to the same semantics as the constructor.
+
+    Use of this method is generally discouraged, as one of the main benefits of virtual
+    address spaces is as a guard against pointer invalidation.  If this method fails,
+    then the only way to extend the address space is to copy/move the existing elements
+    into a new space, potentially leaving dangling pointers and memory leaks to the
+    original values.  It is therefore always preferable to just allocate a larger
+    address space from the beginning, and never attempt to resize it. */
+    [[nodiscard]] bool resize(size_type capacity) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
             if (capacity < m_capacity) {
                 throw MemoryError(std::format(
@@ -597,14 +717,8 @@ public:
             }
         }
 
-        void* ptr;
-        size_t delta = capacity - m_capacity;
-        if constexpr (meta::is_void<T>) {
-            ptr = reinterpret_cast<char*>(m_ptr) + m_capacity;
-        } else {
-            ptr = reinterpret_cast<char*>(m_ptr) + m_capacity * sizeof(T);
-            delta *= sizeof(T);
-        }
+        void* ptr = reinterpret_cast<char*>(m_ptr) + nbytes();
+        size_type delta = (capacity - m_capacity) * sizeof(value_type);
 
         #ifdef _WIN32
             void* temp = VirtualAlloc(
@@ -641,6 +755,230 @@ public:
         return true;
     }
 
+    /* Construct a value that was allocated from this address space using placement
+    new. */
+    template <typename... Args>
+        requires (!meta::is_void<T> && std::constructible_from<T, Args...>)
+    void construct(pointer p, Args&&... args) noexcept(
+        !DEBUG && noexcept(new (p) T(std::forward<Args>(args)...))
+    ) {
+        if constexpr (DEBUG) {
+            if (p < begin() || p >= end()) {
+                throw MemoryError(std::format(
+                    "pointer at address {:#x} was not allocated from the virtual "
+                    "address space starting at address {:#x} and ending at "
+                    "address {:#x} ({:.2e} MiB)",
+                    reinterpret_cast<uintptr_t>(p),
+                    reinterpret_cast<uintptr_t>(m_ptr),
+                    reinterpret_cast<uintptr_t>(m_ptr) + nbytes(),
+                    double(nbytes()) / double(impl::bytes::MiB)
+                ));
+            }
+        }
+        new (p) T(std::forward<Args>(args)...);
+    }
+
+    /* Destroy a value that was allocated from this address space by calling its
+    destructor in-place.  Note that this does not deallocate the memory itself.  This
+    only occurs when the address space is destroyed, or when physical memory is
+    explicitly decommitted using the `deallocate()` method. */
+    void destroy(pointer p) noexcept(!DEBUG && noexcept(p->~T())) {
+        if constexpr (DEBUG) {
+            if (p < begin() || p >= end()) {
+                throw MemoryError(std::format(
+                    "pointer at address {:#x} was not allocated from the virtual "
+                    "address space starting at address {:#x} and ending at "
+                    "address {:#x} ({:.2e} MiB)",
+                    reinterpret_cast<uintptr_t>(p),
+                    reinterpret_cast<uintptr_t>(m_ptr),
+                    reinterpret_cast<uintptr_t>(m_ptr) + nbytes(),
+                    double(nbytes()) / double(impl::bytes::MiB)
+                ));
+            }
+        }
+        p->~T();
+    }
+
+private:
+    pointer m_ptr;
+    size_type m_capacity;
+};
+
+
+/* A contiguous array of uninitialized values of type `T`.
+
+This is mostly meant as an alternative to `address_space<T, N>` for small `N`, and uses
+the same interface.  Rather than exploiting virtual memory, this allocates all of the
+reserved addresses ahead of time as a raw array, potentially resulting in higher
+performance at the cost of capacity and flexibility.
+
+Because they are allocated as a single block of memory, physical spaces are potentially
+dangerous to use for large data structures, especially if placed on the stack (due to
+buffer overflows).  Care should be taken to leave such spaces relatively small, and to
+offload them to the heap or nest them within a virtual address space if necessary. */
+template <meta::unqualified T, size_t N>
+struct physical_space : impl::physical_space_tag {
+    using size_type = size_t;
+    using difference_type = ptrdiff_t;
+    using type = T;
+    using value_type = std::conditional_t<meta::is_void<T>, std::byte, T>;
+    using reference = value_type&;
+    using const_reference = const value_type&;
+    using pointer = value_type*;
+    using const_pointer = const value_type*;
+    using iterator = pointer;
+    using const_iterator = const_pointer;
+    using reverse_iterator = std::reverse_iterator<iterator>;
+    using const_reverse_iterator = const std::reverse_iterator<const_iterator>;
+
+    enum : size_type {
+        B = impl::bytes::B,
+        KiB = impl::bytes::KiB,
+        MiB = impl::bytes::MiB,
+        GiB = impl::bytes::GiB,
+    };
+
+    /* Default constructor.  Allocates uninitialized storage equal to the size of the
+    physical space. */
+    [[nodiscard]] physical_space() noexcept = default;
+
+    /// TODO: copy/move constructors?  Do these even make sense for physical spaces?
+
+    // physical_space(const physical_space&) = delete;
+    // physical_space& operator=(const physical_space&) = delete;
+
+    /* True if the physical space is not empty.  False otherwise. */
+    explicit operator bool() const noexcept { return N; }
+
+    /* Return the maximum size of the physical space in units of `T`.  If `T` is void,
+    then this refers to the total size (in bytes) of the physical space itself. */
+    [[nodiscard]] static constexpr size_type size() noexcept { return N; }
+
+    /* Return the maximum size of the physical space in bytes.  If `T` is void, then
+    this is equivalent to `size()`. */
+    [[nodiscard]] static constexpr size_type nbytes() noexcept { return N * sizeof(value_type); }
+
+    /* Get a pointer to the beginning of the reserved physical space.  If `T` is void,
+    then the pointer will be returned as `std::byte*`. */
+    [[nodiscard]] pointer data() noexcept { return reinterpret_cast<pointer>(m_storage); }
+    [[nodiscard]] const_pointer data() const noexcept {
+        return reinterpret_cast<const_pointer>(m_storage);
+    }
+
+    /* Iterate over the reserved addresses.  If `T` is void, then each element is
+    represented as a `std::byte`. */
+    [[nodiscard]] iterator begin() noexcept { return reinterpret_cast<iterator>(m_storage); }
+    [[nodiscard]] const_iterator begin() const noexcept {
+        return reinterpret_cast<const_iterator>(m_storage);
+    }
+    [[nodiscard]] const_iterator cbegin() const noexcept {
+        return reinterpret_cast<const_iterator>(m_storage);
+    }
+    [[nodiscard]] iterator end() noexcept { return begin() + N; }
+    [[nodiscard]] const_iterator end() const noexcept { return begin() + N; }
+    [[nodiscard]] const_iterator cend() const noexcept { return begin() + N; }
+    [[nodiscard]] reverse_iterator rbegin() noexcept { return {end()}; }
+    [[nodiscard]] const_reverse_iterator rbegin() const noexcept { return {end()}; }
+    [[nodiscard]] const_reverse_iterator crbegin() const noexcept { return {end()}; }
+    [[nodiscard]] reverse_iterator rend() noexcept { return {begin()}; }
+    [[nodiscard]] const_reverse_iterator rend() const noexcept { return {begin()}; }
+    [[nodiscard]] const_reverse_iterator crend() const noexcept { return {begin()}; }
+
+    /* Return a pointer to the beginning of a contiguous region of the physical space.
+    If `T` is not void, then `offset` and `length` are both multiplied by `sizeof(T)`
+    to determine the actual offsets. */
+    [[nodiscard, gnu::malloc]] pointer allocate(
+        size_type offset,
+        size_type length
+    ) noexcept(!DEBUG) {
+        if constexpr (DEBUG) {
+            if (offset + length > N) {
+                throw MemoryError(std::format(
+                    "attempted to commit memory at offset {} with length {}, "
+                    "which exceeds the size of the physical space starting "
+                    "at address {:#x} and ending at address {:#x} ({:.2e} MiB)",
+                    offset,
+                    length,
+                    reinterpret_cast<uintptr_t>(m_storage),
+                    reinterpret_cast<uintptr_t>(m_storage) + nbytes(),
+                    double(nbytes()) / double(impl::bytes::MiB)
+                ));
+            }
+        }
+        offset *= sizeof(value_type);
+        length *= sizeof(value_type);
+        return reinterpret_cast<iterator>(m_storage + offset);
+    }
+
+    /* Zero out the physical memory associated with the given range.  If `T` is not
+    void, then `offset` and `length` are both multiplied by `sizeof(T)` to determine
+    the actual offsets. */
+    [[nodiscard]] bool deallocate(size_type offset, size_type length) noexcept(!DEBUG) {
+        if constexpr (DEBUG) {
+            if (offset + length > N) {
+                throw MemoryError(std::format(
+                    "attempted to decommit memory at offset {} with length {}, "
+                    "which exceeds the size of the physical space starting "
+                    "at address {:#x} and ending at address {:#x} ({:.2e} MiB)",
+                    offset,
+                    length,
+                    reinterpret_cast<uintptr_t>(m_storage),
+                    reinterpret_cast<uintptr_t>(m_storage) + nbytes(),
+                    double(nbytes()) / double(impl::bytes::MiB)
+                ));
+            }
+        }
+        offset *= sizeof(value_type);
+        length *= sizeof(value_type);
+        std::memset(m_storage + offset, 0, length);
+        return true;
+    }
+
+    /* Construct a value that was allocated from this physical space using placement
+    new. */
+    template <typename... Args>
+        requires (!meta::is_void<T> && std::constructible_from<T, Args...>)
+    void construct(pointer p, Args&&... args) noexcept(
+        !DEBUG && noexcept(new (p) T(std::forward<Args>(args)...))
+    ) {
+        if constexpr (DEBUG) {
+            if (p < begin() || p >= end()) {
+                throw MemoryError(std::format(
+                    "pointer at address {:#x} was not allocated from the physical "
+                    "space starting at address {:#x} and ending at "
+                    "address {:#x} ({:.2e} MiB)",
+                    reinterpret_cast<uintptr_t>(p),
+                    reinterpret_cast<uintptr_t>(m_storage),
+                    reinterpret_cast<uintptr_t>(m_storage) + nbytes(),
+                    double(nbytes()) / double(impl::bytes::MiB)
+                ));
+            }
+        }
+        new (p) T(std::forward<Args>(args)...);
+    }
+
+    /* Destroy a value that was allocated from this physical space by calling its
+    destructor in-place.  Note that this does not deallocate the memory itself.  This
+    only occurs when the physical space is destroyed. */
+    void destroy(pointer p) noexcept(!DEBUG && noexcept(p->~T())) {
+        if constexpr (DEBUG) {
+            if (p < begin() || p >= end()) {
+                throw MemoryError(std::format(
+                    "pointer at address {:#x} was not allocated from the physical "
+                    "space starting at address {:#x} and ending at "
+                    "address {:#x} ({:.2e} MiB)",
+                    reinterpret_cast<uintptr_t>(p),
+                    reinterpret_cast<uintptr_t>(m_storage),
+                    reinterpret_cast<uintptr_t>(m_storage) + nbytes(),
+                    double(nbytes()) / double(impl::bytes::MiB)
+                ));
+            }
+        }
+        p->~T();
+    }
+
+private:
+    alignas(T) unsigned char m_storage[sizeof(value_type) * N];
 };
 
 

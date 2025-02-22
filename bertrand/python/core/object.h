@@ -142,7 +142,7 @@ template <meta::has_python T>
     if constexpr (meta::python<T>) {
         return std::forward<T>(value);
     } else if constexpr (
-        meta::is_lvalue<T> &&
+        meta::lvalue<T> &&
         meta::is<T, meta::cpp_type<meta::python_type<T>>>
     ) {
         return impl::wrap(std::forward<T>(value));
@@ -1011,7 +1011,7 @@ template <meta::python From, meta::python To>
     )
 struct __cast__<From, To>                                   : returns<To> {
     static To operator()(From from) {
-        if constexpr (std::is_lvalue_reference_v<From>) {
+        if constexpr (meta::lvalue<From>) {
             return borrow<To>(ptr(from));
         } else {
             return steal<To>(release(from));
@@ -1031,7 +1031,7 @@ template <meta::python From, meta::python To>
 struct __cast__<From, To>                                   : returns<To> {
     static auto operator()(From from) {
         if (isinstance<To>(from)) {
-            if constexpr (std::is_lvalue_reference_v<From>) {
+            if constexpr (meta::lvalue<From>) {
                 return borrow<To>(ptr(from));
             } else {
                 return steal<To>(release(from));

@@ -1826,7 +1826,7 @@ namespace impl::linked {
         using const_slice<Self>::indices;
 
         static decltype(auto) forward(auto& value) {
-            if constexpr (std::is_lvalue_reference_v<Self>) {
+            if constexpr (meta::lvalue<Self>) {
                 return value;
             } else {
                 return std::move(value);
@@ -2342,7 +2342,7 @@ namespace impl::linked {
     /* A specialized iterator that carries the current node with it as it moves,
     translating the node along the list. */
     template <meta::linked Self>
-        requires (meta::is_lvalue<Self> && !meta::is_const<Self> && !meta::bst<Self>)
+        requires (meta::lvalue<Self> && !meta::is_const<Self> && !meta::bst<Self>)
     struct move : std::remove_cvref_t<Self>::iterator {
     private:
         using iterator = std::remove_cvref_t<Self>::iterator;
@@ -5103,7 +5103,7 @@ public:
     slice itself.  Returns the number of items that were removed, which may be zero
     if the input slice is empty. */
     template <typename Slice>
-        requires (!meta::is_const<Slice> && !meta::is_lvalue<Slice> && (
+        requires (!meta::is_const<Slice> && !meta::lvalue<Slice> && (
             meta::is<Slice, impl::linked::slice<linked_list&>> ||
             meta::is<Slice, impl::linked::slice<linked_list&&>>
         ))
@@ -5131,7 +5131,7 @@ public:
     equivalent to calling `pop()` on the slice itself.  Returns a container of the same
     type, whose values are moved from the original.  */
     template <typename Slice>
-        requires (!meta::is_const<Slice> && !meta::is_lvalue<Slice> && (
+        requires (!meta::is_const<Slice> && !meta::lvalue<Slice> && (
             meta::is<Slice, impl::linked::slice<linked_list&>> ||
             meta::is<Slice, impl::linked::slice<linked_list&&>>
         ))

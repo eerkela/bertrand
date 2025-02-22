@@ -226,7 +226,7 @@ namespace impl {
                 ) -> Return {
                     using T = std::remove_cvref_t<Curr>::template at<I>;
                     using Q = meta::qualify<T, Curr>;
-                    if constexpr (std::is_lvalue_reference_v<Curr>) {
+                    if constexpr (meta::lvalue<Curr>) {
                         T value = borrow<T>(ptr(curr));
                         return visit_helper<args<Prev..., Q>, Next...>{}(
                             std::forward<visitor>(visit),
@@ -255,8 +255,8 @@ namespace impl {
                     using T = std::variant_alternative_t<I, std::remove_cvref_t<Curr>>;
                     using Q = meta::qualify<T, Curr>;
                     if constexpr (
-                        std::is_lvalue_reference_v<Curr> ||
-                        std::is_const_v<std::remove_reference_t<Curr>>
+                        meta::lvalue<Curr> ||
+                        meta::is_const<std::remove_reference_t<Curr>>
                     ) {
                         return visit_helper<args<Prev..., Q>, Next...>{}(
                             std::forward<visitor>(visit),
@@ -700,7 +700,7 @@ struct interface<Union<Types...>> : impl::union_tag {
                 "bad union access: '" + type_name<T> + "' is not the active type"
             );
         }
-        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+        if constexpr (meta::lvalue<decltype(self)>) {
             return borrow<T>(ptr(self));
         } else {
             return steal<T>(release(self));
@@ -714,7 +714,7 @@ struct interface<Union<Types...>> : impl::union_tag {
                 "bad union access: '" + type_name<at<I>> + "' is not the active type"
             );
         }
-        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+        if constexpr (meta::lvalue<decltype(self)>) {
             return borrow<at<I>>(ptr(self));
         } else {
             return steal<at<I>>(release(self));
@@ -726,7 +726,7 @@ struct interface<Union<Types...>> : impl::union_tag {
         if (self.index() != meta::index_of<T, Types...>) {
             return None;
         }
-        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+        if constexpr (meta::lvalue<decltype(self)>) {
             return borrow<T>(ptr(self));
         } else {
             return steal<T>(release(self));
@@ -738,7 +738,7 @@ struct interface<Union<Types...>> : impl::union_tag {
         if (self.index() != I) {
             return None;
         }
-        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+        if constexpr (meta::lvalue<decltype(self)>) {
             return borrow<at<I>>(ptr(self));
         } else {
             return steal<at<I>>(release(self));
@@ -850,7 +850,7 @@ public:
                 "bad union access -> '" + type_name<U> + "' is not the active type"
             );
         }
-        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+        if constexpr (meta::lvalue<decltype(self)>) {
             return borrow<U>(ptr(self));
         } else {
             return steal<U>(release(self));
@@ -864,7 +864,7 @@ public:
                 "bad union access: '" + type_name<at<I>> + "' is not the active type"
             );
         }
-        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+        if constexpr (meta::lvalue<decltype(self)>) {
             return borrow<at<I>>(ptr(self));
         } else {
             return steal<at<I>>(release(self));
@@ -876,7 +876,7 @@ public:
         if (self.index() != std::same_as<U, NoneType>) {
             return None;
         }
-        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+        if constexpr (meta::lvalue<decltype(self)>) {
             return borrow<U>(ptr(self));
         } else {
             return steal<U>(release(self));
@@ -888,7 +888,7 @@ public:
         if (self.index() != I) {
             return None;
         }
-        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+        if constexpr (meta::lvalue<decltype(self)>) {
             return borrow<at<I>>(ptr(self));
         } else {
             return steal<at<I>>(release(self));
@@ -919,7 +919,7 @@ public:
                 "bad union access -> '" + type_name<T> + "' is not the active type"
             );
         }
-        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+        if constexpr (meta::lvalue<decltype(self)>) {
             return borrow<T>(ptr(self));
         } else {
             return steal<T>(release(self));
@@ -931,7 +931,7 @@ public:
         if (self.index()) {
             return std::forward<U>(val);
         }
-        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+        if constexpr (meta::lvalue<decltype(self)>) {
             return borrow<T>(ptr(self));
         } else {
             return steal<T>(release(self));
@@ -945,7 +945,7 @@ public:
         if (self.index()) {
             return None;
         }
-        if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
+        if constexpr (meta::lvalue<decltype(self)>) {
             return std::forward<F>(f)(borrow<T>(ptr(self)));
         } else {
             return std::forward<F>(f)(steal<T>(release(self)));

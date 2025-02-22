@@ -110,11 +110,7 @@ namespace impl {
     struct ArgsBase<T, Ts...> {};
     template <typename T, typename... Ts>
     struct ArgsBase<T, Ts...> : ArgsBase<Ts...> {
-        std::conditional_t<
-            std::is_lvalue_reference_v<T>,
-            T,
-            std::remove_reference_t<T>
-        > value;
+        std::conditional_t<meta::lvalue<T>, T, std::remove_reference_t<T>> value;
         constexpr ArgsBase(T value, Ts... ts) :
             ArgsBase<Ts...>(std::forward<Ts>(ts)...),
             value(std::forward<T>(value))
@@ -122,7 +118,7 @@ namespace impl {
         constexpr ArgsBase(ArgsBase&& other) :
             ArgsBase<Ts...>(std::move(other)),
             value([](ArgsBase&& other) {
-                if constexpr (std::is_lvalue_reference_v<T>) {
+                if constexpr (meta::lvalue<T>) {
                     return other.value;
                 } else {
                     return std::move(other.value);
@@ -500,7 +496,7 @@ private:
 
     template <size_t I> requires (I < sizeof...(Ts))
     decltype(auto) forward() {
-        if constexpr (std::is_lvalue_reference_v<meta::unpack_type<I, Ts...>>) {
+        if constexpr (meta::lvalue<meta::unpack_type<I, Ts...>>) {
             return get_base<I>::value;
         } else {
             return std::move(get_base<I>::value);
@@ -567,7 +563,7 @@ public:
     /* Get the argument at index I. */
     template <size_t I> requires (I < size())
     [[nodiscard]] decltype(auto) get() && {
-        if constexpr (std::is_lvalue_reference_v<meta::unpack_type<I, Ts...>>) {
+        if constexpr (meta::lvalue<meta::unpack_type<I, Ts...>>) {
             return get_base<I>::value;
         } else {
             return std::move(get_base<I>::value);
@@ -784,7 +780,7 @@ namespace impl {
             m_type(typeid(std::remove_cvref_t<V>)),
             m_convert([](void* value) -> T {
                 if constexpr (std::convertible_to<V, T>) {
-                    if constexpr (meta::is_lvalue<V>) {
+                    if constexpr (meta::lvalue<V>) {
                         return *static_cast<std::remove_cvref_t<V>*>(value);
                     } else {
                         return std::move(*static_cast<std::remove_cvref_t<V>*>(value));
@@ -6762,7 +6758,7 @@ namespace std {
     };
 
     template <size_t I, bertrand::meta::args T>
-        requires (!std::is_lvalue_reference_v<T> && I < std::remove_cvref_t<T>::size())
+        requires (!bertrand::meta::lvalue<T> && I < std::remove_cvref_t<T>::size())
     [[nodiscard]] constexpr decltype(auto) get(T&& args) noexcept {
         return std::forward<T>(args).template get<I>();
     }

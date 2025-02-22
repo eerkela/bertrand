@@ -529,10 +529,13 @@ namespace meta {
     concept is_volatile = std::is_volatile_v<std::remove_reference_t<T>>;
 
     template <typename T>
-    concept is_lvalue = std::is_lvalue_reference_v<T>;
+    concept reference = std::is_reference_v<T>;
 
     template <typename T>
-    concept is_rvalue = !is_lvalue<T>;
+    concept lvalue = std::is_lvalue_reference_v<T>;
+
+    template <typename T>
+    concept rvalue = !lvalue<T>;
 
     template <typename T>
     concept is_ptr = std::is_pointer_v<std::remove_reference_t<T>>;
@@ -640,7 +643,7 @@ namespace meta {
         ));
         using container = std::remove_reference_t<Container>;
     };
-    template <meta::iterable Container> requires (is_lvalue<Container>)
+    template <meta::iterable Container> requires (lvalue<Container>)
     struct iter_traits<Container> {
         using begin = decltype(std::ranges::begin(std::declval<Container>()));
         using end = decltype(std::ranges::end(std::declval<Container>()));
