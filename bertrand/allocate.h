@@ -1,10 +1,12 @@
 #ifndef BERTRAND_ALLOCATE_H
 #define BERTRAND_ALLOCATE_H
 
+#include <shared_mutex>
+#include <random>
+
 
 #include "bertrand/common.h"
 #include "bertrand/except.h"
-#include <cstddef>
 
 
 #ifdef _WIN32
@@ -22,8 +24,287 @@ namespace bertrand {
 
 
 namespace impl {
+
+    namespace bytes {
+        enum : size_t {
+            B = 1,
+            KiB = 1024,
+            MiB = 1024 * KiB,
+            GiB = 1024 * MiB,
+            TiB = 1024 * GiB,
+            PiB = 1024 * TiB,
+            EiB = 1024 * PiB,
+        };
+    }
+
+    template <typename T>
+    constexpr size_t DEFAULT_ADDRESS_CAPACITY = (bytes::MiB + sizeof(T) - 1) / sizeof(T);
+    template <meta::is_void T>
+    constexpr size_t DEFAULT_ADDRESS_CAPACITY<T> = bytes::MiB;
+
+}
+
+
+#ifdef BERTRAND_ARENA_SIZE
+    constexpr size_t ARENA_SIZE = BERTRAND_ARENA_SIZE;
+#else
+    constexpr size_t ARENA_SIZE = impl::bytes::TiB;
+#endif
+
+
+#ifdef BERTRAND_NUM_ARENAS
+    constexpr size_t NUM_ARENAS = BERTRAND_NUM_ARENAS;
+#else
+    constexpr size_t NUM_ARENAS = 8;
+#endif
+
+
+template <meta::unqualified T, size_t N = impl::DEFAULT_ADDRESS_CAPACITY<T>>
+struct address_space;
+
+
+namespace impl {
     struct address_space_tag {};
     struct physical_space_tag {};
+
+    /* A pool of virtual address spaces backing the `address_space<T, N>` constructor.
+    These spaces are allocated upfront at startup and reused in a manner similar to
+    a `malloc()`/`free()`-based heap, in order to greatly reduce syscall overhead when
+    apportioning address spaces in downstream code.  Provides thread-safe access to
+    each arena, and implements a simple load-balancing algorithm to ensure that the
+    arenas are evenly utilized. */
+    struct global_address_space {
+    private:
+        inline static thread_local std::mt19937 rng{std::random_device()()};
+        inline static thread_local std::uniform_int_distribution<size_t> dist{
+            0,
+            NUM_ARENAS - 1
+        };
+
+        /* An individual arena, representing a contiguous virtual address space of length
+        `ARENA_SIZE`.  The first GiB is reserved to store the available chunk list in
+        contiguous memory */
+        struct arena {
+        private:
+            template <typename T, size_t N>
+            friend struct address_space;
+            friend global_address_space;
+
+            /// TODO: eventually swap to a balanced binary search tree
+
+            struct Node {
+                /// TODO: per-arena free list
+            };
+
+            mutable std::mutex m_mutex;
+            size_t m_id;
+            size_t m_used = 0;
+            size_t m_offset = 0;
+            Node* m_freelist = nullptr;
+            std::byte* m_data;
+
+            arena(size_t id) : m_id(id), m_data([] {
+                std::byte* result = nullptr;
+                #ifdef _WIN32
+                    result = reinterpret_cast<std::byte*>(VirtualAlloc(
+                        nullptr,
+                        ARENA_SIZE,
+                        MEM_RESERVE,
+                        PAGE_NOACCESS
+                    ));
+                #elifdef __unix__
+                    #ifdef MAP_NORESERVE
+                        constexpr int flags =
+                            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE;
+                    #else
+                        constexpr int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED;
+                    #endif
+                    void* ptr = mmap(
+                        nullptr,
+                        ARENA_SIZE,
+                        PROT_NONE,  // reserve only, do not allocate pages
+                        flags,
+                        -1,  // no file descriptor
+                        0  // no offset
+                    );
+                    result = ptr == MAP_FAILED ?
+                        nullptr : reinterpret_cast<std::byte*>(ptr);
+                #endif
+                return result + impl::bytes::GiB;
+            }()) {}
+
+            /// TODO: allocate() expects the arena mutex to be locked, and unlocks it
+            /// when finished.  Deallocate() will both lock and unlock the mutex in
+            /// the same call.  Then, allocate() will be called in the address space
+            /// constructor, and deallocate() will be called in the destructor.
+
+            [[nodiscard]] std::byte* allocate(size_t capacity) {
+
+            }
+
+            [[nodiscard]] bool deallocate(std::byte* ptr, size_t capacity) {
+
+            }
+
+        public:
+
+            /* The ID of this arena, which is always an integer from
+            [0, NUM_ARENAS). */
+            [[nodiscard]] size_t id() const noexcept { return m_id; }
+
+            /* The number of bytes that have been used in this arena.  This is always
+            less than or equal to `capacity()`. */
+            [[nodiscard]] size_t size() const noexcept { return m_used; }
+
+            /* The total amount of virtual memory that is stored in this arena.  This
+            is a compile-time constant that is set by the `BERTRAND_ARENA_SIZE` build
+            flag.  More capacity allows for a greater number and size of child address
+            spaces, but can compete with the rest of the program's virtual address
+            space if set too high.  Note that this does not refer to actual physical
+            memory, just a range of pointers that are reserved for each arena. */
+            [[nodiscard]] size_t capacity() const noexcept { return ARENA_SIZE; }
+
+            /* A pointer to the beginning of this arena's address range, returned as
+            a `std::byte*` pointer.  Pointer arithmetic can be used to navigate to
+            specific sections of the address space. */
+            [[nodiscard]] const std::byte* data() const noexcept { return m_data; }
+
+            ~arena() noexcept {
+                /// NOTE: destructor is only called at program termination, so errors
+                /// here are not critical.  The OS will reclaim memory anyways unless
+                /// something is really wrong.
+                #ifdef _WIN32
+                    if (VirtualFree(m_ptr, 0, MEM_RELEASE) != 0) {}
+                #elifdef __unix__
+                    if (munmap(m_data, ARENA_SIZE) == 0) {}
+                #endif
+            }
+        };
+
+        /* Arenas are stored in an array where each index is equal to the arena's ID. */
+        std::array<arena, NUM_ARENAS> m_arenas =
+            []<size_t... Is>(std::index_sequence<Is...>) -> std::array<arena, NUM_ARENAS> {
+                return {arena{Is}...};
+            }(std::make_index_sequence<NUM_ARENAS>{});
+
+    public:
+
+        /* The number of arenas in the global address space.  This is a compile-time
+        constant that is set by the `BERTRAND_NUM_ARENAS` build flag, and defaults to 8
+        if not specified.  More arenas may reduce contention in multithreaded
+        environments. */
+        [[nodiscard]] static constexpr size_t size() noexcept { return NUM_ARENAS; }
+
+        /* Access a specific arena by its ID, which is a sequential integer from 0 to
+        size. */
+        [[nodiscard]] const arena& operator[](size_t id) const {
+            if (id >= NUM_ARENAS) {
+                throw IndexError(std::format(
+                    "Arena ID {} is out of bounds for global address space with {} "
+                    "arenas.",
+                    id,
+                    NUM_ARENAS
+                ));
+            }
+            return m_arenas[id];
+        }
+
+        /* Iterate over the arenas one-by-one to collect usage statistics. */
+        [[nodiscard]] const arena* begin() const noexcept {
+            if constexpr (NUM_ARENAS == 0) {
+                return nullptr;
+            } else {
+                return &m_arenas[0];
+            }
+        }
+        [[nodiscard]] const arena* end() const noexcept {
+            if constexpr (NUM_ARENAS == 0) {
+                return nullptr;
+            } else {
+                return &m_arenas[NUM_ARENAS];
+            }
+        }
+
+        /* Search for an available arena for a requested address space of size
+        `capacity`.  A null pointer will be returned if all arenas are full.
+        Otherwise, the arena will be returned in a locked state, requiring the user to
+        manually unlock its mutex once they are finished with the insertion. */
+        [[nodiscard]] arena* acquire(size_t capacity) noexcept {
+            if constexpr (NUM_ARENAS == 0) {
+                return nullptr;
+
+            } else {
+                struct Node {
+                    arena* ptr;
+                    Node* next = nullptr;
+                    bool full = false;
+                };
+
+                constexpr size_t max_neighbors = 4;
+                constexpr size_t neighbors =
+                    max_neighbors < NUM_ARENAS ? max_neighbors : NUM_ARENAS;
+
+                // concurrent load balancing is performed stochastically, by generating a
+                // random index into the arena array and building a neighborhood of the
+                // next 4 as a ring buffer sorted by utilization.
+                size_t index = 0;
+                if constexpr (NUM_ARENAS > max_neighbors) {
+                    index = dist(rng) % NUM_ARENAS;
+                }
+
+                std::array<Node, neighbors> nodes = []<size_t... Is>(
+                    std::index_sequence<Is...>,
+                    size_t index,
+                    arena* arenas
+                ) -> std::array<Node, neighbors> {
+                    return {Node{&arenas[(index + Is) % NUM_ARENAS]}...};
+                }(std::make_index_sequence<neighbors>{}, index, m_arenas.data());
+
+                Node* head = &nodes[0];
+                Node* tail = &nodes[0];
+                for (size_t i = 1; i < neighbors; ++i) {
+                    Node& node = nodes[i];
+                    if (node.ptr->size() < head->ptr->size()) {
+                        node.next = head;
+                        head = &node;
+                    } else if (node.ptr->size() >= tail->ptr->size()) {
+                        tail->next = &node;
+                        tail = &node;
+                    } else {
+                        Node* prev = head;
+                        Node* curr = head->next;
+                        while (curr) {
+                            if (node.ptr->size() < curr->ptr->size()) {
+                                node.next = curr;
+                                prev->next = &node;
+                                break;
+                            }
+                            prev = curr;
+                            curr = curr->next;
+                        }
+                    }
+                }
+                tail->next = head;
+
+                // spin around the ring buffer until we find an available arena or
+                // all arenas are full
+                size_t full_count = 0;
+                while (full_count < neighbors) {
+                    if (!head->full) {
+                        if (head->ptr->size() + capacity > ARENA_SIZE) {
+                            head->full = true;
+                            ++full_count;
+                        } else if (head->ptr->m_mutex.try_lock()) {
+                            return head->ptr;
+                        }
+                    }
+                    head = head->next;
+                }
+                return nullptr;
+            }
+        }
+    };
+
 
     /* Backs the `address_space<T>` constructor.  `size` is interpreted as a raw
     number of bytes.  Returns null if the allocation failed. */
@@ -120,21 +401,6 @@ namespace impl {
             return true;  // not supported
         #endif
     }
-
-    namespace bytes {
-        enum : size_t {
-            B = 1,
-            KiB = 1024,
-            MiB = 1024 * KiB,
-            GiB = 1024 * MiB
-        };
-    }
-
-    template <typename T>
-    constexpr size_t DEFAULT_ADDRESS_CAPACITY =
-        (bytes::MiB * 32 + sizeof(T) - 1) / sizeof(T);
-    template <meta::is_void T>
-    constexpr size_t DEFAULT_ADDRESS_CAPACITY<T> = (bytes::MiB * 32);
 
 }
 
