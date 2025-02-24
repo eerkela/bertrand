@@ -103,8 +103,7 @@ namespace impl {
     /* Library constructor runs BEFORE a `main()` entry point and ensures the Python
     interpreter is available for any static/global constructors, without explicit
     initialization. */
-    __attribute__((constructor(101)))
-    static void initialize_python() {
+    [[gnu::constructor(101)]] static void initialize_python() {
         if (!Py_IsInitialized()) {
             Py_Initialize();
         }
@@ -113,8 +112,7 @@ namespace impl {
     /* Library destructor runs AFTER a `main()` entry point and ensures that the Python
     interpreter is available for any static/global destructors, without explicit
     finalization. */
-    __attribute__((destructor(65535)))
-    static void finalize_python() {
+    [[gnu::destructor(65535)]] static void finalize_python() {
         if (Py_IsInitialized()) {
             Py_Finalize();
         }
