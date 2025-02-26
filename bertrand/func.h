@@ -13,6 +13,32 @@
 namespace bertrand {
 
 
+#ifdef BERTRAND_MAX_ARGS
+    constexpr size_t MAX_ARGS = BERTRAND_MAX_ARGS;
+#else
+    constexpr size_t MAX_ARGS = sizeof(size_t) * 8;
+#endif
+
+
+#ifdef BERTRAND_MAX_OVERLOADS
+    constexpr size_t MAX_OVERLOADS = BERTRAND_MAX_OVERLOADS;
+#else
+    constexpr size_t MAX_OVERLOADS = 256;
+#endif
+
+
+#ifdef BERTRAND_OVERLOAD_CACHE
+    constexpr size_t OVERLOAD_CACHE = BERTRAND_OVERLOAD_CACHE;
+#else
+    constexpr size_t OVERLOAD_CACHE = 128;
+#endif
+
+
+static_assert(MAX_ARGS > 0, "`BERTRAND_MAX_ARGS` must be positive.");
+static_assert(MAX_OVERLOADS > 0, "`BERTRAND_MAX_OVERLOADS` must be positive.");
+static_assert(OVERLOAD_CACHE > 0, "`BERTRAND_OVERLOAD_CACHE` must be positive.");
+
+
 /* Introspect an annotated C++ function signature to extract compile-time type
 information and allow matching functions to be called using Python-style conventions.
 Also defines supporting data structures to allow for partial function application. */

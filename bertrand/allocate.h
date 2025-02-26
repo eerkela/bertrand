@@ -249,6 +249,37 @@ struct address_space;
 
 namespace impl {
 
+    inline bool valid_page_size = [] {
+        #ifdef _WIN32
+            SYSTEM_INFO si;
+            GetSystemInfo(&si);
+            if (si.dwPageSize != PAGE_SIZE) {
+                std::cerr << std::format(
+                    "warning: `BERTRAND_PAGE_SIZE` ({} bytes) does not match "
+                    "system page size ({} bytes).  This may cause misaligned virtual "
+                    "address spaces and undefined behavior.  Please recompile with "
+                    "`BERTRAND_PAGE_SIZE` set to the correct value to silence this "
+                    "warning",
+                    PAGE_SIZE,
+                    si.dwPageSize
+                ) << std::endl;
+            }
+        #elifdef __unix__
+            if (sysconf(_SC_PAGESIZE) != PAGE_SIZE) {
+                std::cerr << std::format(
+                    "warning: `BERTRAND_PAGE_SIZE` ({} bytes) does not match "
+                    "system page size ({} bytes).  This may cause misaligned virtual "
+                    "address spaces and undefined behavior.  Please recompile with "
+                    "`BERTRAND_PAGE_SIZE` set to the correct value to silence this "
+                    "warning",
+                    PAGE_SIZE,
+                    sysconf(_SC_PAGESIZE)
+                ) << std::endl;
+            }
+        #endif
+        return true;
+    }();
+
     /* A pool of virtual arenas backing the `address_space<T, N>` class.  These arenas
     are allocated upfront at program startup and reused in a manner similar to
     `malloc()`/`free()`, minimizing syscall overhead when apportioning spaces in
@@ -954,6 +985,16 @@ struct address_space : impl::address_space_tag {
         TiB = impl::bytes::TiB,
     };
 
+private:
+
+    static constexpr size_t GUARD_SIZE =
+        ((sizeof(value_type) + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;
+
+    static constexpr size_t TOTAL_SIZE =
+        GUARD_SIZE + (N * sizeof(value_type)) + GUARD_SIZE;
+
+public:
+
     /* The default capacity to reserve if no template override is given.  This defaults
     to a maximum of ~8 MiB of total storage, evenly divided into contiguous segments of
     type T. */
@@ -961,51 +1002,51 @@ struct address_space : impl::address_space_tag {
 
     /* Default constructor.  Reserves address space, but does not commit any memory. */
     [[nodiscard]] address_space() :
-        m_arena(impl::global_address_space::get().acquire(nbytes())),
-        m_ptr(reinterpret_cast<pointer>(m_arena->reserve(nbytes())))
+        m_arena(impl::global_address_space::get().acquire(TOTAL_SIZE)),
+        m_data(reinterpret_cast<pointer>(m_arena->reserve(TOTAL_SIZE) + GUARD_SIZE))
     {}
 
     address_space(const address_space&) = delete;
     address_space& operator=(const address_space&) = delete;
 
     address_space(address_space&& other) noexcept :
-        m_arena(other.m_arena), m_ptr(other.m_ptr)
+        m_arena(other.m_arena), m_data(other.m_data)
     {
         other.m_arena = nullptr;
-        other.m_ptr = nullptr;
+        other.m_data = nullptr;
     }
 
     address_space& operator=(address_space&& other) noexcept(!DEBUG) {
         if (this != &other) {
-            if (m_ptr) {
-                std::byte* p = reinterpret_cast<std::byte*>(m_ptr);
+            if (m_data) {
+                std::byte* p = reinterpret_cast<std::byte*>(m_data);
                 if (!impl::purge_address_space(p, nbytes())) {
                     throw MemoryError(std::format(
                         "failed to decommit pages from virtual address space starting "
                         "at address {:#x} and ending at address {:#x} ({:.2e} MiB) - {}",
-                        reinterpret_cast<uintptr_t>(m_ptr),
-                        reinterpret_cast<uintptr_t>(m_ptr) + nbytes(),
+                        reinterpret_cast<uintptr_t>(m_data),
+                        reinterpret_cast<uintptr_t>(m_data) + nbytes(),
                         double(nbytes()) / double(impl::bytes::MiB),
                         impl::system_err_msg()
                     ));
                 }
-                if (!m_arena->recycle(p, nbytes())) {
+                if (!m_arena->recycle(p - GUARD_SIZE, TOTAL_SIZE)) {
                     throw MemoryError(std::format(
                         "failed to commit additional pages to freelist for arena {} "
                         "starting at address {:#x} and ending at address {:#x} "
                         "({:.2e} MiB) - {}",
                         m_arena->id(),
-                        reinterpret_cast<uintptr_t>(m_ptr),
-                        reinterpret_cast<uintptr_t>(m_ptr) + nbytes(),
+                        reinterpret_cast<uintptr_t>(m_data),
+                        reinterpret_cast<uintptr_t>(m_data) + nbytes(),
                         double(nbytes()) / double(impl::bytes::MiB),
                         impl::system_err_msg()
                     ));
                 }
             }
             m_arena = other.m_arena;
-            m_ptr = other.m_ptr;
+            m_data = other.m_data;
             other.m_arena = nullptr;
-            other.m_ptr = nullptr;
+            other.m_data = nullptr;
         }
         return *this;
     }
@@ -1015,38 +1056,38 @@ struct address_space : impl::address_space_tag {
     for future allocations. */
     ~address_space() {
         m_arena = nullptr;
-        if (m_ptr) {
-            std::byte* p = reinterpret_cast<std::byte*>(m_ptr);
+        if (m_data) {
+            std::byte* p = reinterpret_cast<std::byte*>(m_data);
             if (!impl::purge_address_space(p, nbytes())) {
                 throw MemoryError(std::format(
                     "failed to decommit pages from virtual address space starting "
                     "at address {:#x} and ending at address {:#x} ({:.2e} MiB) - {}",
-                    reinterpret_cast<uintptr_t>(m_ptr),
-                    reinterpret_cast<uintptr_t>(m_ptr) + nbytes(),
+                    reinterpret_cast<uintptr_t>(m_data),
+                    reinterpret_cast<uintptr_t>(m_data) + nbytes(),
                     double(nbytes()) / double(impl::bytes::MiB),
                     impl::system_err_msg()
                 ));
             }
-            if (!m_arena->recycle(p, nbytes())) {
+            if (!m_arena->recycle(p - GUARD_SIZE, TOTAL_SIZE)) {
                 throw MemoryError(std::format(
                     "failed to commit additional pages to freelist for arena {} "
                     "starting at address {:#x} and ending at address {:#x} "
                     "({:.2e} MiB) - {}",
                     m_arena->id(),
-                    reinterpret_cast<uintptr_t>(m_ptr),
-                    reinterpret_cast<uintptr_t>(m_ptr) + nbytes(),
+                    reinterpret_cast<uintptr_t>(m_data),
+                    reinterpret_cast<uintptr_t>(m_data) + nbytes(),
                     double(nbytes()) / double(impl::bytes::MiB),
                     impl::system_err_msg()
                 ));
             }
-            m_ptr = nullptr;
+            m_data = nullptr;
         }
     }
 
     /* True if the address space no longer owns virtual memory.  False otherwise.
     Currently, this only occurs after an address space has been moved from, leaving it
     in an empty state. */
-    [[nodiscard]] explicit operator bool() const noexcept { return m_ptr; }
+    [[nodiscard]] explicit operator bool() const noexcept { return m_data; }
 
     /* Return the maximum size of the virtual address space in units of `T`.  If
     `T` is void, then this refers to the total size (in bytes) of the address space
@@ -1059,14 +1100,14 @@ struct address_space : impl::address_space_tag {
 
     /* Get a pointer to the beginning of the reserved address space.  If `T` is void,
     then the pointer will be returned as `std::byte*`. */
-    [[nodiscard]] pointer data() noexcept { return m_ptr; }
-    [[nodiscard]] const_pointer data() const noexcept { return m_ptr; }
+    [[nodiscard]] pointer data() noexcept { return m_data; }
+    [[nodiscard]] const_pointer data() const noexcept { return m_data; }
 
     /* Iterate over the reserved addresses.  If `T` is void, then each element is
     represented as a `std::byte`. */
-    [[nodiscard]] iterator begin() noexcept { return m_ptr; }
-    [[nodiscard]] const_iterator begin() const noexcept { return m_ptr; }
-    [[nodiscard]] const_iterator cbegin() const noexcept { return m_ptr;}
+    [[nodiscard]] iterator begin() noexcept { return m_data; }
+    [[nodiscard]] const_iterator begin() const noexcept { return m_data; }
+    [[nodiscard]] const_iterator cbegin() const noexcept { return m_data;}
     [[nodiscard]] iterator end() noexcept { return begin() + N; }
     [[nodiscard]] const_iterator end() const noexcept { return begin() + N; }
     [[nodiscard]] const_iterator cend() const noexcept { return begin() + N; }
@@ -1095,25 +1136,23 @@ struct address_space : impl::address_space_tag {
                     "at address {:#x} and ending at address {:#x} ({:.2e} MiB)",
                     offset,
                     length,
-                    reinterpret_cast<uintptr_t>(m_ptr),
-                    reinterpret_cast<uintptr_t>(m_ptr) + N,
-                    double(N) / double(impl::bytes::MiB)
+                    reinterpret_cast<uintptr_t>(m_data),
+                    reinterpret_cast<uintptr_t>(m_data) + nbytes(),
+                    double(nbytes()) / double(impl::bytes::MiB)
                 ));
             }
         }
-        pointer result = reinterpret_cast<pointer>(
-            impl::commit_address_space(
-                m_ptr,
-                offset * sizeof(value_type),
-                length * sizeof(value_type)
-            )
-        );
+        pointer result = reinterpret_cast<pointer>(impl::commit_address_space(
+            m_data,
+            offset * sizeof(value_type),
+            length * sizeof(value_type)
+        ));
         if (result == nullptr) {
             throw MemoryError(std::format(
                 "failed to commit pages to virtual address space starting at "
                 "address {:#x} and ending at address {:#x} ({:.2e} MiB) - {}",
-                reinterpret_cast<uintptr_t>(m_ptr),
-                reinterpret_cast<uintptr_t>(m_ptr) + nbytes(),
+                reinterpret_cast<uintptr_t>(m_data),
+                reinterpret_cast<uintptr_t>(m_data) + nbytes(),
                 double(nbytes()) / double(impl::bytes::MiB),
                 impl::system_err_msg()
             ));
@@ -1140,22 +1179,22 @@ struct address_space : impl::address_space_tag {
                     "at address {:#x} and ending at address {:#x} ({:.2e} MiB)",
                     offset,
                     length,
-                    reinterpret_cast<uintptr_t>(m_ptr),
-                    reinterpret_cast<uintptr_t>(m_ptr) + N,
-                    double(N) / double(impl::bytes::MiB)
+                    reinterpret_cast<uintptr_t>(m_data),
+                    reinterpret_cast<uintptr_t>(m_data) + nbytes(),
+                    double(nbytes()) / double(impl::bytes::MiB)
                 ));
             }
         }
         if (!impl::decommit_address_space(
-            m_ptr,
+            m_data,
             offset * sizeof(value_type),
             length * sizeof(value_type)
         )) {
             throw MemoryError(std::format(
                 "failed to decommit pages from virtual address space starting at "
                 "address {:#x} and ending at address {:#x} ({:.2e} MiB) - {}",
-                reinterpret_cast<uintptr_t>(m_ptr),
-                reinterpret_cast<uintptr_t>(m_ptr) + nbytes(),
+                reinterpret_cast<uintptr_t>(m_data),
+                reinterpret_cast<uintptr_t>(m_data) + nbytes(),
                 double(nbytes()) / double(impl::bytes::MiB),
                 impl::system_err_msg()
             ));
@@ -1176,8 +1215,8 @@ struct address_space : impl::address_space_tag {
                     "address space starting at address {:#x} and ending at "
                     "address {:#x} ({:.2e} MiB)",
                     reinterpret_cast<uintptr_t>(p),
-                    reinterpret_cast<uintptr_t>(m_ptr),
-                    reinterpret_cast<uintptr_t>(m_ptr) + nbytes(),
+                    reinterpret_cast<uintptr_t>(m_data),
+                    reinterpret_cast<uintptr_t>(m_data) + nbytes(),
                     double(nbytes()) / double(impl::bytes::MiB)
                 ));
             }
@@ -1198,8 +1237,8 @@ struct address_space : impl::address_space_tag {
                     "address space starting at address {:#x} and ending at "
                     "address {:#x} ({:.2e} MiB)",
                     reinterpret_cast<uintptr_t>(p),
-                    reinterpret_cast<uintptr_t>(m_ptr),
-                    reinterpret_cast<uintptr_t>(m_ptr) + nbytes(),
+                    reinterpret_cast<uintptr_t>(m_data),
+                    reinterpret_cast<uintptr_t>(m_data) + nbytes(),
                     double(nbytes()) / double(impl::bytes::MiB)
                 ));
             }
@@ -1209,7 +1248,7 @@ struct address_space : impl::address_space_tag {
 
 private:
     arena* m_arena;
-    pointer m_ptr;
+    pointer m_data;
 };
 
 

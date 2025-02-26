@@ -10,6 +10,14 @@
 namespace bertrand {
 
 
+/// TODO: Some bertrand internals will need to be able to function in cases where
+/// virtual addressing is not enabled, meaning the heap will be used instead.  This
+/// only really affects the function infrastructure, since the overload trie will
+/// prefer to use address spaces if they are available, and fall back to heap
+/// allocators otherwise.  The actual caches will always use fixed physical space, so
+/// that's not a problem.
+
+
 namespace impl {
 
     template <typename T, typename Alloc>
@@ -20,15 +28,6 @@ namespace impl {
         meta::allocator_or_space_for<Alloc, T>;
 
 }
-
-
-/// TODO: Some bertrand internals will need to be able to function in cases where
-/// virtual addressing is not enabled, meaning the heap will be used instead.  This
-/// only really affects the function infrastructure, since the overload trie will
-/// prefer to use address spaces if they are available, and fall back to heap
-/// allocators otherwise.  The actual caches will always use fixed physical space, so
-/// that's not a problem.
-
 
 
 /* A simple dynamic array that can use either an STL-compliant allocator class, a

@@ -614,7 +614,7 @@ public:
         }
 
         // fill in missing indices
-        constexpr auto indices = []<size_t... Is>(
+        auto indices = []<size_t... Is>(
             std::index_sequence<Is...>,
             const auto& slice
         ) {
