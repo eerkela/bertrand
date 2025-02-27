@@ -877,7 +877,7 @@ namespace impl {
             sizeof(global_address_space)
         ];
 
-        [[gnu::constructor(101)]] static void init() noexcept {
+        [[gnu::constructor(101)]] static void init() {
             if constexpr (HAS_ARENA) {
                 if (!initialized) {
                     new (buffer) global_address_space();
@@ -886,7 +886,7 @@ namespace impl {
             }
         }
 
-        [[gnu::destructor(65535)]] static void finalize() noexcept {
+        [[gnu::destructor(65535)]] static void finalize() {
             if constexpr (HAS_ARENA) {
                 if (initialized) {
                     reinterpret_cast<global_address_space*>(
@@ -985,6 +985,16 @@ struct address_space : impl::address_space_tag {
         TiB = impl::bytes::TiB,
     };
 
+    /* Indicates whether this address space falls into the small space optimization.
+    Such spaces cannot be copied or moved without downstream, implementation-defined
+    logic. */
+    static constexpr bool SMALL = false;
+
+    /* The default capacity to reserve if no template override is given.  This defaults
+    to a maximum of ~8 MiB of total storage, evenly divided into contiguous segments of
+    type `T`. */
+    static constexpr size_type DEFAULT_CAPACITY = impl::DEFAULT_ADDRESS_CAPACITY<T>;
+
 private:
 
     static constexpr size_t GUARD_SIZE =
@@ -995,11 +1005,6 @@ private:
 
 public:
 
-    /* The default capacity to reserve if no template override is given.  This defaults
-    to a maximum of ~8 MiB of total storage, evenly divided into contiguous segments of
-    type T. */
-    static constexpr size_type DEFAULT_CAPACITY = impl::DEFAULT_ADDRESS_CAPACITY<T>;
-
     /* Default constructor.  Reserves address space, but does not commit any memory. */
     [[nodiscard]] address_space() :
         m_arena(impl::global_address_space::get().acquire(TOTAL_SIZE)),
@@ -1009,14 +1014,14 @@ public:
     address_space(const address_space&) = delete;
     address_space& operator=(const address_space&) = delete;
 
-    address_space(address_space&& other) noexcept :
+    [[nodiscard]] address_space(address_space&& other) noexcept :
         m_arena(other.m_arena), m_data(other.m_data)
     {
         other.m_arena = nullptr;
         other.m_data = nullptr;
     }
 
-    address_space& operator=(address_space&& other) noexcept(!DEBUG) {
+    [[maybe_unused]] address_space& operator=(address_space&& other) noexcept(!DEBUG) {
         if (this != &other) {
             if (m_data) {
                 std::byte* p = reinterpret_cast<std::byte*>(m_data);
@@ -1283,111 +1288,27 @@ struct address_space<T, N> : impl::address_space_tag {
         TiB = impl::bytes::TiB,
     };
 
+    /* Indicates whether this address space falls into the small space optimization.
+    Such spaces cannot be copied or moved without downstream, implementation-defined
+    logic. */
+    static constexpr bool SMALL = true;
+
+    /* The default capacity to reserve if no template override is given.  This defaults
+    to a maximum of ~8 MiB of total storage, evenly divided into contiguous segments of
+    type `T`. */
+    static constexpr size_type DEFAULT_CAPACITY = impl::DEFAULT_ADDRESS_CAPACITY<T>;
+
     /* Default constructor.  Allocates uninitialized storage equal to the size of the
     physical space, initialized to zero. */
     [[nodiscard]] address_space() noexcept = default;
 
-    address_space(const address_space& other)
-        noexcept(noexcept(value_type(std::declval<const value_type&>())))
-    {
-        size_t i = 0;
-        for (bool bit : other.m_constructed) {
-            if (bit) {
-                size_t j = i * sizeof(value_type);
-                new (m_storage + j) value_type(
-                    *reinterpret_cast<const_pointer>(other.m_storage + j)
-                );
-                m_constructed[i] = true;
-            }
-            ++i;
-        }
-    }
+    address_space(const address_space& other) = delete;
 
-    address_space(address_space&& other)
-        noexcept(noexcept(value_type(std::declval<value_type&&>())))
-    {
-        size_t i = 0;
-        for (bool bit : other.m_constructed) {
-            if (bit) {
-                size_t j = i * sizeof(value_type);
-                new (m_storage + j) value_type(
-                    std::move(*reinterpret_cast<pointer>(other.m_storage + j))
-                );
-                m_constructed[i] = true;
-            }
-            ++i;
-        }
-    }
+    address_space(address_space&& other) = delete;
 
-    address_space& operator=(const address_space& other) noexcept(
-        noexcept(std::declval<pointer>()->~value_type()) &&
-        noexcept(new (m_storage) value_type(std::declval<const value_type&>()))
-    ) {
-        if (this != &other) {
-            size_t i = 0;
-            for (bool bit : m_constructed) {
-                if (bit) {
-                    size_t j = i * sizeof(value_type);
-                    reinterpret_cast<pointer>(m_storage + j)->~value_type();
-                    std::memset(
-                        m_storage + j,
-                        static_cast<unsigned char>(0),
-                        sizeof(value_type)
-                    );
-                    m_constructed[i] = false;
-                }
-                ++i;
-            }
+    address_space& operator=(const address_space& other) = delete;
 
-            i = 0;
-            for (bool bit : other.m_constructed) {
-                if (bit) {
-                    size_t j = i * sizeof(value_type);
-                    new (m_storage + j) value_type(
-                        *reinterpret_cast<const_pointer>(other.m_storage + j)
-                    );
-                    m_constructed[i] = true;
-                }
-                ++i;
-            }
-        }
-        return *this;
-    }
-
-    address_space& operator=(address_space&& other) noexcept(
-        noexcept(std::declval<pointer>()->value_type()) &&
-        noexcept(new (m_storage) value_type(std::declval<value_type&&>()))
-    ) {
-        if (this != &other) {
-            size_t i = 0;
-            for (bool bit : m_constructed) {
-                if (bit) {
-                    size_t j = i * sizeof(value_type);
-                    reinterpret_cast<pointer>(m_storage + j)->~value_type();
-                    std::memset(
-                        m_storage + j,
-                        static_cast<unsigned char>(0),
-                        sizeof(value_type)
-                    );
-                    m_constructed[i] = false;
-                }
-                ++i;
-            }
-
-            i = 0;
-            for (bool bit : other.m_constructed) {
-                if (bit) {
-                    size_t j = i * sizeof(value_type);
-                    new (m_storage + j) value_type(
-                        std::move(*reinterpret_cast<pointer>(other.m_storage + j))
-                    );
-                    m_constructed[i] = true;
-                }
-                ++i;
-            }
-        }
-        return *this;
-    }
+    address_space& operator=(address_space&& other) = delete;
 
     /* True if the physical space is not empty.  False otherwise. */
     [[nodiscard]] explicit operator bool() const noexcept { return N; }
@@ -1498,7 +1419,6 @@ struct address_space<T, N> : impl::address_space_tag {
             }
         }
         new (p) T(std::forward<Args>(args)...);
-        m_constructed[p - data()] = true;
     }
 
     /* Destroy a value that was allocated from this physical space by calling its
@@ -1520,11 +1440,9 @@ struct address_space<T, N> : impl::address_space_tag {
             }
         }
         p->~T();
-        m_constructed[p - data()] = false;
     }
 
 private:
-    bitset<N> m_constructed;
     alignas(value_type) unsigned char m_storage[N * sizeof(value_type)];
 };
 

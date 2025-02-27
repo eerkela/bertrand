@@ -5,27 +5,476 @@
 #include "bertrand/common.h"
 #include "bertrand/allocate.h"
 #include "bertrand/except.h"
+#include "bertrand/static_str.h"
 
 
 namespace bertrand {
 
 
-/// TODO: Some bertrand internals will need to be able to function in cases where
-/// virtual addressing is not enabled, meaning the heap will be used instead.  This
-/// only really affects the function infrastructure, since the overload trie will
-/// prefer to use address spaces if they are available, and fall back to heap
-/// allocators otherwise.  The actual caches will always use fixed physical space, so
-/// that's not a problem.
+template <
+    typename T,
+    size_t N = impl::DEFAULT_ADDRESS_CAPACITY<T>,
+    meta::allocator_for<T> Alloc = std::allocator<T>
+>
+    requires (!meta::reference<T> && !meta::is_void<T>)
+struct List;
 
 
 namespace impl {
 
-    template <typename T, typename Alloc>
-    concept valid_list_config =
-        !meta::reference<T> &&
-        !meta::is_void<T> &&
-        meta::unqualified<Alloc> &&
-        meta::allocator_or_space_for<Alloc, T>;
+    /* Common immutable, bounds-checked iterator class for `bertrand::list`. */
+    template <typename T> requires (!meta::reference<T> && !meta::is_void<T>)
+    struct const_list_iterator {
+        using iterator_category = std::contiguous_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using value_type = const T;
+        using pointer = const value_type*;
+        using reference = const value_type&;
+
+    private:
+        template <size_t N, meta::allocator_for<T> Alloc>
+        friend struct bertrand::List;
+
+        const T* m_data = nullptr;
+        size_t m_index = 0;
+        size_t m_size = 0;
+
+        const_list_iterator(const T* data, size_t index, size_t size) noexcept :
+            m_data(data), m_index(index), m_size(size)
+        {}
+
+    public:
+        const_list_iterator() = default;
+
+        [[nodiscard]] const value_type& operator*() const noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (m_index >= m_size) {
+                    throw IndexError(std::to_string(static_cast<ssize_t>(m_index)));
+                }
+            }
+            return m_data[m_index];
+        }
+
+        [[nodiscard]] const value_type* operator->() const noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (m_index >= m_size) {
+                    throw IndexError(std::to_string(static_cast<ssize_t>(m_index)));
+                }
+            }
+            return &m_data[m_index];
+        }
+
+        [[nodiscard]] const value_type& operator[](difference_type n) const noexcept(!DEBUG) {
+            size_t idx = m_index;
+            if (n < 0) {
+                idx -= static_cast<size_t>(-n);
+            } else {
+                idx += static_cast<size_t>(n);
+            }
+            if constexpr (DEBUG) {
+                if (idx >= m_size) {
+                    throw IndexError(std::to_string(static_cast<ssize_t>(idx)));
+                }
+            }
+            return m_data[idx];
+        }
+
+        [[maybe_unused]] const_list_iterator& operator++() noexcept {
+            ++m_index;
+            return *this;
+        }
+
+        [[nodiscard]] const_list_iterator operator++(int) noexcept {
+            const_list_iterator copy = *this;
+            ++(*this);
+            return copy;
+        }
+
+        [[maybe_unused]] const_list_iterator& operator+=(difference_type n) noexcept {
+            m_index += n;
+            return *this;
+        }
+
+        [[nodiscard]] const_list_iterator operator+(difference_type n) const noexcept {
+            return {m_data, m_index + n, m_size};
+        }
+
+        [[maybe_unused]] const_list_iterator& operator--() noexcept {
+            --m_index;
+            return *this;
+        }
+
+        [[nodiscard]] const_list_iterator operator--(int) noexcept {
+            const_list_iterator copy = *this;
+            --(*this);
+            return copy;
+        }
+
+        [[maybe_unused]] const_list_iterator& operator-=(difference_type n) noexcept {
+            m_index -= n;
+            return *this;
+        }
+
+        [[nodiscard]] const_list_iterator operator-(difference_type n) const noexcept {
+            return {m_data, m_index - n, m_size};
+        }
+
+        [[nodiscard]] difference_type operator-(
+            const const_list_iterator& other
+        ) const noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (m_data != other.m_data) {
+                    throw ValueError(
+                        "cannot compare iterators from different lists"
+                    );
+                }
+            }
+            return m_index - other.m_index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator<(
+            const const_list_iterator& lhs,
+            const const_list_iterator& rhs
+        ) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (lhs.m_data != rhs.m_data) {
+                    throw ValueError(
+                        "cannot compare iterators from different lists"
+                    );
+                }
+            }
+            return lhs.m_index < rhs.m_index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator<=(
+            const const_list_iterator& lhs,
+            const const_list_iterator& rhs
+        ) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (lhs.m_data != rhs.m_data) {
+                    throw ValueError(
+                        "cannot compare iterators from different lists"
+                    );
+                }
+            }
+            return lhs.m_index <= rhs.m_index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            const const_list_iterator& lhs,
+            const const_list_iterator& rhs
+        ) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (lhs.m_data != rhs.m_data) {
+                    throw ValueError(
+                        "cannot compare iterators from different lists"
+                    );
+                }
+            }
+            return lhs.m_index == rhs.m_index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(
+            const const_list_iterator& lhs,
+            const const_list_iterator& rhs
+        ) noexcept(!DEBUG) {
+            return !(lhs == rhs);
+        }
+
+        [[nodiscard]] friend constexpr bool operator>=(
+            const const_list_iterator& lhs,
+            const const_list_iterator& rhs
+        ) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (lhs.m_data != rhs.m_data) {
+                    throw ValueError(
+                        "cannot compare iterators from different lists"
+                    );
+                }
+            }
+            return lhs.m_index >= rhs.m_index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator>(
+            const const_list_iterator& lhs,
+            const const_list_iterator& rhs
+        ) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (lhs.m_data != rhs.m_data) {
+                    throw ValueError(
+                        "cannot compare iterators from different lists"
+                    );
+                }
+            }
+            return lhs.m_index > rhs.m_index;
+        }
+
+        template <typename V> requires (std::convertible_to<const value_type&, V>)
+        [[nodiscard]] operator V() const noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (m_index >= m_size) {
+                    throw IndexError(std::to_string(static_cast<ssize_t>(m_index)));
+                }
+            }
+            return m_data[m_index];
+        }
+    };
+
+    /* Common mutable, bounds-checked iterator class for `bertrand::list`. */
+    template <typename T> requires (!meta::reference<T> && !meta::is_void<T>)
+    struct list_iterator {
+        using iterator_category = std::contiguous_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using value_type = T;
+        using pointer = value_type*;
+        using reference = value_type&;
+
+    private:
+        template <size_t N, meta::allocator_for<T> Alloc>
+        friend struct bertrand::List;
+
+        T* m_data = nullptr;
+        size_t m_index = 0;
+        size_t m_size = 0;
+
+        list_iterator(T* data, size_t index, size_t size) noexcept :
+            m_data(data), m_index(index), m_size(size)
+        {}
+
+    public:
+        list_iterator() = default;
+        list_iterator(const list_iterator&) = default;
+        list_iterator(list_iterator&&) = default;
+        list_iterator& operator=(const list_iterator&) = default;
+        list_iterator& operator=(list_iterator&&) = default;
+
+        [[nodiscard]] value_type& operator*() noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (m_index >= m_size) {
+                    throw IndexError(std::to_string(static_cast<ssize_t>(m_index)));
+                }
+            }
+            return m_data[m_index];
+        }
+
+        [[nodiscard]] const value_type& operator*() const noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (m_index >= m_size) {
+                    throw IndexError(std::to_string(static_cast<ssize_t>(m_index)));
+                }
+            }
+            return m_data[m_index];
+        }
+
+        [[nodiscard]] value_type* operator->() noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (m_index >= m_size) {
+                    throw IndexError(std::to_string(static_cast<ssize_t>(m_index)));
+                }
+            }
+            return &m_data[m_index];
+        }
+
+        [[nodiscard]] const value_type* operator->() const noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (m_index >= m_size) {
+                    throw IndexError(std::to_string(static_cast<ssize_t>(m_index)));
+                }
+            }
+            return &m_data[m_index];
+        }
+
+        [[nodiscard]] value_type& operator[](difference_type n) noexcept(!DEBUG) {
+            size_t idx = m_index;
+            if (n < 0) {
+                idx -= static_cast<size_t>(-n);
+            } else {
+                idx += static_cast<size_t>(n);
+            }
+            if constexpr (DEBUG) {
+                if (idx >= m_size) {
+                    throw IndexError(std::to_string(static_cast<ssize_t>(idx)));
+                }
+            }
+            return m_data[idx];
+        }
+
+        [[nodiscard]] const value_type& operator[](difference_type n) const noexcept(!DEBUG) {
+            size_t idx = m_index;
+            if (n < 0) {
+                idx -= static_cast<size_t>(-n);
+            } else {
+                idx += static_cast<size_t>(n);
+            }
+            if constexpr (DEBUG) {
+                if (idx >= m_size) {
+                    throw IndexError(std::to_string(static_cast<ssize_t>(idx)));
+                }
+            }
+            return m_data[idx];
+        }
+
+        [[maybe_unused]] list_iterator& operator++() noexcept {
+            ++m_index;
+            return *this;
+        }
+
+        [[nodiscard]] list_iterator operator++(int) noexcept {
+            list_iterator copy = *this;
+            ++(*this);
+            return copy;
+        }
+
+        [[maybe_unused]] list_iterator& operator+=(difference_type n) noexcept {
+            m_index += n;
+            return *this;
+        }
+
+        [[nodiscard]] list_iterator operator+(difference_type n) const noexcept {
+            return {m_data, m_index + n, m_size};
+        }
+
+        [[maybe_unused]] list_iterator& operator--() noexcept {
+            --m_index;
+            return *this;
+        }
+
+        [[nodiscard]] list_iterator operator--(int) noexcept {
+            list_iterator copy = *this;
+            --(*this);
+            return copy;
+        }
+
+        [[maybe_unused]] list_iterator& operator-=(difference_type n) noexcept {
+            m_index -= n;
+            return *this;
+        }
+
+        [[nodiscard]] list_iterator operator-(difference_type n) const noexcept {
+            return {m_data, m_index - n, m_size};
+        }
+
+        [[nodiscard]] difference_type operator-(
+            const list_iterator& other
+        ) const noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (m_data != other.m_data) {
+                    throw ValueError(
+                        "cannot compare iterators from different lists"
+                    );
+                }
+            }
+            return m_index - other.m_index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator<(
+            const list_iterator& lhs,
+            const list_iterator& rhs
+        ) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (lhs.m_data != rhs.m_data) {
+                    throw ValueError(
+                        "cannot compare iterators from different lists"
+                    );
+                }
+            }
+            return lhs.m_index < rhs.m_index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator<=(
+            const list_iterator& lhs,
+            const list_iterator& rhs
+        ) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (lhs.m_data != rhs.m_data) {
+                    throw ValueError(
+                        "cannot compare iterators from different lists"
+                    );
+                }
+            }
+            return lhs.m_index <= rhs.m_index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            const list_iterator& lhs,
+            const list_iterator& rhs
+        ) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (lhs.m_data != rhs.m_data) {
+                    throw ValueError(
+                        "cannot compare iterators from different lists"
+                    );
+                }
+            }
+            return lhs.m_index == rhs.m_index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(
+            const list_iterator& lhs,
+            const list_iterator& rhs
+        ) noexcept(!DEBUG) {
+            return !(lhs == rhs);
+        }
+
+        [[nodiscard]] friend constexpr bool operator>=(
+            const list_iterator& lhs,
+            const list_iterator& rhs
+        ) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (lhs.m_data != rhs.m_data) {
+                    throw ValueError(
+                        "cannot compare iterators from different lists"
+                    );
+                }
+            }
+            return lhs.m_index >= rhs.m_index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator>(
+            const list_iterator& lhs,
+            const list_iterator& rhs
+        ) noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (lhs.m_data != rhs.m_data) {
+                    throw ValueError(
+                        "cannot compare iterators from different lists"
+                    );
+                }
+            }
+            return lhs.m_index > rhs.m_index;
+        }
+
+        template <typename V> requires (std::convertible_to<value_type&, V>)
+        [[nodiscard]] operator V() noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (m_index >= m_size) {
+                    throw IndexError(std::to_string(static_cast<ssize_t>(m_index)));
+                }
+            }
+            return m_data[m_index];
+        }
+
+        template <typename V> requires (std::convertible_to<const value_type&, V>)
+        [[nodiscard]] operator V() const noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (m_index >= m_size) {
+                    throw IndexError(std::to_string(static_cast<ssize_t>(m_index)));
+                }
+            }
+            return m_data[m_index];
+        }
+
+        template <typename V> requires (std::assignable_from<value_type&, V>)
+        [[maybe_unused]] list_iterator& operator=(V&& value) && noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (m_index >= m_size) {
+                    throw IndexError(std::to_string(static_cast<ssize_t>(m_index)));
+                }
+            }
+            m_data[m_index] = std::forward<V>(value);
+            return *this;
+        }
+    };
 
 }
 
@@ -65,202 +514,555 @@ underlying data, leads to possible pointer invalidation, and causes inconsistent
 insertion performance.  If dynamic allocation is required, then it is always
 recommended to use an overcommitted virtual address space if possible, which largely
 mitigates these issues. */
-template <typename T, typename Alloc = std::allocator<T>>
-    requires (impl::valid_list_config<T, Alloc>)
-struct list {
+template <typename T, size_t N, meta::allocator_for<T> Alloc>
+    requires (!meta::reference<T> && !meta::is_void<T>)
+struct List {
+    using size_type = size_t;
+    using index_type = ssize_t;
+    using difference_type = std::ptrdiff_t;
+    using value_type = T;
+    using reference = value_type&;
+    using const_reference = const value_type&;
+    using pointer = value_type*;
+    using const_pointer = const value_type*;
+    using iterator = impl::list_iterator<T>;
+    using const_iterator = impl::const_list_iterator<T>;
+    using reverse_iterator = std::reverse_iterator<iterator>;
+    using const_reverse_iterator = std::reverse_iterator<const_iterator>;
+
 private:
 
-    Alloc m_alloc;
-    size_t m_size = 0;
+    template <typename V>
+    static constexpr V& lvalue(V&& x) noexcept { return x; }
 
-
-public:
-    /// TODO: this is actually the standard allocator case, so it works like a typical
-    /// dynamic array
-
-    list() noexcept(noexcept(Alloc())) = default;
-
-    list(const Alloc& allocator) noexcept(noexcept(Alloc(allocator))) :
-        m_alloc(allocator)
-    {}
-
-    list(Alloc&& allocator) noexcept(noexcept(Alloc(std::move(allocator)))) :
-        m_alloc(std::move(allocator))
-    {}
-
-    list(std::initializer_list<T> items) noexcept(noexcept(list(items.begin(), items.end()))) :
-        list(items.begin(), items.end())
-    {}
-
-    list(std::initializer_list<T> items, Alloc&& allocator) noexcept(
-        noexcept(list(items.begin(), items.end(), std::move(allocator)))
-    ) : list(items.begin(), items.end(), std::move(allocator))
-    {}
-
-    list(std::initializer_list<T> items, const Alloc& allocator) noexcept(
-        noexcept(list(items.begin(), items.end(), allocator))
-    ) : list(items.begin(), items.end(), allocator)
-    {}
-
-    template <meta::yields<T> Range>
-    explicit list(Range&& range) noexcept(noexcept(Alloc())) {
-        /// TODO: add all items
-    }
-
-    template <meta::yields<T> Range>
-    explicit list(Range&& range, Alloc&& allocator) noexcept(
-        noexcept(Alloc(std::move(allocator)))
-    ) :
-        m_alloc(std::move(allocator))
+    static constexpr void invoke_destructors(T* data, size_t size)
+        noexcept(std::is_nothrow_destructible_v<T>)
     {
-        /// TODO: add all items
-    }
-
-    template <meta::yields<T> Range>
-    explicit list(Range&& range, const Alloc& allocator) noexcept(
-        noexcept(Alloc(allocator))
-    ) :
-        m_alloc(allocator)
-    {
-        /// TODO: add all items
-    }
-
-    template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
-    explicit list(Begin&& begin, End&& end) noexcept(noexcept(Alloc())) {
-        /// TODO: add all items
-    }
-
-    template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
-    explicit list(Begin&& begin, End&& end, Alloc&& allocator) noexcept(
-        noexcept(Alloc(std::move(allocator)))
-    ) : m_alloc(std::move(allocator)) {
-        /// TODO: add all items
-    }
-
-    template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
-    explicit list(Begin&& begin, End&& end, const Alloc& allocator) noexcept(
-        noexcept(Alloc(allocator))
-    ) : m_alloc(allocator) {
-        /// TODO: add all items
-    }
-
-    /// TODO: copy/move constructors and assignment operators get a little funky,
-    /// especially if I want to support propagating allocators.
-
-
-    template <typename... Args> requires (std::constructible_from<T, Args...>)
-    void append(Args&&... args) {
-        if constexpr (meta::address_space<Alloc>) {
-            if constexpr (Alloc::STATIC) {
-                // if ()
-
-                T* ptr = m_alloc.allocate(m_size, 1);
-                if (ptr == nullptr) {
-                    throw MemoryError(std::format(
-                        "Failed to allocate address at offset {} in virtual "
-                        "address space starting at address {:#x} and ending at "
-                        "address {:#x} ({:.2e} MiB)",
-                        m_size,
-                        reinterpret_cast<uintptr_t>(m_alloc.begin()),
-                        reinterpret_cast<uintptr_t>(m_alloc.end()),
-                        double(m_alloc.nbytes()) / double(impl::bytes::MiB)
-                    ));
-                }
-            } else {
-                if (m_size == m_alloc.size()) {
-
-                }
-
+        if constexpr (!std::is_trivially_destructible_v<T>) {
+            for (size_t i = 0; i < size; ++i) {
+                data[i].~T();
             }
-        } else {
-            /// TODO: normal allocator case
         }
     }
 
-
-};
-
-
-/* Specialization for lists (dynamic arrays) that are backed by a virtual address
-space. */
-template <typename T, typename Alloc>
-    requires (impl::valid_list_config<T, Alloc> && meta::address_space<Alloc>)
-struct list<T, Alloc> {
-private:
-
-    Alloc m_alloc;
-    size_t m_size = 0;
-
-    static size_t initial_size() noexcept {
-        constexpr size_t min_elements = 8;
-        return (sizeof(T) * min_elements + PAGE_SIZE - 1) / PAGE_SIZE;
+    constexpr size_t normalize_index(index_type i) {
+        if (i < 0) {
+            i += size();
+            if (i < 0) {
+                throw IndexError(std::to_string(i));
+            }
+        } else if (i >= size()) {
+            throw IndexError(std::to_string(i));
+        }
+        return static_cast<size_t>(i);
     }
 
+    /// TODO: maybe copy/move assignment operators can reuse the same memory, without
+    /// needing to reallocate?
+    /// TODO: copy/move constructors can be implemented on the backend storage class
+    /// and then called polymorphically.  That should also handle the physical case
+    /// where there are no copy/move constructors for the space itself.
+
+    template <bool cond>
+    struct backend {
+        address_space<T, N> space;
+        size_type size = 0;
+        size_type capacity = 0;
+
+        constexpr backend(const backend& other) noexcept(
+            noexcept(space.allocate(0, other.size)) &&
+            noexcept(space.construct(space.data(), *other.space.data()))
+        ) {
+            T* data = space.allocate(0, other.size);
+            for (size_type i = 0; i < other.size; ++i) {
+                try {
+                    space.construct(data + i, other.space.data()[i]);
+                } catch (...) {
+                    invoke_destructors(data, i);
+                    throw;
+                }
+            }
+        }
+
+        constexpr backend(backend&& other) noexcept(address_space<T, N>::SMALL ?
+            (
+                noexcept(address_space<T, N>{}) &&
+                noexcept(space.allocate(0, other.size)) &&
+                noexcept(space.construct(space.data(), std::move(*other.space.data())))
+            ) :
+            noexcept(address_space<T, N>(std::move(other.space)))
+        ) :
+            space([](backend&& other) {
+                // if the address space is small-size optimized, then we have to move
+                // the contents elementwise into a new space
+                if constexpr (address_space<T, N>::SMALL) {
+                    address_space<T, N> space;
+                    T* data = space.allocate(0, other.size);
+                    for (size_type i = 0; i < other.size; ++i) {
+                        try {
+                            space.construct(
+                                data + i,
+                                std::move(other.space.data()[i])
+                            );
+
+                        // if a move constructor fails, make a best-faith effort to
+                        // move the previous contents back to the original container
+                        } catch (...) {
+                            for (size_type j = 0; j < i; ++j) {
+                                try {
+                                    other.space.construct(
+                                        other.data() + j,
+                                        std::move(data[j])
+                                    );
+                                } catch (...) {
+                                    invoke_destructors(data, i);
+                                    throw;
+                                }
+                            }
+                            invoke_destructors(data, i);
+                            throw;
+                        }
+                    }
+                    return space;
+
+                // otherwise, we can just transfer ownership
+                } else {
+                    return std::move(other.space);
+                }
+            }(std::move(other)))
+        {}
+
+        constexpr backend& operator=(const backend& other) {
+            if (this != &other) {
+                /// TODO:
+            }
+            return *this;
+        }
+
+        constexpr backend& operator=(backend&& other) {
+            if (this != &other) {
+                /// TODO:
+            }
+            return *this;
+        }
+
+        constexpr ~backend() noexcept(std::is_nothrow_destructible_v<T>) {
+            if (space) {
+                invoke_destructors(space.data(), size);
+            }
+        }
+
+        constexpr T* data() const noexcept(noexcept(space.data())) { return space.data(); }
+
+        constexpr void reserve(size_type n)
+            noexcept(noexcept(space.allocate(capacity, n - capacity)))
+        {
+            if (n > capacity) {
+                space.allocate(capacity, n - capacity);
+                capacity = n;
+            }
+        }
+
+        constexpr void shrink()
+            noexcept(noexcept(space.deallocate(size, capacity - size)))
+        {
+            if (size < capacity) {
+                space.deallocate(size, capacity - size);
+                capacity = size;
+            }
+        }
+
+        template <typename... Args>
+        constexpr void construct(pointer p, Args&&... args) noexcept(
+            noexcept(space.construct(space.data(), std::forward<Args>(args)...))
+        ) {
+            space.construct(p, std::forward<Args>(args)...);
+            ++size;
+        }
+
+        constexpr void destroy(pointer p) noexcept(
+            noexcept(space.destroy(space.data()))
+        ) {
+            space.destroy(p);
+            --size;
+        }
+    };
+
+    template <>
+    struct backend<false> {
+        Alloc heap;
+        T* storage = nullptr;
+        size_t size = 0;
+        size_t capacity = 0;
+
+        [[nodiscard]] constexpr T* data() const noexcept { return storage; }
+
+        // constexpr backend(const backend& other)
+
+        constexpr ~backend() noexcept(noexcept(std::free(storage))) {
+            if (storage) {
+                invoke_destructors(storage, size);
+                std::free(storage);
+                storage = nullptr;
+            }
+        }
+    };
+
+    using alloc = backend<HAS_ARENA>;
+    alloc m_alloc;
+
 public:
+    /* The default capacity to reserve if no template override is given.  This defaults
+    to a maximum of ~8 MiB of total storage, evenly divided into contiguous segments of
+    type `T`. */
+    static constexpr bool DEFAULT_CAPACITY = impl::DEFAULT_ADDRESS_CAPACITY<T>;
 
-    /// TODO: constructors first
+    /* True if the container is backed by a stable address space, meaning that dynamic
+    growth will not invalidate pointers to existing elements.  This is equivalent to
+    the `bertrand::HAS_ARENA` flag */
+    static constexpr bool STABLE_ADDRESS = HAS_ARENA;
 
+    /* Default constructor.  Creates an empty list and reserves virtual address space
+    if `STABLE_ADDRESS == true`. */
+    [[nodiscard]] constexpr List() noexcept(noexcept(alloc())) = default;
 
-    /// TODO: initial size equates to 1 full page or enough pages to store 8 instances
-    /// of T.  This is probably just the ceiling of the size of 8 instances of T with
-    /// respect to page size.
+    /* Initializer list constructor. */
+    [[nodiscard]] constexpr List(std::initializer_list<T> items) noexcept(
+        noexcept(list(items.begin(), items.end()))
+    ) : List(items.begin(), items.end())
+    {}
 
-
-    template <typename... Args> requires (std::constructible_from<T, Args...>)
-    void append(Args&&... args) {
-        if constexpr (Alloc::STATIC) {
-            /// TODO: initial
-
-            // if ()
-
-            T* ptr = m_alloc.allocate(m_size, 1);
-            if (ptr == nullptr) {
-                throw MemoryError(std::format(
-                    "Failed to allocate address at offset {} in virtual "
-                    "address space starting at address {:#x} and ending at "
-                    "address {:#x} ({:.2e} MiB)",
-                    m_size,
-                    reinterpret_cast<uintptr_t>(m_alloc.begin()),
-                    reinterpret_cast<uintptr_t>(m_alloc.end()),
-                    double(m_alloc.nbytes()) / double(impl::bytes::MiB)
-                ));
+    /* Conversion constructor from an iterable range whose contents are convertible to
+    the stored type `T`. */
+    template <meta::yields<T> Range>
+    [[nodiscard]] constexpr explicit List(Range&& range) noexcept(
+        noexcept(alloc()) &&
+        (
+            !meta::has_size<std::add_lvalue_reference_t<Range>> ||
+            meta::has_nothrow_size<std::add_lvalue_reference_t<Range>>
+        ) &&
+        noexcept(lvalue(std::ranges::begin(range)) != lvalue(std::ranges::end(range))) &&
+        noexcept(m_alloc.construct(
+            m_alloc.data() + size(),
+            *lvalue(std::ranges::begin(range))
+        )) &&
+        noexcept(++lvalue(std::ranges::begin(range)))
+    ) {
+        using RangeRef = std::add_lvalue_reference_t<Range>;
+        if constexpr (meta::has_size<RangeRef>) {
+            reserve(std::ranges::size(range));
+        }
+        auto begin = std::ranges::begin(range);
+        auto end = std::ranges::end(range);
+        while (begin != end) {
+            if constexpr (!meta::has_size<RangeRef>) {
+                reserve(size() + 1);
             }
-        } else {
-            if (m_size == m_alloc.size()) {
-
+            try {
+                m_alloc.construct(m_alloc.data() + size(), *begin);
+            } catch (...) {
+                invoke_destructors();
+                throw;
             }
-
+            ++begin;
         }
     }
 
-};
+    /* Conversion constructor from an iterator pair whose contents are convertible to
+    the stored type `T`. */
+    template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
+        requires (!meta::is_const<Begin> && !meta::is_const<End>)
+    [[nodiscard]] constexpr explicit List(Begin&& begin, End&& end) noexcept(
+        noexcept(alloc()) &&
+        (
+            !meta::sub_returns<
+                std::add_lvalue_reference_t<End>,
+                std::add_lvalue_reference_t<Begin>,
+                size_t
+            > ||
+            meta::has_nothrow_sub<
+                std::add_lvalue_reference_t<End>,
+                std::add_lvalue_reference_t<Begin>
+            >
+        ) &&
+        noexcept(lvalue(begin) != lvalue(end)) &&
+        noexcept(m_alloc.construct(m_alloc.data() + size(), *lvalue(begin))) &&
+        noexcept(++lvalue(begin))
+    ) {
+        using BeginRef = std::add_lvalue_reference_t<Begin>;
+        using EndRef = std::add_lvalue_reference_t<End>;
+        if constexpr (meta::sub_returns<EndRef, BeginRef, size_t>) {
+            reserve(end - begin);
+        }
+        while (begin != end) {
+            if constexpr (!meta::sub_returns<EndRef, BeginRef, size_t>) {
+                reserve(size() + 1);
+            }
+            try {
+                m_alloc.construct(m_alloc.data() + size(), *begin);
+            } catch (...) {
+                invoke_destructors();
+                throw;
+            }
+            ++begin;
+        }
+    }
+
+    /* Copy constructor.  Copies the contents of another list into a new address
+    range. */
+    [[nodiscard]] constexpr List(const List& other) = default;
+
+    /* Move constructor.  Preserves the original addresses and simply transfers
+    ownership if the list is stored on the heap or in a virtual address space.  If `N`
+    is small enough to trigger the small space optimization, then the contents will be
+    moved elementwise into the new list. */
+    [[nodiscard]] constexpr List(List&& other) = default;
+
+    /* Copy assignment operator.  Dumps the current contents of the list and then
+    copies those of another list into a new address range. */
+    [[maybe_unused]] constexpr List& operator=(const List& other) = default;
+
+    /* Move assignment operator.  Dumps the current contents of the list and then  */
+    [[maybe_unused]] constexpr List& operator=(List&& other) = default;
+
+    /* Destructor.  Calls destructors for each of the elements and then releases any
+    memory held by the list.  If the list was backed by a virtual address space, then
+    the address space will be released and any physical pages will be reclaimed by the
+    operating system.  */
+    constexpr ~List() noexcept(noexcept(m_alloc.~alloc())) = default;
+
+    /* The current number of elements contained in the list. */
+    [[nodiscard]] constexpr size_type size() const noexcept { return m_alloc.size; }
+
+    /* True if the list has nonzero size.  False otherwise. */
+    [[nodiscard]] constexpr explicit operator bool() const noexcept { return size(); }
+
+    /* True if the list has zero size.  False otherwise. */
+    [[nodiscard]] constexpr bool empty() const noexcept { return size() == 0; }
+
+    /* The total number of elements that can be stored before triggering dynamic
+    growth. */
+    [[nodiscard]] constexpr size_type capacity() const noexcept { return m_alloc.capacity; }
+
+    /* The absolute maximum number of elements that can be stored within the list.
+    This is equal to the `N` template parameter. */
+    [[nodiscard]] static constexpr size_type max_capacity() noexcept { return N; }
+
+    /* Estimates the total amount of memory being consumed by the list. */
+    [[nodiscard]] constexpr size_type nbytes() const noexcept {
+        return sizeof(List) + capacity() * sizeof(T);
+    }
+
+    /* Estimates the maximum amount of memory that the list could consume.  This is
+    obtained by extrapolating from `N`, which defaults to a maximum capacity of a few
+    MiB.  Note that this indicates potential memory consumption, and not the actual
+    amount of memory that is currently being used. */
+    [[nodiscard]] static constexpr size_type max_nbytes() noexcept {
+        return sizeof(List) + N * sizeof(T);
+    }
+
+    /* Retrieve a pointer to the start of the list.  This might be null if
+    `STABLE_ADDRESS == false` and the list is empty, in which case the underlying array
+    will be deleted to save space. */
+    [[nodiscard]] constexpr pointer data() noexcept {return m_alloc.data(); }
+
+    /* Retrieve a pointer to the start of the list.  This might be null if
+    `STABLE_ADDRESS == false` and the list is empty, in which case the underlying array
+    will be deleted to save space. */
+    [[nodiscard]] constexpr const_pointer data() const noexcept { return m_alloc.data(); }
+
+    /* Retrieve a reference to the first element in the list.  Throws an `IndexError`
+    if the list is empty. */
+    [[nodiscard]] constexpr reference front() noexcept(!DEBUG) {
+        if constexpr (DEBUG) {
+            if (empty()) {
+                throw IndexError("empty list has no front() element");
+            }
+        }
+        return *data();
+    }
+
+    /* Retrieve a reference to the first element in the list.  Throws an `IndexError`
+    if the list is empty. */
+    [[nodiscard]] constexpr const_reference front() const noexcept(!DEBUG) {
+        if constexpr (DEBUG) {
+            if (empty()) {
+                throw IndexError("empty list has no front() element");
+            }
+        }
+        return *data();
+    }
+
+    /* Retrieve a reference to the last element in the list.  Throws an `IndexError`
+    if the list is empty. */
+    [[nodiscard]] constexpr reference back() noexcept(!DEBUG) {
+        if constexpr (DEBUG) {
+            if (empty()) {
+                throw IndexError("empty list has no back() element");
+            }
+        }
+        return *(data() + size() - 1);
+    }
+
+    /* Retrieve a reference to the last element in the list.  Throws an `IndexError`
+    if the list is empty. */
+    [[nodiscard]] constexpr const_reference back() const noexcept(!DEBUG) {
+        if constexpr (DEBUG) {
+            if (empty()) {
+                throw IndexError("empty list has no back() element");
+            }
+        }
+        return *(data() + size() - 1);
+    }
+
+    /* Resize the allocator to store at least the given number of elements. */
+    constexpr void reserve(size_type n) noexcept(noexcept(m_alloc.reserve(n))) {
+        m_alloc.reserve(n);
+    }
+
+    /* Resize the allocator to store only `size()` elements, reclaiming any unused
+    capacity. */
+    constexpr void shrink() noexcept(noexcept(m_alloc.shrink())) {
+        m_alloc.shrink();
+    }
+
+    [[nodiscard]] iterator begin()
+        noexcept(noexcept(iterator(data(), 0, size())))
+    {
+        return {data(), 0, size()};
+    }
+
+    [[nodiscard]] const_iterator begin() const
+        noexcept(noexcept(const_iterator(data(), 0, size())))
+    {
+        return {data(), 0, size()};
+    }
+
+    [[nodiscard]] const_iterator cbegin() const
+        noexcept(noexcept(const_iterator(data(), 0, size())))
+    {
+        return {data(), 0, size()};
+    }
+
+    [[nodiscard]] iterator end()
+        noexcept(noexcept(iterator(data(), size(), size())))
+    {
+        return {data(), size(), size()};
+    }
+
+    [[nodiscard]] const_iterator end() const
+        noexcept(noexcept(const_iterator(data(), size(), size())))
+    {
+        return {data(), size(), size()};
+    }
+
+    [[nodiscard]] const_iterator cend() const
+        noexcept(noexcept(const_iterator(data(), size(), size())))
+    {
+        return {data(), size(), size()};
+    }
+
+    [[nodiscard]] reverse_iterator rbegin()
+        noexcept(noexcept(reverse_iterator(end())))
+    {
+        return std::make_reverse_iterator(end());
+    }
+
+    [[nodiscard]] const_reverse_iterator rbegin() const
+        noexcept(noexcept(const_reverse_iterator(end())))
+    {
+        return std::make_reverse_iterator(end());
+    }
+
+    [[nodiscard]] const_reverse_iterator crbegin() const
+        noexcept(noexcept(const_reverse_iterator(end())))
+    {
+        return std::make_reverse_iterator(end());
+    }
+
+    [[nodiscard]] reverse_iterator rend()
+        noexcept(noexcept(reverse_iterator(begin())))
+    {
+        return std::make_reverse_iterator(begin());
+    }
+
+    [[nodiscard]] const_reverse_iterator rend() const
+        noexcept(noexcept(const_reverse_iterator(begin())))
+    {
+        return std::make_reverse_iterator(begin());
+    }
+
+    [[nodiscard]] const_reverse_iterator crend() const
+        noexcept(noexcept(const_reverse_iterator(begin())))
+    {
+        return std::make_reverse_iterator(begin());
+    }
+
+    /* Return an mutable iterator to a specific index of the list.  Bounds checking is
+    always performed, and an `IndexError` is thrown if the index is out of range.  The
+    index may be negative, in which case Python-style wraparound is applied (e.g. `-1`
+    refers to the last element, `-2` to the second to last, etc.).  The resulting
+    iterator can be assigned to in order to simulate indexed assignment into the list,
+    and can be implicitly converted to arbitrary types as if it were a typical
+    reference. */
+    [[nodiscard]] iterator operator[](index_type i) {
+        return {data(), normalize_index(i), size()};
+    }
+
+    /* Return an immutable iterator to a specific index of the list.  Bounds checking
+    is always performed, and an `IndexError` is thrown if the index is out of range.
+    The index may be negative, in which case Python-style wraparound is applied (e.g.
+    `-1` refers to the last element, `-2` to the second to last, etc.).  The resulting
+    iterator can be implicitly converted to arbitrary types as if it were a typical
+    reference. */
+    [[nodiscard]] const_iterator operator[](index_type i) const {
+        return {data(), normalize_index(i), size()};
+    }
 
 
-/* Specialization for lists (dynamic arrays) that are backed by a fixed-size, physical
-array that is allocated all at once, and cannot be resized. */
-template <typename T, typename Alloc>
-    requires (impl::valid_list_config<T, Alloc> && meta::physical_space<Alloc>)
-struct list<T, Alloc> {
-    using allocator_type = Alloc;
-    using size_type = allocator_type::size_type;
-    using difference_type = allocator_type::difference_type;
-    using value_type = allocator_type::value_type;
-    using reference = allocator_type::reference;
-    using const_reference = allocator_type::const_reference;
-    using pointer = allocator_type::pointer;
-    using const_pointer = allocator_type::const_pointer;
+    /// TODO: grow geometrically, not linearly.
 
-    /// TODO: iterators
-
-private:
-
-    allocator_type m_alloc;
-    size_type m_size = 0;
-
-public:
+    /* Insert an item at the end of the list. */
+    template <typename... Args> requires (std::constructible_from<T, Args...>)
+    void append(Args&&... args) noexcept(
+        noexcept(reserve(size() + 1)) && noexcept(T(std::forward<Args>(args)...))
+    ) {
+        reserve(size() + 1);
+        m_alloc.construct(m_alloc.data() + size(), std::forward<Args>(args)...);
+    }
 
 
+    /// TODO: extend(range), extend(it, end) with error recovery
 
+    /// TODO: clear()
+
+    /// TODO: remove(), remove(value), remove(it), remove(slice)
+
+    /// TODO: pop(), pop(value), pop(it), pop(slice)
+
+    /// TODO: count(value)
+
+    /// TODO: index(value)
+
+    /// TODO: sort(compare) (quicksort)
+
+    /// TODO: operator[{start, stop, step}] -> slice
+    ///     slice.count(value)
+    ///     slice.index(value)
+    ///     conversions
+    ///     assignment
+
+    /// TODO: operator+
+
+    /// TODO: operator+=
+
+    /// TODO: operator*
+
+    /// TODO: operator*=
+
+    /// TODO: also dereference and ->* operators, for compatibility with functions
+
+    /// TODO: structured bindings if N is low enough?
 
 };
 
