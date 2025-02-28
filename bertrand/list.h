@@ -11,18 +11,19 @@
 namespace bertrand {
 
 
-template <
-    typename T,
-    size_t N = impl::DEFAULT_ADDRESS_CAPACITY<T>,
-    meta::allocator_for<T> Alloc = std::allocator<T>
->
+/// TODO: remove the allocator argument for simplicity, and just default to always
+/// using either raw malloc/free calls or `std::allocator<T>`.
+
+
+template <typename T, size_t N = impl::DEFAULT_ADDRESS_CAPACITY<T>>
     requires (!meta::reference<T> && !meta::is_void<T>)
 struct List;
 
 
 namespace impl {
+    struct list_tag {};
 
-    /* Common immutable, bounds-checked iterator class for `bertrand::list`. */
+    /* Immutable, bounds-checked iterator class for `bertrand::List`. */
     template <typename T> requires (!meta::reference<T> && !meta::is_void<T>)
     struct const_list_iterator {
         using iterator_category = std::contiguous_iterator_tag;
@@ -32,7 +33,7 @@ namespace impl {
         using reference = const value_type&;
 
     private:
-        template <size_t N, meta::allocator_for<T> Alloc>
+        template <typename T2, size_t N>
         friend struct bertrand::List;
 
         const T* m_data = nullptr;
@@ -220,7 +221,7 @@ namespace impl {
         }
     };
 
-    /* Common mutable, bounds-checked iterator class for `bertrand::list`. */
+    /* Mutable, bounds-checked iterator class for `bertrand::List`. */
     template <typename T> requires (!meta::reference<T> && !meta::is_void<T>)
     struct list_iterator {
         using iterator_category = std::contiguous_iterator_tag;
@@ -230,7 +231,7 @@ namespace impl {
         using reference = value_type&;
 
     private:
-        template <size_t N, meta::allocator_for<T> Alloc>
+        template <typename T2, size_t N>
         friend struct bertrand::List;
 
         T* m_data = nullptr;
@@ -476,6 +477,31 @@ namespace impl {
         }
     };
 
+    /* Immutable, bounds-checked slice class for `bertrand::List`. */
+    template <typename T> requires (!meta::reference<T> && !meta::is_void<T>)
+    struct const_list_slice {
+    private:
+
+        /// TODO: data, start, stop, step
+
+    public:
+
+    };
+
+    /* Mutable, bounds-checked slice class for `bertrand::List`. */
+    template <typename T> requires (!meta::reference<T> && !meta::is_void<T>)
+    struct list_slice {
+
+    };
+
+}
+
+
+namespace meta {
+
+    template <typename T>
+    concept List = inherits<T, impl::list_tag>;
+
 }
 
 
@@ -514,9 +540,8 @@ underlying data, leads to possible pointer invalidation, and causes inconsistent
 insertion performance.  If dynamic allocation is required, then it is always
 recommended to use an overcommitted virtual address space if possible, which largely
 mitigates these issues. */
-template <typename T, size_t N, meta::allocator_for<T> Alloc>
-    requires (!meta::reference<T> && !meta::is_void<T>)
-struct List {
+template <typename T, size_t N> requires (!meta::reference<T> && !meta::is_void<T>)
+struct List : impl::list_tag {
     using size_type = size_t;
     using index_type = ssize_t;
     using difference_type = std::ptrdiff_t;
@@ -535,17 +560,7 @@ private:
     template <typename V>
     static constexpr V& lvalue(V&& x) noexcept { return x; }
 
-    static constexpr void invoke_destructors(T* data, size_t size)
-        noexcept(std::is_nothrow_destructible_v<T>)
-    {
-        if constexpr (!std::is_trivially_destructible_v<T>) {
-            for (size_t i = 0; i < size; ++i) {
-                data[i].~T();
-            }
-        }
-    }
-
-    constexpr size_t normalize_index(index_type i) {
+    constexpr size_type normalize_index(index_type i) {
         if (i < 0) {
             i += size();
             if (i < 0) {
@@ -554,161 +569,528 @@ private:
         } else if (i >= size()) {
             throw IndexError(std::to_string(i));
         }
-        return static_cast<size_t>(i);
+        return static_cast<size_type>(i);
     }
 
-    /// TODO: maybe copy/move assignment operators can reuse the same memory, without
-    /// needing to reallocate?
-    /// TODO: copy/move constructors can be implemented on the backend storage class
-    /// and then called polymorphically.  That should also handle the physical case
-    /// where there are no copy/move constructors for the space itself.
+    enum BackendType {
+        PHYSICAL,
+        VIRTUAL,
+        HEAP
+    };
 
-    template <bool cond>
+    template <BackendType flag>
     struct backend {
-        address_space<T, N> space;
-        size_type size = 0;
         size_type capacity = 0;
+        size_type size = 0;
+        address_space<T, N> space;
 
-        constexpr backend(const backend& other) noexcept(
-            noexcept(space.allocate(0, other.size)) &&
-            noexcept(space.construct(space.data(), *other.space.data()))
-        ) {
-            T* data = space.allocate(0, other.size);
-            for (size_type i = 0; i < other.size; ++i) {
-                try {
-                    space.construct(data + i, other.space.data()[i]);
-                } catch (...) {
-                    invoke_destructors(data, i);
-                    throw;
-                }
-            }
+        constexpr pointer data() noexcept(noexcept(space.data())) {
+            return space.data();
         }
 
-        constexpr backend(backend&& other) noexcept(address_space<T, N>::SMALL ?
-            (
-                noexcept(address_space<T, N>{}) &&
-                noexcept(space.allocate(0, other.size)) &&
-                noexcept(space.construct(space.data(), std::move(*other.space.data())))
-            ) :
-            noexcept(address_space<T, N>(std::move(other.space)))
-        ) :
-            space([](backend&& other) {
-                // if the address space is small-size optimized, then we have to move
-                // the contents elementwise into a new space
-                if constexpr (address_space<T, N>::SMALL) {
-                    address_space<T, N> space;
-                    T* data = space.allocate(0, other.size);
-                    for (size_type i = 0; i < other.size; ++i) {
-                        try {
-                            space.construct(
-                                data + i,
-                                std::move(other.space.data()[i])
-                            );
-
-                        // if a move constructor fails, make a best-faith effort to
-                        // move the previous contents back to the original container
-                        } catch (...) {
-                            for (size_type j = 0; j < i; ++j) {
-                                try {
-                                    other.space.construct(
-                                        other.data() + j,
-                                        std::move(data[j])
-                                    );
-                                } catch (...) {
-                                    invoke_destructors(data, i);
-                                    throw;
-                                }
-                            }
-                            invoke_destructors(data, i);
-                            throw;
-                        }
-                    }
-                    return space;
-
-                // otherwise, we can just transfer ownership
-                } else {
-                    return std::move(other.space);
-                }
-            }(std::move(other)))
-        {}
-
-        constexpr backend& operator=(const backend& other) {
-            if (this != &other) {
-                /// TODO:
-            }
-            return *this;
-        }
-
-        constexpr backend& operator=(backend&& other) {
-            if (this != &other) {
-                /// TODO:
-            }
-            return *this;
-        }
-
-        constexpr ~backend() noexcept(std::is_nothrow_destructible_v<T>) {
-            if (space) {
-                invoke_destructors(space.data(), size);
-            }
-        }
-
-        constexpr T* data() const noexcept(noexcept(space.data())) { return space.data(); }
-
-        constexpr void reserve(size_type n)
-            noexcept(noexcept(space.allocate(capacity, n - capacity)))
-        {
-            if (n > capacity) {
-                space.allocate(capacity, n - capacity);
-                capacity = n;
-            }
-        }
-
-        constexpr void shrink()
-            noexcept(noexcept(space.deallocate(size, capacity - size)))
-        {
-            if (size < capacity) {
-                space.deallocate(size, capacity - size);
-                capacity = size;
-            }
+        constexpr const_pointer data() const noexcept(noexcept(space.data())) {
+            return space.data();
         }
 
         template <typename... Args>
         constexpr void construct(pointer p, Args&&... args) noexcept(
-            noexcept(space.construct(space.data(), std::forward<Args>(args)...))
+            noexcept(space.construct(p, std::forward<Args>(args)...))
         ) {
             space.construct(p, std::forward<Args>(args)...);
             ++size;
         }
 
         constexpr void destroy(pointer p) noexcept(
-            noexcept(space.destroy(space.data()))
+            noexcept(space.destroy(p))
         ) {
             space.destroy(p);
             --size;
         }
-    };
 
-    template <>
-    struct backend<false> {
-        Alloc heap;
-        T* storage = nullptr;
-        size_t size = 0;
-        size_t capacity = 0;
+        constexpr void grow(size_type n) noexcept(
+            noexcept(space.allocate(capacity, n - capacity))
+        ) {
+            space.allocate(capacity, n - capacity);
+            capacity = n;
+        }
 
-        [[nodiscard]] constexpr T* data() const noexcept { return storage; }
+        constexpr void shrink(size_type n) noexcept(
+            noexcept(space.deallocate(n, capacity - n))
+        ) {
+            space.deallocate(n, capacity - n);
+            capacity = n;
+        }
 
-        // constexpr backend(const backend& other)
-
-        constexpr ~backend() noexcept(noexcept(std::free(storage))) {
-            if (storage) {
-                invoke_destructors(storage, size);
-                std::free(storage);
-                storage = nullptr;
+        constexpr void clear() noexcept(
+            std::is_trivially_destructible_v<T> ||
+            noexcept(space.destroy(space.data()))
+        ) {
+            if constexpr (std::is_trivially_destructible_v<T>) {
+                size = 0;
+            } else {
+                while (size) {
+                    --size;
+                    space.destroy(space.data() + size);
+                }
             }
+        }
+
+        constexpr backend(const backend& other) noexcept(
+            noexcept(grow(other.size)) &&
+            noexcept(construct(data(), *other.data()))
+        ) {
+            if (other.size) {
+                grow(other.size);
+                while (size < other.size) {
+                    try {
+                        construct(data() + size, other.data()[size]);
+                    } catch (...) {
+                        clear();
+                        throw;
+                    }
+                }
+            }
+        }
+
+        constexpr backend(backend&& other) noexcept(
+            noexcept(address_space<T, N>{}) &&
+            noexcept(grow(other.size)) &&
+            noexcept(space.construct(data(), std::move(*other.data()))) &&
+            noexcept(other.destroy(other.data()))
+        ) {
+            if (other.size()) {
+                grow(other.size);
+
+                // if a move constructor or destructor fails, make a best-faith effort
+                // to roll the previous contents back to the original container
+                while (size < other.size) {
+                    try {
+                        space.construct(
+                            data() + size,
+                            std::move(other.data()[size])
+                        );
+                        other.destroy(other.data() + (size++));
+                    } catch (...) {
+                        while (size) {
+                            --size;
+                            other.construct(
+                                other.data() + size,
+                                std::move(data()[size])
+                            );
+                            space.destroy(data() + size);
+                        }
+                        throw;
+                    }
+                }
+            }
+        }
+
+        constexpr backend& operator=(const backend& other) noexcept(
+            noexcept(clear()) &&
+            noexcept(grow(other.size)) &&
+            noexcept(construct(data(), *other.space.data()))
+        ) {
+            if (this != &other) {
+                clear();
+                if (other.size > capacity) {
+                    grow(other.size);
+                }
+                while (size < other.size) {
+                    try {
+                        construct(data() + size, other.data()[size]);
+                    } catch (...) {
+                        clear();
+                        throw;
+                    }
+                }
+            }
+            return *this;
+        }
+
+        constexpr backend& operator=(backend&& other) noexcept(
+            noexcept(clear()) &&
+            noexcept(grow(other.size)) &&
+            noexcept(space.construct(data(), std::move(*other.data()))) &&
+            noexcept(other.destroy(other.data()))
+        ) {
+            if (this != &other) {
+                clear();
+                if (other.size > capacity) {
+                    grow(other.size);
+                }
+
+                // if a move constructor or destructor fails, make a best-faith effort
+                // to roll the previous contents back to the original container
+                while (size < other.size) {
+                    try {
+                        space.construct(
+                            data() + size,
+                            std::move(other.data()[size])
+                        );
+                        other.destroy(other.data() + (size++));
+                    } catch (...) {
+                        while (size) {
+                            --size;
+                            other.construct(
+                                other.data() + size,
+                                std::move(data()[size])
+                            );
+                            space.destroy(data() + size);
+                        }
+                        throw;
+                    }
+                }
+            }
+            return *this;
+        }
+
+        constexpr ~backend() noexcept(
+            noexcept(clear()) &&
+            std::is_nothrow_destructible_v<address_space<T, N>>
+        ) {
+            clear();
         }
     };
 
-    using alloc = backend<HAS_ARENA>;
+    template <>
+    struct backend<VIRTUAL> {
+        size_type capacity = 0;
+        size_type size = 0;
+        address_space<T, N> space;
+
+        constexpr pointer data() noexcept(noexcept(space.data())) {
+            return space.data();
+        }
+
+        constexpr const_pointer data() const noexcept(noexcept(space.data())) {
+            return space.data();
+        }
+
+        template <typename... Args>
+        constexpr void construct(pointer p, Args&&... args) noexcept(
+            noexcept(space.construct(p, std::forward<Args>(args)...))
+        ) {
+            space.construct(p, std::forward<Args>(args)...);
+            ++size;
+        }
+
+        constexpr void destroy(pointer p) noexcept(
+            noexcept(space.destroy(p))
+        ) {
+            space.destroy(p);
+            --size;
+        }
+
+        constexpr void grow(size_type n) noexcept(
+            noexcept(space.allocate(capacity, n - capacity))
+        ) {
+            space.allocate(capacity, n - capacity);
+            capacity = n;
+        }
+
+        constexpr void shrink(size_type n) noexcept(
+            noexcept(space.deallocate(n, capacity - n))
+        ) {
+            space.deallocate(n, capacity - n);
+            capacity = n;
+        }
+
+        constexpr void clear() noexcept(
+            std::is_trivially_destructible_v<T> ||
+            noexcept(space.destroy(space.data()))
+        ) {
+            if constexpr (std::is_trivially_destructible_v<T>) {
+                size = 0;
+            } else {
+                while (size) {
+                    --size;
+                    space.destroy(space.data() + size);
+                }
+            }
+        }
+
+        constexpr backend(const backend& other) noexcept(
+            noexcept(grow(other.size)) &&
+            noexcept(construct(data(), *other.data()))
+        ) {
+            if (other.size) {
+                grow(other.size);
+                while (size < other.size) {
+                    try {
+                        construct(data() + size, other.data()[size]);
+                    } catch (...) {
+                        clear();
+                        throw;
+                    }
+                }
+            }
+        }
+
+        constexpr backend(backend&& other) noexcept(
+            noexcept(address_space<T, N>(std::move(other.space)))
+        ) :
+            capacity(other.capacity),
+            size(other.size),
+            space(std::move(other.space))
+        {}
+
+        constexpr backend& operator=(const backend& other) noexcept(
+            noexcept(clear()) &&
+            noexcept(grow(other.size)) &&
+            noexcept(construct(data(), *other.space.data()))
+        ) {
+            if (this != &other) {
+                clear();
+                if (other.size > capacity) {
+                    grow(other.size);
+                }
+                while (size < other.size) {
+                    try {
+                        construct(data() + size, other.data()[size]);
+                    } catch (...) {
+                        clear();
+                        throw;
+                    }
+                }
+            }
+            return *this;
+        }
+
+        constexpr backend& operator=(backend&& other) noexcept(
+            noexcept(clear()) &&
+            noexcept(space = std::move(other.space))
+        ) {
+            if (this != &other) {
+                clear();
+                capacity = other.capacity;
+                size = other.size;
+                space = std::move(other.space);
+                other.capacity = 0;
+                other.size = 0;
+            }
+            return *this;
+        }
+
+        constexpr ~backend() noexcept(
+            noexcept(clear()) &&
+            std::is_nothrow_destructible_v<address_space<T, N>>
+        ) {
+            clear();
+        }
+    };
+
+    template <>
+    struct backend<HEAP> {
+        size_type capacity = 0;
+        size_type size = 0;
+        pointer storage = nullptr;
+
+        constexpr pointer data() noexcept { return storage; }
+        constexpr const_pointer data() const noexcept { return storage; }
+
+        template <typename... Args>
+        constexpr void construct(pointer p, Args&&... args) noexcept(
+            noexcept(new (p) T(std::forward<Args>(args)...))
+        ) {
+            new (p) T(std::forward<Args>(args)...);
+            ++size;
+        }
+
+        constexpr void destroy(pointer p) noexcept(
+            noexcept(p->~T())
+        ) {
+            p->~T();
+            --size;
+        }
+
+        constexpr void grow(size_type n) {
+            if (n == 0) {
+                clear();
+                free(storage);
+                storage = nullptr;
+                capacity = 0;
+                return;
+            }
+
+            pointer new_storage = reinterpret_cast<pointer>(malloc(sizeof(T) * n));
+            if (!new_storage) {
+                throw MemoryError();
+            }
+
+            // if a move constructor or destructor fails, make a best-faith effort
+            // to roll the previous contents back to the original container
+            try {
+                for (size_type i = 0; i < size;) {
+                    try {
+                        new (new_storage + i) T(std::move(storage[i]));
+                        storage[i++].~T();
+                    } catch (...) {
+                        for (size_type j = 0; j < i; ++j) {
+                            new (storage + j) T(std::move(new_storage[j]));
+                            new_storage[j].~T();
+                        }
+                        throw;
+                    }
+                }
+            } catch (...) {
+                free(new_storage);
+                throw;
+            }
+
+            free(storage);
+            storage = new_storage;
+            capacity = n;
+        }
+
+        constexpr void shrink(size_type n) {
+            if (n == 0) {
+                clear();
+                free(storage);
+                storage = nullptr;
+                capacity = 0;
+                return;
+            }
+
+            pointer new_storage = reinterpret_cast<pointer>(malloc(sizeof(T) * n));
+            if (!new_storage) {
+                throw MemoryError();
+            }
+
+            // if a move constructor or destructor fails, make a best-faith effort
+            // to roll the previous contents back to the original container
+            try {
+                for (size_type i = 0; i < size;) {
+                    try {
+                        new (new_storage + i) T(std::move(storage[i]));
+                        storage[i++].~T();
+                    } catch (...) {
+                        for (size_type j = 0; j < i; ++j) {
+                            new (storage + j) T(std::move(new_storage[j]));
+                            new_storage[j].~T();
+                        }
+                        throw;
+                    }
+                }
+            } catch (...) {
+                free(new_storage);
+                throw;
+            }
+
+            free(storage);
+            storage = new_storage;
+            capacity = size;
+        }
+
+        constexpr void clear() noexcept(std::is_nothrow_destructible_v<T>) {
+            if constexpr (std::is_trivially_destructible_v<T>) {
+                size = 0;
+            } else {
+                while (size) {
+                    --size;
+                    storage[size].~T();
+                }
+            }
+        }
+
+        constexpr backend(const backend& other) :
+            size(other.size),
+            capacity(other.size)
+        {
+            if (size) {
+                storage = reinterpret_cast<pointer>(
+                    malloc(sizeof(T) * size)
+                );
+                if (!storage) {
+                    throw MemoryError();
+                }
+                for (size_type i = 0; i < size; ++i) {
+                    try {
+                        construct(storage + i, other.storage[i]);
+                    } catch (...) {
+                        clear();
+                        free(storage);
+                        throw;
+                    }
+                }
+            }
+        }
+
+        constexpr backend(backend&& other) noexcept :
+            size(other.size),
+            capacity(other.capacity),
+            storage(other.storage)
+        {
+            other.size = 0;
+            other.capacity = 0;
+            other.storage = nullptr;
+        }
+
+        constexpr backend& operator=(const backend& other) {
+            if (this != &other) {
+                clear();
+
+                // only reallocate if new size is larger than current capacity
+                if (other.size > capacity) {
+                    if (storage) {
+                        free(storage);
+                    }
+                    storage = reinterpret_cast<pointer>(
+                        malloc(sizeof(T) * other.size)
+                    );
+                    if (!storage) {
+                        throw MemoryError();
+                    }
+                    capacity = other.size;
+                }
+
+                while (size < other.size) {
+                    try {
+                        construct(storage + size, other.storage[size]);
+                    } catch (...) {
+                        clear();
+                        throw;
+                    }
+                }
+            }
+            return *this;
+        }
+
+        constexpr backend& operator=(backend&& other) noexcept(
+            noexcept(clear()) &&
+            noexcept(free(storage))
+        ) {
+            if (this != &other) {
+                clear();
+                if (storage) {
+                    free(storage);
+                }
+                size = other.size;
+                capacity = other.capacity;
+                storage = other.storage;
+                other.size = 0;
+                other.capacity = 0;
+                other.storage = nullptr;
+            }
+            return *this;
+        }
+
+        constexpr ~backend() noexcept(
+            noexcept(clear()) &&
+            noexcept(free(storage))
+        ) {
+            clear();
+            if (storage) {
+                free(storage);
+            }
+            size = 0;
+            capacity = 0;
+            storage = nullptr;
+        }
+    };
+
+    using alloc = backend<
+        HAS_ARENA ? (address_space<T, N>::SMALL ? PHYSICAL : VIRTUAL) : HEAP
+    >;
     alloc m_alloc;
 
 public:
@@ -728,40 +1110,43 @@ public:
 
     /* Initializer list constructor. */
     [[nodiscard]] constexpr List(std::initializer_list<T> items) noexcept(
-        noexcept(list(items.begin(), items.end()))
+        noexcept(List(items.begin(), items.end()))
     ) : List(items.begin(), items.end())
     {}
 
     /* Conversion constructor from an iterable range whose contents are convertible to
     the stored type `T`. */
     template <meta::yields<T> Range>
-    [[nodiscard]] constexpr explicit List(Range&& range) noexcept(
-        noexcept(alloc()) &&
-        (
-            !meta::has_size<std::add_lvalue_reference_t<Range>> ||
-            meta::has_nothrow_size<std::add_lvalue_reference_t<Range>>
-        ) &&
-        noexcept(lvalue(std::ranges::begin(range)) != lvalue(std::ranges::end(range))) &&
-        noexcept(m_alloc.construct(
-            m_alloc.data() + size(),
-            *lvalue(std::ranges::begin(range))
-        )) &&
-        noexcept(++lvalue(std::ranges::begin(range)))
-    ) {
+    [[nodiscard]] constexpr explicit List(Range&& range) {
         using RangeRef = std::add_lvalue_reference_t<Range>;
         if constexpr (meta::has_size<RangeRef>) {
-            reserve(std::ranges::size(range));
+            size_type n = std::ranges::size(range);
+            if (n > N) {
+                throw ValueError(
+                    "cannot construct list with more than " +
+                    static_str<>::from_int<N> + " elements"
+                );
+            }
+            m_alloc.grow(n);
         }
         auto begin = std::ranges::begin(range);
         auto end = std::ranges::end(range);
         while (begin != end) {
             if constexpr (!meta::has_size<RangeRef>) {
-                reserve(size() + 1);
+                if (size() == capacity()) {
+                    if (size() == N) {
+                        throw ValueError(
+                            "cannot construct list with more than " +
+                            static_str<>::from_int<N> + " elements"
+                        );
+                    }
+                    m_alloc.grow(std::min(N, capacity() * 2));
+                }
             }
             try {
                 m_alloc.construct(m_alloc.data() + size(), *begin);
             } catch (...) {
-                invoke_destructors();
+                clear();
                 throw;
             }
             ++begin;
@@ -772,36 +1157,35 @@ public:
     the stored type `T`. */
     template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
         requires (!meta::is_const<Begin> && !meta::is_const<End>)
-    [[nodiscard]] constexpr explicit List(Begin&& begin, End&& end) noexcept(
-        noexcept(alloc()) &&
-        (
-            !meta::sub_returns<
-                std::add_lvalue_reference_t<End>,
-                std::add_lvalue_reference_t<Begin>,
-                size_t
-            > ||
-            meta::has_nothrow_sub<
-                std::add_lvalue_reference_t<End>,
-                std::add_lvalue_reference_t<Begin>
-            >
-        ) &&
-        noexcept(lvalue(begin) != lvalue(end)) &&
-        noexcept(m_alloc.construct(m_alloc.data() + size(), *lvalue(begin))) &&
-        noexcept(++lvalue(begin))
-    ) {
+    [[nodiscard]] constexpr explicit List(Begin&& begin, End&& end) {
         using BeginRef = std::add_lvalue_reference_t<Begin>;
         using EndRef = std::add_lvalue_reference_t<End>;
-        if constexpr (meta::sub_returns<EndRef, BeginRef, size_t>) {
-            reserve(end - begin);
+        if constexpr (meta::sub_returns<EndRef, BeginRef, size_type>) {
+            size_type n = end - begin;
+            if (n > N) {
+                throw ValueError(
+                    "cannot construct list with more than " +
+                    static_str<>::from_int<N> + " elements"
+                );
+            }
+            m_alloc.grow(n);
         }
         while (begin != end) {
-            if constexpr (!meta::sub_returns<EndRef, BeginRef, size_t>) {
-                reserve(size() + 1);
+            if constexpr (!meta::sub_returns<EndRef, BeginRef, size_type>) {
+                if (size() == capacity()) {
+                    if (size() == N) {
+                        throw ValueError(
+                            "cannot construct list with more than " +
+                            static_str<>::from_int<N> + " elements"
+                        );
+                    }
+                    m_alloc.grow(std::min(capacity() * 2), N);
+                }
             }
             try {
                 m_alloc.construct(m_alloc.data() + size(), *begin);
             } catch (...) {
-                invoke_destructors();
+                clear();
                 throw;
             }
             ++begin;
@@ -830,6 +1214,33 @@ public:
     the address space will be released and any physical pages will be reclaimed by the
     operating system.  */
     constexpr ~List() noexcept(noexcept(m_alloc.~alloc())) = default;
+
+    /* Swap two lists as cheaply as possible.  If an exception occurs, a best-faith
+    effort is made to restore the operands to their original state. */
+    constexpr void swap(List& other) & noexcept(
+        noexcept(List(std::move(*this))) &&
+        noexcept(*this = std::move(other)) &&
+        noexcept(other = std::move(*this))
+    ) {
+        if (this == &other) {
+            return;
+        }
+
+        List temp = std::move(*this);
+        try {
+            *this = std::move(other);
+            try {
+                other = std::move(temp);
+            } catch (...) {
+                other = std::move(*this);
+                *this = std::move(temp);
+                throw;
+            }
+        } catch (...) {
+            *this = std::move(temp);
+            throw;
+        }
+    }
 
     /* The current number of elements contained in the list. */
     [[nodiscard]] constexpr size_type size() const noexcept { return m_alloc.size; }
@@ -915,15 +1326,32 @@ public:
         return *(data() + size() - 1);
     }
 
-    /* Resize the allocator to store at least the given number of elements. */
-    constexpr void reserve(size_type n) noexcept(noexcept(m_alloc.reserve(n))) {
-        m_alloc.reserve(n);
+    /* Resize the allocator to store at least `n` elements.  Returns the number of
+    additional elements that were allocated. */
+    [[maybe_unused]] constexpr size_type reserve(size_type n) noexcept(
+        noexcept(m_alloc.grow(n))
+    ) {
+        if (n > capacity()) {
+            size_type result = capacity() - n;
+            m_alloc.grow(n);
+            return result;
+        }
+        return 0;
     }
 
-    /* Resize the allocator to store only `size()` elements, reclaiming any unused
-    capacity. */
-    constexpr void shrink() noexcept(noexcept(m_alloc.shrink())) {
-        m_alloc.shrink();
+    /* Resize the allocator to store at most `n` elements, reclaiming any unused
+    capacity.  If `n` is less than the current size, this method will shrink only to
+    that size, and no lower. */
+    [[maybe_unused]] constexpr size_type shrink(size_type n = 0) noexcept(
+        noexcept(m_alloc.shrink(n))
+    ) {
+        n = std::max(n, size());
+        if (n < capacity()) {
+            size_type result = capacity() - n;
+            m_alloc.shrink(n);
+            return result;
+        }
+        return 0;
     }
 
     [[nodiscard]] iterator begin()
@@ -1019,32 +1447,63 @@ public:
         return {data(), normalize_index(i), size()};
     }
 
+    /// TODO: slice operators
 
-    /// TODO: grow geometrically, not linearly.
 
-    /* Insert an item at the end of the list. */
+
+
+    /* Insert an item at the end of the list.  All arguments are forwarded to the
+    constructor for `T`. */
     template <typename... Args> requires (std::constructible_from<T, Args...>)
     void append(Args&&... args) noexcept(
         noexcept(reserve(size() + 1)) && noexcept(T(std::forward<Args>(args)...))
     ) {
-        reserve(size() + 1);
+        if (size() == capacity()) {
+            if (size() == N) {
+                throw ValueError(
+                    "cannot append to list with more than " +
+                    static_str<>::from_int<N> + " elements"
+                );
+            }
+            m_alloc.grow(std::min(N, capacity() * 2));
+        }
         m_alloc.construct(m_alloc.data() + size(), std::forward<Args>(args)...);
     }
 
+    /* Insert multiple items at the end of the list. */
+    template <meta::yields<value_type> Range>
+    void extend(Range&& range) noexcept(
+        true  // TODO: fix this
+    ) {
+        if constexpr (meta::has_size<Range>) {
+            reserve(size() + std::ranges::size(range));
+        }
+        /// TODO: implement
+    }
 
     /// TODO: extend(range), extend(it, end) with error recovery
 
-    /// TODO: clear()
+    /// TODO: insert(it, args...)
 
     /// TODO: remove(), remove(value), remove(it), remove(slice)
 
     /// TODO: pop(), pop(value), pop(it), pop(slice)
 
+    /* Remove all elements from the list, resetting the size to zero, but leaving the
+    capacity unchanged. */
+    void clear() noexcept(noexcept(m_alloc.clear())) {
+        m_alloc.clear();
+    }
+
+
+
+
+
     /// TODO: count(value)
 
     /// TODO: index(value)
 
-    /// TODO: sort(compare) (quicksort)
+    /// TODO: sort(compare) (timsort)
 
     /// TODO: operator[{start, stop, step}] -> slice
     ///     slice.count(value)
@@ -1062,7 +1521,7 @@ public:
 
     /// TODO: also dereference and ->* operators, for compatibility with functions
 
-    /// TODO: structured bindings if N is low enough?
+    /// TODO: structured bindings if N is small enough?
 
 };
 

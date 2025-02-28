@@ -1231,12 +1231,23 @@ namespace meta {
 }
 
 
+/* ADL-friendly swap method.  Equivalent to calling `l.swap(r)` as a member method. */
+template <typename T> requires (requires(T& l, T& r) { {l.swap(r)} -> std::same_as<void>; })
+constexpr void swap(T& l, T& r) noexcept(noexcept(l.swap(r))) {
+    l.swap(r);
+}
+
+
 /* Equivalent to calling `std::hash<T>{}(...)`, but without explicitly specializating
 `std::hash`. */
 template <meta::hashable T>
-[[nodiscard]] size_t hash(T&& obj) {
+[[nodiscard]] constexpr size_t hash(T&& obj) {
     return std::hash<std::decay_t<T>>{}(std::forward<T>(obj));
 }
+
+
+/// TODO: del()
+
 
 
 }  // namespace bertrand
