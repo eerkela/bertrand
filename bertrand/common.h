@@ -433,6 +433,10 @@ namespace meta {
             static constexpr bool enable = true;
             using type = T;
         };
+
+        template <typename Less, typename T>
+        struct sorted { using type = void; };
+
     }
 
     /* Get the index of a particular type within a parameter pack.  Returns the pack's size
@@ -1248,6 +1252,55 @@ template <meta::hashable T>
 
 /// TODO: del()
 
+
+/* Produce a sorted version of a container with the specified less-than comparison
+function.  If no explicit comparison function is given, they will default to a
+transparent `<` operator for each element.  This operator must be explicitly enabled
+for a given container type by specializing the `meta::detail::sorted<Less, T>` struct
+and providing an appropriate `::type` alias that injects the comparison functor into
+the container logic. */
+template <typename Less = std::less<>, typename T>
+    requires (
+        meta::is<typename meta::detail::sorted<Less, T>::type, T> ||
+        std::constructible_from<typename meta::detail::sorted<Less, T>::type, T> &&
+        std::is_default_constructible_v<Less> &&
+        std::is_invocable_r_v<
+            bool,
+            Less,
+            const typename meta::detail::sorted<Less, T>::type::value_type&,
+            const typename meta::detail::sorted<Less, T>::type::value_type&
+        >
+    )
+decltype(auto) sorted(T&& container) noexcept(
+    noexcept(typename meta::detail::sorted<Less, T>::type(std::forward<T>(container)))
+) {
+    using type = meta::detail::sorted<Less, T>::type;
+    if constexpr (meta::is<type, T>) {
+        return std::forward<T>(container);
+    } else {
+        return type(std::forward<T>(container));
+    }
+}
+
+
+/* Specialization of `sorted()` that accepts the container type as an explicit template
+parameter, and constructs it using the supplied arguments, rather than requiring a
+copy or move. */
+template <typename T, typename Less = std::less<>, typename... Args>
+    requires (
+        std::constructible_from<typename meta::detail::sorted<Less, T>::type, T> &&
+        std::is_invocable_r_v<
+            bool,
+            Less,
+            const typename meta::detail::sorted<Less, T>::type::value_type&,
+            const typename meta::detail::sorted<Less, T>::type::value_type&
+        >
+    )
+meta::detail::sorted<Less, T>::type sorted(Args&&... args) noexcept(
+    noexcept(typename meta::detail::sorted<Less, T>::type(std::forward<Args>(args)...))
+) {
+    return typename meta::detail::sorted<Less, T>::type(std::forward<Args>(args)...);
+}
 
 
 }  // namespace bertrand

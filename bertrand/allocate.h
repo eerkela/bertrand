@@ -1132,7 +1132,7 @@ public:
     Individual arena implementations are expected to wrap this method to make the
     interface more convenient.  This simply abstracts the low-level OS hooks to make
     them cross-platform. */
-    [[nodiscard, gnu::malloc]] pointer allocate(size_type offset, size_type length) {
+    [[maybe_unused, gnu::malloc]] pointer allocate(size_type offset, size_type length) {
         if constexpr (DEBUG) {
             if (offset + length > N) {
                 throw MemoryError(std::format(
@@ -1234,7 +1234,7 @@ public:
     which only occurs when the address space is destroyed, or when memory is explicitly
     decommitted using the `deallocate()` method.  Any errors emanating from the
     destructor for `T` will be propagated. */
-    void destroy(pointer p) noexcept(!DEBUG && noexcept(p->~T())) {
+    void destroy(pointer p) noexcept(!DEBUG && std::is_nothrow_destructible_v<T>) {
         if constexpr (DEBUG) {
             if (p < begin() || p >= end()) {
                 throw MemoryError(std::format(
@@ -1248,7 +1248,9 @@ public:
                 ));
             }
         }
-        p->~T();
+        if constexpr (!std::is_trivially_destructible<T>) {
+            p->~T();
+        }
     }
 
 private:
@@ -1352,7 +1354,7 @@ struct address_space<T, N> : impl::address_space_tag {
     /* Return a pointer to the beginning of a contiguous region of the physical space.
     If `T` is not void, then `offset` and `length` are both multiplied by `sizeof(T)`
     to determine the actual offsets. */
-    [[nodiscard, gnu::malloc]] pointer allocate(
+    [[maybe_unused, gnu::malloc]] pointer allocate(
         size_type offset,
         size_type length
     ) noexcept(!DEBUG) {
@@ -1425,7 +1427,7 @@ struct address_space<T, N> : impl::address_space_tag {
     destructor in-place.  Note that this does not deallocate the memory itself, which
     only occurs when the physical space is destroyed.  Any errors emanating from the
     destructor for `T` will be propagated. */
-    void destroy(pointer p) noexcept(!DEBUG && noexcept(p->~T())) {
+    void destroy(pointer p) noexcept(!DEBUG && std::is_nothrow_destructible_v<T>) {
         if constexpr (DEBUG) {
             if (p < begin() || p >= end()) {
                 throw MemoryError(std::format(
@@ -1439,7 +1441,9 @@ struct address_space<T, N> : impl::address_space_tag {
                 ));
             }
         }
-        p->~T();
+        if constexpr (!std::is_trivially_destructible_v<T>) {
+            p->~T();
+        }
     }
 
 private:

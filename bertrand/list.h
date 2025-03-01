@@ -11,12 +11,23 @@
 namespace bertrand {
 
 
-/// TODO: remove the allocator argument for simplicity, and just default to always
-/// using either raw malloc/free calls or `std::allocator<T>`.
-
-
-template <typename T, size_t N = impl::DEFAULT_ADDRESS_CAPACITY<T>>
-    requires (!meta::reference<T> && !meta::is_void<T>)
+template <
+    typename T,
+    size_t N = impl::DEFAULT_ADDRESS_CAPACITY<T>,
+    typename Equal = std::equal_to<>,
+    typename Less = void
+>
+    requires (!meta::is_void<T> && (
+        meta::is_void<Equal> || (
+            std::is_default_constructible_v<Less> &&
+            std::is_invocable_r_v<bool, Equal, const T&, const T&>
+        )
+    ) && (
+        meta::is_void<Less> || (
+            std::is_default_constructible_v<Less> &&
+            std::is_invocable_r_v<bool, Less, const T&, const T&>
+        )
+    ))
 struct List;
 
 
@@ -502,12 +513,66 @@ namespace meta {
     template <typename T>
     concept List = inherits<T, impl::list_tag>;
 
+    namespace detail {
+
+        template <typename Less, List T>
+            requires (
+                std::is_default_constructible_v<Less> &&
+                std::is_invocable_r_v<
+                    bool,
+                    Less,
+                    const typename std::remove_cvref_t<T>::value_type&,
+                    const typename std::remove_cvref_t<T>::value_type&    
+                >
+            )
+        struct sorted<Less, T> {
+            using type = std::remove_cvref_t<T>::template to_sorted<Less>;
+        };
+
+    }
+
 }
 
 
-/* A simple dynamic array that can use either an STL-compliant allocator class, a
-virtual address space (the default), or a fixed-size physical array as the underlying
-storage backend.
+/* A simple dynamic array that stores its contents in a contiguous virtual address
+space, which can grow without relocation.
+
+Typical dynamic array implementations (such as `std::vector<T>`) store their contents
+on the heap, only allocating as much memory as they need, plus some excess to prevent
+thrashing.  Once the available space is exhausted, the array must allocate a new block
+of memory from the heap, move the contents of the old block to the new block, and then
+free the old block.  This is a costly operation that leads to pointer invalidation for
+the existing contents (a potential security risk) and unpredictable performance, with
+frequent small stutters as the array grows, particularly impacting the memory
+subsystem.  This can be mitigated to some extent by proper use of the `reserve()`
+method, but that is not always feasible, and `reserve()` can still trigger relocation
+if the array lacks sufficient capacity.
+
+This class avoids dynamic allocations entirely by giving each list its own private
+arena, which consists of a virtual address space that is decoupled from physical
+memory.  Upon construction, each list reserves a range of virtual addresses (pointers)
+without any physical memory to back them, and then directs the operating system to
+allocate pages on-demand as they are needed.  Because of this, and because the
+available virtual address space is quite large on 64-bit systems (on the order of
+hundreds of terabytes), it is possible to reserve even very large contiguous address
+spaces in an efficient manner
+
+
+
+
+
+
+
+Such arrays exhibit strong pointer stability
+and performance characteristics similar to typical STL containers, 
+
+
+
+
+
+If virtual addresses are not enabled at
+build time, then the list will fall back to traditional heap allocation using
+`malloc()` and `free()`.
 
 Virtual address spaces allow dynamic lists to be allocated within a reserved (usually
 large) range of addresses, with physical memory being assigned on-demand when needed.
@@ -540,7 +605,18 @@ underlying data, leads to possible pointer invalidation, and causes inconsistent
 insertion performance.  If dynamic allocation is required, then it is always
 recommended to use an overcommitted virtual address space if possible, which largely
 mitigates these issues. */
-template <typename T, size_t N> requires (!meta::reference<T> && !meta::is_void<T>)
+template <typename T, size_t N, typename Equal, typename Less>
+    requires (!meta::is_void<T> && (
+        meta::is_void<Equal> || (
+            std::is_default_constructible_v<Less> &&
+            std::is_invocable_r_v<bool, Equal, const T&, const T&>
+        )
+    ) && (
+        meta::is_void<Less> || (
+            std::is_default_constructible_v<Less> &&
+            std::is_invocable_r_v<bool, Less, const T&, const T&>
+        )
+    ))
 struct List : impl::list_tag {
     using size_type = size_t;
     using index_type = ssize_t;
@@ -555,8 +631,33 @@ struct List : impl::list_tag {
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
 
-private:
+    /* Replace the `Less` type that this list was specialized with.  This is invoked
+    when evaluating the `sorted()` operator on a `bertrand::List` container. */
+    template <typename L>
+        requires (meta::is_void<Less> || (
+            std::is_default_constructible_v<Less> &&
+            std::is_invocable_r_v<bool, Less, const T&, const L&>
+        ))
+    using to_sorted = List<T, N, Equal, L>;
 
+    /* The default capacity to reserve if no template override is given.  This defaults
+    to a maximum of ~8 MiB of total storage, evenly divided into contiguous segments of
+    type `T`. */
+    static constexpr bool DEFAULT_CAPACITY = impl::DEFAULT_ADDRESS_CAPACITY<T>;
+
+    /* True if the container is backed by a stable address space, meaning that dynamic
+    growth will not invalidate pointers to existing elements.  This is equivalent to
+    the `bertrand::HAS_ARENA` flag */
+    static constexpr bool STABLE_ADDRESS = HAS_ARENA;
+
+    /* True if the container is naturally sorted, which occurs when it is templated
+    with a non-void `Less` function.  Such a container is guaranteed to always maintain
+    strict ascending order based on the comparison function, allowing for O(log(n))
+    binary searches using any key that can be transparently evaluated by the `Less`
+    function (as if the STL's `is_transparent` property were always true). */
+    static constexpr bool SORTED = !meta::is_void<Less>;
+
+private:
     template <typename V>
     static constexpr V& lvalue(V&& x) noexcept { return x; }
 
@@ -572,14 +673,14 @@ private:
         return static_cast<size_type>(i);
     }
 
-    enum BackendType {
+    enum Allocator {
         PHYSICAL,
         VIRTUAL,
         HEAP
     };
 
-    template <BackendType flag>
-    struct backend {
+    template <Allocator flag>
+    struct Alloc {
         size_type capacity = 0;
         size_type size = 0;
         address_space<T, N> space;
@@ -635,7 +736,9 @@ private:
             }
         }
 
-        constexpr backend(const backend& other) noexcept(
+        constexpr Alloc() = default;
+
+        constexpr Alloc(const Alloc& other) noexcept(
             noexcept(grow(other.size)) &&
             noexcept(construct(data(), *other.data()))
         ) {
@@ -652,7 +755,7 @@ private:
             }
         }
 
-        constexpr backend(backend&& other) noexcept(
+        constexpr Alloc(Alloc&& other) noexcept(
             noexcept(address_space<T, N>{}) &&
             noexcept(grow(other.size)) &&
             noexcept(space.construct(data(), std::move(*other.data()))) &&
@@ -685,7 +788,7 @@ private:
             }
         }
 
-        constexpr backend& operator=(const backend& other) noexcept(
+        constexpr Alloc& operator=(const Alloc& other) noexcept(
             noexcept(clear()) &&
             noexcept(grow(other.size)) &&
             noexcept(construct(data(), *other.space.data()))
@@ -707,7 +810,7 @@ private:
             return *this;
         }
 
-        constexpr backend& operator=(backend&& other) noexcept(
+        constexpr Alloc& operator=(Alloc&& other) noexcept(
             noexcept(clear()) &&
             noexcept(grow(other.size)) &&
             noexcept(space.construct(data(), std::move(*other.data()))) &&
@@ -744,7 +847,7 @@ private:
             return *this;
         }
 
-        constexpr ~backend() noexcept(
+        constexpr ~Alloc() noexcept(
             noexcept(clear()) &&
             std::is_nothrow_destructible_v<address_space<T, N>>
         ) {
@@ -753,7 +856,7 @@ private:
     };
 
     template <>
-    struct backend<VIRTUAL> {
+    struct Alloc<VIRTUAL> {
         size_type capacity = 0;
         size_type size = 0;
         address_space<T, N> space;
@@ -809,7 +912,9 @@ private:
             }
         }
 
-        constexpr backend(const backend& other) noexcept(
+        constexpr Alloc() = default;
+
+        constexpr Alloc(const Alloc& other) noexcept(
             noexcept(grow(other.size)) &&
             noexcept(construct(data(), *other.data()))
         ) {
@@ -826,7 +931,7 @@ private:
             }
         }
 
-        constexpr backend(backend&& other) noexcept(
+        constexpr Alloc(Alloc&& other) noexcept(
             noexcept(address_space<T, N>(std::move(other.space)))
         ) :
             capacity(other.capacity),
@@ -834,7 +939,7 @@ private:
             space(std::move(other.space))
         {}
 
-        constexpr backend& operator=(const backend& other) noexcept(
+        constexpr Alloc& operator=(const Alloc& other) noexcept(
             noexcept(clear()) &&
             noexcept(grow(other.size)) &&
             noexcept(construct(data(), *other.space.data()))
@@ -856,7 +961,7 @@ private:
             return *this;
         }
 
-        constexpr backend& operator=(backend&& other) noexcept(
+        constexpr Alloc& operator=(Alloc&& other) noexcept(
             noexcept(clear()) &&
             noexcept(space = std::move(other.space))
         ) {
@@ -871,7 +976,7 @@ private:
             return *this;
         }
 
-        constexpr ~backend() noexcept(
+        constexpr ~Alloc() noexcept(
             noexcept(clear()) &&
             std::is_nothrow_destructible_v<address_space<T, N>>
         ) {
@@ -880,7 +985,7 @@ private:
     };
 
     template <>
-    struct backend<HEAP> {
+    struct Alloc<HEAP> {
         size_type capacity = 0;
         size_type size = 0;
         pointer storage = nullptr;
@@ -897,9 +1002,11 @@ private:
         }
 
         constexpr void destroy(pointer p) noexcept(
-            noexcept(p->~T())
+            std::is_nothrow_destructible_v<T>
         ) {
-            p->~T();
+            if constexpr (!std::is_trivially_destructible_v<T>) {
+                p->~T();
+            }
             --size;
         }
 
@@ -923,11 +1030,15 @@ private:
                 for (size_type i = 0; i < size;) {
                     try {
                         new (new_storage + i) T(std::move(storage[i]));
-                        storage[i++].~T();
+                        if constexpr (!std::is_trivially_destructible_v<T>) {
+                            storage[i++].~T();
+                        }
                     } catch (...) {
                         for (size_type j = 0; j < i; ++j) {
                             new (storage + j) T(std::move(new_storage[j]));
-                            new_storage[j].~T();
+                            if constexpr (!std::is_trivially_destructible_v<T>) {
+                                new_storage[j].~T();
+                            }
                         }
                         throw;
                     }
@@ -962,11 +1073,16 @@ private:
                 for (size_type i = 0; i < size;) {
                     try {
                         new (new_storage + i) T(std::move(storage[i]));
-                        storage[i++].~T();
+                        if constexpr (!std::is_trivially_destructible_v<T>) {
+                            storage[i++].~T();
+                        }
+                        
                     } catch (...) {
                         for (size_type j = 0; j < i; ++j) {
                             new (storage + j) T(std::move(new_storage[j]));
-                            new_storage[j].~T();
+                            if constexpr (!std::is_trivially_destructible_v<T>) {
+                                new_storage[j].~T();
+                            }
                         }
                         throw;
                     }
@@ -992,7 +1108,9 @@ private:
             }
         }
 
-        constexpr backend(const backend& other) :
+        constexpr Alloc() = default;
+
+        constexpr Alloc(const Alloc& other) :
             size(other.size),
             capacity(other.size)
         {
@@ -1015,7 +1133,7 @@ private:
             }
         }
 
-        constexpr backend(backend&& other) noexcept :
+        constexpr Alloc(Alloc&& other) noexcept :
             size(other.size),
             capacity(other.capacity),
             storage(other.storage)
@@ -1025,7 +1143,7 @@ private:
             other.storage = nullptr;
         }
 
-        constexpr backend& operator=(const backend& other) {
+        constexpr Alloc& operator=(const Alloc& other) {
             if (this != &other) {
                 clear();
 
@@ -1055,7 +1173,7 @@ private:
             return *this;
         }
 
-        constexpr backend& operator=(backend&& other) noexcept(
+        constexpr Alloc& operator=(Alloc&& other) noexcept(
             noexcept(clear()) &&
             noexcept(free(storage))
         ) {
@@ -1074,7 +1192,7 @@ private:
             return *this;
         }
 
-        constexpr ~backend() noexcept(
+        constexpr ~Alloc() noexcept(
             noexcept(clear()) &&
             noexcept(free(storage))
         ) {
@@ -1088,68 +1206,33 @@ private:
         }
     };
 
-    using alloc = backend<
-        HAS_ARENA ? (address_space<T, N>::SMALL ? PHYSICAL : VIRTUAL) : HEAP
+    using alloc = Alloc<
+        address_space<T, N>::SMALL ? PHYSICAL : (HAS_ARENA ? VIRTUAL : HEAP)
     >;
     alloc m_alloc;
 
 public:
-    /* The default capacity to reserve if no template override is given.  This defaults
-    to a maximum of ~8 MiB of total storage, evenly divided into contiguous segments of
-    type `T`. */
-    static constexpr bool DEFAULT_CAPACITY = impl::DEFAULT_ADDRESS_CAPACITY<T>;
-
-    /* True if the container is backed by a stable address space, meaning that dynamic
-    growth will not invalidate pointers to existing elements.  This is equivalent to
-    the `bertrand::HAS_ARENA` flag */
-    static constexpr bool STABLE_ADDRESS = HAS_ARENA;
-
     /* Default constructor.  Creates an empty list and reserves virtual address space
     if `STABLE_ADDRESS == true`. */
     [[nodiscard]] constexpr List() noexcept(noexcept(alloc())) = default;
 
     /* Initializer list constructor. */
-    [[nodiscard]] constexpr List(std::initializer_list<T> items) noexcept(
-        noexcept(List(items.begin(), items.end()))
-    ) : List(items.begin(), items.end())
-    {}
+    [[nodiscard]] constexpr List(std::initializer_list<T> items) {
+        if constexpr (meta::is_void<Less>) {
+            extend(items.begin(), items.end());
+        } else {
+            update(items.begin(), items.end());
+        }
+    }
 
     /* Conversion constructor from an iterable range whose contents are convertible to
     the stored type `T`. */
     template <meta::yields<T> Range>
     [[nodiscard]] constexpr explicit List(Range&& range) {
-        using RangeRef = std::add_lvalue_reference_t<Range>;
-        if constexpr (meta::has_size<RangeRef>) {
-            size_type n = std::ranges::size(range);
-            if (n > N) {
-                throw ValueError(
-                    "cannot construct list with more than " +
-                    static_str<>::from_int<N> + " elements"
-                );
-            }
-            m_alloc.grow(n);
-        }
-        auto begin = std::ranges::begin(range);
-        auto end = std::ranges::end(range);
-        while (begin != end) {
-            if constexpr (!meta::has_size<RangeRef>) {
-                if (size() == capacity()) {
-                    if (size() == N) {
-                        throw ValueError(
-                            "cannot construct list with more than " +
-                            static_str<>::from_int<N> + " elements"
-                        );
-                    }
-                    m_alloc.grow(std::min(N, capacity() * 2));
-                }
-            }
-            try {
-                m_alloc.construct(m_alloc.data() + size(), *begin);
-            } catch (...) {
-                clear();
-                throw;
-            }
-            ++begin;
+        if constexpr (meta::is_void<Less>) {
+            extend(std::forward<Range>(range));
+        } else {
+            update(std::forward<Range>(range));
         }
     }
 
@@ -1158,56 +1241,37 @@ public:
     template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
         requires (!meta::is_const<Begin> && !meta::is_const<End>)
     [[nodiscard]] constexpr explicit List(Begin&& begin, End&& end) {
-        using BeginRef = std::add_lvalue_reference_t<Begin>;
-        using EndRef = std::add_lvalue_reference_t<End>;
-        if constexpr (meta::sub_returns<EndRef, BeginRef, size_type>) {
-            size_type n = end - begin;
-            if (n > N) {
-                throw ValueError(
-                    "cannot construct list with more than " +
-                    static_str<>::from_int<N> + " elements"
-                );
-            }
-            m_alloc.grow(n);
-        }
-        while (begin != end) {
-            if constexpr (!meta::sub_returns<EndRef, BeginRef, size_type>) {
-                if (size() == capacity()) {
-                    if (size() == N) {
-                        throw ValueError(
-                            "cannot construct list with more than " +
-                            static_str<>::from_int<N> + " elements"
-                        );
-                    }
-                    m_alloc.grow(std::min(capacity() * 2), N);
-                }
-            }
-            try {
-                m_alloc.construct(m_alloc.data() + size(), *begin);
-            } catch (...) {
-                clear();
-                throw;
-            }
-            ++begin;
+        if constexpr (meta::is_void<Less>) {
+            extend(std::forward<Begin>(begin), std::forward<End>(end));
+        } else {
+            update(std::forward<Begin>(begin), std::forward<End>(end));
         }
     }
 
     /* Copy constructor.  Copies the contents of another list into a new address
     range. */
-    [[nodiscard]] constexpr List(const List& other) = default;
+    [[nodiscard]] constexpr List(const List& other) noexcept(
+        noexcept(alloc(other.alloc))
+    ) = default;
 
     /* Move constructor.  Preserves the original addresses and simply transfers
     ownership if the list is stored on the heap or in a virtual address space.  If `N`
     is small enough to trigger the small space optimization, then the contents will be
     moved elementwise into the new list. */
-    [[nodiscard]] constexpr List(List&& other) = default;
+    [[nodiscard]] constexpr List(List&& other) noexcept(
+        noexcept(alloc(std::move(other.alloc)))
+    ) = default;
 
     /* Copy assignment operator.  Dumps the current contents of the list and then
     copies those of another list into a new address range. */
-    [[maybe_unused]] constexpr List& operator=(const List& other) = default;
+    [[maybe_unused]] constexpr List& operator=(const List& other) noexcept(
+        noexcept(m_alloc = other.m_alloc)
+    ) = default;
 
     /* Move assignment operator.  Dumps the current contents of the list and then  */
-    [[maybe_unused]] constexpr List& operator=(List&& other) = default;
+    [[maybe_unused]] constexpr List& operator=(List&& other) noexcept(
+        noexcept(m_alloc = std::move(other.m_alloc))
+    ) = default;
 
     /* Destructor.  Calls destructors for each of the elements and then releases any
     memory held by the list.  If the list was backed by a virtual address space, then
@@ -1329,9 +1393,17 @@ public:
     /* Resize the allocator to store at least `n` elements.  Returns the number of
     additional elements that were allocated. */
     [[maybe_unused]] constexpr size_type reserve(size_type n) noexcept(
-        noexcept(m_alloc.grow(n))
+        !DEBUG && noexcept(m_alloc.grow(n))
     ) {
         if (n > capacity()) {
+            if constexpr (DEBUG) {
+                if (n > N) {
+                    throw ValueError(
+                        "cannot reserve more than " + static_str<>::from_int<N> +
+                        " elements"
+                    );
+                }
+            }
             size_type result = capacity() - n;
             m_alloc.grow(n);
             return result;
@@ -1354,73 +1426,73 @@ public:
         return 0;
     }
 
-    [[nodiscard]] iterator begin()
+    [[nodiscard]] constexpr iterator begin()
         noexcept(noexcept(iterator(data(), 0, size())))
     {
         return {data(), 0, size()};
     }
 
-    [[nodiscard]] const_iterator begin() const
+    [[nodiscard]] constexpr const_iterator begin() const
         noexcept(noexcept(const_iterator(data(), 0, size())))
     {
         return {data(), 0, size()};
     }
 
-    [[nodiscard]] const_iterator cbegin() const
+    [[nodiscard]] constexpr const_iterator cbegin() const
         noexcept(noexcept(const_iterator(data(), 0, size())))
     {
         return {data(), 0, size()};
     }
 
-    [[nodiscard]] iterator end()
+    [[nodiscard]] constexpr iterator end()
         noexcept(noexcept(iterator(data(), size(), size())))
     {
         return {data(), size(), size()};
     }
 
-    [[nodiscard]] const_iterator end() const
+    [[nodiscard]] constexpr const_iterator end() const
         noexcept(noexcept(const_iterator(data(), size(), size())))
     {
         return {data(), size(), size()};
     }
 
-    [[nodiscard]] const_iterator cend() const
+    [[nodiscard]] constexpr const_iterator cend() const
         noexcept(noexcept(const_iterator(data(), size(), size())))
     {
         return {data(), size(), size()};
     }
 
-    [[nodiscard]] reverse_iterator rbegin()
+    [[nodiscard]] constexpr reverse_iterator rbegin()
         noexcept(noexcept(reverse_iterator(end())))
     {
         return std::make_reverse_iterator(end());
     }
 
-    [[nodiscard]] const_reverse_iterator rbegin() const
+    [[nodiscard]] constexpr const_reverse_iterator rbegin() const
         noexcept(noexcept(const_reverse_iterator(end())))
     {
         return std::make_reverse_iterator(end());
     }
 
-    [[nodiscard]] const_reverse_iterator crbegin() const
+    [[nodiscard]] constexpr const_reverse_iterator crbegin() const
         noexcept(noexcept(const_reverse_iterator(end())))
     {
         return std::make_reverse_iterator(end());
     }
 
-    [[nodiscard]] reverse_iterator rend()
+    [[nodiscard]] constexpr reverse_iterator rend()
         noexcept(noexcept(reverse_iterator(begin())))
     {
         return std::make_reverse_iterator(begin());
     }
 
-    [[nodiscard]] const_reverse_iterator rend() const
+    [[nodiscard]] constexpr const_reverse_iterator rend() const
         noexcept(noexcept(const_reverse_iterator(begin())))
     {
         return std::make_reverse_iterator(begin());
     }
 
-    [[nodiscard]] const_reverse_iterator crend() const
+    [[nodiscard]] constexpr const_reverse_iterator crend() const
         noexcept(noexcept(const_reverse_iterator(begin())))
     {
         return std::make_reverse_iterator(begin());
@@ -1433,7 +1505,7 @@ public:
     iterator can be assigned to in order to simulate indexed assignment into the list,
     and can be implicitly converted to arbitrary types as if it were a typical
     reference. */
-    [[nodiscard]] iterator operator[](index_type i) {
+    [[nodiscard]] constexpr iterator operator[](index_type i) {
         return {data(), normalize_index(i), size()};
     }
 
@@ -1443,20 +1515,24 @@ public:
     `-1` refers to the last element, `-2` to the second to last, etc.).  The resulting
     iterator can be implicitly converted to arbitrary types as if it were a typical
     reference. */
-    [[nodiscard]] const_iterator operator[](index_type i) const {
+    [[nodiscard]] constexpr const_iterator operator[](index_type i) const {
         return {data(), normalize_index(i), size()};
     }
 
-    /// TODO: slice operators
-
-
-
+    /// TODO: operator[{start, stop, step}] -> slice
+    ///     slice.count(value)
+    ///     slice.index(value)
+    ///     conversions
+    ///     assignment
 
     /* Insert an item at the end of the list.  All arguments are forwarded to the
-    constructor for `T`. */
-    template <typename... Args> requires (std::constructible_from<T, Args...>)
-    void append(Args&&... args) noexcept(
-        noexcept(reserve(size() + 1)) && noexcept(T(std::forward<Args>(args)...))
+    constructor for `T`.  Returns an iterator to the appended element, and propagates
+    any errors emanating from the constructor, without modifying the list. */
+    template <typename... Args>
+        requires (std::constructible_from<T, Args...> && !SORTED)
+    [[maybe_unused]] constexpr iterator append(Args&&... args) noexcept(
+        noexcept(m_alloc.grow(std::min(N, capacity() * 2))) &&
+        noexcept(m_alloc.construct(data(), std::forward<Args>(args)...))
     ) {
         if (size() == capacity()) {
             if (size() == N) {
@@ -1468,26 +1544,279 @@ public:
             m_alloc.grow(std::min(N, capacity() * 2));
         }
         m_alloc.construct(m_alloc.data() + size(), std::forward<Args>(args)...);
+        return {data(), size() - 1, size()};
     }
 
-    /* Insert multiple items at the end of the list. */
-    template <meta::yields<value_type> Range>
-    void extend(Range&& range) noexcept(
+    /* Insert an item at an arbitrary location within the list, immediately before the
+    given iterator.  All subsequent elements will be shifted one index down the list.
+    If the iterator is out of bounds, it will be truncated to the nearest valid
+    position.  All other arguments are forwarded to the constructor for `T`, and any
+    errors will be propagated, without modifying the state of the list.  Returns an
+    iterator to the inserted element. */
+    template <typename... Args>
+        requires (std::constructible_from<T, Args...> && !SORTED)
+    [[maybe_unused]] constexpr iterator insert(iterator it, Args&&... args) noexcept(
+        !DEBUG &&
+        noexcept(m_alloc.grow(std::min(N, capacity() * 2))) &&
+        noexcept(m_alloc.construct(data(), std::forward<Args>(args)...)) &&
+        noexcept(m_alloc.destroy(data()))
+    ) {
+        // truncate iterator to bounds of list
+        if (it < begin()) {
+            it = begin();
+        } else if (it > end()) {
+            it = end();
+        }
+
+        // grow if necessary
+        if (size() == capacity()) {
+            if constexpr (DEBUG) {
+                if (size() == N) {
+                    throw ValueError(
+                        "list exceeds maximum length (" + static_str<>::from_int<N> + ")"
+                    );
+                }
+            }
+            m_alloc.grow(std::min(N, capacity() * 2));
+        }
+
+        // move all subsequent elements down one index
+        for (size_type i = it.m_index; i < size();) {
+            try {
+                m_alloc.construct(
+                    m_alloc.data() + i + 1,
+                    std::move(m_alloc.data()[i])
+                );
+                m_alloc.destroy(m_alloc.data() + (i++));
+            } catch (...) {
+                for (size_type j = it.m_index; j < i; ++j) {
+                    m_alloc.construct(
+                        m_alloc.data() + j,
+                        std::move(m_alloc.data()[j + 1])
+                    );
+                    m_alloc.destroy(m_alloc.data() + j + 1);
+                }
+                throw;
+            }
+        }
+
+        // insert new element at iterator position
+        try {
+            m_alloc.construct(data() + it.m_index, std::forward<Args>(args)...);
+        } catch (...) {
+            for (size_type j = it.m_index; j < size(); ++j) {
+                m_alloc.construct(
+                    m_alloc.data() + j,
+                    std::move(m_alloc.data()[j + 1])
+                );
+                m_alloc.destroy(m_alloc.data() + j + 1);
+            }
+            throw;
+        }
+
+        // return an iterator to the inserted element
+        return {data(), it.m_index, size()};
+    }
+
+    /* Insert an item into a sorted list, maintaining proper order.  A binary search
+    will be performed to find the proper insertion point, and all subsequent elements
+    will be shifted one index down the list.  If an item compares equal to the inserted
+    value, then the final ordering between them is not defined.  All other arguments
+    are forwarded to the constructor for `T`. */
+    template <typename... Args>
+        requires (std::constructible_from<T, Args...> && SORTED)
+    [[maybe_unused]] constexpr iterator insert(Args&&... args) noexcept(
         true  // TODO: fix this
     ) {
-        if constexpr (meta::has_size<Range>) {
-            reserve(size() + std::ranges::size(range));
-        }
-        /// TODO: implement
+        /// TODO: construct a temporary item, then binary search for the
+        /// insertion point, then move all subsequent elements down one index and
+        /// insert the new item at the insertion point
     }
 
-    /// TODO: extend(range), extend(it, end) with error recovery
+    /* Insert items from an input range at the end of the list, returning the number of
+    items that were inserted.  In the event of an error, the list will be rolled back
+    to its original state before propagating the error. */
+    template <typename Dummy = Less> requires (!SORTED)
+    [[maybe_unused]] constexpr size_type extend(std::initializer_list<T> items) {
+        return extend(items.begin(), items.end());
+    }
 
-    /// TODO: insert(it, args...)
+    /* Insert items from an input range at the end of the list, returning the number of
+    items that were inserted.  In the event of an error, the list will be rolled back
+    to its original state before propagating the error. */
+    template <meta::yields<value_type> Range> requires (!SORTED)
+    [[maybe_unused]] constexpr size_type extend(Range&& range) {
+        using RangeRef = std::add_lvalue_reference_t<Range>;
+        if constexpr (meta::has_size<RangeRef>) {
+            reserve(size() + std::ranges::size(range));
+        }
 
-    /// TODO: remove(), remove(value), remove(it), remove(slice)
+        size_type old_size = size();
+        auto begin = std::ranges::begin(range);
+        auto end = std::ranges::end(range);
+        while (begin != end) {
+            if constexpr (!meta::has_size<RangeRef>) {
+                if (size() == capacity()) {
+                    if constexpr (DEBUG) {
+                        if (size() == N) {
+                            throw ValueError(
+                                "list exceeds maximum length (" +
+                                static_str<>::from_int<N> + ")"
+                            );
+                        }
+                    }
+                    m_alloc.grow(std::min(N, capacity() * 2));
+                }
+            }
+            try {
+                m_alloc.construct(m_alloc.data() + size(), *begin);
+            } catch (...) {
+                size_type new_size = size();
+                for (size_t j = old_size; j < new_size; ++j) {
+                    m_alloc.destroy(m_alloc.data() + j);
+                }
+                throw;
+            }
+            ++begin;
+        }
+        return size() - old_size;
+    }
 
-    /// TODO: pop(), pop(value), pop(it), pop(slice)
+    /* Insert items from an input range at the end of the list, returning the number of
+    items that were inserted.  In the event of an error, the list will be rolled back
+    to its original state before propagating the error. */
+    template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
+        requires (meta::dereferences_to<Begin, T> && !SORTED)
+    [[maybe_unused]] constexpr size_type extend(Begin&& begin, End&& end) {
+        using BeginRef = std::add_lvalue_reference_t<Begin>;
+        using EndRef = std::add_lvalue_reference_t<End>;
+        if constexpr (meta::sub_returns<EndRef, BeginRef, size_type>) {
+            reserve(end - begin);
+        }
+
+        size_type old_size = size();
+        while (begin != end) {
+            if constexpr (!meta::sub_returns<EndRef, BeginRef, size_type>) {
+                if (size() == capacity()) {
+                    if constexpr (DEBUG) {
+                        if (size() == N) {
+                            throw ValueError(
+                                "list exceeds maximum length (" +
+                                static_str<>::from_int<N> + ")"
+                            );
+                        }
+                    }
+                    m_alloc.grow(std::min(N, capacity() * 2));
+                }
+            }
+            try {
+                m_alloc.construct(m_alloc.data() + size(), *begin);
+            } catch (...) {
+                size_type new_size = size();
+                for (size_t j = old_size; j < new_size; ++j) {
+                    m_alloc.destroy(m_alloc.data() + j);
+                }
+                throw;
+            }
+            ++begin;
+        }
+        return size() - old_size;
+    }
+
+    /* Insert items from an input range into a sorted list, maintaining proper order.
+    Returns the number of items that were inserted.  In the event of an error, the list
+    will be rolled back to its original state before propagating the error. */
+    template <typename Dummy = Less> requires (SORTED)
+    [[maybe_unused]] constexpr size_type update(std::initializer_list<T> items) {
+        return update(items.begin(), items.end());
+    }
+
+    /* Insert items from an input range into a sorted list, maintaining proper order.
+    Returns the number of items that were inserted.  In the event of an error, the list
+    will be rolled back to its original state before propagating the error. */
+    template <meta::yields<value_type> Range> requires (SORTED)
+    [[maybe_unused]] constexpr size_type update(Range&& range) {
+        /// TODO: basically identical to extend() for the sorted case
+
+        if constexpr (!meta::is_void<Less>) {
+            size_type new_size = size();
+            if (new_size > old_size) {
+                try {
+                    sort(Less{});
+                } catch (...) {
+                    /// TODO: at this point, the list should be back in its original
+                    /// state, so I can just remove the new elements and throw
+                    for (size_type j = old_size; j < new_size; ++j) {
+                        m_alloc.destroy(m_alloc.data() + j);
+                    }
+                    throw;
+                }
+            }
+        }
+
+        return size() - old_size;
+    }
+
+    /* Insert items from an input range into a sorted list, maintaining proper order.
+    Returns the number of items that were inserted.  In the event of an error, the list
+    will be rolled back to its original state before propagating the error. */
+    template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
+        requires (meta::dereferences_to<Begin, T> && SORTED)
+    [[maybe_unused]] constexpr size_type update(Begin&& begin, End&& end) {
+        /// TODO: basically identical to extend() for the sorted case
+
+        if constexpr (!meta::is_void<Less>) {
+            size_type new_size = size();
+            if (new_size > old_size) {
+                try {
+                    sort(Less{});
+                } catch (...) {
+                    /// TODO: at this point, the list should be back in its original
+                    /// state, so I can just remove the new elements and throw
+                    for (size_type j = old_size; j < new_size; ++j) {
+                        m_alloc.destroy(m_alloc.data() + j);
+                    }
+                    throw;
+                }
+            }
+        }
+
+        return size() - old_size;
+    }
+
+    /* Efficiently remove the last item in the list.  If the list is empty and the
+    program is compiled in debug mode, this will throw an `IndexError`. */
+    void remove() noexcept(!DEBUG && noexcept(m_alloc.destroy(data() + size()))) {
+        if constexpr (DEBUG) {
+            if (empty()) {
+                throw IndexError("cannot remove from empty list");
+            }
+        }
+        m_alloc.destroy(data() + size());
+    }
+
+    /* Remove the item pointed to by the given iterator.  All subsequent elements will
+    be shifted one index up the list.  If the iterator is out of bounds and the program
+    is compiled in debug mode, this will throw an `IndexError`. */
+    void remove(iterator it) {
+        if constexpr (DEBUG) {
+            if (it < begin() || it >= end()) {
+                throw IndexError("iterator out of bounds");
+            }
+        }
+        m_alloc.destroy(data() + it.m_index);
+        for (size_type i = it.m_index; i < size(); ++i) {
+            m_alloc.construct(
+                m_alloc.data() + i,
+                std::move(m_alloc.data()[i + 1])
+            );
+            m_alloc.destroy(m_alloc.data() + i + 1);
+        }
+    }
+
+    /// TODO: remove(), remove(it), remove(slice)
+
+    /// TODO: pop(), pop(it), pop(slice)
 
     /* Remove all elements from the list, resetting the size to zero, but leaving the
     capacity unchanged. */
@@ -1495,21 +1824,22 @@ public:
         m_alloc.clear();
     }
 
+    /// TODO: find(value).  Either a linear search or binary search depending on
+    /// template configuration
 
+    /// TODO: contains().  Equuivalent to find() != end()
 
+    /// TODO: count(value).  call find(), and then iterate forwards and maybe also
+    /// backwards to count the number of occurrences.
 
-
-    /// TODO: count(value)
-
-    /// TODO: index(value)
+    /// TODO: index(value).  call find() and note that a binary search might not
+    /// strictly give the first occurrence, so I would need to backwards iterate until
+    /// I find the next smallest item and then report the first index.
 
     /// TODO: sort(compare) (timsort)
 
-    /// TODO: operator[{start, stop, step}] -> slice
-    ///     slice.count(value)
-    ///     slice.index(value)
-    ///     conversions
-    ///     assignment
+    /// TODO: lexicographic comparisons against any iterable whose value type can be
+    /// passed to less<> or the transparent `<` operator.
 
     /// TODO: operator+
 
@@ -1527,6 +1857,12 @@ public:
 
 
 }  // namespace bertrand
+
+
+namespace std {
+
+
+}
 
 
 #endif
