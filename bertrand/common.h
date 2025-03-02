@@ -1254,27 +1254,51 @@ template <meta::hashable T>
 
 
 /* Produce a sorted version of a container with the specified less-than comparison
-function.  If no explicit comparison function is given, they will default to a
+function.  If no explicit comparison function is given, it will default to a
 transparent `<` operator for each element.  This operator must be explicitly enabled
 for a given container type by specializing the `meta::detail::sorted<Less, T>` struct
-and providing an appropriate `::type` alias that injects the comparison functor into
+and providing an appropriate `::type` alias that injects the comparison function into
 the container logic. */
-template <typename Less = std::less<>, typename T>
+template <meta::unqualified Less = std::less<>, typename T>
     requires (
-        meta::is<typename meta::detail::sorted<Less, T>::type, T> ||
-        std::constructible_from<typename meta::detail::sorted<Less, T>::type, T> &&
-        std::is_default_constructible_v<Less> &&
-        std::is_invocable_r_v<
-            bool,
-            Less,
-            const typename meta::detail::sorted<Less, T>::type::value_type&,
-            const typename meta::detail::sorted<Less, T>::type::value_type&
-        >
+        meta::is<
+            typename meta::detail::sorted<Less, std::remove_cvref_t<T>>::type,
+            T
+        > || (
+            std::constructible_from<
+                typename meta::detail::sorted<Less, std::remove_cvref_t<T>>::type,
+                T
+            > &&
+            std::is_default_constructible_v<Less> &&
+            std::is_invocable_r_v<
+                bool,
+                std::add_lvalue_reference_t<Less>,
+                std::add_lvalue_reference_t<std::add_const_t<
+                    typename meta::detail::sorted<
+                        Less,
+                        std::remove_cvref_t<T>
+                    >::type::value_type
+                >>,
+                std::add_lvalue_reference_t<std::add_const_t<
+                    typename meta::detail::sorted<
+                        Less,
+                        std::remove_cvref_t<T>
+                    >::type::value_type
+                >>
+            >
+        )
     )
 decltype(auto) sorted(T&& container) noexcept(
-    noexcept(typename meta::detail::sorted<Less, T>::type(std::forward<T>(container)))
+    meta::is<
+        typename meta::detail::sorted<Less, std::remove_cvref_t<T>>::type,
+        T
+    > || noexcept(
+        typename meta::detail::sorted<Less, std::remove_cvref_t<T>>::type(
+            std::forward<T>(container)
+        )
+    )
 ) {
-    using type = meta::detail::sorted<Less, T>::type;
+    using type = meta::detail::sorted<Less, std::remove_cvref_t<T>>::type;
     if constexpr (meta::is<type, T>) {
         return std::forward<T>(container);
     } else {
@@ -1286,14 +1310,21 @@ decltype(auto) sorted(T&& container) noexcept(
 /* Specialization of `sorted()` that accepts the container type as an explicit template
 parameter, and constructs it using the supplied arguments, rather than requiring a
 copy or move. */
-template <typename T, typename Less = std::less<>, typename... Args>
+template <meta::unqualified T, meta::unqualified Less = std::less<>, typename... Args>
     requires (
-        std::constructible_from<typename meta::detail::sorted<Less, T>::type, T> &&
+        std::constructible_from<
+            typename meta::detail::sorted<Less, T>::type,
+            Args...
+        > &&
         std::is_invocable_r_v<
             bool,
-            Less,
-            const typename meta::detail::sorted<Less, T>::type::value_type&,
-            const typename meta::detail::sorted<Less, T>::type::value_type&
+            std::add_lvalue_reference_t<Less>,
+            std::add_lvalue_reference_t<std::add_const_t<
+                typename meta::detail::sorted<Less, T>::type::value_type
+            >>,
+            std::add_lvalue_reference_t<std::add_const_t<
+                typename meta::detail::sorted<Less, T>::type::value_type
+            >>
         >
     )
 meta::detail::sorted<Less, T>::type sorted(Args&&... args) noexcept(
