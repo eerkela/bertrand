@@ -15,7 +15,6 @@
 #include <utility>
 
 #include "bertrand/common.h"
-#include "bertrand/except.h"
 
 
 // required for demangling
@@ -163,124 +162,6 @@ namespace impl {
         return static_str<N>{name.data()};
     }
 
-    struct static_str_iterator {
-        const char* m_ptr = nullptr;
-        ssize_t m_index = 0;
-        ssize_t m_length = 0;
-
-        using iterator = static_str_iterator;
-
-    public:
-        using iterator_category             = std::contiguous_iterator_tag;
-        using difference_type               = std::ptrdiff_t;
-        using value_type                    = const char;
-        using pointer                       = value_type*;
-        using reference                     = value_type&;
-
-        constexpr static_str_iterator() noexcept = default;
-        constexpr static_str_iterator(
-            const char* ptr,
-            ssize_t index,
-            ssize_t length
-        ) noexcept :
-            m_ptr(ptr),
-            m_index(index),
-            m_length(length)
-        {}
-
-        [[nodiscard]] constexpr value_type operator*() const {
-            if (m_index >= 0 && m_index < m_length) {
-                return m_ptr[m_index];
-            }
-            throw IndexError(std::to_string(m_index));
-        }
-
-        [[nodiscard]] constexpr pointer operator->() const {
-            if (m_index >= 0 && m_index < m_length) {
-                return m_ptr + m_index;
-            }
-            throw IndexError(std::to_string(m_index));
-        }
-
-        [[nodiscard]] constexpr value_type operator[](difference_type n) const {
-            ssize_t index = m_index + n;
-            if (index >= 0 && index < m_length) {
-                return m_ptr[index];
-            }
-            throw IndexError(std::to_string(index));
-        }
-
-        constexpr iterator& operator++() noexcept {
-            ++m_index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr iterator operator++(int) noexcept {
-            iterator copy = *this;
-            ++(*this);
-            return copy;
-        }
-
-        constexpr iterator& operator+=(difference_type n) noexcept {
-            m_index += n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr iterator operator+(difference_type n) const noexcept {
-            return {m_ptr, m_index + n, m_length};
-        }
-
-        constexpr iterator& operator--() noexcept {
-            --m_index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr iterator operator--(int) noexcept {
-            iterator copy = *this;
-            --(*this);
-            return copy;
-        }
-
-        constexpr iterator& operator-=(difference_type n) noexcept {
-            m_index -= n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr iterator operator-(difference_type n) const noexcept {
-            return {m_ptr, m_index - n, m_length};
-        }
-
-        [[nodiscard]] constexpr difference_type operator-(
-            const iterator& other
-        ) const noexcept {
-            return m_index - other.m_index;
-        }
-
-        [[nodiscard]] constexpr bool operator<(const iterator& other) const noexcept {
-            return m_ptr == other.m_ptr && m_index < other.m_index;
-        }
-
-        [[nodiscard]] constexpr bool operator<=(const iterator& other) const noexcept {
-            return m_ptr == other.m_ptr && m_index <= other.m_index;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const iterator& other) const noexcept {
-            return m_ptr == other.m_ptr && m_index == other.m_index;
-        }
-
-        [[nodiscard]] constexpr bool operator!=(const iterator& other) const noexcept {
-            return !(*this == other);
-        }
-
-        [[nodiscard]] constexpr bool operator>=(const iterator& other) const noexcept {
-            return m_ptr == other.m_ptr && m_index >= other.m_index;
-        }
-
-        [[nodiscard]] constexpr bool operator>(const iterator& other) const noexcept {
-            return m_ptr == other.m_ptr && m_index > other.m_index;
-        }
-    };
-
 }
 
 
@@ -350,10 +231,6 @@ struct static_str : impl::static_str_tag {
 private:
     template <size_t M>
     friend class static_str;
-
-    static constexpr ssize_t normalize_index(ssize_t i) noexcept {
-        return i + N * (i < 0);
-    };
 
     template <bertrand::static_str self, bertrand::static_str chars>
     static consteval size_t first_non_stripped() noexcept {
@@ -449,10 +326,12 @@ public:
     using const_pointer = pointer;
     using size_type = size_t;
     using difference_type = std::ptrdiff_t;
-    using iterator = impl::static_str_iterator;
+    using iterator = impl::contiguous_iterator<value_type>;
     using const_iterator = iterator;
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
+    using slice = impl::contiguous_slice<value_type>;
+    using const_slice = slice;
 
     /* A placeholder index returned when a substring is not present. */
     static constexpr size_t missing = std::numeric_limits<size_t>::max();
@@ -577,10 +456,10 @@ public:
     [[nodiscard]] static constexpr bool empty() noexcept { return !N; }
 
     [[nodiscard]] constexpr const char* data() const noexcept { return buffer; }
-    [[nodiscard]] constexpr iterator begin() const noexcept { return {buffer, 0, N}; }
-    [[nodiscard]] constexpr iterator cbegin() const noexcept { return {buffer, 0, N}; }
-    [[nodiscard]] constexpr iterator end() const noexcept { return {buffer, N, N}; }
-    [[nodiscard]] constexpr iterator cend() const noexcept { return {buffer, N, N}; }
+    [[nodiscard]] constexpr iterator begin() const noexcept { return {buffer, 0}; }
+    [[nodiscard]] constexpr iterator cbegin() const noexcept { return {buffer, 0}; }
+    [[nodiscard]] constexpr iterator end() const noexcept { return {buffer, N}; }
+    [[nodiscard]] constexpr iterator cend() const noexcept { return {buffer, N}; }
     [[nodiscard]] constexpr reverse_iterator rbegin() const noexcept {
         return std::make_reverse_iterator(end());
     }
@@ -597,59 +476,15 @@ public:
     /* Access a character within the underlying buffer.  Applies Python-style
     wraparound for negative indices. */
     [[nodiscard]] constexpr const char operator[](ssize_t i) const {
-        ssize_t index = normalize_index(i);
-        if (index >= 0 && index < N) {
-            return buffer[index];
-        }
-        throw IndexError(std::to_string(i));
+        return buffer[impl::normalize_index(size(), i)];
     }
 
     /* Slice operator utilizing `std::initializer_list`.  Up to 3 indices may be
     supplied according to Python semantics, with `std::nullopt` equating to `None`. */
-    [[nodiscard]] constexpr std::string operator[](
-        std::initializer_list<std::optional<ssize_t>> slice
+    [[nodiscard]] constexpr slice operator[](
+        std::initializer_list<std::optional<ssize_t>> indices
     ) const {
-        if (slice.size() > 3) {
-            throw TypeError("Slices must be of the form {start[, stop[, step]]}");
-        }
-
-        // fill in missing indices
-        auto indices = []<size_t... Is>(
-            std::index_sequence<Is...>,
-            const auto& slice
-        ) {
-            return std::array<std::optional<ssize_t>, 3>{
-                Is < slice.size() ? std::data(slice)[Is] : std::nullopt...
-            };
-        }(std::make_index_sequence<3>{}, slice);
-
-        // normalize step
-        ssize_t step = indices[2].value_or(1);
-        if (step == 0) {
-            throw ValueError("slice step cannot be zero");
-        }
-
-        // normalize start/stop based on sign of step and populate result
-        std::optional<ssize_t> opt_start = indices[0];
-        std::optional<ssize_t> opt_stop = indices[1];
-        if (step > 0) {
-            ssize_t start = opt_start ? normalize_index(*opt_start) : 0;
-            ssize_t stop = opt_stop ? normalize_index(*opt_stop) : N;
-            std::string result((stop - start) * (stop > start) / step, '\0');
-            for (ssize_t i = start, j = 0; i < stop; i += step) {
-                result[j++] = buffer[i];
-            }
-            return result;
-        } else {
-            ssize_t start = opt_start ? normalize_index(*opt_start) : N - 1;
-            ssize_t stop = opt_stop ? normalize_index(*opt_stop) : -1;
-            ssize_t delta = (stop - start) * (stop < start);  // needed for floor
-            std::string result(delta / step + (delta % step != 0), '\0');
-            for (ssize_t i = start, j = 0; i > stop; i += step) {
-                result[j++] = buffer[i];
-            }
-            return result;
-        }
+        return {buffer, size(), indices};
     }
 
     /* Equivalent to Python `str.capitalize()`. */
@@ -704,11 +539,11 @@ public:
     >
     [[nodiscard]] static consteval size_t count() noexcept {
         ssize_t nstart = std::max(
-            normalize_index(start),
+            impl::truncate_index(size(), start),
             static_cast<ssize_t>(0)
         );
         ssize_t nstop = std::min(
-            normalize_index(stop),
+            impl::truncate_index(size(), stop),
             static_cast<ssize_t>(self.size())
         );
         size_t count = 0;
@@ -759,9 +594,15 @@ public:
     >
     [[nodiscard]] static consteval size_t find() noexcept {
         constexpr ssize_t nstart =
-            std::max(normalize_index(start), static_cast<ssize_t>(0));
+            std::max(
+                impl::truncate_index(size(), start),
+                static_cast<ssize_t>(0)
+            );
         constexpr ssize_t nstop =
-            std::min(normalize_index(stop), static_cast<ssize_t>(self.size()));
+            std::min(
+                impl::truncate_index(size(), stop),
+                static_cast<ssize_t>(self.size())
+            );
         for (ssize_t i = nstart; i < nstop; ++i) {
             if (std::equal(sub.buffer, sub.buffer + sub.size(), self.buffer + i)) {
                 return i;
@@ -1014,9 +855,15 @@ public:
     >
     [[nodiscard]] static consteval size_t rfind() noexcept {
         constexpr ssize_t nstart =
-            std::min(normalize_index(stop), static_cast<ssize_t>(self.size())) - 1;
+            std::min(
+                impl::truncate_index(size(), stop),
+                static_cast<ssize_t>(self.size())
+            ) - 1;
         constexpr ssize_t nstop =
-            std::max(normalize_index(start), static_cast<ssize_t>(0)) - 1;
+            std::max(
+                impl::truncate_index(size(), start),
+                static_cast<ssize_t>(0)
+            ) - 1;
         for (ssize_t i = nstart; i > nstop; --i) {
             if (std::equal(sub.buffer, sub.buffer + sub.size(), self.buffer + i)) {
                 return i;
@@ -1918,6 +1765,13 @@ template <typename Self>
     ))
 [[nodiscard]] constexpr std::string repr(Self&& obj) {
     return __repr__<Self>{}(std::forward<Self>(obj));
+}
+
+
+
+inline void test() {
+    constexpr static_str str = "Hello, World!";
+    constexpr auto c = str[3];
 }
 
 

@@ -1080,7 +1080,7 @@ namespace impl::linked {
         ) {
             if (slice.size() > 3) {
                 throw TypeError(
-                    "Slices must be of the form {start[, stop[, step]]} "
+                    "Slices must be of the form {[start[, stop[, step]]]} "
                     "(received " + std::to_string(slice.size()) + " indices)"
                 );
             }
@@ -1117,12 +1117,9 @@ namespace impl::linked {
             if (!start) {
                 this->start = 0;
             } else {
-                this->start = *start;
+                this->start = *start + size * (*start < 0);
                 if (this->start < 0) {
-                    this->start += size;
-                    if (this->start < 0) {
-                        this->start = 0;
-                    }
+                    this->start = 0;
                 } else if (this->start > size) {
                     this->start = size;
                 }
@@ -1132,12 +1129,9 @@ namespace impl::linked {
             if (!stop) {
                 this->stop = size;
             } else {
-                this->stop = *stop;
+                this->stop = *stop + size * (*stop < 0);
                 if (this->stop < 0) {
-                    this->stop += size;
-                    if (this->stop < 0) {
-                        this->stop = 0;
-                    }
+                    this->stop = 0;
                 } else if (this->stop > size) {
                     this->stop = size;
                 }
@@ -1163,12 +1157,9 @@ namespace impl::linked {
             if (!start) {
                 this->start = neg ? size - 1 : 0;  // neg: size - 1 | pos: 0
             } else {
-                this->start = *start;
+                this->start = *start + size * (*start < 0);
                 if (this->start < 0) {
-                    this->start += size;
-                    if (this->start < 0) {
-                        this->start = -neg;  // neg: -1 | pos: 0 
-                    }
+                    this->start = -neg;  // neg: -1 | pos: 0
                 } else if (this->start >= size) {
                     this->start = size - neg;  // neg: size - 1 | pos: size
                 }
@@ -1178,12 +1169,9 @@ namespace impl::linked {
             if (!stop) {
                 this->stop = neg ? -1 : size;  // neg: -1 | pos: size
             } else {
-                this->stop = *stop;
+                this->stop = *stop + size * (*stop < 0);
                 if (this->stop < 0) {
-                    this->stop += size;
-                    if (this->stop < 0) {
-                        this->stop = -neg;  // neg: -1 | pos: 0
-                    }
+                    this->stop = -neg;  // neg: -1 | pos: 0
                 } else if (this->stop >= size) {
                     this->stop = size - neg;  // neg: size - 1 | pos: size
                 }

@@ -5,7 +5,6 @@
 
 #include "bertrand/common.h"
 #include "bertrand/bitset.h"
-#include "bertrand/except.h"
 
 
 #ifdef _WIN32
@@ -1248,7 +1247,7 @@ public:
                 ));
             }
         }
-        if constexpr (!std::is_trivially_destructible<T>) {
+        if constexpr (!std::is_trivially_destructible_v<T>) {
             p->~T();
         }
     }
