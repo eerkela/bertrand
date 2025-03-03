@@ -1768,13 +1768,6 @@ template <typename Self>
 }
 
 
-
-inline void test() {
-    constexpr static_str str = "Hello, World!";
-    constexpr auto c = str[3];
-}
-
-
 }  // namespace bertrand
 
 

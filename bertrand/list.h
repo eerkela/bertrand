@@ -666,20 +666,6 @@ namespace impl {
         }
     };
 
-    /// TODO: sorted lists should not yield mutable iterators, since those could
-    /// disrupt sorted order?  Maybe they treat their value type as if it is const at
-    /// all times?
-    /// -> That's what the STL does for ordered/hashed containers, so it's no problem.
-
-    /// TODO: add an assignment operator for mutable list slices
-
-    template <typename T>
-    struct list_slice : contiguous_slice<T> {
-
-        /// TODO: assignment operator with possible insertions
-
-    };
-
     /// TODO: maybe delete list_base and distribute its contents into sorted/unsorted
     /// specializations
 
@@ -695,6 +681,20 @@ namespace impl {
         using const_reference = std::add_lvalue_reference_t<std::add_const_t<value_type>>;
         using pointer = std::add_pointer_t<value_type>;
         using const_pointer = std::add_pointer_t<std::add_const_t<value_type>>;
+        using iterator = impl::contiguous_iterator<std::conditional_t<
+            meta::is_void<Less>,
+            value_type,
+            std::add_const_t<value_type>
+        >>;
+        using const_iterator = impl::contiguous_iterator<std::add_const_t<value_type>>;
+        using reverse_iterator = std::reverse_iterator<iterator>;
+        using const_reverse_iterator = std::reverse_iterator<const_iterator>;
+        using slice = impl::contiguous_slice<std::conditional_t<
+            meta::is_void<Less>,
+            value_type,
+            std::add_const_t<value_type>
+        >>;
+        using const_slice = impl::contiguous_slice<std::add_const_t<value_type>>;
 
         /* The default capacity to reserve if no template override is given.  This defaults
         to a maximum of ~8 MiB of total storage, evenly divided into contiguous segments of
@@ -717,19 +717,6 @@ namespace impl {
 
         template <typename V>
         static constexpr V& lvalue(V&& x) noexcept { return x; }
-
-        /// TODO: use the global version in common.h?
-        constexpr size_type normalize_index(index_type i) {
-            if (i < 0) {
-                i += size();
-                if (i < 0) {
-                    throw IndexError(std::to_string(i));
-                }
-            } else if (i >= size()) {
-                throw IndexError(std::to_string(i));
-            }
-            return static_cast<size_type>(i);
-        }
 
         using alloc = std::conditional_t<
             address_space<T, N>::SMALL,
@@ -890,6 +877,142 @@ namespace impl {
             return *(data() + size() - 1);
         }
 
+        [[nodiscard]] constexpr iterator begin()
+            noexcept(noexcept(iterator(data(), 0, size())))
+        {
+            return {data(), 0};
+        }
+
+        [[nodiscard]] constexpr const_iterator begin() const
+            noexcept(noexcept(const_iterator(data(), 0, size())))
+        {
+            return {data(), 0};
+        }
+
+        [[nodiscard]] constexpr const_iterator cbegin() const
+            noexcept(noexcept(const_iterator(data(), 0, size())))
+        {
+            return {data(), 0};
+        }
+
+        [[nodiscard]] constexpr iterator end()
+            noexcept(noexcept(iterator(data(), size(), size())))
+        {
+            return {data(), size()};
+        }
+
+        [[nodiscard]] constexpr const_iterator end() const
+            noexcept(noexcept(const_iterator(data(), size(), size())))
+        {
+            return {data(), size()};
+        }
+
+        [[nodiscard]] constexpr const_iterator cend() const
+            noexcept(noexcept(const_iterator(data(), size(), size())))
+        {
+            return {data(), size()};
+        }
+
+        [[nodiscard]] constexpr reverse_iterator rbegin()
+            noexcept(noexcept(reverse_iterator(end())))
+        {
+            return std::make_reverse_iterator(end());
+        }
+
+        [[nodiscard]] constexpr const_reverse_iterator rbegin() const
+            noexcept(noexcept(const_reverse_iterator(end())))
+        {
+            return std::make_reverse_iterator(end());
+        }
+
+        [[nodiscard]] constexpr const_reverse_iterator crbegin() const
+            noexcept(noexcept(const_reverse_iterator(end())))
+        {
+            return std::make_reverse_iterator(end());
+        }
+
+        [[nodiscard]] constexpr reverse_iterator rend()
+            noexcept(noexcept(reverse_iterator(begin())))
+        {
+            return std::make_reverse_iterator(begin());
+        }
+
+        [[nodiscard]] constexpr const_reverse_iterator rend() const
+            noexcept(noexcept(const_reverse_iterator(begin())))
+        {
+            return std::make_reverse_iterator(begin());
+        }
+
+        [[nodiscard]] constexpr const_reverse_iterator crend() const
+            noexcept(noexcept(const_reverse_iterator(begin())))
+        {
+            return std::make_reverse_iterator(begin());
+        }
+
+        /* Return a bounds-checked iterator to a specific index of the list.  The index may
+        be negative, in which case Python-style wraparound is applied (e.g. `-1` refers to
+        the last element, `-2` to the second to last, etc.).  An `IndexError` will be
+        thrown if the index is out of range after normalization.  The resulting iterator
+        can be assigned to in order to simulate indexed assignment into the list, and can
+        be implicitly converted to arbitrary types as if it were a typical reference. */
+        [[nodiscard]] constexpr iterator operator[](index_type i) {
+            return {data(), impl::normalize_index(size(), i)};
+        }
+
+        /* Return a bounds-checked iterator to a specific index of the list.  The index may
+        be negative, in which case Python-style wraparound is applied (e.g. `-1` refers to
+        the last element, `-2` to the second to last, etc.).  An `IndexError` will be
+        thrown if the index is out of range after normalization.  The resulting iterator
+        can be assigned to in order to simulate indexed assignment into the list, and can
+        be implicitly converted to arbitrary types as if it were a typical reference. */
+        [[nodiscard]] constexpr const_iterator operator[](index_type i) const {
+            return {data(), impl::normalize_index(size(), i)};
+        }
+
+        /* Return a view over a particular slice of the list by providing Python-style
+        start, stop, and step arguments as a braced initializer.  Each argument can be a
+        possibly negative integer, in which case the same wraparound will be applied as for
+        scalar indexing, and out of bounds indices will be truncated to the nearest end.
+        They can also be omitted either implicitly or explicitly via `std::nullopt`, which
+        is replaced with the proper default based on the sign of the step size (itself
+        defaulting to 1).
+
+        The returned slice is a valid, explicitly sized range, which can be iterated over
+        to yield the underlying elements or implicitly converted (as an rvalue) to any
+        other container type via `std::ranges::to()`.  If the slice is mutable, then an
+        equivalently-sized range can also be assigned to the slice, which will overwrite
+        the underlying list elements in-place.  Note that such assignments cannot change
+        the overall size of the list, which outlaws some slice-based insertions that
+        would be valid in standard Python.  Such insertions are counterintuitive, and have
+        been abstracted into a separate `list.merge(it, values...)` method for clarity. */
+        [[nodiscard]] constexpr slice operator[](
+            std::initializer_list<std::optional<ssize_t>> indices
+        ) {
+            return {data(), size(), indices};
+        }
+
+        /* Return a view over a particular slice of the list by providing Python-style
+        start, stop, and step arguments as a braced initializer.  Each argument can be a
+        possibly negative integer, in which case the same wraparound will be applied as for
+        scalar indexing, and out of bounds indices will be truncated to the nearest end.
+        They can also be omitted either implicitly or explicitly via `std::nullopt`, which
+        is replaced with the proper default based on the sign of the step size (itself
+        defaulting to 1).
+
+        The returned slice is a valid, explicitly sized range, which can be iterated over
+        to yield the underlying elements or implicitly converted (as an rvalue) to any
+        other container type via `std::ranges::to()`.  If the slice is mutable, then an
+        equivalently-sized range can also be assigned to the slice, which will overwrite
+        the underlying list elements in-place.  Note that such assignments cannot change
+        the overall size of the list, which outlaws some slice-based insertions that
+        would be valid in standard Python.  Such insertions are counterintuitive, and have
+        been abstracted into a separate `list.merge(it, values...)` method for clarity. */
+        [[nodiscard]] constexpr const_slice operator[](
+            std::initializer_list<std::optional<ssize_t>> indices
+        ) const {
+            return {data(), size(), indices};
+        }
+
         /* Resize the allocator to store at least `n` elements.  Returns the number of
         additional elements that were allocated. */
         [[maybe_unused]] constexpr size_type reserve(size_type n) noexcept(
@@ -948,9 +1071,87 @@ namespace impl {
             m_alloc.destroy(data() + size() - 1);
         }
 
+        /* Remove the item referenced by the given iterator.  All subsequent elements
+        will be shifted one index down the list.  Throws an `IndexError` if the iterator
+        is out of bounds. */
+        constexpr void remove(const iterator& it) {
+            if constexpr (DEBUG) {
+                if (it < begin() || it >= end()) {
+                    throw IndexError("iterator out of bounds");
+                }
+            }
+            m_alloc.destroy(data() + it.index);
+            for (ssize_t i = it.index; i < size(); ++i) {
+                m_alloc.construct(
+                    m_alloc.data() + i,
+                    std::move(m_alloc.data()[i + 1])
+                );
+                m_alloc.destroy(m_alloc.data() + i + 1);
+            }
+        }
+
+        /* Remove the contents of a slice from the list.  Does nothing if the slice is
+        empty. */
+        constexpr void remove(const slice& slice) {
+            if (slice.empty()) {
+                return;
+            }
+
+            /// NOTE: It is possible to do this in strict O(n) time by destroying and
+            /// shifting items within the same loop.  However, since the shifts are
+            /// asymmetric with respect to traversal direction, this requires some
+            /// normalization, such that we always traverse the slice from left to
+            /// right, enabling efficient shifting of elements in the opposite
+            /// direction.
+
+            ssize_t index;
+            ssize_t stop;
+            ssize_t step;
+            ssize_t size = this->size();
+            if (slice.step() > 0) {
+                step = slice.step();
+                index = slice.start();
+                stop = slice.stop();
+            } else {
+                step = -slice.step();
+                index = slice.stop() + (slice.start() - slice.stop()) % step;
+                stop = slice.start() + 1;
+            }
+
+            // handle the first deleted element specially, then leap frog so as
+            // not to walk off the end of the list
+            m_alloc.destroy(data() + index);
+            ssize_t offset = 1;
+            ssize_t next = index + step;
+            while (next < stop) {
+                // left shift next `step` elements
+                while (++index < next) {
+                    m_alloc.construct(
+                        data() + index - offset,
+                        std::move(data()[index])
+                    );
+                    m_alloc.destroy(data() + index);
+                }
+
+                // delete the next element
+                m_alloc.destroy(data() + index);
+                ++offset;
+                next += step;
+            }
+
+            // shift remaining elements to fill in gaps
+            while (++index < size) {
+                m_alloc.construct(
+                    data() + index - offset,
+                    std::move(data()[index])
+                );
+                m_alloc.destroy(data() + index);
+            }
+        }
+
         /* Efficiently remove the last item in the list and return its value.  Throws
         an `IndexError` if the list is empty. */
-        [[nodiscard]] constexpr std::remove_cvref_t<T> pop() noexcept(
+        [[nodiscard]] constexpr std::remove_cvref_t<value_type> pop() noexcept(
             !DEBUG &&
             noexcept(std::remove_cvref_t<T>{std::move(back())}) &&
             noexcept(m_alloc.destroy(data()))
@@ -963,6 +1164,93 @@ namespace impl {
             std::remove_cvref_t<T> item {std::move(back())};
             m_alloc.destroy(data() + size() - 1);
             return item;
+        }
+
+        /* Remove the item pointed to by the given iterator and return its value.  All
+        subsequent elements will be shifted one index down the list.  Throws an
+        `IndexError` if the iterator is out of bounds. */
+        [[nodiscard]] constexpr std::remove_cvref_t<value_type> pop(const iterator& it) {
+            if constexpr (DEBUG) {
+                if (it < begin() || it >= end()) {
+                    throw IndexError("iterator out of bounds");
+                }
+            }
+            std::remove_cvref_t<T> item {std::move(*it)};
+            m_alloc.destroy(data() + it.index);
+            for (ssize_t i = it.index; i < size(); ++i) {
+                m_alloc.construct(
+                    m_alloc.data() + i,
+                    std::move(m_alloc.data()[i + 1])
+                );
+                m_alloc.destroy(m_alloc.data() + i + 1);
+            }
+            return item;
+        }
+
+        /* Remove the contents of a slice from the list and extract them into a
+        separate list.  The result will be empty if the slice is empty. */
+        [[nodiscard]] constexpr List<T, N, Equal, Less> pop(const slice& slice) {
+            if (slice.empty()) {
+                return {};
+            }
+
+            List<T, N, Equal, Less> result;
+            result.reserve(slice.size());
+
+            /// NOTE: It is possible to do this in strict O(n) time by destroying and
+            /// shifting items within the same loop.  However, since the shifts are
+            /// asymmetric with respect to traversal direction, this requires some
+            /// normalization, such that we always traverse the slice from left to
+            /// right, enabling efficient shifting of elements in the opposite
+            /// direction.
+
+            ssize_t index;
+            ssize_t stop;
+            ssize_t step;
+            ssize_t size = this->size();
+            if (slice.step() > 0) {
+                step = slice.step();
+                index = slice.start();
+                stop = slice.stop();
+            } else {
+                step = -slice.step();
+                index = slice.stop() + (slice.start() - slice.stop()) % step;
+                stop = slice.start() + 1;
+            }
+
+            // handle the first deleted element specially, then leap frog so as
+            // not to walk off the end of the list
+            result.m_alloc.construct(result.data(), std::move(data()[index]));
+            m_alloc.destroy(data() + index);
+            ssize_t offset = 1;
+            ssize_t next = index + step;
+            while (next < stop) {
+                // left shift next `step` elements
+                while (++index < next) {
+                    m_alloc.construct(
+                        data() + index - offset,
+                        std::move(data()[index])
+                    );
+                    m_alloc.destroy(data() + index);
+                }
+
+                // delete the next element
+                result.m_alloc.construct(result.data() + offset, std::move(data()[index]));
+                m_alloc.destroy(data() + index);
+                ++offset;
+                next += step;
+            }
+
+            // shift remaining elements to fill in gaps
+            while (++index < size) {
+                m_alloc.construct(
+                    data() + index - offset,
+                    std::move(data()[index])
+                );
+                m_alloc.destroy(data() + index);
+            }
+
+            return result;
         }
     };
 
@@ -1010,7 +1298,6 @@ struct List : impl::list_base<T, N, Equal, Less> {
 private:
     using base = impl::list_base<T, N, Equal, Less>;
     using base::lvalue;
-    using base::normalize_index;
     using base::m_alloc;
 
     template <typename V>
@@ -1279,7 +1566,6 @@ struct List<T, N, Equal, void> : impl::list_base<T, N, Equal, void> {
 private:
     using base = impl::list_base<T, N, Equal, void>;
     using base::lvalue;
-    using base::normalize_index;
     using base::m_alloc;
 
 public:
@@ -1293,8 +1579,15 @@ public:
     using const_reference = base::const_reference;
     using pointer = base::pointer;
     using const_pointer = base::const_pointer;
+    using iterator = base::iterator;
+    using const_iterator = base::const_iterator;
+    using reverse_iterator = base::reverse_iterator;
+    using const_reverse_iterator = base::const_reverse_iterator;
+    using slice = base::slice;
+    using const_slice = base::const_slice;
 
     using base::base;
+    using base::swap;
     using base::size;
     using base::operator bool;
     using base::empty;
@@ -1305,18 +1598,20 @@ public:
     using base::data;
     using base::front;
     using base::back;
+    using base::begin;
+    using base::cbegin;
+    using base::end;
+    using base::cend;
+    using base::rbegin;
+    using base::crbegin;
+    using base::rend;
+    using base::crend;
+    using base::operator[];
     using base::reserve;
     using base::shrink;
     using base::clear;
     using base::remove;
     using base::pop;
-
-    using iterator = impl::contiguous_iterator<T>;
-    using const_iterator = impl::contiguous_iterator<std::add_const_t<T>>;
-    using reverse_iterator = std::reverse_iterator<iterator>;
-    using const_reverse_iterator = std::reverse_iterator<const_iterator>;
-    using slice = impl::list_slice<T>;
-    using const_slice = impl::const_list_slice<T>;
 
     /* Initializer list constructor. */
     [[nodiscard]] constexpr List(std::initializer_list<T> items) {
@@ -1528,46 +1823,6 @@ public:
         return size() - old_size;
     }
 
-    /* Remove the item pointed to by the given iterator.  All subsequent elements
-    will be shifted one index down the list.  Throws an `IndexError` if the iterator
-    is out of bounds. */
-    constexpr void remove(iterator it) {
-        if constexpr (DEBUG) {
-            if (it < begin() || it >= end()) {
-                throw IndexError("iterator out of bounds");
-            }
-        }
-        m_alloc.destroy(data() + it.index);
-        for (size_type i = it.index; i < size(); ++i) {
-            m_alloc.construct(
-                m_alloc.data() + i,
-                std::move(m_alloc.data()[i + 1])
-            );
-            m_alloc.destroy(m_alloc.data() + i + 1);
-        }
-    }
-
-    /* Remove the item pointed to by the given iterator and return its value.  All
-    subsequent elements will be shifted one index down the list.  Throws an
-    `IndexError` if the iterator is out of bounds. */
-    [[nodiscard]] constexpr std::remove_cvref_t<T> pop(iterator it) {
-        if constexpr (DEBUG) {
-            if (it < begin() || it >= end()) {
-                throw IndexError("iterator out of bounds");
-            }
-        }
-        std::remove_cvref_t<T> item {std::move(*it)};
-        m_alloc.destroy(data() + it.index);
-        for (size_type i = it.index; i < size(); ++i) {
-            m_alloc.construct(
-                m_alloc.data() + i,
-                std::move(m_alloc.data()[i + 1])
-            );
-            m_alloc.destroy(m_alloc.data() + i + 1);
-        }
-        return item;
-    }
-
     /* Find the first occurrence of a given value within the list, returning an
     iterator to the leftmost element that compares equal to it.  Returns an end
     iterator if no such element exists.  If the list is sorted, then this will be done
@@ -1631,120 +1886,6 @@ public:
     }
 
     /// TODO: sort(compare) (timsort)
-
-    [[nodiscard]] constexpr iterator begin()
-        noexcept(noexcept(iterator(data(), 0, size())))
-    {
-        return {data(), 0};
-    }
-
-    [[nodiscard]] constexpr const_iterator begin() const
-        noexcept(noexcept(const_iterator(data(), 0, size())))
-    {
-        return {data(), 0};
-    }
-
-    [[nodiscard]] constexpr const_iterator cbegin() const
-        noexcept(noexcept(const_iterator(data(), 0, size())))
-    {
-        return {data(), 0};
-    }
-
-    [[nodiscard]] constexpr iterator end()
-        noexcept(noexcept(iterator(data(), size(), size())))
-    {
-        return {data(), size()};
-    }
-
-    [[nodiscard]] constexpr const_iterator end() const
-        noexcept(noexcept(const_iterator(data(), size(), size())))
-    {
-        return {data(), size()};
-    }
-
-    [[nodiscard]] constexpr const_iterator cend() const
-        noexcept(noexcept(const_iterator(data(), size(), size())))
-    {
-        return {data(), size()};
-    }
-
-    [[nodiscard]] constexpr reverse_iterator rbegin()
-        noexcept(noexcept(reverse_iterator(end())))
-    {
-        return std::make_reverse_iterator(end());
-    }
-
-    [[nodiscard]] constexpr const_reverse_iterator rbegin() const
-        noexcept(noexcept(const_reverse_iterator(end())))
-    {
-        return std::make_reverse_iterator(end());
-    }
-
-    [[nodiscard]] constexpr const_reverse_iterator crbegin() const
-        noexcept(noexcept(const_reverse_iterator(end())))
-    {
-        return std::make_reverse_iterator(end());
-    }
-
-    [[nodiscard]] constexpr reverse_iterator rend()
-        noexcept(noexcept(reverse_iterator(begin())))
-    {
-        return std::make_reverse_iterator(begin());
-    }
-
-    [[nodiscard]] constexpr const_reverse_iterator rend() const
-        noexcept(noexcept(const_reverse_iterator(begin())))
-    {
-        return std::make_reverse_iterator(begin());
-    }
-
-    [[nodiscard]] constexpr const_reverse_iterator crend() const
-        noexcept(noexcept(const_reverse_iterator(begin())))
-    {
-        return std::make_reverse_iterator(begin());
-    }
-
-    /* Return a bounds-checked iterator to a specific index of the list.  The index may
-    be negative, in which case Python-style wraparound is applied (e.g. `-1` refers to
-    the last element, `-2` to the second to last, etc.).  An `IndexError` will be
-    thrown if the index is out of range after normalization.  The resulting iterator
-    can be assigned to in order to simulate indexed assignment into the list, and can
-    be implicitly converted to arbitrary types as if it were a typical reference. */
-    [[nodiscard]] constexpr iterator operator[](index_type i) {
-        return {data(), normalize_index(i)};
-    }
-
-    /* Return a bounds-checked iterator to a specific index of the list.  The index may
-    be negative, in which case Python-style wraparound is applied (e.g. `-1` refers to
-    the last element, `-2` to the second to last, etc.).  An `IndexError` will be
-    thrown if the index is out of range after normalization.  The resulting iterator
-    can be assigned to in order to simulate indexed assignment into the list, and can
-    be implicitly converted to arbitrary types as if it were a typical reference. */
-    [[nodiscard]] constexpr const_iterator operator[](index_type i) const {
-        return {data(), normalize_index(i)};
-    }
-
-    /* Return a proxy for a slice within the list. */
-    [[nodiscard]] constexpr slice operator[](
-        std::initializer_list<std::optional<ssize_t>> indices
-    ) {
-        /// TODO: normalize and unpack indices
-        ssize_t start;
-        ssize_t stop;
-        ssize_t step;
-        return {data(), start, stop, step};
-    }
-
-
-    [[nodiscard]] constexpr const_slice operator[](
-        std::initializer_list<std::optional<ssize_t>> indices
-    ) const {
-        /// TODO: normalize and unpack indices
-        ssize_t start;
-        ssize_t stop;
-        ssize_t step;
-        return {data(), start, stop, step};
-    }
 
     /* Concatenate this list with another input iterable to produce a new list
     containing all elements from both lists.  The original list is unchanged. */

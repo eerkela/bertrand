@@ -2214,6 +2214,13 @@ namespace impl {
     struct contiguous_slice {
     private:
 
+        struct initializer {
+            std::initializer_list<T>& items;
+            [[nodiscard]] constexpr size_t size() const noexcept { return items.size(); }
+            [[nodiscard]] constexpr auto begin() const noexcept { return items.begin(); }
+            [[nodiscard]] constexpr auto end() const noexcept { return items.end(); }
+        };
+
         void normalize(
             ssize_t size,
             std::optional<ssize_t> start,
@@ -2221,27 +2228,32 @@ namespace impl {
         ) noexcept {
             // normalize start, correcting for negative indices and truncating to bounds
             if (!start) {
-                this->start = 0;
+                m_start = 0;
             } else {
-                this->start = *start + size * (*start < 0);
-                if (this->start < 0) {
-                    this->start = 0;
-                } else if (this->start > size) {
-                    this->start = size;
+                m_start = *start + size * (*start < 0);
+                if (m_start < 0) {
+                    m_start = 0;
+                } else if (m_start > size) {
+                    m_start = size;
                 }
             }
 
             // normalize stop, correcting for negative indices and truncating to bounds
             if (!stop) {
-                this->stop = size;
+                m_stop = size;
             } else {
-                this->stop = *stop + size * (*stop < 0);
-                if (this->stop < 0) {
-                    this->stop = 0;
-                } else if (this->stop > size) {
-                    this->stop = size;
+                m_stop = *stop + size * (*stop < 0);
+                if (m_stop < 0) {
+                    m_stop = 0;
+                } else if (m_stop > size) {
+                    m_stop = size;
                 }
             }
+
+            // compute number of included elements
+            ssize_t bias = m_step + (m_step < ssize_t(0)) - (m_step > ssize_t(0));
+            m_size = (m_stop - m_start + bias) / m_step;
+            m_size *= (m_size > ssize_t(0));
         }
 
         void normalize(
@@ -2251,35 +2263,40 @@ namespace impl {
             std::optional<ssize_t> step
         ) {
             // normalize step, defaulting to 1
-            this->step = step.value_or(1);
-            if (this->step == 0) {
+            m_step = step.value_or(1);
+            if (m_step == 0) {
                 throw ValueError("slice step cannot be zero");
             };
-            bool neg = this->step < 0;
+            bool neg = m_step < 0;
 
             // normalize start, correcting for negative indices and truncating to bounds
             if (!start) {
-                this->start = neg ? size - 1 : 0;  // neg: size - 1 | pos: 0
+                m_start = neg ? size - 1 : 0;  // neg: size - 1 | pos: 0
             } else {
-                this->start = *start + size * (*start < 0);
-                if (this->start < 0) {
-                    this->start = -neg;  // neg: -1 | pos: 0
-                } else if (this->start >= size) {
-                    this->start = size - neg;  // neg: size - 1 | pos: size
+                m_start = *start + size * (*start < 0);
+                if (m_start < 0) {
+                    m_start = -neg;  // neg: -1 | pos: 0
+                } else if (m_start >= size) {
+                    m_start = size - neg;  // neg: size - 1 | pos: size
                 }
             }
 
             // normalize stop, correcting for negative indices and truncating to bounds
             if (!stop) {
-                this->stop = neg ? -1 : size;  // neg: -1 | pos: size
+                m_stop = neg ? -1 : size;  // neg: -1 | pos: size
             } else {
-                this->stop = *stop + size * (*stop < 0);
-                if (this->stop < 0) {
-                    this->stop = -neg;  // neg: -1 | pos: 0
-                } else if (this->stop >= size) {
-                    this->stop = size - neg;  // neg: size - 1 | pos: size
+                m_stop = *stop + size * (*stop < 0);
+                if (m_stop < 0) {
+                    m_stop = -neg;  // neg: -1 | pos: 0
+                } else if (m_stop >= size) {
+                    m_stop = size - neg;  // neg: size - 1 | pos: size
                 }
             }
+
+            // compute number of included elements
+            ssize_t bias = m_step + (m_step < ssize_t(0)) - (m_step > ssize_t(0));
+            m_size = (m_stop - m_start + bias) / m_step;
+            m_size *= (m_size > ssize_t(0));
         }
 
         template <typename V>
@@ -2328,14 +2345,14 @@ namespace impl {
                 const iter& lhs,
                 sentinel
             ) noexcept {
-                return lhs.step < 0 ? lhs.start <= lhs.stop : lhs.start >= lhs.stop;
+                return lhs.step < 0 ? lhs.index <= lhs.stop : lhs.index >= lhs.stop;
             }
 
             [[nodiscard]] friend constexpr bool operator==(
                 sentinel,
                 const iter& rhs
             ) noexcept {
-                return rhs.step < 0 ? rhs.start <= rhs.stop : rhs.start >= rhs.stop;
+                return rhs.step < 0 ? rhs.index <= rhs.stop : rhs.index >= rhs.stop;
             }
 
             [[nodiscard]] friend constexpr bool operator!=(
@@ -2367,12 +2384,6 @@ namespace impl {
             ssize_t size,
             const std::initializer_list<std::optional<ssize_t>>& slice
         ) {
-            if (slice.size() > 3) {
-                throw TypeError(
-                    "Slices must be of the form {[start[, stop[, step]]]} "
-                    "(received " + std::to_string(slice.size()) + " indices)"
-                );
-            }
             auto it = slice.begin();
             auto end = slice.end();
             if (it == end) {
@@ -2393,38 +2404,132 @@ namespace impl {
             if (it == end) {
                 normalize(size, start, stop, step);
             }
+            throw IndexError(
+                "Slices must be of the form {[start[, stop[, step]]]} "
+                "(received " + std::to_string(slice.size()) + " indices)"
+            );
         }
 
+        [[nodiscard]] constexpr pointer data() const noexcept { return m_data; }
+        [[nodiscard]] constexpr ssize_t start() const noexcept { return m_start; }
+        [[nodiscard]] constexpr ssize_t stop() const noexcept { return m_stop; }
+        [[nodiscard]] constexpr ssize_t step() const noexcept { return m_step; }
+        [[nodiscard]] constexpr ssize_t size() const noexcept { return m_size; }
+        [[nodiscard]] constexpr bool empty() const noexcept { return !size(); }
+        [[nodiscard]] explicit operator bool() const noexcept { return size(); }
+
         [[nodiscard]] constexpr iterator begin() noexcept {
-            return {data, start, stop, step};
+            return {m_data, m_start, m_stop, m_step};
         }
 
         [[nodiscard]] constexpr const_iterator begin() const noexcept {
-            return {data, start, stop, step};
+            return {m_data, m_start, m_stop, m_step};
         }
 
         [[nodiscard]] constexpr const_iterator cbegin() noexcept {
-            return {data, start, stop, step};
+            return {m_data, m_start, m_stop, m_step};
         }
 
-        [[nodiscard]] static constexpr sentinel end() noexcept {
-            return {};
+        [[nodiscard]] static constexpr sentinel end() noexcept { return {}; }
+        [[nodiscard]] static constexpr sentinel cend() noexcept { return {}; }
+
+        template <typename V> requires(requires(contiguous_slice& slice) {
+            { std::ranges::to<V>(slice) } -> std::same_as<V>;
+        })
+        [[nodiscard]] constexpr operator V() && noexcept(
+            noexcept(std::ranges::to<V>(*this))
+        ) {
+            return std::ranges::to<V>(*this);
         }
 
-        [[nodiscard]] static constexpr sentinel cend() noexcept {
-            return {};
+        constexpr contiguous_slice& operator=(const contiguous_slice&) = default;
+        constexpr contiguous_slice& operator=(contiguous_slice&&) = default;
+
+        template <typename Dummy = value_type>
+            requires (
+                !meta::is_const<Dummy> &&
+                std::destructible<Dummy> &&
+                std::copy_constructible<Dummy>
+            )
+        [[maybe_unused]] constexpr contiguous_slice& operator=(
+            std::initializer_list<value_type> items
+        ) && {
+            return *this = initializer{items};
         }
 
-        template <std::constructible_from<iterator, sentinel> V>
-        [[nodiscard]] constexpr operator V() && {
-            return V(begin(), end());
+        template <meta::yields<value_type> Range>
+            requires (
+                !meta::is_const<value_type> &&
+                std::destructible<value_type> &&
+                std::constructible_from<value_type, meta::iter_type<Range>>
+            )
+        [[maybe_unused]] constexpr contiguous_slice& operator=(Range&& range) && {
+            using type = std::remove_cvref_t<value_type>;
+            constexpr bool has_size = meta::has_size<std::add_lvalue_reference_t<Range>>;
+            auto it = std::ranges::begin(range);
+            auto end = std::ranges::end(range);
+
+            // if the range has an explicit size, then we can check it ahead of time
+            // to ensure that it exactly matches that of the slice
+            if constexpr (has_size) {
+                if (std::ranges::size(range) != m_size) {
+                    throw ValueError(
+                        "cannot assign a range of size " +
+                        std::to_string(std::ranges::size(range)) +
+                        " to a slice of size " + std::to_string(m_size)
+                    );
+                }
+            }
+
+            // If we checked the size above, we can avoid checking it again on each
+            // iteration
+            if (m_step > 0) {
+                for (ssize_t i = m_start; i < m_stop; i += m_step) {
+                    if constexpr (!has_size) {
+                        if (it == end) {
+                            throw ValueError(
+                                "not enough values to fill slice of size " +
+                                std::to_string(m_size)
+                            );
+                        }
+                    }
+                    m_data[i].~type();
+                    new (m_data + i) type(*it);
+                    ++it;
+                }
+            } else {
+                for (ssize_t i = m_start; i > m_stop; i += m_step) {
+                    if constexpr (!has_size) {
+                        if (it == end) {
+                            throw ValueError(
+                                "not enough values to fill slice of size " +
+                                std::to_string(m_size)
+                            );
+                        }
+                    }
+                    m_data[i].~type();
+                    new (m_data + i) type(*it);
+                    ++it;
+                }
+            }
+
+            if constexpr (!has_size) {
+                if (it != end) {
+                    throw ValueError(
+                        "range length exceeds slice of size " +
+                        std::to_string(m_size)
+                    );
+                }
+            }
+            return *this;
         }
 
     private:
-        pointer data = nullptr;
-        ssize_t start = 0;
-        ssize_t stop = 0;
-        ssize_t step = 1;
+        pointer m_data = nullptr;
+        ssize_t m_start = 0;
+        ssize_t m_stop = 0;
+        ssize_t m_step = 1;
+        ssize_t m_size = 0;
     };
 
 }
