@@ -1776,10 +1776,10 @@ namespace std {
     template <bertrand::meta::static_str T>
     struct hash<T> {
         consteval static size_t operator()(const T& str) {
-            return bertrand::impl::fnv1a(
+            return bertrand::impl::fnv1a{}(
                 str,
-                bertrand::impl::fnv1a_seed,
-                bertrand::impl::fnv1a_prime
+                bertrand::impl::fnv1a::seed,
+                bertrand::impl::fnv1a::prime
             );
         }
     };
