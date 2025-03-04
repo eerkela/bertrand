@@ -77,7 +77,7 @@ private:
         /// NOTE: this implementation is taken from the libdivide reference:
         /// https://github.com/ridiculousfish/libdivide/blob/master/doc/divlu.c
         /// It should be much faster than the naive approach found in Hacker's Delight.
-        using Signed = std::make_signed_t<Word>;
+        using Signed = meta::as_signed<Word>;
         constexpr size_t chunk = word_size / 2;
         constexpr Word b = Word(1) << chunk;
         constexpr Word mask = b - 1;
@@ -142,12 +142,12 @@ private:
         bitset& quotient,
         bitset& remainder
     ) {
-        using Signed = std::make_signed_t<Word>;
+        using Signed = meta::as_signed<Word>;
         constexpr size_t chunk = word_size / 2;
         constexpr Word b = Word(1) << chunk;
 
         if (!rhs) {
-            throw std::domain_error("division by zero");
+            throw ZeroDivisionError();
         }
         if (lhs < rhs || !lhs) {
             remainder = lhs;
@@ -285,7 +285,7 @@ public:
             if (c == one) {
                 m_data[i / word_size] |= Word(1) << (i % word_size);
             } else if (c != zero) {
-                throw std::invalid_argument(
+                throw ValueError(
                     "bitset string must contain only 1s and 0s, not: '" +
                     std::string(1, c) + "'"
                 );
@@ -300,7 +300,7 @@ public:
             if (c == one) {
                 m_data[i / word_size] |= Word(1) << (i % word_size);
             } else if (c != zero) {
-                throw std::invalid_argument(
+                throw ValueError(
                     "bitset string must contain only 1s and 0s, not: '" +
                     std::string(1, c) + "'"
                 );
@@ -347,9 +347,9 @@ public:
         char one = '1'
     ) const {
         if (base < 2) {
-            throw std::invalid_argument("bitset base must be at least 2");
+            throw ValueError("bitset base must be at least 2");
         } else if (base > 36) {
-            throw std::invalid_argument("bitset base must be at most 36");
+            throw ValueError("bitset base must be at most 36");
         }
         if (base == 2) {
             int diff = one - zero;
@@ -748,13 +748,13 @@ public:
     }
     [[nodiscard]] constexpr bool get(size_t index) const {
         if (index >= N) {
-            throw std::out_of_range("bitset index out of range");
+            throw IndexError(std::to_string(index));
         }
         return (*this)[index];
     }
     [[nodiscard]] constexpr Ref get(size_t index) {
         if (index >= N) {
-            throw std::out_of_range("bitset index out of range");
+            throw IndexError(std::to_string(index));
         }
         return (*this)[index];
     }
@@ -1695,7 +1695,7 @@ public:
 };
 
 
-template <std::integral T>
+template <meta::integer T>
 bitset(T) -> bitset<sizeof(T) * 8>;
 template <size_t N>
 bitset(const char(&)[N]) -> bitset<N - 1>;

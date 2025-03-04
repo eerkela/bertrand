@@ -13,7 +13,6 @@
 #include "pcre2.h"
 
 #include "bertrand/common.h"
-#include "bertrand/except.h"
 #include "bertrand/static_str.h"
 
 
@@ -327,9 +326,9 @@ namespace impl {
             bindings. */
             template <typename... Args>
                 requires (sizeof...(Args) > 1 && ((
-                    std::convertible_to<Args, size_t> ||
-                    std::convertible_to<Args, const char*> ||
-                    std::convertible_to<Args, std::string_view>
+                    meta::convertible_to<Args, size_t> ||
+                    meta::convertible_to<Args, const char*> ||
+                    meta::convertible_to<Args, std::string_view>
                 ) && ...))
             [[nodiscard]] auto group(Args&&... args) const noexcept {
                 return [this]<size_t... Is>(
@@ -345,9 +344,9 @@ namespace impl {
             /* Syntactic sugar for match.group(). */
             template <typename... Args>
                 requires ((
-                    std::convertible_to<Args, size_t> ||
-                    std::convertible_to<Args, const char*> ||
-                    std::convertible_to<Args, std::string_view>
+                    meta::convertible_to<Args, size_t> ||
+                    meta::convertible_to<Args, const char*> ||
+                    meta::convertible_to<Args, std::string_view>
                 ) && ...)
             [[nodiscard]] auto operator[](Args&&... args) const noexcept {
                 return [this]<size_t... Is>(
@@ -1281,7 +1280,7 @@ public:
     `std::string_view`, the iterator will store a non-owning view of the input string,
     which must be guaranteed to outlive the iterator itself.  Otherwise, the iterator
     will own a local copy of the input string. */
-    template <std::convertible_to<std::string> Str>
+    template <meta::convertible_to<std::string> Str>
         requires (
             !meta::string_literal<Str> &&
             !meta::static_str<Str> &&
@@ -1359,7 +1358,7 @@ public:
     replacements that were made.  If the replacement string is a function that can be
     called with a regex match object and returns a string, then the result of that
     function will be substituted instead. */
-    template <std::convertible_to<std::string_view> Str, typename... Args>
+    template <meta::convertible_to<std::string_view> Str, typename... Args>
         requires (
             !meta::string_literal<Str> &&
             !meta::static_str<Str> &&
@@ -1390,9 +1389,9 @@ public:
         requires (
             !meta::string_literal<F> &&
             !meta::static_str<F> &&
-            !std::convertible_to<F, std::string_view> &&
+            !meta::convertible_to<F, std::string_view> &&
             match_args<Args...>::enable &&
-            std::is_invocable_r_v<
+            meta::invoke_returns<
                 std::string,
                 F,
                 typename decltype(

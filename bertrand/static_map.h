@@ -3,7 +3,6 @@
 
 
 #include "bertrand/static_str.h"
-#include "bertrand/except.h"
 
 
 namespace bertrand {
@@ -201,8 +200,8 @@ namespace impl {
 
         template <typename T>
         static constexpr bool hashable =
-            std::convertible_to<T, const char*> ||
-            std::convertible_to<T, std::string_view>;
+            meta::convertible_to<T, const char*> ||
+            meta::convertible_to<T, std::string_view>;
 
         /* An array holding the positions of the significant characters for the
         associative value array, in traversal order. */
@@ -250,7 +249,7 @@ namespace impl {
         }
 
         /* Hash a character buffer according to the computed perfect hash algorithm. */
-        template <std::convertible_to<const char*> T>
+        template <meta::convertible_to<const char*> T>
             requires (!meta::static_str<T> && !meta::string_literal<T>)
         [[nodiscard]] static constexpr size_t hash(const T& str) noexcept {
             const char* start = str;
@@ -281,7 +280,7 @@ namespace impl {
 
         /* Hash a character buffer according to the computed perfect hash algorithm and
         record its length as an out parameter. */
-        template <std::convertible_to<const char*> T>
+        template <meta::convertible_to<const char*> T>
             requires (!meta::static_str<T> && !meta::string_literal<T>)
         [[nodiscard]] static constexpr size_t hash(const T& str, size_t& len) noexcept {
             const char* start = str;
@@ -316,11 +315,11 @@ namespace impl {
         }
 
         /* Hash a string view according to the computed perfect hash algorithm. */
-        template <std::convertible_to<std::string_view> T>
+        template <meta::convertible_to<std::string_view> T>
             requires (
                 !meta::static_str<T> &&
                 !meta::string_literal<T> &&
-                !std::convertible_to<T, const char*>
+                !meta::convertible_to<T, const char*>
             )
         [[nodiscard]] static constexpr size_t hash(const T& str) noexcept {
             std::string_view s = str;
@@ -775,13 +774,13 @@ private:
 
 public:
     template <typename Self = static_map>
-        requires (std::is_default_constructible_v<typename Self::mapped_type>)
+        requires (meta::default_constructible<typename Self::mapped_type>)
     constexpr static_map() {}
 
     template <typename... Values>
         requires (
             sizeof...(Values) == size() &&
-            (std::convertible_to<Values, Value> && ...)
+            (meta::convertible_to<Values, Value> && ...)
         )
     constexpr static_map(Values&&... values) :
         m_table([]<size_t... Is>(std::index_sequence<Is...>, auto&&... values) {
@@ -849,7 +848,7 @@ public:
     /* Check whether the map contains an arbitrary key. */
     template <meta::static_str Key>
     [[nodiscard]] constexpr bool contains(const Key& key) const noexcept {
-        constexpr size_t len = std::remove_cvref_t<Key>::size();
+        constexpr size_t len = meta::unqualify<Key>::size();
         if constexpr (len < hasher::min_length || len > hasher::max_length) {
             return false;
         } else {
@@ -858,7 +857,7 @@ public:
     }
 
     /* Check whether the map contains an arbitrary key. */
-    template <std::convertible_to<const char*> T>
+    template <meta::convertible_to<const char*> T>
         requires (!meta::string_literal<T> && !meta::static_str<T>)
     [[nodiscard]] constexpr bool contains(const T& key) const noexcept {
         const char* str = key;
@@ -876,11 +875,11 @@ public:
     }
 
     /* Check whether the map contains an arbitrary key. */
-    template <std::convertible_to<std::string_view> T>
+    template <meta::convertible_to<std::string_view> T>
         requires (
             !meta::string_literal<T> &&
             !meta::static_str<T> &&
-            !std::convertible_to<T, const char*>
+            !meta::convertible_to<T, const char*>
         )
     [[nodiscard]] constexpr bool contains(const T& key) const noexcept {
         std::string_view str = key;
@@ -891,12 +890,12 @@ public:
     }
 
     /* Check whether the given index is in bounds for the table. */
-    template <std::convertible_to<size_t> T>
+    template <meta::convertible_to<size_t> T>
         requires (
             !meta::string_literal<T> &&
             !meta::static_str<T> &&
-            !std::convertible_to<T, const char*> &&
-            !std::convertible_to<T, std::string_view>
+            !meta::convertible_to<T, const char*> &&
+            !meta::convertible_to<T, std::string_view>
         )
     [[nodiscard]] constexpr bool contains(const T& key) const noexcept {
         return size_t(key) < size();
@@ -936,7 +935,7 @@ public:
     is not present. */
     template <size_t N>
     [[nodiscard]] constexpr auto operator[](const char(&key)[N]) const noexcept
-        -> const std::remove_reference_t<mapped_type>*
+        -> meta::as_pointer<meta::as_const<mapped_type>>
     {
         constexpr size_t M = N - 1;
         if constexpr (M < hasher::min_length || M > hasher::max_length) {
@@ -959,7 +958,7 @@ public:
     is not present. */
     template <size_t N>
     [[nodiscard]] constexpr auto operator[](const char(&key)[N]) noexcept
-        -> std::remove_reference_t<mapped_type>*
+        -> meta::as_pointer<mapped_type>
     {
         constexpr size_t M = N - 1;
         if constexpr (M < hasher::min_length || M > hasher::max_length) {
@@ -982,9 +981,9 @@ public:
     is not present. */
     template <meta::static_str Key>
     [[nodiscard]] constexpr auto operator[](const Key& key) const noexcept
-        -> const std::remove_reference_t<mapped_type>*
+        -> meta::as_pointer<meta::as_const<mapped_type>>
     {
-        constexpr size_t len = std::remove_cvref_t<Key>::size();
+        constexpr size_t len = meta::unqualify<Key>::size();
         if constexpr (len < hasher::min_length || len > hasher::max_length) {
             return nullptr;
         } else {
@@ -997,9 +996,9 @@ public:
     is not present. */
     template <meta::static_str Key>
     [[nodiscard]] constexpr auto operator[](const Key& key) noexcept
-        -> std::remove_reference_t<mapped_type>*
+        -> meta::as_pointer<mapped_type>
     {
-        constexpr size_t len = std::remove_cvref_t<Key>::size();
+        constexpr size_t len = meta::unqualify<Key>::size();
         if constexpr (len < hasher::min_length || len > hasher::max_length) {
             return nullptr;
         } else {
@@ -1010,10 +1009,10 @@ public:
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
-    template <std::convertible_to<const char*> T>
+    template <meta::convertible_to<const char*> T>
         requires (!meta::string_literal<T> && !meta::static_str<T>)
     [[nodiscard]] constexpr auto operator[](const T& key) const noexcept
-        -> const std::remove_reference_t<mapped_type>*
+        -> meta::as_pointer<meta::as_const<mapped_type>>
     {
         const char* str = key;
         size_t len;
@@ -1031,10 +1030,10 @@ public:
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
-    template <std::convertible_to<const char*> T>
+    template <meta::convertible_to<const char*> T>
         requires (!meta::string_literal<T> && !meta::static_str<T>)
     [[nodiscard]] constexpr auto operator[](const T& key) noexcept
-        -> std::remove_reference_t<mapped_type>*
+        -> meta::as_pointer<mapped_type>
     {
         const char* str = key;
         size_t len;
@@ -1052,14 +1051,14 @@ public:
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
-    template <std::convertible_to<std::string_view> T>
+    template <meta::convertible_to<std::string_view> T>
         requires (
             !meta::string_literal<T> &&
             !meta::static_str<T> &&
-            !std::convertible_to<T, const char*>
+            !meta::convertible_to<T, const char*>
         )
     [[nodiscard]] constexpr auto operator[](const T& key) const noexcept
-        -> const std::remove_reference_t<mapped_type>*
+        -> meta::as_pointer<meta::as_const<mapped_type>>
     {
         std::string_view str = key;
         if (str.size() < hasher::min_length || str.size() > hasher::max_length) {
@@ -1071,14 +1070,14 @@ public:
 
     /* Look up a key, returning a pointer to the corresponding value or nullptr if it
     is not present. */
-    template <std::convertible_to<std::string_view> T>
+    template <meta::convertible_to<std::string_view> T>
         requires (
             !meta::string_literal<T> &&
             !meta::static_str<T> &&
-            !std::convertible_to<T, const char*>
+            !meta::convertible_to<T, const char*>
         )
     [[nodiscard]] constexpr auto operator[](const T& key) noexcept
-        -> std::remove_reference_t<mapped_type>*
+        -> meta::as_pointer<mapped_type>
     {
         std::string_view str = key;
         if (str.size() < hasher::min_length || str.size() > hasher::max_length) {
@@ -1090,12 +1089,12 @@ public:
 
     /* Look up an index in the table, returning the value that corresponds to the
     key at that index or nullptr if the index is out of bounds. */
-    template <std::convertible_to<size_t> T>
+    template <meta::convertible_to<size_t> T>
         requires (
             !meta::string_literal<T> &&
             !meta::static_str<T> &&
-            !std::convertible_to<T, const char*> &&
-            !std::convertible_to<T, std::string_view>
+            !meta::convertible_to<T, const char*> &&
+            !meta::convertible_to<T, std::string_view>
         )
     [[nodiscard]] constexpr const_pointer operator[](const T& key) const noexcept {
         size_t idx = key;
@@ -1104,12 +1103,12 @@ public:
 
     /* Look up an index in the table, returning the value that corresponds to the
     key at that index or nullptr if the index is out of bounds. */
-    template <std::convertible_to<size_t> T>
+    template <meta::convertible_to<size_t> T>
         requires (
             !meta::string_literal<T> &&
             !meta::static_str<T> &&
-            !std::convertible_to<T, const char*> &&
-            !std::convertible_to<T, std::string_view>
+            !meta::convertible_to<T, const char*> &&
+            !meta::convertible_to<T, std::string_view>
         )
     [[nodiscard]] constexpr pointer operator[](const T& key) noexcept {
         size_t idx = key;
@@ -1261,7 +1260,7 @@ public:
     /* Check whether the map contains an arbitrary key. */
     template <meta::static_str Key>
     [[nodiscard]] constexpr bool contains(const Key& key) const noexcept {
-        constexpr size_t len = std::remove_cvref_t<Key>::size();
+        constexpr size_t len = meta::unqualify<Key>::size();
         if constexpr (len < hasher::min_length || len > hasher::max_length) {
             return false;
         } else {
@@ -1270,7 +1269,7 @@ public:
     }
 
     /* Check whether the map contains an arbitrary key. */
-    template <std::convertible_to<const char*> T>
+    template <meta::convertible_to<const char*> T>
         requires (!meta::string_literal<T> && !meta::static_str<T>)
     [[nodiscard]] constexpr bool contains(const T& key) const noexcept {
         const char* str = key;
@@ -1288,11 +1287,11 @@ public:
     }
 
     /* Check whether the map contains an arbitrary key. */
-    template <std::convertible_to<std::string_view> T>
+    template <meta::convertible_to<std::string_view> T>
         requires (
             !meta::string_literal<T> &&
             !meta::static_str<T> &&
-            !std::convertible_to<T, const char*>
+            !meta::convertible_to<T, const char*>
         )
     [[nodiscard]] constexpr bool contains(const T& key) const noexcept {
         std::string_view str = key;
@@ -1303,12 +1302,12 @@ public:
     }
 
     /* Check whether the given index is in bounds for the table. */
-    template <std::convertible_to<size_t> T>
+    template <meta::convertible_to<size_t> T>
         requires (
             !meta::string_literal<T> &&
             !meta::static_str<T> &&
-            !std::convertible_to<T, const char*> &&
-            !std::convertible_to<T, std::string_view>
+            !meta::convertible_to<T, const char*> &&
+            !meta::convertible_to<T, std::string_view>
         )
     [[nodiscard]] constexpr bool contains(const T& key) const noexcept {
         return size_t(key) < size();
@@ -1354,7 +1353,7 @@ public:
     not present. */
     template <meta::static_str Key>
     [[nodiscard]] constexpr pointer operator[](const Key& key) const noexcept {
-        constexpr size_t len = std::remove_cvref_t<Key>::size();
+        constexpr size_t len = meta::unqualify<Key>::size();
         if constexpr (len < hasher::min_length || len > hasher::max_length) {
             return nullptr;
         } else {
@@ -1365,7 +1364,7 @@ public:
 
     /* Look up a key, returning a pointer to the corresponding key or nullptr if it is
     not present. */
-    template <std::convertible_to<const char*> T>
+    template <meta::convertible_to<const char*> T>
         requires (!meta::string_literal<T> && !meta::static_str<T>)
     [[nodiscard]] constexpr pointer operator[](const T& key) const noexcept {
         const char* str = key;
@@ -1384,11 +1383,11 @@ public:
 
     /* Look up a key, returning a pointer to the corresponding key or nullptr if it is
     not present. */
-    template <std::convertible_to<std::string_view> T>
+    template <meta::convertible_to<std::string_view> T>
         requires (
             !meta::string_literal<T> &&
             !meta::static_str<T> &&
-            !std::convertible_to<T, const char*>
+            !meta::convertible_to<T, const char*>
         )
     [[nodiscard]] constexpr pointer operator[](const T& key) const noexcept {
         std::string_view str = key;
@@ -1401,12 +1400,12 @@ public:
 
     /* Look up an index in the table, returning the value that corresponds to the
     key at that index or nullptr if the index is out of bounds. */
-    template <std::convertible_to<size_t> T>
+    template <meta::convertible_to<size_t> T>
         requires (
             !meta::string_literal<T> &&
             !meta::static_str<T> &&
-            !std::convertible_to<T, const char*> &&
-            !std::convertible_to<T, std::string_view>
+            !meta::convertible_to<T, const char*> &&
+            !meta::convertible_to<T, std::string_view>
         )
     [[nodiscard]] constexpr pointer operator[](const T& key) const noexcept {
         size_t idx = key;

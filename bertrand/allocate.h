@@ -2,9 +2,9 @@
 #define BERTRAND_ALLOCATE_H
 
 #include <random>
+#include <mutex>
 
 #include "bertrand/common.h"
-#include "bertrand/bitset.h"
 
 
 #ifdef _WIN32
@@ -223,7 +223,7 @@ namespace meta {
     template <typename Alloc, typename T>
     concept address_space_for =
         address_space<Alloc> &&
-        std::same_as<typename std::remove_cvref_t<Alloc>::type, T>;
+        std::same_as<typename unqualify<Alloc>::type, T>;
 
     template <typename Alloc, typename T>
     concept allocator_or_space_for =
@@ -1208,7 +1208,7 @@ public:
     /* Construct a value that was allocated from this address space using placement
     new.  Propagates any errors that emanate from the constructor for `T`. */
     template <typename... Args>
-        requires (!meta::is_void<T> && std::constructible_from<T, Args...>)
+        requires (meta::not_void<T> && meta::constructible_from<T, Args...>)
     void construct(pointer p, Args&&... args)
         noexcept(!DEBUG && noexcept(new (p) T(std::forward<Args>(args)...)))
     {
@@ -1233,7 +1233,7 @@ public:
     which only occurs when the address space is destroyed, or when memory is explicitly
     decommitted using the `deallocate()` method.  Any errors emanating from the
     destructor for `T` will be propagated. */
-    void destroy(pointer p) noexcept(!DEBUG && std::is_nothrow_destructible_v<T>) {
+    void destroy(pointer p) noexcept(!DEBUG && meta::nothrow::destructible<T>) {
         if constexpr (DEBUG) {
             if (p < begin() || p >= end()) {
                 throw MemoryError(std::format(
@@ -1247,7 +1247,7 @@ public:
                 ));
             }
         }
-        if constexpr (!std::is_trivially_destructible_v<T>) {
+        if constexpr (!meta::trivially_destructible<T>) {
             p->~T();
         }
     }
@@ -1402,7 +1402,7 @@ struct address_space<T, N> : impl::address_space_tag {
     /* Construct a value that was allocated from this physical space using placement
     new.  Propagates any errors that emanate from the constructor for `T`. */
     template <typename... Args>
-        requires (!meta::is_void<T> && std::constructible_from<T, Args...>)
+        requires (meta::not_void<T> && meta::constructible_from<T, Args...>)
     void construct(pointer p, Args&&... args)
         noexcept(!DEBUG && noexcept(new (p) T(std::forward<Args>(args)...)))
     {
@@ -1426,7 +1426,7 @@ struct address_space<T, N> : impl::address_space_tag {
     destructor in-place.  Note that this does not deallocate the memory itself, which
     only occurs when the physical space is destroyed.  Any errors emanating from the
     destructor for `T` will be propagated. */
-    void destroy(pointer p) noexcept(!DEBUG && std::is_nothrow_destructible_v<T>) {
+    void destroy(pointer p) noexcept(!DEBUG && meta::nothrow::destructible<T>) {
         if constexpr (DEBUG) {
             if (p < begin() || p >= end()) {
                 throw MemoryError(std::format(
@@ -1440,7 +1440,7 @@ struct address_space<T, N> : impl::address_space_tag {
                 ));
             }
         }
-        if constexpr (!std::is_trivially_destructible_v<T>) {
+        if constexpr (!meta::trivially_destructible<T>) {
             p->~T();
         }
     }

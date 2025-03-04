@@ -1988,8 +1988,8 @@ List(std::initializer_list<T>) -> List<
 
 template <meta::iterable Range>
 List(Range&&) -> List<
-    std::remove_cvref_t<meta::iter_type<Range>>,
-    impl::DEFAULT_ADDRESS_CAPACITY<std::remove_cvref_t<meta::iter_type<Range>>>,
+    std::remove_cvref_t<meta::yield_type<Range>>,
+    impl::DEFAULT_ADDRESS_CAPACITY<std::remove_cvref_t<meta::yield_type<Range>>>,
     std::equal_to<>,
     void
 >;

@@ -1627,7 +1627,7 @@ public:
         result.buffer[N + M - 1] = '\0';
         return result;
     }
-    template <std::convertible_to<std::string> T>
+    template <meta::convertible_to<std::string> T>
         requires (!meta::string_literal<T> && !meta::static_str<T>)
     [[nodiscard]] friend constexpr std::string operator+(
         const static_str& self,
@@ -1635,7 +1635,7 @@ public:
     ) {
         return std::string(self) + std::forward<T>(other);
     }
-    template <std::convertible_to<std::string> T>
+    template <meta::convertible_to<std::string> T>
         requires (!meta::string_literal<T> && !meta::static_str<T>)
     [[nodiscard]] friend constexpr std::string operator+(
         T&& other,
@@ -1760,8 +1760,8 @@ functionally equivalent to Python's `repr()` function, but extended to work for
 arbitrary C++ types, with possible customization via the `__repr__` control struct. */
 template <typename Self>
     requires (__repr__<Self>::enable && (
-        std::convertible_to<typename __repr__<Self>::type, std::string> &&
-        std::is_invocable_r_v<std::string, __repr__<Self>, Self>
+        meta::convertible_to<typename __repr__<Self>::type, std::string> &&
+        meta::invoke_returns<std::string, __repr__<Self>, Self>
     ))
 [[nodiscard]] constexpr std::string repr(Self&& obj) {
     return __repr__<Self>{}(std::forward<Self>(obj));
