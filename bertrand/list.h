@@ -666,9 +666,6 @@ namespace impl {
         }
     };
 
-    /// TODO: maybe delete list_base and distribute its contents into sorted/unsorted
-    /// specializations
-
     template <typename T, size_t N, typename Equal, typename Less>
     struct list_base : list_tag {
         using equal_type = Equal;
@@ -738,7 +735,7 @@ namespace impl {
         /* Copy constructor.  Copies the contents of another list into a new address
         range. */
         [[nodiscard]] constexpr list_base(const list_base& other) noexcept(
-            noexcept(alloc(other.alloc))
+            noexcept(alloc(other.m_alloc))
         ) = default;
 
         /* Move constructor.  Preserves the original addresses and simply transfers
@@ -746,7 +743,7 @@ namespace impl {
         is small enough to trigger the small space optimization, then the contents will be
         moved elementwise into the new list. */
         [[nodiscard]] constexpr list_base(list_base&& other) noexcept(
-            noexcept(alloc(std::move(other.alloc)))
+            noexcept(alloc(std::move(other.m_alloc)))
         ) = default;
 
         /* Copy assignment operator.  Dumps the current contents of the list and then
@@ -769,7 +766,7 @@ namespace impl {
         /* Swap two lists as cheaply as possible.  If an exception occurs, a best-faith
         effort is made to restore the operands to their original state. */
         constexpr void swap(list_base& other) & noexcept(
-            noexcept(list_base(std::move(*this))) &&
+            noexcept(List<T, N, Equal, Less>(std::move(*this))) &&
             noexcept(*this = std::move(other)) &&
             noexcept(other = std::move(*this))
         ) {
@@ -777,7 +774,7 @@ namespace impl {
                 return;
             }
 
-            list_base temp = std::move(*this);
+            List<T, N, Equal, Less> temp = std::move(*this);
             try {
                 *this = std::move(other);
                 try {
@@ -812,7 +809,7 @@ namespace impl {
 
         /* Estimates the total amount of memory being consumed by the list. */
         [[nodiscard]] constexpr size_type nbytes() const noexcept {
-            return sizeof(list_base) + capacity() * sizeof(T);
+            return sizeof(List<T, N, Equal, Less>) + capacity() * sizeof(T);
         }
 
         /* Estimates the maximum amount of memory that the list could consume.  This is
@@ -820,7 +817,7 @@ namespace impl {
         MiB.  Note that this indicates potential memory consumption, and not the actual
         amount of memory currently being used. */
         [[nodiscard]] static constexpr size_type max_nbytes() noexcept {
-            return sizeof(list_base) + N * sizeof(T);
+            return sizeof(List<T, N, Equal, Less>) + N * sizeof(T);
         }
 
         /* Retrieve a pointer to the start of the list.  This might be null if
@@ -878,39 +875,39 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr iterator begin()
-            noexcept(noexcept(iterator(data(), 0, size())))
+            noexcept(noexcept(iterator(data(), 0)))
         {
             return {data(), 0};
         }
 
         [[nodiscard]] constexpr const_iterator begin() const
-            noexcept(noexcept(const_iterator(data(), 0, size())))
+            noexcept(noexcept(const_iterator(data(), 0)))
         {
             return {data(), 0};
         }
 
         [[nodiscard]] constexpr const_iterator cbegin() const
-            noexcept(noexcept(const_iterator(data(), 0, size())))
+            noexcept(noexcept(const_iterator(data(), 0)))
         {
             return {data(), 0};
         }
 
         [[nodiscard]] constexpr iterator end()
-            noexcept(noexcept(iterator(data(), size(), size())))
+            noexcept(noexcept(iterator(data(), size())))
         {
-            return {data(), size()};
+            return {data(), ssize_t(size())};
         }
 
         [[nodiscard]] constexpr const_iterator end() const
-            noexcept(noexcept(const_iterator(data(), size(), size())))
+            noexcept(noexcept(const_iterator(data(), size())))
         {
-            return {data(), size()};
+            return {data(), ssize_t(size())};
         }
 
         [[nodiscard]] constexpr const_iterator cend() const
-            noexcept(noexcept(const_iterator(data(), size(), size())))
+            noexcept(noexcept(const_iterator(data(), size())))
         {
-            return {data(), size()};
+            return {data(), ssize_t(size())};
         }
 
         [[nodiscard]] constexpr reverse_iterator rbegin()
@@ -988,7 +985,7 @@ namespace impl {
         [[nodiscard]] constexpr slice operator[](
             std::initializer_list<std::optional<ssize_t>> indices
         ) {
-            return {data(), size(), indices};
+            return {data(), ssize_t(size()), indices};
         }
 
         /* Return a view over a particular slice of the list by providing Python-style
@@ -1010,7 +1007,7 @@ namespace impl {
         [[nodiscard]] constexpr const_slice operator[](
             std::initializer_list<std::optional<ssize_t>> indices
         ) const {
-            return {data(), size(), indices};
+            return {data(), ssize_t(size()), indices};
         }
 
         /* Resize the allocator to store at least `n` elements.  Returns the number of
@@ -1568,6 +1565,8 @@ private:
     using base::lvalue;
     using base::m_alloc;
 
+    friend base;
+
 public:
     using equal_type = base::equal_type;
     using less_type = base::less_type;
@@ -1658,7 +1657,7 @@ public:
             m_alloc.grow(std::min(capacity() * 2, max_capacity()));
         }
         m_alloc.construct(m_alloc.data() + size(), std::forward<Args>(args)...);
-        return {data(), size() - 1, size()};
+        return {data(), ssize_t(size()) - 1};
     }
 
     /* Insert an item at an arbitrary location within the list, immediately before the
@@ -1941,6 +1940,37 @@ public:
         return *this;
     }
 
+    /* Apply a lexicographic comparison between this list and another iterable whose
+    elements are `<` and `==` comparable. */
+    template <meta::iterable Range>
+        /// TODO: further restrictions for ranges whose elements are comparable with
+        /// the value type, accounting for `Less`
+    [[nodiscard]] constexpr std::strong_ordering operator<=>(Range&& range) {
+        std::compare_three_way compare;
+        auto l_it = begin();
+        auto l_end = end();
+        auto r_it = std::ranges::begin(range);
+        auto r_end = std::ranges::end(range);
+
+        while (l_it != l_end && r_it != r_end) {
+            auto result = compare(*l_it <=> *r_it);
+            if (result != 0) {
+                return result;
+            }
+            ++l_it;
+            ++r_it;
+        }
+
+        if (l_it != l_end) {
+            return std::strong_ordering::greater;
+        }
+        if (r_it != r_end) {
+            return std::strong_ordering::less;
+        }
+        return std::strong_ordering::equal;
+    }
+
+
     /// TODO: lexicographic comparisons against any iterable whose value type can be
     /// passed to less<> or the transparent `<` operator.
 
@@ -1978,6 +2008,27 @@ List(Begin&&, End&&) -> List<
 
 
 /// TODO: also dereference and ->* operators, for compatibility with functions
+
+
+inline void test() {
+    List<std::string> x = {"a", "b", "c"};
+
+    x[2] = "d";
+
+    std::string value = x[2];
+
+    if (x[2]->empty()) {
+        auto item = x.pop(x[{0, 2}]);
+    }
+
+    for (auto&& y : x[{0, 2}]) {
+        std::cout << y << '\n';
+    }
+
+    x[{0, 2}] = {"e", "f"};
+
+    std::vector<std::string> vec = x[{0, 2}];
+}
 
 
 }  // namespace bertrand
