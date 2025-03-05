@@ -87,29 +87,29 @@ during insertion, and allows for O(log(n)) binary searches for individual elemen
 Otherwise, searches are strictly linear, using the `Equal` function to determine
 equality. */
 template <
-    typename T,
+    meta::not_void T,
     size_t N = impl::DEFAULT_ADDRESS_CAPACITY<T>,
     meta::unqualified Equal = std::equal_to<>,
     meta::unqualified Less = void
 >
-    requires (!meta::is_void<T> && (
+    requires ((
         meta::is_void<Equal> || (
-            std::is_default_constructible_v<Equal> &&
-            std::is_invocable_r_v<
+            meta::default_constructible<Equal> &&
+            meta::invoke_returns<
                 bool,
-                std::add_lvalue_reference_t<Equal>,
-                std::add_lvalue_reference_t<std::add_const_t<T>>,
-                std::add_lvalue_reference_t<std::add_const_t<T>>
+                meta::as_lvalue<Equal>,
+                meta::as_lvalue<meta::as_const<T>>,
+                meta::as_lvalue<meta::as_const<T>>
             >
         )
     ) && (
         meta::is_void<Less> || (
-            std::is_default_constructible_v<Less> &&
-            std::is_invocable_r_v<
+            meta::default_constructible<Less> &&
+            meta::invoke_returns<
                 bool,
-                std::add_lvalue_reference_t<Less>,
-                std::add_lvalue_reference_t<std::add_const_t<T>>,
-                std::add_lvalue_reference_t<std::add_const_t<T>>
+                meta::as_lvalue<Less>,
+                meta::as_lvalue<meta::as_const<T>>,
+                meta::as_lvalue<meta::as_const<T>>
             >
         )
     ))
@@ -122,8 +122,8 @@ namespace impl {
     template <typename T, size_t N>
     struct physical_list_allocator {
         using size_type = size_t;
-        using pointer = std::add_pointer_t<T>;
-        using const_pointer = std::add_pointer_t<std::add_const_t<T>>;
+        using pointer = meta::as_pointer<T>;
+        using const_pointer = meta::as_pointer<meta::as_const<T>>;
 
         size_type capacity = 0;
         size_type size = 0;
@@ -167,10 +167,10 @@ namespace impl {
         }
 
         constexpr void clear() noexcept(
-            std::is_trivially_destructible_v<T> ||
+            meta::trivially_destructible<T> ||
             noexcept(space.destroy(space.data()))
         ) {
-            if constexpr (std::is_trivially_destructible_v<T>) {
+            if constexpr (meta::trivially_destructible<T>) {
                 size = 0;
             } else {
                 while (size) {
@@ -296,8 +296,7 @@ namespace impl {
         }
 
         constexpr ~physical_list_allocator() noexcept(
-            noexcept(clear()) &&
-            std::is_nothrow_destructible_v<address_space<T, N>>
+            noexcept(clear()) && meta::nothrow::destructible<address_space<T, N>>
         ) {
             clear();
         }
@@ -306,8 +305,8 @@ namespace impl {
     template <typename T, size_t N>
     struct virtual_list_allocator {
         using size_type = size_t;
-        using pointer = std::add_pointer_t<T>;
-        using const_pointer = std::add_pointer_t<std::add_const_t<T>>;
+        using pointer = meta::as_pointer<T>;
+        using const_pointer = meta::as_pointer<meta::as_const<T>>;
 
         size_type capacity = 0;
         size_type size = 0;
@@ -351,10 +350,10 @@ namespace impl {
         }
 
         constexpr void clear() noexcept(
-            std::is_trivially_destructible_v<T> ||
+            meta::trivially_destructible<T> ||
             noexcept(space.destroy(space.data()))
         ) {
-            if constexpr (std::is_trivially_destructible_v<T>) {
+            if constexpr (meta::trivially_destructible<T>) {
                 size = 0;
             } else {
                 while (size) {
@@ -434,7 +433,7 @@ namespace impl {
 
         constexpr ~virtual_list_allocator() noexcept(
             noexcept(clear()) &&
-            std::is_nothrow_destructible_v<address_space<T, N>>
+            meta::nothrow::destructible<address_space<T, N>>
         ) {
             clear();
         }
@@ -443,8 +442,8 @@ namespace impl {
     template <typename T, size_t N>
     struct heap_list_allocator {
         using size_type = size_t;
-        using pointer = std::add_pointer_t<T>;
-        using const_pointer = std::add_pointer_t<std::add_const_t<T>>;
+        using pointer = meta::as_pointer<T>;
+        using const_pointer = meta::as_pointer<meta::as_const<T>>;
 
         size_type capacity = 0;
         size_type size = 0;
@@ -462,9 +461,10 @@ namespace impl {
         }
 
         constexpr void destroy(pointer p) noexcept(
-            std::is_nothrow_destructible_v<T>
+            meta::trivially_destructible<T> ||
+            meta::nothrow::destructible<T>
         ) {
-            if constexpr (!std::is_trivially_destructible_v<T>) {
+            if constexpr (!meta::trivially_destructible<T>) {
                 p->~T();
             }
             --size;
@@ -490,13 +490,13 @@ namespace impl {
                 for (size_type i = 0; i < size;) {
                     try {
                         new (new_storage + i) T(std::move(storage[i]));
-                        if constexpr (!std::is_trivially_destructible_v<T>) {
+                        if constexpr (!meta::trivially_destructible<T>) {
                             storage[i++].~T();
                         }
                     } catch (...) {
                         for (size_type j = 0; j < i; ++j) {
                             new (storage + j) T(std::move(new_storage[j]));
-                            if constexpr (!std::is_trivially_destructible_v<T>) {
+                            if constexpr (!meta::trivially_destructible<T>) {
                                 new_storage[j].~T();
                             }
                         }
@@ -533,14 +533,14 @@ namespace impl {
                 for (size_type i = 0; i < size;) {
                     try {
                         new (new_storage + i) T(std::move(storage[i]));
-                        if constexpr (!std::is_trivially_destructible_v<T>) {
+                        if constexpr (!meta::trivially_destructible<T>) {
                             storage[i++].~T();
                         }
                         
                     } catch (...) {
                         for (size_type j = 0; j < i; ++j) {
                             new (storage + j) T(std::move(new_storage[j]));
-                            if constexpr (!std::is_trivially_destructible_v<T>) {
+                            if constexpr (!meta::trivially_destructible<T>) {
                                 new_storage[j].~T();
                             }
                         }
@@ -557,8 +557,11 @@ namespace impl {
             capacity = size;
         }
 
-        constexpr void clear() noexcept(std::is_nothrow_destructible_v<T>) {
-            if constexpr (std::is_trivially_destructible_v<T>) {
+        constexpr void clear() noexcept(
+            meta::trivially_destructible<T> ||
+            meta::nothrow::destructible<T>
+        ) {
+            if constexpr (meta::trivially_destructible<T>) {
                 size = 0;
             } else {
                 while (size) {
@@ -671,27 +674,27 @@ namespace impl {
         using equal_type = Equal;
         using less_type = Less;
         using size_type = size_t;
-        using index_type = ssize_t;
+        using index_type = meta::as_signed<size_type>;
         using difference_type = std::ptrdiff_t;
         using value_type = T;
-        using reference = std::add_lvalue_reference_t<value_type>;
-        using const_reference = std::add_lvalue_reference_t<std::add_const_t<value_type>>;
-        using pointer = std::add_pointer_t<value_type>;
-        using const_pointer = std::add_pointer_t<std::add_const_t<value_type>>;
+        using reference = meta::as_lvalue<value_type>;
+        using const_reference = meta::as_lvalue<meta::as_const<value_type>>;
+        using pointer = meta::as_pointer<value_type>;
+        using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
         using iterator = impl::contiguous_iterator<std::conditional_t<
             meta::is_void<Less>,
             value_type,
-            std::add_const_t<value_type>
+            meta::as_const<value_type>
         >>;
-        using const_iterator = impl::contiguous_iterator<std::add_const_t<value_type>>;
+        using const_iterator = impl::contiguous_iterator<meta::as_const<value_type>>;
         using reverse_iterator = std::reverse_iterator<iterator>;
         using const_reverse_iterator = std::reverse_iterator<const_iterator>;
         using slice = impl::contiguous_slice<std::conditional_t<
             meta::is_void<Less>,
             value_type,
-            std::add_const_t<value_type>
+            meta::as_const<value_type>
         >>;
-        using const_slice = impl::contiguous_slice<std::add_const_t<value_type>>;
+        using const_slice = impl::contiguous_slice<meta::as_const<value_type>>;
 
         /* The default capacity to reserve if no template override is given.  This defaults
         to a maximum of ~8 MiB of total storage, evenly divided into contiguous segments of
@@ -708,7 +711,7 @@ namespace impl {
         strict ascending order based on the comparison function, allowing for O(log(n))
         binary searches using any key that can be transparently evaluated by the `Less`
         function (as if the STL's `is_transparent` property were always true). */
-        static constexpr bool SORTED = !meta::is_void<Less>;
+        static constexpr bool SORTED = meta::not_void<Less>;
 
     protected:
 
@@ -792,6 +795,9 @@ namespace impl {
 
         /* The current number of elements contained in the list. */
         [[nodiscard]] constexpr size_type size() const noexcept { return m_alloc.size; }
+
+        /* Equivalent to `size()`, but returns a signed result. */
+        [[nodiscard]] constexpr index_type ssize() const noexcept { return index_type(size()); }
 
         /* True if the list has nonzero size.  False otherwise. */
         [[nodiscard]] constexpr explicit operator bool() const noexcept { return size(); }
@@ -895,19 +901,19 @@ namespace impl {
         [[nodiscard]] constexpr iterator end()
             noexcept(noexcept(iterator(data(), size())))
         {
-            return {data(), ssize_t(size())};
+            return {data(), ssize()};
         }
 
         [[nodiscard]] constexpr const_iterator end() const
             noexcept(noexcept(const_iterator(data(), size())))
         {
-            return {data(), ssize_t(size())};
+            return {data(), ssize()};
         }
 
         [[nodiscard]] constexpr const_iterator cend() const
             noexcept(noexcept(const_iterator(data(), size())))
         {
-            return {data(), ssize_t(size())};
+            return {data(), ssize()};
         }
 
         [[nodiscard]] constexpr reverse_iterator rbegin()
@@ -982,10 +988,8 @@ namespace impl {
         the overall size of the list, which outlaws some slice-based insertions that
         would be valid in standard Python.  Such insertions are counterintuitive, and have
         been abstracted into a separate `list.merge(it, values...)` method for clarity. */
-        [[nodiscard]] constexpr slice operator[](
-            std::initializer_list<std::optional<ssize_t>> indices
-        ) {
-            return {data(), ssize_t(size()), indices};
+        [[nodiscard]] constexpr slice operator[](bertrand::slice s) {
+            return {data(), s.normalize(ssize())};
         }
 
         /* Return a view over a particular slice of the list by providing Python-style
@@ -1004,10 +1008,8 @@ namespace impl {
         the overall size of the list, which outlaws some slice-based insertions that
         would be valid in standard Python.  Such insertions are counterintuitive, and have
         been abstracted into a separate `list.merge(it, values...)` method for clarity. */
-        [[nodiscard]] constexpr const_slice operator[](
-            std::initializer_list<std::optional<ssize_t>> indices
-        ) const {
-            return {data(), ssize_t(size()), indices};
+        [[nodiscard]] constexpr const_slice operator[](bertrand::slice s) const {
+            return {data(), s.normalize(ssize())};
         }
 
         /* Resize the allocator to store at least `n` elements.  Returns the number of
@@ -1148,9 +1150,9 @@ namespace impl {
 
         /* Efficiently remove the last item in the list and return its value.  Throws
         an `IndexError` if the list is empty. */
-        [[nodiscard]] constexpr std::remove_cvref_t<value_type> pop() noexcept(
+        [[nodiscard]] constexpr meta::unqualify<value_type> pop() noexcept(
             !DEBUG &&
-            noexcept(std::remove_cvref_t<T>{std::move(back())}) &&
+            noexcept(meta::unqualify<value_type>{std::move(back())}) &&
             noexcept(m_alloc.destroy(data()))
         ) {
             if constexpr (DEBUG) {
@@ -1158,7 +1160,7 @@ namespace impl {
                     throw IndexError("cannot pop from empty list");
                 }
             }
-            std::remove_cvref_t<T> item {std::move(back())};
+            meta::unqualify<value_type> item {std::move(back())};
             m_alloc.destroy(data() + size() - 1);
             return item;
         }
@@ -1166,13 +1168,13 @@ namespace impl {
         /* Remove the item pointed to by the given iterator and return its value.  All
         subsequent elements will be shifted one index down the list.  Throws an
         `IndexError` if the iterator is out of bounds. */
-        [[nodiscard]] constexpr std::remove_cvref_t<value_type> pop(const iterator& it) {
+        [[nodiscard]] constexpr meta::unqualify<value_type> pop(const iterator& it) {
             if constexpr (DEBUG) {
                 if (it < begin() || it >= end()) {
                     throw IndexError("iterator out of bounds");
                 }
             }
-            std::remove_cvref_t<T> item {std::move(*it)};
+            meta::unqualify<value_type> item {std::move(*it)};
             m_alloc.destroy(data() + it.index);
             for (ssize_t i = it.index; i < size(); ++i) {
                 m_alloc.construct(
@@ -1249,6 +1251,66 @@ namespace impl {
 
             return result;
         }
+
+        /* Apply a lexicographic comparison between this list and another iterable whose
+        elements are 3-way comparable. */
+        template <meta::iterable Range>
+            requires (requires(const List<T, N, Equal, Less>& self, Range range) {
+                std::lexicographical_compare_three_way(
+                    self.begin(),
+                    self.end(),
+                    std::ranges::begin(range),
+                    std::ranges::end(range)
+                );
+            })
+        [[nodiscard]] constexpr auto operator<=>(Range&& range) const noexcept(
+            noexcept(std::lexicographical_compare_three_way(
+                begin(),
+                end(),
+                std::ranges::begin(range),
+                std::ranges::end(range)
+            ))
+        ) {
+            return std::lexicographical_compare_three_way(
+                begin(),
+                end(),
+                std::ranges::begin(range),
+                std::ranges::end(range)
+            );
+        }
+
+        /* Special case for lexicographic equality comparisons which attempts to
+        check the size before proceeding to a lexicographic loop. */
+        template <meta::iterable Range>
+            requires (requires(const List<T, N, Equal, Less>& self, Range range) {
+                { std::lexicographical_compare_three_way(
+                    self.begin(),
+                    self.end(),
+                    std::ranges::begin(range),
+                    std::ranges::end(range)
+                ) == 0 } -> meta::convertible_to<bool>;
+            })
+        [[nodiscard]] constexpr bool operator==(Range&& range) const noexcept(
+            (!meta::has_size<Range> || meta::nothrow::has_size<Range>) &&
+            noexcept(std::lexicographical_compare_three_way(
+                begin(),
+                end(),
+                std::ranges::begin(range),
+                std::ranges::end(range)
+            ) == 0)
+        ) {
+            if constexpr (meta::has_size<Range>) {
+                if (size() != std::ranges::size(range)) {
+                    return false;
+                }
+            }
+            return std::lexicographical_compare_three_way(
+                begin(),
+                end(),
+                std::ranges::begin(range),
+                std::ranges::end(range)
+            ) == 0;
+        }
     };
 
 }
@@ -1269,25 +1331,25 @@ namespace meta {
 }
 
 
-template <typename T, size_t N, meta::unqualified Equal, meta::unqualified Less>
-    requires (!meta::is_void<T> && (
+template <meta::not_void T, size_t N, meta::unqualified Equal, meta::unqualified Less>
+    requires ((
         meta::is_void<Equal> || (
-            std::is_default_constructible_v<Equal> &&
-            std::is_invocable_r_v<
+            meta::default_constructible<Equal> &&
+            meta::invoke_returns<
                 bool,
-                std::add_lvalue_reference_t<Equal>,
-                std::add_lvalue_reference_t<std::add_const_t<T>>,
-                std::add_lvalue_reference_t<std::add_const_t<T>>
+                meta::as_lvalue<Equal>,
+                meta::as_lvalue<meta::as_const<T>>,
+                meta::as_lvalue<meta::as_const<T>>
             >
         )
     ) && (
         meta::is_void<Less> || (
-            std::is_default_constructible_v<Less> &&
-            std::is_invocable_r_v<
+            meta::default_constructible<Less> &&
+            meta::invoke_returns<
                 bool,
-                std::add_lvalue_reference_t<Less>,
-                std::add_lvalue_reference_t<std::add_const_t<T>>,
-                std::add_lvalue_reference_t<std::add_const_t<T>>
+                meta::as_lvalue<Less>,
+                meta::as_lvalue<meta::as_const<T>>,
+                meta::as_lvalue<meta::as_const<T>>
             >
         )
     ))
@@ -1368,11 +1430,11 @@ public:
 
     /* Conversion constructor from an iterator pair whose contents are convertible to
     the stored type `T`. */
-    template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
+    template <meta::iterator Begin, meta::sentinel_for<Begin> End>
         requires (
-            !meta::is_const<Begin> &&
-            !meta::is_const<End> &&
-            meta::dereferences_to<std::add_lvalue_reference_t<Begin>, T>
+            meta::not_const<Begin> &&
+            meta::not_const<End> &&
+            meta::dereferences_to<meta::as_lvalue<Begin>, value_type>
         )
     [[nodiscard]] constexpr explicit List(Begin&& begin, End&& end) {
         update(std::forward<Begin>(begin), std::forward<End>(end));
@@ -1386,8 +1448,7 @@ public:
     will be shifted one index down the list.  If an item compares equal to the inserted
     value, then the final ordering between them is not defined.  All other arguments
     are forwarded to the constructor for `T`. */
-    template <typename... Args>
-        requires (std::constructible_from<T, Args...>)
+    template <typename... Args> requires (meta::constructible_from<T, Args...>)
     [[maybe_unused]] constexpr iterator insert(Args&&... args) noexcept(
         true  // TODO: fix this
     ) {
@@ -1411,7 +1472,7 @@ public:
     [[maybe_unused]] constexpr size_type update(Range&& range) {
         /// TODO: basically identical to extend() for the sorted case
 
-        if constexpr (!meta::is_void<Less>) {
+        if constexpr (meta::not_void<Less>) {
             size_type new_size = size();
             if (new_size > old_size) {
                 try {
@@ -1433,12 +1494,12 @@ public:
     /* Insert items from an input range into a sorted list, maintaining proper order.
     Returns the number of items that were inserted.  In the event of an error, the list
     will be rolled back to its original state before propagating the error. */
-    template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
-        requires (meta::dereferences_to<std::add_lvalue_reference_t<Begin>, T>)
+    template <meta::iterator Begin, meta::sentinel_for<Begin> End>
+        requires (meta::dereferences_to<meta::as_lvalue<Begin>, value_type>)
     [[maybe_unused]] constexpr size_type update(Begin&& begin, End&& end) {
         /// TODO: basically identical to extend() for the sorted case
 
-        if constexpr (!meta::is_void<Less>) {
+        if constexpr (meta::not_void<Less>) {
             size_type new_size = size();
             if (new_size > old_size) {
                 try {
@@ -1463,11 +1524,18 @@ public:
     /// TODO: pop(), pop(it), pop(slice)
 
 
+    /// TODO: use meta::as_lvalue
+
     /* Binary search a sorted list, returning an iterator to the leftmost element that
     is equal to or greater than the given value.  Returns an end iterator if no such
     element exists. */
     template <typename V>
-        requires (std::is_invocable_r_v<bool, Less&, const value_type&, const V&>)
+        requires (meta::invoke_returns<
+            bool,
+            meta::as_lvalue<Less>,
+            meta::as_lvalue<meta::as_const<value_type>>,
+            meta::as_lvalue<meta::as_const<V>>
+        >)
     [[nodiscard]] constexpr iterator nearest(const V& value) const noexcept(
         noexcept(lvalue(Less{})(*data(), value))
     ) {
@@ -1481,8 +1549,18 @@ public:
     using a binary search.  Otherwise, a linear search will be used. */
     template <typename V>
         requires (
-            std::is_invocable_r_v<bool, Less&, const value_type&, const V&> &&
-            std::is_invocable_r_v<bool, Less&, const V&, const value_type&>
+            meta::invoke_returns<
+                bool,
+                meta::as_lvalue<Less>,
+                meta::as_lvalue<meta::as_const<value_type>>,
+                meta::as_lvalue<meta::as_const<V>>
+            > &&
+            meta::invoke_returns<
+                bool,
+                meta::as_lvalue<Less>,
+                meta::as_lvalue<meta::as_const<V>>,
+                meta::as_lvalue<meta::as_const<value_type>>
+            >
         )
     [[nodiscard]] constexpr iterator find(const V& value) const noexcept(
         noexcept(lvalue(Less{})(*data(), value)) &&
@@ -1500,8 +1578,18 @@ public:
     to calling `list.find(value) == list.end()`. */
     template <typename V>
         requires (
-            std::is_invocable_r_v<bool, Less&, const value_type&, const V&> &&
-            std::is_invocable_r_v<bool, Less&, const V&, const value_type&>
+            meta::invoke_returns<
+                bool,
+                meta::as_lvalue<Less>,
+                meta::as_lvalue<meta::as_const<value_type>>,
+                meta::as_lvalue<meta::as_const<V>>
+            > &&
+            meta::invoke_returns<
+                bool,
+                meta::as_lvalue<Less>,
+                meta::as_lvalue<meta::as_const<V>>,
+                meta::as_lvalue<meta::as_const<value_type>>
+            >
         )
     [[nodiscard]] constexpr bool contains(const V& value) const
         noexcept(noexcept(find(value)))
@@ -1515,8 +1603,18 @@ public:
     will be used. */
     template <typename V>
         requires (
-            std::is_invocable_r_v<bool, Less&, const value_type&, const V&> &&
-            std::is_invocable_r_v<bool, Less&, const V&, const value_type&>
+            meta::invoke_returns<
+                bool,
+                meta::as_lvalue<Less>,
+                meta::as_lvalue<meta::as_const<value_type>>,
+                meta::as_lvalue<meta::as_const<V>>
+            > &&
+            meta::invoke_returns<
+                bool,
+                meta::as_lvalue<Less>,
+                meta::as_lvalue<meta::as_const<V>>,
+                meta::as_lvalue<meta::as_const<value_type>>
+            >
         )
     [[nodiscard]] constexpr size_type count(const V& value) const
         noexcept(noexcept(find(value)))
@@ -1542,8 +1640,18 @@ public:
     search will be used.  Returns an empty optional if no such element exists. */
     template <typename V>
         requires (
-            std::is_invocable_r_v<bool, Less&, const value_type&, const V&> &&
-            std::is_invocable_r_v<bool, Less&, const V&, const value_type&>
+            meta::invoke_returns<
+                bool,
+                meta::as_lvalue<Less>,
+                meta::as_lvalue<meta::as_const<value_type>>,
+                meta::as_lvalue<meta::as_const<V>>
+            > &&
+            meta::invoke_returns<
+                bool,
+                meta::as_lvalue<Less>,
+                meta::as_lvalue<meta::as_const<V>>,
+                meta::as_lvalue<meta::as_const<value_type>>
+            >
         )
     [[nodiscard]] constexpr std::optional<size_type> index(const V& value) const
         noexcept(noexcept(find(value)))
@@ -1588,6 +1696,7 @@ public:
     using base::base;
     using base::swap;
     using base::size;
+    using base::ssize;
     using base::operator bool;
     using base::empty;
     using base::capacity;
@@ -1613,24 +1722,24 @@ public:
     using base::pop;
 
     /* Initializer list constructor. */
-    [[nodiscard]] constexpr List(std::initializer_list<T> items) {
+    [[nodiscard]] constexpr List(std::initializer_list<value_type> items) {
         extend(items.begin(), items.end());
     }
 
     /* Conversion constructor from an iterable range whose contents are convertible to
     the stored type `T`. */
-    template <meta::yields<T> Range>
+    template <meta::yields<value_type> Range>
     [[nodiscard]] constexpr explicit List(Range&& range) {
         extend(std::forward<Range>(range));
     }
 
     /* Conversion constructor from an iterator pair whose contents are convertible to
     the stored type `T`. */
-    template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
+    template <meta::iterator Begin, meta::sentinel_for<Begin> End>
         requires (
-            !meta::is_const<Begin> &&
-            !meta::is_const<End> &&
-            meta::dereferences_to<std::add_lvalue_reference_t<Begin>, T>
+            meta::not_const<Begin> &&
+            meta::not_const<End> &&
+            meta::dereferences_to<meta::as_lvalue<Begin>, value_type>
         )
     [[nodiscard]] constexpr explicit List(Begin&& begin, End&& end) {
         extend(std::forward<Begin>(begin), std::forward<End>(end));
@@ -1639,7 +1748,7 @@ public:
     /* Insert an item at the end of the list.  All arguments are forwarded to the
     constructor for `T`.  Returns an iterator to the appended element, and propagates
     any errors emanating from the constructor without modifying the list. */
-    template <typename... Args> requires (std::constructible_from<T, Args...>)
+    template <typename... Args> requires (meta::constructible_from<value_type, Args...>)
     [[maybe_unused]] constexpr iterator append(Args&&... args) noexcept(
         !DEBUG &&
         noexcept(m_alloc.grow(std::min(capacity() * 2, max_capacity()))) &&
@@ -1657,7 +1766,7 @@ public:
             m_alloc.grow(std::min(capacity() * 2, max_capacity()));
         }
         m_alloc.construct(m_alloc.data() + size(), std::forward<Args>(args)...);
-        return {data(), ssize_t(size()) - 1};
+        return {data(), ssize() - 1};
     }
 
     /* Insert an item at an arbitrary location within the list, immediately before the
@@ -1666,7 +1775,7 @@ public:
     position.  All other arguments are forwarded to the constructor for `T`, and any
     errors will be propagated, without modifying the state of the list.  Returns an
     iterator to the inserted element. */
-    template <typename... Args> requires (std::constructible_from<T, Args...>)
+    template <typename... Args> requires (meta::constructible_from<value_type, Args...>)
     [[maybe_unused]] constexpr iterator insert(iterator it, Args&&... args) noexcept(
         !DEBUG &&
         noexcept(m_alloc.grow(std::min(capacity() * 2, max_capacity()))) &&
@@ -1734,7 +1843,7 @@ public:
     /* Insert items from an input range at the end of the list, returning the number of
     items that were inserted.  In the event of an error, the list will be rolled back
     to its original state before propagating the error. */
-    [[maybe_unused]] constexpr size_type extend(std::initializer_list<T> items) {
+    [[maybe_unused]] constexpr size_type extend(std::initializer_list<value_type> items) {
         return extend(items.begin(), items.end());
     }
 
@@ -1743,7 +1852,7 @@ public:
     to its original state before propagating the error. */
     template <meta::yields<value_type> Range>
     [[maybe_unused]] constexpr size_type extend(Range&& range) {
-        using RangeRef = std::add_lvalue_reference_t<Range>;
+        using RangeRef = meta::as_lvalue<Range>;
         if constexpr (meta::has_size<RangeRef>) {
             reserve(size() + std::ranges::size(range));
         }
@@ -1783,11 +1892,11 @@ public:
     /* Insert items from an input range at the end of the list, returning the number of
     items that were inserted.  In the event of an error, the list will be rolled back
     to its original state before propagating the error. */
-    template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
-        requires (meta::dereferences_to<std::add_lvalue_reference_t<Begin>, T>)
+    template <meta::iterator Begin, meta::sentinel_for<Begin> End>
+        requires (meta::dereferences_to<meta::as_lvalue<Begin>, value_type>)
     [[maybe_unused]] constexpr size_type extend(Begin&& begin, End&& end) {
-        using BeginRef = std::add_lvalue_reference_t<Begin>;
-        using EndRef = std::add_lvalue_reference_t<End>;
+        using BeginRef = meta::as_lvalue<Begin>;
+        using EndRef = meta::as_lvalue<End>;
         if constexpr (meta::sub_returns<EndRef, BeginRef, size_type>) {
             reserve(end - begin);
         }
@@ -1822,12 +1931,21 @@ public:
         return size() - old_size;
     }
 
+    /// TODO: splice(it, initializer_list)
+    /// TODO: splice(it, range)
+    /// TODO: splice(it, begin, end)
+
     /* Find the first occurrence of a given value within the list, returning an
     iterator to the leftmost element that compares equal to it.  Returns an end
     iterator if no such element exists.  If the list is sorted, then this will be done
     using a binary search.  Otherwise, a linear search will be used. */
     template <typename V>
-        requires (std::is_invocable_r_v<bool, Equal&, const value_type&, const V&>)
+        requires (meta::invoke_returns<
+            bool,
+            meta::as_lvalue<Equal>,
+            meta::as_lvalue<meta::as_const<value_type>>,
+            meta::as_lvalue<meta::as_const<V>>
+        >)
     [[nodiscard]] constexpr iterator find(const V& value) const
         noexcept(noexcept(lvalue(Equal{})(*data(), value)))
     {
@@ -1843,7 +1961,12 @@ public:
     /* Check whether a given value is contained within the list.  This is equivalent
     to calling `list.find(value) == list.end()`. */
     template <typename V>
-        requires (std::is_invocable_r_v<bool, Equal&, const value_type&, const V&>)
+        requires (meta::invoke_returns<
+            bool,
+            meta::as_lvalue<Equal>,
+            meta::as_lvalue<meta::as_const<value_type>>,
+            meta::as_lvalue<meta::as_const<V>>
+        >)
     [[nodiscard]] constexpr bool contains(const V& value) const
         noexcept(noexcept(find(value)))
     {
@@ -1855,7 +1978,12 @@ public:
     iterating until the first unequal value is encountered.  Otherwise, a linear search
     will be used. */
     template <typename V>
-        requires (std::is_invocable_r_v<bool, Equal&, const value_type&, const V&>)
+        requires (meta::invoke_returns<
+            bool,
+            meta::as_lvalue<Equal>,
+            meta::as_lvalue<meta::as_const<value_type>>,
+            meta::as_lvalue<meta::as_const<V>>
+        >)
     [[nodiscard]] constexpr size_type count(const V& value) const
         noexcept(noexcept(find(value)))
     {
@@ -1873,7 +2001,12 @@ public:
     list is sorted, then this will be done using a binary search.  Otherwise, a linear
     search will be used.  Returns an empty optional if no such element exists. */
     template <typename V>
-        requires (std::is_invocable_r_v<bool, Equal&, const value_type&, const V&>)
+        requires (meta::invoke_returns<
+            bool,
+            meta::as_lvalue<Equal>,
+            meta::as_lvalue<meta::as_const<value_type>>,
+            meta::as_lvalue<meta::as_const<V>>
+        >)
     [[nodiscard]] constexpr std::optional<size_type> index(const V& value) const
         noexcept(noexcept(find(value)))
     {
@@ -1888,24 +2021,32 @@ public:
 
     /* Concatenate this list with another input iterable to produce a new list
     containing all elements from both lists.  The original list is unchanged. */
-    template <meta::yields<value_type> V>
-    [[nodiscard]] constexpr List operator+(V&& range) const noexcept(
+    template <meta::yields<value_type> Range>
+    [[nodiscard]] constexpr List operator+(Range&& range) const noexcept(
         noexcept(List{*this}) &&
-        noexcept(extend(std::forward<V>(range)))
+        noexcept(extend(std::forward<Range>(range)))
     ) {
-        /// TODO: it might be more efficient to reserve all needed space ahead of time.
-        List copy = *this;
-        copy.extend(std::forward<V>(range));
-        return copy;
+        if constexpr (meta::has_size<Range>) {
+            List result;
+            result.reserve(size() + std::ranges::size(range));
+            result.extend(*this);
+            result.extend(std::forward<Range>(range));
+            return result;
+
+        } else {
+            List copy = *this;
+            copy.extend(std::forward<Range>(range));
+            return copy;
+        }
     }
 
     /* Concatenate this list with another input iterable in-place.  This is equivalent
     to calling `list.extend()`. */
-    template <meta::yields<value_type> V>
-    [[maybe_unused]] constexpr List& operator+=(V&& range) noexcept(
-        noexcept(extend(std::forward<V>(range)))
+    template <meta::yields<value_type> Range>
+    [[maybe_unused]] constexpr List& operator+=(Range&& range) noexcept(
+        noexcept(extend(std::forward<Range>(range)))
     ) {
-        extend(std::forward<V>(range));
+        extend(std::forward<Range>(range));
         return *this;
     }
 
@@ -1939,96 +2080,27 @@ public:
         }
         return *this;
     }
-
-    /* Apply a lexicographic comparison between this list and another iterable whose
-    elements are `<` and `==` comparable. */
-    template <meta::iterable Range>
-        /// TODO: further restrictions for ranges whose elements are comparable with
-        /// the value type, accounting for `Less`
-    [[nodiscard]] constexpr std::strong_ordering operator<=>(Range&& range) {
-        std::compare_three_way compare;
-        auto l_it = begin();
-        auto l_end = end();
-        auto r_it = std::ranges::begin(range);
-        auto r_end = std::ranges::end(range);
-
-        while (l_it != l_end && r_it != r_end) {
-            auto result = compare(*l_it <=> *r_it);
-            if (result != 0) {
-                return result;
-            }
-            ++l_it;
-            ++r_it;
-        }
-
-        if (l_it != l_end) {
-            return std::strong_ordering::greater;
-        }
-        if (r_it != r_end) {
-            return std::strong_ordering::less;
-        }
-        return std::strong_ordering::equal;
-    }
-
-
-    /// TODO: lexicographic comparisons against any iterable whose value type can be
-    /// passed to less<> or the transparent `<` operator.
-
 };
 
 
 template <typename T>
-List(std::initializer_list<T>) -> List<
-    std::remove_cvref_t<T>,
-    impl::DEFAULT_ADDRESS_CAPACITY<std::remove_cvref_t<T>>,
-    std::equal_to<>,
-    void
->;
+List(std::initializer_list<T>) -> List<meta::unqualify<T>>;
 
 
 template <meta::iterable Range>
-List(Range&&) -> List<
-    std::remove_cvref_t<meta::yield_type<Range>>,
-    impl::DEFAULT_ADDRESS_CAPACITY<std::remove_cvref_t<meta::yield_type<Range>>>,
-    std::equal_to<>,
-    void
->;
+List(Range&&) -> List<meta::unqualify<meta::yield_type<Range>>>;
 
 
-template <std::input_or_output_iterator Begin, std::sentinel_for<Begin> End>
-    requires (!meta::is_const<Begin> && !meta::is_const<End>)
-List(Begin&&, End&&) -> List<
-    std::remove_cvref_t<meta::dereference_type<std::add_lvalue_reference_t<Begin>>>,
-    impl::DEFAULT_ADDRESS_CAPACITY<
-        std::remove_cvref_t<meta::dereference_type<std::add_lvalue_reference_t<Begin>>>
-    >,
-    std::equal_to<>,
-    void
->;
+template <meta::iterator Begin, meta::sentinel_for<Begin> End>
+    requires (meta::not_const<Begin> && meta::not_const<End>)
+List(Begin&&, End&&) -> List<meta::unqualify<
+    meta::dereference_type<meta::as_lvalue<Begin>>
+>>;
 
 
-/// TODO: also dereference and ->* operators, for compatibility with functions
-
-
-inline void test() {
-    List<std::string> x = {"a", "b", "c"};
-
-    x[2] = "d";
-
-    std::string value = x[2];
-
-    if (x[2]->empty()) {
-        auto item = x.pop(x[{0, 2}]);
-    }
-
-    for (auto&& y : x[{0, 2}]) {
-        std::cout << y << '\n';
-    }
-
-    x[{0, 2}] = {"e", "f"};
-
-    std::vector<std::string> vec = x[{0, 2}];
-}
+/// TODO: also dereference and ->* operators, for compatibility with functions.  Those
+/// may need to be defined in func.h, or include func.h before this file, although that
+/// might run into some circular dependencies.
 
 
 }  // namespace bertrand
@@ -2036,7 +2108,60 @@ inline void test() {
 
 namespace std {
 
-    /// TODO: structured bindings if N is small enough?
+    /// NOTE: specializing `std::tuple_size`/`std::tuple_element` and `std::get` allows
+    /// small lists to be destructured using structured bindings.
+
+    template <bertrand::meta::List T>
+    struct tuple_size<T> :
+        std::integral_constant<size_t, bertrand::meta::unqualify<T>::max_capacity()>
+    {};
+
+    template <size_t I, bertrand::meta::List T>
+        requires (I < bertrand::meta::unqualify<T>::max_capacity())
+    struct tuple_element<I, T> {
+        using type = bertrand::meta::qualify<
+            typename bertrand::meta::unqualify<T>::value_type,
+            T
+        >;
+    };
+
+    template <size_t I, bertrand::meta::List T>
+        requires (I < bertrand::meta::unqualify<T>::max_capacity())
+    [[nodiscard]] constexpr tuple_element<I, T>::type get(T&& list) noexcept {
+        return std::forward<T>(list).data()[I];
+    }
+
+}
+
+
+namespace bertrand {
+
+    inline void test() {
+        List<std::string> x = {"a", "b", "c"};
+    
+        x[2] = "d";
+    
+        std::string value = x[2];
+    
+        if (x[2]->empty()) {
+            auto item = x.pop(x[2]);
+        }
+    
+        for (auto&& y : x[slice{0, 2}]) {
+            std::cout << y << '\n';
+        }
+    
+        x[slice{0, 2}] = {"e", "f"};
+    
+        std::vector<std::string> vec = x[slice{0, 2}];
+
+        if (x < vec) {
+            
+        }
+
+        List<int, 2> list {1, 2};
+        auto&& [a, b] = list;
+    }
 
 }
 

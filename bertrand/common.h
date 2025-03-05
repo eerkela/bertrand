@@ -188,6 +188,9 @@ namespace meta {
     concept is_const = std::is_const_v<std::remove_reference_t<T>>;
 
     template <typename T>
+    concept not_const = !is_const<T>;
+
+    template <typename T>
     using as_const = std::conditional_t<
         meta::lvalue<T>,
         meta::as_lvalue<std::add_const_t<meta::remove_reference<T>>>,
@@ -2693,23 +2696,37 @@ namespace meta {
 
     namespace detail {
 
-        /* Enables the `sorted()` helper function for sortable container types. */
-        template <typename Less, typename T>
+        /// NOTE: in all cases, cvref qualifiers will be stripped from the input
+        /// types before checking against these customization points.
+
+        /// TODO: make sure that the above is actually the case
+
+        /* Enables the `sorted()` helper function for sortable container types.  The
+        `::type` alias should map the templated `Less` function into the template
+        definition for `T`.  */
+        template <meta::unqualified Less, meta::iterable T>
+            requires (
+                meta::default_constructible<Less> &&
+                meta::invoke_returns<
+                    bool,
+                    Less,
+                    meta::yield_type<T>,
+                    meta::yield_type<T>
+                >
+            )
         struct sorted { using type = void; };
+
+        /* Enables the `*` unpacking operator for iterable container types. */
+        template <meta::iterable T>
+        constexpr bool enable_unpack_operator = false;
+
+        /* Enables the `->*` comprehension operator for iterable container types. */
+        template <meta::iterable T>
+        constexpr bool enable_comprehension_operator = false;
 
     }
 
 }
-
-
-/* A generic sentinel type to simplify iterator implementations. */
-struct sentinel {};
-
-
-/* A simple convenience struct implementing the overload pattern for `visit()`-style
-functions. */
-template <typename... Funcs>
-struct visitor : Funcs... { using Funcs::operator()...; };
 
 
 /* CPython exception types:
@@ -3479,6 +3496,111 @@ public:
 };
 
 
+/* A generic sentinel type to simplify iterator implementations. */
+struct sentinel {};
+
+
+/* A simple convenience struct implementing the overload pattern for `visit()`-style
+functions. */
+template <typename... Funcs>
+struct visitor : Funcs... { using Funcs::operator()...; };
+
+
+/* A convenience class describing the indices provided to a slice-style subscript
+operator.  Generally, an instance of this class will be implicitly constructed using an
+initializer list to condense the syntax and provide compile-time guarantees when it
+comes to slice shape. */
+struct slice {
+    std::optional<ssize_t> start;
+    std::optional<ssize_t> stop;
+    ssize_t step;
+
+    [[nodiscard]] explicit constexpr slice(
+        std::optional<ssize_t> start = std::nullopt,
+        std::optional<ssize_t> stop = std::nullopt,
+        std::optional<ssize_t> step = std::nullopt
+    ) :
+        start(start),
+        stop(stop),
+        step(step.value_or(ssize_t(1)))
+    {
+        if (this->step == 0) {
+            throw ValueError("slice step cannot be zero");
+        }        
+    }
+
+    /* Result of the `normalize` method.  Indices of this form can be passed to
+    per-container slice implementations to implement the correct traversal logic. */
+    struct normalized {
+    private:
+        friend slice;
+
+        constexpr normalized(
+            ssize_t start,
+            ssize_t stop,
+            ssize_t step,
+            ssize_t length
+        ) noexcept :
+            start(start),
+            stop(stop),
+            step(step),
+            length(length)
+        {}
+
+    public:
+        ssize_t start;
+        ssize_t stop;
+        ssize_t step;
+        ssize_t length;
+    };
+
+    /* Normalize the provided indices against a container of a given size, returning a
+    4-tuple with members `start`, `stop`, `step`, and `length` in that order, and
+    supporting structured bindings.  If either of the original `start` or `stop`
+    indices were given as negative values or `nullopt`, they will be normalized
+    according to the size, and will be truncated to the nearest end if they are out
+    of bounds.  `length` stores the total number of elements that will be included in
+    the slice */
+    [[nodiscard]] constexpr normalized normalize(ssize_t size) const noexcept {
+        bool neg = step < 0;
+        ssize_t zero = 0;
+        normalized result {zero, zero, step, zero};
+
+        // normalize start, correcting for negative indices and truncating to bounds
+        if (!start) {
+            result.start = neg ? size - ssize_t(1) : zero;  // neg: size - 1 | pos: 0
+        } else {
+            result.start = *start;
+            result.start += size * (result.start < zero);
+            if (result.start < zero) {
+                result.start = -neg;  // neg: -1 | pos: 0
+            } else if (result.start >= size) {
+                result.start = size - neg;  // neg: size - 1 | pos: size
+            }
+        }
+
+        // normalize stop, correcting for negative indices and truncating to bounds
+        if (!stop) {
+            result.stop = neg ? ssize_t(-1) : size;  // neg: -1 | pos: size
+        } else {
+            result.stop = *stop;
+            result.stop += size * (result.stop < zero);
+            if (result.stop < zero) {
+                result.stop = -neg;  // neg: -1 | pos: 0
+            } else if (result.stop >= size) {
+                result.stop = size - neg;  // neg: size - 1 | pos: size
+            }
+        }
+
+        // compute number of included elements
+        ssize_t bias = result.step + (result.step < zero) - (result.step > zero);
+        result.length = (result.stop - result.start + bias) / result.step;
+        result.length *= (result.length > zero);
+        return result;
+    }
+};
+
+
 namespace impl {
 
     struct virtualenv;
@@ -3723,9 +3845,16 @@ namespace impl {
         using pointer = meta::as_pointer<value_type>;
         using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
 
-        pointer data = nullptr;
-        difference_type index = 0;
+        pointer data;
+        difference_type index;
 
+        constexpr contiguous_iterator(
+            pointer data = nullptr,
+            difference_type index = 0
+        ) noexcept : data(data), index(index) {};
+
+        constexpr contiguous_iterator(const contiguous_iterator&) noexcept = default;
+        constexpr contiguous_iterator(contiguous_iterator&&) noexcept = default;
         constexpr contiguous_iterator& operator=(const contiguous_iterator&) noexcept = default;
         constexpr contiguous_iterator& operator=(contiguous_iterator&&) noexcept = default;
 
@@ -3814,7 +3943,15 @@ namespace impl {
             return {data, index - n};
         }
 
-        [[nodiscard]] constexpr bool operator<(const contiguous_iterator& rhs) noexcept(!DEBUG) {
+        [[nodiscard]] constexpr difference_type operator-(
+            const contiguous_iterator& rhs
+        ) noexcept {
+            return index - rhs.index;
+        }
+
+        [[nodiscard]] constexpr std::strong_ordering operator<=>(
+            const contiguous_iterator& rhs
+        ) noexcept(!DEBUG) {
             if constexpr (DEBUG) {
                 if (data != rhs.data) {
                     throw AssertionError(
@@ -3822,55 +3959,7 @@ namespace impl {
                     );
                 }
             }
-            return index < rhs.index;
-        }
-
-        [[nodiscard]] constexpr bool operator<=(const contiguous_iterator& rhs) noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (data != rhs.data) {
-                    throw AssertionError(
-                        "cannot compare iterators from different lists"
-                    );
-                }
-            }
-            return index <= rhs.index;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const contiguous_iterator& rhs) noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (data != rhs.data) {
-                    throw AssertionError(
-                        "cannot compare iterators from different lists"
-                    );
-                }
-            }
-            return index == rhs.index;
-        }
-
-        [[nodiscard]] constexpr bool operator!=(const contiguous_iterator& rhs) noexcept(!DEBUG) {
-            return !(*this == rhs);
-        }
-
-        [[nodiscard]] constexpr bool operator>=(const contiguous_iterator& rhs) noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (data != rhs.data) {
-                    throw AssertionError(
-                        "cannot compare iterators from different lists"
-                    );
-                }
-            }
-            return index >= rhs.index;
-        }
-
-        [[nodiscard]] constexpr bool operator>(const contiguous_iterator& rhs) noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (data != rhs.data) {
-                    throw AssertionError(
-                        "cannot compare iterators from different lists"
-                    );
-                }
-            }
-            return index > rhs.index;
+            return index <=> rhs.index;
         }
     };
 
@@ -3884,84 +3973,6 @@ namespace impl {
             [[nodiscard]] constexpr auto begin() const noexcept { return items.begin(); }
             [[nodiscard]] constexpr auto end() const noexcept { return items.end(); }
         };
-
-        void normalize(
-            ssize_t size,
-            std::optional<ssize_t> start,
-            std::optional<ssize_t> stop
-        ) noexcept {
-            // normalize start, correcting for negative indices and truncating to bounds
-            if (!start) {
-                m_start = 0;
-            } else {
-                m_start = *start + size * (*start < 0);
-                if (m_start < 0) {
-                    m_start = 0;
-                } else if (m_start > size) {
-                    m_start = size;
-                }
-            }
-
-            // normalize stop, correcting for negative indices and truncating to bounds
-            if (!stop) {
-                m_stop = size;
-            } else {
-                m_stop = *stop + size * (*stop < 0);
-                if (m_stop < 0) {
-                    m_stop = 0;
-                } else if (m_stop > size) {
-                    m_stop = size;
-                }
-            }
-
-            // compute number of included elements
-            ssize_t bias = m_step + (m_step < ssize_t(0)) - (m_step > ssize_t(0));
-            m_size = (m_stop - m_start + bias) / m_step;
-            m_size *= (m_size > ssize_t(0));
-        }
-
-        void normalize(
-            ssize_t size,
-            std::optional<ssize_t> start,
-            std::optional<ssize_t> stop,
-            std::optional<ssize_t> step
-        ) {
-            // normalize step, defaulting to 1
-            m_step = step.value_or(1);
-            if (m_step == 0) {
-                throw ValueError("slice step cannot be zero");
-            };
-            bool neg = m_step < 0;
-
-            // normalize start, correcting for negative indices and truncating to bounds
-            if (!start) {
-                m_start = neg ? size - 1 : 0;  // neg: size - 1 | pos: 0
-            } else {
-                m_start = *start + size * (*start < 0);
-                if (m_start < 0) {
-                    m_start = -neg;  // neg: -1 | pos: 0
-                } else if (m_start >= size) {
-                    m_start = size - neg;  // neg: size - 1 | pos: size
-                }
-            }
-
-            // normalize stop, correcting for negative indices and truncating to bounds
-            if (!stop) {
-                m_stop = neg ? -1 : size;  // neg: -1 | pos: size
-            } else {
-                m_stop = *stop + size * (*stop < 0);
-                if (m_stop < 0) {
-                    m_stop = -neg;  // neg: -1 | pos: 0
-                } else if (m_stop >= size) {
-                    m_stop = size - neg;  // neg: size - 1 | pos: size
-                }
-            }
-
-            // compute number of included elements
-            ssize_t bias = m_step + (m_step < ssize_t(0)) - (m_step > ssize_t(0));
-            m_size = (m_stop - m_start + bias) / m_step;
-            m_size *= (m_size > ssize_t(0));
-        }
 
         template <typename V>
         struct iter {
@@ -4024,65 +4035,48 @@ namespace impl {
 
         constexpr contiguous_slice(
             pointer data,
-            ssize_t size,
-            const std::initializer_list<std::optional<ssize_t>>& slice
-        ) {
-            auto it = slice.begin();
-            auto end = slice.end();
-            if (it == end) {
-                normalize(size, std::nullopt, std::nullopt);
-                return;
-            }
-            std::optional<ssize_t> start = *it++;
-            if (it == end) {
-                normalize(size, start, std::nullopt);
-                return;
-            }
-            std::optional<ssize_t> stop = *it++;
-            if (it == end) {
-                normalize(size, start, stop);
-                return;
-            }
-            std::optional<ssize_t> step = *it++;
-            if (it == end) {
-                normalize(size, start, stop, step);
-            }
-            throw IndexError(
-                "Slices must be of the form {[start[, stop[, step]]]} "
-                "(received " + std::to_string(slice.size()) + " indices)"
-            );
-        }
+            bertrand::slice::normalized indices
+        ) noexcept :
+            m_data(data),
+            m_indices(indices)
+        {}
+
+        constexpr contiguous_slice(const contiguous_slice&) = default;
+        constexpr contiguous_slice(contiguous_slice&&) = default;
+        constexpr contiguous_slice& operator=(const contiguous_slice&) = default;
+        constexpr contiguous_slice& operator=(contiguous_slice&&) = default;
 
         [[nodiscard]] constexpr pointer data() const noexcept { return m_data; }
-        [[nodiscard]] constexpr ssize_t start() const noexcept { return m_start; }
-        [[nodiscard]] constexpr ssize_t stop() const noexcept { return m_stop; }
-        [[nodiscard]] constexpr ssize_t step() const noexcept { return m_step; }
-        [[nodiscard]] constexpr ssize_t size() const noexcept { return m_size; }
-        [[nodiscard]] constexpr bool empty() const noexcept { return !size(); }
-        [[nodiscard]] explicit operator bool() const noexcept { return size(); }
+        [[nodiscard]] constexpr ssize_t start() const noexcept { return m_indices.start; }
+        [[nodiscard]] constexpr ssize_t stop() const noexcept { return m_indices.stop; }
+        [[nodiscard]] constexpr ssize_t step() const noexcept { return m_indices.step; }
+        [[nodiscard]] constexpr ssize_t ssize() const noexcept { return m_indices.length; }
+        [[nodiscard]] constexpr size_t size() const noexcept { return size_t(size()); }
+        [[nodiscard]] constexpr bool empty() const noexcept { return !ssize(); }
+        [[nodiscard]] explicit operator bool() const noexcept { return ssize(); }
 
         [[nodiscard]] constexpr iterator begin() noexcept {
-            return {m_data, m_start, m_step};
+            return {m_data, m_indices.start, m_indices.step};
         }
 
         [[nodiscard]] constexpr const_iterator begin() const noexcept {
-            return {m_data, m_start, m_step};
+            return {m_data, m_indices.start, m_indices.step};
         }
 
         [[nodiscard]] constexpr const_iterator cbegin() noexcept {
-            return {m_data, m_start, m_step};
+            return {m_data, m_indices.start, m_indices.step};
         }
 
         [[nodiscard]] constexpr iterator end() noexcept {
-            return {m_data, m_stop, m_step};
+            return {m_data, m_indices.stop, m_indices.step};
         }
 
         [[nodiscard]] constexpr const_iterator end() const noexcept {
-            return {m_data, m_stop, m_step};
+            return {m_data, m_indices.stop, m_indices.step};
         }
 
         [[nodiscard]] constexpr const_iterator cend() const noexcept {
-            return {m_data, m_stop, m_step};
+            return {m_data, m_indices.stop, m_indices.step};
         }
 
         template <typename V>
@@ -4100,12 +4094,9 @@ namespace impl {
             return V(begin(), end());
         }
 
-        constexpr contiguous_slice& operator=(const contiguous_slice&) = default;
-        constexpr contiguous_slice& operator=(contiguous_slice&&) = default;
-
         template <typename Dummy = value_type>
             requires (
-                !meta::is_const<Dummy> &&
+                meta::not_const<Dummy> &&
                 meta::destructible<Dummy> &&
                 meta::copyable<Dummy>
             )
@@ -4117,7 +4108,7 @@ namespace impl {
 
         template <meta::yields<value_type> Range>
             requires (
-                !meta::is_const<value_type> &&
+                meta::not_const<value_type> &&
                 meta::destructible<value_type> &&
                 meta::constructible_from<value_type, meta::yield_type<Range>>
             )
@@ -4130,24 +4121,24 @@ namespace impl {
             // if the range has an explicit size, then we can check it ahead of time
             // to ensure that it exactly matches that of the slice
             if constexpr (has_size) {
-                if (std::ranges::size(range) != m_size) {
+                if (std::ranges::size(range) != size()) {
                     throw ValueError(
                         "cannot assign a range of size " +
                         std::to_string(std::ranges::size(range)) +
-                        " to a slice of size " + std::to_string(m_size)
+                        " to a slice of size " + std::to_string(size())
                     );
                 }
             }
 
             // If we checked the size above, we can avoid checking it again on each
             // iteration
-            if (m_step > 0) {
-                for (ssize_t i = m_start; i < m_stop; i += m_step) {
+            if (step() > 0) {
+                for (ssize_t i = start(); i < stop(); i += step()) {
                     if constexpr (!has_size) {
                         if (it == end) {
                             throw ValueError(
                                 "not enough values to fill slice of size " +
-                                std::to_string(m_size)
+                                std::to_string(size())
                             );
                         }
                     }
@@ -4156,12 +4147,12 @@ namespace impl {
                     ++it;
                 }
             } else {
-                for (ssize_t i = m_start; i > m_stop; i += m_step) {
+                for (ssize_t i = start(); i > stop(); i += step()) {
                     if constexpr (!has_size) {
                         if (it == end) {
                             throw ValueError(
                                 "not enough values to fill slice of size " +
-                                std::to_string(m_size)
+                                std::to_string(size())
                             );
                         }
                     }
@@ -4175,7 +4166,7 @@ namespace impl {
                 if (it != end) {
                     throw ValueError(
                         "range length exceeds slice of size " +
-                        std::to_string(m_size)
+                        std::to_string(size())
                     );
                 }
             }
@@ -4183,11 +4174,8 @@ namespace impl {
         }
 
     private:
-        pointer m_data = nullptr;
-        ssize_t m_start = 0;
-        ssize_t m_stop = 0;
-        ssize_t m_step = 1;
-        ssize_t m_size = 0;
+        pointer m_data;
+        bertrand::slice::normalized m_indices;
     };
 
 }
@@ -4204,7 +4192,7 @@ C++ `assert()` macro is that this is implemented as a normal function and throws
 `bertrand::AssertionError` which can be passed up to Python with a coherent traceback.
 It is thus possible to implement pytest-style unit tests using this function just as
 you would in Python. */
-inline void assert_(bool cnd, const char* msg = "") {
+inline void assert_(bool cnd, const char* msg = "") noexcept(!DEBUG) {
     if constexpr (DEBUG) {
         if (!cnd) {
             throw AssertionError(msg);
@@ -4263,7 +4251,7 @@ template <meta::unqualified Less = std::less<>, typename T>
             >
         )
     )
-decltype(auto) sorted(T&& container) noexcept(
+[[nodiscard]] decltype(auto) sorted(T&& container) noexcept(
     meta::is<typename meta::detail::sorted<Less, meta::unqualify<T>>::type, T> ||
     noexcept(typename meta::detail::sorted<Less, meta::unqualify<T>>::type(
         std::forward<T>(container)
@@ -4298,7 +4286,7 @@ template <meta::unqualified T, meta::unqualified Less = std::less<>, typename...
             >>
         >
     )
-meta::detail::sorted<Less, T>::type sorted(Args&&... args) noexcept(
+[[nodiscard]] meta::detail::sorted<Less, T>::type sorted(Args&&... args) noexcept(
     noexcept(typename meta::detail::sorted<Less, T>::type(std::forward<Args>(args)...))
 ) {
     return typename meta::detail::sorted<Less, T>::type(std::forward<Args>(args)...);

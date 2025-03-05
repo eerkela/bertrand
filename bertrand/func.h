@@ -202,12 +202,6 @@ namespace meta {
         template <bertrand::static_str Name, bertrand::static_str... Names>
         constexpr bool arg_names_are_unique<Name, Names...> =
             (Name.empty() || ((Name != Names) && ...)) && arg_names_are_unique<Names...>;
-
-        template <typename T>
-        constexpr bool enable_unpack_operator = false;
-
-        template <typename T>
-        constexpr bool enable_comprehension_operator = false;
     }
 
     template <typename T>

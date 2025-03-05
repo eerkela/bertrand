@@ -4,10 +4,8 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <initializer_list>
 #include <iterator>
 #include <limits>
-#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -453,6 +451,7 @@ public:
     }
 
     [[nodiscard]] static constexpr size_t size() noexcept { return N; }
+    [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(N); }
     [[nodiscard]] static constexpr bool empty() noexcept { return !N; }
 
     [[nodiscard]] constexpr const char* data() const noexcept { return buffer; }
@@ -479,12 +478,11 @@ public:
         return buffer[impl::normalize_index(size(), i)];
     }
 
-    /* Slice operator utilizing `std::initializer_list`.  Up to 3 indices may be
-    supplied according to Python semantics, with `std::nullopt` equating to `None`. */
-    [[nodiscard]] constexpr slice operator[](
-        std::initializer_list<std::optional<ssize_t>> indices
-    ) const {
-        return {buffer, size(), indices};
+    /* Slice operator utilizing an initializer list.  Up to 3 (possibly negative)
+    indices may be supplied according to Python semantics, with `std::nullopt` equating
+    to `None`. */
+    [[nodiscard]] constexpr slice operator[](bertrand::slice s) const {
+        return {buffer, s.normalize(ssize())};
     }
 
     /* Equivalent to Python `str.capitalize()`. */
@@ -1284,113 +1282,42 @@ public:
     }
 
     template <size_t M>
-    [[nodiscard]] friend consteval bool operator<(
+    [[nodiscard]] friend consteval std::strong_ordering operator<=>(
         const static_str& self,
         const static_str<M>& other
     ) noexcept {
-        size_t i = 0;
-        while (i < self.size() && i < other.size()) {
-            const char x = self.buffer[i];
-            const char y = other.buffer[i];
-            if (x < y) {
-                return true;
-            } else if (y < x) {
-                return false;
-            }
-            ++i;
-        }
-        return i == self.size() && i != other.size();
-    }
-    template <size_t M>
-    [[nodiscard]] friend consteval bool operator<(
-        const static_str& self,
-        const char(&other)[M]
-    ) noexcept {
-        size_t i = 0;
-        while (i < self.size() && i < (M - 1)) {
-            const char x = self.buffer[i];
-            const char y = other[i];
-            if (x < y) {
-                return true;
-            } else if (y < x) {
-                return false;
-            }
-            ++i;
-        }
-        return i == self.size() && i != (M - 1);
-    }
-    template <size_t M>
-    [[nodiscard]] friend consteval bool operator<(
-        const char(&other)[M],
-        const static_str& self
-    ) noexcept {
-        size_t i = 0;
-        while (i < self.size() && i < (M - 1)) {
-            const char x = other[i];
-            const char y = self.buffer[i];
-            if (x < y) {
-                return true;
-            } else if (y < x) {
-                return false;
-            }
-            ++i;
-        }
-        return i == (M - 1) && i != self.size();
+        return std::lexicographical_compare_three_way(
+            self.buffer,
+            self.buffer + N,
+            other.buffer,
+            other.buffer + M
+        );
     }
 
     template <size_t M>
-    [[nodiscard]] friend consteval bool operator<=(
-        const static_str& self,
-        const static_str<M>& other
-    ) noexcept {
-        size_t i = 0;
-        while (i < self.size() && i < other.size()) {
-            const char x = self.buffer[i];
-            const char y = other.buffer[i];
-            if (x < y) {
-                return true;
-            } else if (y < x) {
-                return false;
-            }
-            ++i;
-        }
-        return i == self.size();
-    }
-    template <size_t M>
-    [[nodiscard]] friend consteval bool operator<=(
+    [[nodiscard]] friend consteval std::strong_ordering operator<=>(
         const static_str& self,
         const char(&other)[M]
     ) noexcept {
-        size_t i = 0;
-        while (i < self.size() && i < (M - 1)) {
-            const char x = self.buffer[i];
-            const char y = other[i];
-            if (x < y) {
-                return true;
-            } else if (y < x) {
-                return false;
-            }
-            ++i;
-        }
-        return i == self.size();
+        return std::lexicographical_compare_three_way(
+            self.buffer,
+            self.buffer + N,
+            other,
+            other + M - 1
+        );
     }
+
     template <size_t M>
-    [[nodiscard]] friend consteval bool operator<=(
+    [[nodiscard]] friend consteval std::strong_ordering operator<=>(
         const char(&other)[M],
         const static_str& self
     ) noexcept {
-        size_t i = 0;
-        while (i < self.size() && i < (M - 1)) {
-            const char x = other[i];
-            const char y = self.buffer[i];
-            if (x < y) {
-                return true;
-            } else if (y < x) {
-                return false;
-            }
-            ++i;
-        }
-        return i == (M - 1);
+        return std::lexicographical_compare_three_way(
+            other,
+            other + M - 1,
+            self.buffer,
+            self.buffer + N
+        );
     }
 
     template <size_t M>
@@ -1399,199 +1326,49 @@ public:
         const static_str<M>& other
     ) noexcept {
         if constexpr (N == M) {
-            for (size_t i = 0; i < N; ++i) {
-                if (self.buffer[i] != other.buffer[i]) {
-                    return false;
-                }
-            }
-            return true;
+            return std::lexicographical_compare_three_way(
+                self.buffer,
+                self.buffer + N,
+                other.buffer,
+                other.buffer + M
+            ) == 0;
+        } else {
+            return false;
         }
-        return false;
     }
+
     template <size_t M>
     [[nodiscard]] friend consteval bool operator==(
         const static_str& self,
         const char(&other)[M]
     ) noexcept {
         if constexpr (N == (M - 1)) {
-            for (size_t i = 0; i < N; ++i) {
-                if (self.buffer[i] != other[i]) {
-                    return false;
-                }
-            }
-            return true;
+            return std::lexicographical_compare_three_way(
+                self.buffer,
+                self.buffer + N,
+                other,
+                other + N
+            ) == 0;
+        } else {
+            return false;
         }
-        return false;
     }
+
     template <size_t M>
     [[nodiscard]] friend consteval bool operator==(
         const char(&other)[M],
         const static_str& self
     ) noexcept {
         if constexpr (N == (M - 1)) {
-            for (size_t i = 0; i < N; ++i) {
-                if (self.buffer[i] != other[i]) {
-                    return false;
-                }
-            }
-            return true;
-        }
-    }
-
-    template <size_t M>
-    [[nodiscard]] friend consteval bool operator!=(
-        const static_str& self,
-        const static_str<M>& other
-    ) noexcept {
-        if constexpr (N == M) {
-            for (size_t i = 0; i < N; ++i) {
-                if (self.buffer[i] != other.buffer[i]) {
-                    return true;
-                }
-            }
+            return std::lexicographical_compare_three_way(
+                other,
+                other + N,
+                self.buffer,
+                self.buffer + N
+            ) == 0;
+        } else {
             return false;
         }
-        return true;
-    }
-    template <size_t M>
-    [[nodiscard]] friend consteval bool operator!=(
-        const static_str& self,
-        const char(&other)[M]
-    ) noexcept {
-        if constexpr (N == (M - 1)) {
-            for (size_t i = 0; i < N; ++i) {
-                if (self.buffer[i] != other[i]) {
-                    return true;
-                }
-            }
-            return false;
-        }
-        return true;
-    }
-    template <size_t M>
-    [[nodiscard]] friend consteval bool operator!=(
-        const char(&other)[M],
-        const static_str& self
-    ) noexcept {
-        if constexpr (N == (M - 1)) {
-            for (size_t i = 0; i < N; ++i) {
-                if (self.buffer[i] != other[i]) {
-                    return true;
-                }
-            }
-            return false;
-        }
-        return true;
-    }
-
-    template <size_t M>
-    [[nodiscard]] friend consteval bool operator>=(
-        const static_str& self,
-        const static_str<M>& other
-    ) noexcept {
-        size_t i = 0;
-        while (i < self.size() && i < other.size()) {
-            const char x = self.buffer[i];
-            const char y = other.buffer[i];
-            if (x > y) {
-                return true;
-            } else if (y > x) {
-                return false;
-            }
-            ++i;
-        }
-        return i == self.size();
-    }
-    template <size_t M>
-    [[nodiscard]] friend consteval bool operator>=(
-        const static_str& self,
-        const char(&other)[M]
-    ) noexcept {
-        size_t i = 0;
-        while (i < self.size() && i < (M - 1)) {
-            const char x = self.buffer[i];
-            const char y = other[i];
-            if (x > y) {
-                return true;
-            } else if (y > x) {
-                return false;
-            }
-            ++i;
-        }
-        return i == self.size();
-    }
-    template <size_t M>
-    [[nodiscard]] friend consteval bool operator>=(
-        const char(&other)[M],
-        const static_str& self
-    ) noexcept {
-        size_t i = 0;
-        while (i < self.size() && i < (M - 1)) {
-            const char x = other[i];
-            const char y = self.buffer[i];
-            if (x > y) {
-                return true;
-            } else if (y > x) {
-                return false;
-            }
-            ++i;
-        }
-        return i == (M - 1);
-    }
-
-    template <size_t M>
-    [[nodiscard]] friend consteval bool operator>(
-        const static_str& self,
-        const static_str<M>& other
-    ) noexcept {
-        size_t i = 0;
-        while (i < self.size() && i < other.size()) {
-            const char x = self.buffer[i];
-            const char y = other.buffer[i];
-            if (x > y) {
-                return true;
-            } else if (y > x) {
-                return false;
-            }
-            ++i;
-        }
-        return i != self.size() && i == other.size();
-    }
-    template <size_t M>
-    [[nodiscard]] friend consteval bool operator>(
-        const static_str& self,
-        const char(&other)[M]
-    ) noexcept {
-        size_t i = 0;
-        while (i < self.size() && i < (M - 1)) {
-            const char x = self.buffer[i];
-            const char y = other[i];
-            if (x > y) {
-                return true;
-            } else if (y > x) {
-                return false;
-            }
-            ++i;
-        }
-        return i != self.size() && i == (M - 1);
-    }
-    template <size_t M>
-    [[nodiscard]] friend consteval bool operator>(
-        const char(&other)[M],
-        const static_str& self
-    ) noexcept {
-        size_t i = 0;
-        while (i < self.size() && i < (M - 1)) {
-            const char x = other[i];
-            const char y = self.buffer[i];
-            if (x > y) {
-                return true;
-            } else if (y > x) {
-                return false;
-            }
-            ++i;
-        }
-        return i != (M - 1) && i == self.size();
     }
 
     template <size_t M>
@@ -1605,6 +1382,7 @@ public:
         result.buffer[N + M] = '\0';
         return result;
     }
+
     template <size_t M>
     [[nodiscard]] friend consteval static_str<N + M - 1> operator+(
         const static_str<N>& self,
@@ -1616,6 +1394,7 @@ public:
         result.buffer[N + M - 1] = '\0';
         return result;
     }
+
     template <size_t M>
     [[nodiscard]] friend consteval static_str<N + M - 1> operator+(
         const char(&other)[M],
@@ -1627,6 +1406,7 @@ public:
         result.buffer[N + M - 1] = '\0';
         return result;
     }
+
     template <meta::convertible_to<std::string> T>
         requires (!meta::string_literal<T> && !meta::static_str<T>)
     [[nodiscard]] friend constexpr std::string operator+(
@@ -1635,6 +1415,7 @@ public:
     ) {
         return std::string(self) + std::forward<T>(other);
     }
+
     template <meta::convertible_to<std::string> T>
         requires (!meta::string_literal<T> && !meta::static_str<T>)
     [[nodiscard]] friend constexpr std::string operator+(
@@ -1664,6 +1445,7 @@ public:
             return result;
         }
     }
+
     [[nodiscard]] friend constexpr std::string operator*(
         size_t reps,
         const static_str& self
