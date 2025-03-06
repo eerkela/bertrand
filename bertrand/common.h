@@ -1117,6 +1117,9 @@ namespace meta {
     template <typename T, typename Iter>
     concept sentinel_for = std::sentinel_for<T, Iter>;
 
+    template <typename T, typename Iter>
+    concept sized_sentinel_for = sentinel_for<T, Iter> && std::sized_sentinel_for<T, Iter>;
+
     template <typename T>
     concept has_begin = requires(T& t) { std::ranges::begin(t); };
 

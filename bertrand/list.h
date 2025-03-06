@@ -715,8 +715,36 @@ namespace impl {
 
     protected:
 
-        template <typename V>
-        static constexpr V& lvalue(V&& x) noexcept { return x; }
+        /* Shift all elements from `pivot` to the end of the list to the right by
+        `offset` indices.  If a move constructor fails, then a best-faith effort is
+        made to return the shifted elements back to their original positions. */
+        constexpr void shift_right(size_type pivot, size_type delta) {
+            for (size_type i = size(); i-- > pivot;) {
+                try {
+                    m_alloc.construct(
+                        m_alloc.data() + i + delta,
+                        std::move(m_alloc.data()[i])
+                    );
+                } catch(...) {
+                    shift_left(i + 1, delta);
+                    throw;
+                }
+                m_alloc.destroy(m_alloc.data() + i);
+            }
+        }
+
+        /* Shift all elements from `pivot` to the end of the list to the left by
+        `offset` indices.  This is only used during error recovery for a failed
+        insertion toward the middle of the list. */
+        constexpr void shift_left(size_type pivot, size_type delta) {
+            for (size_type i = pivot; i < size(); ++i) {
+                m_alloc.construct(
+                    m_alloc.data() + i,
+                    std::move(m_alloc.data()[i + delta])
+                );
+                m_alloc.destroy(m_alloc.data() + i + delta);
+            }
+        }
 
         using alloc = std::conditional_t<
             address_space<T, N>::SMALL,
@@ -1322,10 +1350,18 @@ namespace meta {
     concept List = inherits<T, impl::list_tag>;
 
     namespace detail {
+
         template <typename Less, typename T, size_t N, typename Equal, typename L>
         struct sorted<Less, bertrand::List<T, N, Equal, L>> {
             using type = bertrand::List<T, N, Equal, Less>;
         };
+
+        template <typename T, size_t N, typename Equal, typename Less>
+        constexpr bool enable_unpack_operator<bertrand::List<T, N, Equal, Less>> = true;
+
+        template <typename T, size_t N, typename Equal, typename Less>
+        constexpr bool enable_comprehension_operator<bertrand::List<T, N, Equal, Less>> = true;
+
     }
 
 }
@@ -1670,8 +1706,8 @@ template <typename T, size_t N, typename Equal>
 struct List<T, N, Equal, void> : impl::list_base<T, N, Equal, void> {
 private:
     using base = impl::list_base<T, N, Equal, void>;
-    using base::lvalue;
     using base::m_alloc;
+    using base::shift_right;
 
     friend base;
 
@@ -1770,23 +1806,24 @@ public:
     }
 
     /* Insert an item at an arbitrary location within the list, immediately before the
-    given iterator.  All subsequent elements will be shifted one index down the list.
-    If the iterator is out of bounds, it will be truncated to the nearest valid
-    position.  All other arguments are forwarded to the constructor for `T`, and any
-    errors will be propagated, without modifying the state of the list.  Returns an
-    iterator to the inserted element. */
+    given iterator.  All subsequent elements (including the item at the iterator
+    itself) will be shifted one index up the list.  If the iterator is out of bounds,
+    it will be truncated to the nearest valid position.  All other arguments are
+    forwarded to the constructor for `T`, and any errors will be propagated, without
+    modifying the state of the list.  Returns an iterator to the inserted element,
+    which is always equivalent to the input iterator. */
     template <typename... Args> requires (meta::constructible_from<value_type, Args...>)
-    [[maybe_unused]] constexpr iterator insert(iterator it, Args&&... args) noexcept(
+    [[maybe_unused]] constexpr iterator insert(iterator pos, Args&&... args) noexcept(
         !DEBUG &&
         noexcept(m_alloc.grow(std::min(capacity() * 2, max_capacity()))) &&
         noexcept(m_alloc.construct(data(), std::forward<Args>(args)...)) &&
         noexcept(m_alloc.destroy(data()))
     ) {
         // truncate iterator to bounds of list
-        if (it < begin()) {
-            it = begin();
-        } else if (it > end()) {
-            it = end();
+        if (pos < begin()) {
+            pos = begin();
+        } else if (pos > end()) {
+            pos = end();
         }
 
         // grow if necessary
@@ -1802,42 +1839,19 @@ public:
             m_alloc.grow(std::min(capacity() * 2, max_capacity()));
         }
 
-        // move all subsequent elements down one index
-        for (size_type i = it.index; i < size();) {
-            try {
-                m_alloc.construct(
-                    m_alloc.data() + i + 1,
-                    std::move(m_alloc.data()[i])
-                );
-                m_alloc.destroy(m_alloc.data() + (i++));
-            } catch (...) {
-                for (size_type j = it.index; j < i; ++j) {
-                    m_alloc.construct(
-                        m_alloc.data() + j,
-                        std::move(m_alloc.data()[j + 1])
-                    );
-                    m_alloc.destroy(m_alloc.data() + j + 1);
-                }
-                throw;
-            }
-        }
+        // move all subsequent elements to the right one index
+        shift_right(pos.index, 1);
 
-        // insert new element at iterator position
+        // insert new element at iterator position.  If the constructor fails, then
+        // we attempt to shift all subsequent elements back to their original positions
         try {
-            m_alloc.construct(data() + it.index, std::forward<Args>(args)...);
+            m_alloc.construct(data() + pos.index, std::forward<Args>(args)...);
         } catch (...) {
-            for (size_type j = it.index; j < size(); ++j) {
-                m_alloc.construct(
-                    m_alloc.data() + j,
-                    std::move(m_alloc.data()[j + 1])
-                );
-                m_alloc.destroy(m_alloc.data() + j + 1);
-            }
+            shift_left(pos.index, 1);
             throw;
         }
 
-        // return an iterator to the inserted element
-        return it;
+        return pos;
     }
 
     /* Insert items from an input range at the end of the list, returning the number of
@@ -1897,13 +1911,13 @@ public:
     [[maybe_unused]] constexpr size_type extend(Begin&& begin, End&& end) {
         using BeginRef = meta::as_lvalue<Begin>;
         using EndRef = meta::as_lvalue<End>;
-        if constexpr (meta::sub_returns<EndRef, BeginRef, size_type>) {
+        if constexpr (meta::sized_sentinel_for<EndRef, BeginRef>) {
             reserve(end - begin);
         }
 
         size_type old_size = size();
         while (begin != end) {
-            if constexpr (!meta::sub_returns<EndRef, BeginRef, size_type>) {
+            if constexpr (!meta::sized_sentinel_for<EndRef, BeginRef>) {
                 if (size() == capacity()) {
                     if constexpr (DEBUG) {
                         if (capacity() == max_capacity()) {
@@ -1931,9 +1945,115 @@ public:
         return size() - old_size;
     }
 
-    /// TODO: splice(it, initializer_list)
-    /// TODO: splice(it, range)
-    /// TODO: splice(it, begin, end)
+    /* Insert items from an input range at an arbitrary location within the list,
+    immediately before the given iterator.  All subsequent elements (including the item
+    at the iterator itself) will be shifted one index up the list.  If the iterator is
+    out of bounds, it will be truncated to the nearest valid position.  In the event
+    of an error, the list will be rolled back to its original state before propagating
+    the error.  Returns the number of items that were inserted. */
+    [[maybe_unused]] constexpr size_type splice(
+        iterator pos,
+        std::initializer_list<value_type> items
+    ) {
+        return splice(pos, items.begin(), items.end());
+    }
+
+    /* Insert items from an input range at an arbitrary location within the list,
+    immediately before the given iterator.  All subsequent elements (including the item
+    at the iterator itself) will be shifted one index up the list.  If the iterator is
+    out of bounds, it will be truncated to the nearest valid position.  In the event
+    of an error, the list will be rolled back to its original state before propagating
+    the error.  Returns the number of items that were inserted. */
+    template <meta::yields<value_type> Range>
+    [[maybe_unused]] constexpr size_type splice(iterator pos, Range&& range) {
+        // get size of input range (potentially O(n) if the range is not explicitly
+        // sized and its iterators do not support constant-time distance)
+        auto delta = std::ranges::distance(std::forward<Range>(range));
+        if (delta == 0) {
+            return 0;
+        }
+        reserve(size() + delta);
+
+        // truncate position to bounds of list
+        if (pos < begin()) {
+            pos = begin();
+        } else if (pos > end()) {
+            pos = end();
+        }
+
+        // move all subsequent elements to the right by size of range to open gap
+        shift_right(pos.index, delta);
+
+        // insert items from range.  If an error occurs, then we remove all items that
+        // have been added thus far and shift all subsequent elements back to their
+        // original positions
+        size_type i = pos.index;
+        auto begin = std::ranges::begin(range);
+        auto end = std::ranges::end(range);
+        while (begin != end) {
+            try {
+                m_alloc.construct(m_alloc.data() + i, *begin);
+            } catch (...) {
+                for (size_type j = pos.index; j < i; ++j) {
+                    m_alloc.destroy(m_alloc.data() + j);
+                }
+                shift_left(pos.index, delta);
+                throw;
+            }
+            ++i;
+            ++begin;
+        }
+
+        return delta;
+    }
+
+    /* Insert items from an input range at an arbitrary location within the list,
+    immediately before the given iterator.  All subsequent elements (including the item
+    at the iterator itself) will be shifted one index up the list.  If the iterator is
+    out of bounds, it will be truncated to the nearest valid position.  In the event
+    of an error, the list will be rolled back to its original state before propagating
+    the error.  Returns the number of items that were inserted. */
+    template <meta::iterator Begin, meta::sentinel_for<Begin> End>
+        requires (meta::dereferences_to<meta::as_lvalue<Begin>, value_type>)
+    [[maybe_unused]] constexpr size_type splice(iterator pos, Begin&& begin, End&& end) {
+        // get size of input range (potentially O(n) if begin and end do not support
+        // constant-time distance)
+        auto delta = std::ranges::distance(begin, end);
+        if (delta == 0) {
+            return 0;
+        }
+        reserve(size() + delta);
+
+        // truncate position to bounds of list
+        if (pos < begin()) {
+            pos = begin();
+        } else if (pos > end()) {
+            pos = end();
+        }
+
+        // move all subsequent elements to the right by size of range to open gap
+        shift_right(pos.index, delta);
+
+        // insert items from range.  If an error occurs, then we remove all items that
+        // have been added thus far and shift all subsequent elements back to their
+        // original positions
+        size_type i = pos.index;
+        while (begin != end) {
+            try {
+                m_alloc.construct(m_alloc.data() + i, *begin);
+            } catch (...) {
+                for (size_type j = pos.index; j < i; ++j) {
+                    m_alloc.destroy(m_alloc.data() + j);
+                }
+                shift_left(pos.index, delta);
+                throw;
+            }
+            ++i;
+            ++begin;
+        }
+
+        return delta;
+    }
 
     /* Find the first occurrence of a given value within the list, returning an
     iterator to the leftmost element that compares equal to it.  Returns an end
@@ -2098,11 +2218,6 @@ List(Begin&&, End&&) -> List<meta::unqualify<
 >>;
 
 
-/// TODO: also dereference and ->* operators, for compatibility with functions.  Those
-/// may need to be defined in func.h, or include func.h before this file, although that
-/// might run into some circular dependencies.
-
-
 }  // namespace bertrand
 
 
@@ -2131,7 +2246,7 @@ namespace std {
         return std::forward<T>(list).data()[I];
     }
 
-}
+}  // namespace std
 
 
 namespace bertrand {
