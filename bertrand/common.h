@@ -3737,9 +3737,34 @@ namespace impl {
         return ++n;
     }
 
-    /* Get the log base 2 of a number. */
+    /* Get the floored log base 2 of an unsigned integer.  Uses an optimized compiler
+    intrinsic if available, falling back to a generic implementation otherwise.  Inputs
+    equal to zero result in undefined behavior. */
     template <meta::unsigned_integer T>
     constexpr size_t log2(T n) noexcept {
+        constexpr size_t max = sizeof(T) * 8 - 1;
+
+        #if defined(__GNUC__) || defined(__clang__)
+            if constexpr (sizeof(T) <= sizeof(unsigned int)) {
+                return max - __builtin_clz(n);
+            } else if constexpr (sizeof(T) <= sizeof(unsigned long)) {
+                return max - __builtin_clzl(n);
+            } else if constexpr (sizeof(T) <= sizeof(unsigned long long)) {
+                return max - __builtin_clzll(n);
+            }
+
+        #elif defined(_MSC_VER)
+            if constexpr (sizeof(T) <= sizeof(unsigned long)) {
+                unsigned long index;
+                _BitScanReverse(&index, n);
+                return index;
+            } else if constexpr (sizeof(T) <= sizeof(uint64_t)) {
+                unsigned long index;
+                _BitScanReverse64(&index, n);
+                return index;
+            }
+        #endif
+
         size_t count = 0;
         while (n >>= 1) {
             ++count;
@@ -3813,6 +3838,310 @@ namespace impl {
         }
         return first;
     }
+
+    /// TODO: maybe such a sort is never in-place?  `list.sort()` would always
+    /// therefore return a new list, which you would have to assign back to the
+    /// original variable if you want to discard the old list.
+    /// -> https://en.wikipedia.org/wiki/Block_sort
+    /// -> https://stackoverflow.com/questions/2571049/how-to-sort-in-place-using-the-merge-sort-algorithm
+
+    /* A stable, in-place, adaptive 4-way Powersort algorithm for contiguous arrays
+    based on work by Gelling, Nebel, Smith, and Wild (2023).  A full description of the
+    algorithm and its benefits can be found at:
+
+        [1] https://www.wild-inter.net/publications/html/cawley-gelling-nebel-smith-wild-2023.pdf.html
+
+    An earlier, 2-way version of this algorithm is currently in use as the default
+    CPython sorting backend for the `sorted()` operator and `list.sort` method as of
+    Python 3.11.  A more complete introduction to that algorithm and how it relates to
+    the newer 4-way version can be found in Munro, Wild (2018):
+
+        [2] https://www.wild-inter.net/publications/html/munro-wild-2018.pdf.html
+
+    A full C++ source implementation for each of these algorithms is available at:
+
+        [3] https://github.com/sebawild/powersort
+
+    The 4-way version presented above is an incremental improvement that further
+    reduces cache misses, and is generally competitive with or better than `std::sort`
+    and `std::stable_sort` for general use, often by a significant margin.  This is
+    particularly true if the data is already partially sorted, and contains non-trivial
+    runs of previously-sorted sorted elements, which are recognized and skipped within
+    the algorithm. */
+    template <meta::unqualified Less = std::less<>>
+        requires (meta::default_constructible<Less>)
+    struct powersort {
+    private:
+
+        /* The algorithm presented in [1] is generalized for arbitrary `K >= 2`, where
+        `K = 2` represents a typical binary mergesort policy, as implemented in [2].
+        `K = 4` shows promising results in combination with a manually unrolled inner
+        loop, which is what is implemented here. */
+        static constexpr size_t k = 4;
+
+        /* Powersort advises a minimum run length of 24, under which insertion sort
+        will be used to grow the run. */
+        static constexpr size_t min_run_length = 24;
+
+        static constexpr size_t ceil_log4(size_t n) noexcept {
+            return (log2(n - 1) >> 1) + 1;
+        }
+
+        template <typename Iter>
+        constexpr void insertion_sort(Iter& begin, Iter& end, Iter& begin_unsorted) {
+            for (Iter i = begin_unsorted; i < end; ++i) {
+                Iter j = i;
+                const auto v = *i;
+                while (v < *(j - 1)) {
+                    *j = *(j - 1);
+                    --j;
+                    if (j <= begin) {
+                        break;
+                    }
+                }
+                *j = v;
+            }
+        }
+
+        template <meta::contiguous_iterator Iter>
+        struct run {
+            Iter begin;
+            Iter end;
+            int power = 0;
+
+            constexpr run(Iter& begin, Iter& end, int power) noexcept(
+                meta::nothrow::copyable<Iter>
+            ) :
+                begin(begin), end(end), power(power)
+            {}
+
+            constexpr run(Less& compare, Iter& begin, Iter& end, int power) noexcept(
+                meta::nothrow::copyable<Iter>
+            ) :
+                begin(begin), end(begin), power(power)
+            {
+                /// TODO: advance end to identify the next strictly increasing or
+                /// decreasing run
+            }
+        };
+
+        template <meta::contiguous_iterator Iter>
+        struct merge_tree {
+        private:
+            using run = powersort::run<Iter>;
+            using value_type = meta::dereference_type<Iter>;
+
+            static constexpr int get_power(
+                size_t n,
+                size_t begin1,
+                size_t end1,
+                size_t begin2,
+                size_t end2
+            ) noexcept {
+                size_t a = (begin1 + (end1 - begin1) / 2);
+                size_t b = (begin2 + (end2 - begin2) / 2);
+                size_t product = 1;
+                size_t pow = 0;
+                while ((a * product) / n == (b * product) / n) {
+                    product *= k;
+                    ++pow;
+                }
+                return pow;
+            }
+
+            static constexpr void merge_2runs(
+                Iter left,
+                Iter middle,
+                Iter right,
+                Iter output
+            ) {
+                using traits = std::numeric_limits<meta::unqualify<value_type>>;
+
+                size_t n1 = middle - left;
+                size_t n2 = right - middle;
+
+                // if the iterator's value type has a +inf sentinel, then we can use an
+                // optimized 2-way merge from the paper mentioned above
+                if constexpr (traits::has_infinity) {
+                    std::copy(left, middle, output);
+                    *(output + n1) = traits::infinity();
+                    std::copy(middle, right, output + n1 + 1);
+                    *(output + (right - left) + 1) = traits::infinity();
+                    Iter c1 = output;
+                    Iter c2 = output + n1 + 1;
+                    Iter o = left;
+                    while (o < right) {
+                        *o++ = *c1 <= *c2 ? *c1++ : *c2++;
+                    }
+
+                // otherwise, we have to merge in stages, using extra boundary checks
+                } else {
+                    std::copy(left, right, output);
+
+                    Iter c1 = output;
+                    Iter e1 = c1 + n1;
+                    Iter c2 = e1;
+                    Iter e2 = c2 + n2;
+                    Iter o = left;
+
+                    while (c1 < e1 && c2 < e2) {
+                        *o++ = (*c1 <= *c2 ? *c1++ : *c2++);
+                    }
+
+                    while (c1 < e1) {
+                        *o++ = *c1++;
+                    }
+
+                    while (c2 < e2) {
+                        *o++ = *c2++;
+                    }
+                }
+            }
+
+            /// TODO: merge_3runs
+
+            /// TODO: merge_4runs
+
+        public:
+            std::unique_ptr<run[]> data;
+            run* top;
+
+            /// TODO: also store a pointer to an output buffer into which everything
+            /// will be placed
+
+            constexpr merge_tree(
+                run& prev,
+                Iter& begin,
+                Iter& end,
+                Less& compare,
+                size_t length
+            ) :
+                data(std::make_unique<run[]>((k - 1) * (ceil_log4(length) + 1))),
+                top(data.get())
+            {
+                new (top) run{begin, end, 0};  // power 0 as sentinel entry
+
+                // merge runs of equal power while growing the stack
+                while (prev.end < end) {
+                    run next {compare, prev.end, end, 0};
+                    if (size_t len = next.end - next.begin; len < min_run_length) {
+                        next.end = std::min(end, next.begin + min_run_length);
+                        insertion_sort(compare, next.begin, next.end, len);
+                    }
+                    prev.power = get_power(
+                        length,
+                        0,
+                        prev.begin - begin,
+                        next.begin - begin,
+                        next.end - begin
+                    );
+                    while (top->power > prev.power) {
+                        int same_power = 1;
+                        while ((top - same_power)->power == top->power) {
+                            ++same_power;
+                        }
+                        if (same_power == 1) {  // 2way
+                            Iter g[] = {top->begin};
+                            merge_2runs(g[0], prev.begin, prev.end, buffer.begin());
+                            prev.begin = g[0];
+                        } else if (same_power == 2) {  // 3way
+                            Iter g[] = {(top - 1)->begin, top->begin};
+                            merge_3runs(g[0], g[1], prev.begin, prev.end, buffer.begin());
+                            prev.begin = g[0];
+                        } else {  // 4way
+                            Iter g[] = {(top - 2)->begin, (top - 1)->begin, top->begin};
+                            merge_4runs(g[0], g[1], g[2], prev.begin, prev.end, buffer.begin());
+                            prev.begin = g[0];
+                        }
+                        top -= same_power;  // pop merged runs
+                    }
+                    *(++top) = this;
+                    *this = next;
+                }
+            }
+
+            constexpr void merge_down(run& prev) {
+                size_t n_runs = top - data.get() + 1;  // stack size + prev
+
+                // do the first merge manually as a 2-way, 3-way, or 4-way merge such
+                // that the stack size is reduced to 3k+1
+                switch (n_runs % (k - 1)) {
+                    case 0:  // merge topmost 3 runs
+                        merge_3runs(
+                            (top - 1)->begin,
+                            top->begin,
+                            prev.begin,
+                            prev.end,
+                            buffer.begin()
+                        );
+                        prev.begin = (top - 1)->begin;
+                        top -= 2;
+                        break;
+                    case 2: // merge topmost 2 runs
+                        merge_2runs(
+                            top->begin,
+                            prev.begin,
+                            prev.end,
+                            buffer.begin()
+                        );
+                        prev.begin = top->begin;
+                        --top;
+                        break;
+                    default:
+                        break;
+                }
+
+                // all subsequent merges will combine the top with the next 3 runs,
+                // yielding consistent 4-way merges for the remainder of the stack
+                while (top > data.get()) {
+                    merge_4runs(
+                        (top - 2)->begin,
+                        (top - 1)->begin,
+                        top->begin,
+                        prev.begin,
+                        prev.end,
+                        buffer.begin()
+                    );
+                    prev.begin = (top - 2)->begin;
+                    top -= 3;
+                }
+            }
+        };
+
+    public:
+
+        template <meta::contiguous_iterator Iter>
+            requires (meta::copyable<Iter> && meta::invoke_returns<
+                bool,
+                Less&,
+                meta::dereference_type<Iter>,
+                meta::dereference_type<Iter>
+            >)
+        static constexpr void operator()(Iter begin, Iter end) {
+            auto length = end - begin;
+            if (length < 2) {
+                return;  // trivially sorted
+            }
+
+            Less compare;
+
+            // identify first strictly increasing or decreasing run
+            run<Iter> prev {compare, begin, end, 0};
+
+            // grow to minimum length using insertion sort
+            if (size_t len = prev.end - prev.begin; len < min_run_length) {
+                prev.end = std::min(end, prev.begin + min_run_length);
+                insertion_sort(prev.begin, prev.end, compare, len);
+            }
+
+            // build consolidated merge tree
+            merge_tree<Iter> stack {prev, begin, end, compare, length};
+
+            // flatten merge tree to complete sort
+            stack.merge_down(prev);
+        }
+
+    };
 
     /* Apply python-style wraparound to a given index, throwing an `IndexError` if the
     index is out of bounds after normalizing. */
