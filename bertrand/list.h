@@ -92,7 +92,7 @@ template <
     meta::unqualified Equal = std::equal_to<>,
     meta::unqualified Less = void
 >
-    requires ((
+    requires (!meta::reference<T> && (
         meta::is_void<Equal> || (
             meta::default_constructible<Equal> &&
             meta::invoke_returns<
@@ -1368,7 +1368,7 @@ namespace meta {
 
 
 template <meta::not_void T, size_t N, meta::unqualified Equal, meta::unqualified Less>
-    requires ((
+    requires (!meta::reference<T> && (
         meta::is_void<Equal> || (
             meta::default_constructible<Equal> &&
             meta::invoke_returns<
@@ -2204,16 +2204,16 @@ public:
 
 
 template <typename T>
-List(std::initializer_list<T>) -> List<meta::unqualify<T>>;
+List(std::initializer_list<T>) -> List<meta::remove_reference<T>>;
 
 
 template <meta::iterable Range>
-List(Range&&) -> List<meta::unqualify<meta::yield_type<Range>>>;
+List(Range&&) -> List<meta::remove_reference<meta::yield_type<Range>>>;
 
 
 template <meta::iterator Begin, meta::sentinel_for<Begin> End>
     requires (meta::not_const<Begin> && meta::not_const<End>)
-List(Begin&&, End&&) -> List<meta::unqualify<
+List(Begin&&, End&&) -> List<meta::remove_reference<
     meta::dereference_type<meta::as_lvalue<Begin>>
 >>;
 
