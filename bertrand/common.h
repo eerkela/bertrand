@@ -4227,16 +4227,22 @@ namespace impl {
         [3] https://github.com/sebawild/powersort
 
     The 4-way version presented here is adapted from the above implementations, and is
-    generally competitive with or better than `std::sort` and `std::stable_sort`,
-    sometimes by a significant margin if the data is already partially sorted. */
+    generally competitive with or better than `std::sort` and `std::stable_sort`, often
+    by a significant margin if the data is already partially sorted, requires expensive
+    comparisons, or has a `std::numeric_limits<T>::infinity()` value that can be used
+    as a sentinel in comparisons. */
     struct powersort {
     private:
 
+        /// TODO: lift `k` to be a template parameter of `powersort<>`, defaulting to
+        /// 4.
+
         /* The algorithm presented in [1] is generalizable for arbitrary `k >= 2`,
         where `k = 2` represents a typical binary mergesort policy, as implemented in
-        [2].  [1] implements 4-way merging, and shows promising results in combination
-        with a manually unrolled inner loop + tournament tree, which is replicated
-        here. */
+        [2].  [1] implements 4-way merging with a manually unrolled inner loop and
+        tournament tree, which asymptotically halves the total number of comparisons
+        needed to sort a given array.  This is especially beneficial if comparisons
+        are expensive, as is the case with strings, for example. */
         static constexpr size_t k = 4;
 
         /* Powersort advises a minimum run length of 24, under which insertion sort
@@ -4251,6 +4257,14 @@ namespace impl {
             Less& less_than
         ) {
             using value_type = std::iterator_traits<Iter>::value_type;
+            constexpr auto compare = [](Less& less_than, value_type& temp, Iter& j) {
+                try {
+                    return less_than(temp, *(j - 1));
+                } catch (...) {
+                    *j = std::move(temp);
+                    throw;
+                }
+            };
 
             // rotate elements to the right until we find a proper insertion point
             while (unsorted < end) {
@@ -4258,11 +4272,10 @@ namespace impl {
                     Iter j = unsorted;
                     value_type temp = std::move(*j);
 
-                    // rotate
-                    while (less_than(temp, *(j - 1))) {
+                    // rotate with error recovery
+                    while (compare(less_than, temp, j)) {
                         *j = std::move(*(j - 1));
-                        --j;
-                        if (j == begin) {
+                        if (--j == begin) {
                             break;
                         }
                     }
@@ -4275,24 +4288,20 @@ namespace impl {
         }
 
         template <typename Iter, typename Less>
+            requires (!meta::reference<Iter> && !meta::reference<Less>)
         struct run {
             Iter begin;
             Iter end;
             size_t power = 0;
 
-            constexpr run(Iter& begin, Iter& end) noexcept(
-                meta::nothrow::copyable<Iter>
-            ) :
+            /* Initialize sentinel run. */
+            constexpr run(Iter& begin, Iter& end) :
                 begin(begin),
                 end(end)
             {}
 
-            constexpr run(Less& less_than, Iter& begin, Iter& end) noexcept(
-                meta::nothrow::copyable<Iter> &&
-                noexcept(this->end != end) &&
-                noexcept(++this->end != end) &&
-                noexcept(less_than(*(this->end + 1), *this->end))
-            ) :
+            /* Detect the next run starting at `begin` and not exceeding `end`. */
+            constexpr run(Less& less_than, Iter& begin, Iter& end) :
                 begin(begin),
                 end(begin)
             {
@@ -4317,17 +4326,440 @@ namespace impl {
         };
 
         template <typename Iter, typename Less>
+            requires (!meta::reference<Iter> && !meta::reference<Less>)
         struct merge_tree {
         private:
             using run = powersort::run<Iter, Less>;
             using value_type = meta::remove_reference<meta::dereference_type<Iter>>;
             using pointer = meta::as_pointer<meta::dereference_type<Iter>>;
+            using numeric = std::numeric_limits<meta::unqualify<value_type>>;
+            static constexpr bool destroy = !meta::trivially_destructible<value_type>;
 
             /* Scratch space is allocated as an uninitialized buffer using `malloc()`
             and `free()` so as not to impose default constructibility on `value_type`. */
             struct deleter {
-                static constexpr void operator()(value_type* p) noexcept {
+                static constexpr void operator()(pointer p) noexcept {
                     std::free(p);
+                }
+            };
+
+            /* Nodes in the tournament tree are held in RAII guards to provide
+            exception safety.  If an error occurs, the values stored in the node will
+            be written back to the input range in a partially-sorted order. */
+            template <bool has_sentinel>
+            struct tournament_node {
+                Iter& output;
+                pointer left;
+                pointer right;
+                pointer left_end = left;
+                pointer right_end = right;
+                pointer curr = nullptr;
+
+                constexpr ~tournament_node() {
+                    if (curr) {
+                        *output++ = std::move(*curr);
+                        if constexpr (destroy) { curr->~value_type(); }
+                    }
+
+                    while (left != left_end) {
+                        *output++ = std::move(*left);
+                        if constexpr (destroy) { left->~value_type(); }
+                        ++left;
+                    }
+                    if constexpr (has_sentinel && destroy) {
+                        left_end->~value_type();
+                    }
+
+                    if (right_end) {  // might not have a right subtree
+                        while (right != right_end) {
+                            *output++ = std::move(*right);
+                            if constexpr (destroy) { right->~value_type(); }
+                            ++right;
+                        }
+                        if constexpr (has_sentinel && destroy) {
+                            right_end->~value_type();
+                        }
+                    }
+                }
+            };
+
+            /* An exception-safe tournament tree generalized to arbitrary `N >= 2`.  If
+            an error occurs during a comparison, then all runs will be transferred back
+            into the output range in partially-sorted order via RAII. */
+            template <size_t N, bool = numeric::has_infinity> requires (N >= 2)
+            struct tournament_tree {
+                static constexpr size_t R = N + (N % 2);
+                Less& less_than;
+                pointer scratch;
+                Iter output;
+                size_t size;
+                std::array<pointer, R> begin;  // begin iterators for each run
+                std::array<pointer, R> end;  // end iterators for each run
+                std::array<size_t, R - 1> internal;  // internal nodes of tree
+
+                /// NOTE: the tree is represented such that the root (min) is always
+                /// the first element of the `internal` buffer, and each subsequent
+                /// level is compressed into the next 2^i elements, from left to right.
+                /// Each node stores the leaf index of the winning run for that subtree.
+
+                template <meta::is<Iter>... Iters> requires (sizeof...(Iters) == N + 1)
+                constexpr tournament_tree(
+                    Less& less_than,
+                    pointer scratch,
+                    Iters&... iters
+                ) :
+                    less_than(less_than),
+                    scratch(scratch),
+                    output(meta::unpack_arg<0>(iters...)),
+                    size(meta::unpack_arg<N>(iters...) - output),
+                    begin([&]<size_t... Is>(std::index_sequence<Is...>) {
+                        // begin iterators initialize to offsets within the scratch
+                        // space based on the size of each run + an extra sentinel
+                        if constexpr (N % 2) {
+                            // if `N` is odd, then we have to insert an additional
+                            // sentinel at the end of the scratch space to give each
+                            // internal node exactly two children
+                            return std::array<pointer, R>{
+                                (scratch + (meta::unpack_arg<Is>(iters...) - output) + Is)...,
+                                scratch + size + N
+                            };
+                        } else {
+                            return std::array<pointer, R>{
+                                (scratch + (meta::unpack_arg<Is>(iters...) - output) + Is)...
+                            };
+                        }
+                    }(std::make_index_sequence<N>{})),
+                    end(begin)  // end iterators initialize to same as begin
+                {
+                    // move all runs into scratch space.  Afterwards, the end iterators
+                    // will point to the sentinel values for each run, plus a possible
+                    // extra sentinel if `N` is odd.
+                    [&]<size_t I>(this auto&& self) {
+                        if constexpr (I < N) {
+                            Iter& i = meta::unpack_arg<I>(iters...);
+                            Iter& j = meta::unpack_arg<I + 1>(iters...);
+                            while (i != j) { new (end[I]++) value_type(std::move(*i++)); }
+                            new (end[I]) value_type(numeric::infinity());
+                            std::forward<decltype(self)>(self).template operator()<I + 1>();
+
+                        } else if constexpr (N % 2) {
+                            new (end[I]) value_type(numeric::infinity());
+                        }
+                    }();
+                }
+
+                /* Perform the merge. */
+                constexpr void merge() {
+                    // initialize tournament tree
+                    //                internal[0]               internal nodes store
+                    //            /                \            leaf indices.  Leaf
+                    //      internal[1]          internal[2]    nodes store iterators
+                    //      /       \             /       \     into stack space
+                    //         ...                   ...
+                    // begin[0]   begin[1]   begin[2]   begin[3]   ...
+                    for (size_t i = R - 1; i-- > 0;) {
+                        size_t left = 2 * i + 1;
+                        size_t right = 2 * i + 2;
+                        size_t left_winner;
+                        size_t right_winner;
+                        if (left < R - 1) {  // child is an internal node
+                            left_winner = internal[left];
+                            right_winner = internal[right];
+                        } else {  // child is a leaf iterator
+                            left_winner = left - (R - 1);
+                            right_winner = right - (R - 1);
+                        }
+                        internal[i] =
+                            less_than(*begin[right_winner], *begin[left_winner]) ?
+                            right_winner : left_winner;   
+                    }
+
+                    // move the root of the tree into the output range and bubble up
+                    // the next winner
+                    for (size_t i = 0; i < size; ++i) {
+                        size_t winner = internal[0];
+                        *output++ = std::move(*begin[winner]);
+                        if constexpr (destroy) { begin[winner]->~value_type(); }
+                        ++begin[winner];
+
+                        // find next winner
+                        size_t leaf = winner + (R - 1);
+                        while (leaf > 0) {
+                            size_t parent = (leaf - 1) / 2;
+
+                            // get new left and right winners
+                            size_t left = 2 * parent + 1;
+                            size_t right = 2 * parent + 2;
+                            size_t left_winner;
+                            size_t right_winner;
+                            if (left < R - 1) {  // child is an internal node
+                                left_winner = internal[left];
+                                right_winner = internal[right];
+                            } else {  // child is a leaf iterator
+                                left_winner = left - (R - 1);
+                                right_winner = right - (R - 1);
+                            }
+
+                            // recompute parent winner
+                            internal[parent] =
+                                less_than(*begin[right_winner], *begin[left_winner]) ?
+                                right_winner : left_winner;
+
+                            leaf = parent;
+                        }
+                    }
+                }
+
+                /* If an error occurs during comparison, attempt to move the
+                unprocessed portions of each run back into the output range and destroy
+                sentinels. */
+                constexpr ~tournament_tree() {
+                    for (size_t i = 0; i < begin.size(); ++i) {
+                        while (begin[i] != end[i]) {
+                            *output++ = std::move(*begin[i]);
+                            if constexpr (destroy) { begin[i]->~value_type(); }
+                            ++begin[i];
+                        }
+                        if constexpr (destroy) { end[i]->~value_type(); }
+                    }
+                }
+            };
+
+            /* A specialized tournament tree for when the underlying type does not
+            have a +inf sentinel value to guard comparisons.  Instead, this uses extra
+            boundary checks and merges in stages, where `N` steadily decreases as runs
+            are fully consumed. */
+            template <size_t N> requires (N >= 2)
+            struct tournament_tree<N, false> {
+
+                /// TODO: basically, this does everything that the sentinel-based
+                /// implementation does, except that I can't pad the extra sentinel
+                /// and I have to merge in phases using stack-based vectors.  It will
+                /// be somewhat hard to implement, but that's tomorrow's job
+
+
+                /* End a merge stage by pruning empty runs and computing the minimum
+                length for the next stage.  */
+                void advance() {
+                    min_length = std::numeric_limits<size_t>::max();
+                    size_t i = 0;
+                    while (i < remaining) {
+                        // compute length of run
+                        size_t size = end[i] - begin[i];
+
+                        // if empty, pop from the array and left shift subsequent runs
+                        if (!size) {
+                            --remaining;
+                            for (size_t j = i; j < remaining; ++j) {
+                                begin[j] = begin[j + 1];
+                                end[j] = end[j + 1];
+                            }
+
+                        // otherwise, record the minimum length and advance
+                        } else {
+                            if (size < min_length) {
+                                min_length = size;
+                            }
+                            ++i;
+                        }
+                    }
+                }
+
+                std::array<pointer, k> begin;
+                std::array<pointer, k> end;
+                size_t remaining;
+                size_t min_length = 0;
+
+                /// TODO: constructor takes two tournament nodes, or just all of the
+                /// iterators and builds the arrays internally
+
+            };
+
+            /* An optimized tournament tree for binary merges with sentinel values. */
+            template <>
+            struct tournament_tree<2, true> {
+                Less& less_than;
+                pointer scratch;
+                Iter output;
+                size_t size;
+                std::array<pointer, 2> begin;
+                std::array<pointer, 2> end;
+
+                constexpr tournament_tree(
+                    Less& less_than,
+                    pointer scratch,
+                    Iter& l,
+                    Iter& m,
+                    Iter& r
+                ) :
+                    less_than(less_than),
+                    scratch(scratch),
+                    output(l),
+                    size(r - l),
+                    begin {scratch, scratch + (m - l) + 1},
+                    end(begin)
+                {
+                    while (l != m) { new (end[0]++) value_type(std::move(*l++)); }
+                    new (end[0]) value_type(numeric::infinity());
+                    while (m != r) { new (end[1]++) value_type(std::move(*m++)); }
+                    new (end[1]) value_type(numeric::infinity());
+                }
+
+                constexpr void merge() {
+                    for (size_t i = 0; i < size; ++i) {
+                        bool less = less_than(*begin[1], *begin[0]);
+                        *output++ = std::move(*begin[less]);
+                        if constexpr (destroy) { begin[less]->~value_type(); }
+                        ++begin[less];
+                    }
+                }
+
+                constexpr ~tournament_tree() {
+                    for (size_t i = 0; i < begin.size(); ++i) {
+                        while (begin[i] != end[i]) {
+                            *output++ = std::move(*begin[i]);
+                            if constexpr (destroy) { begin[i]->~value_type(); }
+                            ++begin[i];
+                        }
+                        if constexpr (destroy) { end[i]->~value_type(); }
+                    }
+                }
+            };
+
+            /* An optimized tournament tree for binary merges without sentinel values,
+            which only copies the smaller run into the scratch space. */
+            template <>
+            struct tournament_tree<2, false> {
+                Less& less_than;
+                pointer scratch;
+                Iter& l;
+                Iter& m;
+                Iter& r;
+
+                /* Merge policy used when the left run is smaller than the right. */
+                struct left_merge {
+                    Less& less_than;
+                    Iter output;
+                    pointer c1;
+                    pointer e1;
+                    Iter c2;
+                    Iter e2;
+
+                    constexpr left_merge(
+                        Less& less_than,
+                        pointer scratch,
+                        Iter& l,
+                        Iter& m,
+                        Iter& r,
+                        size_t n
+                    ) :
+                        output(l),
+                        c1(scratch),
+                        e1(scratch + n),
+                        c2(m),
+                        e2(r)
+                    {
+                        for (size_t i = 0; i < n; ++i) {
+                            new (scratch++) value_type(std::move(*l++));
+                        }
+                    }
+
+                    constexpr void merge() {
+                        while (c1 != e1 && c2 != e2) {
+                            if (less_than(*c2, *c1)) {
+                                *output++ = std::move(*c2++);  // no need to destroy
+                            } else {
+                                *output++ = std::move(*c1);
+                                if constexpr (destroy) { c1->~value_type(); }
+                                ++c1;
+                            }
+                        }
+                        while (c1 != e1) {
+                            *output++ = std::move(*c1);
+                            if constexpr (destroy) { c1->~value_type(); }
+                            ++c1;
+                        }
+                    }
+
+                    constexpr ~left_merge() {
+                        while (c2 != e2) {
+                            *output++ = std::move(*c2++);  // no need to destroy
+                        }
+                        while (c1 != e1) {
+                            *output++ = std::move(*c1);
+                            if constexpr (destroy) { c1->~value_type(); }
+                            ++c1;
+                        }
+                    }
+                };
+
+                /* Merge policy used when the right run is smaller than the left. */
+                struct right_merge {
+                    Less& less_than;
+                    Iter output;
+                    Iter c1;
+                    Iter s1;
+                    pointer c2;
+                    pointer s2;
+
+                    constexpr right_merge(
+                        Less& less_than,
+                        pointer scratch,
+                        Iter& l,
+                        Iter& m,
+                        Iter& r,
+                        size_t n
+                    ) :
+                        output(r - 1),
+                        c1(m - 1),
+                        s1(l - 1),
+                        c2(scratch + n - 1),
+                        s2(scratch - 1)
+                    {
+                        for (size_t i = 0; i < n; ++i) {
+                            new (scratch++) value_type(std::move(*m++));
+                        }
+                    }
+
+                    constexpr void merge() {
+                        while (c1 != s1 && c2 != s2) {
+                            if (less_than(*c2, *c1)) {
+                                *output-- = std::move(*c2);
+                                if constexpr (destroy) { c2->~value_type(); }
+                                --c2;
+                            } else {
+                                *output-- = std::move(*c1--);  // no need to destroy
+                            }
+                        }
+                        while (c2 != s2) {
+                            *output-- = std::move(*c2);
+                            if constexpr (destroy) { c2->~value_type(); }
+                            --c2;
+                        }
+                    }
+
+                    // due to postfix decrement, `c1` and `c2` are already at the
+                    // correct positions when the call operator exits
+                    constexpr ~right_merge() {
+                        while (c1 != s1) {
+                            *output-- = std::move(*c1--);  // no need to destroy
+                        }
+                        while (c2 != s2) {
+                            *output-- = std::move(*c2);
+                            if constexpr (destroy) { c2->~value_type(); }
+                            --c2;
+                        }
+                    }
+                };
+
+                constexpr void merge() {
+                    auto n1 = m - l;
+                    auto n2 = r - m;
+                    if (n1 <= n2) {
+                        left_merge{less_than, scratch, l, m, r, n1}.merge();
+                    } else {
+                        right_merge{less_than, scratch, l, m, r, n2}.merge();
+                    }
                 }
             };
 
@@ -4336,8 +4768,12 @@ namespace impl {
             std::unique_ptr<value_type, deleter> scratch;
 
             static constexpr size_t ceil_log4(size_t n) noexcept {
-                return (log2(n - 1) >> 1) + 1;
+                return (impl::log2(n - 1) >> 1) + 1;
             }
+
+            /// NOTE: these implementations are taken straight from the reference, and
+            /// have only been lightly edited for readability, and to leverage move
+            /// semantics + custom comparisons with exception safety.
 
             static constexpr size_t get_power(
                 size_t n,
@@ -4345,10 +4781,6 @@ namespace impl {
                 size_t next_begin,
                 size_t next_end
             ) noexcept {
-                /// NOTE: these implementations are taken straight from the reference
-                /// implementations in the repo above, and have only been lightly
-                /// edited for readability and to eliminate redundant code
-
                 // if a built-in compiler intrinsic is available, use it
                 #if defined(__GNUC__) || defined(__clang__)
                     size_t l = prev_begin + next_begin;
@@ -4398,29 +4830,25 @@ namespace impl {
             }
 
             constexpr void merge_4runs(Iter l, Iter m1, Iter m2, Iter m3, Iter r) {
-                using traits = std::numeric_limits<meta::unqualify<value_type>>;
-                constexpr bool destroy = !meta::trivially_destructible<value_type>;
-                value_type* p = scratch.get();
+                pointer p = scratch.get();
+                auto n = r - l;
+                auto o = l;
 
                 // if the iterator's value type has a +inf sentinel, then we can use an
-                // optimized 4-way merge from the paper mentioned above
-                if constexpr (traits::has_infinity) {
-                    auto n = r - l;
-                    auto c1 = p;
-                    auto c2 = p + (m1 - l) + 1;
-                    auto c3 = p + (m2 - l) + 2;
-                    auto c4 = p + (m3 - l) + 3;
-                    auto o = l;
+                // optimized merge loop
+                if constexpr (numeric::has_infinity) {
+                    tournament_node<true> x {o, p, p + (m1 - l) + 1};
+                    tournament_node<true> y {o, p + (m2 - l) + 2, p + (m3 - l) + 3};
 
-                    // copy runs to scratch space and append sentinel after each one
-                    while (l != m1) { new (p++) value_type(std::move(*l++)); }
-                    new (p++) value_type(traits::infinity());
-                    while (m1 != m2) { new (p++) value_type(std::move(*m1++)); }
-                    new (p++) value_type(traits::infinity());
-                    while (m2 != m3) { new (p++) value_type(std::move(*m2++)); }
-                    new (p++) value_type(traits::infinity());
-                    while (m3 != r) { new (p++) value_type(std::move(*m3++)); }
-                    new (p++) value_type(traits::infinity());
+                    // move runs to scratch space and append sentinels
+                    while (l != m1) { new (x.left_end++) value_type(std::move(*l++)); }
+                    new (x.left_end) value_type(numeric::infinity());
+                    while (m1 != m2) { new (x.right_end++) value_type(std::move(*m1++)); }
+                    new (x.right_end) value_type(numeric::infinity());
+                    while (m2 != m3) { new (y.left_end++) value_type(std::move(*m2++)); }
+                    new (y.left_end) value_type(numeric::infinity());
+                    while (m3 != r) { new (y.right_end++) value_type(std::move(*m3++)); }
+                    new (y.right_end) value_type(numeric::infinity());
 
                     // initialize tournament tree
                     //          z               `x`, `y`, `z` store iterators
@@ -4429,204 +4857,73 @@ namespace impl {
                     //   /  \      /  \         came from left subtree.
                     // c1    c2  c3    c4
                     bool left;
-                    auto x = less_than(*c2, *c1) ? c2++ : c1++;
-                    auto y = less_than(*c4, *c3) ? c4++ : c3++;
-                    auto z = less_than(*y, *x) ? (left = false, y) : (left = true, x);  // comma operator
+                    x.curr = less_than(*x.right, *x.left) ? x.right++ : x.left++;
+                    y.curr = less_than(*y.right, *y.left) ? y.right++ : y.left++;
+                    auto z = less_than(*y.curr, *x.curr) ?
+                        (left = false, y.curr) : (left = true, x.curr);  // comma operator
 
-                    *o++ = std::move(*z);  // vacate root into output
+                    *o++ = std::move(*z);  // move root into output
                     if constexpr (destroy) { z->~value_type(); }
 
                     for (decltype(n) i = 1; i < n; ++i) {
-                        if (left) {  // min came from c1 or c2, so recompute x
-                            x = less_than(*c2, *c1) ? c2++ : c1++;
-                        } else {  // min came from c3 or c4, so recompute y
-                            y = less_than(*c4, *c3) ? c4++ : c3++;
+                        if (left) {  // root came from c1 or c2, so recompute x
+                            x.curr = less_than(*x.right, *x.left) ? x.right++ : x.left++;
+                        } else {  // root came from c3 or c4, so recompute y
+                            y.curr = less_than(*y.right, *y.left) ? y.right++ : y.left++;
                         }
 
-                        // always recompute z
-                        if (less_than(*y, *x)) {
-                            z = y;
+                        // recompute root
+                        if (less_than(*y.curr, *x.curr)) {
+                            z = y.curr;
+                            y.curr = nullptr;  // in case of error
                             left = false;
                         } else {
-                            z = x;
+                            z = x.curr;
+                            x.curr = nullptr;  // in case of error
                             left = true;
                         }
+
+                        // move root into output
                         *o++ = std::move(*z);
                         if constexpr (destroy) { z->~value_type(); }
                     }
 
-                    // clean up sentinels
-                    if constexpr (destroy) {
-                        c1->~value_type();
-                        c2->~value_type();
-                        c3->~value_type();
-                        c4->~value_type();
-                    }
-
                 // otherwise, we have to merge in stages using extra boundary checks
                 } else {
+                    /// TODO: use a different form of generalized tournament tree, which
+                    /// encapsulates all the stages.
 
-                }
-            }
+                    tournament_node<false> x {o, p, p + (m1 - l)};
+                    tournament_node<false> y {o, p + (m2 - l), p + (m3 - l)};
 
-            constexpr void merge_3runs(Iter l, Iter m1, Iter m2, Iter r) {
-                using traits = std::numeric_limits<meta::unqualify<value_type>>;
-                constexpr bool destroy = !meta::trivially_destructible<value_type>;
-                value_type* p = scratch.get();
+                    // move runs into scratch space
+                    while (l != m1) { new (x.left_end++) value_type(std::move(*l++)); }
+                    while (m1 != m2) { new (x.right_end++) value_type(std::move(*m1++)); }
+                    while (m2 != m3) { new (y.left_end++) value_type(std::move(*m2++)); }
+                    while (m3 != r) { new (y.right_end++) value_type(std::move(*m3++)); }
 
-                /// NOTE: 3-way merge is identical to 4-way merge except that the right
-                /// subtree is trivial, with `y` always set to `c3`.
+                    // merging is done by stages, where each stage continues until
+                    // the minimum run length reaches zero, at which point empty stages
+                    // will be discarded and the next stage will rebuild an optimized
+                    // tournament tree from the remaining runs, devolving to a 2-way
+                    // merge for the last stage
+                    stages stage {
+                        /// TODO: pass the tournament nodes into the constructor,
+                        /// which stores references to the iterators, or maybe the
+                        /// stages object should handle error recovery for itself?
+                        {x.left, x.right, y.left, y.right},
+                        {x.left_end, x.right_end, y.left_end, y.right_end},
+                        4
+                    };
+                    stage.advance();  // purge empty runs and get min length
 
-                // if the iterator's value type has a +inf sentinel, then we can use an
-                // optimized 3-way merge from the paper mentioned above
-                if constexpr (traits::has_infinity) {
-                    auto n = r - l;
-                    auto c1 = p;
-                    auto c2 = p + (m1 - l) + 1;
-                    auto c3 = p + (m2 - l) + 2;
-                    auto o = l;
-
-                    // copy runs to scratch space and append sentinel after each one
-                    while (l != m1) { new (p++) value_type(std::move(*l++)); }
-                    new (p++) value_type(traits::infinity());
-                    while (m1 != m2) { new (p++) value_type(std::move(*m1++)); }
-                    new (p++) value_type(traits::infinity());
-                    while (m2 != r) { new (p++) value_type(std::move(*m2++)); }
-                    new (p++) value_type(traits::infinity());
-
-                    // initialize tournament tree
-                    //          z               `x`, `y`, `z` store iterators
-                    //       /     \            from winning runs.
-                    //     x         y          `left` also stores whether min
-                    //   /  \        |          came from left subtree.
-                    // c1    c2     c3
-                    bool left;
-                    auto x = less_than(*c2, *c1) ? c2++ : c1++;
-                    auto y = c3++;
-                    auto z = less_than(*y, *x) ? (left = false, y) : (left = true, x);  // comma operator
-
-                    *o++ = std::move(*z);  // vacate root into output
-                    if constexpr (destroy) { z->~value_type(); }
-
-                    for (decltype(n) i = 1; i < n; ++i) {
-                        if (left) {  // min came from c1 or c2, so recompute x
-                            x = less_than(*c2, *c1) ? c2++ : c1++;
-                        } else {  // min came from c3, so recompute y
-                            y = c3++;
-                        }
-
-                        // always recompute z
-                        if (less_than(*y, *x)) {
-                            z = y;
-                            left = false;
-                        } else {
-                            z = x;
-                            left = true;
-                        }
-                        *o++ = std::move(*z);
-                        if constexpr (destroy) { z->~value_type(); }
-                    }
-
-                    // clean up sentinels
-                    if constexpr (destroy) {
-                        c1->~value_type();
-                        c2->~value_type();
-                        c3->~value_type();
-                    }
-
-                // otherwise, we have to merge in stages using extra boundary checks
-                } else {
-
-                }
-            }
-
-            constexpr void merge_2runs(Iter l, Iter m, Iter r) {
-                using traits = std::numeric_limits<meta::unqualify<value_type>>;
-                constexpr bool destroy = !meta::trivially_destructible<value_type>;
-                value_type* p = scratch.get();
-
-                // if the iterator's value type has a +inf sentinel, then we can use an
-                // optimized 2-way merge from the paper mentioned above
-                if constexpr (traits::has_infinity) {
-                    auto n1 = m - l;
-                    auto c1 = p;
-                    auto c2 = c1 + n1 + 1;
-                    auto o = l;
-
-                    // move left run into scratch space and append sentinel
-                    while (l != m) { new (p++) value_type(std::move(*l++)); }
-                    new (p++) value_type(traits::infinity());
-
-                    // move right run into scratch space and append sentinel
-                    while (m != r) { new (p++) value_type(std::move(*m++)); }
-                    new (p++) value_type(traits::infinity());
-
-                    // classic merge, destroying scratch elements as we go
+                    // 
                     while (o != r) {
-                        if (less_than(*c2, *c1)) {
-                            *o++ = std::move(*c2);
-                            if constexpr (destroy) { c2->~value_type(); }
-                            ++c2;
-                        } else {
-                            *o++ = std::move(*c1);
-                            if constexpr (destroy) { c1->~value_type(); }
-                            ++c1;
-                        }
-                    }
-
-                    // clean up sentinels
-                    if constexpr (destroy) {
-                        c1->~value_type();
-                        c2->~value_type();
-                    }
-
-                // otherwise, we have to merge in stages using extra boundary checks.
-                // In the 2-way case, we can reduce memory transfers by only copying
-                // the smaller of the 2 runs into the scratch space.
-                } else {
-                    auto n1 = m - l;
-                    auto n2 = r - m;
-
-                    // left run is smaller
-                    if (n1 <= n2) {
-                        auto c1 = p, e1 = c1 + n1;
-                        auto c2 = m, e2 = r;
-                        auto o = l;
-                        while (l != m) { new (p++) value_type(std::move(*l++)); }
-                        while (c1 != e1 && c2 != e2) {
-                            if (less_than(*c2, *c1)) {
-                                *o++ = std::move(*c2++);  // no need to destroy
-                            } else {
-                                *o++ = std::move(*c1);
-                                if constexpr (destroy) { c1->~value_type(); }
-                                ++c1;
-                            }
-                        }
-                        while (c1 != e1) {
-                            *o++ = std::move(*c1);
-                            if constexpr (destroy) { c1->~value_type(); }
-                            ++c1;
-                        }
-
-                    // right run is smaller
-                    } else {
-                        auto c1 = m - 1, s1 = l;
-                        auto c2 = p + n2 - 1, s2 = p;
-                        auto o = r - 1;
-                        while (m != r) { new (p++) value_type(std::move(*m++)); }
-                        while (c1 != s1 && c2 != s2) {
-                            if (less_than(*c2, *c1)) {
-                                *o-- = std::move(*c2);
-                                if constexpr (destroy) { c2->~value_type(); }
-                                --c2;
-                            } else {
-                                *o-- = std::move(*c1--);  // no need to destroy
-                            }
-                        }
-                        while (c2 != s2) {
-                            *o-- = std::move(*c2);
-                            if constexpr (destroy) { c2->~value_type(); }
-                            --c2;
+                        switch (stage.remaining) {
+                            case 4: if (stage.template merge<4>(o, r)) break;
+                            case 3: if (stage.template merge<3>(o, r)) break;
+                            case 2: if (stage.template merge<2>(o, r)) break;
+                            default: return;
                         }
                     }
                 }
@@ -4642,8 +4939,8 @@ namespace impl {
             ) :
                 less_than(less_than),
                 scratch(
-                    reinterpret_cast<value_type*>(
-                        std::malloc(sizeof(value_type) * (length + 4))
+                    reinterpret_cast<pointer>(
+                        std::malloc(sizeof(value_type) * (length + k + 1))
                     ),
                     deleter{}
                 )
@@ -4655,7 +4952,7 @@ namespace impl {
                 stack.emplace_back(begin, end);  // power 0 as sentinel entry
                 while (prev.end < end) {
 
-                    // grow next run using insertion sort
+                    // grow and possibly reverse next run using insertion sort
                     run next {less_than, prev.end, end};
                     if ((next.end - next.begin) < min_run_length) {
                         Iter unsorted = next.end;
@@ -4668,7 +4965,7 @@ namespace impl {
                         );
                     }
 
-                    // compute power with respect to previous run
+                    // compute previous run's power with respect to next run
                     prev.power = get_power(
                         length,
                         prev.begin - begin,
@@ -4678,21 +4975,37 @@ namespace impl {
 
                     // invariant: powers on stack weakly increase from bottom to top.
                     // If violated, merge runs with equal power into `prev` until
-                    // invariant is restored.
+                    // invariant is restored.  Only at most the top 4 runs will ever
+                    // meet this criteria due to the structure of the merge tree.
                     while (stack.back().power > prev.power) {
-                        size_t same_power = 1;
                         run* top = &stack.back();
+                        size_t same_power = 1;
                         while ((top - same_power)->power == top->power) {
                             ++same_power;
                         }
+                        /// TODO: this can be generalized to arbitrary `k` by using an
+                        /// index sequence.
                         if (same_power == 1) {  // 2way
                             Iter f1 = top->begin;
-                            merge_2runs(f1, prev.begin, prev.end);
+                            tournament_tree<2>{
+                                less_than,
+                                scratch.get(),
+                                f1,
+                                prev.begin,
+                                prev.end
+                            }.merge();
                             prev.begin = f1;
                         } else if (same_power == 2) {  // 3way
                             Iter f1 = (top - 1)->begin;
                             Iter f2 = top->begin;
-                            merge_3runs(f1, f2, prev.begin, prev.end);
+                            tournament_tree<3>{
+                                less_than,
+                                scratch.get(),
+                                f1,
+                                f2,
+                                prev.begin,
+                                prev.end
+                            }.merge();
                             prev.begin = f1;
                         } else {  // 4way
                             Iter f1 = (top - 2)->begin;
@@ -4710,29 +5023,41 @@ namespace impl {
                 }
             }
 
+            /* Successively merge the top 4 elements on the stack.  Because runs
+            typically increase in size exponentially as we empty the stack, we can
+            manually merge the first 2-3 such that the stack size is reduced to a
+            multiple of `3n + 1`.  That means all subsequent merges can be 4-way,
+            maximizing the benefits of the tournament tree and minimizing total
+            comparisons. */
             constexpr void merge_down(run& prev) {
-                size_t n_runs = stack.size() + 1;  // stack size + prev
                 run* top = &stack.back();
+                run* bottom = &stack.front();
 
-                // do the first merge manually as a 2-way, 3-way, or 4-way merge such
-                // that the stack size is reduced to 3k+1
+                size_t n_runs = stack.size() + 1;  // stack + prev
                 switch (n_runs % (k - 1)) {
+                    /// TODO: this switch statement can be generalized to arbitrary
+                    /// k by using a vtable with function pointers
+
                     case 0:  // merge topmost 3 runs
-                        merge_3runs(
+                        tournament_tree<3>{
+                            less_than,
+                            scratch.get(),
                             (top - 1)->begin,
                             top->begin,
                             prev.begin,
                             prev.end
-                        );
+                        }.merge();
                         prev.begin = (top - 1)->begin;
                         top -= 2;
                         break;
                     case 2: // merge topmost 2 runs
-                        merge_2runs(
+                        tournament_tree<2>{
+                            less_than,
+                            scratch.get(),
                             top->begin,
                             prev.begin,
                             prev.end
-                        );
+                        }.merge();
                         prev.begin = top->begin;
                         --top;
                         break;
@@ -4740,9 +5065,9 @@ namespace impl {
                         break;
                 }
 
-                // all subsequent merges will combine the top with the next 3 runs,
-                // yielding consistent 4-way merges for the remainder of the stack
-                while (top > stack.get()) {  // incorrect
+                while (top > bottom) {  // 4-way merge remaining runs
+                    /// TODO: in the generalized case, this will always be a `k`-way
+                    /// merge
                     merge_4runs(
                         (top - 2)->begin,
                         (top - 1)->begin,
@@ -4758,16 +5083,14 @@ namespace impl {
 
     public:
 
-        /// TODO: figure out how to make sure that the list stays in a valid state
-        /// in case of exception.
-
         /* Execute the sort algorithm using unsorted values in the range [begin, end)
-        and place the result back into the same range.  The `less_than` comparison
+        and placing the result back into the same range.  The `less_than` comparison
         function is used to determine the order of the elements.  If no comparison
         function is given, it will default to a transparent `<` operator for each
-        element.  If an exception occurs during a comparison or copy/move constructor,
-        the input range will be left in a valid but unspecified state, and may be only
-        partially sorted. */
+        element.  If an exception occurs during a comparison, the input range will be
+        left in a valid but unspecified state, and may be partially sorted.  Any other
+        exception (e.g. in a move constructor, destructor, or iterator operation) can
+        result in undefined behavior. */
         template <meta::contiguous_iterator Iter, typename Less = std::less<>>
             requires (
                 meta::copyable<Iter> &&
@@ -4790,10 +5113,11 @@ namespace impl {
                 return;  // trivially sorted
             }
 
-            // identify first strictly increasing or decreasing run
+            // identify and possibly reverse first weakly increasing or strictly
+            // decreasing run starting at `begin`
             run<Iter, L> prev {less_than, begin, end};
 
-            // grow to minimum length using insertion sort
+            // grow run to minimum length using insertion sort
             if ((prev.end - prev.begin) < min_run_length) {
                 Iter unsorted = prev.end;
                 prev.end = std::min(end, prev.begin + min_run_length);
@@ -4805,7 +5129,7 @@ namespace impl {
                 );
             }
 
-            // build consolidated merge tree
+            // continue left-right scan to build consolidated merge tree
             merge_tree<Iter, L> stack {length, less_than, prev, begin, end};
 
             // flatten tree to complete sort
