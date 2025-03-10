@@ -4396,11 +4396,15 @@ namespace impl {
                 std::array<pointer, R> begin;  // begin iterators for each run
                 std::array<pointer, R> end;  // end iterators for each run
                 std::array<size_t, R - 1> internal;  // internal nodes of tree
+                size_t winner;  // leaf index of overall winner
 
-                /// NOTE: the tree is represented such that the root (min) is always
-                /// the first element of the `internal` buffer, and each subsequent
-                /// level is compressed into the next 2^i elements, from left to right.
-                /// Each node stores the leaf index of the winning run for that subtree.
+                /// NOTE: the tree is represented as a loser tree, meaning the internal
+                /// nodes store the leaf index of the losing run for that subtree, and
+                /// the winner is bubbled up to the next level of the tree.  The root
+                /// of the tree (runner-up) is always the first element of the
+                /// `internal` buffer, and each subsequent level is compressed into the
+                /// next 2^i elements, from left to right.  The last layer will be
+                /// incomplete if `N` is not a power of two.
 
                 template <meta::is<Iter>... Iters> requires (sizeof...(Iters) == N + 1)
                 constexpr tournament_tree(
@@ -4434,7 +4438,11 @@ namespace impl {
                     // move all runs into scratch space.  Afterwards, the end iterators
                     // will point to the sentinel values for each run, plus a possible
                     // extra sentinel if `N` is odd.
-                    [&]<size_t I>(this auto&& self) {
+                    [&]<size_t I = 0>(this auto&& self) {
+                        if constexpr (I < R - 1) {
+                            internal[I] = R;  // nodes are initialized to sentinel
+                        }
+
                         if constexpr (I < N) {
                             Iter& i = meta::unpack_arg<I>(iters...);
                             Iter& j = meta::unpack_arg<I + 1>(iters...);
@@ -4450,62 +4458,55 @@ namespace impl {
 
                 /* Perform the merge. */
                 constexpr void merge() {
-                    // initialize tournament tree
+                    // Initialize the tournament tree
                     //                internal[0]               internal nodes store
-                    //            /                \            leaf indices.  Leaf
-                    //      internal[1]          internal[2]    nodes store iterators
-                    //      /       \             /       \     into stack space
+                    //            /                \            losing leaf indices.
+                    //      internal[1]          internal[2]    Leaf nodes store
+                    //      /       \             /       \     scratch iterators
                     //         ...                   ...
                     // begin[0]   begin[1]   begin[2]   begin[3]   ...
-                    for (size_t i = R - 1; i-- > 0;) {
-                        size_t left = 2 * i + 1;
-                        size_t right = 2 * i + 2;
-                        size_t left_winner;
-                        size_t right_winner;
-                        if (left < R - 1) {  // child is an internal node
-                            left_winner = internal[left];
-                            right_winner = internal[right];
-                        } else {  // child is a leaf iterator
-                            left_winner = left - (R - 1);
-                            right_winner = right - (R - 1);
+                    for (size_t i = 0; i < R - 1; ++i) {
+                        winner = i;
+                        size_t node = i + (R - 1);
+                        while (node > 0) {
+                            size_t parent = (node - 1) / 2;
+                            size_t loser = internal[parent];
+
+                            // parent may be uninitialized, in which case the current
+                            // node automatically loses
+                            if (loser == R) {
+                                internal[parent] = node;
+                                break;  // parent nodes are guaranteed to be empty
+                            }
+
+                            // otherwise, if the current winner loses against the
+                            // parent, then we swap it and continue bubbling up
+                            if (less_than(*begin[loser], *begin[winner])) {
+                                internal[parent] = winner;
+                                winner = loser;
+                            }
+
+                            node = parent;
                         }
-                        internal[i] =
-                            less_than(*begin[right_winner], *begin[left_winner]) ?
-                            right_winner : left_winner;   
                     }
 
-                    // move the root of the tree into the output range and bubble up
-                    // the next winner
+                    // merge runs according to tournament tree
                     for (size_t i = 0; i < size; ++i) {
-                        size_t winner = internal[0];
+                        // move the overall winner into the output range
                         *output++ = std::move(*begin[winner]);
                         if constexpr (destroy) { begin[winner]->~value_type(); }
                         ++begin[winner];
 
-                        // find next winner
-                        size_t leaf = winner + (R - 1);
-                        while (leaf > 0) {
-                            size_t parent = (leaf - 1) / 2;
-
-                            // get new left and right winners
-                            size_t left = 2 * parent + 1;
-                            size_t right = 2 * parent + 2;
-                            size_t left_winner;
-                            size_t right_winner;
-                            if (left < R - 1) {  // child is an internal node
-                                left_winner = internal[left];
-                                right_winner = internal[right];
-                            } else {  // child is a leaf iterator
-                                left_winner = left - (R - 1);
-                                right_winner = right - (R - 1);
+                        // bubble up next winner
+                        size_t node = winner + (R - 1);
+                        while (node > 0) {
+                            size_t parent = (node - 1) / 2;
+                            size_t loser = internal[parent];
+                            if (less_than(*begin[loser], *begin[winner])) {
+                                internal[parent] = winner;
+                                winner = loser;
                             }
-
-                            // recompute parent winner
-                            internal[parent] =
-                                less_than(*begin[right_winner], *begin[left_winner]) ?
-                                right_winner : left_winner;
-
-                            leaf = parent;
+                            node = parent;
                         }
                     }
                 }
@@ -4531,17 +4532,68 @@ namespace impl {
             are fully consumed. */
             template <size_t N> requires (N >= 2)
             struct tournament_tree<N, false> {
+                Less& less_than;
+                pointer scratch;
+                Iter output;
+                size_t size;
+                std::array<pointer, N> begin;  // begin iterators for each run
+                std::array<pointer, N> end;  // end iterators for each run
+                std::array<size_t, N - 1> internal;  // internal nodes of tree
+                size_t remaining = N;  // effective size of tree
+                size_t smallest = std::numeric_limits<size_t>::max();  // length of smallest non-empty run
 
-                /// TODO: basically, this does everything that the sentinel-based
-                /// implementation does, except that I can't pad the extra sentinel
-                /// and I have to merge in phases using stack-based vectors.  It will
-                /// be somewhat hard to implement, but that's tomorrow's job
+                /// TODO: is `smallest` even necessary?
+
+                /// NOTE: this specialization plays tournaments in `N - 1` distinct
+                /// stages, where each stage ends when `min_length` reaches zero.  At
+                /// At that point, empty runs are removed, and a smaller tournament
+                /// tree is constructed with the remaining runs.  This continues until
+                /// `N == 2`, in which case we proceed as for a binary merge.
+
+                template <meta::is<Iter>... Iters> requires (sizeof...(Iters) == N + 1)
+                constexpr tournament_tree(
+                    Less& less_than,
+                    pointer scratch,
+                    Iters&... iters
+                ) :
+                    less_than(less_than),
+                    scratch(scratch),
+                    output(meta::unpack_arg<0>(iters...)),
+                    size(meta::unpack_arg<N>(iters...) - output),
+                    begin([&]<size_t... Is>(std::index_sequence<Is...>) {
+                        // begin iterators initialize to offsets within the scratch
+                        // space based on the size of each run
+                        return std::array<pointer, N>{
+                            (scratch + (meta::unpack_arg<Is>(iters...) - output) + Is)...
+                        };
+                    }(std::make_index_sequence<N>{})),
+                    end(begin)  // end iterators initialize to same as begin
+                {
+                    // move all runs into scratch space, without any extra sentinels.
+                    // Record the minimum length of each run for the the first stage.
+                    [&]<size_t I = 0>(this auto&& self) {
+                        if constexpr (I < N) {
+                            Iter& i = meta::unpack_arg<I>(iters...);
+                            Iter& j = meta::unpack_arg<I + 1>(iters...);
+                            while (i != j) { new (end[I]++) value_type(std::move(*i++)); }
+                            smallest = std::min(smallest, end[I] - begin[I]);
+                            std::forward<decltype(self)>(self).template operator()<I + 1>();
+                        }
+                    }();
+                }
+
+                constexpr void merge() {
+                    /// TODO: initialize the tournament tree for this stage
+
+                    /// TODO: proceed until a run is exhausted, then pop from the tree
+                    /// and reinitialize the tournament tree for the next stage
+                }
 
 
                 /* End a merge stage by pruning empty runs and computing the minimum
                 length for the next stage.  */
-                void advance() {
-                    min_length = std::numeric_limits<size_t>::max();
+                constexpr void advance() {
+                    smallest = std::numeric_limits<size_t>::max();
                     size_t i = 0;
                     while (i < remaining) {
                         // compute length of run
@@ -4557,22 +4609,23 @@ namespace impl {
 
                         // otherwise, record the minimum length and advance
                         } else {
-                            if (size < min_length) {
-                                min_length = size;
-                            }
+                            smallest = std::min(smallest, size);
                             ++i;
                         }
                     }
                 }
 
-                std::array<pointer, k> begin;
-                std::array<pointer, k> end;
-                size_t remaining;
-                size_t min_length = 0;
 
-                /// TODO: constructor takes two tournament nodes, or just all of the
-                /// iterators and builds the arrays internally
 
+                constexpr ~tournament_tree() {
+                    for (size_t i = 0; i < begin.size(); ++i) {
+                        while (begin[i] != end[i]) {
+                            *output++ = std::move(*begin[i]);
+                            if constexpr (destroy) { begin[i]->~value_type(); }
+                            ++begin[i];
+                        }
+                    }
+                }
             };
 
             /* An optimized tournament tree for binary merges with sentinel values. */
@@ -4653,6 +4706,7 @@ namespace impl {
                         Iter& r,
                         size_t n
                     ) :
+                        less_than(less_than),
                         output(l),
                         c1(scratch),
                         e1(scratch + n),
@@ -4710,6 +4764,7 @@ namespace impl {
                         Iter& r,
                         size_t n
                     ) :
+                        less_than(less_than),
                         output(r - 1),
                         c1(m - 1),
                         s1(l - 1),
