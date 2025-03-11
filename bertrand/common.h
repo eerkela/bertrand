@@ -4207,7 +4207,7 @@ namespace impl {
         bertrand::slice::normalized m_indices;
     };
 
-    /* A stable, adaptive, 4-way merge sort algorithm for contiguous arrays based on
+    /* A stable, adaptive, k-way merge sort algorithm for contiguous arrays based on
     work by Gelling, Nebel, Smith, and Wild ("Multiway Powersort", 2023), requiring
     O(n) scratch space for rotations.  A full description of the algorithm and its
     benefits can be found at:
@@ -4222,32 +4222,53 @@ namespace impl {
 
         [2] https://www.wild-inter.net/publications/html/munro-wild-2018.pdf.html
 
-    A full reference implementation for each of these algorithms is available at:
+    A full reference implementation for both of these algorithms is available at:
 
         [3] https://github.com/sebawild/powersort
 
-    The 4-way version presented here is adapted from the above implementations, and is
-    generally competitive with or better than `std::sort` and `std::stable_sort`, often
-    by a significant margin if the data is already partially sorted, requires expensive
-    comparisons, or has a `std::numeric_limits<T>::infinity()` value that can be used
-    as a sentinel in comparisons. */
+    The k-way version presented here is adapted from the above implementations with the
+    following changes:
+
+        a)  A custom `less_than` predicate can be provided to the algorithm, which
+            allows for sorting based on arbitrary comparison functions, including
+            lambdas, custom comparator classes, and pointers to members.
+        b)  Merges are safe against exceptions thrown by the comparison function, and
+            will attempt to transfer partially-sorted runs back into the output range
+            via RAII.
+        c)  Proper move semantics are used to transfer objects to and from the scratch
+            space, instead of requiring the type to be default constructible and/or
+            copyable.
+        d)  The algorithm is generalized to arbitrary `k >= 2`, with a default value of
+            4, in accordance with [2].  Higher `k` will asymptotically reduce the
+            number of comparisons needed to sort the array by a factor of `log2(k)`, at
+            the expense of deeper tournament trees.  There is likely an architecture-
+            dependent sweet spot based on the size of the data and the cost of
+            comparisons for a given type.  Further investigation is needed to determine
+            the optimal value of `k` for a given situation, as well as possibly allow
+            dynamic tuning based on the input data.
+        e)  All tournament trees are swapped from winner trees to loser trees, which
+            reduces branching in the inner loop and simplifies the implementation.
+        f)  Sentinel values will be used by default if
+            `std::numeric_limits<T>::has_infinity == true`, which maximizes performance
+            as demonstrated in [2].
+
+    Otherwise, the algorithm is designed to be a drop-in replacement for `std::sort`
+    and `std::stable_sort`, and is generally competitive with or better than those
+    algorithms, sometimes by a significant margin if any of the following conditions
+    are true:
+
+        1.  The data is already partially sorted, or is naturally ordered in
+            ascending/descending runs.
+        2.  Comparisons are expensive, such as for strings or complex objects.
+        3.  The data has a sentinel value, expressed as
+            `std::numeric_limits<T>::infinity()`.
+
+    NOTE: the `min_run` template parameter dictates the minimum run length under
+    which insertion sort will be used to grow the run.  [2] sets this to a default of
+    24, which is replicated here.  Like `k`, it can be tuned based on the data. */
+    template <size_t k = 4, size_t min_run = 24> requires (k >= 2 && min_run > 0)
     struct powersort {
     private:
-
-        /// TODO: lift `k` to be a template parameter of `powersort<>`, defaulting to
-        /// 4.
-
-        /* The algorithm presented in [1] is generalizable for arbitrary `k >= 2`,
-        where `k = 2` represents a typical binary mergesort policy, as implemented in
-        [2].  [1] implements 4-way merging with a manually unrolled inner loop and
-        tournament tree, which asymptotically halves the total number of comparisons
-        needed to sort a given array.  This is especially beneficial if comparisons
-        are expensive, as is the case with strings, for example. */
-        static constexpr size_t k = 4;
-
-        /* Powersort advises a minimum run length of 24, under which insertion sort
-        will be used to grow the run, similar to Timsort. */
-        static constexpr size_t min_run_length = 24;
 
         template <typename Iter, typename Less>
         static constexpr void insertion_sort(
@@ -4882,17 +4903,9 @@ namespace impl {
                 }
             };
 
-            Less& less_than;
-            std::vector<run> stack;
-            std::unique_ptr<value_type, deleter> scratch;
-
             static constexpr size_t ceil_log4(size_t n) noexcept {
                 return (impl::log2(n - 1) >> 1) + 1;
             }
-
-            /// NOTE: these implementations are taken straight from the reference, and
-            /// have only been lightly edited for readability, and to leverage move
-            /// semantics + custom comparisons with exception safety.
 
             static constexpr size_t get_power(
                 size_t n,
@@ -4900,6 +4913,9 @@ namespace impl {
                 size_t next_begin,
                 size_t next_end
             ) noexcept {
+                /// NOTE: these implementations are taken straight from the reference,
+                /// and have only been lightly edited for readability.
+
                 // if a built-in compiler intrinsic is available, use it
                 #if defined(__GNUC__) || defined(__clang__)
                     size_t l = prev_begin + next_begin;
@@ -4948,6 +4964,10 @@ namespace impl {
                 #endif
             }
 
+            Less& less_than;
+            std::vector<run> stack;
+            std::unique_ptr<value_type, deleter> scratch;
+
         public:
             constexpr merge_tree(
                 size_t length,
@@ -4973,9 +4993,9 @@ namespace impl {
 
                     // grow and possibly reverse next run using insertion sort
                     run next {less_than, prev.end, end};
-                    if ((next.end - next.begin) < min_run_length) {
+                    if ((next.end - next.begin) < min_run) {
                         Iter unsorted = next.end;
-                        next.end = std::min(end, next.begin + min_run_length);
+                        next.end = std::min(end, next.begin + min_run);
                         insertion_sort(
                             next.begin,
                             unsorted,
@@ -5002,45 +5022,40 @@ namespace impl {
                         while ((top - same_power)->power == top->power) {
                             ++same_power;
                         }
-                        /// TODO: this can be generalized to arbitrary `k` by using an
-                        /// index sequence.
-                        if (same_power == 1) {  // 2way
-                            Iter f1 = top->begin;
-                            tournament_tree<2>{
-                                less_than,
-                                scratch.get(),
-                                f1,
-                                prev.begin,
-                                prev.end
-                            }();
-                            prev.begin = f1;
-                        } else if (same_power == 2) {  // 3way
-                            Iter f1 = (top - 1)->begin;
-                            Iter f2 = top->begin;
-                            tournament_tree<3>{
-                                less_than,
-                                scratch.get(),
-                                f1,
-                                f2,
-                                prev.begin,
-                                prev.end
-                            }();
-                            prev.begin = f1;
-                        } else {  // 4way
-                            Iter f1 = (top - 2)->begin;
-                            Iter f2 = (top - 1)->begin;
-                            Iter f3 = top->begin;
-                            tournament_tree<4>{
-                                less_than,
-                                scratch.get(),
-                                f1,
-                                f2,
-                                f3,
-                                prev.begin,
-                                prev.end
-                            }();
-                            prev.begin = f1;
-                        }
+                        // a vtable that dispatches to the correct tournament tree
+                        // based on the number of runs to merge
+                        using F = void(*)(Less&, pointer, std::vector<run>&, run&);
+                        using VTable = std::array<F, k - 1>;
+                        constexpr VTable vtable = []<size_t... Is>(std::index_sequence<Is...>) {
+                            // 0: 2-way
+                            // 1: 3-way
+                            // 2: 4-way
+                            // ...
+                            // (k-2): k-way
+                            return VTable{[]<size_t... Js>(std::index_sequence<Js...>) {
+                                // Is... => [0, k - 2] (inclusive)
+                                // Js... => [0, Is] (inclusive)
+                                return +[](
+                                    Less& less_than,
+                                    pointer scratch,
+                                    std::vector<run>& stack,
+                                    run& prev
+                                ) {
+                                    Iter temp = (&stack.back() - Is)->begin;
+                                    tournament_tree<Is + 2>{
+                                        less_than,
+                                        scratch,
+                                        (&stack.back() - Is + Js)->begin...,
+                                        prev.begin,
+                                        prev.end
+                                    }();
+                                    prev.begin = temp;
+                                };
+                            }(std::make_index_sequence<Is + 1>{})...};
+                        }(std::make_index_sequence<k - 1>{});
+
+                        // merge runs with equal power
+                        vtable[same_power - 1](less_than, scratch.get(), stack, prev);
                         stack.resize(stack.size() - same_power);  // pop merged runs
                     }
 
@@ -5050,62 +5065,95 @@ namespace impl {
                 }
             }
 
-            /* Successively merge the top 4 elements on the stack.  Because runs
-            typically increase in size exponentially as we empty the stack, we can
-            manually merge the first 2-3 such that the stack size is reduced to a
-            multiple of `3n + 1`.  That means all subsequent merges can be 4-way,
-            maximizing the benefits of the tournament tree and minimizing total
-            comparisons. */
-            constexpr void merge_down(run& prev) {
-                run* top = &stack.back();
-                run* bottom = &stack.front();
+            /* Merge the contents of the stack in steps of size `k`. */
+            constexpr void operator()(run& prev) {
+                // Because runs typically increase in size exponentially as the stack
+                // is emptied, we can manually merge the first few such that the stack
+                // size is reduced to a multiple of `k - 1`, such that repeatedly
+                // merging `k` runs will give `k`-way merges the rest of the way.  This
+                // maximizes the benefit of the tournament tree and minimizes total
+                // comparisons.
+                using F = void(*)(Less&, pointer, std::vector<run>&, run&);
+                using VTable = std::array<F, k - 1>;
+                constexpr VTable vtable = []<size_t... Is>(std::index_sequence<Is...>) {
+                    return VTable{
+                        // 0: k-way merge
+                        []<size_t... Js>(
+                            std::index_sequence<Js...>
+                        ) {
+                            return +[](
+                                Less& less_than,
+                                pointer scratch,
+                                std::vector<run>& stack,
+                                run& prev
+                            ) {
+                                tournament_tree<k>{
+                                    less_than,
+                                    scratch,
+                                    (&stack.back() - (k - 2) + Js)->begin...,
+                                    prev.begin,
+                                    prev.end
+                                }();
+                                prev.being = (&stack.back() - (k - 2))->begin;
+                                stack.resize(stack.size() - (k - 1));
+                            };
+                        }(std::make_index_sequence<k - 1>{}),
+                        // 1: 2-way
+                        // 2: 3-way,
+                        // 3: 4-way,
+                        // ...
+                        // (k-2): (k-1)-way
+                        []<size_t... Js>(std::index_sequence<Js...>) {
+                            /// Is... => [0, k - 2] (inclusive)
+                            // Js... => [0, Is] (inclusive)
+                            return +[](
+                                Less& less_than,
+                                pointer scratch,
+                                std::vector<run>& stack,
+                                run& prev
+                            ) {
+                                tournament_tree<Is + 2>{
+                                    less_than,
+                                    scratch,
+                                    (&stack.back() - Is + Js)->begin...,
+                                    prev.begin,
+                                    prev.end
+                                }();
+                                prev.begin = (&stack.back() - Is)->begin;
+                                stack.resize(stack.size() - Is - 1);
+                            };
+                        }(std::make_index_sequence<Is + 1>{})...
+                    };
+                }(std::make_index_sequence<k - 2>{});
 
-                size_t n_runs = stack.size() + 1;  // stack + prev
-                switch (n_runs % (k - 1)) {
-                    /// TODO: this switch statement can be generalized to arbitrary
-                    /// k by using a vtable with function pointers
-
-                    case 0:  // merge topmost 3 runs
-                        tournament_tree<3>{
+                // above vtable is only consulted for the first merge, after which we
+                // devolve to k-way merges
+                vtable[stack.size() % (k - 1)](less_than, scratch.get(), stack, prev);
+                while (stack.size()) {
+                    [&]<size_t... Is>(std::index_sequence<Is...>) {
+                        tournament_tree<k>{
                             less_than,
                             scratch.get(),
-                            (top - 1)->begin,
-                            top->begin,
+                            (&stack.back() - (k - 2) + Is)->begin...,
                             prev.begin,
                             prev.end
                         }();
-                        prev.begin = (top - 1)->begin;
-                        top -= 2;
-                        break;
-                    case 2: // merge topmost 2 runs
-                        tournament_tree<2>{
-                            less_than,
-                            scratch.get(),
-                            top->begin,
-                            prev.begin,
-                            prev.end
-                        }();
-                        prev.begin = top->begin;
-                        --top;
-                        break;
-                    default:
-                        break;
+                        prev.begin = (&stack.back() - (k - 2))->begin;
+                        stack.resize(stack.size() - (k - 1));  // pop merged runs
+                    }(std::make_index_sequence<k - 1>{});
                 }
+            }
+        };
 
-                while (top > bottom) {  // 4-way merge remaining runs
-                    /// TODO: in the generalized case, this will always be a `k`-way
-                    /// merge
-                    tournament_tree<4>{
-                        less_than,
-                        scratch.get(),
-                        (top - 2)->begin,
-                        (top - 1)->begin,
-                        top->begin,
-                        prev.begin,
-                        prev.end
-                    }();
-                    prev.begin = (top - 2)->begin;
-                    top -= 3;
+        template <typename Iter, meta::member T>
+            requires (!meta::reference<Iter> && !meta::reference<T>)
+        struct sort_by_member {
+            T member;
+            constexpr bool operator()(auto&& l, auto&& r) const noexcept {
+                if constexpr (meta::member_function<T>) {
+                    return (l.*member()) < (r.*member());
+                } else {
+                    return (l.*member) < (r.*member);
                 }
             }
         };
@@ -5113,25 +5161,54 @@ namespace impl {
     public:
 
         /* Execute the sort algorithm using unsorted values in the range [begin, end)
-        and placing the result back into the same range.  The `less_than` comparison
-        function is used to determine the order of the elements.  If no comparison
-        function is given, it will default to a transparent `<` operator for each
-        element.  If an exception occurs during a comparison, the input range will be
-        left in a valid but unspecified state, and may be partially sorted.  Any other
-        exception (e.g. in a move constructor, destructor, or iterator operation) can
-        result in undefined behavior. */
+        and placing the result back into the same range.
+
+        The `less_than` comparison function is used to determine the order of the
+        elements.  It may be a pointer to an arbitrary member of the iterator's value
+        type, in which case only that member will be compared.  Otherwise, it must be a
+        function with the signature `bool(const T&, const T&)` where `T` is the value
+        type of the iterator.  If no comparison function is given, it will default to a
+        transparent `<` operator for each element.
+
+        If an exception occurs during a comparison, the input range will be left in a
+        valid but unspecified state, and may be partially sorted.  Any other exception
+        (e.g. in a move constructor/assignment operator, destructor, or iterator
+        operation) may result in undefined behavior. */
         template <meta::contiguous_iterator Iter, typename Less = std::less<>>
             requires (
                 meta::copyable<Iter> &&
                 meta::movable<meta::remove_reference<meta::dereference_type<Iter>>> &&
                 meta::move_assignable<meta::remove_reference<meta::dereference_type<Iter>>> &&
                 meta::destructible<meta::remove_reference<meta::dereference_type<Iter>>> &&
-                meta::invoke_returns<
-                    bool,
-                    meta::as_lvalue<Less>,
-                    meta::dereference_type<Iter>,
-                    meta::dereference_type<Iter>
-                >
+                (
+                    (
+                        meta::member_object_of<
+                            Less,
+                            meta::remove_reference<meta::dereference_type<Iter>>
+                        > &&
+                        meta::has_lt<meta::remove_member<Less>, meta::remove_member<Less>>
+                    ) ||
+                    (
+                        meta::member_function_of<
+                            Less,
+                            meta::remove_reference<meta::dereference_type<Iter>>
+                        > &&
+                        meta::invocable<Less, meta::dereference_type<Iter>> &&
+                        meta::has_lt<
+                            meta::invoke_type<Less, meta::dereference_type<Iter>>,
+                            meta::invoke_type<Less, meta::dereference_type<Iter>>
+                        >
+                    ) ||
+                    (
+                        !meta::member<Less> &&
+                        meta::invoke_returns<
+                            bool,
+                            meta::as_lvalue<Less>,
+                            meta::dereference_type<Iter>,
+                            meta::dereference_type<Iter>
+                        >
+                    )
+                )
             )
         static constexpr void operator()(Iter begin, Iter end, Less&& less_than = {}) {
             using value_type = std::iterator_traits<Iter>::value_type;
@@ -5142,27 +5219,45 @@ namespace impl {
                 return;  // trivially sorted
             }
 
-            // identify and possibly reverse first weakly increasing or strictly
-            // decreasing run starting at `begin`
-            run<Iter, L> prev {less_than, begin, end};
+            if constexpr (meta::member<Less>) {
+                sort_by_member<Iter, L> cmp {std::forward<Less>(less_than)};
 
-            // grow run to minimum length using insertion sort
-            if ((prev.end - prev.begin) < min_run_length) {
-                Iter unsorted = prev.end;
-                prev.end = std::min(end, prev.begin + min_run_length);
-                insertion_sort(
-                    prev.begin,
-                    unsorted,
-                    prev.end,
-                    less_than
-                );
+                // identify and possibly reverse first weakly increasing or strictly
+                // decreasing run starting at `begin`
+                run<Iter, L> prev {cmp, begin, end};
+
+                // grow run to minimum length using insertion sort
+                if ((prev.end - prev.begin) < min_run) {
+                    Iter unsorted = prev.end;
+                    prev.end = std::min(end, prev.begin + min_run);
+                    insertion_sort(
+                        prev.begin,
+                        unsorted,
+                        prev.end,
+                        cmp
+                    );
+                }
+
+                // continue left-right scan to build consolidated merge tree, then
+                // flatten tree to complete sort
+                merge_tree<Iter, L> {length, cmp, prev, begin, end}(prev);
+
+            } else {
+                run<Iter, L> prev {less_than, begin, end};
+
+                if ((prev.end - prev.begin) < min_run) {
+                    Iter unsorted = prev.end;
+                    prev.end = std::min(end, prev.begin + min_run);
+                    insertion_sort(
+                        prev.begin,
+                        unsorted,
+                        prev.end,
+                        less_than
+                    );
+                }
+
+                merge_tree<Iter, L> {length, less_than, prev, begin, end}(prev);
             }
-
-            // continue left-right scan to build consolidated merge tree
-            merge_tree<Iter, L> stack {length, less_than, prev, begin, end};
-
-            // flatten tree to complete sort
-            stack.merge_down(prev);
         }
     };
 
