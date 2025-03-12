@@ -10,10 +10,10 @@
 namespace bertrand {
 
 
-/// TODO: swap all size/capacity/index variables to signed integers?  This would
-/// probably have to be done across the entire package, although that's probably a
-/// good idea overall, just to prevent confusion and make things more bug-resistent
-/// overall.
+/// TODO: I should still offer a version of this class that just uses ordinary heap
+/// allocations rather than a virtual address space.
+
+
 
 
 /* A simple dynamic array that stores its contents in a contiguous virtual address
@@ -909,39 +909,39 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr iterator begin()
-            noexcept(noexcept(iterator(data(), 0)))
+            noexcept(noexcept(iterator(data())))
         {
-            return {data(), 0};
+            return {data()};
         }
 
         [[nodiscard]] constexpr const_iterator begin() const
-            noexcept(noexcept(const_iterator(data(), 0)))
+            noexcept(noexcept(const_iterator(data())))
         {
-            return {data(), 0};
+            return {data()};
         }
 
         [[nodiscard]] constexpr const_iterator cbegin() const
-            noexcept(noexcept(const_iterator(data(), 0)))
+            noexcept(noexcept(const_iterator(data())))
         {
-            return {data(), 0};
+            return {data()};
         }
 
         [[nodiscard]] constexpr iterator end()
-            noexcept(noexcept(iterator(data(), size())))
+            noexcept(noexcept(iterator(data() + size())))
         {
-            return {data(), ssize()};
+            return {data() + size()};
         }
 
         [[nodiscard]] constexpr const_iterator end() const
-            noexcept(noexcept(const_iterator(data(), size())))
+            noexcept(noexcept(const_iterator(data() + size())))
         {
-            return {data(), ssize()};
+            return {data() + size()};
         }
 
         [[nodiscard]] constexpr const_iterator cend() const
-            noexcept(noexcept(const_iterator(data(), size())))
+            noexcept(noexcept(const_iterator(data() + size())))
         {
-            return {data(), ssize()};
+            return {data() + size()};
         }
 
         [[nodiscard]] constexpr reverse_iterator rbegin()
@@ -987,7 +987,7 @@ namespace impl {
         can be assigned to in order to simulate indexed assignment into the list, and can
         be implicitly converted to arbitrary types as if it were a typical reference. */
         [[nodiscard]] constexpr iterator operator[](index_type i) {
-            return {data(), impl::normalize_index(size(), i)};
+            return {data() + impl::normalize_index(size(), i)};
         }
 
         /* Return a bounds-checked iterator to a specific index of the list.  The index may
@@ -997,7 +997,7 @@ namespace impl {
         can be assigned to in order to simulate indexed assignment into the list, and can
         be implicitly converted to arbitrary types as if it were a typical reference. */
         [[nodiscard]] constexpr const_iterator operator[](index_type i) const {
-            return {data(), impl::normalize_index(size(), i)};
+            return {data() + impl::normalize_index(size(), i)};
         }
 
         /* Return a view over a particular slice of the list by providing Python-style
@@ -1107,8 +1107,9 @@ namespace impl {
                     throw IndexError("iterator out of bounds");
                 }
             }
-            m_alloc.destroy(data() + it.index);
-            for (ssize_t i = it.index; i < size(); ++i) {
+            size_t idx = it - begin();
+            m_alloc.destroy(data() + idx);
+            for (ssize_t i = idx; i < size(); ++i) {
                 m_alloc.construct(
                     m_alloc.data() + i,
                     std::move(m_alloc.data()[i + 1])
@@ -1203,8 +1204,9 @@ namespace impl {
                 }
             }
             meta::unqualify<value_type> item {std::move(*it)};
-            m_alloc.destroy(data() + it.index);
-            for (ssize_t i = it.index; i < size(); ++i) {
+            size_t idx = it - begin();
+            m_alloc.destroy(data() + idx);
+            for (ssize_t i = idx; i < size(); ++i) {
                 m_alloc.construct(
                     m_alloc.data() + i,
                     std::move(m_alloc.data()[i + 1])
@@ -1696,7 +1698,7 @@ public:
         if (it == end()) {
             return std::nullopt;
         }
-        return it.index;
+        return it - begin();
     }
 
 };
@@ -1708,6 +1710,7 @@ private:
     using base = impl::list_base<T, N, Equal, void>;
     using base::m_alloc;
     using base::shift_right;
+    using base::shift_left;
 
     friend base;
 
@@ -1758,14 +1761,18 @@ public:
     using base::pop;
 
     /* Initializer list constructor. */
-    [[nodiscard]] constexpr List(std::initializer_list<value_type> items) {
+    [[nodiscard]] constexpr List(std::initializer_list<value_type> items) noexcept(
+        noexcept(extend(items.begin(), items.end()))
+    ) {
         extend(items.begin(), items.end());
     }
 
     /* Conversion constructor from an iterable range whose contents are convertible to
     the stored type `T`. */
     template <meta::yields<value_type> Range>
-    [[nodiscard]] constexpr explicit List(Range&& range) {
+    [[nodiscard]] constexpr explicit List(Range&& range) noexcept(
+        noexcept(extend(std::forward<Range>(range)))
+    ) {
         extend(std::forward<Range>(range));
     }
 
@@ -1777,7 +1784,9 @@ public:
             meta::not_const<End> &&
             meta::dereferences_to<meta::as_lvalue<Begin>, value_type>
         )
-    [[nodiscard]] constexpr explicit List(Begin&& begin, End&& end) {
+    [[nodiscard]] constexpr explicit List(Begin&& begin, End&& end) noexcept(
+        noexcept(extend(std::forward<Begin>(begin), std::forward<End>(end)))
+    ) {
         extend(std::forward<Begin>(begin), std::forward<End>(end));
     }
 
@@ -1785,7 +1794,7 @@ public:
     constructor for `T`.  Returns an iterator to the appended element, and propagates
     any errors emanating from the constructor without modifying the list. */
     template <typename... Args> requires (meta::constructible_from<value_type, Args...>)
-    [[maybe_unused]] constexpr iterator append(Args&&... args) noexcept(
+    [[maybe_unused]] constexpr iterator append(Args&&... args) & noexcept(
         !DEBUG &&
         noexcept(m_alloc.grow(std::min(capacity() * 2, max_capacity()))) &&
         noexcept(m_alloc.construct(data(), std::forward<Args>(args)...))
@@ -1801,8 +1810,8 @@ public:
             }
             m_alloc.grow(std::min(capacity() * 2, max_capacity()));
         }
-        m_alloc.construct(m_alloc.data() + size(), std::forward<Args>(args)...);
-        return {data(), ssize() - 1};
+        m_alloc.construct(data() + size(), std::forward<Args>(args)...);
+        return begin() + (size() - 1);
     }
 
     /* Insert an item at an arbitrary location within the list, immediately before the
@@ -1813,7 +1822,7 @@ public:
     modifying the state of the list.  Returns an iterator to the inserted element,
     which is always equivalent to the input iterator. */
     template <typename... Args> requires (meta::constructible_from<value_type, Args...>)
-    [[maybe_unused]] constexpr iterator insert(iterator pos, Args&&... args) noexcept(
+    [[maybe_unused]] constexpr iterator insert(const_iterator pos, Args&&... args) & noexcept(
         !DEBUG &&
         noexcept(m_alloc.grow(std::min(capacity() * 2, max_capacity()))) &&
         noexcept(m_alloc.construct(data(), std::forward<Args>(args)...)) &&
@@ -1840,24 +1849,25 @@ public:
         }
 
         // move all subsequent elements to the right one index
-        shift_right(pos.index, 1);
+        size_t idx = pos - begin();
+        shift_right(idx, 1);
 
         // insert new element at iterator position.  If the constructor fails, then
         // we attempt to shift all subsequent elements back to their original positions
         try {
-            m_alloc.construct(data() + pos.index, std::forward<Args>(args)...);
+            m_alloc.construct(data() + idx, std::forward<Args>(args)...);
         } catch (...) {
-            shift_left(pos.index, 1);
+            shift_left(idx, 1);
             throw;
         }
 
-        return pos;
+        return begin() + idx;
     }
 
     /* Insert items from an input range at the end of the list, returning the number of
     items that were inserted.  In the event of an error, the list will be rolled back
     to its original state before propagating the error. */
-    [[maybe_unused]] constexpr size_type extend(std::initializer_list<value_type> items) {
+    [[maybe_unused]] constexpr void extend(std::initializer_list<value_type> items) & {
         return extend(items.begin(), items.end());
     }
 
@@ -1865,7 +1875,7 @@ public:
     items that were inserted.  In the event of an error, the list will be rolled back
     to its original state before propagating the error. */
     template <meta::yields<value_type> Range>
-    [[maybe_unused]] constexpr size_type extend(Range&& range) {
+    [[maybe_unused]] constexpr void extend(Range&& range) & {
         using RangeRef = meta::as_lvalue<Range>;
         if constexpr (meta::has_size<RangeRef>) {
             reserve(size() + std::ranges::size(range));
@@ -1889,18 +1899,16 @@ public:
                 }
             }
             try {
-                m_alloc.construct(m_alloc.data() + size(), *begin);
+                m_alloc.construct(data() + size(), *begin);
             } catch (...) {
                 size_type new_size = size();
                 for (size_t j = old_size; j < new_size; ++j) {
-                    m_alloc.destroy(m_alloc.data() + j);
+                    m_alloc.destroy(data() + j);
                 }
                 throw;
             }
             ++begin;
         }
-
-        return size() - old_size;
     }
 
     /* Insert items from an input range at the end of the list, returning the number of
@@ -1908,7 +1916,7 @@ public:
     to its original state before propagating the error. */
     template <meta::iterator Begin, meta::sentinel_for<Begin> End>
         requires (meta::dereferences_to<meta::as_lvalue<Begin>, value_type>)
-    [[maybe_unused]] constexpr size_type extend(Begin&& begin, End&& end) {
+    [[maybe_unused]] constexpr void extend(Begin&& begin, End&& end) & {
         using BeginRef = meta::as_lvalue<Begin>;
         using EndRef = meta::as_lvalue<End>;
         if constexpr (meta::sized_sentinel_for<EndRef, BeginRef>) {
@@ -1931,18 +1939,16 @@ public:
                 }
             }
             try {
-                m_alloc.construct(m_alloc.data() + size(), *begin);
+                m_alloc.construct(data() + size(), *begin);
             } catch (...) {
                 size_type new_size = size();
                 for (size_t j = old_size; j < new_size; ++j) {
-                    m_alloc.destroy(m_alloc.data() + j);
+                    m_alloc.destroy(data() + j);
                 }
                 throw;
             }
             ++begin;
         }
-
-        return size() - old_size;
     }
 
     /* Insert items from an input range at an arbitrary location within the list,
@@ -1951,10 +1957,10 @@ public:
     out of bounds, it will be truncated to the nearest valid position.  In the event
     of an error, the list will be rolled back to its original state before propagating
     the error.  Returns the number of items that were inserted. */
-    [[maybe_unused]] constexpr size_type splice(
-        iterator pos,
+    [[maybe_unused]] constexpr void splice(
+        const_iterator pos,
         std::initializer_list<value_type> items
-    ) {
+    ) & {
         return splice(pos, items.begin(), items.end());
     }
 
@@ -1963,14 +1969,14 @@ public:
     at the iterator itself) will be shifted one index up the list.  If the iterator is
     out of bounds, it will be truncated to the nearest valid position.  In the event
     of an error, the list will be rolled back to its original state before propagating
-    the error.  Returns the number of items that were inserted. */
+    the error.  Returns a perfectly-forwarded self-reference to allow chaining. */
     template <meta::yields<value_type> Range>
-    [[maybe_unused]] constexpr size_type splice(iterator pos, Range&& range) {
+    [[maybe_unused]] constexpr void splice(const_iterator pos, Range&& range) & {
         // get size of input range (potentially O(n) if the range is not explicitly
         // sized and its iterators do not support constant-time distance)
         auto delta = std::ranges::distance(std::forward<Range>(range));
-        if (delta == 0) {
-            return 0;
+        if (delta <= 0) {
+            return;
         }
         reserve(size() + delta);
 
@@ -1982,29 +1988,28 @@ public:
         }
 
         // move all subsequent elements to the right by size of range to open gap
-        shift_right(pos.index, delta);
+        size_t idx = pos - begin();
+        shift_right(idx, delta);
 
         // insert items from range.  If an error occurs, then we remove all items that
         // have been added thus far and shift all subsequent elements back to their
         // original positions
-        size_type i = pos.index;
+        size_type i = idx;
         auto begin = std::ranges::begin(range);
         auto end = std::ranges::end(range);
         while (begin != end) {
             try {
-                m_alloc.construct(m_alloc.data() + i, *begin);
+                m_alloc.construct(data() + i, *begin);
             } catch (...) {
-                for (size_type j = pos.index; j < i; ++j) {
-                    m_alloc.destroy(m_alloc.data() + j);
+                for (size_type j = idx; j < i; ++j) {
+                    m_alloc.destroy(data() + j);
                 }
-                shift_left(pos.index, delta);
+                shift_left(idx, delta);
                 throw;
             }
             ++i;
             ++begin;
         }
-
-        return delta;
     }
 
     /* Insert items from an input range at an arbitrary location within the list,
@@ -2012,15 +2017,19 @@ public:
     at the iterator itself) will be shifted one index up the list.  If the iterator is
     out of bounds, it will be truncated to the nearest valid position.  In the event
     of an error, the list will be rolled back to its original state before propagating
-    the error.  Returns the number of items that were inserted. */
+    the error.  Returns a perfectly-forwarded self-reference to allow chaining. */
     template <meta::iterator Begin, meta::sentinel_for<Begin> End>
         requires (meta::dereferences_to<meta::as_lvalue<Begin>, value_type>)
-    [[maybe_unused]] constexpr size_type splice(iterator pos, Begin&& begin, End&& end) {
+    [[maybe_unused]] constexpr void splice(
+        const_iterator pos,
+        Begin&& begin,
+        End&& end
+    ) & {
         // get size of input range (potentially O(n) if begin and end do not support
         // constant-time distance)
         auto delta = std::ranges::distance(begin, end);
-        if (delta == 0) {
-            return 0;
+        if (delta <= 0) {
+            return;
         }
         reserve(size() + delta);
 
@@ -2032,27 +2041,26 @@ public:
         }
 
         // move all subsequent elements to the right by size of range to open gap
-        shift_right(pos.index, delta);
+        size_t idx = pos - begin();
+        shift_right(idx, delta);
 
         // insert items from range.  If an error occurs, then we remove all items that
         // have been added thus far and shift all subsequent elements back to their
         // original positions
-        size_type i = pos.index;
+        size_type i = idx;
         while (begin != end) {
             try {
-                m_alloc.construct(m_alloc.data() + i, *begin);
+                m_alloc.construct(data() + i, *begin);
             } catch (...) {
-                for (size_type j = pos.index; j < i; ++j) {
-                    m_alloc.destroy(m_alloc.data() + j);
+                for (size_type j = idx; j < i; ++j) {
+                    m_alloc.destroy(data() + j);
                 }
-                shift_left(pos.index, delta);
+                shift_left(idx, delta);
                 throw;
             }
             ++i;
             ++begin;
         }
-
-        return delta;
     }
 
     /* Find the first occurrence of a given value within the list, returning an
@@ -2066,9 +2074,32 @@ public:
             meta::as_lvalue<meta::as_const<value_type>>,
             meta::as_lvalue<meta::as_const<V>>
         >)
-    [[nodiscard]] constexpr iterator find(const V& value) const
-        noexcept(noexcept(lvalue(Equal{})(*data(), value)))
-    {
+    [[nodiscard]] constexpr iterator find(const V& value) noexcept(
+        noexcept(lvalue(Equal{})(*data(), value))
+    ) {
+        Equal compare;
+        for (size_type i = 0; i < size(); ++i) {
+            if (compare(data()[i], value)) {
+                return {data(), i};
+            }
+        }
+        return end();
+    }
+
+    /* Find the first occurrence of a given value within the list, returning an
+    iterator to the leftmost element that compares equal to it.  Returns an end
+    iterator if no such element exists.  If the list is sorted, then this will be done
+    using a binary search.  Otherwise, a linear search will be used. */
+    template <typename V>
+        requires (meta::invoke_returns<
+            bool,
+            meta::as_lvalue<Equal>,
+            meta::as_lvalue<meta::as_const<value_type>>,
+            meta::as_lvalue<meta::as_const<V>>
+        >)
+    [[nodiscard]] constexpr const_iterator find(const V& value) const noexcept(
+        noexcept(lvalue(Equal{})(*data(), value))
+    ) {
         Equal compare;
         for (size_type i = 0; i < size(); ++i) {
             if (compare(data()[i], value)) {
@@ -2087,9 +2118,9 @@ public:
             meta::as_lvalue<meta::as_const<value_type>>,
             meta::as_lvalue<meta::as_const<V>>
         >)
-    [[nodiscard]] constexpr bool contains(const V& value) const
-        noexcept(noexcept(find(value)))
-    {
+    [[nodiscard]] constexpr bool contains(const V& value) const noexcept(
+        noexcept(find(value))
+    ) {
         return find(value) != end();
     }
 
@@ -2104,9 +2135,9 @@ public:
             meta::as_lvalue<meta::as_const<value_type>>,
             meta::as_lvalue<meta::as_const<V>>
         >)
-    [[nodiscard]] constexpr size_type count(const V& value) const
-        noexcept(noexcept(find(value)))
-    {
+    [[nodiscard]] constexpr size_type count(const V& value) const noexcept(
+        noexcept(find(value))
+    ) {
         size_type count = 0;
         Equal compare;
         for (size_type i = 0; i < size(); ++i) {
@@ -2127,17 +2158,27 @@ public:
             meta::as_lvalue<meta::as_const<value_type>>,
             meta::as_lvalue<meta::as_const<V>>
         >)
-    [[nodiscard]] constexpr std::optional<size_type> index(const V& value) const
-        noexcept(noexcept(find(value)))
-    {
+    [[nodiscard]] constexpr std::optional<size_type> index(const V& value) const noexcept(
+        noexcept(find(value))
+    ) {
         auto it = find(value);
         if (it == end()) {
             return std::nullopt;
         }
-        return it.index;
+        return it - begin();
     }
 
-    /// TODO: sort(compare) (timsort)
+    /* Sort the list in-place according to a given comparison function, defaulting to
+    a transparent `<` operator. */
+    template <typename Less = std::less<>>
+        requires (requires(List& list, Less less_than) {
+            bertrand::sort(list, std::forward<Less>(less_than));
+        })
+    constexpr void sort(Less&& less_than = {}) & noexcept(
+        noexcept(bertrand::sort(*this, std::forward<Less>(less_than)))
+    ) {
+        bertrand::sort(*this, std::forward<Less>(less_than));
+    }
 
     /* Concatenate this list with another input iterable to produce a new list
     containing all elements from both lists.  The original list is unchanged. */
@@ -2163,7 +2204,7 @@ public:
     /* Concatenate this list with another input iterable in-place.  This is equivalent
     to calling `list.extend()`. */
     template <meta::yields<value_type> Range>
-    [[maybe_unused]] constexpr List& operator+=(Range&& range) noexcept(
+    [[maybe_unused]] constexpr List& operator+=(Range&& range) & noexcept(
         noexcept(extend(std::forward<Range>(range)))
     ) {
         extend(std::forward<Range>(range));
@@ -2187,8 +2228,8 @@ public:
     }
 
     /* Repeat the contents of this list in-place. */
-    [[maybe_unused]] constexpr List& operator*=(index_type n) noexcept(
-        noexcept(extend(std::declval<List>()))
+    [[maybe_unused]] constexpr List& operator*=(index_type n) & noexcept(
+        noexcept(extend(begin(), end()))
     ) {
         if (n > 0) {
             auto sentinel = end();
@@ -2253,7 +2294,12 @@ namespace bertrand {
 
     inline void test() {
         List<std::string> x = {"a", "b", "c"};
-    
+        // bertrand::sort(x);
+        // std::vector<std::string> y = {"a", "b", "c"};
+        // bertrand::sort(y.begin(), y.end(), &std::string::size);
+
+        typename List<std::string>::const_iterator abc = x.begin();
+
         x[2] = "d";
     
         std::string value = x[2];

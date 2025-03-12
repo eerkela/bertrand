@@ -323,6 +323,25 @@ namespace meta {
     template <typename T>
     using unqualify = std::remove_cvref_t<T>;
 
+    namespace detail {
+
+        template <typename T, typename U>
+        constexpr bool more_qualified_than = true;
+        template <typename T, typename U>
+        constexpr bool more_qualified_than<T, const U> = meta::is_const<T>;
+        template <typename T, typename U>
+        constexpr bool more_qualified_than<T, volatile U> = meta::is_volatile<T>;
+        template <typename T, typename U>
+        constexpr bool more_qualified_than<T, const volatile U> =
+            meta::is_const<T> && meta::is_volatile<T>;
+
+    }
+
+    template <typename T, typename U>
+    concept more_qualified_than =
+        detail::more_qualified_than<T, meta::remove_reference<U>> &&
+        !std::same_as<meta::remove_reference<T>, meta::remove_reference<U>>;
+
     //////////////////////////
     ////    PRIMITIVES    ////
     //////////////////////////
@@ -1102,6 +1121,9 @@ namespace meta {
 
     template <typename T>
     concept iterator = std::input_or_output_iterator<T>;
+
+    template <typename T, typename V>
+    concept output_iterator = iterator<T> && std::output_iterator<T, V>;
 
     template <typename T>
     concept forward_iterator = std::forward_iterator<T>;
@@ -3607,6 +3629,8 @@ struct slice {
 
 namespace impl {
 
+    /// TODO: deal with virtual environments in a separate file at a later date
+
     struct virtualenv;
     static virtualenv get_virtual_environment() noexcept;
 
@@ -3840,372 +3864,42 @@ namespace impl {
         return first;
     }
 
-    /* Apply python-style wraparound to a given index, throwing an `IndexError` if the
-    index is out of bounds after normalizing. */
-    inline constexpr ssize_t normalize_index(size_t size, ssize_t i) {
-        ssize_t n = static_cast<ssize_t>(size);
-        ssize_t j = i + n * (i < 0);
-        if (j < 0 || j >= n) {
-            throw IndexError(std::to_string(i));
-        }
-        return j;
-    }
-
-    /* Apply python-style wraparound to a given index, truncating to the nearest edge
-    if the index is out of bounds after normalizing. */
-    inline constexpr ssize_t truncate_index(size_t size, ssize_t i) noexcept {
-        ssize_t n = static_cast<ssize_t>(size);
-        i += n * (i < 0);
-        if (i < 0) {
-            return 0;
-        } else if (i >= n) {
-            return n;
-        }
-        return i;
-    }
-
-    template <meta::not_void T> requires (!meta::reference<T>)
-    struct contiguous_iterator {
-        using iterator_category = std::contiguous_iterator_tag;
-        using difference_type = ssize_t;
-        using value_type = T;
-        using reference = meta::as_lvalue<value_type>;
-        using const_reference = meta::as_lvalue<meta::as_const<value_type>>;
-        using pointer = meta::as_pointer<value_type>;
-        using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
-
-        pointer data;
-        difference_type index;
-
-        constexpr contiguous_iterator(
-            pointer data = nullptr,
-            difference_type index = 0
-        ) noexcept : data(data), index(index) {};
-
-        constexpr contiguous_iterator(const contiguous_iterator&) noexcept = default;
-        constexpr contiguous_iterator(contiguous_iterator&&) noexcept = default;
-        constexpr contiguous_iterator& operator=(const contiguous_iterator&) noexcept = default;
-        constexpr contiguous_iterator& operator=(contiguous_iterator&&) noexcept = default;
-
-        template <typename V> requires (meta::assignable<reference, V>)
-        [[maybe_unused]] constexpr contiguous_iterator& operator=(V&& value) && noexcept(
-            noexcept(data[index] = std::forward<V>(value))
-        ) {
-            data[index] = std::forward<V>(value);
-            return *this;
-        }
-
-        template <typename V> requires (meta::convertible_to<reference, V>)
-        [[nodiscard]] constexpr operator V() && noexcept(noexcept(V(**this))) {
-            return **this;
-        }
-
-        [[nodiscard]] constexpr reference operator*() noexcept {
-            return data[index];
-        }
-
-        [[nodiscard]] constexpr const_reference operator*() const noexcept {
-            return data[index];
-        }
-
-        [[nodiscard]] constexpr pointer operator->() noexcept {
-            return data + index;
-        }
-
-        [[nodiscard]] constexpr const_pointer operator->() const noexcept {
-            return data + index;
-        }
-
-        [[nodiscard]] constexpr reference operator[](difference_type n) noexcept {
-            return data[index + n];
-        }
-
-        [[nodiscard]] constexpr const_reference operator[](difference_type n) const noexcept {
-            return data[index + n];
-        }
-
-        [[maybe_unused]] constexpr contiguous_iterator& operator++() noexcept {
-            ++index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr contiguous_iterator operator++(int) noexcept {
-            contiguous_iterator copy = *this;
-            ++(*this);
-            return copy;
-        }
-
-        [[maybe_unused]] constexpr contiguous_iterator& operator+=(
-            difference_type n
-        ) noexcept {
-            index += n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr contiguous_iterator operator+(
-            difference_type n
-        ) const noexcept {
-            return {data, index + n};
-        }
-
-        [[maybe_unused]] constexpr contiguous_iterator& operator--() noexcept {
-            --index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr contiguous_iterator operator--(int) noexcept {
-            contiguous_iterator copy = *this;
-            --(*this);
-            return copy;
-        }
-
-        [[maybe_unused]] constexpr contiguous_iterator& operator-=(
-            difference_type n
-        ) noexcept {
-            index -= n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr contiguous_iterator operator-(
-            difference_type n
-        ) const noexcept {
-            return {data, index - n};
-        }
-
-        [[nodiscard]] constexpr difference_type operator-(
-            const contiguous_iterator& rhs
-        ) noexcept {
-            return index - rhs.index;
-        }
-
-        [[nodiscard]] constexpr std::strong_ordering operator<=>(
-            const contiguous_iterator& rhs
-        ) noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (data != rhs.data) {
-                    throw AssertionError(
-                        "cannot compare iterators from different lists"
-                    );
-                }
-            }
-            return index <=> rhs.index;
-        }
-    };
-
-    template <meta::not_void T> requires (!meta::reference<T>)
-    struct contiguous_slice {
-    private:
-
-        struct initializer {
-            std::initializer_list<T>& items;
-            [[nodiscard]] constexpr size_t size() const noexcept { return items.size(); }
-            [[nodiscard]] constexpr auto begin() const noexcept { return items.begin(); }
-            [[nodiscard]] constexpr auto end() const noexcept { return items.end(); }
-        };
-
-        template <typename V>
-        struct iter {
-            using iterator_category = std::input_iterator_tag;
-            using difference_type = ssize_t;
-            using value_type = V;
-            using reference = meta::as_lvalue<value_type>;
-            using const_reference = meta::as_lvalue<meta::as_const<value_type>>;
-            using pointer = meta::as_pointer<value_type>;
-            using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
-
-            pointer data = nullptr;
-            ssize_t index = 0;
-            ssize_t step = 1;
-
-            [[nodiscard]] constexpr reference operator*() noexcept {
-                return data[index];
-            }
-
-            [[nodiscard]] constexpr const_reference operator*() const noexcept {
-                return data[index];
-            }
-
-            [[nodiscard]] constexpr pointer operator->() noexcept {
-                return data + index;
-            }
-
-            [[nodiscard]] constexpr const_pointer operator->() const noexcept {
-                return data + index;
-            }
-
-            [[maybe_unused]] iter& operator++() noexcept {
-                index += step;
-                return *this;
-            }
-
-            [[nodiscard]] iter operator++(int) noexcept {
-                iterator copy = *this;
-                ++(*this);
-                return copy;
-            }
-
-            [[nodiscard]] constexpr bool operator==(const iter& other) noexcept {
-                return step > 0 ? index >= other.index : index <= other.index;
-            }
-
-            [[nodiscard]] constexpr bool operator!=(const iter& other) noexcept {
-                return !(*this == other);
-            }
-        };
-
-    public:
-        using value_type = T;
-        using reference = meta::as_lvalue<value_type>;
-        using const_reference = meta::as_lvalue<meta::as_const<value_type>>;
-        using pointer = meta::as_pointer<value_type>;
-        using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
-        using iterator = iter<value_type>;
-        using const_iterator = iter<meta::as_const<value_type>>;
-
-        constexpr contiguous_slice(
-            pointer data,
-            bertrand::slice::normalized indices
-        ) noexcept :
-            m_data(data),
-            m_indices(indices)
-        {}
-
-        constexpr contiguous_slice(const contiguous_slice&) = default;
-        constexpr contiguous_slice(contiguous_slice&&) = default;
-        constexpr contiguous_slice& operator=(const contiguous_slice&) = default;
-        constexpr contiguous_slice& operator=(contiguous_slice&&) = default;
-
-        [[nodiscard]] constexpr pointer data() const noexcept { return m_data; }
-        [[nodiscard]] constexpr ssize_t start() const noexcept { return m_indices.start; }
-        [[nodiscard]] constexpr ssize_t stop() const noexcept { return m_indices.stop; }
-        [[nodiscard]] constexpr ssize_t step() const noexcept { return m_indices.step; }
-        [[nodiscard]] constexpr ssize_t ssize() const noexcept { return m_indices.length; }
-        [[nodiscard]] constexpr size_t size() const noexcept { return size_t(size()); }
-        [[nodiscard]] constexpr bool empty() const noexcept { return !ssize(); }
-        [[nodiscard]] explicit operator bool() const noexcept { return ssize(); }
-
-        [[nodiscard]] constexpr iterator begin() noexcept {
-            return {m_data, m_indices.start, m_indices.step};
-        }
-
-        [[nodiscard]] constexpr const_iterator begin() const noexcept {
-            return {m_data, m_indices.start, m_indices.step};
-        }
-
-        [[nodiscard]] constexpr const_iterator cbegin() noexcept {
-            return {m_data, m_indices.start, m_indices.step};
-        }
-
-        [[nodiscard]] constexpr iterator end() noexcept {
-            return {m_data, m_indices.stop, m_indices.step};
-        }
-
-        [[nodiscard]] constexpr const_iterator end() const noexcept {
-            return {m_data, m_indices.stop, m_indices.step};
-        }
-
-        [[nodiscard]] constexpr const_iterator cend() const noexcept {
-            return {m_data, m_indices.stop, m_indices.step};
-        }
-
-        template <typename V>
-            requires (meta::constructible_from<V, std::from_range_t, contiguous_slice&>)
-        [[nodiscard]] constexpr operator V() && noexcept(noexcept(V(std::from_range, *this))) {
-            return V(std::from_range, *this);
-        }
-
-        template <typename V>
-            requires (
-                !meta::constructible_from<V, std::from_range_t, contiguous_slice&> &&
-                meta::constructible_from<V, iterator, iterator>
+    template <typename Begin, typename End, typename Less>
+    concept sortable =
+        meta::iterator<Begin> &&
+        meta::sentinel_for<End, Begin> &&
+        meta::copyable<Begin> &&
+        meta::output_iterator<Begin, meta::as_rvalue<meta::dereference_type<Begin>>> &&
+        meta::movable<meta::remove_reference<meta::dereference_type<Begin>>> &&
+        meta::move_assignable<meta::remove_reference<meta::dereference_type<Begin>>> &&
+        meta::destructible<meta::remove_reference<meta::dereference_type<Begin>>> &&
+        (
+            (
+                meta::member_object_of<
+                    Less,
+                    meta::remove_reference<meta::dereference_type<Begin>>
+                > &&
+                meta::has_lt<meta::remove_member<Less>, meta::remove_member<Less>>
+            ) || (
+                meta::member_function_of<
+                    Less,
+                    meta::remove_reference<meta::dereference_type<Begin>>
+                > &&
+                meta::invocable<Less, meta::dereference_type<Begin>> &&
+                meta::has_lt<
+                    meta::invoke_type<Less, meta::dereference_type<Begin>>,
+                    meta::invoke_type<Less, meta::dereference_type<Begin>>
+                >
+            ) || (
+                !meta::member<Less> &&
+                meta::invoke_returns<
+                    bool,
+                    meta::as_lvalue<Less>,
+                    meta::dereference_type<Begin>,
+                    meta::dereference_type<Begin>
+                >
             )
-        [[nodiscard]] constexpr operator V() && noexcept(noexcept(V(begin(), end()))) {
-            return V(begin(), end());
-        }
-
-        template <typename Dummy = value_type>
-            requires (
-                meta::not_const<Dummy> &&
-                meta::destructible<Dummy> &&
-                meta::copyable<Dummy>
-            )
-        [[maybe_unused]] constexpr contiguous_slice& operator=(
-            std::initializer_list<value_type> items
-        ) && {
-            return std::move(*this) = initializer{items};
-        }
-
-        template <meta::yields<value_type> Range>
-            requires (
-                meta::not_const<value_type> &&
-                meta::destructible<value_type> &&
-                meta::constructible_from<value_type, meta::yield_type<Range>>
-            )
-        [[maybe_unused]] constexpr contiguous_slice& operator=(Range&& range) && {
-            using type = meta::unqualify<value_type>;
-            constexpr bool has_size = meta::has_size<meta::as_lvalue<Range>>;
-            auto it = std::ranges::begin(range);
-            auto end = std::ranges::end(range);
-
-            // if the range has an explicit size, then we can check it ahead of time
-            // to ensure that it exactly matches that of the slice
-            if constexpr (has_size) {
-                if (std::ranges::size(range) != size()) {
-                    throw ValueError(
-                        "cannot assign a range of size " +
-                        std::to_string(std::ranges::size(range)) +
-                        " to a slice of size " + std::to_string(size())
-                    );
-                }
-            }
-
-            // If we checked the size above, we can avoid checking it again on each
-            // iteration
-            if (step() > 0) {
-                for (ssize_t i = start(); i < stop(); i += step()) {
-                    if constexpr (!has_size) {
-                        if (it == end) {
-                            throw ValueError(
-                                "not enough values to fill slice of size " +
-                                std::to_string(size())
-                            );
-                        }
-                    }
-                    m_data[i].~type();
-                    new (m_data + i) type(*it);
-                    ++it;
-                }
-            } else {
-                for (ssize_t i = start(); i > stop(); i += step()) {
-                    if constexpr (!has_size) {
-                        if (it == end) {
-                            throw ValueError(
-                                "not enough values to fill slice of size " +
-                                std::to_string(size())
-                            );
-                        }
-                    }
-                    m_data[i].~type();
-                    new (m_data + i) type(*it);
-                    ++it;
-                }
-            }
-
-            if constexpr (!has_size) {
-                if (it != end) {
-                    throw ValueError(
-                        "range length exceeds slice of size " +
-                        std::to_string(size())
-                    );
-                }
-            }
-            return *this;
-        }
-
-    private:
-        pointer m_data;
-        bertrand::slice::normalized m_indices;
-    };
+        );
 
     /* A stable, adaptive, k-way merge sort algorithm for contiguous arrays based on
     work by Gelling, Nebel, Smith, and Wild ("Multiway Powersort", 2023), requiring
@@ -4229,16 +3923,20 @@ namespace impl {
     The k-way version presented here is adapted from the above implementations with the
     following changes:
 
-        a)  A custom `less_than` predicate can be provided to the algorithm, which
-            allows for sorting based on arbitrary comparison functions, including
-            lambdas, custom comparator classes, and pointers to members.
-        b)  Merges are safe against exceptions thrown by the comparison function, and
+        a)  The algorithm works on arbitrary ranges, not just random access iterators.
+            If the iterator type does not support O(1) distance calculations, then a
+            `std::ranges::distance()` call will be used to determine the initial size
+            of the range.  All other iterator operations will be done in constant time.
+        b)  A custom `less_than` predicate can be provided to the algorithm, which
+            allows for sorting based on custom comparison functions, including
+            lambdas, user-defined comparators, and pointers to members.
+        c)  Merges are safe against exceptions thrown by the comparison function, and
             will attempt to transfer partially-sorted runs back into the output range
             via RAII.
-        c)  Proper move semantics are used to transfer objects to and from the scratch
+        d)  Proper move semantics are used to transfer objects to and from the scratch
             space, instead of requiring the type to be default constructible and/or
             copyable.
-        d)  The algorithm is generalized to arbitrary `k >= 2`, with a default value of
+        e)  The algorithm is generalized to arbitrary `k >= 2`, with a default value of
             4, in accordance with [2].  Higher `k` will asymptotically reduce the
             number of comparisons needed to sort the array by a factor of `log2(k)`, at
             the expense of deeper tournament trees.  There is likely an architecture-
@@ -4246,9 +3944,9 @@ namespace impl {
             comparisons for a given type.  Further investigation is needed to determine
             the optimal value of `k` for a given situation, as well as possibly allow
             dynamic tuning based on the input data.
-        e)  All tournament trees are swapped from winner trees to loser trees, which
+        f)  All tournament trees are swapped from winner trees to loser trees, which
             reduces branching in the inner loop and simplifies the implementation.
-        f)  Sentinel values will be used by default if
+        g)  Sentinel values will be used by default if
             `std::numeric_limits<T>::has_infinity == true`, which maximizes performance
             as demonstrated in [2].
 
@@ -4270,89 +3968,16 @@ namespace impl {
     struct powersort {
     private:
 
-        template <typename Iter, typename Less>
-        static constexpr void insertion_sort(
-            Iter& begin,
-            Iter& unsorted,
-            Iter& end,
-            Less& less_than
-        ) {
-            using value_type = std::iterator_traits<Iter>::value_type;
-            constexpr auto compare = [](Less& less_than, value_type& temp, Iter& j) {
-                try {
-                    return less_than(temp, *(j - 1));
-                } catch (...) {
-                    *j = std::move(temp);
-                    throw;
-                }
-            };
-
-            // rotate elements to the right until we find a proper insertion point
-            while (unsorted < end) {
-                if (less_than(*unsorted, *(unsorted - 1))) {
-                    Iter j = unsorted;
-                    value_type temp = std::move(*j);
-
-                    // rotate with error recovery
-                    while (compare(less_than, temp, j)) {
-                        *j = std::move(*(j - 1));
-                        if (--j == begin) {
-                            break;
-                        }
-                    }
-
-                    // replace value at insertion point
-                    *j = std::move(temp);
-                }
-                ++unsorted;
-            }
-        }
-
-        template <typename Iter, typename Less>
-            requires (!meta::reference<Iter> && !meta::reference<Less>)
-        struct run {
-            Iter begin;
-            Iter end;
-            size_t power = 0;
-
-            /* Initialize sentinel run. */
-            constexpr run(Iter& begin, Iter& end) :
-                begin(begin),
-                end(end)
-            {}
-
-            /* Detect the next run starting at `begin` and not exceeding `end`. */
-            constexpr run(Less& less_than, Iter& begin, Iter& end) :
-                begin(begin),
-                end(begin)
-            {
-                if (this->end != end && ++this->end != end) {
-                    auto next = this->end + 1;
-                    if (less_than(*this->end, *this->begin)) {  // strictly decreasing
-                        while (next != end && less_than(*next, *this->end)) {
-                            ++this->end;
-                            ++next;
-                        }
-                        ++this->end;
-                        std::ranges::reverse(this->begin, this->end);
-                    } else {  // weakly increasing
-                        while (next != end && !less_than(*next, *this->end)) {
-                            ++this->end;
-                            ++next;
-                        }
-                        ++this->end;
-                    }
-                }
-            }
-        };
-
-        template <typename Iter, typename Less>
-            requires (!meta::reference<Iter> && !meta::reference<Less>)
+        template <typename Begin, typename End, typename Less>
+            requires (
+                !meta::reference<Begin> &&
+                !meta::reference<End> &&
+                !meta::reference<Less>
+            )
         struct merge_tree {
         private:
-            using run = powersort::run<Iter, Less>;
-            using value_type = meta::remove_reference<meta::dereference_type<Iter>>;
-            using pointer = meta::as_pointer<meta::dereference_type<Iter>>;
+            using value_type = meta::remove_reference<meta::dereference_type<Begin>>;
+            using pointer = meta::as_pointer<meta::dereference_type<Begin>>;
             using numeric = std::numeric_limits<meta::unqualify<value_type>>;
             static constexpr bool destroy = !meta::trivially_destructible<value_type>;
 
@@ -4364,6 +3989,175 @@ namespace impl {
                 }
             };
 
+            struct run {
+                Begin iter;  // iterator to start of run
+                size_t start;  // first index of the run
+                size_t stop;  // one past last index of the run
+                size_t power = 0;
+
+                /* Initialize sentinel run. */
+                constexpr run(Begin& iter, size_t start, size_t stop) :
+                    iter(iter),
+                    start(start),
+                    stop(stop)
+                {}
+
+                /* Detect the next run beginning at `start` and not exceeding `stop`.
+                `iter` is an iterator to the start index, which will be advanced to
+                the end of the detected run as an out parameter.  If the run is shorter
+                than the minimum length, it will be grown to the minimum length using
+                insertion sort. */
+                constexpr run(
+                    Less& less_than,
+                    pointer scratch,
+                    Begin& iter,
+                    size_t start,
+                    size_t size
+                ) :
+                    iter(iter),
+                    start(start),
+                    stop(start)
+                {
+                    if (stop < size && ++stop < size) {
+                        Begin next = iter;
+                        ++next;
+                        if (less_than(*next, *iter)) {  // strictly decreasing
+                            do {
+                                ++iter;
+                                ++next;
+                            } while (++stop < size && less_than(*next, *iter));
+
+                            reverse(scratch, iter);
+
+                        } else {  // weakly increasing
+                            do {
+                                ++iter;
+                                ++next;
+                            } while (++stop < size && !less_than(*next, *iter));
+                        }
+                    }
+
+                    /// grow the run to minimum length
+                    grow(less_than, scratch, iter, size);
+                }
+
+            private:
+
+                constexpr void reverse(pointer scratch, Begin& iter) {
+                    // if the iterator is bidirectional, then we can do an O(n / 2)
+                    // pairwise swap
+                    if constexpr (meta::bidirectional_iterator<Begin>) {
+                        std::ranges::reverse(this->iter, iter);
+
+                    // otherwise, if the iterator is forward-only, we have to do an
+                    // O(2 * n) move into scratch space and then move back.
+                    } else {
+                        pointer begin = scratch;
+                        pointer end = scratch + (stop - start);
+                        Begin i = this->iter;
+                        while (begin < end) {
+                            new (begin++) value_type(std::move(*i++));
+                        }
+                        Begin j = this->iter;
+                        while (end-- > scratch) {
+                            *j = std::move(*(end));
+                            if constexpr (destroy) { end->~value_type(); }
+                            ++j;
+                        }
+                    }
+                }
+
+                constexpr void grow(
+                    Less& less_than,
+                    pointer scratch,
+                    Begin& unsorted,
+                    size_t size
+                ) {
+                    size_t limit = std::min(start + min_run, size);
+
+                    // if the iterator is bidirectional, then we can rotate in-place
+                    // from right to left
+                    if constexpr (meta::bidirectional_iterator<Begin>) {
+                        constexpr auto compare = [](
+                            Less& less_than,
+                            value_type& temp,
+                            Begin& prev,
+                            Begin& curr
+                        ) {
+                            try {
+                                return less_than(temp, *prev);
+                            } catch (...) {
+                                *curr = std::move(temp);  // fill hole
+                                throw;
+                            }
+                        };
+
+                        while (stop < limit) {
+                            // if the unsorted element is less than the previous
+                            // element, we need to rotate it into the correct position
+                            Begin prev = unsorted;
+                            --prev;
+                            if (less_than(*unsorted, *prev)) {
+                                value_type temp = std::move(*unsorted);
+                                Begin curr = unsorted;
+                                size_t idx = stop;
+
+                                // rotate hole to the left until we find a proper
+                                // insertion point, recovering on error
+                                while (idx > start && compare(less_than, temp, prev, curr)) {
+                                    *curr-- = std::move(*prev--);
+                                    --idx;
+                                }
+
+                                // fill hole at insertion point
+                                *curr = std::move(temp);
+                            }
+                            ++unsorted;
+                            ++stop;
+                        }
+
+                    // otherwise, we have to scan the sorted portion from left to right
+                    // and move into scratch space to do a rotation
+                    } else {
+                        while (stop < limit) {
+                            // scan sorted portion for insertion point
+                            Begin curr = this->iter;
+                            size_t idx = start;
+                            while (idx < stop) {
+                                // stop at the first element that is strictly greater
+                                // than the unsorted element
+                                if (less_than(*unsorted, *curr)) {
+                                    // move subsequent elements into scratch space
+                                    Begin temp = curr;
+                                    pointer p = scratch;
+                                    pointer p2 = scratch + stop - idx;
+                                    while (p < p2) {
+                                        new (p++) value_type(std::move(*temp++));
+                                    }
+
+                                    // move unsorted element to insertion point
+                                    *curr++ = std::move(*unsorted);
+
+                                    // move intervening elements back
+                                    p = scratch;
+                                    p2 = scratch + stop - idx;
+                                    while (p < p2) {
+                                        *curr++ = std::move(*p);
+                                        if constexpr (destroy) { p->~value_type(); }
+                                        ++p;
+                                    }
+                                    break;
+                                }
+                                ++curr;
+                                ++idx;
+                            }
+                            ++unsorted;
+                            ++stop;
+                        }
+                    }
+                }
+            };
+
             /* An exception-safe tournament tree generalized to arbitrary `N >= 2`.  If
             an error occurs during a comparison, then all runs will be transferred back
             into the output range in partially-sorted order via RAII. */
@@ -4372,7 +4166,7 @@ namespace impl {
                 static constexpr size_t R = N + (N % 2);
                 Less& less_than;
                 pointer scratch;
-                Iter output;
+                Begin output;
                 size_t size;
                 std::array<pointer, R> begin;  // begin iterators for each run
                 std::array<pointer, R> end;  // end iterators for each run
@@ -4387,51 +4181,50 @@ namespace impl {
                 /// next 2^i elements, from left to right.  The last layer will be
                 /// incomplete if `N` is not a power of two.
 
-                template <meta::is<Iter>... Iters> requires (sizeof...(Iters) == N + 1)
+                template <meta::is<run>... Runs> requires (sizeof...(Runs) == N)
                 constexpr tournament_tree(
                     Less& less_than,
                     pointer scratch,
-                    Iters&... iters
+                    Runs&... runs
                 ) :
                     less_than(less_than),
                     scratch(scratch),
-                    output(meta::unpack_arg<0>(iters...)),
-                    size(meta::unpack_arg<N>(iters...) - output),
+                    output(meta::unpack_arg<0>(runs...).iter),
+                    size((0 + ... + (runs.stop - runs.start))),
                     begin([&]<size_t... Is>(std::index_sequence<Is...>) {
-                        // begin iterators initialize to offsets within the scratch
-                        // space based on the size of each run + an extra sentinel
+                        run& first = meta::unpack_arg<0>(runs...);
                         if constexpr (N % 2) {
-                            // if `N` is odd, then we have to insert an additional
-                            // sentinel at the end of the scratch space to give each
-                            // internal node exactly two children
                             return std::array<pointer, R>{
-                                (scratch + (meta::unpack_arg<Is>(iters...) - output) + Is)...,
-                                scratch + size + N
+                                (scratch + (runs.start - first.start) + Is)...,
+                                (scratch + size + N)  // extra sentinel
                             };
                         } else {
                             return std::array<pointer, R>{
-                                (scratch + (meta::unpack_arg<Is>(iters...) - output) + Is)...
+                                (scratch + (runs.start - first.start) + Is)...
                             };
                         }
                     }(std::make_index_sequence<N>{})),
-                    end(begin)  // end iterators initialize to same as begin
+                    end(begin)
                 {
                     // move all runs into scratch space.  Afterwards, the end iterators
-                    // will point to the sentinel values for each run, plus a possible
-                    // extra sentinel if `N` is odd.
+                    // will point to the sentinel values for each run
                     [&]<size_t I = 0>(this auto&& self) {
-                        if constexpr (I < internal.size()) {
-                            internal[I] = R;  // nodes are initialized to sentinel
+                        if constexpr (I < R - 1) {
+                            internal[I] = R;  // nodes are initialized to empty value
                         }
 
                         if constexpr (I < N) {
-                            Iter& i = meta::unpack_arg<I>(iters...);
-                            Iter& j = meta::unpack_arg<I + 1>(iters...);
-                            while (i != j) { new (end[I]++) value_type(std::move(*i++)); }
+                            run& r = meta::unpack_arg<I>(runs...);
+                            for (size_t i = r.start; i < r.stop; ++i) {
+                                new (end[I]++) value_type(std::move(*r.iter++));
+                            }
                             new (end[I]) value_type(numeric::infinity());
                             std::forward<decltype(self)>(self).template operator()<I + 1>();
 
-                        } else if constexpr (N % 2) {
+                        // if `N` is odd, then we have to insert an additional
+                        // sentinel at the end of the scratch space to give each
+                        // internal node exactly two children
+                        } else if constexpr (begin.size()) {
                             new (end[I]) value_type(numeric::infinity());
                         }
                     }();
@@ -4515,7 +4308,7 @@ namespace impl {
             struct tournament_tree<N, false> {
                 Less& less_than;
                 pointer scratch;
-                Iter output;
+                Begin output;
                 size_t size;
                 std::array<pointer, N> begin;  // begin iterators for each run
                 std::array<pointer, N> end;  // end iterators for each run
@@ -4535,35 +4328,32 @@ namespace impl {
                 /// node and causing the leaf that would have been its only child to
                 /// skip it during initialization/update of the tournament tree.
 
-                template <meta::is<Iter>... Iters> requires (sizeof...(Iters) == N + 1)
+                template <meta::is<run>... Runs> requires (sizeof...(Runs) == N)
                 constexpr tournament_tree(
                     Less& less_than,
                     pointer scratch,
-                    Iters&... iters
+                    Runs&... runs
                 ) :
                     less_than(less_than),
                     scratch(scratch),
-                    output(meta::unpack_arg<0>(iters...)),
-                    size(meta::unpack_arg<N>(iters...) - output),
-                    begin([&]<size_t... Is>(std::index_sequence<Is...>) {
-                        return std::array<pointer, N>{
-                            (scratch + (meta::unpack_arg<Is>(iters...) - output) + Is)...
-                        };
-                    }(std::make_index_sequence<N>{})),
+                    output(meta::unpack_arg<0>(runs...).iter),
+                    size((0 + ... + (runs.stop - runs.start))),
+                    begin{(scratch + (runs.start - meta::unpack_arg<0>(runs...).start))...},
                     end(begin)
                 {
                     // move all runs into scratch space, without any extra sentinels.
                     // Record the minimum length of each run for the the first stage.
                     [&]<size_t I = 0>(this auto&& self) {
-                        if constexpr (I < internal.size()) {
+                        if constexpr (I < (N - 1 - (N % 2))) {
                             internal[I] = N;  // nodes are initialized to sentinel
                         }
 
                         if constexpr (I < N) {
-                            Iter& i = meta::unpack_arg<I>(iters...);
-                            Iter& j = meta::unpack_arg<I + 1>(iters...);
-                            while (i != j) { new (end[I]++) value_type(std::move(*i++)); }
-                            smallest = std::min(smallest, end[I] - begin[I]);
+                            run& r = meta::unpack_arg<I>(runs...);
+                            for (size_t i = r.start; i < r.stop; ++i) {
+                                new (end[I]++) value_type(std::move(*r.iter++));
+                            }
+                            smallest = std::min(smallest, r.stop - r.start);
                             std::forward<decltype(self)>(self).template operator()<I + 1>();
                         }
                     }();
@@ -4683,7 +4473,7 @@ namespace impl {
                     // be done before another boundscheck must be performed.
                     smallest = std::numeric_limits<size_t>::max();
                     for (size_t i = 0; i < I; ++i) {
-                        smallest = std::min(smallest, end[i] - begin[i]);
+                        smallest = std::min(smallest, size_t(end[i] - begin[i]));
                     }
                 }
 
@@ -4718,7 +4508,7 @@ namespace impl {
             struct tournament_tree<2, true> {
                 Less& less_than;
                 pointer scratch;
-                Iter output;
+                Begin output;
                 size_t size;
                 std::array<pointer, 2> begin;
                 std::array<pointer, 2> end;
@@ -4726,20 +4516,24 @@ namespace impl {
                 constexpr tournament_tree(
                     Less& less_than,
                     pointer scratch,
-                    Iter& l,
-                    Iter& m,
-                    Iter& r
+                    run& left,
+                    run& right
                 ) :
                     less_than(less_than),
                     scratch(scratch),
-                    output(l),
-                    size(r - l),
-                    begin {scratch, scratch + (m - l) + 1},
+                    output(left.iter),
+                    size((left.stop - left.start) + (right.stop - right.start)),
+                    begin{scratch, scratch + (left.stop - left.start) + 1},
                     end(begin)
                 {
-                    while (l != m) { new (end[0]++) value_type(std::move(*l++)); }
+                    for (size_t i = left.start; i < left.stop; ++i) {
+                        new (end[0]++) value_type(std::move(*left.iter++));
+                    }
                     new (end[0]) value_type(numeric::infinity());
-                    while (m != r) { new (end[1]++) value_type(std::move(*m++)); }
+
+                    for (size_t i = right.start; i < right.stop; ++i) {
+                        new (end[1]++) value_type(std::move(*right.iter++));
+                    }
                     new (end[1]) value_type(numeric::infinity());
                 }
 
@@ -4764,141 +4558,64 @@ namespace impl {
                 }
             };
 
-            /* An optimized tournament tree for binary merges without sentinel values,
-            which only copies the smaller run into the scratch space. */
+            /* An optimized tournament tree for binary merges without sentinel values. */
             template <>
             struct tournament_tree<2, false> {
                 Less& less_than;
                 pointer scratch;
-                Iter& l;
-                Iter& m;
-                Iter& r;
+                Begin output;
+                size_t size;
+                std::array<pointer, 2> begin;
+                std::array<pointer, 2> end;
 
-                /* Merge policy used when the left run is smaller than the right. */
-                struct left_merge {
-                    Less& less_than;
-                    Iter output;
-                    pointer c1;
-                    pointer e1;
-                    Iter c2;
-                    Iter e2;
-
-                    constexpr left_merge(
-                        Less& less_than,
-                        pointer scratch,
-                        Iter& l,
-                        Iter& m,
-                        Iter& r,
-                        size_t n
-                    ) :
-                        less_than(less_than),
-                        output(l),
-                        c1(scratch),
-                        e1(scratch + n),
-                        c2(m),
-                        e2(r)
-                    {
-                        for (size_t i = 0; i < n; ++i) {
-                            new (scratch++) value_type(std::move(*l++));
-                        }
+                constexpr tournament_tree(
+                    Less& less_than,
+                    pointer scratch,
+                    run& left,
+                    run& right
+                ) :
+                    less_than(less_than),
+                    scratch(scratch),
+                    output(left.iter),
+                    size((left.stop - left.start) + (right.stop - right.start)),
+                    begin{scratch, scratch + (left.stop - left.start)},
+                    end(begin)
+                {
+                    for (size_t i = left.start; i < left.stop; ++i) {
+                        new (end[0]++) value_type(std::move(*left.iter++));
                     }
-
-                    constexpr void operator()() {
-                        while (c1 != e1 && c2 != e2) {
-                            if (less_than(*c2, *c1)) {
-                                *output++ = std::move(*c2++);  // no need to destroy
-                            } else {
-                                *output++ = std::move(*c1);
-                                if constexpr (destroy) { c1->~value_type(); }
-                                ++c1;
-                            }
-                        }
-                        while (c1 != e1) {
-                            *output++ = std::move(*c1);
-                            if constexpr (destroy) { c1->~value_type(); }
-                            ++c1;
-                        }
+                    for (size_t i = right.start; i < right.stop; ++i) {
+                        new (end[1]++) value_type(std::move(*right.iter++));
                     }
-
-                    constexpr ~left_merge() {
-                        while (c2 != e2) {
-                            *output++ = std::move(*c2++);  // no need to destroy
-                        }
-                        while (c1 != e1) {
-                            *output++ = std::move(*c1);
-                            if constexpr (destroy) { c1->~value_type(); }
-                            ++c1;
-                        }
-                    }
-                };
-
-                /* Merge policy used when the right run is smaller than the left. */
-                struct right_merge {
-                    Less& less_than;
-                    Iter output;
-                    Iter c1;
-                    Iter s1;
-                    pointer c2;
-                    pointer s2;
-
-                    constexpr right_merge(
-                        Less& less_than,
-                        pointer scratch,
-                        Iter& l,
-                        Iter& m,
-                        Iter& r,
-                        size_t n
-                    ) :
-                        less_than(less_than),
-                        output(r - 1),
-                        c1(m - 1),
-                        s1(l - 1),
-                        c2(scratch + n - 1),
-                        s2(scratch - 1)
-                    {
-                        for (size_t i = 0; i < n; ++i) {
-                            new (scratch++) value_type(std::move(*m++));
-                        }
-                    }
-
-                    constexpr void operator()() {
-                        while (c1 != s1 && c2 != s2) {
-                            if (less_than(*c2, *c1)) {
-                                *output-- = std::move(*c2);
-                                if constexpr (destroy) { c2->~value_type(); }
-                                --c2;
-                            } else {
-                                *output-- = std::move(*c1--);  // no need to destroy
-                            }
-                        }
-                        while (c2 != s2) {
-                            *output-- = std::move(*c2);
-                            if constexpr (destroy) { c2->~value_type(); }
-                            --c2;
-                        }
-                    }
-
-                    // due to postfix decrement, `c1` and `c2` are already at the
-                    // correct positions when the call operator exits
-                    constexpr ~right_merge() {
-                        while (c1 != s1) {
-                            *output-- = std::move(*c1--);  // no need to destroy
-                        }
-                        while (c2 != s2) {
-                            *output-- = std::move(*c2);
-                            if constexpr (destroy) { c2->~value_type(); }
-                            --c2;
-                        }
-                    }
-                };
+                }
 
                 constexpr void operator()() {
-                    auto n1 = m - l;
-                    auto n2 = r - m;
-                    if (n1 <= n2) {
-                        left_merge{less_than, scratch, l, m, r, n1}();
-                    } else {
-                        right_merge{less_than, scratch, l, m, r, n2}();
+                    while (begin[0] < end[0] && begin[1] < end[1]) {
+                        bool less = less_than(*begin[1], *begin[0]);
+                        *output++ = std::move(*begin[less]);
+                        if constexpr (destroy) { begin[less]->~value_type(); }
+                        ++begin[less];
+                    }
+                    while (begin[0] < end[0]) {
+                        *output++ = std::move(*begin[0]);
+                        if constexpr (destroy) { begin[0]->~value_type(); }
+                        ++begin[0];
+                    }
+                    while (begin[1] < end[1]) {
+                        *output++ = std::move(*begin[1]);
+                        if constexpr (destroy) { begin[1]->~value_type(); }
+                        ++begin[1];
+                    }
+                }
+
+                constexpr ~tournament_tree() {
+                    for (size_t i = 0; i < begin.size(); ++i) {
+                        while (begin[i] != end[i]) {
+                            *output++ = std::move(*begin[i]);
+                            if constexpr (destroy) { begin[i]->~value_type(); }
+                            ++begin[i];
+                        }
+                        if constexpr (destroy) { end[i]->~value_type(); }
                     }
                 }
             };
@@ -4909,17 +4626,17 @@ namespace impl {
 
             static constexpr size_t get_power(
                 size_t n,
-                size_t prev_begin,
-                size_t next_begin,
-                size_t next_end
+                size_t prev_start,
+                size_t next_start,
+                size_t next_stop
             ) noexcept {
                 /// NOTE: these implementations are taken straight from the reference,
                 /// and have only been lightly edited for readability.
 
                 // if a built-in compiler intrinsic is available, use it
                 #if defined(__GNUC__) || defined(__clang__)
-                    size_t l = prev_begin + next_begin;
-                    size_t r = next_begin + next_end;
+                    size_t l = prev_start + next_start;
+                    size_t r = next_start + next_stop;
                     size_t a = (l << 30) / n;
                     size_t b = (r << 30) / n;
                     if constexpr (sizeof(size_t) <= sizeof(unsigned int)) {
@@ -4931,8 +4648,8 @@ namespace impl {
                     }
 
                 #elif defined(_MSC_VER)
-                    size_t l = prev_begin + next_begin;
-                    size_t r = next_begin + next_end;
+                    size_t l = prev_start + next_start;
+                    size_t r = next_start + next_stop;
                     size_t a = (l << 30) / n;
                     size_t b = (r << 30) / n;
                     unsigned long index;
@@ -4944,8 +4661,8 @@ namespace impl {
                     return ((index - 1) >> 1) + 1;
 
                 #else
-                    size_t l = prev_begin + next_begin;
-                    size_t r = next_begin + next_end;
+                    size_t l = prev_start + next_start;
+                    size_t r = next_start + next_stop;
                     size_t n_common_bits = 0;
                     bool digit_a = l >= n;
                     bool digit_b = r >= n;
@@ -4964,22 +4681,18 @@ namespace impl {
                 #endif
             }
 
-            Less& less_than;
-            std::vector<run> stack;
+            size_t size;
             std::unique_ptr<value_type, deleter> scratch;
+            std::vector<run> stack;
 
         public:
-            constexpr merge_tree(
-                size_t length,
-                Less& less_than,
-                run& prev,
-                Iter& begin,
-                Iter& end
-            ) :
-                less_than(less_than),
+
+            /* Allocate stack and scratch space for a range of the given size. */
+            constexpr merge_tree(size_t size) :
+                size(size),
                 scratch(
                     reinterpret_cast<pointer>(
-                        std::malloc(sizeof(value_type) * (length + k + 1))
+                        std::malloc(sizeof(value_type) * (size + k + 1))
                     ),
                     deleter{}
                 )
@@ -4987,34 +4700,30 @@ namespace impl {
                 if (!scratch) {
                     throw MemoryError("failed to allocate scratch space");
                 }
-                stack.reserve((k - 1) * (ceil_log4(length) + 1));
-                stack.emplace_back(begin, end);  // power 0 as sentinel entry
-                while (prev.end < end) {
+                stack.reserve((k - 1) * (ceil_log4(size) + 1));
+            }
 
-                    // grow and possibly reverse next run using insertion sort
-                    run next {less_than, prev.end, end};
-                    if ((next.end - next.begin) < min_run) {
-                        Iter unsorted = next.end;
-                        next.end = std::min(end, next.begin + min_run);
-                        insertion_sort(
-                            next.begin,
-                            unsorted,
-                            next.end,
-                            less_than
-                        );
-                    }
+            /* Execute the sorting algorithm. */
+            constexpr void operator()(Begin& begin, Less& less_than) {
+                stack.emplace_back(begin, 0, size);  // power 0 as sentinel entry
+
+                // identify the first weakly increasing or strictly decreasing run
+                // starting at `begin` and grow to minimum length using insertion sort
+                run prev {less_than, scratch.get(), begin, 0, size};
+                while (prev.stop < size) {
+                    run next {less_than, scratch.get(), begin, prev.stop, size};
 
                     // compute previous run's power with respect to next run
                     prev.power = get_power(
-                        length,
-                        prev.begin - begin,
-                        next.begin - begin,
-                        next.end - begin
+                        size,
+                        prev.start,
+                        next.start,
+                        next.stop
                     );
 
                     // invariant: powers on stack weakly increase from bottom to top.
                     // If violated, merge runs with equal power into `prev` until
-                    // invariant is restored.  Only at most the top 4 runs will ever
+                    // invariant is restored.  Only at most the top 3 runs will ever
                     // meet this criteria due to the structure of the merge tree.
                     while (stack.back().power > prev.power) {
                         run* top = &stack.back();
@@ -5022,8 +4731,6 @@ namespace impl {
                         while ((top - same_power)->power == top->power) {
                             ++same_power;
                         }
-                        // a vtable that dispatches to the correct tournament tree
-                        // based on the number of runs to merge
                         using F = void(*)(Less&, pointer, std::vector<run>&, run&);
                         using VTable = std::array<F, k - 1>;
                         constexpr VTable vtable = []<size_t... Is>(std::index_sequence<Is...>) {
@@ -5041,63 +4748,45 @@ namespace impl {
                                     std::vector<run>& stack,
                                     run& prev
                                 ) {
-                                    Iter temp = (&stack.back() - Is)->begin;
-                                    tournament_tree<Is + 2>{
+                                    constexpr size_t I = Is;
+                                    Begin temp = stack[stack.size() - I - 1].iter;
+                                    tournament_tree<I + 2>{
                                         less_than,
                                         scratch,
-                                        (&stack.back() - Is + Js)->begin...,
-                                        prev.begin,
-                                        prev.end
+                                        stack[stack.size() - I + Js - 1]...,
+                                        prev
                                     }();
-                                    prev.begin = temp;
+                                    prev.iter = temp;
                                 };
                             }(std::make_index_sequence<Is + 1>{})...};
                         }(std::make_index_sequence<k - 1>{});
 
-                        // merge runs with equal power
+                        // merge runs with equal power by dispatching to vtable
                         vtable[same_power - 1](less_than, scratch.get(), stack, prev);
-                        stack.resize(stack.size() - same_power);  // pop merged runs
+                        stack.erase(stack.end() - same_power, stack.end());  // pop merged runs
                     }
 
                     // push next run onto stack
                     stack.emplace_back(std::move(prev));
                     prev = std::move(next);
                 }
-            }
 
-            /* Merge the contents of the stack in steps of size `k`. */
-            constexpr void operator()(run& prev) {
                 // Because runs typically increase in size exponentially as the stack
                 // is emptied, we can manually merge the first few such that the stack
-                // size is reduced to a multiple of `k - 1`, such that repeatedly
-                // merging `k` runs will give `k`-way merges the rest of the way.  This
-                // maximizes the benefit of the tournament tree and minimizes total
-                // comparisons.
+                // size is reduced to a multiple of `k - 1`, so that we can do `k`-way
+                // merges the rest of the way.  This maximizes the benefit of the
+                // tournament tree and minimizes total comparisons.
                 using F = void(*)(Less&, pointer, std::vector<run>&, run&);
                 using VTable = std::array<F, k - 1>;
                 constexpr VTable vtable = []<size_t... Is>(std::index_sequence<Is...>) {
                     return VTable{
-                        // 0: k-way merge
-                        []<size_t... Js>(
-                            std::index_sequence<Js...>
-                        ) {
-                            return +[](
-                                Less& less_than,
-                                pointer scratch,
-                                std::vector<run>& stack,
-                                run& prev
-                            ) {
-                                tournament_tree<k>{
-                                    less_than,
-                                    scratch,
-                                    (&stack.back() - (k - 2) + Js)->begin...,
-                                    prev.begin,
-                                    prev.end
-                                }();
-                                prev.being = (&stack.back() - (k - 2))->begin;
-                                stack.resize(stack.size() - (k - 1));
-                            };
-                        }(std::make_index_sequence<k - 1>{}),
+                        // 0: do nothing
+                        +[](
+                            Less& less_than,
+                            pointer scratch,
+                            std::vector<run>& stack,
+                            run& prev
+                        ) {},
                         // 1: 2-way
                         // 2: 3-way,
                         // 3: 4-way,
@@ -5112,21 +4801,21 @@ namespace impl {
                                 std::vector<run>& stack,
                                 run& prev
                             ) {
-                                tournament_tree<Is + 2>{
+                                constexpr size_t I = Is;
+                                tournament_tree<I + 2>{
                                     less_than,
                                     scratch,
-                                    (&stack.back() - Is + Js)->begin...,
-                                    prev.begin,
-                                    prev.end
+                                    stack[stack.size() - I + Js - 1]...,
+                                    prev
                                 }();
-                                prev.begin = (&stack.back() - Is)->begin;
-                                stack.resize(stack.size() - Is - 1);
+                                prev.iter = stack[stack.size() - I - 1].iter;
+                                stack.erase(stack.end() - I - 1, stack.end());  // pop merged runs
                             };
                         }(std::make_index_sequence<Is + 1>{})...
                     };
                 }(std::make_index_sequence<k - 2>{});
 
-                // above vtable is only consulted for the first merge, after which we
+                // vtable is only consulted for the first merge, after which we
                 // devolve to k-way merges
                 vtable[stack.size() % (k - 1)](less_than, scratch.get(), stack, prev);
                 while (stack.size()) {
@@ -5134,24 +4823,23 @@ namespace impl {
                         tournament_tree<k>{
                             less_than,
                             scratch.get(),
-                            (&stack.back() - (k - 2) + Is)->begin...,
-                            prev.begin,
-                            prev.end
+                            stack[stack.size() - (k - 1) + Is]...,
+                            prev
                         }();
-                        prev.begin = (&stack.back() - (k - 2))->begin;
-                        stack.resize(stack.size() - (k - 1));  // pop merged runs
+                        prev.iter = stack[stack.size() - (k - 1)].iter;
+                        stack.erase(stack.end() - (k - 1), stack.end());  // pop merged runs
                     }(std::make_index_sequence<k - 1>{});
                 }
             }
         };
 
-        template <typename Iter, meta::member T>
-            requires (!meta::reference<Iter> && !meta::reference<T>)
+        template <typename Begin, meta::member T>
+            requires (!meta::reference<Begin> && !meta::reference<T>)
         struct sort_by_member {
             T member;
             constexpr bool operator()(auto&& l, auto&& r) const noexcept {
                 if constexpr (meta::member_function<T>) {
-                    return (l.*member()) < (r.*member());
+                    return ((l.*member)()) < ((r.*member)());
                 } else {
                     return (l.*member) < (r.*member);
                 }
@@ -5174,91 +4862,428 @@ namespace impl {
         valid but unspecified state, and may be partially sorted.  Any other exception
         (e.g. in a move constructor/assignment operator, destructor, or iterator
         operation) may result in undefined behavior. */
-        template <meta::contiguous_iterator Iter, typename Less = std::less<>>
-            requires (
-                meta::copyable<Iter> &&
-                meta::movable<meta::remove_reference<meta::dereference_type<Iter>>> &&
-                meta::move_assignable<meta::remove_reference<meta::dereference_type<Iter>>> &&
-                meta::destructible<meta::remove_reference<meta::dereference_type<Iter>>> &&
-                (
-                    (
-                        meta::member_object_of<
-                            Less,
-                            meta::remove_reference<meta::dereference_type<Iter>>
-                        > &&
-                        meta::has_lt<meta::remove_member<Less>, meta::remove_member<Less>>
-                    ) ||
-                    (
-                        meta::member_function_of<
-                            Less,
-                            meta::remove_reference<meta::dereference_type<Iter>>
-                        > &&
-                        meta::invocable<Less, meta::dereference_type<Iter>> &&
-                        meta::has_lt<
-                            meta::invoke_type<Less, meta::dereference_type<Iter>>,
-                            meta::invoke_type<Less, meta::dereference_type<Iter>>
-                        >
-                    ) ||
-                    (
-                        !meta::member<Less> &&
-                        meta::invoke_returns<
-                            bool,
-                            meta::as_lvalue<Less>,
-                            meta::dereference_type<Iter>,
-                            meta::dereference_type<Iter>
-                        >
-                    )
-                )
-            )
-        static constexpr void operator()(Iter begin, Iter end, Less&& less_than = {}) {
-            using value_type = std::iterator_traits<Iter>::value_type;
+        template <typename Begin, typename End, typename Less = std::less<>>
+            requires (impl::sortable<Begin, End, Less>)
+        static constexpr void operator()(Begin begin, End end, Less&& less_than = {}) {
+            using B = meta::remove_reference<Begin>;
+            using E = meta::remove_reference<End>;
             using L = meta::remove_reference<Less>;
 
-            size_t length = end - begin;
+            // get overall length of range (possibly O(n) if iterators do not support
+            // O(1) distance)
+            auto length = std::ranges::distance(begin, end);
             if (length < 2) {
                 return;  // trivially sorted
             }
 
+            // convert member pointers into proper comparisons
             if constexpr (meta::member<Less>) {
-                sort_by_member<Iter, L> cmp {std::forward<Less>(less_than)};
-
-                // identify and possibly reverse first weakly increasing or strictly
-                // decreasing run starting at `begin`
-                run<Iter, L> prev {cmp, begin, end};
-
-                // grow run to minimum length using insertion sort
-                if ((prev.end - prev.begin) < min_run) {
-                    Iter unsorted = prev.end;
-                    prev.end = std::min(end, prev.begin + min_run);
-                    insertion_sort(
-                        prev.begin,
-                        unsorted,
-                        prev.end,
-                        cmp
-                    );
-                }
-
-                // continue left-right scan to build consolidated merge tree, then
-                // flatten tree to complete sort
-                merge_tree<Iter, L> {length, cmp, prev, begin, end}(prev);
-
+                using C = sort_by_member<B, L>;
+                C cmp {std::forward<Less>(less_than)};
+                merge_tree<B, E, C>{size_t(length)}(begin, cmp);
             } else {
-                run<Iter, L> prev {less_than, begin, end};
-
-                if ((prev.end - prev.begin) < min_run) {
-                    Iter unsorted = prev.end;
-                    prev.end = std::min(end, prev.begin + min_run);
-                    insertion_sort(
-                        prev.begin,
-                        unsorted,
-                        prev.end,
-                        less_than
-                    );
-                }
-
-                merge_tree<Iter, L> {length, less_than, prev, begin, end}(prev);
+                merge_tree<B, E, L>{size_t(length)}(begin, less_than);
             }
         }
+
+        /* An equivalent of the iterator-based call operator that accepts a range and
+        uses its `size()` to deduce the length of the range. */
+        template <meta::iterable Range, typename Less = std::less<>>
+            requires (impl::sortable<meta::begin_type<Range>, meta::end_type<Range>, Less>)
+        static constexpr void operator()(Range& range, Less&& less_than = {}) {
+            using B = meta::remove_reference<meta::begin_type<Range>>;
+            using E = meta::remove_reference<meta::end_type<Range>>;
+            using L = meta::remove_reference<Less>;
+
+            // get overall length of range (possibly O(n) if the range is not
+            // explicitly sized and iterators do not support O(1) distance)
+            auto length = std::ranges::distance(range);
+            if (length < 2) {
+                return;  // trivially sorted
+            }
+            auto begin = std::ranges::begin(range);
+
+            // convert member pointers into proper comparisons
+            if constexpr (meta::member<Less>) {
+                using C = sort_by_member<B, L>;
+                C cmp {std::forward<Less>(less_than)};
+                merge_tree<B, E, C>{size_t(length)}(begin, cmp);
+            } else {
+                merge_tree<B, E, L>{size_t(length)}(begin, less_than);
+            }
+        }
+    };
+
+    /* Apply python-style wraparound to a given index, throwing an `IndexError` if it
+    is out of bounds after normalizing. */
+    inline constexpr ssize_t normalize_index(size_t size, ssize_t i) {
+        ssize_t n = static_cast<ssize_t>(size);
+        ssize_t j = i + n * (i < 0);
+        if (j < 0 || j >= n) {
+            throw IndexError(std::to_string(i));
+        }
+        return j;
+    }
+
+    /* Apply python-style wraparound to a given index, truncating to the nearest edge
+    if it is out of bounds after normalizing. */
+    inline constexpr ssize_t truncate_index(size_t size, ssize_t i) noexcept {
+        ssize_t n = static_cast<ssize_t>(size);
+        i += n * (i < 0);
+        if (i < 0) {
+            return 0;
+        } else if (i >= n) {
+            return n;
+        }
+        return i;
+    }
+
+    template <meta::not_void T> requires (!meta::reference<T>)
+    struct contiguous_iterator {
+        using iterator_category = std::contiguous_iterator_tag;
+        using difference_type = ssize_t;
+        using value_type = T;
+        using reference = meta::as_lvalue<value_type>;
+        using const_reference = meta::as_lvalue<meta::as_const<value_type>>;
+        using pointer = meta::as_pointer<value_type>;
+        using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
+
+        constexpr contiguous_iterator(pointer ptr = nullptr) noexcept : ptr(ptr) {};
+        constexpr contiguous_iterator(const contiguous_iterator&) noexcept = default;
+        constexpr contiguous_iterator(contiguous_iterator&&) noexcept = default;
+        constexpr contiguous_iterator& operator=(const contiguous_iterator&) noexcept = default;
+        constexpr contiguous_iterator& operator=(contiguous_iterator&&) noexcept = default;
+
+        template <typename V> requires (meta::assignable<reference, V>)
+        constexpr contiguous_iterator& operator=(V&& value) && noexcept(
+            noexcept(*ptr = std::forward<V>(value))
+        ) {
+            *ptr = std::forward<V>(value);
+            return *this;
+        }
+
+        template <typename V> requires (meta::convertible_to<reference, V>)
+        [[nodiscard]] constexpr operator V() && noexcept(noexcept(V(**this))) {
+            return **this;
+        }
+
+        [[nodiscard]] constexpr reference operator*() noexcept {
+            return *ptr;
+        }
+
+        [[nodiscard]] constexpr const_reference operator*() const noexcept {
+            return *ptr;
+        }
+
+        [[nodiscard]] constexpr pointer operator->() noexcept {
+            return ptr;
+        }
+
+        [[nodiscard]] constexpr const_pointer operator->() const noexcept {
+            return ptr;
+        }
+
+        [[nodiscard]] constexpr reference operator[](difference_type n) noexcept {
+            return ptr[n];
+        }
+
+        [[nodiscard]] constexpr const_reference operator[](difference_type n) const noexcept {
+            return ptr[n];
+        }
+
+        constexpr contiguous_iterator& operator++() noexcept {
+            ++ptr;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr contiguous_iterator operator++(int) noexcept {
+            contiguous_iterator copy = *this;
+            ++(*this);
+            return copy;
+        }
+
+        constexpr contiguous_iterator& operator+=(difference_type n) noexcept {
+            ptr += n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr contiguous_iterator operator+(difference_type n) const noexcept {
+            return {ptr + n};
+        }
+
+        constexpr contiguous_iterator& operator--() noexcept {
+            --ptr;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr contiguous_iterator operator--(int) noexcept {
+            contiguous_iterator copy = *this;
+            --(*this);
+            return copy;
+        }
+
+        constexpr contiguous_iterator& operator-=(difference_type n) noexcept {
+            ptr -= n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr contiguous_iterator operator-(difference_type n) const noexcept {
+            return {ptr - n};
+        }
+
+        template <meta::is<T> U>
+        [[nodiscard]] constexpr difference_type operator-(
+            const contiguous_iterator<U>& rhs
+        ) const noexcept {
+            return ptr - rhs.ptr;
+        }
+
+        template <meta::is<T> U>
+        [[nodiscard]] constexpr std::strong_ordering operator<=>(
+            const contiguous_iterator<U>& rhs
+        ) const noexcept {
+            return ptr <=> rhs.ptr;
+        }
+
+        template <meta::is<T> U>
+        [[nodiscard]] constexpr bool operator==(
+            const contiguous_iterator<U>& rhs
+        ) const noexcept {
+            return ptr == rhs.ptr;
+        }
+
+        template <meta::more_qualified_than<T> U>
+        [[nodiscard]] constexpr operator contiguous_iterator<U>() noexcept {
+            return {ptr};
+        }
+
+    private:
+        pointer ptr;
+    };
+
+    template <meta::not_void T> requires (!meta::reference<T>)
+    struct contiguous_slice {
+    private:
+
+        struct initializer {
+            std::initializer_list<T>& items;
+            [[nodiscard]] constexpr size_t size() const noexcept { return items.size(); }
+            [[nodiscard]] constexpr auto begin() const noexcept { return items.begin(); }
+            [[nodiscard]] constexpr auto end() const noexcept { return items.end(); }
+        };
+
+        template <typename V>
+        struct iter {
+            using iterator_category = std::input_iterator_tag;
+            using difference_type = ssize_t;
+            using value_type = V;
+            using reference = meta::as_lvalue<value_type>;
+            using const_reference = meta::as_lvalue<meta::as_const<value_type>>;
+            using pointer = meta::as_pointer<value_type>;
+            using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
+
+            pointer data = nullptr;
+            ssize_t index = 0;
+            ssize_t step = 1;
+
+            [[nodiscard]] constexpr reference operator*() noexcept {
+                return data[index];
+            }
+
+            [[nodiscard]] constexpr const_reference operator*() const noexcept {
+                return data[index];
+            }
+
+            [[nodiscard]] constexpr pointer operator->() noexcept {
+                return data + index;
+            }
+
+            [[nodiscard]] constexpr const_pointer operator->() const noexcept {
+                return data + index;
+            }
+
+            [[maybe_unused]] iter& operator++() noexcept {
+                index += step;
+                return *this;
+            }
+
+            [[nodiscard]] iter operator++(int) noexcept {
+                iterator copy = *this;
+                ++(*this);
+                return copy;
+            }
+
+            [[nodiscard]] constexpr bool operator==(const iter& other) noexcept {
+                return step > 0 ? index >= other.index : index <= other.index;
+            }
+
+            [[nodiscard]] constexpr bool operator!=(const iter& other) noexcept {
+                return !(*this == other);
+            }
+        };
+
+    public:
+        using value_type = T;
+        using reference = meta::as_lvalue<value_type>;
+        using const_reference = meta::as_lvalue<meta::as_const<value_type>>;
+        using pointer = meta::as_pointer<value_type>;
+        using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
+        using iterator = iter<value_type>;
+        using const_iterator = iter<meta::as_const<value_type>>;
+
+        constexpr contiguous_slice(
+            pointer data,
+            bertrand::slice::normalized indices
+        ) noexcept :
+            m_data(data),
+            m_indices(indices)
+        {}
+
+        constexpr contiguous_slice(const contiguous_slice&) = default;
+        constexpr contiguous_slice(contiguous_slice&&) = default;
+        constexpr contiguous_slice& operator=(const contiguous_slice&) = default;
+        constexpr contiguous_slice& operator=(contiguous_slice&&) = default;
+
+        [[nodiscard]] constexpr pointer data() const noexcept { return m_data; }
+        [[nodiscard]] constexpr ssize_t start() const noexcept { return m_indices.start; }
+        [[nodiscard]] constexpr ssize_t stop() const noexcept { return m_indices.stop; }
+        [[nodiscard]] constexpr ssize_t step() const noexcept { return m_indices.step; }
+        [[nodiscard]] constexpr ssize_t ssize() const noexcept { return m_indices.length; }
+        [[nodiscard]] constexpr size_t size() const noexcept { return size_t(size()); }
+        [[nodiscard]] constexpr bool empty() const noexcept { return !ssize(); }
+        [[nodiscard]] explicit operator bool() const noexcept { return ssize(); }
+
+        [[nodiscard]] constexpr iterator begin() noexcept {
+            return {m_data, m_indices.start, m_indices.step};
+        }
+
+        [[nodiscard]] constexpr const_iterator begin() const noexcept {
+            return {m_data, m_indices.start, m_indices.step};
+        }
+
+        [[nodiscard]] constexpr const_iterator cbegin() noexcept {
+            return {m_data, m_indices.start, m_indices.step};
+        }
+
+        [[nodiscard]] constexpr iterator end() noexcept {
+            return {m_data, m_indices.stop, m_indices.step};
+        }
+
+        [[nodiscard]] constexpr const_iterator end() const noexcept {
+            return {m_data, m_indices.stop, m_indices.step};
+        }
+
+        [[nodiscard]] constexpr const_iterator cend() const noexcept {
+            return {m_data, m_indices.stop, m_indices.step};
+        }
+
+        /// TODO: contains(), count(), index()
+
+        template <typename Less = std::less<>>
+            requires (impl::sortable<iterator, iterator, Less>)
+        constexpr void sort(Less&& less_than = {}) noexcept(
+            noexcept(powersort{}(*this, std::forward<Less>(less_than)))
+        ) {
+            powersort{}(*this, std::forward<Less>(less_than));
+        }
+
+        template <typename V>
+            requires (meta::constructible_from<V, std::from_range_t, contiguous_slice&>)
+        [[nodiscard]] constexpr operator V() && noexcept(noexcept(V(std::from_range, *this))) {
+            return V(std::from_range, *this);
+        }
+
+        template <typename V>
+            requires (
+                !meta::constructible_from<V, std::from_range_t, contiguous_slice&> &&
+                meta::constructible_from<V, iterator, iterator>
+            )
+        [[nodiscard]] constexpr operator V() && noexcept(noexcept(V(begin(), end()))) {
+            return V(begin(), end());
+        }
+
+        template <typename Dummy = value_type>
+            requires (
+                meta::not_const<Dummy> &&
+                meta::destructible<Dummy> &&
+                meta::copyable<Dummy>
+            )
+        [[maybe_unused]] constexpr contiguous_slice& operator=(
+            std::initializer_list<value_type> items
+        ) && {
+            return std::move(*this) = initializer{items};
+        }
+
+        template <meta::yields<value_type> Range>
+            requires (
+                meta::not_const<value_type> &&
+                meta::destructible<value_type> &&
+                meta::constructible_from<value_type, meta::yield_type<Range>>
+            )
+        [[maybe_unused]] constexpr contiguous_slice& operator=(Range&& range) && {
+            using type = meta::unqualify<value_type>;
+            constexpr bool has_size = meta::has_size<meta::as_lvalue<Range>>;
+            auto it = std::ranges::begin(range);
+            auto end = std::ranges::end(range);
+
+            // if the range has an explicit size, then we can check it ahead of time
+            // to ensure that it exactly matches that of the slice
+            if constexpr (has_size) {
+                if (std::ranges::size(range) != size()) {
+                    throw ValueError(
+                        "cannot assign a range of size " +
+                        std::to_string(std::ranges::size(range)) +
+                        " to a slice of size " + std::to_string(size())
+                    );
+                }
+            }
+
+            // If we checked the size above, we can avoid checking it again on each
+            // iteration
+            if (step() > 0) {
+                for (ssize_t i = start(); i < stop(); i += step()) {
+                    if constexpr (!has_size) {
+                        if (it == end) {
+                            throw ValueError(
+                                "not enough values to fill slice of size " +
+                                std::to_string(size())
+                            );
+                        }
+                    }
+                    m_data[i].~type();
+                    new (m_data + i) type(*it);
+                    ++it;
+                }
+            } else {
+                for (ssize_t i = start(); i > stop(); i += step()) {
+                    if constexpr (!has_size) {
+                        if (it == end) {
+                            throw ValueError(
+                                "not enough values to fill slice of size " +
+                                std::to_string(size())
+                            );
+                        }
+                    }
+                    m_data[i].~type();
+                    new (m_data + i) type(*it);
+                    ++it;
+                }
+            }
+
+            if constexpr (!has_size) {
+                if (it != end) {
+                    throw ValueError(
+                        "range length exceeds slice of size " +
+                        std::to_string(size())
+                    );
+                }
+            }
+            return *this;
+        }
+
+    private:
+        pointer m_data;
+        bertrand::slice::normalized m_indices;
     };
 
 }
@@ -5284,6 +5309,14 @@ inline void assert_(bool cnd, const char* msg = "") noexcept(!DEBUG) {
 }
 
 
+/* Equivalent to calling `std::hash<T>{}(...)`, but without explicitly specializating
+`std::hash`. */
+template <meta::hashable T>
+[[nodiscard]] constexpr size_t hash(T&& obj) noexcept(meta::nothrow::hashable<T>) {
+    return std::hash<std::decay_t<T>>{}(std::forward<T>(obj));
+}
+
+
 /* ADL-friendly swap method.  Equivalent to calling `l.swap(r)` as a member method. */
 template <typename T> requires (requires(T& l, T& r) { {l.swap(r)} -> meta::is_void; })
 constexpr void swap(T& l, T& r) noexcept(noexcept(l.swap(r))) {
@@ -5291,12 +5324,47 @@ constexpr void swap(T& l, T& r) noexcept(noexcept(l.swap(r))) {
 }
 
 
-/* Equivalent to calling `std::hash<T>{}(...)`, but without explicitly specializating
-`std::hash`. */
-template <meta::hashable T>
-[[nodiscard]] constexpr size_t hash(T&& obj) noexcept(meta::nothrow::hashable<T>) {
-    return std::hash<std::decay_t<T>>{}(std::forward<T>(obj));
+
+
+
+
+/// TODO: document the sorting algorithm here, possibly including references
+
+/// TODO: maybe this turns into an ADL method that invokes a `sort()` member if one
+/// is available, or falls back to powersort if not?  That way,
+/// `bertrand::sort(linked_list)` would do an optimized in-place sort by default,
+/// without requiring extra space.
+
+
+/* Sort an arbitrary range using an optimized, stable, adaptive merge sort algorithm */
+template <meta::iterable Range, typename Less = std::less<>>
+    requires (impl::sortable<meta::begin_type<Range>, meta::end_type<Range>, Less>)
+constexpr void sort(Range&& range, Less&& less_than = {}) noexcept(
+    noexcept(impl::powersort{}(range, std::forward<Less>(less_than)))
+) {
+    impl::powersort{}(range, std::forward<Less>(less_than));
 }
+
+
+template <typename Begin, typename End, typename Less = std::less<>>
+    requires (impl::sortable<Begin, End, Less>)
+constexpr void sort(Begin&& begin, End&& end, Less&& less_than = {}) noexcept(
+    noexcept(impl::powersort{}(
+        std::forward<Begin>(begin),
+        std::forward<End>(end),
+        std::forward<Less>(less_than)
+    ))
+) {
+    impl::powersort{}(
+        std::forward<Begin>(begin),
+        std::forward<End>(end),
+        std::forward<Less>(less_than)
+    );
+}
+
+
+
+
 
 
 /* Produce a sorted version of a container with the specified less-than comparison
