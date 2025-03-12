@@ -2565,6 +2565,20 @@ namespace meta {
 
     }
 
+    template <typename T, typename... A>
+    concept has_member_sort = requires(T t, A... a) {
+        std::forward<T>(t).sort(std::forward<A>(a)...);
+    };
+
+    namespace nothrow {
+
+        template <typename T, typename... A>
+        concept has_member_sort =
+            meta::has_member_sort<T, A...> &&
+            noexcept(std::declval<T>().sort(std::declval<A>()...));
+
+    }
+
     template <typename T>
     concept has_member_to_string = requires(T t) {
         { std::forward<T>(t).to_string() } -> convertible_to<std::string>;
@@ -3864,8 +3878,8 @@ namespace impl {
         return first;
     }
 
-    template <typename Begin, typename End, typename Less>
-    concept sortable =
+    template <typename Less, typename Begin, typename End>
+    concept iter_sortable =
         meta::iterator<Begin> &&
         meta::sentinel_for<End, Begin> &&
         meta::copyable<Begin> &&
@@ -3900,6 +3914,11 @@ namespace impl {
                 >
             )
         );
+
+    template <typename Less, typename Range>
+    concept sortable =
+        meta::iterable<Range> &&
+        iter_sortable<Less, meta::begin_type<Range>, meta::end_type<Range>>;
 
     /* A stable, adaptive, k-way merge sort algorithm for contiguous arrays based on
     work by Gelling, Nebel, Smith, and Wild ("Multiway Powersort", 2023), requiring
@@ -4863,7 +4882,7 @@ namespace impl {
         (e.g. in a move constructor/assignment operator, destructor, or iterator
         operation) may result in undefined behavior. */
         template <typename Begin, typename End, typename Less = std::less<>>
-            requires (impl::sortable<Begin, End, Less>)
+            requires (impl::iter_sortable<Less, Begin, End>)
         static constexpr void operator()(Begin begin, End end, Less&& less_than = {}) {
             using B = meta::remove_reference<Begin>;
             using E = meta::remove_reference<End>;
@@ -4888,8 +4907,8 @@ namespace impl {
 
         /* An equivalent of the iterator-based call operator that accepts a range and
         uses its `size()` to deduce the length of the range. */
-        template <meta::iterable Range, typename Less = std::less<>>
-            requires (impl::sortable<meta::begin_type<Range>, meta::end_type<Range>, Less>)
+        template <typename Range, typename Less = std::less<>>
+            requires (impl::sortable<Less, Range>)
         static constexpr void operator()(Range& range, Less&& less_than = {}) {
             using B = meta::remove_reference<meta::begin_type<Range>>;
             using E = meta::remove_reference<meta::end_type<Range>>;
@@ -4938,8 +4957,15 @@ namespace impl {
         return i;
     }
 
+    /// TODO: maybe I can add a special rule to all standard library utilities such
+    /// that any type that exposes a __wrapped__ member type will be converted to that
+    /// type when used in a context that expects it, like the universal `print()`
+    /// function.
+
     template <meta::not_void T> requires (!meta::reference<T>)
     struct contiguous_iterator {
+        using __wrapped__ = T;
+
         using iterator_category = std::contiguous_iterator_tag;
         using difference_type = ssize_t;
         using value_type = T;
@@ -5179,12 +5205,11 @@ namespace impl {
 
         /// TODO: contains(), count(), index()
 
-        template <typename Less = std::less<>>
-            requires (impl::sortable<iterator, iterator, Less>)
+        template <impl::sortable<contiguous_slice> Less = std::less<>>
         constexpr void sort(Less&& less_than = {}) noexcept(
-            noexcept(powersort{}(*this, std::forward<Less>(less_than)))
+            noexcept(impl::powersort{}(*this, std::forward<Less>(less_than)))
         ) {
-            powersort{}(*this, std::forward<Less>(less_than));
+            impl::powersort{}(*this, std::forward<Less>(less_than));
         }
 
         template <typename V>
@@ -5286,35 +5311,21 @@ namespace impl {
         bertrand::slice::normalized m_indices;
     };
 
+    template <typename T>
+        requires(requires(T obj) {
+            typename meta::unqualify<T>::__wrapped__;
+        } && meta::convertible_to<T, typename meta::unqualify<T>::__wrapped__>
+    )
+    [[nodiscard]] constexpr meta::unqualify<T>::__wrapped__ to_wrapped(T&& obj) noexcept {
+        return std::forward<T>(obj);
+    }
+
 }
 
 
 /* A simple struct holding paths to the bertrand environment's directories, if such an
 environment is currently active. */
 inline const impl::virtualenv VIRTUAL_ENV = impl::get_virtual_environment();
-
-
-/* A python-style `assert` statement in C++, which is optimized away if built without
-`-DBERTRAND_DEBUG` (release mode).  The only difference between this and the built-in
-C++ `assert()` macro is that this is implemented as a normal function and throws a
-`bertrand::AssertionError` which can be passed up to Python with a coherent traceback.
-It is thus possible to implement pytest-style unit tests using this function just as
-you would in Python. */
-inline void assert_(bool cnd, const char* msg = "") noexcept(!DEBUG) {
-    if constexpr (DEBUG) {
-        if (!cnd) {
-            throw AssertionError(msg);
-        }
-    }
-}
-
-
-/* Equivalent to calling `std::hash<T>{}(...)`, but without explicitly specializating
-`std::hash`. */
-template <meta::hashable T>
-[[nodiscard]] constexpr size_t hash(T&& obj) noexcept(meta::nothrow::hashable<T>) {
-    return std::hash<std::decay_t<T>>{}(std::forward<T>(obj));
-}
 
 
 /* ADL-friendly swap method.  Equivalent to calling `l.swap(r)` as a member method. */
@@ -5324,21 +5335,75 @@ constexpr void swap(T& l, T& r) noexcept(noexcept(l.swap(r))) {
 }
 
 
+/* Get the length of an arbitrary sequence in constant time as a signed integer.
+Equivalent to calling `std::ranges::ssize(range)`. */
+template <meta::has_size Range>
+[[nodiscard]] constexpr auto len(Range&& r) noexcept(
+    noexcept(std::ranges::ssize(r))
+) {
+    return std::ranges::ssize(r);
+}
 
 
+/* Get the distance between two iterators as a signed integer.  Equivalent to calling
+`std::ranges::distance(begin, end)`.  This may run in O(n) time if the iterators do
+not support constant-time distance measurements. */
+template <meta::iterator Begin, meta::sentinel_for<Begin> End>
+[[nodiscard]] constexpr auto len(Begin&& begin, End&& end) noexcept(
+    noexcept(std::ranges::distance(begin, end))
+) {
+    return std::ranges::distance(begin, end);
+}
 
 
-/// TODO: document the sorting algorithm here, possibly including references
+/* Hash an arbitrary value.  Equivalent to calling `std::hash<T>{}(...)`, but without
+explicitly specializating `std::hash`. */
+template <meta::hashable T>
+[[nodiscard]] constexpr auto hash(T&& obj) noexcept(meta::nothrow::hashable<T>) {
+    return std::hash<std::decay_t<T>>{}(std::forward<T>(obj));
+}
 
-/// TODO: maybe this turns into an ADL method that invokes a `sort()` member if one
-/// is available, or falls back to powersort if not?  That way,
-/// `bertrand::sort(linked_list)` would do an optimized in-place sort by default,
-/// without requiring extra space.
 
+/* Sort an arbitrary range using an optimized, implementation-specific sorting
+algorithm.
 
-/* Sort an arbitrary range using an optimized, stable, adaptive merge sort algorithm */
-template <meta::iterable Range, typename Less = std::less<>>
-    requires (impl::sortable<meta::begin_type<Range>, meta::end_type<Range>, Less>)
+If the input range has a member `.sort()` method, this function will invoke it with the
+given arguments.  Otherwise, it will fall back to a generalized sorting algorithm that
+works on arbitrary output ranges, sorting them in-place.  The generalized algorithm
+accepts an optional `less_than` comparison function, which can be used to provide
+custom sorting criteria.  Such a function can be supplied as a function pointer,
+lambda, or custom comparator type with the signature `bool(const T&, const T&)`
+where `T` is the value type of the range.  Alternatively, it can also be supplied as
+a pointer to a member of the value type or a member function that is callable without
+arguments (i.e. a getter), in which case only that member will be considered for
+comparison.  If no comparison function is given, it will default to a transparent `<`
+operator for each pair of elements.
+
+Currently, the default sorting algorithm is implemented as a heavily optimized,
+run-adaptive, stable merge sort variant with a `k`-way powersort policy.  It requires
+best case O(n) time due to optimal run detection and worst case O(n log n) time thanks
+to a tournament tree that minimizes comparisons.  It needs O(n) extra scratch space,
+and can work on arbitrary input ranges.  It is generally faster than `std::sort()` in
+most cases, and has far fewer restrictions on its use.  Users should only need to
+implement a custom member `.sort()` method if there is a better algorithm for a
+particular type (which should be rare), or if they wish to embed it as a member method
+for convenience.  In the latter case, users should call the powersort implemtation
+directly to guard against infinite recursion, as follows:
+
+```cpp
+
+    template <bertrand::impl::sortable<MyType> Less = std::less<>>
+    void MyType::sort(Less&& less_than = {}) {
+        bertrand::impl::powersort{}(*this, std::forward<Less>(less));
+    }
+
+```
+
+The `impl::sortable<Less, MyType>` concept encapsulates all of the requirements for
+sorting based on any of the predicates described above, and enforces them at compile
+time, while `std::less<>` defaults to a transparent comparison. */
+template <typename Range, impl::sortable<Range> Less = std::less<>>
+    requires (!meta::has_member_sort<Range, Less>)
 constexpr void sort(Range&& range, Less&& less_than = {}) noexcept(
     noexcept(impl::powersort{}(range, std::forward<Less>(less_than)))
 ) {
@@ -5346,8 +5411,23 @@ constexpr void sort(Range&& range, Less&& less_than = {}) noexcept(
 }
 
 
+/* ADL version of `sort()`, which delegates to the implementation-specific
+`range.sort()`.  All arguments as well as the return type (if any) will be perfectly
+forwarded to that method.  */
+template <typename Range, typename... Args>
+    requires (meta::has_member_sort<Range, Args...>)
+constexpr decltype(auto) sort(Range&& range, Args&&... args) noexcept(
+    noexcept(std::forward<Range>(range).sort(std::forward<Args>(args)...))
+) {
+    return std::forward<Range>(range).sort(std::forward<Args>(args)...);
+}
+
+
+/* Iterator-based `sort()`, which always uses the fallback powersort implementation.
+If the iterators do not support O(1) distance, the length of the range will be
+computed in O(n) time before starting the sort algorithm. */
 template <typename Begin, typename End, typename Less = std::less<>>
-    requires (impl::sortable<Begin, End, Less>)
+    requires (impl::iter_sortable<Less, Begin, End>)
 constexpr void sort(Begin&& begin, End&& end, Less&& less_than = {}) noexcept(
     noexcept(impl::powersort{}(
         std::forward<Begin>(begin),
@@ -5361,10 +5441,6 @@ constexpr void sort(Begin&& begin, End&& end, Less&& less_than = {}) noexcept(
         std::forward<Less>(less_than)
     );
 }
-
-
-
-
 
 
 /* Produce a sorted version of a container with the specified less-than comparison
@@ -5444,7 +5520,8 @@ template <meta::unqualified T, meta::unqualified Less = std::less<>, typename...
 }
 
 
-/// TODO: template template versions of sorted() that allow for CTAD
+/// TODO: overloads of `sorted()` that accept template template parameters and
+/// apply CTAD.
 
 
 }  // namespace bertrand

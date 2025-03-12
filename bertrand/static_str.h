@@ -160,6 +160,20 @@ namespace impl {
         return static_str<N>{name.data()};
     }
 
+    template <typename out, typename... Args>
+    struct _format_repr;
+    template <typename... out, typename... Args>
+    struct _format_repr<std::tuple<out...>, Args...> {
+        using type = std::format_string<out...>;
+    };
+    template <typename... out, typename A, typename... Args>
+    struct _format_repr<std::tuple<out...>, A, Args...> {
+        using type = _format_repr<std::tuple<out..., std::string>, Args...>::type;
+    };
+
+    template <typename... Args>
+    using format_repr = _format_repr<std::tuple<>, Args...>::type;
+
 }
 
 
@@ -1501,52 +1515,118 @@ constexpr std::string demangle(const char* name) {
 }
 
 
-/* Customizes the `bertrand::repr()` output for an arbitrary type.  Note that
-`bertrand::repr()` is always enabled by default; specializing this struct merely
-changes the output.  The default behavior will look for a valid `to_string()` function
-either as a member method, an ADL function, or `std::to_string()` as a fallback.  If
-none of these are found, `repr()` will attempt to perform stream insertion via the `<<`
-operator, and if that fails, will return a string containing the demangled type name
-and memory address, similar to Python. */
-template <typename Self>
-struct __repr__ {
-    static constexpr bool enable = true;
-    using type = std::string;
-
-    static constexpr std::string operator()(Self obj) {
-        if constexpr (meta::has_member_to_string<Self>) {
-            return std::forward<Self>(obj).to_string();
-
-        } else if constexpr (meta::has_adl_to_string<Self>) {
-            return to_string(std::forward<Self>(obj));
-
-        } else if constexpr (meta::has_std_to_string<Self>) {
-            return std::to_string(std::forward<Self>(obj));
-
-        } else if constexpr (meta::has_stream_insertion<Self>) {
-            std::ostringstream stream;
-            stream << std::forward<Self>(obj);
-            return stream.str();
-
-        } else {
-            return "<" + type_name<Self> + " at " + std::to_string(
-                reinterpret_cast<size_t>(&obj)
-            ) + ">";
-        }
-    }
-};
-
-
 /* Get a simple string representation of an arbitrary object.  This function is
 functionally equivalent to Python's `repr()` function, but extended to work for
-arbitrary C++ types, with possible customization via the `__repr__` control struct. */
+arbitrary C++ types.  It is guaranteed not to fail, and will attempt the following,
+in order of precedence:
+
+    1.  A `std::format()` call using a registered `std::formatter<>` specialization.
+    2.  An explicit conversion to `std::string`.
+    3.  A member `.to_string()` function on the object's type.
+    4.  An ADL `to_string()` function in the same namespace as the object.
+    5.  A `std::to_string()` call.
+    6.  A stream insertion operator (`<<`).
+    7.  A generic identifier based on the demangled type name and memory address.
+*/
 template <typename Self>
-    requires (__repr__<Self>::enable && (
-        meta::convertible_to<typename __repr__<Self>::type, std::string> &&
-        meta::invoke_returns<std::string, __repr__<Self>, Self>
-    ))
 [[nodiscard]] constexpr std::string repr(Self&& obj) {
-    return __repr__<Self>{}(std::forward<Self>(obj));
+    if constexpr (std::formattable<Self, char>) {
+        return std::format("{}", std::forward<Self>(obj));
+
+    } else if constexpr (meta::explicitly_convertible_to<Self, std::string>) {
+        return static_cast<std::string>(obj);
+
+    } else if constexpr (meta::has_member_to_string<Self>) {
+        return std::forward<Self>(obj).to_string();
+
+    } else if constexpr (meta::has_adl_to_string<Self>) {
+        return to_string(std::forward<Self>(obj));
+
+    } else if constexpr (meta::has_std_to_string<Self>) {
+        return std::to_string(std::forward<Self>(obj));
+
+    } else if constexpr (meta::has_stream_insertion<Self>) {
+        std::ostringstream stream;
+        stream << std::forward<Self>(obj);
+        return stream.str();
+
+    } else {
+        return "<" + type_name<Self> + " at " + std::to_string(
+            reinterpret_cast<size_t>(&obj)
+        ) + ">";
+    }
+}
+
+
+/* Print a format string to an output buffer.  Does not append a newline character. */
+template <typename... Args>
+constexpr void print(impl::format_repr<Args...> fmt, Args&&... args) {
+    std::print(fmt, repr(std::forward<Args>(args))...);
+}
+
+
+/* Print an arbitrary value to an output buffer by calling `repr()` on it. Does not
+append a newline character. */
+template <typename T>
+constexpr void print(T&& obj) {
+    std::cout << repr(std::forward<T>(obj));
+}
+
+
+/* Print a format string to an output buffer.  Appends a newline character to the
+output. */
+template <typename... Args>
+constexpr void println(impl::format_repr<Args...> fmt, Args&&... args) {
+    std::println(fmt, repr(std::forward<Args>(args))...);
+}
+
+
+/* Print an arbitrary value to an output buffer by calling `repr()` on it.  Appends a
+newline character to the output. */
+template <typename T>
+constexpr void println(T&& obj) {
+    std::cout << repr(std::forward<T>(obj)) << "\n";
+}
+
+
+/* A python-style `assert` statement in C++, which is optimized away if built with
+`bertrand::DEBUG == false` (release mode).  This differs from the built-in C++
+`assert()` macro in that this is implemented as a normal inline function that accepts
+a format string and arguments (which are automatically passed through `repr()`), and
+results in a `bertrand::AssertionError` with a coherent traceback, which can be
+seamlessly passed up to Python.  It is thus possible to implement pytest-style unit
+tests using this function just as in native Python. */
+template <typename... Args>
+[[gnu::always_inline]] void assert_(
+    bool cnd,
+    impl::format_repr<Args...> msg = "",
+    Args&&... args
+) noexcept(!DEBUG) {
+    if constexpr (DEBUG) {
+        if (!cnd) {
+            throw AssertionError(std::format(
+                msg,
+                repr(std::forward<Args>(args))...
+            ));
+        }
+    }
+}
+
+
+/* A python-style `assert` statement in C++, which is optimized away if built with
+`bertrand::DEBUG == false` (release mode).  This differs from the built-in C++
+`assert()` macro in that this is implemented as a normal inline function that accepts
+an arbitrary value (which is automatically passed through `repr()`), and results in a
+`bertrand::AssertionError` with a coherent traceback, which can be seamlessly passed up
+to Python.  It is thus possible to implement pytest-style unit tests using this
+function just as in native Python. */
+template <typename T>
+[[gnu::always_inline]] void assert_(bool cnd, T&& obj) noexcept(!DEBUG) {
+    if constexpr (DEBUG) {
+        if (!cnd) {
+            throw AssertionError(repr(std::forward<T>(obj)));
+        }
+    }
 }
 
 
