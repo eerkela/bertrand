@@ -10,6 +10,10 @@
 namespace bertrand {
 
 
+template <meta::unqualified T = void, impl::capacity<T> N = 8_MiB>
+struct address_space;
+
+
 namespace impl {
     struct address_space_tag {};
 
@@ -131,32 +135,6 @@ namespace impl {
         }
         return false;  // decommit failed or not supported
     }
-
-    /* In the event of a syscall error, get an explanatory error message in a
-    thread-safe way. */
-    [[nodiscard]] inline std::string system_err_msg() {
-        #ifdef _WIN32
-            return
-                std::string("windows: ") +
-                std::system_category().message(GetLastError());  // thread-safe
-        #elifdef __unix__
-            char buffer[1024];
-            return
-                std::string("unix: ") +
-                strerror_r(errno, buffer, 1024);  // thread-safe
-        #else
-            return "Unknown OS error";
-        #endif
-    }
-
-}
-
-
-template <meta::unqualified T = void, impl::capacity<T> N = 8_MiB>
-struct address_space;
-
-
-namespace impl {
 
     /* A pool of virtual arenas backing the `address_space<T, N>` class.  These arenas
     are allocated upfront at program startup and reused in a manner similar to
@@ -976,14 +954,12 @@ public:
 
     /* Return the maximum size of the virtual address space in units of `T`.  If `T` is
     void, then this refers to the total size (in bytes) of the address space itself.
-    Otherwise, it is equivalent to `nbytes()` divided by the aligned size of `T`.  If
-    `T` is an empty type, then the result is always zero. */
+    Otherwise, it is equivalent to `nbytes()` divided by the aligned size of `T`. */
     [[nodiscard]] static constexpr size_type size() noexcept { return N.count(); }
 
     /* Return the maximum size of the address space in bytes.  If `T` is void, then
     this is always equivalent to `N`.  Otherwise, the result is adjusted downwards to
-    be a multiple of the aligned size of type `T`.  If `T` is an empty type, then
-    the result is always zero. */
+    be a multiple of the aligned size of type `T`. */
     [[nodiscard]] static constexpr size_type nbytes() noexcept { return N; }
 
     /* Get a pointer to the beginning of the reserved address space.  If `T` is void,
@@ -1150,9 +1126,7 @@ public:
         if constexpr (!meta::trivially_destructible<T>) {
             p->~T();
         }
-        if constexpr (N.item_size) {
-            std::memset(p, 0, N.item_size);
-        }
+        std::memset(p, 0, N.item_size);
     }
 
 private:
@@ -1362,22 +1336,12 @@ struct address_space<T, N> : impl::address_space_tag {
         if constexpr (!meta::trivially_destructible<T>) {
             p->~T();
         }
-        if constexpr (N.item_size) {
-            std::memset(p, 0, N.item_size);
-        }
+        std::memset(p, 0, N.item_size);
     }
 
 private:
     std::byte* m_data;
 };
-
-
-inline void test() {
-    address_space<int, 4> small;  // space to store 4 aligned integers
-    address_space<int, 4_MiB> large;  // space to store ~4 MiB of aligned integers
-    static_assert(small.nbytes() == 16);
-    static_assert(large.nbytes() == 4_MiB);
-}
 
 
 }  // namespace bertrand

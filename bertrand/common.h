@@ -3800,53 +3800,63 @@ namespace impl {
         return true;
     }();
 
-    /* A helper for defining the capacity of a fixed size container using either raw
-    byte sizes or */
+    /* In the event of a syscall error, get an explanatory error message in a
+    thread-safe way. */
+    [[nodiscard]] inline std::string system_err_msg() {
+        #ifdef _WIN32
+            return
+                std::string("windows: ") +
+                std::system_category().message(GetLastError());  // thread-safe
+        #elifdef __unix__
+            char buffer[1024];
+            return
+                std::string("unix: ") +
+                strerror_r(errno, buffer, 1024);  // thread-safe
+        #else
+            return "Unknown OS error";
+        #endif
+    }
+
+    /* A self-aligning helper for defining the capacity of a fixed-size container using
+    either explicit units or raw integers, which are interpreted in units of `T`. */
     template <typename T>
     struct capacity {
     private:
         template <typename U>
-        static constexpr size_t raw_size = sizeof(U);
+        static constexpr size_t raw_size = sizeof(U);  // never returns 0
         template <meta::is_void U>
         static constexpr size_t raw_size<U> = 1;
 
         template <typename U>
-        static constexpr size_t alignment = alignof(U);
+        static constexpr size_t alignment = alignof(U);  // never returns 0
         template <meta::is_void U>
         static constexpr size_t alignment<U> = 1;
 
     public:
-        static constexpr size_t item_size = raw_size<T> + (raw_size<T> % alignment<T>);
+        static constexpr size_t item_size =
+            (raw_size<T> + (alignment<T> - 1) / alignment<T>) * alignment<T>;
+
         const size_t value;
         constexpr capacity(size_t size) noexcept : value(size * item_size) {}
         constexpr capacity(impl::nbytes size) noexcept :
-            value(item_size ? (size.value / item_size) * item_size : 0)
+            value((size.value / item_size) * item_size)
         {}
 
         constexpr operator size_t() const noexcept { return value; }
 
         /* Get the total number of aligned instances of `T` that will fit within the
-        capacity.  If `T` is an empty type, then this will always return 0.  If the
-        type is `void`, then it will return a raw number of bytes.  Otherwise, it is
-        equivalent to `value / item_size`. */
+        capacity.  If the type is `void`, then it will return a raw number of bytes.
+        Otherwise, it is equivalent to `value / item_size`. */
         constexpr size_t count() const noexcept {
-            if constexpr (item_size == 0) {
-                return 0;
-            } else {
-                return value / item_size;
-            }
+            return value / item_size;
         }
 
         /* Align the capacity to the nearest physical page, increasing it to a multiple
         of the `PAGE_SIZE`, and then adjusting it downwards to account for the
         alignment of `T`. */
         constexpr capacity page_align() const noexcept {
-            if constexpr (item_size == 0) {
-                return 0;
-            } else {
-                size_t pages = ((value + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;
-                return (pages / item_size) * item_size;
-            }
+            size_t pages = ((value + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;
+            return (pages / item_size) * item_size;
         }
     };
 
