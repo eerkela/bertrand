@@ -1146,7 +1146,8 @@ for multi-page allocations.  This tends to reduce the total number of syscalls a
 improve performance for small, transient data structures, without compromising any of
 the pointer stability guarantees of the larger address spaces.  Both cases expose the
 same interface, so the user does not need to worry about which one is being used. */
-template <meta::unqualified T, impl::capacity<T> N> requires (N.page_align() <= PAGE_SIZE)
+template <meta::unqualified T, impl::capacity<T> N>
+    requires (N.page_align() <= PAGE_SIZE)
 struct address_space<T, N> : impl::address_space_tag {
     using size_type = size_t;
     using capacity_type = impl::capacity<T>;

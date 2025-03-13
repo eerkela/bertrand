@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -5174,12 +5175,10 @@ namespace impl {
         return i;
     }
 
-    /// TODO: maybe I can add a special rule to all standard library utilities such
-    /// that any type that exposes a __wrapped__ member type will be converted to that
-    /// type when used in a context that expects it, like the universal `print()`
-    /// function.
+    template <typename T>
+    concept contiguous_iterator_arg = meta::not_void<T> && !meta::reference<T>;
 
-    template <meta::not_void T> requires (!meta::reference<T>)
+    template <contiguous_iterator_arg T>
     struct contiguous_iterator {
         using __wrapped__ = T;
 
@@ -5302,6 +5301,147 @@ namespace impl {
 
     private:
         pointer ptr;
+    };
+
+    template <contiguous_iterator_arg T> requires (DEBUG)
+    struct contiguous_iterator<T> {
+        using __wrapped__ = T;
+        using boundscheck = std::function<void(const contiguous_iterator&)>;
+
+        using iterator_category = std::contiguous_iterator_tag;
+        using difference_type = ssize_t;
+        using value_type = T;
+        using reference = meta::as_lvalue<value_type>;
+        using const_reference = meta::as_lvalue<meta::as_const<value_type>>;
+        using pointer = meta::as_pointer<value_type>;
+        using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
+
+        constexpr contiguous_iterator(
+            pointer ptr = nullptr,
+            boundscheck check = [](const contiguous_iterator&) noexcept {}
+        ) :
+            ptr(ptr),
+            check(std::move(check))
+        {};
+
+        constexpr contiguous_iterator(const contiguous_iterator&) noexcept = default;
+        constexpr contiguous_iterator(contiguous_iterator&&) noexcept = default;
+        constexpr contiguous_iterator& operator=(const contiguous_iterator&) noexcept = default;
+        constexpr contiguous_iterator& operator=(contiguous_iterator&&) noexcept = default;
+
+        template <typename V> requires (meta::assignable<reference, V>)
+        constexpr contiguous_iterator& operator=(V&& value) && {
+            check(*this);
+            *ptr = std::forward<V>(value);
+            return *this;
+        }
+
+        template <typename V> requires (meta::convertible_to<reference, V>)
+        [[nodiscard]] constexpr operator V() && {
+            check(*this);
+            return **this;
+        }
+
+        [[nodiscard]] constexpr reference operator*() {
+            check(*this);
+            return *ptr;
+        }
+
+        [[nodiscard]] constexpr const_reference operator*() const {
+            check(*this);
+            return *ptr;
+        }
+
+        [[nodiscard]] constexpr pointer operator->() {
+            check(*this);
+            return ptr;
+        }
+
+        [[nodiscard]] constexpr const_pointer operator->() const {
+            check(*this);
+            return ptr;
+        }
+
+        [[nodiscard]] constexpr reference operator[](difference_type n) {
+            return *contiguous_iterator{ptr + n, check};
+        }
+
+        [[nodiscard]] constexpr const_reference operator[](difference_type n) const {
+            return *contiguous_iterator{ptr + n, check};
+        }
+
+        constexpr contiguous_iterator& operator++() noexcept {
+            ++ptr;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr contiguous_iterator operator++(int) noexcept {
+            contiguous_iterator copy = *this;
+            ++(*this);
+            return copy;
+        }
+
+        constexpr contiguous_iterator& operator+=(difference_type n) noexcept {
+            ptr += n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr contiguous_iterator operator+(difference_type n) const {
+            return {ptr + n, check};
+        }
+
+        constexpr contiguous_iterator& operator--() noexcept {
+            --ptr;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr contiguous_iterator operator--(int) noexcept {
+            contiguous_iterator copy = *this;
+            --(*this);
+            return copy;
+        }
+
+        constexpr contiguous_iterator& operator-=(difference_type n) noexcept {
+            ptr -= n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr contiguous_iterator operator-(difference_type n) const {
+            return {ptr - n, check};
+        }
+
+        template <meta::is<T> U>
+        [[nodiscard]] constexpr difference_type operator-(
+            const contiguous_iterator<U>& rhs
+        ) const {
+            check(rhs);
+            return ptr - rhs.ptr;
+        }
+
+        template <meta::is<T> U>
+        [[nodiscard]] constexpr std::strong_ordering operator<=>(
+            const contiguous_iterator<U>& rhs
+        ) const {
+            check(rhs);
+            return ptr <=> rhs.ptr;
+        }
+
+        template <meta::is<T> U>
+        [[nodiscard]] constexpr bool operator==(
+            const contiguous_iterator<U>& rhs
+        ) const {
+            check(rhs);
+            return ptr == rhs.ptr;
+        }
+
+        template <meta::more_qualified_than<T> U>
+        [[nodiscard]] constexpr operator contiguous_iterator<U>() {
+            return {ptr, check};
+        }
+
+    private:
+        pointer ptr;
+        boundscheck check;
     };
 
     template <meta::not_void T> requires (!meta::reference<T>)

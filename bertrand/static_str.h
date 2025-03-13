@@ -160,20 +160,6 @@ namespace impl {
         return static_str<N>{name.data()};
     }
 
-    template <typename out, typename... Args>
-    struct _format_repr;
-    template <typename... out, typename... Args>
-    struct _format_repr<std::tuple<out...>, Args...> {
-        using type = std::format_string<out...>;
-    };
-    template <typename... out, typename A, typename... Args>
-    struct _format_repr<std::tuple<out...>, A, Args...> {
-        using type = _format_repr<std::tuple<out..., std::string>, Args...>::type;
-    };
-
-    template <typename... Args>
-    using format_repr = _format_repr<std::tuple<>, Args...>::type;
-
 }
 
 
@@ -1558,10 +1544,45 @@ template <typename Self>
 }
 
 
+namespace impl {
+
+    template <typename out, typename... Args>
+    struct _format_repr;
+    template <typename... out, typename... Args>
+    struct _format_repr<std::tuple<out...>, Args...> {
+        using type = std::format_string<out...>;
+    };
+    template <typename... out, typename A, typename... Args>
+    struct _format_repr<std::tuple<out...>, A, Args...> {
+        template <typename T>
+        struct to_repr { using type = std::string; };
+        template <std::formattable<char> T>
+        struct to_repr<T> { using type = T; };
+        using type = _format_repr<
+            std::tuple<out..., typename to_repr<A>::type>,
+            Args...
+        >::type;
+    };
+
+    template <typename... Args>
+    using format_repr = _format_repr<std::tuple<>, Args...>::type;
+
+    template <typename A>
+    constexpr decltype(auto) to_format_repr(A&& arg) {
+        if constexpr (std::formattable<decltype(arg), char>) {
+            return std::forward<decltype(arg)>(arg);
+        } else {
+            return bertrand::repr(std::forward<decltype(arg)>(arg));
+        }
+    }
+
+}
+
+
 /* Print a format string to an output buffer.  Does not append a newline character. */
 template <typename... Args>
 constexpr void print(impl::format_repr<Args...> fmt, Args&&... args) {
-    std::print(fmt, repr(std::forward<Args>(args))...);
+    std::print(fmt, impl::to_format_repr(std::forward<Args>(args))...);
 }
 
 
@@ -1577,7 +1598,7 @@ constexpr void print(T&& obj) {
 output. */
 template <typename... Args>
 constexpr void println(impl::format_repr<Args...> fmt, Args&&... args) {
-    std::println(fmt, repr(std::forward<Args>(args))...);
+    std::println(fmt, impl::to_format_repr(std::forward<Args>(args))...);
 }
 
 
@@ -1606,7 +1627,7 @@ template <typename... Args>
         if (!cnd) {
             throw AssertionError(std::format(
                 msg,
-                repr(std::forward<Args>(args))...
+                impl::to_format_repr(std::forward<Args>(args))...
             ));
         }
     }
