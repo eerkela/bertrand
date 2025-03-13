@@ -11,7 +11,7 @@ namespace bertrand {
 
 
 /// TODO: I should still offer a version of this class that just uses ordinary heap
-/// allocations rather than a virtual address space.
+/// allocations rather than a virtual address space.  This always occurs when N == 0
 
 
 

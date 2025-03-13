@@ -2329,6 +2329,34 @@ namespace meta {
     ///////////////////////////////////
 
     template <typename T>
+    concept has_wrapped =
+        requires { typename meta::unqualify<T>::__wrapped__; } &&
+        meta::convertible_to<T, typename meta::unqualify<T>::__wrapped__>;
+
+    template <has_wrapped T>
+    using wrapped_type = meta::qualify<typename meta::unqualify<T>::__wrapped__, T>;
+
+    template <typename T, typename Ret>
+    concept wrapped_returns = has_wrapped<T> && convertible_to<wrapped_type<T>, Ret>;
+
+    namespace nothrow {
+
+        template <typename T>
+        concept has_wrapped =
+            meta::has_wrapped<T> &&
+            noexcept(meta::implicit_cast<typename meta::unqualify<T>::__wrapped__>(
+                std::declval<T>()
+            ));
+
+        template <has_wrapped T>
+        using wrapped_type = meta::wrapped_type<T>;
+
+        template <typename T, typename Ret>
+        concept wrapped_returns = has_wrapped<T> && convertible_to<wrapped_type<T>, Ret>;
+
+    }
+
+    template <typename T>
     concept has_data = requires(T t) { std::ranges::data(t); };
 
     template <has_data T>
@@ -2739,19 +2767,18 @@ namespace meta {
         /// NOTE: in all cases, cvref qualifiers will be stripped from the input
         /// types before checking against these customization points.
 
-        /// TODO: make sure that the above is actually the case
-
         /* Enables the `sorted()` helper function for sortable container types.  The
         `::type` alias should map the templated `Less` function into the template
         definition for `T`.  */
-        template <meta::unqualified Less, meta::iterable T>
+        template <meta::unqualified Less, meta::unqualified T>
             requires (
+                meta::iterable<T> &&
                 meta::default_constructible<Less> &&
                 meta::invoke_returns<
                     bool,
-                    Less,
-                    meta::yield_type<T>,
-                    meta::yield_type<T>
+                    meta::as_lvalue<Less>,
+                    meta::as_const<meta::yield_type<T>>,
+                    meta::as_const<meta::yield_type<T>>
                 >
             )
         struct sorted { using type = void; };
@@ -5311,12 +5338,19 @@ namespace impl {
         bertrand::slice::normalized m_indices;
     };
 
-    template <typename T>
-        requires(requires(T obj) {
-            typename meta::unqualify<T>::__wrapped__;
-        } && meta::convertible_to<T, typename meta::unqualify<T>::__wrapped__>
-    )
-    [[nodiscard]] constexpr meta::unqualify<T>::__wrapped__ to_wrapped(T&& obj) noexcept {
+    /* If a type has a `__wrapped__` alias to which it is convertible, attempt to
+    convert it to that type.  Otherwise, return the object as-is. */
+    template <meta::has_wrapped T>
+    [[nodiscard]] constexpr meta::unqualify<T>::__wrapped__ to_wrapped(T&& obj) noexcept(
+        meta::nothrow::has_wrapped<T>
+    ) {
+        return std::forward<T>(obj);
+    }
+
+    /* If a type has a `__wrapped__` alias to which it is convertible, attempt to
+    convert it to that type.  Otherwise, return the object as-is. */
+    template <typename T> requires (!meta::has_wrapped<T>)
+    [[nodiscard]] constexpr decltype(auto) to_wrapped(T&& obj) noexcept {
         return std::forward<T>(obj);
     }
 
@@ -5326,6 +5360,10 @@ namespace impl {
 /* A simple struct holding paths to the bertrand environment's directories, if such an
 environment is currently active. */
 inline const impl::virtualenv VIRTUAL_ENV = impl::get_virtual_environment();
+
+
+/// TODO: maybe just expose a separate swap() overload per container?  This messes
+/// with a `using namespace bertrand` directive.
 
 
 /* ADL-friendly swap method.  Equivalent to calling `l.swap(r)` as a member method. */
@@ -5394,7 +5432,7 @@ directly to guard against infinite recursion, as follows:
 
     template <bertrand::impl::sortable<MyType> Less = std::less<>>
     void MyType::sort(Less&& less_than = {}) {
-        bertrand::impl::powersort{}(*this, std::forward<Less>(less));
+        bertrand::impl::powersort<k, min_run_length>{}(*this, std::forward<Less>(less));
     }
 
 ```
@@ -5447,36 +5485,22 @@ constexpr void sort(Begin&& begin, End&& end, Less&& less_than = {}) noexcept(
 function.  If no explicit comparison function is given, it will default to a
 transparent `<` operator for each element.  This operator must be explicitly enabled
 for a given container type by specializing the `meta::detail::sorted<Less, T>` struct
-and providing an appropriate `::type` alias that injects the comparison function into
-the container logic. */
+with an appropriate `::type` alias that injects the comparison function into the
+container configuration.
+
+This overload directly copies or moves the contents of a previous, unsorted container,
+and returns a new container of a corresponding type.  It returns the input as-is if the
+container is already equivalent to its sorted type. */
 template <meta::unqualified Less = std::less<>, typename T>
     requires (
         meta::is<
+            T,
+            typename meta::detail::sorted<Less, meta::unqualify<T>>::type
+        > ||
+        meta::constructible_from<
             typename meta::detail::sorted<Less, meta::unqualify<T>>::type,
             T
-        > || (
-            meta::constructible_from<
-                typename meta::detail::sorted<Less, meta::unqualify<T>>::type,
-                T
-            > &&
-            meta::default_constructible<Less> &&
-            meta::invoke_returns<
-                bool,
-                meta::as_lvalue<Less>,
-                meta::as_lvalue<meta::as_const<
-                    typename meta::detail::sorted<
-                        Less,
-                        meta::unqualify<T>
-                    >::type::value_type
-                >>,
-                meta::as_lvalue<meta::as_const<
-                    typename meta::detail::sorted<
-                        Less,
-                        meta::unqualify<T>
-                    >::type::value_type
-                >>
-            >
-        )
+        >
     )
 [[nodiscard]] decltype(auto) sorted(T&& container) noexcept(
     meta::is<typename meta::detail::sorted<Less, meta::unqualify<T>>::type, T> ||
@@ -5484,44 +5508,153 @@ template <meta::unqualified Less = std::less<>, typename T>
         std::forward<T>(container)
     ))
 ) {
-    using type = meta::detail::sorted<Less, meta::unqualify<T>>::type;
-    if constexpr (meta::is<type, T>) {
+    using sorted_type = meta::detail::sorted<Less, meta::unqualify<T>>::type;
+    if constexpr (meta::is<sorted_type, T>) {
         return std::forward<T>(container);
     } else {
-        return type(std::forward<T>(container));
+        return sorted_type(std::forward<T>(container));
     }
 }
 
 
-/* Specialization of `sorted()` that accepts the container type as an explicit template
-parameter, and constructs it using the supplied arguments, rather than requiring a
-copy or move. */
+/* Produce a sorted version of a container with the specified less-than comparison
+function.  If no explicit comparison function is given, it will default to a
+transparent `<` operator for each element.  This operator must be explicitly enabled
+for a given container type by specializing the `meta::detail::sorted<Less, T>` struct
+with an appropriate `::type` alias that injects the comparison function into the
+container configuration.
+
+This overload expects the user to provide the container type as an explicit template
+parameter, possibly along with a custom comparison function.  All arguments will be
+passed to the constructor for the container's sorted type. */
 template <meta::unqualified T, meta::unqualified Less = std::less<>, typename... Args>
-    requires (
-        meta::constructible_from<
-            typename meta::detail::sorted<Less, T>::type,
-            Args...
-        > &&
-        meta::invoke_returns<
-            bool,
-            meta::as_lvalue<Less>,
-            meta::as_lvalue<meta::as_const<
-                typename meta::detail::sorted<Less, T>::type::value_type
-            >>,
-            meta::as_lvalue<meta::as_const<
-                typename meta::detail::sorted<Less, T>::type::value_type
-            >>
-        >
-    )
+    requires (meta::constructible_from<
+        typename meta::detail::sorted<Less, T>::type,
+        Args...
+    >)
 [[nodiscard]] meta::detail::sorted<Less, T>::type sorted(Args&&... args) noexcept(
     noexcept(typename meta::detail::sorted<Less, T>::type(std::forward<Args>(args)...))
 ) {
-    return typename meta::detail::sorted<Less, T>::type(std::forward<Args>(args)...);
+    using sorted_type = meta::detail::sorted<Less, T>::type;
+    return sorted_type(std::forward<Args>(args)...);
 }
 
 
-/// TODO: overloads of `sorted()` that accept template template parameters and
-/// apply CTAD.
+/* Produce a sorted version of a container with the specified less-than comparison
+function.  If no explicit comparison function is given, it will default to a
+transparent `<` operator for each element.  This operator must be explicitly enabled
+for a given container type by specializing the `meta::detail::sorted<Less, T>` struct
+with an appropriate `::type` alias that injects the comparison function into the
+container configuration.
+
+This overload expects the user to provide an unspecialized template class as the first
+template parameter, possibly along with a custom comparison function.  The arguments
+will be used to specialize the container type using CTAD, as if it were being
+constructed with the given arguments. */
+template <
+    template <typename...> class Container,
+    meta::unqualified Less = std::less<>,
+    typename... Args
+>
+    requires (requires(Args... args) {
+        Container(std::forward<Args>(args)...);
+        typename meta::detail::sorted<
+            Less,
+            decltype(Container(std::forward<Args>(args)...))
+        >::type;
+        typename meta::detail::sorted<
+            Less,
+            decltype(Container(std::forward<Args>(args)...))
+        >::type(std::forward<Args>(args)...);
+    })
+[[nodiscard]] auto sorted(Args&&... args) noexcept(
+    noexcept(typename meta::detail::sorted<
+        Less,
+        decltype(Container(std::forward<Args>(args)...))
+    >::type(std::forward<Args>(args)...))
+) {
+    using deduced_type = decltype(Container(std::forward<Args>(args)...));
+    using sorted_type = meta::detail::sorted<Less, deduced_type>::type;
+    return sorted_type(std::forward<Args>(args)...);
+}
+
+
+/* Produce a sorted version of a container with the specified less-than comparison
+function.  If no explicit comparison function is given, it will default to a
+transparent `<` operator for each element.  This operator must be explicitly enabled
+for a given container type by specializing the `meta::detail::sorted<Less, T>` struct
+with an appropriate `::type` alias that injects the comparison function into the
+container configuration.
+
+This overload expects the user to provide an unspecialized template class as the first
+template parameter, possibly along with a custom comparison function.  The arguments
+will be used to specialize the container type using CTAD, as if it were being
+constructed with the given arguments. */
+template <
+    template <typename, size_t, typename...> class Container,
+    meta::unqualified Less = std::less<>,
+    typename... Args
+>
+    requires (requires(Args... args) {
+        Container(std::forward<Args>(args)...);
+        typename meta::detail::sorted<
+            Less,
+            decltype(Container(std::forward<Args>(args)...))
+        >::type;
+        typename meta::detail::sorted<
+            Less,
+            decltype(Container(std::forward<Args>(args)...))
+        >::type(std::forward<Args>(args)...);
+    })
+[[nodiscard]] auto sorted(Args&&... args) noexcept(
+    noexcept(typename meta::detail::sorted<
+        Less,
+        decltype(Container(std::forward<Args>(args)...))
+    >::type(std::forward<Args>(args)...))
+) {
+    using deduced_type = decltype(Container(std::forward<Args>(args)...));
+    using sorted_type = meta::detail::sorted<Less, deduced_type>::type;
+    return sorted_type(std::forward<Args>(args)...);
+}
+
+
+/* Produce a sorted version of a container with the specified less-than comparison
+function.  If no explicit comparison function is given, it will default to a
+transparent `<` operator for each element.  This operator must be explicitly enabled
+for a given container type by specializing the `meta::detail::sorted<Less, T>` struct
+with an appropriate `::type` alias that injects the comparison function into the
+container configuration.
+
+This overload expects the user to provide an unspecialized template class as the first
+template parameter, possibly along with a custom comparison function.  The arguments
+will be used to specialize the container type using CTAD, as if it were being
+constructed with the given arguments. */
+template <
+    template <typename, typename, size_t, typename...> class Container,
+    meta::unqualified Less = std::less<>,
+    typename... Args
+>
+    requires (requires(Args... args) {
+        Container(std::forward<Args>(args)...);
+        typename meta::detail::sorted<
+            Less,
+            decltype(Container(std::forward<Args>(args)...))
+        >::type;
+        typename meta::detail::sorted<
+            Less,
+            decltype(Container(std::forward<Args>(args)...))
+        >::type(std::forward<Args>(args)...);
+    })
+[[nodiscard]] auto sorted(Args&&... args) noexcept(
+    noexcept(typename meta::detail::sorted<
+        Less,
+        decltype(Container(std::forward<Args>(args)...))
+    >::type(std::forward<Args>(args)...))
+) {
+    using deduced_type = decltype(Container(std::forward<Args>(args)...));
+    using sorted_type = meta::detail::sorted<Less, deduced_type>::type;
+    return sorted_type(std::forward<Args>(args)...);
+}
 
 
 }  // namespace bertrand
