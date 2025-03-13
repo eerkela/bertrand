@@ -23,9 +23,13 @@
 #ifdef _WIN32
     #include <windows.h>
     #include <errhandlingapi.h>
+    #include <intrin.h>
 #elifdef __unix__
     #include <sys/mman.h>
     #include <unistd.h>
+    #ifdef __APPLE__
+        #include <sys/sysctl.h>
+    #endif
 #endif
 
 
@@ -61,7 +65,7 @@ namespace bertrand {
 #ifdef BERTRAND_TEMPLATE_RECURSION_LIMIT
     constexpr size_t TEMPLATE_RECURSION_LIMIT = BERTRAND_TEMPLATE_RECURSION_LIMIT;
 #else
-    constexpr size_t TEMPLATE_RECURSION_LIMIT = 1024;
+    constexpr size_t TEMPLATE_RECURSION_LIMIT = 8192;
 #endif
 
 
@@ -3818,6 +3822,48 @@ namespace impl {
         #endif
     }
 
+    inline bool is_debugger_present() noexcept {
+        #if defined(_WIN32)
+            return IsDebuggerPresent();
+
+        #elif defined(__APPLE__)
+            int mib[4];
+            struct kinfo_proc info;
+            size_t size = sizeof(info);
+            info.kp_proc.p_flag = 0;
+            mib[0] = CTL_KERN;
+            mib[1] = KERN_PROC;
+            mib[2] = KERN_PROC_PID;
+            mib[3] = getpid();
+            if (sysctl(mib, 4, &info, &size, nullptr, 0) != 0) {
+                return false;
+            }
+            return (info.kp_proc.p_flag & P_TRACED) != 0;
+    
+        #elif defined(__unix__)
+            FILE* status = fopen("/proc/self/status", "r");
+            if (!status) {
+                return false;
+            }
+            char buffer[256];
+            bool debugged = false;
+            while (fgets(buffer, sizeof(buffer), status)) {
+                if (strncmp(buffer, "TracerPid:", 10) == 0) {
+                    int pid = atoi(buffer + 10);
+                    if (pid != 0) {
+                        debugged = true;
+                    }
+                    break;
+                }
+            }
+            fclose(status);
+            return debugged;
+
+        #else
+            return false;
+        #endif
+    }
+
     /* A self-aligning helper for defining the capacity of a fixed-size container using
     either explicit units or raw integers, which are interpreted in units of `T`. */
     template <typename T>
@@ -5684,12 +5730,37 @@ namespace impl {
         return std::forward<T>(obj);
     }
 
+    struct boolean_predicate {
+        static constexpr bool operator()(auto&& obj) noexcept(noexcept(
+            static_cast<bool>(std::forward<decltype(obj)>(obj))
+        )) {
+            return static_cast<bool>(std::forward<decltype(obj)>(obj));
+        }
+    };
+
 }
 
 
 /* A simple struct holding paths to the bertrand environment's directories, if such an
 environment is currently active. */
 inline const impl::virtualenv VIRTUAL_ENV = impl::get_virtual_environment();
+
+
+/* Place a breakpoint at the current line, causing the program to drop into an
+interactive debug session at that location.  This can only be used when
+`DEBUG == true`, and fails to compile otherwise. */
+template <typename Dummy = void> requires (DEBUG)
+[[gnu::always_inline]] inline void breakpoint() noexcept {
+    if (impl::is_debugger_present()) {
+        #ifdef _MSC_VER
+            __debugbreak();  // MSVC
+        #elif defined(__clang__) || defined(__GNUC__)
+            __builtin_debugtrap();  // clang and GCC
+        #else
+            raise(SIGTRAP);  // POSIX fallback
+        #endif
+    }
+}
 
 
 /// TODO: maybe just expose a separate swap() overload per container?  This messes
@@ -5700,6 +5771,14 @@ inline const impl::virtualenv VIRTUAL_ENV = impl::get_virtual_environment();
 template <typename T> requires (requires(T& l, T& r) { {l.swap(r)} -> meta::is_void; })
 constexpr void swap(T& l, T& r) noexcept(noexcept(l.swap(r))) {
     l.swap(r);
+}
+
+
+/* Hash an arbitrary value.  Equivalent to calling `std::hash<T>{}(...)`, but without
+explicitly specializating `std::hash`. */
+template <meta::hashable T>
+[[nodiscard]] constexpr auto hash(T&& obj) noexcept(meta::nothrow::hashable<T>) {
+    return std::hash<std::decay_t<T>>{}(std::forward<T>(obj));
 }
 
 
@@ -5724,12 +5803,351 @@ template <meta::iterator Begin, meta::sentinel_for<Begin> End>
 }
 
 
-/* Hash an arbitrary value.  Equivalent to calling `std::hash<T>{}(...)`, but without
-explicitly specializating `std::hash`. */
-template <meta::hashable T>
-[[nodiscard]] constexpr auto hash(T&& obj) noexcept(meta::nothrow::hashable<T>) {
-    return std::hash<std::decay_t<T>>{}(std::forward<T>(obj));
+/* Produce a simple range starting at a default-constructed instance of `End` (zero if
+`End` is an integer type), similar to Python's built-in `range()` operator.  This is
+equivalent to a  `std::views::iota()` call under the hood, but is easier to remember. */
+template <typename End>
+    requires (requires(End stop) {
+        std::views::iota(End{}, std::forward<End>(stop));
+    })
+[[nodiscard]] constexpr auto range(End&& stop) noexcept(
+    noexcept(std::views::iota(End{}, std::forward<End>(stop)))
+) {
+    return std::views::iota(End{}, std::forward<End>(stop));
 }
+
+
+/* Produce a simple range from `start` to `stop`, similar to Python's built-in
+`range()` operator.  This is equivalent to a `std::views::iota()` call under the hood,
+but is easier to remember, and closer to Python syntax. */
+template <typename Begin, typename End>
+    requires (
+        !(meta::iterator<Begin> && meta::sentinel_for<End, Begin>) &&
+        requires(Begin start, End stop) {
+            std::views::iota(std::forward<Begin>(start), std::forward<End>(stop));
+        }
+    )
+[[nodiscard]] constexpr auto range(Begin&& start, End&& stop) noexcept(
+    noexcept(std::views::iota(std::forward<Begin>(start), std::forward<End>(stop)))
+) {
+    return std::views::iota(std::forward<Begin>(start), std::forward<End>(stop));
+}
+
+
+/// TODO: views::stride() is not available, so this is commented out for now.  I may
+/// be able to implement it myself, but that would require a lot of unnecessary work.
+
+
+// /* Produce a simple integer range, similar to Python's built-in `range()` operator.
+// This is equivalent to a  `std::views::iota()` call under the hood, but is easier to
+// remember. */
+// template <typename T = ssize_t>
+// inline constexpr auto range(T start, T stop, T step) {
+//     return std::views::iota(start, stop) | std::views::stride(step);
+// }
+
+
+/* Produce a simple range object that encapsulates a `start` and `stop` iterator as a
+range adaptor.  This is equivalent to a `std::ranges::subrange()` call under the hood,
+but is easier to remember, and closer to Python syntax. */
+template <meta::iterator Begin, meta::sentinel_for<Begin> End>
+    requires (requires(Begin start, End stop) {
+        std::ranges::subrange(std::forward<Begin>(start), std::forward<End>(stop));
+    })
+[[nodiscard]] constexpr auto range(Begin&& start, End&& stop) noexcept(
+    noexcept(std::ranges::subrange(std::forward<Begin>(start), std::forward<End>(stop)))
+) {
+    return std::ranges::subrange(std::forward<Begin>(start), std::forward<End>(stop));
+}
+
+
+/// TODO: a stride view range() accepting begin/end iterators would be very nice.
+
+
+/* Produce a view over a reverse iterable range that can be used in range-based for
+loops.  This is equivalent to a `std::views::reverse()` call under the hood, but is
+easier to remember, and closer to Python syntax. */
+template <meta::reverse_iterable T>
+[[nodiscard]] constexpr auto reversed(T&& obj) noexcept(
+    noexcept(std::views::reverse(std::forward<T>(obj)))
+) {
+    return std::views::reverse(std::forward<T>(obj));
+}
+
+
+/* Returns true if and only if a boolean predicate evaluates to true for any of the
+elements of a range.  This is equivalent to a `std::ranges::any_of()` call under the
+hood, but is easier to remember, and closer to Python syntax. */
+template <meta::iterable T, typename Pred = impl::boolean_predicate>
+    requires (requires(T r, Pred pred) {
+        std::ranges::any_of(std::forward<T>(r), std::forward<Pred>(pred));
+    })
+[[nodiscard]] constexpr bool any(
+    T&& r,
+    Pred&& pred = {}
+) noexcept(noexcept(std::ranges::any_of(
+    std::forward<T>(r),
+    std::forward<Pred>(pred)
+))) {
+    return std::ranges::any_of(std::forward<T>(r), std::forward<Pred>(pred));
+}
+
+
+/* Returns true if and only if a boolean predicate evaluates to true for any of the
+elements of a range.  This is equivalent to a `std::ranges::any_of()` call under the
+hood, but is easier to remember, and closer to Python syntax. */
+template <typename T, typename Pred = impl::boolean_predicate>
+    requires (requires(std::initializer_list<T> r, Pred pred) {
+        std::ranges::any_of(r.begin(), r.end(), std::forward<Pred>(pred));
+    })
+[[nodiscard]] constexpr bool any(
+    std::initializer_list<T> r,
+    Pred&& pred = {}
+) noexcept(noexcept(std::ranges::any_of(
+    r.begin(),
+    r.end(),
+    std::forward<Pred>(pred)
+))) {
+    return std::ranges::any_of(r.begin(), r.end(), std::forward<Pred>(pred));
+}
+
+
+/* Returns true if and only if a boolean predicate evaluates to true for any of the
+elements of a range.  This is equivalent to a `std::ranges::any_of()` call under the
+hood, but is easier to remember, and closer to Python syntax. */
+template <
+    meta::iterator Begin,
+    meta::sentinel_for<Begin> End,
+    typename Pred = impl::boolean_predicate
+>
+    requires (requires(Begin begin, End end, Pred pred) {
+        std::ranges::any_of(
+            std::forward<Begin>(begin),
+            std::forward<End>(end),
+            std::forward<Pred>(pred)
+        );
+    })
+[[nodiscard]] constexpr bool any(
+    Begin&& begin,
+    End&& end,
+    Pred&& pred = {}
+) noexcept(noexcept(std::ranges::any_of(
+    std::forward<Begin>(begin),
+    std::forward<End>(end),
+    std::forward<Pred>(pred)
+))) {
+    return std::ranges::any_of(
+        std::forward<Begin>(begin),
+        std::forward<End>(end),
+        std::forward<Pred>(pred)
+    );
+}
+
+
+/* Returns true if and only if a boolean predicate evaluates to true for all of the
+elements of a range.  This is equivalent to a `std::ranges::all_of()` call under th
+ hood, but is easier to remember, and closer to Python syntax. */
+template <meta::iterable T, typename Pred = impl::boolean_predicate>
+    requires (requires(T r, Pred pred) {
+        std::ranges::all_of(std::forward<T>(r), std::forward<Pred>(pred));
+    })
+[[nodiscard]] constexpr bool all(
+    T&& r,
+    Pred&& pred = {}
+) noexcept(noexcept(std::ranges::all_of(
+    std::forward<T>(r),
+    std::forward<Pred>(pred)
+))) {
+    return std::ranges::all_of(std::forward<T>(r), std::forward<Pred>(pred));
+}
+
+
+/* Returns true if and only if a boolean predicate evaluates to true for all of the
+elements of a range.  This is equivalent to a `std::ranges::all_of()` call under th
+ hood, but is easier to remember, and closer to Python syntax. */
+template <typename T, typename Pred = impl::boolean_predicate>
+    requires (requires(std::initializer_list<T> r, Pred pred) {
+        std::ranges::all_of(r.begin(), r.end(), std::forward<Pred>(pred));
+    })
+[[nodiscard]] constexpr bool all(
+    std::initializer_list<T> r,
+    Pred&& pred = {}
+) noexcept(noexcept(std::ranges::all_of(
+    r.begin(),
+    r.end(),
+    std::forward<Pred>(pred)
+))) {
+    return std::ranges::all_of(r.begin(), r.end(), std::forward<Pred>(pred));
+}
+
+
+/* Returns true if and only if a boolean predicate evaluates to true for all of the
+elements of a range.  This is equivalent to a `std::ranges::all_of()` call under th
+ hood, but is easier to remember, and closer to Python syntax. */
+template <
+    meta::iterator Begin,
+    meta::sentinel_for<Begin> End,
+    typename Pred = impl::boolean_predicate
+>
+    requires (requires(Begin begin, End end, Pred pred) {
+        std::ranges::all_of(
+            std::forward<Begin>(begin),
+            std::forward<End>(end),
+            std::forward<Pred>(pred)
+        );
+    })
+[[nodiscard]] constexpr bool all(
+    Begin&& begin,
+    End&& end,
+    Pred&& pred = {}
+) noexcept(noexcept(std::ranges::all_of(
+    std::forward<Begin>(begin),
+    std::forward<End>(end),
+    std::forward<Pred>(pred)
+))) {
+    return std::ranges::all_of(
+        std::forward<Begin>(begin),
+        std::forward<End>(end),
+        std::forward<Pred>(pred)
+    );
+}
+
+
+/* Get the maximum of a pair of values.  This is equivalent to a `std::ranges::max()`
+call under the hood, but is easier to remember, and closer to Python syntax. */
+template <typename T, typename Less = std::less<>>
+    requires (
+        !(meta::iterator<T> && meta::sentinel_for<T, T>) &&
+        requires(const T& a, const T& b, Less less_than) {
+            std::ranges::max(a, b, std::forward<Less>(less_than));
+        }
+    )
+[[nodiscard]] constexpr decltype(auto) max(
+    const T& a,
+    const T& b,
+    Less&& less_than = {}
+) noexcept(
+    noexcept(std::ranges::max(a, b, std::forward<Less>(less_than)))
+) {
+    return std::ranges::max(a, b, std::forward<Less>(less_than));
+}
+
+
+/* Get the maximum of a sequence of values as an initializer list.  This is equivalent
+to a `std::ranges::min()` call under the hood, but is easier to remember, and closer to
+Python syntax. */
+template <typename T, typename Less = std::less<>>
+    requires (requires(std::initializer_list<T> r, Less less_than) {
+        std::ranges::max(r, std::forward<Less>(less_than));
+    })
+[[nodiscard]] constexpr decltype(auto) max(
+    std::initializer_list<T> r,
+    Less&& less_than = {}
+) noexcept(
+    noexcept(std::ranges::max(r, std::forward<Less>(less_than)))
+) {
+    return std::ranges::max(r, std::forward<Less>(less_than));
+}
+
+
+/* Get the maximum of a sequence of values as an iterable range.  This is equivalent
+to a `std::ranges::min()` call under the hood, but is easier to remember, and closer to
+Python syntax. */
+template <meta::iterable T, typename Less = std::less<>>
+    requires (requires(T r, Less less_than) {
+        std::ranges::max(std::forward<T>(r), std::forward<Less>(less_than));
+    })
+[[nodiscard]] constexpr decltype(auto) max(
+    T&& r,
+    Less&& less_than = {}
+) noexcept(
+    noexcept(std::ranges::max(std::forward<T>(r), std::forward<Less>(less_than)))
+) {
+    return std::ranges::max(std::forward<T>(r), std::forward<Less>(less_than));
+}
+
+
+/* Get the minimum of a pair of values.  This is equivalent to a `std::ranges::min()`
+call under the hood, but is easier to remember, and closer to Python syntax. */
+template <typename T, typename Less = std::less<>>
+    requires (
+        !(meta::iterator<T> && meta::sentinel_for<T, T>) &&
+        requires(const T& a, const T& b, Less less_than) {
+            std::ranges::min(a, b, std::forward<Less>(less_than));
+        }
+    )
+[[nodiscard]] constexpr decltype(auto) min(
+    const T& a,
+    const T& b,
+    Less&& less_than = {}
+) noexcept(
+    noexcept(std::ranges::min(a, b, std::forward<Less>(less_than)))
+) {
+    return std::ranges::min(a, b, std::forward<Less>(less_than));
+}
+
+
+/* Get the minimum of a sequence of values as an initializer list.  This is equivalent
+to a `std::ranges::min()` call under the hood, but is easier to remember, and closer to
+Python syntax. */
+template <typename T, typename Less = std::less<>>
+    requires (requires(std::initializer_list<T> r, Less less_than) {
+        std::ranges::min(r, std::forward<Less>(less_than));
+    })
+[[nodiscard]] constexpr decltype(auto) min(
+    std::initializer_list<T> r,
+    Less&& less_than = {}
+) noexcept(
+    noexcept(std::ranges::min(r, std::forward<Less>(less_than)))
+) {
+    return std::ranges::min(r, std::forward<Less>(less_than));
+}
+
+
+/* Get the minimum of a sequence of values as an initializer list.  This is equivalent
+to a `std::ranges::min()` call under the hood, but is easier to remember, and closer to
+Python syntax. */
+template <meta::iterable T, typename Less = std::less<>>
+    requires (requires(T r, Less less_than) {
+        std::ranges::min(std::forward<T>(r), std::forward<Less>(less_than));
+    })
+[[nodiscard]] constexpr decltype(auto) min(
+    T&& r,
+    Less&& less_than = {}
+) noexcept(
+    noexcept(std::ranges::min(std::forward<T>(r), std::forward<Less>(less_than)))
+) {
+    return std::ranges::min(std::forward<T>(r), std::forward<Less>(less_than));
+}
+
+
+/* Combine several ranges into a view that yields tuple-like values consisting of the
+`i` th element of each range.  This is equivalent to a `std::views::zip()` call under
+the hood, but is easier to remember, and closer to python syntax. */
+template <meta::iterable... Ts>
+    requires (requires(Ts... rs) { std::views::zip(std::forward<Ts>(rs)...); })
+[[nodiscard]] constexpr decltype(auto) zip(Ts&&... rs) noexcept(
+    noexcept(std::views::zip(std::forward<Ts>(rs)...))
+) {
+    return std::views::zip(std::forward<Ts>(rs)...);
+}
+
+
+/// TODO: there's no std::views::enumerate() yet, so this is commented out for now.
+/// I may be able to implement it myself, but that would require a lot of unnecessary
+/// work
+
+
+// /* Produce a view over a given range that yields tuples consisting of each item's
+// index and ordinary value_type.  This is equivalent to a `std::views::enumerate()` call
+// under the hood, but is easier to remember, and closer to Python syntax. */
+// template <meta::iterable T>
+//     requires (requires(T r) { std::views::enumerate(std::forward<T>(r)); })
+// [[nodiscard]] constexpr decltype(auto) enumerate(T&& r) noexcept(
+//     noexcept(std::views::enumerate(std::forward<T>(r)))
+// ) {
+//     return std::views::enumerate(std::forward<T>(r));
+// }
 
 
 /* Sort an arbitrary range using an optimized, implementation-specific sorting
