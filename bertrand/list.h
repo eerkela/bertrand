@@ -13,6 +13,14 @@ namespace bertrand {
 /// TODO: I should still offer a version of this class that just uses ordinary heap
 /// allocations rather than a virtual address space.  This always occurs when N == 0
 
+/// TODO: also, default capacities are hard to define since it's just a raw integer.
+/// What I should probably do instead is define everything using memory sized, such that
+/// you can do something like this:
+
+/// List<int, 40_MiB>   enough space for 40 MiB of integers
+/// List<int, 40>       enough space for 40 integers
+
+/// using a user-defined literal type, which defaults to sizeof(T) in size.
 
 
 

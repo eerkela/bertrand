@@ -7,37 +7,11 @@
 #include "bertrand/common.h"
 
 
-#ifdef _WIN32
-    #include <windows.h>
-    #include <errhandlingapi.h>
-#elifdef __unix__
-    #include <sys/mman.h>
-    #include <unistd.h>
-#endif
-
-
 namespace bertrand {
 
 
 namespace impl {
     struct address_space_tag {};
-
-    namespace bytes {
-        enum : size_t {
-            B = 1,
-            KiB = 1024,
-            MiB = 1024 * KiB,
-            GiB = 1024 * MiB,
-            TiB = 1024 * GiB,
-            PiB = 1024 * TiB,
-            EiB = 1024 * PiB,
-        };
-    }
-
-    template <typename T>
-    constexpr size_t DEFAULT_ADDRESS_CAPACITY = (bytes::MiB * 8 + sizeof(T) - 1) / sizeof(T);
-    template <meta::is_void T>
-    constexpr size_t DEFAULT_ADDRESS_CAPACITY<T> = bytes::MiB * 8;
 
     /* Reserve a range of virtual addresses with the given size.  Returns a pointer to
     the start of the address range or nullptr on error. */
@@ -178,106 +152,11 @@ namespace impl {
 }
 
 
-#ifdef BERTRAND_PAGE_SIZE
-    constexpr size_t PAGE_SIZE = BERTRAND_PAGE_SIZE;
-#else
-    constexpr size_t PAGE_SIZE = impl::bytes::KiB * 4;
-#endif
-
-
-#ifdef BERTRAND_ARENA_SIZE
-    constexpr size_t ARENA_SIZE = BERTRAND_ARENA_SIZE;
-#else
-    constexpr size_t ARENA_SIZE = impl::bytes::GiB * 128;
-#endif
-
-
-#ifdef BERTRAND_NUM_ARENAS
-    constexpr size_t NUM_ARENAS = BERTRAND_NUM_ARENAS;
-#else
-    constexpr size_t NUM_ARENAS = 8;
-#endif
-
-
-static_assert(
-    PAGE_SIZE == 0 || ARENA_SIZE % PAGE_SIZE == 0,
-    "arena size must be a multiple of the page size"
-);
-static_assert(
-    ARENA_SIZE == 0 || ARENA_SIZE >= (PAGE_SIZE * 2),
-    "arena must contain at least two pages of memory to store a freelist and "
-    "public partition"
-);
-
-
-/* True if the current system supports virtual address reservation.  False
-otherwise. */
-constexpr bool HAS_ARENA = ARENA_SIZE > 0 && NUM_ARENAS > 0 && PAGE_SIZE > 0;
-
-
-namespace meta {
-
-    template <typename Alloc>
-    concept address_space = inherits<Alloc, impl::address_space_tag>;
-
-    template <typename Alloc, typename T>
-    concept address_space_for =
-        address_space<Alloc> &&
-        std::same_as<typename unqualify<Alloc>::type, T>;
-
-    template <typename Alloc, typename T>
-    concept allocator_or_space_for =
-        allocator_for<Alloc, T> ||
-        address_space_for<Alloc, T>;
-
-    template <typename T, size_t N>
-    concept address_space_args = HAS_ARENA && meta::unqualified<T>;
-
-    template <typename T, size_t N>
-    concept small_address_space_args =
-        address_space_args<T, N> &&
-        N * sizeof(std::conditional_t<meta::is_void<T>, std::byte, T>) < PAGE_SIZE;
-
-}
-
-
-template <typename T = void, size_t N = impl::DEFAULT_ADDRESS_CAPACITY<T>>
-    requires (meta::address_space_args<T, N>)
+template <meta::unqualified T = void, impl::capacity<T> N = 8_MiB>
 struct address_space;
 
 
 namespace impl {
-
-    inline bool valid_page_size = [] {
-        #ifdef _WIN32
-            SYSTEM_INFO si;
-            GetSystemInfo(&si);
-            if (si.dwPageSize != PAGE_SIZE) {
-                std::cerr << std::format(
-                    "warning: `BERTRAND_PAGE_SIZE` ({} bytes) does not match "
-                    "system page size ({} bytes).  This may cause misaligned virtual "
-                    "address spaces and undefined behavior.  Please recompile with "
-                    "`BERTRAND_PAGE_SIZE` set to the correct value to silence this "
-                    "warning",
-                    PAGE_SIZE,
-                    si.dwPageSize
-                ) << std::endl;
-            }
-        #elifdef __unix__
-            if (sysconf(_SC_PAGESIZE) != PAGE_SIZE) {
-                std::cerr << std::format(
-                    "warning: `BERTRAND_PAGE_SIZE` ({} bytes) does not match "
-                    "system page size ({} bytes).  This may cause misaligned virtual "
-                    "address spaces and undefined behavior.  Please recompile with "
-                    "`BERTRAND_PAGE_SIZE` set to the correct value to silence this "
-                    "warning",
-                    PAGE_SIZE,
-                    sysconf(_SC_PAGESIZE)
-                ) << std::endl;
-            }
-        #endif
-        return true;
-    }();
 
     /* A pool of virtual arenas backing the `address_space<T, N>` class.  These arenas
     are allocated upfront at program startup and reused in a manner similar to
@@ -290,7 +169,7 @@ namespace impl {
         length `ARENA_SIZE` with a private partition to store an allocator freelist. */
         struct arena {
         private:
-            template <typename T, size_t N> requires (meta::address_space_args<T, N>)
+            template <meta::unqualified T, impl::capacity<T> N>
             friend struct bertrand::address_space;
             friend global_address_space;
 
@@ -340,7 +219,7 @@ namespace impl {
                         m_id,
                         reinterpret_cast<uintptr_t>(m_public),
                         reinterpret_cast<uintptr_t>(m_public) + capacity(),
-                        double(PAGE_SIZE) / double(impl::bytes::MiB),
+                        double(PAGE_SIZE) / double(1_MiB),
                         system_err_msg()
                     ));
                 }
@@ -501,7 +380,7 @@ namespace impl {
                                         m_id,
                                         reinterpret_cast<uintptr_t>(m_private),
                                         reinterpret_cast<uintptr_t>(m_highest),
-                                        double(PAGE_SIZE) / double(impl::bytes::MiB),
+                                        double(PAGE_SIZE) / double(1_MiB),
                                         system_err_msg()
                                     ));
                                 }
@@ -600,7 +479,7 @@ namespace impl {
                             m_id,
                             reinterpret_cast<uintptr_t>(m_public),
                             reinterpret_cast<uintptr_t>(m_public) + capacity(),
-                            double(ARENA_SIZE) / double(impl::bytes::MiB)
+                            double(ARENA_SIZE) / double(1_MiB)
                         ));
                     }
                     m_occupied += length;
@@ -675,7 +554,7 @@ namespace impl {
         };
 
     private:
-        template <typename T, size_t N> requires (meta::address_space_args<T, N>)
+        template <meta::unqualified T, capacity<T> N>
         friend struct bertrand::address_space;
 
         struct storage;
@@ -703,7 +582,7 @@ namespace impl {
                     ARENA_SIZE * NUM_ARENAS,
                     reinterpret_cast<uintptr_t>(ptr),
                     reinterpret_cast<uintptr_t>(ptr) + ARENA_SIZE * NUM_ARENAS,
-                    double(ARENA_SIZE * NUM_ARENAS) / double(impl::bytes::MiB),
+                    double(ARENA_SIZE * NUM_ARENAS) / double(1_MiB),
                     system_err_msg()
                 ));
             }
@@ -808,7 +687,7 @@ namespace impl {
             throw MemoryError(std::format(
                 "not enough virtual memory for new address space of size "
                 "{:.2e} MiB",
-                double(capacity) / double(impl::bytes::MiB)
+                double(capacity) / double(1_MiB)
             ));
         }
 
@@ -912,6 +791,22 @@ namespace impl {
 }
 
 
+namespace meta {
+
+    template <typename Alloc>
+    concept address_space = inherits<Alloc, impl::address_space_tag>;
+
+    template <typename Alloc, typename T>
+    concept address_space_for =
+        address_space<Alloc> && std::same_as<typename unqualify<Alloc>::type, T>;
+
+    template <typename Alloc, typename T>
+    concept allocator_or_space_for =
+        allocator_for<Alloc, T> || address_space_for<Alloc, T>;
+
+}
+
+
 /* A contiguous region of reserved virtual addresses (pointers), into which physical
 memory can be allocated.
 
@@ -931,11 +826,15 @@ used to construct it indicates how many instances of `T` can be stored within.  
 `T = void`, then the size is interpreted as a raw number of bytes, which can be used
 to store arbitrary data.
 
-The template parameter `N` indicates the size of space to reserve in units of `T`, as
-described above.  The default value equates to roughly 8 MiB of contiguous address
-space, subdivided into segments of type `T`.  This is usually sufficient for small to
-medium-sized data structures, but can be increased arbitrarily if necessary, up to the
-system's maximum virtual address (~256 TiB on most 64-bit systems).
+The template parameter `N` indicates the size of space to reserve.  If it does not
+have any units, then it will be multiplied by the aligned size of `T` to determine the
+total number of bytes to reserve.  Otherwise, it can be defined with explicit units
+via the integer literals `_B`, `_KiB`, `_MiB`, `_GiB`, etc., which will be
+automatically reduced to match the alignment of `T`.  The default value equates to
+roughly 8 MiB of contiguous address space, which is usually sufficient for small to
+medium-sized data structures and leaves plenty of room for other allocations, but can
+be increased arbitrarily if needed, up to the system's maximum virtual address (~256
+TiB on most 64-bit systems).
 
 This class is primarily meant to implement low-level memory allocation for arena
 allocators and dynamic data structures, such as high-performance vectors.  Since the
@@ -944,26 +843,23 @@ is possible to implement these data structures without ever needing to relocate 
 in memory, which is ordinarily a costly operation that results in fragmentation and
 possible dangling pointers.  By using a virtual address space, the data structure can
 be trivially resized by simply allocating additional pages of physical memory within
-the same address range, without changing the address of existing objects.  This
+the same address range, without changing the addresses of existing objects.  This
 improves both performance and safety, since there is no risk of pointer invalidation or
 memory leaks due to growth of the data structure (although invalidation can still occur
-if relocation occurs for other reasons, such as by removing an element from the middle
+if relocation happens for other reasons, such as by removing an element from the middle
 of a vector).  It also shields the user somewhat from heap corruption vulnerabilities
 and out-of-bounds reads/writes, since most of the address space is protected by the
-operating system, and additional hardening can be trivially applied.
+operating system, and additional guard pages are automatically added at both ends.
 
 Allocating and deallocating address spaces is considered to be thread-safe, but the
 space itself has no built-in synchronization beyond that.  If the same space is
 expected to be accessible from multiple threads, then the user must ensure that
 concurrent access is properly synchronized, either by explicit locking or by
-partitioning the address space into separate regions for each thread.  With a careful
-implementation, this technically allows for direct read/write access between threads
-through the shared address space, which enables complex messaging patterns and
-low-level data sharing, although that is not trivial to implement correctly. */
-template <typename T, size_t N> requires (meta::address_space_args<T, N>)
+partitioning the address space into separate regions for each thread. */
+template <meta::unqualified T, impl::capacity<T> N>
 struct address_space : impl::address_space_tag {
-    using arena = impl::global_address_space::arena;
     using size_type = size_t;
+    using capacity_type = impl::capacity<T>;
     using difference_type = ptrdiff_t;
     using type = T;
     using value_type = std::conditional_t<meta::is_void<T>, std::byte, T>;
@@ -976,38 +872,23 @@ struct address_space : impl::address_space_tag {
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
 
-    enum : size_type {
-        B = impl::bytes::B,
-        KiB = impl::bytes::KiB,
-        MiB = impl::bytes::MiB,
-        GiB = impl::bytes::GiB,
-        TiB = impl::bytes::TiB,
-    };
-
     /* Indicates whether this address space falls into the small space optimization.
-    Such spaces cannot be copied or moved without downstream, implementation-defined
-    logic. */
+    Such spaces are allocated on the heap rather than using page-aligned virtual
+    memory. */
     static constexpr bool SMALL = false;
-
-    /* The default capacity to reserve if no template override is given.  This defaults
-    to a maximum of ~8 MiB of total storage, evenly divided into contiguous segments of
-    type `T`. */
-    static constexpr size_type DEFAULT_CAPACITY = impl::DEFAULT_ADDRESS_CAPACITY<T>;
 
 private:
 
-    static constexpr size_t GUARD_SIZE =
-        ((sizeof(value_type) + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;
-
-    static constexpr size_t TOTAL_SIZE =
-        GUARD_SIZE + (N * sizeof(value_type)) + GUARD_SIZE;
+    static constexpr capacity_type GUARD_SIZE =
+        (N.item_size + PAGE_SIZE - 1) / PAGE_SIZE * PAGE_SIZE;
+    static constexpr capacity_type TOTAL_SIZE = GUARD_SIZE + N.page_align() + GUARD_SIZE;
 
 public:
 
     /* Default constructor.  Reserves address space, but does not commit any memory. */
     [[nodiscard]] address_space() :
         m_arena(impl::global_address_space::get().acquire(TOTAL_SIZE)),
-        m_data(reinterpret_cast<pointer>(m_arena->reserve(TOTAL_SIZE) + GUARD_SIZE))
+        m_data(m_arena->reserve(TOTAL_SIZE) + GUARD_SIZE)
     {}
 
     address_space(const address_space&) = delete;
@@ -1023,14 +904,14 @@ public:
     [[maybe_unused]] address_space& operator=(address_space&& other) noexcept(!DEBUG) {
         if (this != &other) {
             if (m_data) {
-                std::byte* p = reinterpret_cast<std::byte*>(m_data);
+                std::byte* p = m_data;
                 if (!impl::purge_address_space(p, nbytes())) {
                     throw MemoryError(std::format(
                         "failed to decommit pages from virtual address space starting "
                         "at address {:#x} and ending at address {:#x} ({:.2e} MiB) - {}",
                         reinterpret_cast<uintptr_t>(m_data),
                         reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-                        double(nbytes()) / double(impl::bytes::MiB),
+                        double(nbytes()) / double(1_MiB),
                         impl::system_err_msg()
                     ));
                 }
@@ -1042,7 +923,7 @@ public:
                         m_arena->id(),
                         reinterpret_cast<uintptr_t>(m_data),
                         reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-                        double(nbytes()) / double(impl::bytes::MiB),
+                        double(nbytes()) / double(1_MiB),
                         impl::system_err_msg()
                     ));
                 }
@@ -1058,17 +939,17 @@ public:
     /* Unreserve the address space upon destruction, returning the virtual capacity to
     the arena's freelist and allowing the operating system to reclaim physical pages
     for future allocations. */
-    ~address_space() {
+    ~address_space() noexcept(false) {
         m_arena = nullptr;
         if (m_data) {
-            std::byte* p = reinterpret_cast<std::byte*>(m_data);
+            std::byte* p = m_data;
             if (!impl::purge_address_space(p, nbytes())) {
                 throw MemoryError(std::format(
                     "failed to decommit pages from virtual address space starting "
                     "at address {:#x} and ending at address {:#x} ({:.2e} MiB) - {}",
                     reinterpret_cast<uintptr_t>(m_data),
                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-                    double(nbytes()) / double(impl::bytes::MiB),
+                    double(nbytes()) / double(1_MiB),
                     impl::system_err_msg()
                 ));
             }
@@ -1080,7 +961,7 @@ public:
                     m_arena->id(),
                     reinterpret_cast<uintptr_t>(m_data),
                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-                    double(nbytes()) / double(impl::bytes::MiB),
+                    double(nbytes()) / double(1_MiB),
                     impl::system_err_msg()
                 ));
             }
@@ -1088,33 +969,40 @@ public:
         }
     }
 
-    /* True if the address space no longer owns virtual memory.  False otherwise.
+    /* True if the address space owns a virtual memory handle.  False otherwise.
     Currently, this only occurs after an address space has been moved from, leaving it
     in an empty state. */
     [[nodiscard]] explicit operator bool() const noexcept { return m_data; }
 
-    /* Return the maximum size of the virtual address space in units of `T`.  If
-    `T` is void, then this refers to the total size (in bytes) of the address space
-    itself. */
-    [[nodiscard]] static constexpr size_type size() noexcept { return N; }
+    /* Return the maximum size of the virtual address space in units of `T`.  If `T` is
+    void, then this refers to the total size (in bytes) of the address space itself.
+    Otherwise, it is equivalent to `nbytes()` divided by the aligned size of `T`.  If
+    `T` is an empty type, then the result is always zero. */
+    [[nodiscard]] static constexpr size_type size() noexcept { return N.count(); }
 
     /* Return the maximum size of the address space in bytes.  If `T` is void, then
-    this is equivalent to `size()`. */
-    [[nodiscard]] static constexpr size_type nbytes() noexcept { return N * sizeof(value_type); }
+    this is always equivalent to `N`.  Otherwise, the result is adjusted downwards to
+    be a multiple of the aligned size of type `T`.  If `T` is an empty type, then
+    the result is always zero. */
+    [[nodiscard]] static constexpr size_type nbytes() noexcept { return N; }
 
     /* Get a pointer to the beginning of the reserved address space.  If `T` is void,
     then the pointer will be returned as `std::byte*`. */
-    [[nodiscard]] pointer data() noexcept { return m_data; }
-    [[nodiscard]] const_pointer data() const noexcept { return m_data; }
+    [[nodiscard]] pointer data() noexcept {
+        return reinterpret_cast<pointer>(m_data);
+    }
+    [[nodiscard]] const_pointer data() const noexcept {
+        return reinterpret_cast<const_pointer>(m_data);
+    }
 
     /* Iterate over the reserved addresses.  If `T` is void, then each element is
     represented as a `std::byte`. */
-    [[nodiscard]] iterator begin() noexcept { return m_data; }
-    [[nodiscard]] const_iterator begin() const noexcept { return m_data; }
-    [[nodiscard]] const_iterator cbegin() const noexcept { return m_data;}
-    [[nodiscard]] iterator end() noexcept { return begin() + N; }
-    [[nodiscard]] const_iterator end() const noexcept { return begin() + N; }
-    [[nodiscard]] const_iterator cend() const noexcept { return begin() + N; }
+    [[nodiscard]] iterator begin() noexcept { return data(); }
+    [[nodiscard]] const_iterator begin() const noexcept { return data(); }
+    [[nodiscard]] const_iterator cbegin() const noexcept { return data();}
+    [[nodiscard]] iterator end() noexcept { return begin() + size(); }
+    [[nodiscard]] const_iterator end() const noexcept { return begin() + size(); }
+    [[nodiscard]] const_iterator cend() const noexcept { return begin() + size(); }
     [[nodiscard]] reverse_iterator rbegin() noexcept { return {end()}; }
     [[nodiscard]] const_reverse_iterator rbegin() const noexcept { return {end()}; }
     [[nodiscard]] const_reverse_iterator crbegin() const noexcept { return {end()}; }
@@ -1122,18 +1010,23 @@ public:
     [[nodiscard]] const_reverse_iterator rend() const noexcept { return {begin()}; }
     [[nodiscard]] const_reverse_iterator crend() const noexcept { return {begin()}; }
 
-    /* Manually commit physical memory to the address space.  If `T` is not void, then
-    `offset` and `length` are both multiplied by `sizeof(T)` to determine the actual
-    offsets for the relevant syscall.  The result is a pointer to the start of the
-    committed memory, and a `MemoryError` may be thrown if committing the memory
-    resulted in an OS error, with the original message being forwarded to the user.
+    /* Manually commit physical memory to the address space.  If `T` is not void and
+    the offset and/or length have no units, then they will be multiplied by the aligned
+    size of `T` to determine the actual offsets for the relevant syscall.  If the
+    length is empty, then no memory will be committed.  The result is a pointer to the
+    start of the committed region, and a `MemoryError` may be thrown if committing the
+    memory resulted in an OS error, with the original message being forwarded to the
+    user.
 
     Individual arena implementations are expected to wrap this method to make the
     interface more convenient.  This simply abstracts the low-level OS hooks to make
     them cross-platform. */
-    [[maybe_unused, gnu::malloc]] pointer allocate(size_type offset, size_type length) {
+    [[maybe_unused, gnu::malloc]] pointer allocate(
+        capacity_type offset,
+        capacity_type length
+    ) {
         if constexpr (DEBUG) {
-            if (offset + length > N) {
+            if (offset + length > nbytes()) {
                 throw MemoryError(std::format(
                     "attempted to commit memory at offset {} with length {}, "
                     "which exceeds the size of the virtual address space starting "
@@ -1142,14 +1035,17 @@ public:
                     length,
                     reinterpret_cast<uintptr_t>(m_data),
                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-                    double(nbytes()) / double(impl::bytes::MiB)
+                    double(nbytes()) / double(1_MiB)
                 ));
             }
         }
+        if (!length) {
+            return reinterpret_cast<pointer>(m_data + offset);
+        }
         pointer result = reinterpret_cast<pointer>(impl::commit_address_space(
             m_data,
-            offset * sizeof(value_type),
-            length * sizeof(value_type)
+            offset,
+            length
         ));
         if (result == nullptr) {
             throw MemoryError(std::format(
@@ -1157,24 +1053,25 @@ public:
                 "address {:#x} and ending at address {:#x} ({:.2e} MiB) - {}",
                 reinterpret_cast<uintptr_t>(m_data),
                 reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-                double(nbytes()) / double(impl::bytes::MiB),
+                double(nbytes()) / double(1_MiB),
                 impl::system_err_msg()
             ));
         }
         return result;
     }
 
-    /* Manually release physical memory from the address space.  If `T` is not void,
-    then `offset` and `length` are both multiplied by `sizeof(T)` to determine the
-    actual offsets for the relevant syscall.  A `MemoryError` may be thrown if
-    decommitting the memory resulted in an OS error, with the original message being
+    /* Manually release physical memory from the address space.  If `T` is not void and
+    the offset and/or length have no units, then they will be multiplied by the aligned
+    size of `T` to determine the actual offsets for the relevant syscall.  If the
+    length is empty, then no memory will be decommitted.  A `MemoryError` may be thrown
+    if decommitting the memory resulted in an OS error, with the original message being
     forwarded to the user.
 
     Individual arena implementations are expected to wrap this method to make the
     interface more convenient.  This simply abstracts the low-level OS hooks to make
     them cross-platform.  Note that this does not remove addresses from the space
     itself, which is always handled automatically by the destructor. */
-    void deallocate(size_type offset, size_type length) {
+    void deallocate(capacity_type offset, capacity_type length) {
         if constexpr (DEBUG) {
             if (offset + length > N) {
                 throw MemoryError(std::format(
@@ -1185,21 +1082,24 @@ public:
                     length,
                     reinterpret_cast<uintptr_t>(m_data),
                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-                    double(nbytes()) / double(impl::bytes::MiB)
+                    double(nbytes()) / double(1_MiB)
                 ));
             }
         }
+        if (!length) {
+            return;
+        }
         if (!impl::decommit_address_space(
             m_data,
-            offset * sizeof(value_type),
-            length * sizeof(value_type)
+            offset,
+            length
         )) {
             throw MemoryError(std::format(
                 "failed to decommit pages from virtual address space starting at "
                 "address {:#x} and ending at address {:#x} ({:.2e} MiB) - {}",
                 reinterpret_cast<uintptr_t>(m_data),
                 reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-                double(nbytes()) / double(impl::bytes::MiB),
+                double(nbytes()) / double(1_MiB),
                 impl::system_err_msg()
             ));
         };
@@ -1221,7 +1121,7 @@ public:
                     reinterpret_cast<uintptr_t>(p),
                     reinterpret_cast<uintptr_t>(m_data),
                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-                    double(nbytes()) / double(impl::bytes::MiB)
+                    double(nbytes()) / double(1_MiB)
                 ));
             }
         }
@@ -1243,32 +1143,39 @@ public:
                     reinterpret_cast<uintptr_t>(p),
                     reinterpret_cast<uintptr_t>(m_data),
                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-                    double(nbytes()) / double(impl::bytes::MiB)
+                    double(nbytes()) / double(1_MiB)
                 ));
             }
         }
         if constexpr (!meta::trivially_destructible<T>) {
             p->~T();
         }
+        if constexpr (N.item_size) {
+            std::memset(p, 0, N.item_size);
+        }
     }
 
 private:
-    arena* m_arena;
-    pointer m_data;
+    typename impl::global_address_space::arena* m_arena;
+    std::byte* m_data;
 };
 
 
 /* Small space optimization for `address_space<T, N>`, where `N * sizeof(T)` is less
 than one full page in memory.
 
-This bypasses the virtual memory allocator and instead uses an inline buffer to store
-the contents of the address space.  Such an optimization alleviates contention and
-overall pressure on the allocator, reducing the number of syscalls and improving
-performance for small, transient data structures.  It also limits overall memory usage,
-since we avoid allocating partial pages for small spaces of a known size. */
-template <typename T, size_t N> requires (meta::small_address_space_args<T, N>)
+This bypasses the virtual memory arenas and allocates the address space on the heap
+using the system's `calloc()` and `free()`.  Since virtual address spaces are always
+aligned to the nearest page boundary, spaces smaller than that can use the heap to
+avoid wasting memory and reduce contention on the global arenas, which are only used
+for multi-page allocations.  This tends to reduce the total number of syscalls and
+improve performance for small, transient data structures, without compromising any of
+the pointer stability guarantees of the larger address spaces.  Both cases expose the
+same interface, so the user does not need to worry about which one is being used. */
+template <meta::unqualified T, impl::capacity<T> N> requires (N.page_align() <= PAGE_SIZE)
 struct address_space<T, N> : impl::address_space_tag {
     using size_type = size_t;
+    using capacity_type = impl::capacity<T>;
     using difference_type = ptrdiff_t;
     using type = T;
     using value_type = std::conditional_t<meta::is_void<T>, std::byte, T>;
@@ -1281,68 +1188,84 @@ struct address_space<T, N> : impl::address_space_tag {
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = const std::reverse_iterator<const_iterator>;
 
-    enum : size_type {
-        B = impl::bytes::B,
-        KiB = impl::bytes::KiB,
-        MiB = impl::bytes::MiB,
-        GiB = impl::bytes::GiB,
-        TiB = impl::bytes::TiB,
-    };
-
     /* Indicates whether this address space falls into the small space optimization.
     Such spaces cannot be copied or moved without downstream, implementation-defined
     logic. */
     static constexpr bool SMALL = true;
 
-    /* The default capacity to reserve if no template override is given.  This defaults
-    to a maximum of ~8 MiB of total storage, evenly divided into contiguous segments of
-    type `T`. */
-    static constexpr size_type DEFAULT_CAPACITY = impl::DEFAULT_ADDRESS_CAPACITY<T>;
-
-    /* Default constructor.  Allocates uninitialized storage equal to the size of the
-    physical space, initialized to zero. */
-    [[nodiscard]] address_space() noexcept = default;
+    /* Default constructor.  `calloc()`s uninitialized storage equal to the size of the
+    space, initialized to zero. */
+    [[nodiscard]] address_space() : m_data(calloc(N)) {
+        if (!m_data) {
+            throw MemoryError(std::format(
+                "failed to allocate {} bytes for address space starting at "
+                "address {:#x} and ending at address {:#x} ({:.2e} MiB)",
+                nbytes(),
+                reinterpret_cast<uintptr_t>(m_data),
+                reinterpret_cast<uintptr_t>(m_data) + nbytes(),
+                double(nbytes()) / double(1_MiB)
+            ));
+        }
+    }
 
     address_space(const address_space& other) = delete;
-
-    address_space(address_space&& other) = delete;
-
     address_space& operator=(const address_space& other) = delete;
 
-    address_space& operator=(address_space&& other) = delete;
+    [[nodiscard]] address_space(address_space&& other) noexcept :
+        m_data(other.m_data)
+    {
+        other.m_data = nullptr;
+    }
 
-    /* True if the physical space is not empty.  False otherwise. */
-    [[nodiscard]] explicit operator bool() const noexcept { return N; }
+    [[maybe_unused]] address_space& operator=(address_space&& other) noexcept {
+        if (this != &other) {
+            if (m_data) {
+                free(m_data);
+            }
+            m_data = other.m_data;
+            other.m_data = nullptr;
+        }
+        return *this;
+    }
+
+    /* `free()` the address space upon destruction. */
+    ~address_space() {
+        if (m_data) {
+            free(m_data);
+            m_data = nullptr;
+        }
+    }
+
+    /* True if the address space owns a virtual memory handle.  False otherwise.
+    Currently, this only occurs after an address space has been moved from, leaving it
+    in an empty state. */
+    [[nodiscard]] explicit operator bool() const noexcept { return m_data; }
 
     /* Return the maximum size of the physical space in units of `T`.  If `T` is void,
     then this refers to the total size (in bytes) of the physical space itself. */
-    [[nodiscard]] static constexpr size_type size() noexcept { return N; }
+    [[nodiscard]] static constexpr size_type size() noexcept { return N.count(); }
 
     /* Return the maximum size of the physical space in bytes.  If `T` is void, then
     this is equivalent to `size()`. */
-    [[nodiscard]] static constexpr size_type nbytes() noexcept { return N * sizeof(value_type); }
+    [[nodiscard]] static constexpr size_type nbytes() noexcept { return N; }
 
     /* Get a pointer to the beginning of the reserved physical space.  If `T` is void,
     then the pointer will be returned as `std::byte*`. */
-    [[nodiscard]] pointer data() noexcept { return reinterpret_cast<pointer>(m_storage); }
+    [[nodiscard]] pointer data() noexcept {
+        return reinterpret_cast<pointer>(m_data);
+    }
     [[nodiscard]] const_pointer data() const noexcept {
-        return reinterpret_cast<const_pointer>(m_storage);
+        return reinterpret_cast<const_pointer>(m_data);
     }
 
     /* Iterate over the reserved addresses.  If `T` is void, then each element is
     represented as a `std::byte`. */
-    [[nodiscard]] iterator begin() noexcept {
-        return reinterpret_cast<iterator>(m_storage);
-    }
-    [[nodiscard]] const_iterator begin() const noexcept {
-        return reinterpret_cast<const_iterator>(m_storage);
-    }
-    [[nodiscard]] const_iterator cbegin() const noexcept {
-        return reinterpret_cast<const_iterator>(m_storage);
-    }
-    [[nodiscard]] iterator end() noexcept { return begin() + N; }
-    [[nodiscard]] const_iterator end() const noexcept { return begin() + N; }
-    [[nodiscard]] const_iterator cend() const noexcept { return begin() + N; }
+    [[nodiscard]] iterator begin() noexcept { return data(); }
+    [[nodiscard]] const_iterator begin() const noexcept { return data(); }
+    [[nodiscard]] const_iterator cbegin() const noexcept { return data(); }
+    [[nodiscard]] iterator end() noexcept { return begin() + size(); }
+    [[nodiscard]] const_iterator end() const noexcept { return begin() + size(); }
+    [[nodiscard]] const_iterator cend() const noexcept { return begin() + size(); }
     [[nodiscard]] reverse_iterator rbegin() noexcept { return {end()}; }
     [[nodiscard]] const_reverse_iterator rbegin() const noexcept { return {end()}; }
     [[nodiscard]] const_reverse_iterator crbegin() const noexcept { return {end()}; }
@@ -1351,32 +1274,33 @@ struct address_space<T, N> : impl::address_space_tag {
     [[nodiscard]] const_reverse_iterator crend() const noexcept { return {begin()}; }
 
     /* Return a pointer to the beginning of a contiguous region of the physical space.
-    If `T` is not void, then `offset` and `length` are both multiplied by `sizeof(T)`
-    to determine the actual offsets. */
+    If `T` is not void and the offset and/or length have no units, then they will be
+    multiplied by the aligned size of `T` to determine the actual offsets.  The result
+    is a pointer to the start of the allocated region. */
     [[maybe_unused, gnu::malloc]] pointer allocate(
-        size_type offset,
-        size_type length
+        capacity_type offset,
+        capacity_type length
     ) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
-            if (offset + length > N) {
+            if (offset + length > nbytes()) {
                 throw MemoryError(std::format(
                     "attempted to commit memory at offset {} with length {}, "
                     "which exceeds the size of the physical space starting "
                     "at address {:#x} and ending at address {:#x} ({:.2e} MiB)",
                     offset,
                     length,
-                    reinterpret_cast<uintptr_t>(m_storage),
-                    reinterpret_cast<uintptr_t>(m_storage) + nbytes(),
-                    double(nbytes()) / double(impl::bytes::MiB)
+                    reinterpret_cast<uintptr_t>(m_data),
+                    reinterpret_cast<uintptr_t>(m_data) + nbytes(),
+                    double(nbytes()) / double(1_MiB)
                 ));
             }
         }
-        return reinterpret_cast<pointer>(m_storage + offset * sizeof(value_type));
+        return reinterpret_cast<pointer>(m_data + offset);
     }
 
-    /* Zero out the physical memory associated with the given range.  If `T` is not
-    void, then `offset` and `length` are both multiplied by `sizeof(T)` to determine
-    the actual offsets. */
+    /* Zero out the physical memory associated with the given range.  If `T` is not void and
+    the offset and/or length have no units, then they will be multiplied by the aligned
+    size of `T` to determine the actual offsets. */
     void deallocate(size_type offset, size_type length) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
             if (offset + length > N) {
@@ -1386,17 +1310,12 @@ struct address_space<T, N> : impl::address_space_tag {
                     "at address {:#x} and ending at address {:#x} ({:.2e} MiB)",
                     offset,
                     length,
-                    reinterpret_cast<uintptr_t>(m_storage),
-                    reinterpret_cast<uintptr_t>(m_storage) + nbytes(),
-                    double(nbytes()) / double(impl::bytes::MiB)
+                    reinterpret_cast<uintptr_t>(m_data),
+                    reinterpret_cast<uintptr_t>(m_data) + nbytes(),
+                    double(nbytes()) / double(1_MiB)
                 ));
             }
         }
-        std::memset(
-            m_storage + offset * sizeof(value_type),
-            static_cast<unsigned char>(0),
-            length * sizeof(value_type)
-        );
     }
 
     /* Construct a value that was allocated from this physical space using placement
@@ -1413,9 +1332,9 @@ struct address_space<T, N> : impl::address_space_tag {
                     "space starting at address {:#x} and ending at "
                     "address {:#x} ({:.2e} MiB)",
                     reinterpret_cast<uintptr_t>(p),
-                    reinterpret_cast<uintptr_t>(m_storage),
-                    reinterpret_cast<uintptr_t>(m_storage) + nbytes(),
-                    double(nbytes()) / double(impl::bytes::MiB)
+                    reinterpret_cast<uintptr_t>(m_data),
+                    reinterpret_cast<uintptr_t>(m_data) + nbytes(),
+                    double(nbytes()) / double(1_MiB)
                 ));
             }
         }
@@ -1434,20 +1353,31 @@ struct address_space<T, N> : impl::address_space_tag {
                     "space starting at address {:#x} and ending at "
                     "address {:#x} ({:.2e} MiB)",
                     reinterpret_cast<uintptr_t>(p),
-                    reinterpret_cast<uintptr_t>(m_storage),
-                    reinterpret_cast<uintptr_t>(m_storage) + nbytes(),
-                    double(nbytes()) / double(impl::bytes::MiB)
+                    reinterpret_cast<uintptr_t>(m_data),
+                    reinterpret_cast<uintptr_t>(m_data) + nbytes(),
+                    double(nbytes()) / double(1_MiB)
                 ));
             }
         }
         if constexpr (!meta::trivially_destructible<T>) {
             p->~T();
         }
+        if constexpr (N.item_size) {
+            std::memset(p, 0, N.item_size);
+        }
     }
 
 private:
-    alignas(value_type) unsigned char m_storage[N * sizeof(value_type)];
+    std::byte* m_data;
 };
+
+
+inline void test() {
+    address_space<int, 4> small;  // space to store 4 aligned integers
+    address_space<int, 4_MiB> large;  // space to store ~4 MiB of aligned integers
+    static_assert(small.nbytes() == 16);
+    static_assert(large.nbytes() == 4_MiB);
+}
 
 
 }  // namespace bertrand
