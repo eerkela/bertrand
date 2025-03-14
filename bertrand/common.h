@@ -142,12 +142,6 @@ namespace meta {
         }
     }
 
-    template <typename... Ts>
-    concept has_common_type = requires { typename std::common_type<Ts...>::type; };
-
-    template <typename... Ts> requires (has_common_type<Ts...>)
-    using common_type = std::common_type_t<Ts...>;
-
     /////////////////////////////
     ////    QUALIFICATION    ////
     /////////////////////////////
@@ -353,8 +347,15 @@ namespace meta {
 
     template <typename T, typename U>
     concept more_qualified_than =
-        detail::more_qualified_than<T, meta::remove_reference<U>> &&
-        !std::same_as<meta::remove_reference<T>, meta::remove_reference<U>>;
+        !std::same_as<remove_reference<T>, remove_reference<U>> &&
+        detail::more_qualified_than<remove_reference<T>, remove_reference<U>>;
+
+    template <typename... Ts>
+    concept has_common_type =
+        (sizeof...(Ts) > 0) && requires { typename std::common_reference<Ts...>::type; };
+
+    template <typename... Ts> requires (has_common_type<Ts...>)
+    using common_type = std::common_reference<Ts...>::type;
 
     //////////////////////////
     ////    PRIMITIVES    ////
@@ -1079,16 +1080,129 @@ namespace meta {
     ////    STRUCTURED BINDINGS    ////
     ///////////////////////////////////
 
+    template <typename T, size_t N>
+    concept has_member_get = requires(T t) {
+        t.template get<N>();
+    };
+
+    template <typename T, size_t N> requires (has_member_get<T, N>)
+    using member_get_type = decltype(std::declval<T>().template get<N>());
+
+    template <typename T, size_t N, typename Ret>
+    concept member_get_returns =
+        has_member_get<T, N> && convertible_to<member_get_type<T, N>, Ret>;
+
+    template <typename T, size_t N>
+    concept has_adl_get = requires(T t) { get<N>(t); };
+
+    template <typename T, size_t N> requires (has_adl_get<T, N>)
+    using adl_get_type = decltype(get<N>(std::declval<T>()));
+
+    template <typename T, size_t N, typename Ret>
+    concept adl_get_returns =
+        has_adl_get<T, N> && convertible_to<adl_get_type<T, N>, Ret>;
+
+    template <typename T, size_t N>
+    concept has_std_get = requires(T t) {
+        std::get<N>(t);
+    };
+
+    template <typename T, size_t N> requires (has_std_get<T, N>)
+    using std_get_type = decltype(std::get<N>(std::declval<T>()));
+
+    template <typename T, size_t N, typename Ret>
+    concept std_get_returns =
+        has_std_get<T, N> && convertible_to<std_get_type<T, N>, Ret>;
+
+    namespace nothrow {
+
+        template <typename T, size_t N>
+        concept has_member_get =
+            meta::has_member_get<T, N> &&
+            noexcept(std::declval<T>().template get<N>());
+
+        template <typename T, size_t N> requires (has_member_get<T, N>)
+        using member_get_type = meta::member_get_type<T, N>;
+
+        template <typename T, size_t N, typename Ret>
+        concept member_get_returns =
+            has_member_get<T, N> && convertible_to<member_get_type<T, N>, Ret>;
+
+        template <typename T, size_t N>
+        concept has_adl_get =
+            meta::has_adl_get<T, N> &&
+            noexcept(get<N>(std::declval<T>()));
+
+        template <typename T, size_t N> requires (has_adl_get<T, N>)
+        using adl_get_type = meta::adl_get_type<T, N>;
+
+        template <typename T, size_t N, typename Ret>
+        concept adl_get_returns =
+            has_adl_get<T, N> && convertible_to<adl_get_type<T, N>, Ret>;
+
+        template <typename T, size_t N>
+        concept has_std_get =
+            meta::has_std_get<T, N> &&
+            noexcept(std::get<N>(std::declval<T>()));
+
+        template <typename T, size_t N> requires (has_std_get<T, N>)
+        using std_get_type = meta::std_get_type<T, N>;
+
+        template <typename T, size_t N, typename Ret>
+        concept std_get_returns =
+            has_std_get<T, N> && convertible_to<std_get_type<T, N>, Ret>;
+
+    }
+
+    namespace detail {
+
+        template <typename T, size_t N>
+        struct get_type { using type = member_get_type<T, N>; };
+        template <typename T, size_t N> requires (
+            !meta::has_member_get<T, N> &&
+            meta::has_adl_get<T, N>
+        )
+        struct get_type<T, N> { using type = adl_get_type<T, N>; };
+        template <typename T, size_t N> requires (
+            !meta::has_member_get<T, N> &&
+            !meta::has_adl_get<T, N> &&
+            meta::has_std_get<T, N>
+        )
+        struct get_type<T, N> { using type = std_get_type<T, N>; };
+
+    }
+
+    template <typename T, size_t N>
+    concept has_get = has_member_get<T, N> || has_adl_get<T, N> || has_std_get<T, N>;
+
+    template <typename T, size_t N> requires (has_get<T, N>)
+    using get_type = typename detail::get_type<T, N>::type;
+
+    template <typename T, size_t N, typename Ret>
+    concept get_returns = has_get<T, N> && convertible_to<get_type<T, N>, Ret>;
+
+    namespace nothrow {
+
+        template <typename T, size_t N>
+        concept has_get =
+            meta::has_get<T, N> &&
+            (meta::has_member_get<T, N> || meta::has_adl_get<T, N> || meta::has_std_get<T, N>);
+
+        template <typename T, size_t N> requires (has_get<T, N>)
+        using get_type = meta::get_type<T, N>;
+
+        template <typename T, size_t N, typename Ret>
+        concept get_returns =
+            has_get<T, N> && convertible_to<get_type<T, N>, Ret>;
+
+    }
+
     namespace detail {
 
         template <typename T, size_t N>
         struct structured {
             template <size_t I>
-            static constexpr bool _value = (
-                requires(T t) { get<I - 1>(t); } ||
-                requires(T t) { std::get<I - 1>(t); }
-            ) && _value<I - 1>;
-
+            static constexpr bool _value = meta::has_get<T, I - 1> && _value<I - 1>;
             template <>
             static constexpr bool _value<0> = true;
 
@@ -1099,12 +1213,51 @@ namespace meta {
 
     template <typename T, size_t N>
     concept structured =
-        std::tuple_size<T>::value == N && detail::structured<T, N>::value;
+        std::tuple_size<unqualify<T>>::value == N && detail::structured<T, N>::value;
+
+    template <typename T>
+    concept tuple_like = structured<T, std::tuple_size<unqualify<T>>::value>;
+
+    template <tuple_like T>
+    constexpr size_t tuple_size = std::tuple_size<unqualify<T>>::value;
 
     template <typename T>
     concept pair = structured<T, 2>;
 
     namespace detail {
+
+        template <typename T>
+        struct common_tuple_type;
+        template <meta::tuple_like T>
+        struct common_tuple_type<T> {
+            static constexpr size_t size = meta::tuple_size<T>;
+
+            template <size_t I, typename... Ts>
+            struct filter {
+                static constexpr bool value =
+                    filter<I + 1, Ts..., meta::get_type<T, I>>::value;
+                using type = filter<I + 1, Ts..., meta::get_type<T, I>>::type;
+            };
+
+            template <size_t I, typename... Ts> requires (I >= size)
+            struct filter<I, Ts...> {
+                template <typename... Us>
+                struct do_filter {
+                    static constexpr bool value = false;
+                    using type = void;
+                };
+                template <typename... Us> requires (meta::has_common_type<Us...>)
+                struct do_filter<Us...> {
+                    static constexpr bool value = true;
+                    using type = meta::common_type<Us...>;
+                };
+                static constexpr bool value = do_filter<Ts...>::value;
+                using type = do_filter<Ts...>::type;
+            };
+
+            static constexpr bool value = filter<0>::value;
+            using type = filter<0>::type;
+        };
 
         template <typename T, typename... Ts>
         struct structured_with {
@@ -1121,6 +1274,13 @@ namespace meta {
         };
 
     }
+
+    template <typename T>
+    concept has_common_tuple_type =
+        tuple_like<T> && detail::common_tuple_type<T>::value;
+
+    template <has_common_tuple_type T>
+    using common_tuple_type = detail::common_tuple_type<T>::type;
 
     template <typename T, typename... Ts>
     concept structured_with =
@@ -3692,6 +3852,243 @@ namespace impl {
         constexpr operator size_t() const noexcept { return value; }
     };
 
+    template <typename... Ts>
+    constexpr bool broadcast_lt = true;
+    template <typename T, typename... Ts>
+    constexpr bool broadcast_lt<T, Ts...> = false;
+    template <typename T, typename... Ts> requires (
+        (
+            meta::has_lt<T, Ts> &&
+            meta::explicitly_convertible_to<meta::lt_type<T, Ts>, bool>
+        ) && ...
+    )
+    constexpr bool broadcast_lt<T, Ts...> = broadcast_lt<Ts...>;
+
+    template <typename... Ts>
+    constexpr bool nothrow_broadcast_lt = true;
+    template <typename T, typename... Ts>
+    constexpr bool nothrow_broadcast_lt<T, Ts...> = false;
+    template <typename T, typename... Ts> requires (
+        (
+            meta::has_lt<T, Ts> &&
+            meta::explicitly_convertible_to<meta::lt_type<T, Ts>, bool>
+        ) && ...
+    )
+    constexpr bool nothrow_broadcast_lt<T, Ts...> = nothrow_broadcast_lt<Ts...>;
+
+    template <meta::tuple_like T, size_t I = 0, typename... Ts>
+    constexpr bool tuple_broadcast_lt = broadcast_lt<Ts...>;
+    template <meta::tuple_like T, size_t I, typename... Ts>
+        requires (I < meta::tuple_size<T>)
+    constexpr bool tuple_broadcast_lt<T, I, Ts...> =
+        tuple_broadcast_lt<T, I + 1, Ts..., meta::get_type<T, I>>;
+
+    template <meta::tuple_like T, size_t I = 0, typename... Ts>
+    constexpr bool tuple_nothrow_broadcast_lt = nothrow_broadcast_lt<Ts...>;
+    template <meta::tuple_like T, size_t I, typename... Ts>
+        requires (I < meta::tuple_size<T>)
+    constexpr bool tuple_nothrow_broadcast_lt<T, I, Ts...> =
+        tuple_nothrow_broadcast_lt<T, I + 1, Ts..., meta::get_type<T, I>>;
+
+    template <size_t I, typename T>
+    concept broadcast_any_all = I >= meta::tuple_size<T> || (
+        meta::has_get<T, I> &&
+        meta::explicitly_convertible_to<meta::get_type<T, I>, bool>
+    );
+
+    template <size_t I, typename T>
+    concept nothrow_broadcast_any_all = I >= meta::tuple_size<T> || (
+        meta::nothrow::has_get<T, I> &&
+        meta::nothrow::explicitly_convertible_to<meta::nothrow::get_type<T, I>, bool>
+    );
+
+    template <size_t I, typename T, typename Result>
+    concept broadcast_min_max = I >= meta::tuple_size<T> || (
+        meta::has_get<T, I> &&
+        meta::has_lt<meta::get_type<T, I>, Result> &&
+        meta::explicitly_convertible_to<meta::lt_type<meta::get_type<T, I>, Result>, bool>
+    );
+
+    template <size_t I, typename T, typename Result>
+    concept nothrow_broadcast_min_max = I >= meta::tuple_size<T> || (
+        meta::nothrow::has_get<T, I> &&
+        meta::nothrow::has_lt<meta::nothrow::get_type<T, I>, Result> &&
+        meta::nothrow::explicitly_convertible_to<
+            meta::nothrow::lt_type<meta::nothrow::get_type<T, I>, Result>,
+            bool
+        >
+    );
+
+    template <size_t I = 0, meta::tuple_like T> requires (broadcast_any_all<I, T>)
+    constexpr bool broadcast_any(T&& t) noexcept(nothrow_broadcast_any_all<I, T>) {
+        if constexpr (I < std::tuple_size_v<meta::unqualify<T>>) {
+            if constexpr (meta::has_member_get<T, I>) {
+                if (std::forward<T>(t).template get<I>(t)) {
+                    return true;
+                }
+            } else if constexpr (meta::has_adl_get<T, I>) {
+                if (get<I>(std::forward<T>(t))) {
+                    return true;
+                }
+            } else {
+                if (std::get<I>(std::forward<T>(t))) {
+                    return true;
+                }
+            }
+            return broadcast_any<I + 1>(std::forward<T>(t));
+        } else {
+            return false;
+        }
+    }
+
+    template <size_t I = 0, meta::tuple_like T> requires (broadcast_any_all<I, T>)
+    constexpr bool broadcast_all(T&& t) noexcept(nothrow_broadcast_any_all<I, T>) {
+        if constexpr (I < std::tuple_size_v<meta::unqualify<T>>) {
+            if constexpr (meta::has_member_get<T, I>) {
+                if (!std::forward<T>(t).template get<I>(t)) {
+                    return false;
+                }
+            } else if constexpr (meta::has_adl_get<T, I>) {
+                if (!get<I>(std::forward<T>(t))) {
+                    return false;
+                }
+            } else {
+                if (!std::get<I>(std::forward<T>(t))) {
+                    return false;
+                }
+            }
+            return broadcast_all<I + 1>(std::forward<T>(t));
+        } else {
+            return true;
+        }
+    }
+
+    template <size_t I = 0, meta::tuple_like T, typename Result>
+        requires (broadcast_min_max<I, T, Result>)
+    constexpr meta::common_tuple_type<T> broadcast_max(T&& t, Result&& out)
+        noexcept(nothrow_broadcast_min_max<I, T, Result>)
+    {
+        if constexpr (I < meta::tuple_size<T>) {
+            if constexpr (meta::has_member_get<T, I>) {
+                if (std::forward<Result>(out) < std::forward<T>(t).template get<I>(t)) {
+                    return broadcast_max<I + 1>(
+                        std::forward<T>(t),
+                        std::forward<T>(t).template get<I>(t)
+                    );
+                }
+            } else if constexpr (meta::has_adl_get<T, I>) {
+                if (std::forward<Result>(out) < get<I>(std::forward<T>(t))) {
+                    return broadcast_max<I + 1>(
+                        std::forward<T>(t),
+                        get<I>(std::forward<T>(t))
+                    );
+                }
+            } else {
+                if (std::forward<Result>(out) < std::get<I>(std::forward<T>(t))) {
+                    return broadcast_max<I + 1>(
+                        std::forward<T>(t),
+                        std::get<I>(std::forward<T>(t))
+                    );
+                }
+            }
+            return broadcast_max<I + 1>(
+                std::forward<T>(t),
+                std::forward<Result>(out)
+            );
+        } else {
+            return std::forward<Result>(out);
+        }
+    }
+
+    template <meta::tuple_like T> requires (meta::tuple_size<T> > 0)
+    constexpr meta::common_tuple_type<T> broadcast_max(T&& t) noexcept(
+        meta::nothrow::has_get<T, 0> &&
+        noexcept(broadcast_max(
+            std::forward<T>(t),
+            std::declval<meta::get_type<T, 0>>()
+        ))
+    ) {
+        if constexpr (meta::has_member_get<T, 0>) {
+            return broadcast_max(
+                std::forward<T>(t),
+                std::forward<T>(t).template get<0>(t)
+            );
+        } else if constexpr (meta::has_adl_get<T, 0>) {
+            return broadcast_max(
+                std::forward<T>(t),
+                get<0>(std::forward<T>(t))
+            );
+        } else {
+            return broadcast_max(
+                std::forward<T>(t),
+                std::get<0>(std::forward<T>(t))
+            );
+        }
+    }
+
+    template <size_t I = 0, meta::tuple_like T, typename Result>
+        requires (broadcast_min_max<I, T, Result>)
+    constexpr meta::common_tuple_type<T> broadcast_min(T&& t, Result&& out)
+        noexcept(nothrow_broadcast_min_max<I, T, Result>)
+    {
+        if constexpr (I < meta::tuple_size<T>) {
+            if constexpr (meta::has_member_get<T, I>) {
+                if (std::forward<T>(t).template get<I>(t) < std::forward<Result>(out)) {
+                    return broadcast_min<I + 1>(
+                        std::forward<T>(t),
+                        std::forward<T>(t).template get<I>(t)
+                    );
+                }
+            } else if constexpr (meta::has_adl_get<T, I>) {
+                if (get<I>(std::forward<T>(t)) < std::forward<Result>(out)) {
+                    return broadcast_min<I + 1>(
+                        std::forward<T>(t),
+                        get<I>(std::forward<T>(t))
+                    );
+                }
+            } else {
+                if (std::get<I>(std::forward<T>(t)) < std::forward<Result>(out)) {
+                    return broadcast_min<I + 1>(
+                        std::forward<T>(t),
+                        std::get<I>(std::forward<T>(t))
+                    );
+                }
+            }
+            return broadcast_min<I + 1>(
+                std::forward<T>(t),
+                std::forward<Result>(out)
+            );
+        } else {
+            return std::forward<Result>(out);
+        }
+    }
+
+    template <meta::tuple_like T> requires (meta::tuple_size<T> > 0)
+    constexpr meta::common_tuple_type<T> broadcast_min(T&& t) noexcept(
+        meta::nothrow::has_get<T, 0> &&
+        noexcept(broadcast_min(
+            std::forward<T>(t),
+            std::declval<meta::get_type<T, 0>>()
+        ))
+    ) {
+        if constexpr (meta::has_member_get<T, 0>) {
+            return broadcast_min(
+                std::forward<T>(t),
+                std::forward<T>(t).template get<0>(t)
+            );
+        } else if constexpr (meta::has_adl_get<T, 0>) {
+            return broadcast_min(
+                std::forward<T>(t),
+                get<0>(std::forward<T>(t))
+            );
+        } else {
+            return broadcast_min(
+                std::forward<T>(t),
+                std::get<0>(std::forward<T>(t))
+            );
+        }
+    }
+
 }
 
 
@@ -3875,11 +4272,25 @@ template <meta::reverse_iterable T>
 
 /* Returns true if and only if any of the arguments evaluate to true under boolean
 logic. */
-template <meta::convertible_to<bool>... Args> requires (sizeof...(Args) > 1)
+template <meta::explicitly_convertible_to<bool>... Args> requires (sizeof...(Args) > 1)
 [[nodiscard]] constexpr bool any(Args&&... args) noexcept(
     noexcept((static_cast<bool>(std::forward<Args>(args)) || ...))
 ) {
     return (static_cast<bool>(std::forward<Args>(args)) || ...);
+}
+
+
+/* Returns true if and only if any elements of a tuple-like container evaluate to true
+under boolean logic. */
+template <meta::tuple_like T>
+    requires (
+        !meta::iterable<T> &&
+        requires(T t) { impl::broadcast_any(std::forward<T>(t)); }
+    )
+[[nodiscard]] constexpr bool any(T&& t) noexcept(
+    noexcept(impl::broadcast_any(std::forward<T>(t)))
+) {
+    return impl::broadcast_any(std::forward<T>(t));
 }
 
 
@@ -3897,11 +4308,25 @@ template <meta::iterable T>
 
 /* Returns true if and only if all of the arguments evaluate to true under boolean
 logic. */
-template <meta::convertible_to<bool>... Args> requires (sizeof...(Args) > 1)
+template <meta::explicitly_convertible_to<bool>... Args> requires (sizeof...(Args) > 1)
 [[nodiscard]] constexpr bool all(Args&&... args) noexcept(
     noexcept((static_cast<bool>(std::forward<Args>(args)) || ...))
 ) {
     return (static_cast<bool>(std::forward<Args>(args)) && ...);
+}
+
+
+/* Returns true if and only if any elements of a tuple-like container evaluate to true
+under boolean logic. */
+template <meta::tuple_like T>
+    requires (
+        !meta::iterable<T> &&
+        requires(T t) { impl::broadcast_all(std::forward<T>(t)); }
+    )
+[[nodiscard]] constexpr bool all(T&& t) noexcept(
+    noexcept(impl::broadcast_all(std::forward<T>(t)))
+) {
+    return impl::broadcast_all(std::forward<T>(t));
 }
 
 
@@ -3917,16 +4342,63 @@ template <meta::iterable T>
 }
 
 
-/* Get the maximum of an arbitrary list of values that share a common type by
-generating an O(n) sequence of `<` comparisons between each item. */
-template <typename T, std::same_as<T>... Rest>
-    requires (sizeof...(Rest) > 0)
-[[nodiscard]] constexpr const T& max(const T& first, const Rest&... rest) noexcept(
-    noexcept(first < first)
+/* Get the maximum of an arbitrary list of values that share a common type to which
+they are all convertible.  This effectively generates an O(n) sequence of `<`
+comparisons between each argument at compile time, and only converts the winning
+value to the common type at the end, respecting lvalue semantics if possible. */
+template <typename... Ts>
+    requires (
+        sizeof...(Ts) > 1 &&
+        meta::has_common_type<Ts...> &&
+        impl::broadcast_lt<Ts...>
+    )
+[[nodiscard]] constexpr meta::common_type<Ts...> max(Ts&&... args) noexcept(
+    impl::nothrow_broadcast_lt<Ts...> &&
+    (meta::nothrow::convertible_to<Ts, meta::common_type<Ts...>> && ...)
 ) {
-    const T* result = &first;
-    ((result = (*result < rest ? &rest : result)), ...);
-    return *result;
+    return []<size_t I = 0>(
+        this auto&& self,
+        auto&& out,
+        auto&&... rest
+    ) -> meta::common_type<Ts...> {
+        if constexpr (I < sizeof...(rest)) {
+            if (
+                std::forward<decltype(out)>(out) <
+                meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...)
+            ) {
+                return std::forward<decltype(self)>(self).template operator()<I + 1>(
+                    meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...),
+                    std::forward<decltype(rest)>(rest)...
+                );
+            } else {
+                return std::forward<decltype(self)>(self).template operator()<I + 1>(
+                    std::forward<decltype(out)>(out),
+                    std::forward<decltype(rest)>(rest)...
+                );
+            }
+        } else {
+            return std::forward<decltype(out)>(out);
+        }
+    }(std::forward<Ts>(args)...);
+}
+
+
+/* Get the maximum of the values stored within a tuple-like container.  This
+effectively generates an O(n) sequence of `<` comparisons between each argument at
+compile time, and only converts the winning value to the common type at the end,
+respecting lvalue semantics if possible. */
+template <meta::tuple_like T>
+    requires (
+        !meta::iterable<T> &&
+        meta::tuple_size<T> > 0 &&
+        meta::has_common_tuple_type<T> &&
+        impl::tuple_broadcast_lt<T> &&
+        requires(T t) { impl::broadcast_max(std::forward<T>(t)); }
+    )
+[[nodiscard]] constexpr meta::common_tuple_type<T> max(T&& t) noexcept(
+    noexcept(impl::broadcast_max(std::forward<T>(t)))
+) {
+    return impl::broadcast_max(std::forward<T>(t));
 }
 
 
@@ -3942,16 +4414,63 @@ template <meta::iterable T>
 }
 
 
-/* Get the minimum of an arbitrary list of values that share a common type by
-generating an O(n) sequence of `<` comparisons between each item. */
-template <typename T, std::same_as<T>... Rest>
-    requires (sizeof...(Rest) > 0)
-[[nodiscard]] constexpr const T& min(const T& first, const Rest&... rest) noexcept(
-    noexcept(first < first)
+/* Get the maximum of an arbitrary list of values that share a common type to which
+they are all convertible.  This effectively generates an O(n) sequence of `<`
+comparisons between each argument at compile time, and only converts the winning
+value to the common type at the end, respecting lvalue semantics if possible. */
+template <typename... Ts>
+    requires (
+        sizeof...(Ts) > 1 &&
+        meta::has_common_type<Ts...> &&
+        impl::broadcast_lt<Ts...>
+    )
+[[nodiscard]] constexpr meta::common_type<Ts...> min(Ts&&... args) noexcept(
+    impl::nothrow_broadcast_lt<Ts...> &&
+    (meta::nothrow::convertible_to<Ts, meta::common_type<Ts...>> && ...)
 ) {
-    const T* result = &first;
-    ((result = (rest < *result ? &rest : result)), ...);
-    return *result;
+    return []<size_t I = 0>(
+        this auto&& self,
+        auto&& out,
+        auto&&... rest
+    ) -> meta::common_type<Ts...> {
+        if constexpr (I < sizeof...(rest)) {
+            if (
+                meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...) <
+                std::forward<decltype(out)>(out)
+            ) {
+                return std::forward<decltype(self)>(self).template operator()<I + 1>(
+                    meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...),
+                    std::forward<decltype(rest)>(rest)...
+                );
+            } else {
+                return std::forward<decltype(self)>(self).template operator()<I + 1>(
+                    std::forward<decltype(out)>(out),
+                    std::forward<decltype(rest)>(rest)...
+                );
+            }
+        } else {
+            return std::forward<decltype(out)>(out);
+        }
+    }(std::forward<Ts>(args)...);
+}
+
+
+/* Get the minimum of the values stored within a tuple-like container.  This
+effectively generates an O(n) sequence of `<` comparisons between each argument at
+compile time, and only converts the winning value to the common type at the end,
+respecting lvalue semantics if possible. */
+template <meta::tuple_like T>
+    requires (
+        !meta::iterable<T> &&
+        meta::tuple_size<T> > 0 &&
+        meta::has_common_tuple_type<T> &&
+        impl::tuple_broadcast_lt<T> &&
+        requires(T t) { impl::broadcast_min(std::forward<T>(t)); }
+    )
+[[nodiscard]] constexpr meta::common_tuple_type<T> min(T&& t) noexcept(
+    noexcept(impl::broadcast_min(std::forward<T>(t)))
+) {
+    return impl::broadcast_min(std::forward<T>(t));
 }
 
 
@@ -3965,6 +4484,10 @@ template <meta::iterable T>
 ) {
     return std::ranges::min(std::forward<T>(r));
 }
+
+
+/// TODO: there should be a minmax() operator that returns a pair of the min and max
+/// in a single pass
 
 
 /* Combine several ranges into a view that yields tuple-like values consisting of the
@@ -3994,6 +4517,10 @@ template <meta::iterable... Ts>
 // ) {
 //     return std::views::enumerate(std::forward<T>(r));
 // }
+
+
+/// TODO: generic round(), div(), mod(), and divmod() operators.  These will
+/// rely on an enumeration of the possible rounding strategies
 
 
 namespace impl {
