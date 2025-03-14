@@ -4089,6 +4089,126 @@ namespace impl {
         }
     }
 
+
+
+
+
+
+
+    template <size_t I = 0, meta::tuple_like T, typename Min, typename Max>
+        requires (broadcast_min_max<I, T, Min> && broadcast_min_max<I, T, Max>)
+    constexpr auto broadcast_minmax(T&& t, Min&& min, Max&& max) noexcept(
+        nothrow_broadcast_min_max<I, T, Min> &&
+        nothrow_broadcast_min_max<I, T, Max>
+    ) -> std::pair<meta::common_tuple_type<T>, meta::common_tuple_type<T>> {
+        if constexpr (I < meta::tuple_size<T>) {
+            if constexpr (meta::has_member_get<T, I>) {
+                bool is_min = std::forward<T>(t).template get<I>(t) < std::forward<Min>(min);
+                bool is_max = std::forward<Max>(max) < std::forward<T>(t).template get<I>(t);
+                if (is_min && is_max) {
+                    return broadcast_minmax<I + 1>(
+                        std::forward<T>(t),
+                        std::forward<T>(t).template get<I>(t),
+                        std::forward<T>(t).template get<I>(t)
+                    );
+                } else if (is_min) {
+                    return broadcast_minmax<I + 1>(
+                        std::forward<T>(t),
+                        std::forward<T>(t).template get<I>(t),
+                        std::forward<Max>(max)
+                    );
+                } else if (is_max) {
+                    return broadcast_minmax<I + 1>(
+                        std::forward<T>(t),
+                        std::forward<Min>(min),
+                        std::forward<T>(t).template get<I>(t)
+                    );
+                }
+            } else if constexpr (meta::has_adl_get<T, I>) {
+                bool is_min = get<I>(std::forward<T>(t)) < std::forward<Min>(min);
+                bool is_max = std::forward<Max>(max) < get<I>(std::forward<T>(t));
+                if (is_min && is_max) {
+                    return broadcast_minmax<I + 1>(
+                        std::forward<T>(t),
+                        get<I>(std::forward<T>(t)),
+                        get<I>(std::forward<T>(t))
+                    );
+                } else if (is_min) {
+                    return broadcast_minmax<I + 1>(
+                        std::forward<T>(t),
+                        get<I>(std::forward<T>(t)),
+                        std::forward<Max>(max)
+                    );
+                } else if (is_max) {
+                    return broadcast_minmax<I + 1>(
+                        std::forward<T>(t),
+                        std::forward<Min>(min),
+                        get<I>(std::forward<T>(t))
+                    );
+                }
+            } else {
+                bool is_min = std::get<I>(std::forward<T>(t)) < std::forward<Min>(min);
+                bool is_max = std::forward<Max>(max) < std::get<I>(std::forward<T>(t));
+                if (is_min && is_max) {
+                    return broadcast_minmax<I + 1>(
+                        std::forward<T>(t),
+                        std::get<I>(std::forward<T>(t)),
+                        std::get<I>(std::forward<T>(t))
+                    );
+                } else if (is_min) {
+                    return broadcast_minmax<I + 1>(
+                        std::forward<T>(t),
+                        std::get<I>(std::forward<T>(t)),
+                        std::forward<Max>(max)
+                    );
+                } else if (is_max) {
+                    return broadcast_minmax<I + 1>(
+                        std::forward<T>(t),
+                        std::forward<Min>(min),
+                        std::get<I>(std::forward<T>(t))
+                    );
+                }
+            }
+            return broadcast_minmax<I + 1>(
+                std::forward<T>(t),
+                std::forward<Min>(min),
+                std::forward<Max>(max)
+            );
+        } else {
+            return {std::forward<Min>(min), std::forward<Max>(max)};
+        }
+    }
+
+    template <meta::tuple_like T> requires (meta::tuple_size<T> > 0)
+    constexpr auto broadcast_minmax(T&& t) noexcept(
+        meta::nothrow::has_get<T, 0> &&
+        noexcept(broadcast_minmax(
+            std::forward<T>(t),
+            std::declval<meta::get_type<T, 0>>(),
+            std::declval<meta::get_type<T, 0>>()
+        ))
+    ) -> std::pair<meta::common_tuple_type<T>, meta::common_tuple_type<T>> {
+        if constexpr (meta::has_member_get<T, 0>) {
+            return broadcast_minmax(
+                std::forward<T>(t),
+                std::forward<T>(t).template get<0>(t),
+                std::forward<T>(t).template get<0>(t)
+            );
+        } else if constexpr (meta::has_adl_get<T, 0>) {
+            return broadcast_minmax(
+                std::forward<T>(t),
+                get<0>(std::forward<T>(t)),
+                get<0>(std::forward<T>(t))
+            );
+        } else {
+            return broadcast_minmax(
+                std::forward<T>(t),
+                std::get<0>(std::forward<T>(t)),
+                std::get<0>(std::forward<T>(t))
+            );
+        }
+    }
+
 }
 
 
@@ -4270,8 +4390,37 @@ template <meta::reverse_iterable T>
 }
 
 
-/* Returns true if and only if any of the arguments evaluate to true under boolean
-logic. */
+/// TODO: there's no std::views::enumerate() yet, so this is commented out for now.
+/// I may be able to implement it myself, but that would require a lot of unnecessary
+/// work
+
+
+// /* Produce a view over a given range that yields tuples consisting of each item's
+// index and ordinary value_type.  This is equivalent to a `std::views::enumerate()` call
+// under the hood, but is easier to remember, and closer to Python syntax. */
+// template <meta::iterable T>
+//     requires (requires(T r) { std::views::enumerate(std::forward<T>(r)); })
+// [[nodiscard]] constexpr decltype(auto) enumerate(T&& r) noexcept(
+//     noexcept(std::views::enumerate(std::forward<T>(r)))
+// ) {
+//     return std::views::enumerate(std::forward<T>(r));
+// }
+
+
+/* Combine several ranges into a view that yields tuple-like values consisting of the
+`i` th element of each range.  This is equivalent to a `std::views::zip()` call under
+the hood, but is easier to remember, and closer to python syntax. */
+template <meta::iterable... Ts>
+    requires (requires(Ts... rs) { std::views::zip(std::forward<Ts>(rs)...); })
+[[nodiscard]] constexpr decltype(auto) zip(Ts&&... rs) noexcept(
+    noexcept(std::views::zip(std::forward<Ts>(rs)...))
+) {
+    return std::views::zip(std::forward<Ts>(rs)...);
+}
+
+
+/* Returns true if and only if one or more of the arguments evaluate to true under
+boolean logic. */
 template <meta::explicitly_convertible_to<bool>... Args> requires (sizeof...(Args) > 1)
 [[nodiscard]] constexpr bool any(Args&&... args) noexcept(
     noexcept((static_cast<bool>(std::forward<Args>(args)) || ...))
@@ -4280,8 +4429,8 @@ template <meta::explicitly_convertible_to<bool>... Args> requires (sizeof...(Arg
 }
 
 
-/* Returns true if and only if any elements of a tuple-like container evaluate to true
-under boolean logic. */
+/* Returns true if and only if one or more elements of a tuple-like container evaluate
+to true under boolean logic. */
 template <meta::tuple_like T>
     requires (
         !meta::iterable<T> &&
@@ -4294,9 +4443,8 @@ template <meta::tuple_like T>
 }
 
 
-/* Returns true if and only if any elements of a range evaluate to true under boolean
-logic.  This is equivalent to a `std::ranges::any_of()` call under the hood, but is
-easier to remember, and closer to Python syntax. */
+/* Returns true if and only if one ore more elements of a range evaluate to true under
+boolean logic.  This is equivalent to a `std::ranges::any_of()` call under the hood. */
 template <meta::iterable T>
     requires (requires(T r) { std::ranges::any_of(std::forward<T>(r)); })
 [[nodiscard]] constexpr bool any(T&& r) noexcept(
@@ -4331,8 +4479,7 @@ template <meta::tuple_like T>
 
 
 /* Returns true if and only if all elements of a range evaluate to true under boolean
-logic.  This is equivalent to a `std::ranges::all_of()` call under the hood, but is
-easier to remember, and closer to Python syntax. */
+logic.  This is equivalent to a `std::ranges::all_of()` call under the hood. */
 template <meta::iterable T>
     requires (requires(T r) { std::ranges::all_of(std::forward<T>(r)); })
 [[nodiscard]] constexpr bool all(T&& r) noexcept(
@@ -4342,82 +4489,9 @@ template <meta::iterable T>
 }
 
 
-/* Get the maximum of an arbitrary list of values that share a common type to which
-they are all convertible.  This effectively generates an O(n) sequence of `<`
-comparisons between each argument at compile time, and only converts the winning
-value to the common type at the end, respecting lvalue semantics if possible. */
-template <typename... Ts>
-    requires (
-        sizeof...(Ts) > 1 &&
-        meta::has_common_type<Ts...> &&
-        impl::broadcast_lt<Ts...>
-    )
-[[nodiscard]] constexpr meta::common_type<Ts...> max(Ts&&... args) noexcept(
-    impl::nothrow_broadcast_lt<Ts...> &&
-    (meta::nothrow::convertible_to<Ts, meta::common_type<Ts...>> && ...)
-) {
-    return []<size_t I = 0>(
-        this auto&& self,
-        auto&& out,
-        auto&&... rest
-    ) -> meta::common_type<Ts...> {
-        if constexpr (I < sizeof...(rest)) {
-            if (
-                std::forward<decltype(out)>(out) <
-                meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...)
-            ) {
-                return std::forward<decltype(self)>(self).template operator()<I + 1>(
-                    meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...),
-                    std::forward<decltype(rest)>(rest)...
-                );
-            } else {
-                return std::forward<decltype(self)>(self).template operator()<I + 1>(
-                    std::forward<decltype(out)>(out),
-                    std::forward<decltype(rest)>(rest)...
-                );
-            }
-        } else {
-            return std::forward<decltype(out)>(out);
-        }
-    }(std::forward<Ts>(args)...);
-}
-
-
-/* Get the maximum of the values stored within a tuple-like container.  This
+/* Get the minimum of an arbitrary list of values that share a common type.  This
 effectively generates an O(n) sequence of `<` comparisons between each argument at
-compile time, and only converts the winning value to the common type at the end,
-respecting lvalue semantics if possible. */
-template <meta::tuple_like T>
-    requires (
-        !meta::iterable<T> &&
-        meta::tuple_size<T> > 0 &&
-        meta::has_common_tuple_type<T> &&
-        impl::tuple_broadcast_lt<T> &&
-        requires(T t) { impl::broadcast_max(std::forward<T>(t)); }
-    )
-[[nodiscard]] constexpr meta::common_tuple_type<T> max(T&& t) noexcept(
-    noexcept(impl::broadcast_max(std::forward<T>(t)))
-) {
-    return impl::broadcast_max(std::forward<T>(t));
-}
-
-
-/* Get the maximum of a sequence of values as an iterable range.  This is equivalent
-to a `std::ranges::max()` call under the hood, but is easier to remember, and closer to
-Python syntax. */
-template <meta::iterable T>
-    requires (requires(T r) { std::ranges::max(std::forward<T>(r)); })
-[[nodiscard]] constexpr decltype(auto) max(T&& r) noexcept(
-    noexcept(std::ranges::max(std::forward<T>(r)))
-) {
-    return std::ranges::max(std::forward<T>(r));
-}
-
-
-/* Get the maximum of an arbitrary list of values that share a common type to which
-they are all convertible.  This effectively generates an O(n) sequence of `<`
-comparisons between each argument at compile time, and only converts the winning
-value to the common type at the end, respecting lvalue semantics if possible. */
+compile time, converting the winning value to the common type at the end. */
 template <typename... Ts>
     requires (
         sizeof...(Ts) > 1 &&
@@ -4457,8 +4531,7 @@ template <typename... Ts>
 
 /* Get the minimum of the values stored within a tuple-like container.  This
 effectively generates an O(n) sequence of `<` comparisons between each argument at
-compile time, and only converts the winning value to the common type at the end,
-respecting lvalue semantics if possible. */
+compile time, converting the winning value to the common type at the end. */
 template <meta::tuple_like T>
     requires (
         !meta::iterable<T> &&
@@ -4474,9 +4547,8 @@ template <meta::tuple_like T>
 }
 
 
-/* Get the minimum of a sequence of values as an initializer list.  This is equivalent
-to a `std::ranges::min()` call under the hood, but is easier to remember, and closer to
-Python syntax. */
+/* Get the minimum of a sequence of values as an input range.  This is equivalent
+to a `std::ranges::min()` call under the hood. */
 template <meta::iterable T>
     requires (requires(T r) { std::ranges::min(std::forward<T>(r)); })
 [[nodiscard]] constexpr decltype(auto) min(T&& r) noexcept(
@@ -4486,37 +4558,162 @@ template <meta::iterable T>
 }
 
 
-/// TODO: there should be a minmax() operator that returns a pair of the min and max
-/// in a single pass
-
-
-/* Combine several ranges into a view that yields tuple-like values consisting of the
-`i` th element of each range.  This is equivalent to a `std::views::zip()` call under
-the hood, but is easier to remember, and closer to python syntax. */
-template <meta::iterable... Ts>
-    requires (requires(Ts... rs) { std::views::zip(std::forward<Ts>(rs)...); })
-[[nodiscard]] constexpr decltype(auto) zip(Ts&&... rs) noexcept(
-    noexcept(std::views::zip(std::forward<Ts>(rs)...))
+/* Get the maximum of an arbitrary list of values that share a common type.  This
+effectively generates an O(n) sequence of `<` comparisons between each argument at
+compile time, converting the winning value to the common type at the end. */
+template <typename... Ts>
+    requires (
+        sizeof...(Ts) > 1 &&
+        meta::has_common_type<Ts...> &&
+        impl::broadcast_lt<Ts...>
+    )
+[[nodiscard]] constexpr meta::common_type<Ts...> max(Ts&&... args) noexcept(
+    impl::nothrow_broadcast_lt<Ts...> &&
+    (meta::nothrow::convertible_to<Ts, meta::common_type<Ts...>> && ...)
 ) {
-    return std::views::zip(std::forward<Ts>(rs)...);
+    return []<size_t I = 0>(
+        this auto&& self,
+        auto&& out,
+        auto&&... rest
+    ) -> meta::common_type<Ts...> {
+        if constexpr (I < sizeof...(rest)) {
+            if (
+                std::forward<decltype(out)>(out) <
+                meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...)
+            ) {
+                return std::forward<decltype(self)>(self).template operator()<I + 1>(
+                    meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...),
+                    std::forward<decltype(rest)>(rest)...
+                );
+            } else {
+                return std::forward<decltype(self)>(self).template operator()<I + 1>(
+                    std::forward<decltype(out)>(out),
+                    std::forward<decltype(rest)>(rest)...
+                );
+            }
+        } else {
+            return std::forward<decltype(out)>(out);
+        }
+    }(std::forward<Ts>(args)...);
 }
 
 
-/// TODO: there's no std::views::enumerate() yet, so this is commented out for now.
-/// I may be able to implement it myself, but that would require a lot of unnecessary
-/// work
+/* Get the maximum of the values stored within a tuple-like container.  This
+effectively generates an O(n) sequence of `<` comparisons between each argument at
+compile time, converting the winning value to the common type at the end. */
+template <meta::tuple_like T>
+    requires (
+        !meta::iterable<T> &&
+        meta::tuple_size<T> > 0 &&
+        meta::has_common_tuple_type<T> &&
+        impl::tuple_broadcast_lt<T> &&
+        requires(T t) { impl::broadcast_max(std::forward<T>(t)); }
+    )
+[[nodiscard]] constexpr meta::common_tuple_type<T> max(T&& t) noexcept(
+    noexcept(impl::broadcast_max(std::forward<T>(t)))
+) {
+    return impl::broadcast_max(std::forward<T>(t));
+}
 
 
-// /* Produce a view over a given range that yields tuples consisting of each item's
-// index and ordinary value_type.  This is equivalent to a `std::views::enumerate()` call
-// under the hood, but is easier to remember, and closer to Python syntax. */
-// template <meta::iterable T>
-//     requires (requires(T r) { std::views::enumerate(std::forward<T>(r)); })
-// [[nodiscard]] constexpr decltype(auto) enumerate(T&& r) noexcept(
-//     noexcept(std::views::enumerate(std::forward<T>(r)))
-// ) {
-//     return std::views::enumerate(std::forward<T>(r));
-// }
+/* Get the maximum of a sequence of values as an input range.  This is equivalent
+to a `std::ranges::max()` call under the hood. */
+template <meta::iterable T>
+    requires (requires(T r) { std::ranges::max(std::forward<T>(r)); })
+[[nodiscard]] constexpr decltype(auto) max(T&& r) noexcept(
+    noexcept(std::ranges::max(std::forward<T>(r)))
+) {
+    return std::ranges::max(std::forward<T>(r));
+}
+
+
+/* Get the minimum and maximum of an arbitrary list of values that share a common type.
+This effectively generates an O(n) sequence of `<` comparisons between each argument at
+compile time, converting the winning value to the common type at the end. */
+template <typename... Ts>
+    requires (
+        sizeof...(Ts) > 1 &&
+        meta::has_common_type<Ts...> &&
+        impl::broadcast_lt<Ts...>
+    )
+[[nodiscard]] constexpr auto minmax(Ts&&... args) noexcept(
+    impl::nothrow_broadcast_lt<Ts...> &&
+    (meta::nothrow::convertible_to<Ts, meta::common_type<Ts...>> && ...)
+) -> std::pair<meta::common_type<Ts...>, meta::common_type<Ts...>> {
+    return []<size_t I = 0>(
+        this auto&& self,
+        auto&& min,
+        auto&& max,
+        auto&&... rest
+    ) -> std::pair<meta::common_type<Ts...>, meta::common_type<Ts...>> {
+        if constexpr (I < sizeof...(rest)) {
+            bool is_min =
+                meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...) <
+                std::forward<decltype(min)>(min);
+            bool is_max =
+                std::forward<decltype(max)>(max) <
+                meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...);
+
+            if (is_min && is_max) {
+                return std::forward<decltype(self)>(self).template operator()<I + 1>(
+                    meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...),
+                    meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...),
+                    std::forward<decltype(rest)>(rest)...
+                );
+
+            } else if (is_min) {
+                return std::forward<decltype(self)>(self).template operator()<I + 1>(
+                    meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...),
+                    std::forward<decltype(max)>(max),
+                    std::forward<decltype(rest)>(rest)...
+                );
+            } else if (is_max) {
+                return std::forward<decltype(self)>(self).template operator()<I + 1>(
+                    std::forward<decltype(min)>(min),
+                    meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...),
+                    std::forward<decltype(rest)>(rest)...
+                );
+            } else {
+                return std::forward<decltype(self)>(self).template operator()<I + 1>(
+                    std::forward<decltype(min)>(min),
+                    std::forward<decltype(max)>(max),
+                    std::forward<decltype(rest)>(rest)...
+                );
+            }
+        } else {
+            return {std::forward<decltype(min)>(min), std::forward<decltype(max)>(max)};
+        }
+    }(meta::unpack_arg<0>(std::forward<Ts>(args)...), std::forward<Ts>(args)...);
+}
+
+
+/* Get the minimum and maximum of the values stored within a tuple-like container.
+This effectively generates an O(n) sequence of `<` comparisons between each argument
+at compile time, converting the winning value to the common type at the end. */
+template <meta::tuple_like T>
+    requires (
+        !meta::iterable<T> &&
+        meta::tuple_size<T> > 0 &&
+        meta::has_common_tuple_type<T> &&
+        impl::tuple_broadcast_lt<T> &&
+        requires(T t) { impl::broadcast_minmax(std::forward<T>(t)); }
+    )
+[[nodiscard]] constexpr auto minmax(T&& t) noexcept(
+    noexcept(impl::broadcast_minmax(std::forward<T>(t)))
+) -> std::pair<meta::common_tuple_type<T>, meta::common_tuple_type<T>> {
+    return impl::broadcast_minmax(std::forward<T>(t));
+}
+
+
+/* Get the minimum and maximum of a sequence of values as an input range.  This is
+equivalent to a `std::ranges::minmax()` call under the hood. */
+template <meta::iterable T>
+    requires (requires(T r) { std::ranges::minmax(std::forward<T>(r)); })
+[[nodiscard]] constexpr decltype(auto) minmax(T&& r) noexcept(
+    noexcept(std::ranges::minmax(std::forward<T>(r)))
+) {
+    return std::ranges::minmax(std::forward<T>(r));
+}
 
 
 /// TODO: generic round(), div(), mod(), and divmod() operators.  These will
