@@ -2158,52 +2158,52 @@ namespace meta {
     }
 
     template <typename L, typename R>
-    concept has_truediv = requires(L l, R r) { l / r; };
+    concept has_div = requires(L l, R r) { l / r; };
 
-    template <typename L, typename R> requires (has_truediv<L, R>)
-    using truediv_type = decltype(std::declval<L>() / std::declval<R>());
+    template <typename L, typename R> requires (has_div<L, R>)
+    using div_type = decltype(std::declval<L>() / std::declval<R>());
 
     template <typename L, typename R, typename Ret>
-    concept truediv_returns =
-        has_truediv<L, R> && convertible_to<truediv_type<L, R>, Ret>;
+    concept div_returns =
+        has_div<L, R> && convertible_to<div_type<L, R>, Ret>;
 
     namespace nothrow {
 
         template <typename L, typename R>
-        concept has_truediv =
-            meta::has_truediv<L, R> && noexcept(std::declval<L>() / std::declval<R>());
+        concept has_div =
+            meta::has_div<L, R> && noexcept(std::declval<L>() / std::declval<R>());
 
-        template <typename L, typename R> requires (has_truediv<L, R>)
-        using truediv_type = meta::truediv_type<L, R>;
+        template <typename L, typename R> requires (has_div<L, R>)
+        using div_type = meta::div_type<L, R>;
 
         template <typename L, typename R, typename Ret>
-        concept truediv_returns =
-            has_truediv<L, R> && convertible_to<truediv_type<L, R>, Ret>;
+        concept div_returns =
+            has_div<L, R> && convertible_to<div_type<L, R>, Ret>;
 
     }
 
     template <typename L, typename R>
-    concept has_itruediv = requires(L& l, R r) { l /= r; };
+    concept has_idiv = requires(L& l, R r) { l /= r; };
 
-    template <typename L, typename R> requires (has_itruediv<L, R>)
-    using itruediv_type = decltype(std::declval<L&>() /= std::declval<R>());
+    template <typename L, typename R> requires (has_idiv<L, R>)
+    using idiv_type = decltype(std::declval<L&>() /= std::declval<R>());
 
     template <typename L, typename R, typename Ret>
-    concept itruediv_returns =
-        has_itruediv<L, R> && convertible_to<itruediv_type<L, R>, Ret>;
+    concept idiv_returns =
+        has_idiv<L, R> && convertible_to<idiv_type<L, R>, Ret>;
 
     namespace nothrow {
 
         template <typename L, typename R>
-        concept has_itruediv =
-            meta::has_itruediv<L, R> && noexcept(std::declval<L&>() /= std::declval<R>());
+        concept has_idiv =
+            meta::has_idiv<L, R> && noexcept(std::declval<L&>() /= std::declval<R>());
 
-        template <typename L, typename R> requires (has_itruediv<L, R>)
-        using itruediv_type = meta::itruediv_type<L, R>;
+        template <typename L, typename R> requires (has_idiv<L, R>)
+        using idiv_type = meta::idiv_type<L, R>;
 
         template <typename L, typename R, typename Ret>
-        concept itruediv_returns =
-            has_itruediv<L, R> && convertible_to<itruediv_type<L, R>, Ret>;
+        concept idiv_returns =
+            has_idiv<L, R> && convertible_to<idiv_type<L, R>, Ret>;
 
     }
 
@@ -3348,7 +3348,7 @@ public:
     [[noreturn]] static void from_python();
 
 };
-    
+
 
 #define BERTRAND_EXCEPTION(CLS, BASE)                                                   \
     struct CLS : BASE {                                                                 \
@@ -3965,9 +3965,9 @@ namespace impl {
 
     template <size_t I = 0, meta::tuple_like T, typename Result>
         requires (broadcast_min_max<I, T, Result>)
-    constexpr meta::common_tuple_type<T> broadcast_max(T&& t, Result&& out)
-        noexcept(nothrow_broadcast_min_max<I, T, Result>)
-    {
+    constexpr meta::common_tuple_type<T> broadcast_max(T&& t, Result&& out) noexcept(
+        nothrow_broadcast_min_max<I, T, Result>
+    ) {
         if constexpr (I < meta::tuple_size<T>) {
             if constexpr (meta::has_member_get<T, I>) {
                 if (std::forward<Result>(out) < std::forward<T>(t).template get<I>(t)) {
@@ -4028,9 +4028,9 @@ namespace impl {
 
     template <size_t I = 0, meta::tuple_like T, typename Result>
         requires (broadcast_min_max<I, T, Result>)
-    constexpr meta::common_tuple_type<T> broadcast_min(T&& t, Result&& out)
-        noexcept(nothrow_broadcast_min_max<I, T, Result>)
-    {
+    constexpr meta::common_tuple_type<T> broadcast_min(T&& t, Result&& out) noexcept(
+        nothrow_broadcast_min_max<I, T, Result>
+    ) {
         if constexpr (I < meta::tuple_size<T>) {
             if constexpr (meta::has_member_get<T, I>) {
                 if (std::forward<T>(t).template get<I>(t) < std::forward<Result>(out)) {
@@ -4089,12 +4089,6 @@ namespace impl {
         }
     }
 
-
-
-
-
-
-
     template <size_t I = 0, meta::tuple_like T, typename Min, typename Max>
         requires (broadcast_min_max<I, T, Min> && broadcast_min_max<I, T, Max>)
     constexpr auto broadcast_minmax(T&& t, Min&& min, Max&& max) noexcept(
@@ -4103,21 +4097,14 @@ namespace impl {
     ) -> std::pair<meta::common_tuple_type<T>, meta::common_tuple_type<T>> {
         if constexpr (I < meta::tuple_size<T>) {
             if constexpr (meta::has_member_get<T, I>) {
-                bool is_min = std::forward<T>(t).template get<I>(t) < std::forward<Min>(min);
-                bool is_max = std::forward<Max>(max) < std::forward<T>(t).template get<I>(t);
-                if (is_min && is_max) {
-                    return broadcast_minmax<I + 1>(
-                        std::forward<T>(t),
-                        std::forward<T>(t).template get<I>(t),
-                        std::forward<T>(t).template get<I>(t)
-                    );
-                } else if (is_min) {
+                if (std::forward<T>(t).template get<I>(t) < std::forward<Min>(min)) {
                     return broadcast_minmax<I + 1>(
                         std::forward<T>(t),
                         std::forward<T>(t).template get<I>(t),
                         std::forward<Max>(max)
                     );
-                } else if (is_max) {
+                }
+                if (std::forward<Max>(max) < std::forward<T>(t).template get<I>(t)) {
                     return broadcast_minmax<I + 1>(
                         std::forward<T>(t),
                         std::forward<Min>(min),
@@ -4125,21 +4112,14 @@ namespace impl {
                     );
                 }
             } else if constexpr (meta::has_adl_get<T, I>) {
-                bool is_min = get<I>(std::forward<T>(t)) < std::forward<Min>(min);
-                bool is_max = std::forward<Max>(max) < get<I>(std::forward<T>(t));
-                if (is_min && is_max) {
-                    return broadcast_minmax<I + 1>(
-                        std::forward<T>(t),
-                        get<I>(std::forward<T>(t)),
-                        get<I>(std::forward<T>(t))
-                    );
-                } else if (is_min) {
+                if (get<I>(std::forward<T>(t)) < std::forward<Min>(min)) {
                     return broadcast_minmax<I + 1>(
                         std::forward<T>(t),
                         get<I>(std::forward<T>(t)),
                         std::forward<Max>(max)
                     );
-                } else if (is_max) {
+                }
+                if (std::forward<Max>(max) < get<I>(std::forward<T>(t))) {
                     return broadcast_minmax<I + 1>(
                         std::forward<T>(t),
                         std::forward<Min>(min),
@@ -4147,21 +4127,14 @@ namespace impl {
                     );
                 }
             } else {
-                bool is_min = std::get<I>(std::forward<T>(t)) < std::forward<Min>(min);
-                bool is_max = std::forward<Max>(max) < std::get<I>(std::forward<T>(t));
-                if (is_min && is_max) {
-                    return broadcast_minmax<I + 1>(
-                        std::forward<T>(t),
-                        std::get<I>(std::forward<T>(t)),
-                        std::get<I>(std::forward<T>(t))
-                    );
-                } else if (is_min) {
+                if (std::get<I>(std::forward<T>(t)) < std::forward<Min>(min)) {
                     return broadcast_minmax<I + 1>(
                         std::forward<T>(t),
                         std::get<I>(std::forward<T>(t)),
                         std::forward<Max>(max)
                     );
-                } else if (is_max) {
+                }
+                if (std::forward<Max>(max) < std::get<I>(std::forward<T>(t))) {
                     return broadcast_minmax<I + 1>(
                         std::forward<T>(t),
                         std::forward<Min>(min),
@@ -4207,6 +4180,448 @@ namespace impl {
                 std::get<0>(std::forward<T>(t))
             );
         }
+    }
+
+    namespace divide {
+
+        template <typename L, typename R>
+        struct true_ {
+            static constexpr decltype(auto) operator()(const L& lhs, const R& rhs)
+                noexcept(!DEBUG && noexcept(lhs / rhs))
+                requires(requires{ lhs / rhs;})
+            {
+                if constexpr (DEBUG) {
+                    if (rhs == 0) {
+                        throw ZeroDivisionError();
+                    }
+                }
+                return lhs / rhs;
+            }
+        };
+
+        template <meta::integer L, meta::integer R>
+        struct true_<L, R> {
+            static constexpr decltype(auto) operator()(L lhs, R rhs)
+                noexcept(!DEBUG && noexcept(static_cast<double>(lhs) / rhs))
+                requires(requires{static_cast<double>(lhs) / rhs;})
+            {
+                if constexpr (DEBUG) {
+                    if (rhs == 0) {
+                        throw ZeroDivisionError();
+                    }
+                }
+                return static_cast<double>(lhs) / rhs;
+            }
+        };
+
+        template <typename L, typename R>
+        struct floor {
+            template <typename L2, typename R2>
+            static constexpr decltype(auto) operator()(const L2& lhs, const R2& rhs)
+                noexcept(!DEBUG && noexcept(std::floor(lhs / rhs)))
+                requires(requires{std::floor(lhs / rhs);})
+            {
+                if constexpr (DEBUG) {
+                    if (rhs == 0) {
+                        throw ZeroDivisionError();
+                    }
+                }
+                return std::floor(lhs / rhs);
+            }
+        };
+
+        template <meta::unsigned_integer L, meta::unsigned_integer R>
+        struct floor<L, R> {
+            static constexpr decltype(auto) operator()(L lhs, R rhs)
+                noexcept(noexcept(lhs / rhs))
+                requires(requires{lhs / rhs;})
+            {
+                if constexpr (DEBUG) {
+                    if (rhs == 0) {
+                        throw ZeroDivisionError();
+                    }
+                }
+                return lhs / rhs;
+            }
+        };
+
+        template <meta::signed_integer L, meta::signed_integer R>
+        struct floor<L, R> {
+            static constexpr decltype(auto) operator()(L lhs, R rhs)
+                noexcept(
+                    !DEBUG &&
+                    noexcept(lhs / rhs - ((lhs < 0) ^ (rhs < 0) && (lhs % rhs)))
+                )
+                requires(requires{lhs / rhs - ((lhs < 0) ^ (rhs < 0) && (lhs % rhs));})
+            {
+                if constexpr (DEBUG) {
+                    if (rhs == 0) {
+                        throw ZeroDivisionError();
+                    }
+                }
+                return lhs / rhs - ((lhs < 0) ^ (rhs < 0) && (lhs % rhs));
+            }
+        };
+
+        template <typename L, typename R>
+        struct ceil {
+            static constexpr decltype(auto) operator()(const L& lhs, const R& rhs)
+                noexcept(!DEBUG && noexcept(std::ceil(lhs / rhs)))
+                requires(requires{std::ceil(lhs / rhs);})
+            {
+                if constexpr (DEBUG) {
+                    if (rhs == 0) {
+                        throw ZeroDivisionError();
+                    }
+                }
+                return std::ceil(lhs / rhs);
+            }
+        };
+
+        template <meta::unsigned_integer L, meta::unsigned_integer R>
+        struct ceil<L, R> {
+            static constexpr decltype(auto) operator()(const L& lhs, const R& rhs)
+                noexcept(!DEBUG && noexcept(lhs / rhs + ((lhs % rhs) != 0)))
+                requires(requires{lhs / rhs + ((lhs % rhs) != 0);})
+            {
+                if constexpr (DEBUG) {
+                    if (rhs == 0) {
+                        throw ZeroDivisionError();
+                    }
+                }
+                return lhs / rhs + ((lhs % rhs) != 0);
+            }
+        };
+
+        template <meta::signed_integer L, meta::signed_integer R>
+        struct ceil<L, R> {
+            static constexpr decltype(auto) operator()(const L& lhs, const R& rhs)
+                noexcept(
+                    !DEBUG &&
+                    noexcept(lhs / rhs + (((lhs < 0) == (rhs < 0)) && ((lhs % rhs) != 0)))
+                )
+                requires(requires {
+                    lhs / rhs + (((lhs < 0) == (rhs < 0)) && ((lhs % rhs) != 0));
+                })
+            {
+                if constexpr (DEBUG) {
+                    if (rhs == 0) {
+                        throw ZeroDivisionError();
+                    }
+                }
+                return lhs / rhs + (((lhs < 0) == (rhs < 0)) && ((lhs % rhs) != 0));
+            }
+        };
+
+        template <typename L, typename R>
+        struct down {
+            static constexpr decltype(auto) operator()(const L& lhs, const R& rhs)
+                noexcept(noexcept((lhs < 0) ^ (rhs < 0) ?
+                    divide::ceil<L, R>{}(lhs, rhs) :
+                    divide::floor<L, R>{}(lhs, rhs))
+                )
+                requires(requires{(lhs < 0) ^ (rhs < 0) ?
+                    divide::ceil<L, R>{}(lhs, rhs) :
+                    divide::floor<L, R>{}(lhs, rhs);
+                })
+            {
+                return (lhs < 0) ^ (rhs < 0) ?
+                    divide::ceil<L, R>{}(lhs, rhs) :
+                    divide::floor<L, R>{}(lhs, rhs);
+            }
+        };
+
+        template <typename L, typename R>
+        struct up {
+            static constexpr decltype(auto) operator()(const L& lhs, const R& rhs)
+                noexcept(noexcept((lhs < 0) ^ (rhs < 0) ?
+                    divide::floor<L, R>{}(lhs, rhs) :
+                    divide::ceil<L, R>{}(lhs, rhs))
+                )
+                requires(requires{(lhs < 0) ^ (rhs < 0) ?
+                    divide::floor<L, R>{}(lhs, rhs) :
+                    divide::ceil<L, R>{}(lhs, rhs);
+                })
+            {
+                return (lhs < 0) ^ (rhs < 0) ?
+                    divide::floor<L, R>{}(lhs, rhs) :
+                    divide::ceil<L, R>{}(lhs, rhs);
+            }
+        };
+
+    }
+
+    namespace modulo {
+
+        template <typename L, typename R>
+        struct true_ {
+            static constexpr decltype(auto) operator()(const L& lhs, const R& rhs)
+                noexcept(noexcept(lhs - (divide::true_<L, R>{}(lhs, rhs) * rhs)))
+                requires (requires{lhs - (divide::true_<L, R>{}(lhs, rhs) * rhs);})
+            {
+                return lhs - (divide::true_<L, R>{}(lhs, rhs) * rhs);
+            }
+        };
+
+        template <typename L, typename R>
+        struct floor {
+            static constexpr decltype(auto) operator()(const L& lhs, const R& rhs)
+                noexcept(!DEBUG && noexcept((lhs % rhs) + rhs * ((lhs < 0) ^ (rhs < 0))))
+                requires(requires{(lhs % rhs) + rhs * ((lhs < 0) ^ (rhs < 0));})
+            {
+                if constexpr (DEBUG) {
+                    if (rhs == 0) {
+                        throw ZeroDivisionError();
+                    }
+                }
+                return lhs % rhs + rhs * ((lhs < 0) ^ (rhs < 0));
+            }
+        };
+
+        template <meta::floating L, meta::floating R>
+        struct floor<L, R> {
+            static constexpr decltype(auto) operator()(L lhs, R rhs)
+                noexcept(!DEBUG && noexcept(std::fmod(lhs, rhs) + rhs * ((lhs < 0) ^ (rhs < 0))))
+                requires(requires{std::fmod(lhs, rhs) + rhs * ((lhs < 0) ^ (rhs < 0));})
+            {
+                if constexpr (DEBUG) {
+                    if (rhs == 0) {
+                        throw ZeroDivisionError();
+                    }
+                }
+                return std::fmod(lhs, rhs) + rhs * ((lhs < 0) ^ (rhs < 0));
+            }
+        };
+
+        template <typename L, typename R>
+        struct ceil {
+            static constexpr decltype(auto) operator()(const L& lhs, const R& rhs)
+                noexcept(!DEBUG && noexcept((lhs % rhs) + rhs * ((lhs < 0) == (rhs < 0))))
+                requires(requires{lhs % rhs + rhs * ((lhs < 0) == (rhs < 0));})
+            {
+                if constexpr (DEBUG) {
+                    if (rhs == 0) {
+                        throw ZeroDivisionError();
+                    }
+                }
+                return lhs % rhs - rhs * ((lhs < 0) == (rhs < 0));
+            }
+        };
+
+        template <meta::floating L, meta::floating R>
+        struct ceil<L, R> {
+            static constexpr decltype(auto) operator()(const L& lhs, const R& rhs)
+                noexcept(
+                    !DEBUG &&
+                    noexcept(std::fmod(lhs, rhs) - rhs * ((lhs < 0) == (rhs < 0)))
+                )
+                requires(requires{
+                    std::fmod(lhs, rhs) - rhs * ((lhs < 0) == (rhs < 0));
+                })
+            {
+                if constexpr (DEBUG) {
+                    if (rhs == 0) {
+                        throw ZeroDivisionError();
+                    }
+                }
+                return std::fmod(lhs, rhs) - rhs * ((lhs < 0) == (rhs < 0));
+            }
+        };
+
+        template <typename L, typename R>
+        struct down {
+            static constexpr decltype(auto) operator()(const L& lhs, const R& rhs)
+                noexcept(noexcept((lhs < 0) ^ (rhs < 0) ?
+                    modulo::ceil<L, R>{}(lhs, rhs) :
+                    modulo::floor<L, R>{}(lhs, rhs))
+                )
+                requires(requires{(lhs < 0) ^ (rhs < 0) ?
+                    modulo::ceil<L, R>{}(lhs, rhs) :
+                    modulo::floor<L, R>{}(lhs, rhs);
+                })
+            {
+                return (lhs < 0) ^ (rhs < 0) ?
+                    modulo::ceil<L, R>{}(lhs, rhs) :
+                    modulo::floor<L, R>{}(lhs, rhs);
+            }
+        };
+
+        template <typename L, typename R>
+        struct up {
+            static constexpr decltype(auto) operator()(const L& lhs, const R& rhs)
+                noexcept(noexcept((lhs < 0) ^ (rhs < 0) ?
+                    modulo::floor<L, R>{}(lhs, rhs) :
+                    modulo::ceil<L, R>{}(lhs, rhs))
+                )
+                requires(requires{(lhs < 0) ^ (rhs < 0) ?
+                    modulo::floor<L, R>{}(lhs, rhs) :
+                    modulo::ceil<L, R>{}(lhs, rhs);
+                })
+            {
+                return (lhs < 0) ^ (rhs < 0) ?
+                    modulo::floor<L, R>{}(lhs, rhs) :
+                    modulo::ceil<L, R>{}(lhs, rhs);
+            }
+        };
+
+    }
+
+    namespace divmod {
+
+        template <typename L, typename R>
+        struct true_ {
+            static constexpr decltype(auto) operator()(const L& lhs, const R& rhs)
+                noexcept(
+                    noexcept(std::make_pair(
+                        divide::true_<L, R>{}(lhs, rhs),
+                        lhs - (divide::true_<L, R>{}(lhs, rhs) * rhs)
+                    ))
+                )
+                requires(requires {
+                    std::make_pair(
+                        divide::true_<L, R>{}(lhs, rhs),
+                        lhs - (divide::true_<L, R>{}(lhs, rhs) * rhs)
+                    );
+                })
+            {
+                auto quotient = divide::true_<L, R>{}(lhs, rhs);
+                return std::make_pair(quotient, lhs - (quotient * rhs));
+            }
+        };
+
+        template <typename L, typename R>
+        struct floor {
+            static constexpr decltype(auto) operator()(const L& lhs, const R& rhs)
+                noexcept(
+                    noexcept(std::make_pair(
+                        divide::floor<L, R>{}(lhs, rhs),
+                        modulo::floor<L, R>{}(lhs, rhs)
+                    ))
+                )
+                requires(requires {
+                    std::make_pair(
+                        divide::floor<L, R>{}(lhs, rhs),
+                        modulo::floor<L, R>{}(lhs, rhs)
+                    );
+                })
+            {
+                return std::make_pair(
+                    divide::floor<L, R>{}(lhs, rhs),
+                    modulo::floor<L, R>{}(lhs, rhs)
+                );
+            }
+        };
+
+        template <typename L, typename R>
+        struct ceil {
+            static constexpr decltype(auto) operator()(const L& lhs, const R& rhs)
+                noexcept(
+                    noexcept(std::make_pair(
+                        divide::ceil<L, R>{}(lhs, rhs),
+                        modulo::ceil<L, R>{}(lhs, rhs)
+                    ))
+                )
+                requires(requires {
+                    std::make_pair(
+                        divide::ceil<L, R>{}(lhs, rhs),
+                        modulo::ceil<L, R>{}(lhs, rhs)
+                    );
+                })
+            {
+                return std::make_pair(
+                    divide::ceil<L, R>{}(lhs, rhs),
+                    modulo::ceil<L, R>{}(lhs, rhs)
+                );
+            }
+        };
+
+        template <typename L, typename R>
+        struct down {
+            static constexpr decltype(auto) operator()(const L& lhs, const R& rhs)
+                noexcept(noexcept((lhs < 0) ^ (rhs < 0) ?
+                    divmod::ceil<L, R>{}(lhs, rhs) :
+                    divmod::floor<L, R>{}(lhs, rhs))
+                )
+                requires(requires{(lhs < 0) ^ (rhs < 0) ?
+                    divmod::ceil<L, R>{}(lhs, rhs) :
+                    divmod::floor<L, R>{}(lhs, rhs);
+                })
+            {
+                return (lhs < 0) ^ (rhs < 0) ?
+                    divmod::ceil<L, R>{}(lhs, rhs) :
+                    divmod::floor<L, R>{}(lhs, rhs);
+            }
+        };
+
+        template <typename L, typename R>
+        struct up {
+            static constexpr decltype(auto) operator()(const L& lhs, const R& rhs)
+                noexcept(noexcept((lhs < 0) ^ (rhs < 0) ?
+                    divmod::floor<L, R>{}(lhs, rhs) :
+                    divmod::ceil<L, R>{}(lhs, rhs))
+                )
+                requires(requires{(lhs < 0) ^ (rhs < 0) ?
+                    divmod::floor<L, R>{}(lhs, rhs) :
+                    divmod::ceil<L, R>{}(lhs, rhs);
+                })
+            {
+                return (lhs < 0) ^ (rhs < 0) ?
+                    divmod::floor<L, R>{}(lhs, rhs) :
+                    divmod::ceil<L, R>{}(lhs, rhs);
+            }
+        };
+
+    }
+
+    namespace round {
+
+        template <typename T>
+        struct true_ {
+            static constexpr const T& operator()(const T& obj) noexcept {
+                return obj;
+            }
+        };
+
+        template <typename T>
+        struct floor {
+            static constexpr decltype(auto) operator()(const T& obj)
+                noexcept(noexcept(std::floor(obj)))
+                requires(requires{std::floor(obj);})
+            {
+                return std::floor(obj);
+            }
+        };
+
+        template <typename T>
+        struct ceil {
+            static constexpr decltype(auto) operator()(const T& obj)
+                noexcept(std::ceil(obj))
+                requires(requires{std::ceil(obj);})
+            {
+                return std::ceil(obj);
+            }
+        };
+
+        template <typename T>
+        struct down {
+            static constexpr decltype(auto) operator()(const T& obj)
+                noexcept(noexcept(std::trunc(obj)))
+                requires(requires{std::trunc(obj);})
+            {
+                return std::trunc(obj);
+            }
+        };
+
+        template <typename T>
+        struct up {
+            static constexpr decltype(auto) operator()(const T& obj)
+                noexcept(noexcept(obj < 0 ? std::floor(obj) : std::ceil(obj)))
+                requires(requires{obj < 0 ? std::floor(obj) : std::ceil(obj);})
+            {
+                return obj < 0 ? std::floor(obj) : std::ceil(obj);
+            }
+        };
+
     }
 
 }
@@ -4320,7 +4735,7 @@ template <meta::iterator Begin, meta::sentinel_for<Begin> End>
 
 /* Produce a simple range starting at a default-constructed instance of `End` (zero if
 `End` is an integer type), similar to Python's built-in `range()` operator.  This is
-equivalent to a  `std::views::iota()` call under the hood, but is easier to remember. */
+equivalent to a  `std::views::iota()` call under the hood. */
 template <typename End>
     requires (requires(End stop) {
         std::views::iota(End{}, std::forward<End>(stop));
@@ -4333,8 +4748,8 @@ template <typename End>
 
 
 /* Produce a simple range from `start` to `stop`, similar to Python's built-in
-`range()` operator.  This is equivalent to a `std::views::iota()` call under the hood,
-but is easier to remember, and closer to Python syntax. */
+`range()` operator.  This is equivalent to a `std::views::iota()` call under the
+hood. */
 template <typename Begin, typename End>
     requires (
         !(meta::iterator<Begin> && meta::sentinel_for<End, Begin>) &&
@@ -4354,8 +4769,7 @@ template <typename Begin, typename End>
 
 
 // /* Produce a simple integer range, similar to Python's built-in `range()` operator.
-// This is equivalent to a  `std::views::iota()` call under the hood, but is easier to
-// remember. */
+// This is equivalent to a  `std::views::iota()` call under the hood. */
 // template <typename T = ssize_t>
 // inline constexpr auto range(T start, T stop, T step) {
 //     return std::views::iota(start, stop) | std::views::stride(step);
@@ -4363,8 +4777,8 @@ template <typename Begin, typename End>
 
 
 /* Produce a simple range object that encapsulates a `start` and `stop` iterator as a
-range adaptor.  This is equivalent to a `std::ranges::subrange()` call under the hood,
-but is easier to remember, and closer to Python syntax. */
+range adaptor.  This is equivalent to a `std::ranges::subrange()` call under the
+hood. */
 template <meta::iterator Begin, meta::sentinel_for<Begin> End>
     requires (requires(Begin start, End stop) {
         std::ranges::subrange(std::forward<Begin>(start), std::forward<End>(stop));
@@ -4380,8 +4794,7 @@ template <meta::iterator Begin, meta::sentinel_for<Begin> End>
 
 
 /* Produce a view over a reverse iterable range that can be used in range-based for
-loops.  This is equivalent to a `std::views::reverse()` call under the hood, but is
-easier to remember, and closer to Python syntax. */
+loops.  This is equivalent to a `std::views::reverse()` call under the hood. */
 template <meta::reverse_iterable T>
 [[nodiscard]] constexpr auto reversed(T&& obj) noexcept(
     noexcept(std::views::reverse(std::forward<T>(obj)))
@@ -4409,7 +4822,7 @@ template <meta::reverse_iterable T>
 
 /* Combine several ranges into a view that yields tuple-like values consisting of the
 `i` th element of each range.  This is equivalent to a `std::views::zip()` call under
-the hood, but is easier to remember, and closer to python syntax. */
+the hood. */
 template <meta::iterable... Ts>
     requires (requires(Ts... rs) { std::views::zip(std::forward<Ts>(rs)...); })
 [[nodiscard]] constexpr decltype(auto) zip(Ts&&... rs) noexcept(
@@ -4629,7 +5042,7 @@ template <meta::iterable T>
 
 /* Get the minimum and maximum of an arbitrary list of values that share a common type.
 This effectively generates an O(n) sequence of `<` comparisons between each argument at
-compile time, converting the winning value to the common type at the end. */
+compile time, converting the winning values to the common type at the end. */
 template <typename... Ts>
     requires (
         sizeof...(Ts) > 1 &&
@@ -4647,39 +5060,31 @@ template <typename... Ts>
         auto&&... rest
     ) -> std::pair<meta::common_type<Ts...>, meta::common_type<Ts...>> {
         if constexpr (I < sizeof...(rest)) {
-            bool is_min =
+            if (
                 meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...) <
-                std::forward<decltype(min)>(min);
-            bool is_max =
-                std::forward<decltype(max)>(max) <
-                meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...);
-
-            if (is_min && is_max) {
+                std::forward<decltype(min)>(min)
+            ) {
                 return std::forward<decltype(self)>(self).template operator()<I + 1>(
                     meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...),
-                    meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...),
-                    std::forward<decltype(rest)>(rest)...
-                );
-
-            } else if (is_min) {
-                return std::forward<decltype(self)>(self).template operator()<I + 1>(
-                    meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...),
-                    std::forward<decltype(max)>(max),
-                    std::forward<decltype(rest)>(rest)...
-                );
-            } else if (is_max) {
-                return std::forward<decltype(self)>(self).template operator()<I + 1>(
-                    std::forward<decltype(min)>(min),
-                    meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...),
-                    std::forward<decltype(rest)>(rest)...
-                );
-            } else {
-                return std::forward<decltype(self)>(self).template operator()<I + 1>(
-                    std::forward<decltype(min)>(min),
                     std::forward<decltype(max)>(max),
                     std::forward<decltype(rest)>(rest)...
                 );
             }
+            if (
+                std::forward<decltype(max)>(max) <
+                meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...)
+            ) {
+                return std::forward<decltype(self)>(self).template operator()<I + 1>(
+                    std::forward<decltype(min)>(min),
+                    meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...),
+                    std::forward<decltype(rest)>(rest)...
+                );
+            }
+            return std::forward<decltype(self)>(self).template operator()<I + 1>(
+                std::forward<decltype(min)>(min),
+                std::forward<decltype(max)>(max),
+                std::forward<decltype(rest)>(rest)...
+            );
         } else {
             return {std::forward<decltype(min)>(min), std::forward<decltype(max)>(max)};
         }
@@ -4689,7 +5094,7 @@ template <typename... Ts>
 
 /* Get the minimum and maximum of the values stored within a tuple-like container.
 This effectively generates an O(n) sequence of `<` comparisons between each argument
-at compile time, converting the winning value to the common type at the end. */
+at compile time, converting the winning values to the common type at the end. */
 template <meta::tuple_like T>
     requires (
         !meta::iterable<T> &&
@@ -4716,8 +5121,230 @@ template <meta::iterable T>
 }
 
 
+/* A family of division operators with different rounding strategies, in order to
+facilitate inter-language communication where conventions may differ. */
+struct divide {
+    constexpr divide() noexcept = delete;
+
+    template <typename L, typename R>
+        requires (meta::invocable<impl::divide::true_<L, R>, const L&, const R&>)
+    [[nodiscard]] static constexpr decltype(auto) true_(
+        const L& lhs,
+        const R& rhs
+    ) noexcept(noexcept(impl::divide::true_<L, R>{}(lhs, rhs))) {
+        return impl::divide::true_<L, R>{}(lhs, rhs);
+    }
+
+    template <typename L, typename R>
+        requires (meta::invocable<impl::divide::floor<L, R>, const L&, const R&>)
+    [[nodiscard]] static constexpr decltype(auto) floor(
+        const L& lhs,
+        const R& rhs
+    ) noexcept(noexcept(impl::divide::floor<L, R>{}(lhs, rhs))) {
+        return impl::divide::floor<L, R>{}(lhs, rhs);
+    }
+
+    template <typename L, typename R>
+        requires (meta::invocable<impl::divide::ceil<L, R>, const L&, const R&>)
+    [[nodiscard]] static constexpr decltype(auto) ceil(
+        const L& lhs,
+        const R& rhs
+    ) noexcept(noexcept(impl::divide::ceil<L, R>{}(lhs, rhs))) {
+        return impl::divide::ceil<L, R>{}(lhs, rhs);
+    }
+
+    template <typename L, typename R>
+        requires (meta::invocable<impl::divide::down<L, R>, const L&, const R&>)
+    [[nodiscard]] static constexpr decltype(auto) down(
+        const L& lhs,
+        const R& rhs
+    ) noexcept(noexcept(impl::divide::down<L, R>{}(lhs, rhs))) {
+        return impl::divide::down<L, R>{}(lhs, rhs);
+    }
+
+    template <typename L, typename R>
+        requires (meta::invocable<impl::divide::up<L, R>, const L&, const R&>)
+    [[nodiscard]] static constexpr decltype(auto) up(
+        const L& lhs,
+        const R& rhs
+    ) noexcept(noexcept(impl::divide::up<L, R>{}(lhs, rhs))) {
+        return impl::divide::up<L, R>{}(lhs, rhs);
+    }
+
+};
+
+
+/* A family of modulus operators with different rounding strategies, in order to
+facilitate inter-language communication where conventions may differ. */
+struct modulo {
+    constexpr modulo() noexcept = delete;
+
+    template <typename L, typename R>
+        requires (meta::invocable<impl::modulo::true_<L, R>, const L&, const R&>)
+    [[nodiscard]] static constexpr decltype(auto) true_(
+        const L& lhs,
+        const R& rhs
+    ) noexcept(noexcept(impl::modulo::true_<L, R>{}(lhs, rhs))) {
+        return impl::modulo::true_<L, R>{}(lhs, rhs);
+    }
+
+    template <typename L, typename R>
+        requires (meta::invocable<impl::modulo::floor<L, R>, const L&, const R&>)
+    [[nodiscard]] static constexpr decltype(auto) floor(
+        const L& lhs,
+        const R& rhs
+    ) noexcept(noexcept(impl::modulo::floor<L, R>{}(lhs, rhs))) {
+        return impl::modulo::floor<L, R>{}(lhs, rhs);
+    }
+
+    template <typename L, typename R>
+        requires (meta::invocable<impl::modulo::ceil<L, R>, const L&, const R&>)
+    [[nodiscard]] static constexpr decltype(auto) ceil(
+        const L& lhs,
+        const R& rhs
+    ) noexcept(noexcept(impl::modulo::ceil<L, R>{}(lhs, rhs))) {
+        return impl::modulo::ceil<L, R>{}(lhs, rhs);
+    }
+
+    template <typename L, typename R>
+        requires (meta::invocable<impl::modulo::down<L, R>, const L&, const R&>)
+    [[nodiscard]] static constexpr decltype(auto) down(
+        const L& lhs,
+        const R& rhs
+    ) noexcept(noexcept(impl::modulo::down<L, R>{}(lhs, rhs))) {
+        return impl::modulo::down<L, R>{}(lhs, rhs);
+    }
+
+    template <typename L, typename R>
+        requires (meta::invocable<impl::modulo::up<L, R>, const L&, const R&>)
+    [[nodiscard]] static constexpr decltype(auto) up(
+        const L& lhs,
+        const R& rhs
+    ) noexcept(noexcept(impl::modulo::up<L, R>{}(lhs, rhs))) {
+        return impl::modulo::up<L, R>{}(lhs, rhs);
+    }
+
+};
+
+
+/* A family of combined division and modulus operators with different rounding
+strategies, in order to facilitate inter-language communication where conventions may
+differ. */
+struct divmod {
+    constexpr divmod() noexcept = delete;
+
+    template <typename L, typename R>
+        requires (meta::invocable<impl::divmod::true_<L, R>, const L&, const R&>)
+    [[nodiscard]] static constexpr decltype(auto) true_(
+        const L& lhs,
+        const R& rhs
+    ) noexcept(noexcept(impl::divmod::true_<L, R>{}(lhs, rhs))) {
+        return impl::divmod::true_<L, R>{}(lhs, rhs);
+    }
+
+    template <typename L, typename R>
+        requires (meta::invocable<impl::divmod::floor<L, R>, const L&, const R&>)
+    [[nodiscard]] static constexpr decltype(auto) floor(
+        const L& lhs,
+        const R& rhs
+    ) noexcept(noexcept(impl::divmod::floor<L, R>{}(lhs, rhs))) {
+        return impl::divmod::floor<L, R>{}(lhs, rhs);
+    }
+
+    template <typename L, typename R>
+        requires (meta::invocable<impl::divmod::ceil<L, R>, const L&, const R&>)
+    [[nodiscard]] static constexpr decltype(auto) ceil(
+        const L& lhs,
+        const R& rhs
+    ) noexcept(noexcept(impl::divmod::ceil<L, R>{}(lhs, rhs))) {
+        return impl::divmod::ceil<L, R>{}(lhs, rhs);
+    }
+
+    template <typename L, typename R>
+        requires (meta::invocable<impl::divmod::down<L, R>, const L&, const R&>)
+    [[nodiscard]] static constexpr decltype(auto) down(
+        const L& lhs,
+        const R& rhs
+    ) noexcept(noexcept(impl::divmod::down<L, R>{}(lhs, rhs))) {
+        return impl::divmod::down<L, R>{}(lhs, rhs);
+    }
+
+    template <typename L, typename R>
+        requires (meta::invocable<impl::divmod::up<L, R>, const L&, const R&>)
+    [[nodiscard]] static constexpr decltype(auto) up(
+        const L& lhs,
+        const R& rhs
+    ) noexcept(noexcept(impl::divmod::up<L, R>{}(lhs, rhs))) {
+        return impl::divmod::up<L, R>{}(lhs, rhs);
+    }
+
+};
+
+
+/* A family of rounding operators with different strategies, in order to facilitate
+inter-language communication where conventions may differ. */
+struct round {
+    constexpr round() noexcept = delete;
+
+    template <typename T>
+        requires (meta::invocable<impl::round::true_<T>, const T&>)
+    [[nodiscard]] static constexpr decltype(auto) true_(const T& obj)
+        noexcept(noexcept(impl::round::true_<T>{}(obj)))
+    {
+        return impl::round::true_<T>{}(obj);
+    }
+
+    template <typename T>
+        requires (meta::invocable<impl::round::floor<T>, const T&>)
+    [[nodiscard]] static constexpr decltype(auto) floor(const T& obj)
+        noexcept(noexcept(impl::round::floor<T>{}(obj)))
+    {
+        return impl::round::floor<T>{}(obj);
+    }
+
+    template <typename T>
+        requires (meta::invocable<impl::round::ceil<T>, const T&>)
+    [[nodiscard]] static constexpr decltype(auto) ceil(const T& obj)
+        noexcept(noexcept(impl::round::ceil<T>{}(obj)))
+    {
+        return impl::round::ceil<T>{}(obj);
+    }
+
+    template <typename T>
+        requires (meta::invocable<impl::round::down<T>, const T&>)
+    [[nodiscard]] static constexpr decltype(auto) down(const T& obj)
+        noexcept(noexcept(impl::round::down<T>{}(obj)))
+    {
+        return impl::round::down<T>{}(obj);
+    }
+
+    template <typename T>
+        requires (meta::invocable<impl::round::up<T>, const T&>)
+    [[nodiscard]] static constexpr decltype(auto) up(const T& obj)
+        noexcept(noexcept(impl::round::up<T>{}(obj)))
+    {
+        return impl::round::up<T>{}(obj);
+    }
+
+};
+
+
+// static_assert(ROUND::TRUE.div(1.0, 2.0));
+/// div::true_(1, 2);  <- `div` is a class with a static `true_` function
+/// div::floor(1, 2);
+/// div::ceil(1, 2);
+/// div::down(1, 2);
+/// div::up(1, 2);
+/// div::half_floor(1, 2);
+/// div::half_ceil(1, 2);
+/// div::half_down(1, 2);
+/// div::half_up(1, 2);
+/// div::half_even(1, 2);
+
+
 /// TODO: generic round(), div(), mod(), and divmod() operators.  These will
-/// rely on an enumeration of the possible rounding strategies
+/// rely on an enumeration of the possible rounding strategies, probably as functors
+/// in their own namespace so that they can also service python types when I get there.
 
 
 namespace impl {
@@ -6755,9 +7382,9 @@ time, while `std::less<>` defaults to a transparent comparison. */
 template <typename Range, impl::sortable<Range> Less = std::less<>>
     requires (!meta::has_member_sort<Range, Less>)
 constexpr void sort(Range&& range, Less&& less_than = {}) noexcept(
-    noexcept(impl::powersort{}(range, std::forward<Less>(less_than)))
+    noexcept(impl::powersort{}(std::forward<Range>(range), std::forward<Less>(less_than)))
 ) {
-    impl::powersort{}(range, std::forward<Less>(less_than));
+    impl::powersort{}(std::forward<Range>(range), std::forward<Less>(less_than));
 }
 
 
