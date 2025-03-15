@@ -1,13 +1,181 @@
 #ifndef BERTRAND_ALLOCATE_H
 #define BERTRAND_ALLOCATE_H
 
-#include <random>
-#include <mutex>
-
 #include "bertrand/common.h"
+#include "bertrand/except.h"
 
 
 namespace bertrand {
+
+
+namespace impl {
+    struct address_space_tag {};
+
+    /* A raw number of bytes.  Interconvertible with `size_t`, and usually produced
+    through an integer literal of the form `94_B`, `42_KiB`, `27_MiB`, etc. */
+    struct nbytes {
+        size_t value;
+        constexpr nbytes(size_t value = 0) noexcept : value(value) {}
+        constexpr operator size_t() const noexcept { return value; }
+    };
+
+}
+
+
+/* User-defined literal returning an integer-like value corresponding to a raw
+number of bytes, for use in defining fixed-size containers.  The result is
+implicitly convertible to `unsigned long long`. */
+constexpr impl::nbytes operator""_B(unsigned long long size) noexcept {
+    return {size};
+}
+
+
+/* User-defined literal returning an integer-like value corresponding to a raw
+number of kilobytes, for use in defining fixed-size containers.  The result is
+implicitly convertible to `unsigned long long`. */
+constexpr impl::nbytes operator""_KiB(unsigned long long size) noexcept {
+    return {size * 1024_B};
+}
+
+
+/* User-defined literal returning an integer-like value corresponding to a raw
+number of megabytes, for use in defining fixed-size containers.  The result is
+implicitly convertible to `unsigned long long`. */
+constexpr impl::nbytes operator""_MiB(unsigned long long size) noexcept {
+    return {size * 1024_KiB};
+}
+
+
+/* User-defined literal returning an integer-like value corresponding to a raw
+number of gigabytes, for use in defining fixed-size containers.  The result is
+implicitly convertible to `unsigned long long`. */
+constexpr impl::nbytes operator""_GiB(unsigned long long size) noexcept {
+    return {size * 1024_MiB};
+}
+
+
+/* User-defined literal returning an integer-like value corresponding to a raw
+number of terabytes, for use in defining fixed-size containers.  The result is
+implicitly convertible to `unsigned long long`. */
+constexpr impl::nbytes operator""_TiB(unsigned long long size) noexcept {
+    return {size * 1024_GiB};
+}
+
+
+#ifdef BERTRAND_PAGE_SIZE
+    constexpr size_t PAGE_SIZE = BERTRAND_PAGE_SIZE;
+#else
+    constexpr size_t PAGE_SIZE = 4_KiB;
+#endif
+
+
+#ifdef BERTRAND_ARENA_SIZE
+    constexpr size_t ARENA_SIZE = BERTRAND_ARENA_SIZE;
+#else
+    constexpr size_t ARENA_SIZE = 128_GiB;
+#endif
+
+
+#ifdef BERTRAND_NUM_ARENAS
+    constexpr size_t NUM_ARENAS = BERTRAND_NUM_ARENAS;
+#else
+    constexpr size_t NUM_ARENAS = 8;
+#endif
+
+
+static_assert(
+    PAGE_SIZE == 0 || ARENA_SIZE % PAGE_SIZE == 0,
+    "arena size must be a multiple of the page size"
+);
+static_assert(
+    ARENA_SIZE == 0 || ARENA_SIZE >= (PAGE_SIZE * 2),
+    "arena must contain at least two pages of memory to store a freelist and "
+    "public partition"
+);
+
+
+/* True if the current system supports virtual address reservation.  False
+otherwise. */
+constexpr bool HAS_ARENA = ARENA_SIZE > 0 && NUM_ARENAS > 0 && PAGE_SIZE > 0;
+
+
+namespace impl {
+
+    inline bool valid_page_size = [] {
+        #ifdef _WIN32
+            SYSTEM_INFO si;
+            GetSystemInfo(&si);
+            if (si.dwPageSize != PAGE_SIZE) {
+                std::cerr << std::format(
+                    "warning: `BERTRAND_PAGE_SIZE` ({} bytes) does not match "
+                    "system page size ({} bytes).  This may cause misaligned virtual "
+                    "address spaces and undefined behavior.  Please recompile with "
+                    "`BERTRAND_PAGE_SIZE` set to the correct value to silence this "
+                    "warning",
+                    PAGE_SIZE,
+                    si.dwPageSize
+                ) << std::endl;
+            }
+        #elifdef __unix__
+            if (sysconf(_SC_PAGESIZE) != PAGE_SIZE) {
+                std::cerr << std::format(
+                    "warning: `BERTRAND_PAGE_SIZE` ({} bytes) does not match "
+                    "system page size ({} bytes).  This may cause misaligned virtual "
+                    "address spaces and undefined behavior.  Please recompile with "
+                    "`BERTRAND_PAGE_SIZE` set to the correct value to silence this "
+                    "warning",
+                    PAGE_SIZE,
+                    sysconf(_SC_PAGESIZE)
+                ) << std::endl;
+            }
+        #endif
+        return true;
+    }();
+
+    /* A self-aligning helper for defining the capacity of a fixed-size container using
+    either explicit units or raw integers, which are interpreted in units of `T`. */
+    template <typename T>
+    struct capacity {
+    private:
+        template <typename U>
+        static constexpr size_t raw_size = sizeof(U);  // never returns 0
+        template <meta::is_void U>
+        static constexpr size_t raw_size<U> = 1;
+
+        template <typename U>
+        static constexpr size_t alignment = alignof(U);  // never returns 0
+        template <meta::is_void U>
+        static constexpr size_t alignment<U> = 1;
+
+    public:
+        static constexpr size_t item_size =
+            (raw_size<T> + (alignment<T> - 1) / alignment<T>) * alignment<T>;
+
+        const size_t value;
+        constexpr capacity(size_t size) noexcept : value(size * item_size) {}
+        constexpr capacity(impl::nbytes size) noexcept :
+            value((size.value / item_size) * item_size)
+        {}
+
+        constexpr operator size_t() const noexcept { return value; }
+
+        /* Get the total number of aligned instances of `T` that will fit within the
+        capacity.  If the type is `void`, then it will return a raw number of bytes.
+        Otherwise, it is equivalent to `value / item_size`. */
+        constexpr size_t count() const noexcept {
+            return value / item_size;
+        }
+
+        /* Align the capacity to the nearest physical page, increasing it to a multiple
+        of the `PAGE_SIZE`, and then adjusting it downwards to account for the
+        alignment of `T`. */
+        constexpr capacity page_align() const noexcept {
+            size_t pages = ((value + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;
+            return (pages / item_size) * item_size;
+        }
+    };
+
+}
 
 
 template <meta::unqualified T = void, impl::capacity<T> N = 8_MiB>
@@ -15,7 +183,6 @@ struct address_space;
 
 
 namespace impl {
-    struct address_space_tag {};
 
     /* Reserve a range of virtual addresses with the given size.  Returns a pointer to
     the start of the address range or nullptr on error. */

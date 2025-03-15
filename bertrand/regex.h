@@ -2,10 +2,6 @@
 #define BERTRAND_REGEX_H
 
 #include <cstddef>
-#include <cstdint>
-#include <memory>
-#include <optional>
-#include <string>
 #include <vector>
 #include <unordered_map>
 

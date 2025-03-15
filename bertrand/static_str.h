@@ -1,18 +1,8 @@
 #ifndef BERTRAND_STATIC_STRING_H
 #define BERTRAND_STATIC_STRING_H
 
-#include <algorithm>
-#include <array>
-#include <cstddef>
-#include <iterator>
-#include <limits>
-#include <sstream>
-#include <string>
-#include <string_view>
-#include <tuple>
-#include <utility>
-
 #include "bertrand/common.h"
+#include "bertrand/iter.h"
 
 
 // required for demangling
@@ -1607,47 +1597,6 @@ newline character to the output. */
 template <typename T>
 constexpr void println(T&& obj) {
     std::cout << repr(std::forward<T>(obj)) << "\n";
-}
-
-
-/* A python-style `assert` statement in C++, which is optimized away if built with
-`bertrand::DEBUG == false` (release mode).  This differs from the built-in C++
-`assert()` macro in that this is implemented as a normal inline function that accepts
-a format string and arguments (which are automatically passed through `repr()`), and
-results in a `bertrand::AssertionError` with a coherent traceback, which can be
-seamlessly passed up to Python.  It is thus possible to implement pytest-style unit
-tests using this function just as in native Python. */
-template <typename... Args>
-[[gnu::always_inline]] void assert_(
-    bool cnd,
-    impl::format_repr<Args...> msg = "",
-    Args&&... args
-) noexcept(!DEBUG) {
-    if constexpr (DEBUG) {
-        if (!cnd) {
-            throw AssertionError(std::format(
-                msg,
-                impl::to_format_repr(std::forward<Args>(args))...
-            ));
-        }
-    }
-}
-
-
-/* A python-style `assert` statement in C++, which is optimized away if built with
-`bertrand::DEBUG == false` (release mode).  This differs from the built-in C++
-`assert()` macro in that this is implemented as a normal inline function that accepts
-an arbitrary value (which is automatically passed through `repr()`), and results in a
-`bertrand::AssertionError` with a coherent traceback, which can be seamlessly passed up
-to Python.  It is thus possible to implement pytest-style unit tests using this
-function just as in native Python. */
-template <typename T>
-[[gnu::always_inline]] void assert_(bool cnd, T&& obj) noexcept(!DEBUG) {
-    if constexpr (DEBUG) {
-        if (!cnd) {
-            throw AssertionError(repr(std::forward<T>(obj)));
-        }
-    }
 }
 
 

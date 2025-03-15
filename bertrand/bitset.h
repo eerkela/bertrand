@@ -1,8 +1,10 @@
 #ifndef BERTRAND_BITSET_H
 #define BERTRAND_BITSET_H
 
-
 #include "bertrand/common.h"
+#include "bertrand/except.h"
+#include "bertrand/math.h"
+#include "bertrand/iter.h"
 
 
 namespace bertrand {

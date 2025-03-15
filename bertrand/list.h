@@ -1,7 +1,6 @@
 #ifndef BERTRAND_LIST_H
 #define BERTRAND_LIST_H
 
-
 #include "bertrand/common.h"
 #include "bertrand/allocate.h"
 #include "bertrand/static_str.h"

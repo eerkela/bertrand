@@ -1,7 +1,6 @@
 #ifndef BERTRAND_STATIC_MAP_H
 #define BERTRAND_STATIC_MAP_H
 
-
 #include "bertrand/static_str.h"
 
 
