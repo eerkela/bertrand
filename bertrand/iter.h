@@ -9,6 +9,10 @@
 namespace bertrand {
 
 
+/// TODO: min, max, any, all require a tuple with at least one item, and possibly error
+/// for empty containers?
+
+
 /* A generic sentinel type to simplify iterator implementations. */
 struct sentinel {};
 

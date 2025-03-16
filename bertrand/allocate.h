@@ -9,7 +9,7 @@ namespace bertrand {
 
 
 namespace impl {
-    struct address_space_tag {};
+    struct arena_tag {};
 
     /* A raw number of bytes.  Interconvertible with `size_t`, and usually produced
     through an integer literal of the form `94_B`, `42_KiB`, `27_MiB`, etc. */
@@ -179,7 +179,7 @@ namespace impl {
 
 
 template <meta::unqualified T = void, impl::capacity<T> N = 8_MiB>
-struct address_space;
+struct arena;
 
 
 namespace impl {
@@ -303,20 +303,20 @@ namespace impl {
         return false;  // decommit failed or not supported
     }
 
-    /* A pool of virtual arenas backing the `address_space<T, N>` class.  These arenas
+    /* A pool of virtual arenas backing the `arena<T, N>` class.  These arenas
     are allocated upfront at program startup and reused in a manner similar to
     `malloc()`/`free()`, minimizing syscall overhead when apportioning spaces in
     downstream code.  Provides thread-safe access to each arena, and implements a
     simple load-balancing algorithm to ensure that the arenas are evenly utilized. */
-    struct global_address_space {
+    struct address_space {
 
         /* An individual arena, representing a contiguous virtual address space of
         length `ARENA_SIZE` with a private partition to store an allocator freelist. */
         struct arena {
         private:
             template <meta::unqualified T, impl::capacity<T> N>
-            friend struct bertrand::address_space;
-            friend global_address_space;
+            friend struct bertrand::arena;
+            friend address_space;
 
             /* Freelist is held contiguously in the first 1/1024th of the arena.  If
             filled to capacity, this yields an average unoccupied block length of
@@ -611,7 +611,7 @@ namespace impl {
             freelist to consider the region occupied, and returns a null pointer if
             no such region exists.  The mutex must be locked when this method is
             called, and will be unlocked when it returns.  Typically, this method is
-            invoked immediately after `global_address_space.acquire()`. */
+            invoked immediately after `address_space.acquire()`. */
             [[nodiscard]] std::byte* reserve(size_t length) {
                 try {
                     std::byte* ptr = pop(length);
@@ -700,13 +700,13 @@ namespace impl {
 
     private:
         template <meta::unqualified T, capacity<T> N>
-        friend struct bertrand::address_space;
+        friend struct bertrand::arena;
 
         struct storage;
         friend storage;
 
-        global_address_space() = default;
-        ~global_address_space() noexcept {
+        address_space() = default;
+        ~address_space() noexcept {
             if (!unmap_address_space(m_data, ARENA_SIZE * NUM_ARENAS)) {
                 /// NOTE: destructor is only called at program termination, so
                 /// errors here are not critical.  The OS will reclaim memory
@@ -837,13 +837,13 @@ namespace impl {
         }
 
     public:
-        global_address_space(const global_address_space&) = delete;
-        global_address_space(global_address_space&&) = delete;
-        global_address_space& operator=(const global_address_space&) = delete;
-        global_address_space& operator=(global_address_space&&) = delete;
+        address_space(const address_space&) = delete;
+        address_space(address_space&&) = delete;
+        address_space& operator=(const address_space&) = delete;
+        address_space& operator=(address_space&&) = delete;
 
         /* Get a reference to the global address space singleton. */
-        [[nodiscard]] static global_address_space& get() noexcept;
+        [[nodiscard]] static address_space& get() noexcept;
 
         /* The number of arenas in the global address space.  This is a compile-time
         constant that is set by the `BERTRAND_NUM_ARENAS` build flag, and defaults to 8
@@ -888,22 +888,22 @@ namespace impl {
     /* The global address space singleton is stored in an uninitialized private buffer
     that gets initialized first thing before any other global or static constructors
     are run, and last thing after any destructors that may need it.  The
-    `global_address_space::get()` method is the only way to access this instance, and
+    `address_space::get()` method is the only way to access this instance, and
     another instance cannot be created, destroyed, or unsafely modified in any other
     context. */
-    struct global_address_space::storage {
+    struct address_space::storage {
     private:
-        friend global_address_space;
+        friend address_space;
 
         inline static bool initialized = false;
-        alignas(global_address_space) inline static unsigned char buffer[
-            sizeof(global_address_space)
+        alignas(address_space) inline static unsigned char buffer[
+            sizeof(address_space)
         ];
 
         [[gnu::constructor(101)]] static void init() {
             if constexpr (HAS_ARENA) {
                 if (!initialized) {
-                    new (buffer) global_address_space();
+                    new (buffer) address_space();
                     initialized = true;
                 }
             }
@@ -912,16 +912,16 @@ namespace impl {
         [[gnu::destructor(65535)]] static void finalize() {
             if constexpr (HAS_ARENA) {
                 if (initialized) {
-                    reinterpret_cast<global_address_space*>(
+                    reinterpret_cast<address_space*>(
                         buffer
-                    )->~global_address_space();
+                    )->~address_space();
                     initialized = false;
                 }
             }
         }
     };
 
-    [[nodiscard]] inline global_address_space& global_address_space::get() noexcept {
+    [[nodiscard]] inline address_space& address_space::get() noexcept {
         static_assert(
             HAS_ARENA,
             "The current system does not support virtual address spaces.  Please set "
@@ -930,7 +930,7 @@ namespace impl {
             "code path on the state of the constexpr `HAS_ARENA` variable to provide "
             "an alternative."
         );
-        return *reinterpret_cast<global_address_space*>(storage::buffer);
+        return *reinterpret_cast<address_space*>(storage::buffer);
     }
 
 }
@@ -939,15 +939,14 @@ namespace impl {
 namespace meta {
 
     template <typename Alloc>
-    concept address_space = inherits<Alloc, impl::address_space_tag>;
+    concept arena = inherits<Alloc, impl::arena_tag>;
 
     template <typename Alloc, typename T>
-    concept address_space_for =
-        address_space<Alloc> && std::same_as<typename unqualify<Alloc>::type, T>;
+    concept arena_for = arena<Alloc> && std::same_as<typename unqualify<Alloc>::type, T>;
 
     template <typename Alloc, typename T>
     concept allocator_or_space_for =
-        allocator_for<Alloc, T> || address_space_for<Alloc, T>;
+        allocator_for<Alloc, T> || arena_for<Alloc, T>;
 
 }
 
@@ -1002,7 +1001,7 @@ expected to be accessible from multiple threads, then the user must ensure that
 concurrent access is properly synchronized, either by explicit locking or by
 partitioning the address space into separate regions for each thread. */
 template <meta::unqualified T, impl::capacity<T> N>
-struct address_space : impl::address_space_tag {
+struct arena : impl::arena_tag {
     using size_type = size_t;
     using capacity_type = impl::capacity<T>;
     using difference_type = ptrdiff_t;
@@ -1031,22 +1030,22 @@ private:
 public:
 
     /* Default constructor.  Reserves address space, but does not commit any memory. */
-    [[nodiscard]] address_space() :
-        m_arena(impl::global_address_space::get().acquire(TOTAL_SIZE)),
+    [[nodiscard]] arena() :
+        m_arena(impl::address_space::get().acquire(TOTAL_SIZE)),
         m_data(m_arena->reserve(TOTAL_SIZE) + GUARD_SIZE)
     {}
 
-    address_space(const address_space&) = delete;
-    address_space& operator=(const address_space&) = delete;
+    arena(const arena&) = delete;
+    arena& operator=(const arena&) = delete;
 
-    [[nodiscard]] address_space(address_space&& other) noexcept :
+    [[nodiscard]] arena(arena&& other) noexcept :
         m_arena(other.m_arena), m_data(other.m_data)
     {
         other.m_arena = nullptr;
         other.m_data = nullptr;
     }
 
-    [[maybe_unused]] address_space& operator=(address_space&& other) noexcept(!DEBUG) {
+    [[maybe_unused]] arena& operator=(arena&& other) noexcept(!DEBUG) {
         if (this != &other) {
             if (m_data) {
                 std::byte* p = m_data;
@@ -1084,7 +1083,7 @@ public:
     /* Unreserve the address space upon destruction, returning the virtual capacity to
     the arena's freelist and allowing the operating system to reclaim physical pages
     for future allocations. */
-    ~address_space() noexcept(false) {
+    ~arena() noexcept(false) {
         m_arena = nullptr;
         if (m_data) {
             std::byte* p = m_data;
@@ -1297,13 +1296,13 @@ public:
     }
 
 private:
-    typename impl::global_address_space::arena* m_arena;
+    typename impl::address_space::arena* m_arena;
     std::byte* m_data;
 };
 
 
-/* Small space optimization for `address_space<T, N>`, where `N * sizeof(T)` is less
-than one full page in memory.
+/* Small space optimization for `arena<T, N>`, where `N * sizeof(T)` is less than one
+full page in memory.
 
 This bypasses the virtual memory arenas and allocates the address space on the heap
 using the system's `calloc()` and `free()`.  Since virtual address spaces are always
@@ -1315,7 +1314,7 @@ the pointer stability guarantees of the larger address spaces.  Both cases expos
 same interface, so the user does not need to worry about which one is being used. */
 template <meta::unqualified T, impl::capacity<T> N>
     requires (N.page_align() <= PAGE_SIZE)
-struct address_space<T, N> : impl::address_space_tag {
+struct arena<T, N> : impl::arena_tag {
     using size_type = size_t;
     using capacity_type = impl::capacity<T>;
     using difference_type = ptrdiff_t;
@@ -1337,7 +1336,7 @@ struct address_space<T, N> : impl::address_space_tag {
 
     /* Default constructor.  `calloc()`s uninitialized storage equal to the size of the
     space, initialized to zero. */
-    [[nodiscard]] address_space() : m_data(calloc(N)) {
+    [[nodiscard]] arena() : m_data(calloc(N)) {
         if (!m_data) {
             throw MemoryError(std::format(
                 "failed to allocate {} bytes for address space starting at "
@@ -1350,16 +1349,16 @@ struct address_space<T, N> : impl::address_space_tag {
         }
     }
 
-    address_space(const address_space& other) = delete;
-    address_space& operator=(const address_space& other) = delete;
+    arena(const arena& other) = delete;
+    arena& operator=(const arena& other) = delete;
 
-    [[nodiscard]] address_space(address_space&& other) noexcept :
+    [[nodiscard]] arena(arena&& other) noexcept :
         m_data(other.m_data)
     {
         other.m_data = nullptr;
     }
 
-    [[maybe_unused]] address_space& operator=(address_space&& other) noexcept {
+    [[maybe_unused]] arena& operator=(arena&& other) noexcept {
         if (this != &other) {
             if (m_data) {
                 free(m_data);
@@ -1371,7 +1370,7 @@ struct address_space<T, N> : impl::address_space_tag {
     }
 
     /* `free()` the address space upon destruction. */
-    ~address_space() {
+    ~arena() {
         if (m_data) {
             free(m_data);
             m_data = nullptr;
