@@ -47,6 +47,21 @@ namespace std {
 namespace bertrand {
 
 
+/// TODO: eliminate this:
+
+// template <iterable Container>
+// struct iter_traits {
+//     using begin = begin_type<Container>;
+//     using end = end_type<Container>;
+//     using container = std::conditional_t<
+//         lvalue<Container>,
+//         void,
+//         remove_reference<Container>
+//     >;
+// };
+
+
+
 /// TODO: add assertions where appropriate to ensure that no object is ever null.
 
 

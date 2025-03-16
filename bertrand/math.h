@@ -741,16 +741,16 @@ namespace impl {
 
 
 /* Hash an arbitrary value.  Equivalent to calling `std::hash<T>{}(...)`, but without
-explicitly specializating `std::hash`. */
+needing to explicitly specialize `std::hash`. */
 template <meta::hashable T>
 [[nodiscard]] constexpr auto hash(T&& obj) noexcept(meta::nothrow::hashable<T>) {
     return std::hash<std::decay_t<T>>{}(std::forward<T>(obj));
 }
 
 
-/* A general purpose absolute value operator.  The behavior of this operator is
-controlled by the `impl::abs<T>` control structu, which is always specialized for
-integer and floating point types at a minimum. */
+/* A generalized absolute value operator.  The behavior of this operator is controlled
+by the `impl::abs<T>` control struct, which is always specialized for integer and
+floating point types at a minimum. */
 template <typename T>
     requires (requires(const T& obj) { impl::abs<T>{}(obj); })
 [[nodiscard]] constexpr decltype(auto) abs(const T& obj) noexcept(
@@ -760,10 +760,10 @@ template <typename T>
 }
 
 
-/* A general purpose exponentiation operator.  The behavior of this operator is
-controlled by the `impl::pow<Base, Exp, Mod = void>` control struct, which is always
-specialized for integer and floating point types at a minimum.  Note that integer
-exponentiation with a negative exponent always returns zero, without erroring. */
+/* A generalized exponentiation operator.  The behavior of this operator is controlled
+by the `impl::pow<Base, Exp, Mod = void>` control struct, which is always specialized
+for integer and floating point types at a minimum.  Note that integer exponentiation
+with a negative exponent always returns zero, without erroring. */
 template <typename Base, typename Exp>
     requires (requires(const Base& base, const Exp& exp) {
         impl::pow<Base, Exp>{}(base, exp);
@@ -776,8 +776,8 @@ template <typename Base, typename Exp>
 }
 
 
-/* A general purpose modular exponentiation operator.  The behavior of this operator
-is controlled by the `impl::pow<Base, Exp, Mod = void>` control struct, which is always
+/* A generalized modular exponentiation operator.  The behavior of this operator is
+controlled by the `impl::pow<Base, Exp, Mod = void>` control struct, which is always
 specialized for integer and floating point types at a minimum.  Note that modular
 exponentiation with a negative exponent always fails with an `ArithmeticError`, as
 there is no general solution for the modular case.  Also, providing a modulus equal to
@@ -802,10 +802,14 @@ template <typename Base, typename Exp, typename Mod>
 
 
 /* A family of division operators with different rounding strategies, in order to
-facilitate inter-language communication where conventions may differ. */
+facilitate inter-language communication where conventions may differ.  Numeric
+algorithms that use these operators are guaranteed to behave consistently from one
+language to another. */
 struct divide {
     constexpr divide() noexcept = delete;
 
+    /* Divide two numbers, returning a floating point approximation of the true
+    quotient.  This is the rounding strategy used by Python's `/` operator. */
     template <typename L, typename R>
         requires (meta::invocable<impl::divide::true_<L, R>, const L&, const R&>)
     [[nodiscard]] static constexpr decltype(auto) true_(
@@ -819,6 +823,8 @@ struct divide {
         return impl::divide::true_<L, R>{}(lhs, rhs);
     }
 
+    /* Divide two numbers according to C++ semantics.  For integers, this performs
+    truncated division toward zero.  Otherwise, it is identical to "true" division. */
     template <typename L, typename R>
         requires (meta::invocable<impl::divide::cpp<L, R>, const L&, const R&>)
     [[nodiscard]] static constexpr decltype(auto) cpp(
@@ -832,6 +838,8 @@ struct divide {
         return impl::divide::cpp<L, R>{}(lhs, rhs);
     }
 
+    /* Divide two numbers, rounding the quotient toward negative infinity.  This is
+    the rounding strategy used by Python's `//` operator. */
     template <typename L, typename R>
         requires (meta::invocable<impl::divide::floor<L, R>, const L&, const R&>)
     [[nodiscard]] static constexpr decltype(auto) floor(
@@ -845,6 +853,7 @@ struct divide {
         return impl::divide::floor<L, R>{}(lhs, rhs);
     }
 
+    /* Divide two numbers, rounding the quotient toward positive infinity. */
     template <typename L, typename R>
         requires (meta::invocable<impl::divide::ceil<L, R>, const L&, const R&>)
     [[nodiscard]] static constexpr decltype(auto) ceil(
@@ -858,6 +867,7 @@ struct divide {
         return impl::divide::ceil<L, R>{}(lhs, rhs);
     }
 
+    /* Divide two numbers, rounding the quotient toward zero. */
     template <typename L, typename R>
         requires (meta::invocable<impl::divide::down<L, R>, const L&, const R&>)
     [[nodiscard]] static constexpr decltype(auto) down(
@@ -871,6 +881,7 @@ struct divide {
         return impl::divide::down<L, R>{}(lhs, rhs);
     }
 
+    /* Divide two numbers, rounding the quotient away from zero. */
     template <typename L, typename R>
         requires (meta::invocable<impl::divide::up<L, R>, const L&, const R&>)
     [[nodiscard]] static constexpr decltype(auto) up(
@@ -884,6 +895,8 @@ struct divide {
         return impl::divide::up<L, R>{}(lhs, rhs);
     }
 
+    /* Divide two numbers, rounding the quotient toward the nearest whole number, with
+    ties toward negative infinity. */
     template <typename L, typename R>
         requires (meta::invocable<impl::divide::half_floor<L, R>, const L&, const R&>)
     [[nodiscard]] static constexpr decltype(auto) half_floor(
@@ -897,6 +910,8 @@ struct divide {
         return impl::divide::half_floor<L, R>{}(lhs, rhs);
     }
 
+    /* Divide two numbers, rounding the quotient toward the nearest whole number, with
+    ties toward positive infinity. */
     template <typename L, typename R>
         requires (meta::invocable<impl::divide::half_ceil<L, R>, const L&, const R&>)
     [[nodiscard]] static constexpr decltype(auto) half_ceil(
@@ -910,6 +925,8 @@ struct divide {
         return impl::divide::half_ceil<L, R>{}(lhs, rhs);
     }
 
+    /* Divide two numbers, rounding the quotient toward the nearest whole number, with
+    ties toward zero. */
     template <typename L, typename R>
         requires (meta::invocable<impl::divide::half_down<L, R>, const L&, const R&>)
     [[nodiscard]] static constexpr decltype(auto) half_down(
@@ -923,6 +940,8 @@ struct divide {
         return impl::divide::half_down<L, R>{}(lhs, rhs);
     }
 
+    /* Divide two numbers, rounding the quotient toward the nearest whole number, with
+    ties away from zero. */
     template <typename L, typename R>
         requires (meta::invocable<impl::divide::half_up<L, R>, const L&, const R&>)
     [[nodiscard]] static constexpr decltype(auto) half_up(
@@ -936,6 +955,8 @@ struct divide {
         return impl::divide::half_up<L, R>{}(lhs, rhs);
     }
 
+    /* Divide two numbers, rounding the quotient toward the nearest whole number, with
+    ties toward the nearest even number. */
     template <typename L, typename R>
         requires (meta::invocable<impl::divide::half_even<L, R>, const L&, const R&>)
     [[nodiscard]] static constexpr decltype(auto) half_even(
@@ -949,6 +970,8 @@ struct divide {
         return impl::divide::half_even<L, R>{}(lhs, rhs);
     }
 
+    /* Divide two numbers, rounding the quotient toward the nearest whole number, with
+    ties toward the nearest odd number. */
     template <typename L, typename R>
         requires (meta::invocable<impl::divide::half_odd<L, R>, const L&, const R&>)
     [[nodiscard]] static constexpr decltype(auto) half_odd(
@@ -965,10 +988,15 @@ struct divide {
 
 
 /* A family of modulus operators with different rounding strategies, in order to
-facilitate inter-language communication where conventions may differ. */
+facilitate inter-language communication where conventions may differ.  Numeric
+algorithms that use these operators are guaranteed to behave consistently from one
+language to another. */
 struct modulo {
     constexpr modulo() noexcept = delete;
 
+    /* Divide two numbers, returning a floating point approximation of the remainder.
+    This will always be equivalent to the floating point error of the division (i.e.
+    negligible, but not necessarily zero). */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             lhs - divide::true_(lhs, rhs) * rhs;
@@ -982,6 +1010,9 @@ struct modulo {
         return lhs - divide::true_(lhs, rhs) * rhs;
     }
 
+    /* Divide two numbers, returning the remainder according to C++ semantics.  For
+    integers, this returns the remainder of truncated division toward zero.  Otherwise,
+    it is identical to a "true" modulus (i.e. floating point error) of a division. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             lhs - divide::cpp(lhs, rhs) * rhs;
@@ -995,6 +1026,8 @@ struct modulo {
         return lhs - divide::cpp(lhs, rhs) * rhs;
     }
 
+    /* Divide two numbers, rounding the quotient toward negative infinity and returning
+    the remainder.  This is the rounding strategy used by Python's `%` operator. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             lhs - divide::floor(lhs, rhs) * rhs;
@@ -1008,6 +1041,8 @@ struct modulo {
         return lhs - divide::floor(lhs, rhs) * rhs;
     }
 
+    /* Divide two numbers, rounding the quotient toward positive infinity and returning
+    the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             lhs - divide::ceil(lhs, rhs) * rhs;
@@ -1021,6 +1056,8 @@ struct modulo {
         return lhs - divide::ceil(lhs, rhs) * rhs;
     }
 
+    /* Divide two numbers, rounding the quotient toward zero and returning the
+    remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             lhs - divide::down(lhs, rhs) * rhs;
@@ -1034,6 +1071,8 @@ struct modulo {
         return lhs - divide::down(lhs, rhs) * rhs;
     }
 
+    /* Divide two numbers, rounding the quotient away from zero and returning the
+    remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             lhs - divide::up(lhs, rhs) * rhs;
@@ -1047,6 +1086,8 @@ struct modulo {
         return lhs - divide::up(lhs, rhs) * rhs;
     }
 
+    /* Divide two numbers, rounding the quotient toward the nearest whole number, with
+    ties toward negative infinity, and returning the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             lhs - divide::half_floor(lhs, rhs) * rhs;
@@ -1060,6 +1101,8 @@ struct modulo {
         return lhs - divide::half_floor(lhs, rhs) * rhs;
     }
 
+    /* Divide two numbers, rounding the quotient toward the nearest whole number, with
+    ties toward positive infinity, and returning the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             lhs - divide::half_ceil(lhs, rhs) * rhs;
@@ -1073,6 +1116,8 @@ struct modulo {
         return lhs - divide::half_ceil(lhs, rhs) * rhs;
     }
 
+    /* Divide two numbers, rounding the quotient toward the nearest whole number, with
+    ties toward zero, and returning the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             lhs - divide::half_down(lhs, rhs) * rhs;
@@ -1086,6 +1131,8 @@ struct modulo {
         return lhs - divide::half_down(lhs, rhs) * rhs;
     }
 
+    /* Divide two numbers, rounding the quotient toward the nearest whole number, with
+    ties away from zero, and returning the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             lhs - divide::half_up(lhs, rhs) * rhs;
@@ -1099,6 +1146,8 @@ struct modulo {
         return lhs - divide::half_up(lhs, rhs) * rhs;
     }
 
+    /* Divide two numbers, rounding the quotient toward the nearest whole number, with
+    ties toward the nearest even number. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             lhs - divide::half_even(lhs, rhs) * rhs;
@@ -1112,6 +1161,8 @@ struct modulo {
         return lhs - divide::half_even(lhs, rhs) * rhs;
     }
 
+    /* Divide two numbers, rounding the quotient toward the nearest whole number, with
+    ties toward the nearest odd number. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             lhs - divide::half_odd(lhs, rhs) * rhs;
@@ -1129,10 +1180,14 @@ struct modulo {
 
 /* A family of combined division and modulus operators with different rounding
 strategies, in order to facilitate inter-language communication where conventions may
-differ. */
+differ.  Numeric algorithms that use these operators are guaranteed to behave
+consistently from one language to another. */
 struct divmod {
     constexpr divmod() noexcept = delete;
 
+    /* Divide two numbers, returning both the quotient and remainder as floating point
+    approximations.  The remainder will always be equivalent to the floating point
+    error of the division (i.e. negligible, but not necessarily zero). */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             std::make_pair(
@@ -1153,6 +1208,10 @@ struct divmod {
         return std::make_pair(quotient, lhs - (quotient * rhs));
     }
 
+    /* Divide two numbers, returning both the quotient and remainder according to C++
+    semantics.  For integers, this returns the result of truncated division toward
+    zero.  Otherwise, it is identical to a "true" division and modulus (floating point
+    error). */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             std::make_pair(
@@ -1173,6 +1232,9 @@ struct divmod {
         return std::make_pair(quotient, lhs - (quotient * rhs));
     }
 
+    /* Divide two numbers, rounding the quotient toward negative infinity and returning
+    it along with the remainder.  This is the rounding strategy used by Python's
+    `divmod` operator. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             std::make_pair(
@@ -1193,6 +1255,8 @@ struct divmod {
         return std::make_pair(quotient, lhs - (quotient * rhs));
     }
 
+    /* Divide two numbers, rounding the quotient toward positive infinity and returning
+    it along with the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             std::make_pair(
@@ -1213,6 +1277,8 @@ struct divmod {
         return std::make_pair(quotient, lhs - (quotient * rhs));
     }
 
+    /* Divide two numbers, rounding the quotient toward zero and returning it along
+    with the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             std::make_pair(
@@ -1233,6 +1299,8 @@ struct divmod {
         return std::make_pair(quotient, lhs - (quotient * rhs));
     }
 
+    /* Divide two numbers, rounding the quotient away from zero and returning it along
+    with the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             std::make_pair(
@@ -1253,6 +1321,8 @@ struct divmod {
         return std::make_pair(quotient, lhs - (quotient * rhs));
     }
 
+    /* Divide two numbers, rounding the quotient toward the nearest whole number, with
+    ties toward negative infinity, and returning it along with the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             std::make_pair(
@@ -1273,6 +1343,8 @@ struct divmod {
         return std::make_pair(quotient, lhs - (quotient * rhs));
     }
 
+    /* Divide two numbers, rounding the quotient toward the nearest whole number, with
+    ties toward positive infinity, and returning it along with the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             std::make_pair(
@@ -1293,6 +1365,8 @@ struct divmod {
         return std::make_pair(quotient, lhs - (quotient * rhs));
     }
 
+    /* Divide two numbers, rounding the quotient toward the nearest whole number, with
+    ties toward zero, and returning it along with the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             std::make_pair(
@@ -1313,6 +1387,8 @@ struct divmod {
         return std::make_pair(quotient, lhs - (quotient * rhs));
     }
 
+    /* Divide two numbers, rounding the quotient toward the nearest whole number, with
+    ties away from zero, and returning it along with the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             std::make_pair(
@@ -1333,6 +1409,8 @@ struct divmod {
         return std::make_pair(quotient, lhs - (quotient * rhs));
     }
 
+    /* Divide two numbers, rounding the quotient toward the nearest whole number, with
+    ties toward the nearest even number, and returning it along with the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             std::make_pair(
@@ -1353,6 +1431,8 @@ struct divmod {
         return std::make_pair(quotient, lhs - (quotient * rhs));
     }
 
+    /* Divide two numbers, rounding the quotient toward the nearest whole number, with
+    ties toward the nearest odd number, and returning it along with the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
             std::make_pair(
@@ -1376,10 +1456,17 @@ struct divmod {
 
 
 /* A family of rounding operators with different strategies, in order to facilitate
-inter-language communication where conventions may differ. */
+inter-language communication where conventions may differ.  Numeric algorithms that
+use these operators are guaranteed to behave consistently from one language to
+another. */
 struct round {
     constexpr round() noexcept = delete;
 
+    /* Round a value to the specified number of digits as a power of 10, defaulting
+    to the ones place.  Positive digits count to the right of the decimal place, and
+    negative digits count to the left.  For "true" rounding, this effectively does
+    nothing, and simply corrects for possible floating point error with respect to
+    the digit count. */
     template <typename T>
         requires (requires(const T& obj) {
             impl::divide::true_<T, long long>{}(obj * 1LL, 1LL);
@@ -1399,6 +1486,12 @@ struct round {
         return impl::divide::true_<T, long long>{}(obj, factor) * factor;
     }
 
+    /* Round a value to the specified number of digits as a power of 10, defaulting
+    to the ones place.  Positive digits count to the right of the decimal place, and
+    negative digits count to the left.  For "cpp" rounding, this only appreciably
+    impacts integer values, in which case it is identical to rounding down (toward
+    zero) by the digit count.  Otherwise, it is a simple floating point error
+    correction, similar to "true" rounding. */
     template <typename T>
         requires (requires(const T& obj) {
             impl::divide::cpp<T, long long>{}(obj * 1LL, 1LL);
@@ -1418,6 +1511,10 @@ struct round {
         return impl::divide::cpp<T, long long>{}(obj, factor) * factor;
     }
 
+    /* Round a value to the specified number of digits as a power of 10, defaulting
+    to the ones place.  Positive digits count to the right of the decimal place, and
+    negative digits count to the left.  Results are rounded toward negative infinity,
+    as if floor dividing by a power of 10, and then rescaling by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
             impl::divide::floor<T, long long>{}(obj * 1LL, 1LL);
@@ -1437,6 +1534,10 @@ struct round {
         return impl::divide::floor<T, long long>{}(obj, factor) * factor;
     }
 
+    /* Round a value to the specified number of digits as a power of 10, defaulting
+    to the ones place.  Positive digits count to the right of the decimal place, and
+    negative digits count to the left.  Results are rounded toward positive infinity,
+    as if ceil dividing by a power of 10, and then rescaling by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
             impl::divide::ceil<T, long long>{}(obj * 1LL, 1LL);
@@ -1456,6 +1557,10 @@ struct round {
         return impl::divide::ceil<T, long long>{}(obj, factor) * factor;
     }
 
+    /* Round a value to the specified number of digits as a power of 10, defaulting
+    to the ones place.  Positive digits count to the right of the decimal place, and
+    negative digits count to the left.  Results are rounded toward zero, as if
+    dividing down by a power of 10, and then rescaling by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
             impl::divide::down<T, long long>{}(obj * 1LL, 1LL);
@@ -1475,6 +1580,10 @@ struct round {
         return impl::divide::down<T, long long>{}(obj, factor) * factor;
     }
 
+    /* Round a value to the specified number of digits as a power of 10, defaulting
+    to the ones place.  Positive digits count to the right of the decimal place, and
+    negative digits count to the left.  Results are rounded away from zero, as if
+    dividing up by a power of 10, and then rescaling by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
             impl::divide::up<T, long long>{}(obj * 1LL, 1LL);
@@ -1494,6 +1603,11 @@ struct round {
         return impl::divide::up<T, long long>{}(obj, factor) * factor;
     }
 
+    /* Round a value to the specified number of digits as a power of 10, defaulting
+    to the ones place.  Positive digits count to the right of the decimal place, and
+    negative digits count to the left.  Results are rounded toward the nearest whole
+    number, as if performing half-floor division by a power of 10, and then rescaling
+    by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
             impl::divide::half_floor<T, long long>{}(obj * 1LL, 1LL);
@@ -1513,6 +1627,11 @@ struct round {
         return impl::divide::half_floor<T, long long>{}(obj, factor) * factor;
     }
 
+    /* Round a value to the specified number of digits as a power of 10, defaulting
+    to the ones place.  Positive digits count to the right of the decimal place, and
+    negative digits count to the left.  Results are rounded toward the nearest whole
+    number, as if performing half-ceiling division by a power of 10, and then rescaling
+    by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
             impl::divide::half_ceil<T, long long>{}(obj * 1LL, 1LL);
@@ -1532,6 +1651,11 @@ struct round {
         return impl::divide::half_ceil<T, long long>{}(obj, factor) * factor;
     }
 
+    /* Round a value to the specified number of digits as a power of 10, defaulting
+    to the ones place.  Positive digits count to the right of the decimal place, and
+    negative digits count to the left.  Results are rounded toward the nearest whole
+    number, as if performing half-down division by a power of 10, and then rescaling
+    by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
             impl::divide::half_down<T, long long>{}(obj * 1LL, 1LL);
@@ -1551,6 +1675,11 @@ struct round {
         return impl::divide::half_down<T, long long>{}(obj, factor) * factor;
     }
 
+    /* Round a value to the specified number of digits as a power of 10, defaulting
+    to the ones place.  Positive digits count to the right of the decimal place, and
+    negative digits count to the left.  Results are rounded toward the nearest whole
+    number, as if performing half-up division by a power of 10, and then rescaling
+    by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
             impl::divide::half_up<T, long long>{}(obj * 1LL, 1LL);
@@ -1570,6 +1699,11 @@ struct round {
         return impl::divide::half_up<T, long long>{}(obj, factor) * factor;
     }
 
+    /* Round a value to the specified number of digits as a power of 10, defaulting
+    to the ones place.  Positive digits count to the right of the decimal place, and
+    negative digits count to the left.  Results are rounded toward the nearest whole
+    number, as if performing half-even division by a power of 10, and then rescaling
+    by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
             impl::divide::half_even<T, long long>{}(obj * 1LL, 1LL);
@@ -1589,6 +1723,11 @@ struct round {
         return impl::divide::half_even<T, long long>{}(obj, factor) * factor;
     }
 
+    /* Round a value to the specified number of digits as a power of 10, defaulting
+    to the ones place.  Positive digits count to the right of the decimal place, and
+    negative digits count to the left.  Results are rounded toward the nearest whole
+    number, as if performing half-odd division by a power of 10, and then rescaling
+    by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
             impl::divide::half_odd<T, long long>{}(obj * 1LL, 1LL);
@@ -1607,7 +1746,6 @@ struct round {
         long long factor = pow(10LL, -digits);
         return impl::divide::half_odd<T, long long>{}(obj, factor) * factor;
     }
-
 };
 
 

@@ -1566,19 +1566,6 @@ namespace meta {
 
     }
 
-    /// TODO: this can probably be eliminated with a refactor of the Python iterator
-    /// interface
-    template <iterable Container>
-    struct iter_traits {
-        using begin = begin_type<Container>;
-        using end = end_type<Container>;
-        using container = std::conditional_t<
-            lvalue<Container>,
-            void,
-            remove_reference<Container>
-        >;
-    };
-
     ////////////////////////
     ////    INDEXING    ////
     ////////////////////////
@@ -2974,17 +2961,6 @@ namespace meta {
 
     }
 
-}
-
-
-/// TODO: maybe just expose a separate swap() overload per container?  This messes
-/// with a `using namespace bertrand` directive.
-
-
-/* ADL-friendly swap method.  Equivalent to calling `l.swap(r)` as a member method. */
-template <typename T> requires (requires(T& l, T& r) { {l.swap(r)} -> meta::is_void; })
-constexpr void swap(T& l, T& r) noexcept(noexcept(l.swap(r))) {
-    l.swap(r);
 }
 
 

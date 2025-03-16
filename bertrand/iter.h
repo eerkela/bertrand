@@ -3,7 +3,6 @@
 
 #include "bertrand/common.h"
 #include "bertrand/except.h"
-#include "bertrand/sort.h"
 
 
 namespace bertrand {
@@ -518,15 +517,6 @@ namespace impl {
 
         [[nodiscard]] constexpr const_iterator cend() const noexcept {
             return {m_data, m_indices.stop, m_indices.step};
-        }
-
-        /// TODO: contains(), count(), index()
-
-        template <impl::sortable<contiguous_slice> Less = std::less<>>
-        constexpr void sort(Less&& less_than = {}) noexcept(
-            noexcept(impl::powersort{}(*this, std::forward<Less>(less_than)))
-        ) {
-            impl::powersort{}(*this, std::forward<Less>(less_than));
         }
 
         template <typename V>

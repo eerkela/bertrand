@@ -4,6 +4,7 @@
 #include "bertrand/common.h"
 #include "bertrand/except.h"
 #include "bertrand/math.h"
+#include "bertrand/iter.h"
 #include "bertrand/allocate.h"
 
 
@@ -225,7 +226,7 @@ namespace impl {
                     Begin& unsorted,
                     size_t size
                 ) {
-                    size_t limit = std::min(start + min_run, size);
+                    size_t limit = min(start + min_run, size);
 
                     // if the iterator is bidirectional, then we can rotate in-place
                     // from right to left
@@ -505,7 +506,7 @@ namespace impl {
                             for (size_t i = r.start; i < r.stop; ++i) {
                                 new (end[I]++) value_type(std::move(*r.iter++));
                             }
-                            smallest = std::min(smallest, r.stop - r.start);
+                            smallest = min(smallest, r.stop - r.start);
                             std::forward<decltype(self)>(self).template operator()<I + 1>();
                         }
                     }();
@@ -625,7 +626,7 @@ namespace impl {
                     // be done before another boundscheck must be performed.
                     smallest = std::numeric_limits<size_t>::max();
                     for (size_t i = 0; i < I; ++i) {
-                        smallest = std::min(smallest, size_t(end[i] - begin[i]));
+                        smallest = min(smallest, size_t(end[i] - begin[i]));
                     }
                 }
 
@@ -645,7 +646,7 @@ namespace impl {
 
                         // otherwise, record the minimum length
                         } else {
-                            smallest = std::min(smallest, len);
+                            smallest = min(smallest, len);
                             if (i < I - 2 - (I % 2)) {
                                 internal[i] = N;  // reset internal nodes to sentinel
                             }
