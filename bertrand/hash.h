@@ -1,5 +1,5 @@
-#ifndef BERTRAND_STATIC_MAP_H
-#define BERTRAND_STATIC_MAP_H
+#ifndef BERTRAND_HASH_H
+#define BERTRAND_HASH_H
 
 #include "bertrand/static_str.h"
 
@@ -1519,4 +1519,4 @@ namespace std {
 }
 
 
-#endif  // BERTRAND_STATIC_MAP_H
+#endif

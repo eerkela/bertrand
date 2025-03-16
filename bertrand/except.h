@@ -1,7 +1,6 @@
 #ifndef BERTRAND_EXCEPT_H
 #define BERTRAND_EXCEPT_H
 
-
 #include "bertrand/common.h"
 
 #include <cpptrace/cpptrace.hpp>
