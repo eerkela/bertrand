@@ -820,19 +820,19 @@ public:
                 return copy;
             }
 
-            friend constexpr bool operator==(const Iterator& self, sentinel) noexcept {
+            friend constexpr bool operator==(const Iterator& self, impl::sentinel) noexcept {
                 return self.index >= self.last;
             }
 
-            friend constexpr bool operator==(sentinel, const Iterator& self) noexcept {
+            friend constexpr bool operator==(impl::sentinel, const Iterator& self) noexcept {
                 return self.index >= self.last;
             }
 
-            friend constexpr bool operator!=(const Iterator& self, sentinel) noexcept {
+            friend constexpr bool operator!=(const Iterator& self, impl::sentinel) noexcept {
                 return self.index < self.last;
             }
 
-            friend constexpr bool operator!=(sentinel, const Iterator& self) noexcept {
+            friend constexpr bool operator!=(impl::sentinel, const Iterator& self) noexcept {
                 return self.index < self.last;
             }
         };
@@ -841,7 +841,7 @@ public:
             return {self, first, last};
         }
 
-        sentinel end() const noexcept {
+        impl::sentinel end() const noexcept {
             return {};
         }
     };

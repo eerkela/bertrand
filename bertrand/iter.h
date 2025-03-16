@@ -8,14 +8,6 @@
 namespace bertrand {
 
 
-/// TODO: min, max, any, all require a tuple with at least one item, and possibly error
-/// for empty containers?
-
-
-/* A generic sentinel type to simplify iterator implementations. */
-struct sentinel {};
-
-
 /* A convenience class describing the indices provided to a slice-style subscript
 operator.  Generally, an instance of this class will be implicitly constructed using an
 initializer list to condense the syntax and provide compile-time guarantees when it
@@ -112,6 +104,9 @@ struct slice {
 
 
 namespace impl {
+
+    /* A generic sentinel type to simplify iterator implementations. */
+    struct sentinel {};
 
     /* Apply python-style wraparound to a given index, throwing an `IndexError` if it
     is out of bounds after normalizing. */
@@ -618,6 +613,8 @@ namespace impl {
         bertrand::slice::normalized m_indices;
     };
 
+    /* Check whether a `<` operator can be broadcasted over a set of types as part
+    of a `min()`, `max()`, or `minmax()` operation. */
     template <typename... Ts>
     constexpr bool broadcast_lt = true;
     template <typename T, typename... Ts>
@@ -642,6 +639,8 @@ namespace impl {
     )
     constexpr bool nothrow_broadcast_lt<T, Ts...> = nothrow_broadcast_lt<Ts...>;
 
+    /* Do the same for the contents of a tuple-like container by first accumulating
+    the types yielded by series of `get<I>(T)` calls up to `std::tuple_size<T>`. */
     template <meta::tuple_like T, size_t I = 0, typename... Ts>
     constexpr bool tuple_broadcast_lt = broadcast_lt<Ts...>;
     template <meta::tuple_like T, size_t I, typename... Ts>
@@ -656,18 +655,23 @@ namespace impl {
     constexpr bool tuple_nothrow_broadcast_lt<T, I, Ts...> =
         tuple_nothrow_broadcast_lt<T, I + 1, Ts..., meta::get_type<T, I>>;
 
+
+    /* Check whether the tuple type at index `I` are truth-testable as part of an
+    `any()` or `all()` operation. */
     template <size_t I, typename T>
-    concept broadcast_any_all = I >= meta::tuple_size<T> || (
+    concept broadcast_truthy = I >= meta::tuple_size<T> || (
         meta::has_get<T, I> &&
         meta::explicitly_convertible_to<meta::get_type<T, I>, bool>
     );
 
     template <size_t I, typename T>
-    concept nothrow_broadcast_any_all = I >= meta::tuple_size<T> || (
+    concept nothrow_broadcast_truthy = I >= meta::tuple_size<T> || (
         meta::nothrow::has_get<T, I> &&
         meta::nothrow::explicitly_convertible_to<meta::nothrow::get_type<T, I>, bool>
     );
 
+    /* Check whether the tuple type at index `I` is less-than comparable to the given
+    intermediate result type as part of a `min()`, `max()`, or `minmax()` operation. */
     template <size_t I, typename T, typename Result>
     concept broadcast_min_max = I >= meta::tuple_size<T> || (
         meta::has_get<T, I> &&
@@ -685,8 +689,23 @@ namespace impl {
         >
     );
 
-    template <size_t I = 0, meta::tuple_like T> requires (broadcast_any_all<I, T>)
-    constexpr bool broadcast_any(T&& t) noexcept(nothrow_broadcast_any_all<I, T>) {
+    /* Check whether the intermediate result is addable to the tuple type at index `I`
+    as part of a `sum()` operation.  */
+    template <size_t I, typename T, typename Result>
+    concept broadcast_plus = I >= meta::tuple_size<T> || (
+        meta::has_get<T, I> &&
+        meta::has_add<Result, meta::get_type<T, I>>
+    );
+
+    template <size_t I, typename T, typename Result>
+    concept nothrow_broadcast_plus = I >= meta::tuple_size<T> || (
+        meta::nothrow::has_get<T, I> &&
+        meta::nothrow::has_add<Result, meta::nothrow::get_type<T, I>>
+    );
+
+    /* Implement `any()` for tuples. */
+    template <size_t I = 0, meta::tuple_like T> requires (broadcast_truthy<I, T>)
+    constexpr bool broadcast_any(T&& t) noexcept(nothrow_broadcast_truthy<I, T>) {
         if constexpr (I < std::tuple_size_v<meta::unqualify<T>>) {
             if constexpr (meta::has_member_get<T, I>) {
                 if (std::forward<T>(t).template get<I>(t)) {
@@ -707,8 +726,9 @@ namespace impl {
         }
     }
 
-    template <size_t I = 0, meta::tuple_like T> requires (broadcast_any_all<I, T>)
-    constexpr bool broadcast_all(T&& t) noexcept(nothrow_broadcast_any_all<I, T>) {
+    /* Implement `all()` for tuples. */
+    template <size_t I = 0, meta::tuple_like T> requires (broadcast_truthy<I, T>)
+    constexpr bool broadcast_all(T&& t) noexcept(nothrow_broadcast_truthy<I, T>) {
         if constexpr (I < std::tuple_size_v<meta::unqualify<T>>) {
             if constexpr (meta::has_member_get<T, I>) {
                 if (!std::forward<T>(t).template get<I>(t)) {
@@ -729,7 +749,8 @@ namespace impl {
         }
     }
 
-    template <size_t I = 0, meta::tuple_like T, typename Result>
+    /* Implement `max()` for tuples, using `out` as an intermediate result. */
+    template <size_t I = 1, meta::tuple_like T, typename Result>
         requires (broadcast_min_max<I, T, Result>)
     constexpr meta::common_tuple_type<T> broadcast_max(T&& t, Result&& out) noexcept(
         nothrow_broadcast_min_max<I, T, Result>
@@ -766,6 +787,8 @@ namespace impl {
         }
     }
 
+    /* Implement `max()` for tuples, initializing the intermediate result to the
+    first value in the tuple. */
     template <meta::tuple_like T> requires (meta::tuple_size<T> > 0)
     constexpr meta::common_tuple_type<T> broadcast_max(T&& t) noexcept(
         meta::nothrow::has_get<T, 0> &&
@@ -792,7 +815,8 @@ namespace impl {
         }
     }
 
-    template <size_t I = 0, meta::tuple_like T, typename Result>
+    /* Implement `min()` for tuples, using `out` as an intermediate result. */
+    template <size_t I = 1, meta::tuple_like T, typename Result>
         requires (broadcast_min_max<I, T, Result>)
     constexpr meta::common_tuple_type<T> broadcast_min(T&& t, Result&& out) noexcept(
         nothrow_broadcast_min_max<I, T, Result>
@@ -829,6 +853,8 @@ namespace impl {
         }
     }
 
+    /* Implement `min()` for tuples, initializing the intermediate result to the
+    first value in the tuple. */
     template <meta::tuple_like T> requires (meta::tuple_size<T> > 0)
     constexpr meta::common_tuple_type<T> broadcast_min(T&& t) noexcept(
         meta::nothrow::has_get<T, 0> &&
@@ -855,7 +881,9 @@ namespace impl {
         }
     }
 
-    template <size_t I = 0, meta::tuple_like T, typename Min, typename Max>
+    /* Implement `minmax()` for tuples, using `min` and `max` as intermediate
+    results. */
+    template <size_t I = 1, meta::tuple_like T, typename Min, typename Max>
         requires (broadcast_min_max<I, T, Min> && broadcast_min_max<I, T, Max>)
     constexpr auto broadcast_minmax(T&& t, Min&& min, Max&& max) noexcept(
         nothrow_broadcast_min_max<I, T, Min> &&
@@ -918,6 +946,8 @@ namespace impl {
         }
     }
 
+    /* Implement `minmax()` for tuples, initializing the intermediate results to
+    the first value in the tuple. */
     template <meta::tuple_like T> requires (meta::tuple_size<T> > 0)
     constexpr auto broadcast_minmax(T&& t) noexcept(
         meta::nothrow::has_get<T, 0> &&
@@ -943,6 +973,65 @@ namespace impl {
             return broadcast_minmax(
                 std::forward<T>(t),
                 std::get<0>(std::forward<T>(t)),
+                std::get<0>(std::forward<T>(t))
+            );
+        }
+    }
+
+    /* Implement `sum()` for tuples, using `out` as an intermediate result. */
+    template <size_t I = 1, meta::tuple_like T, typename Result>
+        requires (broadcast_plus<I, T, Result>)
+    constexpr auto broadcast_sum(T&& t, Result&& result) noexcept(
+        nothrow_broadcast_plus<I, T, Result>
+    ) {
+        if constexpr (I < meta::tuple_size<T>) {
+            if constexpr (meta::has_member_get<T, I>) {
+                return broadcast_sum<I + 1>(
+                    std::forward<T>(t),
+                    std::forward<Result>(result) +
+                        std::forward<T>(t).template get<I>(t)
+                );
+            } else if constexpr (meta::has_adl_get<T, I>) {
+                return broadcast_sum<I + 1>(
+                    std::forward<T>(t),
+                    std::forward<Result>(result) +
+                        get<I>(std::forward<T>(t))
+                );
+            } else {
+                return broadcast_sum<I + 1>(
+                    std::forward<T>(t),
+                    std::forward<Result>(result) +
+                        std::get<I>(std::forward<T>(t))
+                );
+            }
+        } else {
+            return std::forward<Result>(result);
+        }
+    }
+
+    /* Implement `sum()` for tuples, initializing the intermediate result to the
+    first value in the tuple. */
+    template <meta::tuple_like T> requires (meta::tuple_size<T> > 0)
+    constexpr decltype(auto) broadcast_sum(T&& t) noexcept(
+        meta::nothrow::has_get<T, 0> &&
+        noexcept(broadcast_sum(
+            std::forward<T>(t),
+            std::declval<meta::get_type<T, 0>>()
+        ))
+    ) {
+        if constexpr (meta::has_member_get<T, 0>) {
+            return broadcast_sum(
+                std::forward<T>(t),
+                std::forward<T>(t).template get<0>(t)
+            );
+        } else if constexpr (meta::has_adl_get<T, 0>) {
+            return broadcast_sum(
+                std::forward<T>(t),
+                get<0>(std::forward<T>(t))
+            );
+        } else {
+            return broadcast_sum(
+                std::forward<T>(t),
                 std::get<0>(std::forward<T>(t))
             );
         }
@@ -1200,12 +1289,18 @@ template <meta::tuple_like T>
 
 
 /* Get the minimum of a sequence of values as an input range.  This is equivalent
-to a `std::ranges::min()` call under the hood. */
+to a `std::ranges::min()` call under the hood, but explicitly checks for an empty
+range and throws a `ValueError`, rather than invoking undefined behavior. */
 template <meta::iterable T>
     requires (requires(T r) { std::ranges::min(std::forward<T>(r)); })
 [[nodiscard]] constexpr decltype(auto) min(T&& r) noexcept(
-    noexcept(std::ranges::min(std::forward<T>(r)))
+    !DEBUG && noexcept(std::ranges::min(std::forward<T>(r)))
 ) {
+    if constexpr (DEBUG) {
+        if (std::ranges::empty(r)) {
+            throw ValueError("empty range has no max()");
+        }
+    }
     return std::ranges::min(std::forward<T>(r));
 }
 
@@ -1269,12 +1364,18 @@ template <meta::tuple_like T>
 
 
 /* Get the maximum of a sequence of values as an input range.  This is equivalent
-to a `std::ranges::max()` call under the hood. */
+to a `std::ranges::max()` call under the hood, but explicitly checks for an empty
+range and throws a `ValueError`, rather than invoking undefined behavior. */
 template <meta::iterable T>
     requires (requires(T r) { std::ranges::max(std::forward<T>(r)); })
 [[nodiscard]] constexpr decltype(auto) max(T&& r) noexcept(
-    noexcept(std::ranges::max(std::forward<T>(r)))
+    !DEBUG && noexcept(std::ranges::max(std::forward<T>(r)))
 ) {
+    if constexpr (DEBUG) {
+        if (std::ranges::empty(r)) {
+            throw ValueError("empty range has no max()");
+        }
+    }
     return std::ranges::max(std::forward<T>(r));
 }
 
@@ -1350,17 +1451,91 @@ template <meta::tuple_like T>
 
 
 /* Get the minimum and maximum of a sequence of values as an input range.  This is
-equivalent to a `std::ranges::minmax()` call under the hood. */
+equivalent to a `std::ranges::minmax()` call under the hood, but explicitly checks for
+an empty range and throws a `ValueError`, rather than invoking undefined behavior. */
 template <meta::iterable T>
     requires (requires(T r) { std::ranges::minmax(std::forward<T>(r)); })
 [[nodiscard]] constexpr decltype(auto) minmax(T&& r) noexcept(
-    noexcept(std::ranges::minmax(std::forward<T>(r)))
+    !DEBUG && noexcept(std::ranges::minmax(std::forward<T>(r)))
 ) {
+    if constexpr (DEBUG) {
+        if (std::ranges::empty(r)) {
+            throw ValueError("empty range has no min() or max()");
+        }
+    }
     return std::ranges::minmax(std::forward<T>(r));
 }
 
 
-/// TODO: sum()
+/* Calculate the sum of an arbitrary list of values that can be added from left to
+right.  This effectively generates an O(n) sequence of `+` operators between each
+argument, equivalent to a fold expression. */
+template <typename... Ts>
+    requires (
+        sizeof...(Ts) > 1 &&
+        requires(Ts... args) { (std::forward<Ts>(args) + ...); }
+    )
+[[nodiscard]] constexpr decltype(auto) sum(Ts&&... args) noexcept(
+    noexcept((std::forward<Ts>(args) + ...))
+) {
+    return (std::forward<Ts>(args) + ...);
+}
+
+
+/* Calculate the sum of the values stored within a tuple-like container.  This
+effectively generates an O(n) sequence of `+` operators between each value at compile
+time, equivalent to a fold expression over the tuple's contents. */
+template <meta::tuple_like T>
+    requires (
+        !meta::iterable<T> &&
+        meta::tuple_size<T> > 0 &&
+        requires(T t) {impl::broadcast_sum(std::forward<T>(t)); }
+    )
+[[nodiscard]] constexpr auto sum(T&& t) noexcept(
+    noexcept(impl::broadcast_sum(std::forward<T>(t)))
+) {
+    return impl::broadcast_sum(std::forward<T>(t));
+}
+
+
+/* Calculate the sum of a sequence of values as an input range.  This is equivalent
+to a `std::ranges::fold_left()` call under the hood, but uses the first value in the
+range as an initializer, and throws a `ValueError` if it is empty.  Use the full
+ranges algorithm if you need to set an explicit start value. */
+template <meta::iterable T>
+    requires (requires(T r) {
+        std::ranges::fold_left(
+            std::ranges::begin(r),
+            std::ranges::end(r),
+            *std::ranges::begin(r),
+            std::plus<>{}
+        );
+    })
+[[nodiscard]] constexpr decltype(auto) sum(T&& r) noexcept(
+    !DEBUG &&
+    noexcept(std::ranges::fold_left(
+        std::ranges::begin(r),
+        std::ranges::end(r),
+        *std::ranges::begin(r),
+        std::plus<>{}
+    ))
+) {
+    auto it = std::ranges::begin(r);
+    auto end = std::ranges::end(r);
+    if constexpr (DEBUG) {
+        if (it == end) {
+            throw ValueError("cannot sum an empty range");
+        }
+    }
+    auto init = *it;
+    ++it;
+    return std::ranges::fold_left(
+        it,
+        end,
+        std::move(init),
+        std::plus<>{}
+    );
+}
 
 
 }

@@ -1208,10 +1208,10 @@ namespace meta {
 
         template <typename T, size_t N>
         struct structured {
-            template <size_t I>
+            template <size_t I, typename Dummy = void>
             static constexpr bool _value = meta::has_get<T, I - 1> && _value<I - 1>;
-            template <>
-            static constexpr bool _value<0> = true;
+            template <typename Dummy>
+            static constexpr bool _value<0, Dummy> = true;
 
             static constexpr bool value = _value<N>;
         };
