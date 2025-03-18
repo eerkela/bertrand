@@ -437,6 +437,9 @@ namespace meta {
     template <typename T>
     concept string_literal = requires(T t) { []<size_t N>(const char(&)[N]){}(t); };
 
+    template <string_literal T>
+    constexpr size_t string_literal_size = sizeof(T) - 1;
+
     template <typename T>
     concept raw_array = std::is_array_v<remove_reference<T>>;
 

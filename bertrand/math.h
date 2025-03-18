@@ -67,14 +67,14 @@ namespace impl {
     };
 
     template <_check_for_zero_division T>
-    static constexpr void check_for_zero_division(const T& rhs) {
+    constexpr void check_for_zero_division(const T& rhs) {
         if (rhs == 0) {
             throw ZeroDivisionError();
         }
     }
 
     template <typename T> requires (!_check_for_zero_division<T>)
-    static constexpr void check_for_zero_division(const T& rhs) noexcept {}
+    constexpr void check_for_zero_division(const T& rhs) noexcept {}
 
     template <typename T>
     concept _check_for_negative_exponent = DEBUG && requires(const T& rhs) {
@@ -82,7 +82,7 @@ namespace impl {
     };
 
     template <_check_for_negative_exponent T>
-    static constexpr void check_for_negative_exponent(const T& rhs) {
+    constexpr void check_for_negative_exponent(const T& rhs) {
         if (rhs < 0) {
             throw ArithmeticError(
                 "Negative exponent not supported for modular exponentiation"
@@ -91,7 +91,7 @@ namespace impl {
     }
 
     template <typename T> requires (!_check_for_negative_exponent<T>)
-    static constexpr void check_for_negative_exponent(const T& rhs) noexcept {}
+    constexpr void check_for_negative_exponent(const T& rhs) noexcept {}
 
     template <typename T>
     struct abs {
@@ -348,6 +348,24 @@ namespace impl {
         }
         return 2;  // only returned for n < 2
     }
+
+    template <typename T>
+    struct bit_view;
+    template <typename T> requires (sizeof(T) == 1)
+    struct bit_view<T> { using type = uint8_t; };
+    template <typename T> requires (sizeof(T) == 2)
+    struct bit_view<T> { using type = uint16_t; };
+    template <typename T> requires (sizeof(T) == 4)
+    struct bit_view<T> { using type = uint32_t; };
+    template <typename T> requires (sizeof(T) == 8)
+    struct bit_view<T> { using type = uint64_t; };
+
+    /* Get the state of the sign bit (0 or 1) for a floating point number.  1 indicates
+    a negative number. */
+    inline constexpr bool sign_bit(double num) noexcept {
+        using Int = bit_view<double>::type;
+        return std::bit_cast<Int>(num) >> (8 * sizeof(double) - 1);
+    };
 
     namespace divide {
 
