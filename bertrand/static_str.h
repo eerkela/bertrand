@@ -4,7 +4,6 @@
 #include "bertrand/common.h"
 #include "bertrand/math.h"
 #include "bertrand/iter.h"
-#include <compare>
 
 
 // required for demangling
@@ -60,7 +59,7 @@ deprecated, and the methods moved directly to `static_str`.  For the foreseeable
 future, however, a helper of this form is the only way to provide a straightforward
 Python interface at compile time. */
 template <static_str self>
-struct string_methods;
+struct string_wrapper;
 
 
 /* A list-like container for a sequence of template strings.
@@ -76,12 +75,23 @@ template <static_str... Strings>
 struct string_list;
 
 
+/* CTAD guide allows string literals of any bound to be used as initializer to
+`static_str`, and therefore also as template parameters. */
 template <size_t N>
 static_str(const char(&)[N]) -> static_str<N - 1>;
 
 
+/* CTAD guide allows string wrappers to be implicitly converted to `static_str` without
+user intervention. */
 template <auto S>
-static_str(const string_methods<S>&) -> static_str<S.size()>;
+static_str(string_wrapper<S>) -> static_str<S.size()>;
+
+
+/* A user-defined literal operator that converts a string literal directly to a
+`string_wrapper` object, which naturally decays to `static_str` and has a full Python
+string interface. */
+template <static_str self>
+consteval string_wrapper<self> operator""_str() noexcept { return {}; }
 
 
 namespace impl {
@@ -213,7 +223,7 @@ namespace meta {
 }
 
 
-template <size_t N = 0>
+template <size_t N>
 struct static_str : impl::static_str_tag {
     using value_type = const char;
     using reference = value_type&;
@@ -243,7 +253,7 @@ private:
     template <size_t M>
     friend struct bertrand::static_str;
     template <bertrand::static_str self>
-    friend struct bertrand::string_methods;
+    friend struct bertrand::string_wrapper;
 
     template <long long num, size_type base>
     static constexpr size_type _int_length = [] {
@@ -284,11 +294,6 @@ private:
     static constexpr bool is_format_string = false;
     template <typename... Args>
     static constexpr bool is_format_string<std::basic_format_string<char, Args...>> = true;
-
-    template <index_type I>
-    static constexpr bool in_bounds =
-        (I + index_type(N * (I < 0)) >= index_type(0)) &&
-        (I + index_type(N * (I < 0))) < index_type(N);
 
 public:
 
@@ -426,22 +431,43 @@ public:
     /* Get the character at index `I`, where `I` is known at compile time.  Applies
     Python-style wraparound for negative indices, and fails to compile if the index is
     out of bounds after normalization. */
-    template <index_type I> requires (in_bounds<I>)
+    template <index_type I> requires (impl::valid_index<size(), I>())
     [[nodiscard]] consteval char get() const noexcept {
-        return buffer[I + index_type(N * (I < 0))];
+        return buffer[impl::normalize_index<size(), I>()];
+    }
+
+    /* Get a slice from the string at compile time.  Takes an explicitly-initialized
+    `bertrand::slice` pack describing the start, stop, and step indices.  Each index
+    can be omitted by initializing it to std::nullopt, which is equivalent to an empty
+    slice index in Python.  Applies Python-style wraparound to both `start` and
+    `stop`. */
+    template <bertrand::slice s>
+    [[nodiscard]] consteval auto get() const noexcept {
+        constexpr auto indices = s.normalize(ssize());
+        static_str<indices.length> result;
+        for (index_type i = 0; i < indices.length; ++i) {
+            result.buffer[i] = buffer[indices.start + i * indices.step];
+        }
+        result.buffer[indices.length] = '\0';
+        return result;
     }
 
     /* Access a character within the underlying buffer.  Applies Python-style
     wraparound for negative indices, and throws an `IndexError` if the index is out of
     bounds after normalization. */
-    [[nodiscard]] consteval char operator[](index_type i) const {
-        return buffer[impl::normalize_index(size(), i)];
+    [[nodiscard]] constexpr iterator operator[](index_type i) const noexcept {
+        i += ssize() * (i < 0);
+        if (i < 0 || i >= ssize()) {
+            return end();
+        }
+        return {buffer + i};
     }
 
-    /* Slice operator utilizing an initializer list.  Up to 3 (possibly negative)
-    indices may be supplied according to Python semantics, with `std::nullopt` equating
-    to `None`. */
-    [[nodiscard]] consteval slice operator[](bertrand::slice s) const {
+    /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
+    describing the start, stop, and step indices.  Each index can be omitted by
+    initializing it to `std::nullopt`, which is equivalent to an empty slice index in
+    Python.  Applies Python-style wraparound to both `start` and `stop`. */
+    [[nodiscard]] constexpr slice operator[](bertrand::slice s) const noexcept {
         return {buffer, s.normalize(ssize())};
     }
 
@@ -457,13 +483,13 @@ public:
 
     /* Concatenate two static strings at compile time. */
     template <auto S>
-    [[nodiscard]] consteval auto operator+(string_methods<S>) const noexcept {
+    [[nodiscard]] consteval auto operator+(string_wrapper<S>) const noexcept {
         return operator+(S);
     }
 
     /* Concatenate a static string with a string literal at compile time. */
     template <auto M>
-    [[nodiscard]] friend consteval auto operator+(
+    [[nodiscard]] friend constexpr auto operator+(
         const static_str<N>& self,
         const char(&other)[M]
     ) noexcept {
@@ -476,7 +502,7 @@ public:
 
     /* Concatenate a static string with a string literal at compile time. */
     template <auto M>
-    [[nodiscard]] friend consteval auto operator+(
+    [[nodiscard]] friend constexpr auto operator+(
         const char(&other)[M],
         const static_str<N>& self
     ) noexcept {
@@ -548,9 +574,7 @@ public:
 
     /* Lexicographically compare two static strings at compile time. */
     template <auto M>
-    [[nodiscard]] consteval std::strong_ordering operator<=>(
-        const static_str<M>& other
-    ) const noexcept {
+    [[nodiscard]] consteval auto operator<=>(const static_str<M>& other) const noexcept {
         return std::lexicographical_compare_three_way(
             buffer,
             buffer + N,
@@ -561,15 +585,13 @@ public:
 
     /* Lexicographically compare a static string to a string methods wrapper. */
     template <auto S>
-    [[nodiscard]] consteval std::strong_ordering operator<=>(
-        const string_methods<S>& other
-    ) const noexcept {
+    [[nodiscard]] consteval auto operator<=>(string_wrapper<S>) const noexcept {
         return operator<=>(S);
     }
 
     /* Lexicographically compare a static string against a string literal. */
     template <auto M>
-    [[nodiscard]] friend consteval std::strong_ordering operator<=>(
+    [[nodiscard]] friend constexpr auto operator<=>(
         const static_str& self,
         const char(&other)[M]
     ) noexcept {
@@ -583,7 +605,7 @@ public:
 
     /* Lexicographically compare a static string against a string literal. */
     template <auto M>
-    [[nodiscard]] friend consteval std::strong_ordering operator<=>(
+    [[nodiscard]] friend constexpr auto operator<=>(
         const char(&other)[M],
         const static_str& self
     ) noexcept {
@@ -593,6 +615,22 @@ public:
             self.buffer,
             self.buffer + N
         );
+    }
+
+    /* Lexicographically compare a static string against a string view. */
+    [[nodiscard]] friend constexpr auto operator<=>(
+        const static_str& self,
+        std::string_view other
+    ) noexcept(noexcept(std::string_view(self) <=> other)) {
+        return std::string_view(self) <=> other;
+    }
+
+    /* Lexicographically compare a static string against a string view. */
+    [[nodiscard]] friend constexpr auto operator<=>(
+        std::string_view other,
+        const static_str& self
+    ) noexcept(noexcept(other <=> std::string_view(self))) {
+        return other <=> std::string_view(self);
     }
 
     /* Check for lexicographic equality between two static strings. */
@@ -612,13 +650,13 @@ public:
 
     /* Check for lexicographic equality between two static strings. */
     template <auto S>
-    [[nodiscard]] consteval bool operator==(string_methods<S>) const noexcept {
+    [[nodiscard]] consteval bool operator==(string_wrapper<S>) const noexcept {
         return operator==(S);
     }
 
     /* Check for lexicographic equality between a static string and a string literal. */
     template <auto M>
-    [[nodiscard]] friend consteval bool operator==(
+    [[nodiscard]] friend constexpr bool operator==(
         const static_str& self,
         const char(&other)[M]
     ) noexcept {
@@ -636,7 +674,7 @@ public:
 
     /* Check for lexicographic equality between a static string and a string literal. */
     template <auto M>
-    [[nodiscard]] friend consteval bool operator==(
+    [[nodiscard]] friend constexpr bool operator==(
         const char(&other)[M],
         const static_str& self
     ) noexcept {
@@ -650,6 +688,22 @@ public:
         } else {
             return false;
         }
+    }
+
+    /* Check for lexicographic equality between a static string and a string view. */
+    [[nodiscard]] friend constexpr bool operator==(
+        const static_str& self,
+        std::string_view other
+    ) noexcept(noexcept(std::string_view(self) == other)) {
+        return std::string_view(self) == other;
+    }
+
+    /* Check for lexicographic equality between a static string and a string view. */
+    [[nodiscard]] friend constexpr bool operator==(
+        std::string_view other,
+        const static_str& self
+    ) noexcept(noexcept(other == std::string_view(self))) {
+        return other == std::string_view(self);
     }
 
 private:
@@ -702,10 +756,10 @@ private:
     /// consteval context, all of these algorithms are implemented by taking the
     /// `self` string as a template parameter.  They are therefore private, so as not
     /// to confuse users who might expect them to be callable like Python methods.
-    /// The `string_methods` class is used to abstract this distinction, yielding a
+    /// The `string_wrapper` class is used to abstract this distinction, yielding a
     /// naturally Pythonic interface.  If this restriction is lifted in a future
     /// version of the language, then these can be converted into normal instance
-    /// methods, and the `string_methods` class can be removed.
+    /// methods, and the `string_wrapper` class can be removed.
 
     /* Equivalent to Python `str.capitalize()`. */
     template <bertrand::static_str self>
@@ -1437,12 +1491,9 @@ private:
 
 
 template <static_str self>
-struct string_methods : impl::static_str_tag {
+struct string_wrapper : impl::static_str_tag {
 private:
     using string_type = static_str<self.size()>;
-
-    template <string_type::index_type I>
-    static constexpr bool in_bounds = string_type::template in_bounds<I>;
 
 public:
     using value_type = string_type::value_type;
@@ -1460,8 +1511,8 @@ public:
     using slice = string_type::slice;
     using const_slice = string_type::const_slice;
 
-    template <typename T> requires (meta::convertible_to<static_str<self.size()>, T>)
-    [[nodiscard]] constexpr operator T() const noexcept { return self; }
+    template <typename V> requires (meta::convertible_to<static_str<self.size()>, V>)
+    [[nodiscard]] constexpr operator V() const noexcept { return self; }
     [[nodiscard]] static consteval auto data() noexcept { return self.data(); }
     [[nodiscard]] static consteval auto size() noexcept { return self.size(); }
     [[nodiscard]] static consteval auto ssize() noexcept { return self.ssize(); }
@@ -1476,32 +1527,48 @@ public:
     [[nodiscard]] static constexpr auto rend() noexcept { return self.rend(); }
     [[nodiscard]] static constexpr auto crend() noexcept { return self.crend(); }
 
+    /* Check whether a given substring is present within the string. */
+    template <static_str sub, index_type start = 0, index_type stop = self.size()>
+    [[nodiscard]] static consteval bool contains() noexcept {
+        return find<sub, start, stop>() >= 0;
+    }
+
     /* Get the character at index `I`, where `I` is known at compile time.  Applies
     Python-style wraparound for negative indices, and fails to compile if the index is
     out of bounds after normalization. */
-    template <index_type I> requires (in_bounds<I>)
+    template <index_type I> requires (impl::valid_index<size(), I>())
     [[nodiscard]] static consteval auto get() noexcept {
         return self.template get<I>();
+    }
+
+    /* Get a slice from the string at compile time.  Takes an explicitly-initialized
+    `bertrand::slice` pack describing the start, stop, and step indices.  Each index
+    can be omitted by initializing it to `std::nullopt`, which is equivalent to an
+    empty slice index in Python.  Applies Python-style wraparound to both `start` and
+    `stop`. */
+    template <bertrand::slice s>
+    [[nodiscard]] static consteval auto get() noexcept {
+        return string_wrapper<self.template get<s>()>{};
     }
 
     /* Access a character within the underlying buffer.  Applies Python-style
     wraparound for negative indices, and throws an `IndexError` if the index is out of
     bounds after normalization. */
-    [[nodiscard]] static consteval auto operator[](index_type i) {
+    [[nodiscard]] static constexpr auto operator[](index_type i) {
         return self[i];
     }
 
     /* Slice operator utilizing an initializer list.  Up to 3 (possibly negative)
     indices may be supplied according to Python semantics, with `std::nullopt` equating
     to `None`. */
-    [[nodiscard]] static consteval auto operator[](bertrand::slice s) {
+    [[nodiscard]] static constexpr auto operator[](bertrand::slice s) {
         return self[s];
     }
 
     /* Concatenate two static strings at compile time. */
     template <auto S>
-    [[nodiscard]] consteval auto operator+(string_methods<S>) const noexcept {
-        return string_methods<self + S>{};
+    [[nodiscard]] consteval auto operator+(string_wrapper<S>) const noexcept {
+        return string_wrapper<self + S>{};
     }
 
     /* Concatenate two static strings at compile time. */
@@ -1512,8 +1579,8 @@ public:
 
     /* Concatenate a static string with a string literal at compile time. */
     template <auto M>
-    [[nodiscard]] friend consteval auto operator+(
-        string_methods,
+    [[nodiscard]] friend constexpr auto operator+(
+        string_wrapper,
         const char(&other)[M]
     ) noexcept {
         return self + other;
@@ -1521,46 +1588,46 @@ public:
 
     /* Concatenate a static string with a string literal at compile time. */
     template <auto M>
-    [[nodiscard]] friend consteval auto operator+(
+    [[nodiscard]] friend constexpr auto operator+(
         const char(&other)[M],
-        string_methods
+        string_wrapper
     ) noexcept {
         return other + self;
     }
 
     /* Concatenate a static string with a runtime string. */
-    template <meta::convertible_to<std::string> T>
-        requires (!meta::string_literal<T> && !meta::static_str<T>)
-    [[nodiscard]] friend constexpr auto operator+(string_methods, T&& other) {
-        return self + std::forward<T>(other);
+    template <meta::convertible_to<std::string> V>
+        requires (!meta::string_literal<V> && !meta::static_str<V>)
+    [[nodiscard]] friend constexpr auto operator+(string_wrapper, V&& other) {
+        return self + std::forward<V>(other);
     }
 
     /* Concatenate a static string with a runtime string. */
-    template <meta::convertible_to<std::string> T>
-        requires (!meta::string_literal<T> && !meta::static_str<T>)
-    [[nodiscard]] friend constexpr auto operator+(T&& other, string_methods) {
-        return std::forward<T>(other) + self;
+    template <meta::convertible_to<std::string> V>
+        requires (!meta::string_literal<V> && !meta::static_str<V>)
+    [[nodiscard]] friend constexpr auto operator+(V&& other, string_wrapper) {
+        return std::forward<V>(other) + self;
     }
 
     /* Repeat a string a given number of times at compile time. */
     template <size_type reps>
     [[nodiscard]] static consteval auto repeat() noexcept {
-        return string_methods<self.template repeat<self, reps>()>{};
+        return string_wrapper<self.template repeat<self, reps>()>{};
     }
 
     /* Repeat a string a given number of times at runtime. */
-    [[nodiscard]] friend constexpr auto operator*(string_methods, size_type reps) noexcept {
+    [[nodiscard]] friend constexpr auto operator*(string_wrapper, size_type reps) noexcept {
         return self * reps;
     }
 
     /* Repeat a string a given number of times at runtime. */
-    [[nodiscard]] friend constexpr auto operator*(size_type reps, string_methods) noexcept {
+    [[nodiscard]] friend constexpr auto operator*(size_type reps, string_wrapper) noexcept {
         return reps * self;
     }
 
     /* Lexicographically compare two static strings at compile time. */
     template <auto S>
-    [[nodiscard]] consteval auto operator<=>(string_methods<S>) const noexcept {
+    [[nodiscard]] consteval auto operator<=>(string_wrapper<S>) const noexcept {
         return self <=> S;
     }
 
@@ -1572,8 +1639,8 @@ public:
 
     /* Lexicographically compare a static string against a string literal. */
     template <auto M>
-    [[nodiscard]] friend consteval auto operator<=>(
-        string_methods,
+    [[nodiscard]] friend constexpr auto operator<=>(
+        string_wrapper,
         const char(&other)[M]
     ) noexcept {
         return self <=> other;
@@ -1581,16 +1648,34 @@ public:
 
     /* Lexicographically compare a static string against a string literal. */
     template <auto M>
-    [[nodiscard]] friend consteval auto operator<=>(
+    [[nodiscard]] friend constexpr auto operator<=>(
         const char(&other)[M],
-        string_methods
+        string_wrapper
     ) noexcept {
+        return other <=> self;
+    }
+
+    /* Lexicographically compare a static string against a string view. */
+    template <auto M>
+    [[nodiscard]] friend constexpr auto operator<=>(
+        string_wrapper,
+        std::string_view other
+    ) noexcept(noexcept(self <=> other)) {
+        return self <=> other;
+    }
+
+    /* Lexicographically compare a static string against a string view. */
+    template <auto M>
+    [[nodiscard]] friend constexpr auto operator<=>(
+        std::string_view other,
+        string_wrapper
+    ) noexcept(noexcept(other <=> self)) {
         return other <=> self;
     }
 
     /* Check for lexicographic equality between two static strings. */
     template <auto S>
-    [[nodiscard]] consteval auto operator==(string_methods<S>) const noexcept {
+    [[nodiscard]] consteval auto operator==(string_wrapper<S>) const noexcept {
         return self == S;
     }
 
@@ -1602,8 +1687,8 @@ public:
 
     /* Check for lexicographic equality between a static string and a string literal. */
     template <auto M>
-    [[nodiscard]] friend consteval auto operator==(
-        string_methods,
+    [[nodiscard]] friend constexpr auto operator==(
+        string_wrapper,
         const char(&other)[M]
     ) noexcept {
         return self == other;
@@ -1611,22 +1696,40 @@ public:
 
     /* Check for lexicographic equality between a static string and a string literal. */
     template <auto M>
-    [[nodiscard]] friend consteval auto operator==(
+    [[nodiscard]] friend constexpr auto operator==(
         const char(&other)[M],
-        string_methods
+        string_wrapper
     ) noexcept {
+        return other == self;
+    }
+
+    /* Check for lexicographic equality between a static string and a string view. */
+    template <auto M>
+    [[nodiscard]] friend constexpr auto operator==(
+        string_wrapper,
+        std::string_view other
+    ) noexcept(noexcept(self == other)) {
+        return self == other;
+    }
+
+    /* Check for lexicographic equality between a static string and a string view. */
+    template <auto M>
+    [[nodiscard]] friend constexpr auto operator==(
+        std::string_view other,
+        string_wrapper
+    ) noexcept(noexcept(other == self)) {
         return other == self;
     }
 
     /* Equivalent to Python `str.capitalize()`. */
     [[nodiscard]] static consteval auto capitalize() noexcept {
-        return string_methods<self.template capitalize<self>()>{};
+        return string_wrapper<self.template capitalize<self>()>{};
     }
 
     /* Equivalent to Python `str.center(width[, fillchar])`. */
     template <size_type width, char fillchar = ' '>
     [[nodiscard]] static consteval auto center() noexcept {
-        return string_methods<self.template center<self, width, fillchar>()>{};
+        return string_wrapper<self.template center<self, width, fillchar>()>{};
     }
 
     /* Equivalent to Python `str.count(sub[, start[, stop]])`. */
@@ -1644,7 +1747,7 @@ public:
     /* Equivalent to Python `str.expandtabs([tabsize])`. */
     template <size_type tabsize = 8>
     [[nodiscard]] static consteval auto expandtabs() noexcept {
-        return string_methods<self.template expandtabs<self, tabsize>()>{};
+        return string_wrapper<self.template expandtabs<self, tabsize>()>{};
     }
 
     /* Equivalent to Python `str.find(sub[, start[, stop]])`.  Returns -1 if the
@@ -1657,7 +1760,7 @@ public:
     /* Equivalent to Python `str.index(sub[, start[, stop]])`.  Fails to compile if
     the substring is not present. */
     template <static_str sub, index_type start = 0, index_type stop = self.size()>
-        requires (find<sub, start, stop>() >= 0)
+        requires (contains<sub, start, stop>())
     [[nodiscard]] static consteval auto index() noexcept {
         return find<sub, start, stop>();
     }
@@ -1705,24 +1808,24 @@ public:
     /* Equivalent to Python `str.join(strings...)`. */
     template <static_str first, static_str... rest>
     [[nodiscard]] static consteval auto join() noexcept {
-        return string_methods<self.template join<self, first, rest...>()>{};
+        return string_wrapper<self.template join<self, first, rest...>()>{};
     }
 
     /* Equivalent to Python `str.ljust(width[, fillchar])`. */
     template <size_type width, char fillchar = ' '>
     [[nodiscard]] static consteval auto ljust() noexcept {
-        return string_methods<self.template ljust<self, width, fillchar>()>{};
+        return string_wrapper<self.template ljust<self, width, fillchar>()>{};
     }
 
     /* Equivalent to Python `str.lower()`. */
     [[nodiscard]] static consteval auto lower() noexcept {
-        return string_methods<self.template lower<self>()>{};
+        return string_wrapper<self.template lower<self>()>{};
     }
 
     /* Equivalent to Python `str.lstrip([chars])`. */
     template <static_str chars = " \t\n\r\f\v">
     [[nodiscard]] static consteval auto lstrip() noexcept {
-        return string_methods<self.template lstrip<self, chars>()>{};
+        return string_wrapper<self.template lstrip<self, chars>()>{};
     }
 
     /* Equivalent to Python `str.partition(sep)`. */
@@ -1735,14 +1838,14 @@ public:
     time. */
     template <static_str prefix>
     [[nodiscard]] static consteval auto removeprefix() noexcept {
-        return string_methods<self.template removeprefix<self, prefix>()>{};
+        return string_wrapper<self.template removeprefix<self, prefix>()>{};
     }
 
     /* Equivalent to Python `str.removesuffix()`, but evaluated statically at compile
     time. */
     template <static_str suffix>
     [[nodiscard]] static consteval auto removesuffix() noexcept {
-        return string_methods<self.template removesuffix<self, suffix>()>{};
+        return string_wrapper<self.template removesuffix<self, suffix>()>{};
     }
 
     /* Equivalent to Python `str.replace()`. */
@@ -1752,7 +1855,7 @@ public:
         size_type max_count = std::numeric_limits<size_type>::max()
     >
     [[nodiscard]] static consteval auto replace() noexcept {
-        return string_methods<self.template replace<self, sub, repl, max_count>()>{};
+        return string_wrapper<self.template replace<self, sub, repl, max_count>()>{};
     }
 
     /* Equivalent to Python `str.rfind(sub[, start[, stop]])`.  Returns -1 if the
@@ -1765,7 +1868,7 @@ public:
     /* Equivalent to Python `str.rindex(sub[, start[, stop]])`.  Fails to compile if
     the substring is not present. */
     template <static_str sub, index_type start = 0, index_type stop = self.size()>
-        requires (rfind<sub, start, stop>() >= 0)
+        requires (contains<sub, start, stop>())
     [[nodiscard]] static consteval auto rindex() noexcept {
         return rfind<sub, start, stop>();
     }
@@ -1773,7 +1876,7 @@ public:
     /* Equivalent to Python `str.rjust(width[, fillchar])`. */
     template <size_type width, char fillchar = ' '>
     [[nodiscard]] static consteval auto rjust() noexcept {
-        return string_methods<self.template rjust<self, width, fillchar>()>{};
+        return string_wrapper<self.template rjust<self, width, fillchar>()>{};
     }
 
     /* Equivalent to Python `str.rpartition(sep)`. */
@@ -1794,7 +1897,7 @@ public:
     /* Equivalent to Python `str.rstrip([chars])`. */
     template <static_str chars = " \t\n\r\f\v">
     [[nodiscard]] static consteval auto rstrip() noexcept {
-        return string_methods<self.template rstrip<self, chars>()>{};
+        return string_wrapper<self.template rstrip<self, chars>()>{};
     }
 
     /* Equivalent to Python `str.split(sep[, maxsplit])`.  The result is returned as a
@@ -1824,84 +1927,976 @@ public:
     time. */
     template <static_str chars = " \t\n\r\f\v">
     [[nodiscard]] static consteval auto strip() noexcept {
-        return string_methods<self.template strip<self, chars>()>{};
+        return string_wrapper<self.template strip<self, chars>()>{};
     }
 
     /* Equivalent to Python `str.swapcase()`, but evaluated statically at compile
     time. */
     [[nodiscard]] static consteval auto swapcase() noexcept {
-        return string_methods<self.template swapcase<self>()>{};
+        return string_wrapper<self.template swapcase<self>()>{};
     }
 
     /* Equivalent to Python `str.title()`, but evaluated statically at compile time. */
     [[nodiscard]] static consteval auto title() noexcept {
-        return string_methods<self.template title<self>()>{};
+        return string_wrapper<self.template title<self>()>{};
     }
 
     /* Equivalent to Python `str.upper()`, but evaluated statically at compile time. */
     [[nodiscard]] static consteval auto upper() noexcept {
-        return string_methods<self.template upper<self>()>{};
+        return string_wrapper<self.template upper<self>()>{};
     }
 
     /* Equivalent to Python `str.zfill(width)`, but evaluated statically at compile
     time. */
     template <size_type width>
     [[nodiscard]] static consteval auto zfill() noexcept {
-        return string_methods<self.template zfill<self, width>()>{};
+        return string_wrapper<self.template zfill<self, width>()>{};
     }
 };
 
 
+namespace impl {
+
+    /* A helper struct that computes a gperf-style minimal perfect hash function over
+    the given strings at compile time.  Only the N most variable characters are
+    considered, where N is minimized using an associative array containing relative
+    weights for each character. */
+    template <static_str... Keys>
+    struct minimal_perfect_hash {
+        static constexpr size_t table_size = sizeof...(Keys);
+
+    private:
+        template <size_t>
+        struct _minmax {
+            static constexpr std::pair<size_t, size_t> value =
+                std::minmax({Keys.size()...});
+        };
+        template <>
+        struct _minmax<0> {
+            static constexpr std::pair<size_t, size_t> value = {0, 0};
+        };
+        static constexpr auto minmax = _minmax<table_size>::value;
+
+    public:
+        static constexpr size_t min_length = minmax.first;
+        static constexpr size_t max_length = minmax.second;
+
+        template <size_t I> requires (I < table_size)
+        static constexpr static_str at = meta::unpack_string<I, Keys...>;
+
+    private:
+        using Weights = std::array<unsigned char, 256>;
+
+        template <static_str...>
+        struct _counts {
+            static constexpr size_t operator()(unsigned char, size_t) { return 0; }
+        };
+        template <static_str First, static_str... Rest>
+        struct _counts<First, Rest...> {
+            static constexpr size_t operator()(unsigned char c, size_t pos) {
+                return
+                    _counts<Rest...>{}(c, pos) +
+                    (pos < First.size() && First.data()[pos] == c);
+            }
+        };
+        static constexpr size_t counts(unsigned char c, size_t pos) {
+            return _counts<Keys...>{}(c, pos);
+        }
+
+        template <size_t I, unsigned char C, static_str... Strings>
+        static constexpr size_t first_occurrence = 0;
+        template <size_t I, unsigned char C, static_str First, static_str... Rest>
+        static constexpr size_t first_occurrence<I, C, First, Rest...> =
+            (I < First.size() && First.data()[I] == C) ?
+                0 : first_occurrence<I, C, Rest...> + 1;
+
+        template <size_t I, size_t J, static_str... Strings>
+        static constexpr size_t _variation = 0;
+        template <size_t I, size_t J, static_str First, static_str... Rest>
+        static constexpr size_t _variation<I, J, First, Rest...> =
+            (I < First.size() && J == first_occurrence<I, First.data()[I], Keys...>) +
+            _variation<I, J + 1, Rest...>;
+        template <size_t I, static_str... Strings>
+        static constexpr size_t variation = _variation<I, 0, Strings...>;
+
+        /* An array holding the number of unique characters across each index of the
+        input keys, up to `max_length`. */
+        static constexpr std::array<size_t, max_length> frequencies =
+            []<size_t... Is>(std::index_sequence<Is...>) {
+                return std::array<size_t, max_length>{variation<Is, Keys...>...};
+            }(std::make_index_sequence<max_length>{});
+
+        /* A sorted array holding indices into the frequencies table, with the highest
+        variation indices coming first. */
+        static constexpr std::array<size_t, max_length> sorted_freq_indices =
+            []<size_t... Is>(std::index_sequence<Is...>) {
+                std::array<size_t, max_length> result {Is...};
+                std::sort(result.begin(), result.end(), [](size_t a, size_t b) {
+                    return frequencies[a] > frequencies[b];
+                });
+                return result;
+            }(std::make_index_sequence<max_length>{});
+
+        using collision = std::pair<std::string_view, std::string_view>;
+
+        /* Check to see if the candidate weights produce any collisions for a given
+        number of significant characters. */
+        template <static_str...>
+        struct collisions {
+            static constexpr collision operator()(const Weights&, size_t) {
+                return {"", ""};
+            }
+        };
+        template <static_str First, static_str... Rest>
+        struct collisions<First, Rest...> {
+            template <static_str...>
+            struct scan {
+                static constexpr collision operator()(
+                    std::string_view,
+                    size_t,
+                    const Weights&,
+                    size_t
+                ) {
+                    return {"", ""};
+                }
+            };
+            template <static_str F, static_str... Rs>
+            struct scan<F, Rs...> {
+                static constexpr collision operator()(
+                    std::string_view orig,
+                    size_t idx,
+                    const Weights& weights,
+                    size_t significant_chars
+                ) {
+                    size_t hash = 0;
+                    for (size_t i = 0; i < significant_chars; ++i) {
+                        size_t pos = sorted_freq_indices[i];
+                        unsigned char c = pos < F.size() ? *F[pos] : 0;
+                        hash += weights[c];
+                    }
+                    if ((hash % table_size) == idx) {
+                        return {orig, {F.buffer, F.size()}};
+                    }
+                    return scan<Rs...>{}(orig, idx, weights, significant_chars);
+                }
+            };
+
+            static constexpr collision operator()(
+                const Weights& weights,
+                size_t significant_chars
+            ) {
+                size_t hash = 0;
+                for (size_t i = 0; i < significant_chars; ++i) {
+                    size_t pos = sorted_freq_indices[i];
+                    unsigned char c = pos < First.size() ? First.data()[pos] : 0;
+                    hash += weights[c];
+                }
+                collision result = scan<Rest...>{}(
+                    std::string_view{First.buffer, First.size()},
+                    hash % table_size,
+                    weights,
+                    significant_chars
+                );
+                if (result.first != result.second) {
+                    return result;
+                }
+                return collisions<Rest...>{}(weights, significant_chars);
+            }
+        };
+
+        /* Finds an associative value array that produces perfect hashes over the input
+        keywords. */
+        static constexpr auto find_hash = [] -> std::tuple<size_t, Weights, bool> {
+            Weights weights;
+
+            for (size_t i = 0; i <= max_length; ++i) {
+                weights.fill(1);
+                for (size_t j = 0; j < TEMPLATE_RECURSION_LIMIT; ++j) {
+                    collision result = collisions<Keys...>{}(weights, i);
+                    if (result.first == result.second) {
+                        return {i, weights, true};
+                    }
+                    bool identical = true;
+                    for (size_t k = 0; k < i; ++k) {
+                        size_t pos = sorted_freq_indices[k];
+                        unsigned char c1 = pos < result.first.size() ?
+                            result.first[pos] : 0;
+                        unsigned char c2 = pos < result.second.size() ?
+                            result.second[pos] : 0;
+                        if (c1 != c2) {
+                            if (counts(c1, pos) < counts(c2, pos)) {
+                                ++weights[c1];
+                            } else {
+                                ++weights[c2];
+                            }
+                            identical = false;
+                            break;
+                        }
+                    }
+                    // if all significant characters are the same, widen the search
+                    if (identical) {
+                        break;
+                    }
+                }
+            } 
+            return {0, weights, false};
+        }();
+
+    public:
+        static constexpr size_t significant_chars = std::get<0>(find_hash);
+        static constexpr Weights weights = std::get<1>(find_hash);
+        static constexpr bool exists = std::get<2>(find_hash);
+
+        template <typename T>
+        static constexpr bool hashable =
+            meta::convertible_to<T, const char*> ||
+            meta::convertible_to<T, std::string_view>;
+
+        /* An array holding the positions of the significant characters for the
+        associative value array, in traversal order. */
+        static constexpr std::array<size_t, significant_chars> positions =
+            []<size_t... Is>(std::index_sequence<Is...>) {
+                std::array<size_t, significant_chars> positions {
+                    sorted_freq_indices[Is]...
+                };
+                std::sort(positions.begin(), positions.end());
+                return positions;
+            }(std::make_index_sequence<significant_chars>{});
+
+        /* Hash a compile-time string according to the computed perfect hash algorithm. */
+        template <meta::static_str Key>
+        [[nodiscard]] static constexpr size_t hash(const Key& str) noexcept {
+            constexpr size_t len = Key::size();
+            size_t out = 0;
+            for (size_t pos : positions) {
+                out += weights[pos < len ? str.data()[pos] : 0];
+            }
+            return out;
+        }
+
+        /* Hash a string literal according to the computed perfect hash algorithm. */
+        template <size_t N>
+        [[nodiscard]] static constexpr size_t hash(const char(&str)[N]) noexcept {
+            constexpr size_t M = N - 1;
+            size_t out = 0;
+            for (size_t pos : positions) {
+                out += weights[pos < M ? str[pos] : 0];
+            }
+            return out;
+        }
+
+        /* Hash a string literal according to the computed perfect hash algorithm. */
+        template <size_t N>
+        [[nodiscard]] static constexpr size_t hash(const char(&str)[N], size_t& len) noexcept {
+            constexpr size_t M = N - 1;
+            size_t out = 0;
+            for (size_t pos : positions) {
+                out += weights[pos < M ? str[pos] : 0];
+            }
+            len = M;
+            return out;
+        }
+
+        /* Hash a character buffer according to the computed perfect hash algorithm. */
+        template <meta::convertible_to<const char*> T>
+            requires (!meta::static_str<T> && !meta::string_literal<T>)
+        [[nodiscard]] static constexpr size_t hash(const T& str) noexcept {
+            const char* start = str;
+            if constexpr (positions.empty()) {
+                return 0;
+            } else {
+                const char* ptr = start;
+                size_t out = 0;
+                size_t i = 0;
+                size_t next_pos = positions[i];
+                while (*ptr != '\0') {
+                    if ((ptr - start) == next_pos) {
+                        out += weights[*ptr];
+                        if (++i >= positions.size()) {
+                            return out;  // early break if no characters left to probe
+                        }
+                        next_pos = positions[i];
+                    }
+                    ++ptr;
+                }
+                while (i < positions.size()) {
+                    out += weights[0];
+                    ++i;
+                }
+                return out;
+            }
+        }
+
+        /* Hash a character buffer according to the computed perfect hash algorithm and
+        record its length as an out parameter. */
+        template <meta::convertible_to<const char*> T>
+            requires (!meta::static_str<T> && !meta::string_literal<T>)
+        [[nodiscard]] static constexpr size_t hash(const T& str, size_t& len) noexcept {
+            const char* start = str;
+            const char* ptr = start;
+            if constexpr (positions.empty()) {
+                while (*ptr != '\0') { ++ptr; }
+                len = ptr - start;
+                return 0;
+            } else {
+                size_t out = 0;
+                size_t i = 0;
+                size_t next_pos = positions[i];
+                while (*ptr != '\0') {
+                    if ((ptr - start) == next_pos) {
+                        out += weights[*ptr];
+                        if (++i >= positions.size()) {
+                            // continue probing until end of string to get length
+                            next_pos = std::numeric_limits<size_t>::max();
+                        } else {
+                            next_pos = positions[i];
+                        }
+                    }
+                    ++ptr;
+                }
+                while (i < positions.size()) {
+                    out += weights[0];
+                    ++i;
+                }
+                len = ptr - start;
+                return out;
+            }
+        }
+
+        /* Hash a string view according to the computed perfect hash algorithm. */
+        template <meta::convertible_to<std::string_view> T>
+            requires (
+                !meta::static_str<T> &&
+                !meta::string_literal<T> &&
+                !meta::convertible_to<T, const char*>
+            )
+        [[nodiscard]] static constexpr size_t hash(const T& str) noexcept {
+            std::string_view s = str;
+            size_t out = 0;
+            for (size_t pos : positions) {
+                out += weights[pos < s.size() ? s[pos] : 0];
+            }
+            return out;
+        }
+    };
+
+    /* A standardized iterator type for `bertrand::static_map` instances, independent
+    of the stored names. */
+    template <typename ValueType>
+    struct static_map_iterator {
+        using iterator_category = std::random_access_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using value_type = ValueType;
+        using reference = value_type&;
+        using pointer = value_type*;
+
+    private:
+        pointer m_data = nullptr;
+        const size_t* m_indices = nullptr;
+        difference_type m_idx = 0;
+        size_t m_length = 0;
+
+    public:
+        static_map_iterator() = default;
+
+        static_map_iterator(
+            pointer data,
+            const size_t* indices,
+            difference_type index,
+            size_t length
+        ) :
+            m_data(data),
+            m_indices(indices),
+            m_idx(index),
+            m_length(length)
+        {}
+
+        [[nodiscard]] explicit operator bool() const noexcept {
+            return m_idx >= 0 && m_idx < m_length;
+        }
+
+        [[nodiscard]] reference operator*() const {
+            if (m_idx >= 0 && m_idx < m_length) {
+                return m_data[m_indices[m_idx]];
+            }
+            throw IndexError(std::to_string(m_idx));
+        }
+
+        [[nodiscard]] pointer operator->() const {
+            return &**this;
+        }
+
+        [[nodiscard]] reference operator[](difference_type n) const {
+            difference_type index = m_idx + n;
+            if (index >= 0 && index < m_length) {
+                return m_data[m_indices[index]];
+            }
+            throw IndexError(std::to_string(index));
+        }
+
+        static_map_iterator& operator++() noexcept {
+            ++m_idx;
+            return *this;
+        }
+
+        [[nodiscard]] static_map_iterator operator++(int) {
+            static_map_iterator copy = *this;
+            ++m_idx;
+            return copy;
+        }
+
+        static_map_iterator& operator+=(difference_type n) noexcept {
+            m_idx += n;
+            return *this;
+        }
+
+        [[nodiscard]] friend static_map_iterator operator+(
+            const static_map_iterator& self,
+            difference_type n
+        ) noexcept {
+            return static_map_iterator(
+                self.m_data,
+                self.m_indices,
+                self.m_idx + n,
+                self.m_length
+            );
+        }
+
+        [[nodiscard]] friend static_map_iterator operator+(
+            difference_type n,
+            const static_map_iterator& self
+        ) noexcept {
+            return static_map_iterator(
+                self.m_data,
+                self.m_indices,
+                self.m_idx + n,
+                self.m_length
+            );
+        }
+
+        static_map_iterator& operator--() noexcept {
+            --m_idx;
+            return *this;
+        }
+
+        [[nodiscard]] static_map_iterator operator--(int) noexcept {
+            static_map_iterator copy = *this;
+            --m_idx;
+            return copy;
+        }
+
+        static_map_iterator& operator-=(difference_type n) noexcept {
+            m_idx -= n;
+            return *this;
+        }
+
+        [[nodiscard]] friend static_map_iterator operator-(
+            const static_map_iterator& self,
+            difference_type n
+        ) noexcept {
+            return static_map_iterator(
+                self.m_data,
+                self.m_indices,
+                self.m_idx - n,
+                self.m_length
+            );
+        }
+
+        [[nodiscard]] friend static_map_iterator operator-(
+            difference_type n,
+            const static_map_iterator& self
+        ) noexcept {
+            return static_map_iterator(
+                self.m_data,
+                self.m_indices,
+                self.m_idx - n,
+                self.m_length
+            );
+        }
+
+        [[nodiscard]] friend difference_type operator-(
+            const static_map_iterator& lhs,
+            const static_map_iterator& rhs
+        ) noexcept {
+            return lhs.m_idx - rhs.m_idx;
+        }
+
+        [[nodiscard]] friend bool operator<(
+            const static_map_iterator& lhs,
+            const static_map_iterator& rhs
+        ) noexcept {
+            return lhs.m_data == rhs.m_data && lhs.m_idx < rhs.m_idx;
+        }
+
+        [[nodiscard]] friend bool operator<=(
+            const static_map_iterator& lhs,
+            const static_map_iterator& rhs
+        ) noexcept {
+            return lhs.m_data == rhs.m_data && lhs.m_idx <= rhs.m_idx;
+        }
+
+        [[nodiscard]] friend bool operator==(
+            const static_map_iterator& lhs,
+            const static_map_iterator& rhs
+        ) noexcept {
+            return lhs.m_data == rhs.m_data && lhs.m_idx == rhs.m_idx;
+        }
+
+        [[nodiscard]] friend bool operator!=(
+            const static_map_iterator& lhs,
+            const static_map_iterator& rhs
+        ) noexcept {
+            return !(lhs == rhs);
+        }
+
+        [[nodiscard]] friend bool operator>=(
+            const static_map_iterator& lhs,
+            const static_map_iterator& rhs
+        ) noexcept {
+            return lhs.m_data == rhs.m_data && lhs.m_idx >= rhs.m_idx;
+        }
+
+        [[nodiscard]] friend bool operator>(
+            const static_map_iterator& lhs,
+            const static_map_iterator& rhs
+        ) noexcept {
+            return lhs.m_data == rhs.m_data && lhs.m_idx > rhs.m_idx;
+        }
+    };
+
+    /* A standardized iterator type for immutable `bertrand::static_map` instances,
+    indpendent of the stored names. */
+    template <typename ValueType>
+    struct const_static_map_iterator {
+        using iterator_category = std::random_access_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using value_type = ValueType;
+        using reference = value_type&;
+        using pointer = value_type*;
+
+    private:
+        pointer m_data = nullptr;
+        const size_t* m_indices = nullptr;
+        difference_type m_idx = 0;
+        size_t m_length = 0;
+
+    public:
+        const_static_map_iterator() = default;
+
+        const_static_map_iterator(
+            pointer data,
+            const size_t* indices,
+            difference_type index,
+            size_t length
+        ) :
+            m_data(data),
+            m_indices(indices),
+            m_idx(index),
+            m_length(length)
+        {}
+
+        [[nodiscard]] explicit operator bool() const noexcept {
+            return m_idx >= 0 && m_idx < m_length;
+        }
+
+        [[nodiscard]] reference operator*() const {
+            if (m_idx >= 0 && m_idx < m_length) {
+                return m_data[m_indices[m_idx]];
+            }
+            throw IndexError(std::to_string(m_idx));
+        }
+
+        [[nodiscard]] pointer operator->() const {
+            return &**this;
+        }
+
+        [[nodiscard]] reference operator[](difference_type n) const {
+            difference_type index = m_idx + n;
+            if (index >= 0 && index < m_length) {
+                return m_data[m_indices[index]];
+            }
+            throw IndexError(std::to_string(index));
+        }
+
+        const_static_map_iterator& operator++() noexcept {
+            ++m_idx;
+            return *this;
+        }
+
+        [[nodiscard]] const_static_map_iterator operator++(int) {
+            const_static_map_iterator copy = *this;
+            ++m_idx;
+            return copy;
+        }
+
+        const_static_map_iterator& operator+=(difference_type n) noexcept {
+            m_idx += n;
+            return *this;
+        }
+
+        [[nodiscard]] friend const_static_map_iterator operator+(
+            const const_static_map_iterator& self,
+            difference_type n
+        ) noexcept {
+            return const_static_map_iterator(
+                self.m_data,
+                self.m_indices,
+                self.m_idx + n,
+                self.m_length
+            );
+        }
+
+        [[nodiscard]] friend const_static_map_iterator operator+(
+            difference_type n,
+            const const_static_map_iterator& self
+        ) noexcept {
+            return const_static_map_iterator(
+                self.m_data,
+                self.m_indices,
+                self.m_idx + n,
+                self.m_length
+            );
+        }
+
+        const_static_map_iterator& operator--() noexcept {
+            --m_idx;
+            return *this;
+        }
+
+        [[nodiscard]] const_static_map_iterator operator--(int) noexcept {
+            const_static_map_iterator copy = *this;
+            --m_idx;
+            return copy;
+        }
+
+        const_static_map_iterator& operator-=(difference_type n) noexcept {
+            m_idx -= n;
+            return *this;
+        }
+
+        [[nodiscard]] friend const_static_map_iterator operator-(
+            const const_static_map_iterator& self,
+            difference_type n
+        ) noexcept {
+            return const_static_map_iterator(
+                self.m_data,
+                self.m_indices,
+                self.m_idx - n,
+                self.m_length
+            );
+        }
+
+        [[nodiscard]] friend const_static_map_iterator operator-(
+            difference_type n,
+            const const_static_map_iterator& self
+        ) noexcept {
+            return const_static_map_iterator(
+                self.m_data,
+                self.m_indices,
+                self.m_idx - n,
+                self.m_length
+            );
+        }
+
+        [[nodiscard]] friend difference_type operator-(
+            const const_static_map_iterator& lhs,
+            const const_static_map_iterator& rhs
+        ) noexcept {
+            return lhs.m_idx - rhs.m_idx;
+        }
+
+        [[nodiscard]] friend bool operator<(
+            const const_static_map_iterator& lhs,
+            const const_static_map_iterator& rhs
+        ) noexcept {
+            return lhs.m_data == rhs.m_data && lhs.m_idx < rhs.m_idx;
+        }
+
+        [[nodiscard]] friend bool operator<=(
+            const const_static_map_iterator& lhs,
+            const const_static_map_iterator& rhs
+        ) noexcept {
+            return lhs.m_data == rhs.m_data && lhs.m_idx <= rhs.m_idx;
+        }
+
+        [[nodiscard]] friend bool operator==(
+            const const_static_map_iterator& lhs,
+            const const_static_map_iterator& rhs
+        ) noexcept {
+            return lhs.m_data == rhs.m_data && lhs.m_idx == rhs.m_idx;
+        }
+
+        [[nodiscard]] friend bool operator!=(
+            const const_static_map_iterator& lhs,
+            const const_static_map_iterator& rhs
+        ) noexcept {
+            return !(lhs == rhs);
+        }
+
+        [[nodiscard]] friend bool operator>=(
+            const const_static_map_iterator& lhs,
+            const const_static_map_iterator& rhs
+        ) noexcept {
+            return lhs.m_data == rhs.m_data && lhs.m_idx >= rhs.m_idx;
+        }
+
+        [[nodiscard]] friend bool operator>(
+            const const_static_map_iterator& lhs,
+            const const_static_map_iterator& rhs
+        ) noexcept {
+            return lhs.m_data == rhs.m_data && lhs.m_idx > rhs.m_idx;
+        }
+    };
+
+}
 
 
-/// TODO: move perfect hashing utilities here?
+namespace meta {
+
+    template <bertrand::static_str... Keys>
+    concept perfectly_hashable =
+        strings_are_unique<Keys...> &&
+        impl::minimal_perfect_hash<Keys...>::exists;
+
+}
 
 
-
-template <static_str... Keys> requires (meta::strings_are_unique<Keys...>)
+/* A specialization of string_map that does not hold any values.  Such a data structure
+is equivalent to a perfectly-hashed set of compile-time strings, which can be
+efficiently searched at runtime.  Rather than dereferencing to a value, the buckets
+and iterators will dereference to `string_view`s of the template key buffers. */
+template <static_str... Keys> requires (meta::perfectly_hashable<Keys...>)
 struct string_set;
 
 
-template <typename T, static_str... Keys>
+/* A compile-time perfect hash table with a finite set of static strings as keys.  The
+data structure will compute a perfect hash function for the given strings at compile
+time, and will store the values in a fixed-size array that can be baked into the final
+binary.
+
+Searching the map is extremely fast even in the worst case, consisting only of a
+perfect FNV-1a hash, a single array lookup, and a string comparison to validate.  No
+collision resolution is necessary, due to the perfect hash function.  If the search
+string is also known at compile time, then even these can be optimized out, skipping
+straight to the final value with no intermediate computation. */
+template <meta::not_void T, static_str... Keys> requires (meta::perfectly_hashable<Keys...>)
 struct string_map;
 
+
+/// TODO: allow heterogenous values?
+/// -> Maybe you can write string_wrapper<"key", T>?  So:
+///    static_map<string_wrapper<"foo", int>, string_wrapper<"bar", double>> map;
+
+/// TODO: constexpr string_map map = make_string_map<"foo", "bar", "baz">(1, "a", 2.5);
+
+/// constexpr string_map map = string_list<"foo", "bar", "baz">::map(1, "a", 2.5);
+
+/// -> static_map[] returns the common_type of the initializers, whereas get<>()
+/// returns the actual type at that index.  contains() takes any type that is
+/// comparable against all value types.  Iterators also return the common type.
+
+
+/// TODO: the only way to do this might be to store an array of string_view and values
+/// converted to the common type, and then separately store a tuple of the original
+/// values.  That way, if you look up by `get<"key">()`, you get the actual original
+/// type, and if you iterate or search by `operator[]`, you get the common type.
 
 
 template <static_str... Strings>
 struct string_list {
-    [[nodiscard]] static consteval size_t size() noexcept { return sizeof...(Strings); }
-    [[nodiscard]] static consteval ssize_t ssize() noexcept { return ssize_t(size()); }
+    using value_type = const std::string_view;
+    using reference = value_type&;
+    using const_reference = reference;
+    using pointer = value_type*;
+    using const_pointer = pointer;
+    using size_type = size_t;
+    using index_type = ssize_t;
+    using difference_type = std::ptrdiff_t;
+    using iterator = impl::contiguous_iterator<const std::string_view>;
+    using const_iterator = iterator;
+    using reverse_iterator = std::reverse_iterator<iterator>;
+    using const_reverse_iterator = reverse_iterator;
+    using slice = impl::contiguous_slice<const std::string_view>;
+    using const_slice = slice;
+
+    [[nodiscard]] static consteval pointer data() noexcept { return m_data.data(); }
+    [[nodiscard]] static consteval size_type size() noexcept { return sizeof...(Strings); }
+    [[nodiscard]] static consteval index_type ssize() noexcept { return ssize_t(size()); }
     [[nodiscard]] static consteval bool empty() noexcept { return size() == 0; }
     [[nodiscard]] explicit consteval operator bool() noexcept { return !empty(); }
+    [[nodiscard]] static constexpr iterator begin() noexcept { return {m_data.data()}; }
+    [[nodiscard]] static constexpr iterator cbegin() noexcept { return begin(); }
+    [[nodiscard]] static constexpr iterator end() noexcept { return {m_data.data() + size()}; }
+    [[nodiscard]] static constexpr iterator cend() noexcept { return end(); }
+    [[nodiscard]] static constexpr reverse_iterator rbegin() noexcept {
+        return std::make_reverse_iterator(end());
+    }
+    [[nodiscard]] static constexpr reverse_iterator crbegin() noexcept {
+        return std::make_reverse_iterator(cend());
+    }
+    [[nodiscard]] static constexpr reverse_iterator rend() noexcept {
+        return std::make_reverse_iterator(begin());
+    }
+    [[nodiscard]] static constexpr reverse_iterator crend() noexcept {
+        return std::make_reverse_iterator(cbegin());
+    }
 
-    /// TODO: iterators would yield each string as a string_view.
+    /* Check whether a compile-time index is in bounds for the list. */
+    template <index_type I>
+    [[nodiscard]] static consteval bool contains() noexcept {
+        return impl::valid_index<size(), I>();
+    }
 
-    /* Get the string at index I. */
-    template <size_t I> requires (I < size())
+    /* Check whether the list contains an arbitrary string. */
+    template <static_str Key>
+    [[nodiscard]] static consteval bool contains() noexcept {
+        return ((Key == Strings) || ...);
+    }
+
+    /* Check whether the list contains an arbitrary string. */
+    template <size_t N>
+    [[nodiscard]] static constexpr bool contains(const char(&str)[N])
+        noexcept(noexcept(((str == Strings) || ...)))
+    {
+        return ((str == Strings) || ...);
+    }
+
+    /* Check whether the list contains an arbitrary string. */
+    template <meta::static_str Key>
+    [[nodiscard]] static constexpr bool contains(const Key& key)
+        noexcept(noexcept(((key == Strings) || ...)))
+    {
+        return ((key == Strings) || ...);
+    }
+
+    /* Check whether the list contains an arbitrary string. */
+    template <meta::convertible_to<const char*> T>
+        requires (!meta::string_literal<T> && !meta::static_str<T>)
+    [[nodiscard]] static constexpr bool contains(T&& key)
+        noexcept(noexcept(
+            ((std::string_view(static_cast<const char*>(std::forward<T>(key))) == Strings) || ...)
+        ))
+    {
+        std::string_view view = static_cast<const char*>(std::forward<T>(key));
+        return ((view == Strings) || ...);
+    }
+
+    /* Check whether the list contains an arbitrary string. */
+    template <meta::convertible_to<std::string_view> T>
+        requires (
+            !meta::string_literal<T> &&
+            !meta::static_str<T> &&
+            !meta::convertible_to<T, const char*>
+        )
+    [[nodiscard]] static constexpr bool contains(T&& key)
+        noexcept(noexcept(((std::string_view(std::forward<T>(key)) == Strings) || ...)))
+    {
+        std::string_view view = std::forward<T>(key);
+        return ((view == Strings) || ...);
+    }
+
+    /* Check whether the list contains an arbitrary string. */
+    template <meta::convertible_to<std::string> T>
+        requires (
+            !meta::string_literal<T> &&
+            !meta::static_str<T> &&
+            !meta::convertible_to<T, const char*> &&
+            !meta::convertible_to<T, std::string_view>
+        )
+    [[nodiscard]] static constexpr bool contains(T&& key)
+        noexcept(noexcept(((std::string(std::forward<T>(key)) == Strings) || ...)))
+    {
+        std::string str = std::forward<T>(key);
+        std::string_view view = str;
+        return ((view == Strings) || ...);
+    }
+
+    /* Check whether a runtime index is in bounds for the list. */
+    template <meta::convertible_to<index_type> T>
+        requires (
+            !meta::string_literal<T> &&
+            !meta::static_str<T> &&
+            !meta::convertible_to<T, const char*> &&
+            !meta::convertible_to<T, std::string_view> &&
+            !meta::convertible_to<T, std::string>
+        )
+    [[nodiscard]] static constexpr bool contains(T&& idx)
+        noexcept(noexcept(impl::valid_index(size(), std::forward<T>(idx))))
+    {
+        return impl::valid_index(size(), std::forward<T>(idx));
+    }
+
+    /* Get the string at index I, where `I` is known at compile time.  Applies
+    Python-style wraparound for negative indices, and fails to compile if the index
+    is out of bounds after normalization. */
+    template <index_type I> requires (contains<I>())
     [[nodiscard]] static consteval const auto& get() noexcept {
-        return meta::unpack_string<I, Strings...>;
+        return meta::unpack_string<size_type(I), Strings...>;
     }
 
-    [[nodiscard]] static consteval std::string_view operator[](ssize_t i) {
-        return []<size_t I = 0>(this auto&& self, ssize_t i) {
-            if constexpr (I < size()) {
-                if (I == i) {
-                    return meta::unpack_string<I, Strings...>;
-                }
-                return std::forward<decltype(self)>(self).template operator()<I + 1>(i);
-            } else {
-                throw IndexError(std::to_string(i));
-            }
-        }(impl::normalize_index(size(), i));
+    /* Get a slice from the list at compile time.  Takes an explicitly-initialized
+    `bertrand::slice` pack describing the start, stop, and step indices.  Each index
+    can be omitted by initializing it to `std::nullopt`, which is equivalent to an
+    empty slice index in Python.  Applies Python-style wraparound to both `start` and
+    `stop`. */
+    template <bertrand::slice s>
+    [[nodiscard]] static consteval auto get() noexcept {
+        static constexpr auto indices = s.normalize(ssize());
+        return []<size_t... Is>(std::index_sequence<Is...>) {
+            return string_list<meta::unpack_string<
+                indices.start + Is * indices.step,
+                Strings...
+            >...>{};
+        }(std::make_index_sequence<indices.length>{});
     }
 
-    /// TODO: allow slicing
+    /* Get the string at index I, where `I` is known at runtime.  Applies Python-style
+    wraparound for negative indices, and returns an `end()` iterator if the index is
+    out of bounds. */
+    [[nodiscard]] static constexpr iterator operator[](index_type i) noexcept {
+        i += ssize() * (i < 0);
+        if (i < 0 || i >= ssize()) {
+            return end();
+        }
+        return {data() + i};
+    }
 
+    /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
+    describing the start, stop, and step indices, and returns a slice object containing
+    the strings within the slice.  Each index can be omitted by initializing it to
+    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
+    Python-style wraparound to both `start` and `stop`. */
+    [[nodiscard]] static constexpr slice operator[](bertrand::slice s) noexcept {
+        return {data(), s.normalize(ssize())};
+    }
 
-    /// TODO: conversion to sets/maps and vice versa?
+    /* Equivalent to Python `sep.join(strings...)`. */
+    template <static_str sep>
+    [[nodiscard]] static consteval auto join() noexcept {
+        return string_wrapper<sep>::template join<Strings...>();
+    }
 
+    /* Convert this string list into a string set, assuming the strings it contains are
+    perfectly hashable. */
+    [[nodiscard]] static consteval string_set<Strings...> set()
+        noexcept(noexcept(string_set<Strings...>{}))
+        requires(meta::perfectly_hashable<Strings...>)
+    {
+        return {};
+    }
 
+    /// TODO: support for heterogenous types is an interesting idea.  Might be
+    /// challenging in practice, however.
 
+    // /* Convert this string list into a string map with the given values, assuming the
+    // strings it contains are perfectly hashable. */
+    // template <typename... Args>
+    // [[nodiscard]] static consteval string_map<...> map(Args&&... args)
+    //     noexcept(noexcept(string_map<...>{std::forward<Args>(args)...}))
+    //     requires(meta::perfectly_hashable<Strings...>)
+    // {
+    //     return {std::forward<Args>(args)...};
+    // }
 
     /* Concatenate two string lists via the + operator. */
     template <static_str... OtherStrings>
@@ -1916,7 +2911,7 @@ struct string_list {
     ) const noexcept {
         return []<size_t I = 0>(this auto&& self) {
             if constexpr (I < sizeof...(Strings) && I < sizeof...(OtherStrings)) {
-                constexpr auto comp = get<I>() <=> meta::unpack_string<I, OtherStrings...>;
+                auto comp = get<I>() <=> meta::unpack_string<I, OtherStrings...>;
                 if (comp != 0) {
                     return comp;
                 }
@@ -1939,74 +2934,56 @@ struct string_list {
             ((Strings == OtherStrings) && ...);
     }
 
+private:
+    static constexpr std::array<value_type, size()> m_data {Strings...};
+};
 
 
 
+template <static_str... Keys> requires (meta::perfectly_hashable<Keys...>)
+struct string_set {
 
-    /// TODO: capitalize() returns a new string list with each element capitalized
-    /// same with:
-    /// - center()
-    /// - expandtabs()
-    /// - ljust()
-    /// - lower()
-    /// - lstrip()
-    /// - removeprefix()
-    /// - removesuffix()
-    /// - replace()
-    /// - rjust()
-    /// - rstrip()
-    /// - swapcase()
-    /// - title()
-    /// - upper()
-    /// - zfill()
-
-    /// TODO: count() returns an array of counts for each string in the list.
-    /// same with:
-    /// - endswith()
-    /// - find()
-    /// - index()
-    /// - isalpha()
-    /// - isalnum()
-    /// - isascii()
-    /// - isdigit()
-    /// - islower()
-    /// - isspace()
-    /// - istitle()
-    /// - isupper()
-    /// - rfind()
-    /// - rindex()
-    /// - startswith()
-
-    /// TODO: these present problems.  They may need to return a string_map of heterogenous type?
-    /// - partition()
-    /// - rpartition()
-    /// - split()
-    /// - splitlines()
-    /// - rsplit()
+};
 
 
-
-    template <static_str sep>
-    [[nodiscard]] static consteval auto join() noexcept {
-        return string_methods<sep>::template join<Strings...>();
-    }
+template <meta::not_void T, static_str... Keys> requires (meta::perfectly_hashable<Keys...>)
+struct string_map {
 
 };
 
 
 
+
+
+
+
+template <auto... values>
+struct Foo {};
+
+constexpr Foo<1, 2, "abc"_str> foo;
+
+
+
 inline void test() {
-    constexpr static_str s = "hello";
-
-    static_str s2 = "hello";
-
-    constexpr string_methods<"hello"> str;
-    static_assert(str.capitalize() == "Hello");
-    static_assert(str + " world" == "hello world");
+    constexpr string_list<"foo", "bar", "baz"> list;
+    static_assert(list[5] == list.end());
 
 
 
+
+    static constexpr static_str s = "hello";
+    constexpr std::string s2 = s;
+    static_assert(s == s2);
+
+
+    static_assert(string_wrapper<s>::get<slice{-1, std::nullopt, -1}>().upper() == "OLLEH");
+    static_assert("hello world"_str.split<" ">().join<".">() == "hello.world");
 }
+
+
+
+
+
 
 
 
@@ -2248,7 +3225,6 @@ seamlessly passed up to Python.  It is thus possible to implement pytest-style u
 tests using this function just as in native Python. */
 template <typename... Args> requires (!DEBUG)
 [[gnu::always_inline]] void assert_(Args&&... args) noexcept {}
-
 
 
 }  // namespace bertrand

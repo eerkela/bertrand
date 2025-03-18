@@ -13,8 +13,12 @@ operator.  Generally, an instance of this class will be implicitly constructed u
 initializer list to condense the syntax and provide compile-time guarantees when it
 comes to slice shape. */
 struct slice {
-    std::optional<ssize_t> start;
-    std::optional<ssize_t> stop;
+private:
+    static constexpr ssize_t missing = std::numeric_limits<ssize_t>::min();
+
+public:
+    ssize_t start;
+    ssize_t stop;
     ssize_t step;
 
     [[nodiscard]] explicit constexpr slice(
@@ -22,13 +26,13 @@ struct slice {
         std::optional<ssize_t> stop = std::nullopt,
         std::optional<ssize_t> step = std::nullopt
     ) :
-        start(start),
-        stop(stop),
+        start(start.value_or(missing)),
+        stop(stop.value_or(missing)),
         step(step.value_or(ssize_t(1)))
     {
         if (this->step == 0) {
             throw ValueError("slice step cannot be zero");
-        }        
+        }
     }
 
     /* Result of the `normalize` method.  Indices of this form can be passed to
@@ -69,10 +73,10 @@ struct slice {
         normalized result {zero, zero, step, zero};
 
         // normalize start, correcting for negative indices and truncating to bounds
-        if (!start) {
+        if (start == missing) {
             result.start = neg ? size - ssize_t(1) : zero;  // neg: size - 1 | pos: 0
         } else {
-            result.start = *start;
+            result.start = start;
             result.start += size * (result.start < zero);
             if (result.start < zero) {
                 result.start = -neg;  // neg: -1 | pos: 0
@@ -82,10 +86,10 @@ struct slice {
         }
 
         // normalize stop, correcting for negative indices and truncating to bounds
-        if (!stop) {
+        if (stop == missing) {
             result.stop = neg ? ssize_t(-1) : size;  // neg: -1 | pos: size
         } else {
-            result.stop = *stop;
+            result.stop = stop;
             result.stop += size * (result.stop < zero);
             if (result.stop < zero) {
                 result.stop = -neg;  // neg: -1 | pos: 0
@@ -108,7 +112,33 @@ namespace impl {
     /* A generic sentinel type to simplify iterator implementations. */
     struct sentinel {};
 
-    /* Apply python-style wraparound to a given index, throwing an `IndexError` if it
+    /* Check to see if applying Python-style wraparound to a compile-time index would
+    yield a valid index into a container of a given size.  Returns false if the
+    index would be out of bounds after normalizing. */
+    template <size_t size, ssize_t I>
+    consteval bool valid_index() noexcept {
+        return
+            (I + ssize_t(size * (I < 0)) >= ssize_t(0)) &&
+            (I + ssize_t(size * (I < 0))) < ssize_t(size);
+    }
+
+    /* Check to see if applying Python-style wraparound to a runtime index would yield
+    a valid index into a container of a given size.  Returns false if the index would
+    be out of bounds after normalizing. */
+    inline constexpr bool valid_index(size_t size, ssize_t i) noexcept {
+        return
+            (i + ssize_t(size * (i < 0)) >= ssize_t(0)) &&
+            (i + ssize_t(size * (i < 0))) < ssize_t(size);
+    }
+
+    /* Apply Python-style wraparound to a compile-time index. Fails to compile if the
+    index would be out of bounds after normalizing. */
+    template <size_t size, ssize_t I> requires (valid_index<size, I>())
+    consteval ssize_t normalize_index() noexcept {
+        return I + ssize_t(size * (I < 0));
+    }
+
+    /* Apply python-style wraparound to a runtime index, throwing an `IndexError` if it
     is out of bounds after normalizing. */
     inline constexpr ssize_t normalize_index(size_t size, ssize_t i) {
         ssize_t n = static_cast<ssize_t>(size);
@@ -119,7 +149,18 @@ namespace impl {
         return j;
     }
 
-    /* Apply python-style wraparound to a given index, truncating to the nearest edge
+    /* Apply python-style wraparound to a compile-time index, truncating to the nearest
+    edge if it is out of bounds after normalizing. */
+    template <size_t size, ssize_t I>
+    consteval ssize_t truncate_index() noexcept {
+        if constexpr (valid_index<size, I>()) {
+            return I + ssize_t(size * (I < 0));
+        } else {
+            return I < 0 ? 0 : ssize_t(size);
+        }
+    }
+
+    /* Apply python-style wraparound to a runtime index, truncating to the nearest edge
     if it is out of bounds after normalizing. */
     inline constexpr ssize_t truncate_index(size_t size, ssize_t i) noexcept {
         ssize_t n = static_cast<ssize_t>(size);
