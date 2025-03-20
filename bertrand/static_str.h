@@ -24,7 +24,7 @@
 namespace bertrand {
 
 
-/* A compile-time string literal type that can be used as a deduced non-type template
+/* A compile-time string literal type that can be used as a non-type template
 parameter.
 
 This class allows string literals to be encoded directly into C++'s type system,
@@ -432,7 +432,7 @@ public:
     Python-style wraparound for negative indices, and fails to compile if the index is
     out of bounds after normalization. */
     template <index_type I> requires (impl::valid_index<size(), I>())
-    [[nodiscard]] consteval char get() const noexcept {
+    [[nodiscard]] constexpr char get() const noexcept {
         return buffer[impl::normalize_index<size(), I>()];
     }
 
@@ -442,7 +442,7 @@ public:
     slice index in Python.  Applies Python-style wraparound to both `start` and
     `stop`. */
     template <bertrand::slice s>
-    [[nodiscard]] consteval auto get() const noexcept {
+    [[nodiscard]] constexpr auto get() const noexcept {
         constexpr auto indices = s.normalize(ssize());
         static_str<indices.length> result;
         for (index_type i = 0; i < indices.length; ++i) {
@@ -1537,7 +1537,7 @@ public:
     Python-style wraparound for negative indices, and fails to compile if the index is
     out of bounds after normalization. */
     template <index_type I> requires (impl::valid_index<size(), I>())
-    [[nodiscard]] static consteval auto get() noexcept {
+    [[nodiscard]] static constexpr auto get() noexcept {
         return self.template get<I>();
     }
 
@@ -1547,7 +1547,7 @@ public:
     empty slice index in Python.  Applies Python-style wraparound to both `start` and
     `stop`. */
     template <bertrand::slice s>
-    [[nodiscard]] static consteval auto get() noexcept {
+    [[nodiscard]] static constexpr auto get() noexcept {
         return string_wrapper<self.template get<s>()>{};
     }
 
@@ -2683,25 +2683,6 @@ template <meta::not_void T, static_str... Keys> requires (meta::perfectly_hashab
 struct string_map;
 
 
-/// TODO: allow heterogenous values?
-/// -> Maybe you can write string_wrapper<"key", T>?  So:
-///    static_map<string_wrapper<"foo", int>, string_wrapper<"bar", double>> map;
-
-/// TODO: constexpr string_map map = make_string_map<"foo", "bar", "baz">(1, "a", 2.5);
-
-/// constexpr string_map map = string_list<"foo", "bar", "baz">::map(1, "a", 2.5);
-
-/// -> static_map[] returns the common_type of the initializers, whereas get<>()
-/// returns the actual type at that index.  contains() takes any type that is
-/// comparable against all value types.  Iterators also return the common type.
-
-
-/// TODO: the only way to do this might be to store an array of string_view and values
-/// converted to the common type, and then separately store a tuple of the original
-/// values.  That way, if you look up by `get<"key">()`, you get the actual original
-/// type, and if you iterate or search by `operator[]`, you get the common type.
-
-
 template <static_str... Strings>
 struct string_list {
     using value_type = const std::string_view;
@@ -2712,11 +2693,11 @@ struct string_list {
     using size_type = size_t;
     using index_type = ssize_t;
     using difference_type = std::ptrdiff_t;
-    using iterator = impl::contiguous_iterator<const std::string_view>;
+    using iterator = impl::contiguous_iterator<value_type>;
     using const_iterator = iterator;
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = reverse_iterator;
-    using slice = impl::contiguous_slice<const std::string_view>;
+    using slice = impl::contiguous_slice<value_type>;
     using const_slice = slice;
 
     [[nodiscard]] static consteval pointer data() noexcept { return m_data.data(); }
@@ -2756,29 +2737,26 @@ struct string_list {
     /* Check whether the list contains an arbitrary string. */
     template <size_t N>
     [[nodiscard]] static constexpr bool contains(const char(&str)[N])
-        noexcept(noexcept(((str == Strings) || ...)))
+        noexcept(noexcept(index(str) >= 0))
     {
-        return ((str == Strings) || ...);
+        return index(str) >= 0;
     }
 
     /* Check whether the list contains an arbitrary string. */
     template <meta::static_str Key>
     [[nodiscard]] static constexpr bool contains(const Key& key)
-        noexcept(noexcept(((key == Strings) || ...)))
+        noexcept(noexcept(index(key) >= 0))
     {
-        return ((key == Strings) || ...);
+        return index(key) >= 0;
     }
 
     /* Check whether the list contains an arbitrary string. */
     template <meta::convertible_to<const char*> T>
         requires (!meta::string_literal<T> && !meta::static_str<T>)
     [[nodiscard]] static constexpr bool contains(T&& key)
-        noexcept(noexcept(
-            ((std::string_view(static_cast<const char*>(std::forward<T>(key))) == Strings) || ...)
-        ))
+        noexcept(noexcept(index(std::forward<T>(key)) >= 0))
     {
-        std::string_view view = static_cast<const char*>(std::forward<T>(key));
-        return ((view == Strings) || ...);
+        return index(std::forward<T>(key)) >= 0;
     }
 
     /* Check whether the list contains an arbitrary string. */
@@ -2826,12 +2804,178 @@ struct string_list {
         return impl::valid_index(size(), std::forward<T>(idx));
     }
 
+    /* Count the number of occurrences of a particular string within the list. */
+    template <static_str Key>
+    [[nodiscard]] static consteval size_type count() noexcept {
+        return ((0 + ... + (Key == Strings)));
+    }
+
+    /* Count the number of occurrences of a particular string within the list. */
+    template <size_t N>
+    [[nodiscard]] static constexpr size_type count(const char(&str)[N]) noexcept {
+        return ((0 + ... + (str == Strings)));
+    }
+
+    /* Count the number of occurrences of a particular string within the list. */
+    template <meta::static_str Key>
+    [[nodiscard]] static constexpr size_type count(const Key& key) noexcept {
+        return ((0 + ... + (key == Strings)));
+    }
+
+    /* Count the number of occurrences of a particular string within the list. */
+    template <meta::convertible_to<const char*> T>
+        requires (!meta::string_literal<T> && !meta::static_str<T>)
+    [[nodiscard]] static constexpr size_type count(T&& key) noexcept {
+        return ((0 + ... + (std::forward<T>(key) == Strings)));
+    }
+
+    /* Count the number of occurrences of a particular string within the list. */
+    template <meta::convertible_to<std::string_view> T>
+        requires (
+            !meta::string_literal<T> &&
+            !meta::static_str<T> &&
+            !meta::convertible_to<T, const char*>
+        )
+    [[nodiscard]] static constexpr size_type count(T&& key) noexcept {
+        std::string_view view = std::forward<T>(key);
+        return ((0 + ... + (view == Strings)));
+    }
+
+    /* Count the number of occurrences of a particular string within the list. */
+    template <meta::convertible_to<std::string> T>
+        requires (
+            !meta::string_literal<T> &&
+            !meta::static_str<T> &&
+            !meta::convertible_to<T, const char*> &&
+            !meta::convertible_to<T, std::string_view>
+        )
+    [[nodiscard]] static constexpr size_type count(T&& key) noexcept {
+        std::string str = std::forward<T>(key);
+        std::string_view view = str;
+        return ((0 + ... + (view == Strings)));
+    }
+
+    /* Get the index of the first occurrence of a string within the list.  Fails to
+    compile if the string is not present. */
+    template <static_str Key> requires (contains<Key>())
+    [[nodiscard]] static consteval index_type index() noexcept {
+        return []<index_type I = 0>(this auto&& self) {
+            if constexpr (Key == meta::unpack_string<I, Strings...>) {
+                return I;
+            } else {
+                return std::forward<decltype(self)>(self).template operator()<I + 1>();
+            }
+        }();
+    }
+
+    /* Get the index of the first occurrence of a string within the list.  Returns -1
+    if the string is not present in the list. */
+    template <size_t N>
+    [[nodiscard]] static constexpr index_type index(const char(&str)[N]) noexcept {
+        return []<index_type I = 0>(this auto&& self, const char(&str)[N]) {
+            if constexpr (I < ssize()) {
+                if (str == meta::unpack_string<I, Strings...>) {
+                    return I;
+                }
+                return std::forward<decltype(self)>(self).template operator()<I + 1>();
+            } else {
+                return -1;
+            }
+        }(str);
+    }
+
+    /* Get the index of the first occurrence of a string within the list.  Returns -1
+    if the string is not present in the list. */
+    template <meta::static_str T>
+    [[nodiscard]] static constexpr index_type index(const T& key) noexcept {
+        return []<index_type I = 0>(this auto&& self, const T& key) {
+            if constexpr (I < ssize()) {
+                if (key == meta::unpack_string<I, Strings...>) {
+                    return I;
+                }
+                return std::forward<decltype(self)>(self).template operator()<I + 1>();
+            } else {
+                return -1;
+            }
+        }(key);
+    }
+
+    /* Get the index of the first occurrence of a string within the list.  Returns -1
+    if the string is not present in the list. */
+    template <meta::convertible_to<const char*> T>
+        requires (!meta::string_literal<T> && !meta::static_str<T>)
+    [[nodiscard]] static constexpr index_type index(T&& key) noexcept(
+        noexcept(std::string_view(static_cast<const char*>(std::forward<T>(key))))
+    ) {
+        std::string_view view = static_cast<const char*>(std::forward<T>(key));
+        return []<index_type I = 0>(this auto&& self, std::string_view key) {
+            if constexpr (I < ssize()) {
+                if (key == meta::unpack_string<I, Strings...>) {
+                    return I;
+                }
+                return std::forward<decltype(self)>(self).template operator()<I + 1>(key);
+            } else {
+                return -1;
+            }
+        }(view);
+    }
+
+    /* Get the index of the first occurrence of a string within the list.  Returns -1
+    if the string is not present in the list. */
+    template <meta::convertible_to<std::string_view> T>
+        requires (
+            !meta::string_literal<T> &&
+            !meta::static_str<T> &&
+            !meta::convertible_to<T, const char*>
+        )
+    [[nodiscard]] static constexpr index_type index(T&& key) noexcept(
+        noexcept(std::string_view(std::forward<T>(key)))
+    ) {
+        std::string_view view = std::forward<T>(key);
+        return []<index_type I = 0>(this auto&& self, std::string_view key) {
+            if constexpr (I < ssize()) {
+                if (key == meta::unpack_string<I, Strings...>) {
+                    return I;
+                }
+                return std::forward<decltype(self)>(self).template operator()<I + 1>(key);
+            } else {
+                return -1;
+            }
+        }(view);
+    }
+
+    /* Get the index of the first occurrence of a string within the list.  Returns -1
+    if the string is not present in the list. */
+    template <meta::convertible_to<std::string> T>
+        requires (
+            !meta::string_literal<T> &&
+            !meta::static_str<T> &&
+            !meta::convertible_to<T, const char*> &&
+            !meta::convertible_to<T, std::string_view>
+        )
+    [[nodiscard]] static constexpr index_type index(T&& key) noexcept(
+        noexcept(std::string(std::forward<T>(key)))
+    ) {
+        std::string str = std::forward<T>(key);
+        return []<index_type I = 0>(this auto&& self, std::string_view key) {
+            if constexpr (I < ssize()) {
+                if (key == meta::unpack_string<I, Strings...>) {
+                    return I;
+                }
+                return std::forward<decltype(self)>(self).template operator()<I + 1>(key);
+            } else {
+                return -1;
+            }
+        }(str);
+    }
+
     /* Get the string at index I, where `I` is known at compile time.  Applies
     Python-style wraparound for negative indices, and fails to compile if the index
     is out of bounds after normalization. */
     template <index_type I> requires (contains<I>())
     [[nodiscard]] static consteval const auto& get() noexcept {
-        return meta::unpack_string<size_type(I), Strings...>;
+        constexpr size_type idx = size_type(impl::normalize_index<size(), I>());
+        return meta::unpack_string<idx, Strings...>;
     }
 
     /* Get a slice from the list at compile time.  Takes an explicitly-initialized
@@ -2870,33 +3014,64 @@ struct string_list {
         return {data(), s.normalize(ssize())};
     }
 
+    /* Remove the string at index I, returning a new list without that element.
+    Applies Python-style wraparound for negative indices, and fails to compile if the
+    index is out of bounds after normalization. */
+    template <index_type I> requires (contains<I>())
+    [[nodiscard]] static consteval auto remove() noexcept {
+        constexpr size_type idx = size_type(impl::normalize_index<size(), I>());
+        return []<size_t... Prev, size_t... Next>(
+            std::index_sequence<Prev...>,
+            std::index_sequence<Next...>
+        ) {
+            return string_list<
+                meta::unpack_string<Prev, Strings...>...,
+                meta::unpack_string<idx + 1 + Next, Strings...>...
+            >{};
+        }(
+            std::make_index_sequence<idx>{},
+            std::make_index_sequence<size() - idx - 1>{}
+        );
+    }
+
+    /* Remove the first occurrence of a string from the list, returning a new list
+    without that element.  Fails to compile if the string is not present. */
+    template <static_str Key> requires (contains<Key>())
+    [[nodiscard]] static consteval auto remove() noexcept {
+        constexpr size_type idx = size_type(index<Key>());
+        return []<size_t... Prev, size_t... Next>(
+            std::index_sequence<Prev...>,
+            std::index_sequence<Next...>
+        ) {
+            return string_list<
+                meta::unpack_string<Prev, Strings...>...,
+                meta::unpack_string<idx + 1 + Next, Strings...>...
+            >{};
+        }(
+            std::make_index_sequence<idx>{},
+            std::make_index_sequence<size() - idx - 1>{}
+        );
+    }
+
     /* Equivalent to Python `sep.join(strings...)`. */
     template <static_str sep>
     [[nodiscard]] static consteval auto join() noexcept {
         return string_wrapper<sep>::template join<Strings...>();
     }
 
-    /* Convert this string list into a string set, assuming the strings it contains are
-    perfectly hashable. */
-    [[nodiscard]] static consteval string_set<Strings...> set()
-        noexcept(noexcept(string_set<Strings...>{}))
-        requires(meta::perfectly_hashable<Strings...>)
-    {
-        return {};
+    /* Repeat the contents of the list `reps` times. */
+    template <size_type reps>
+    [[nodiscard]] static consteval auto repeat() noexcept {
+        return []<size_t I = 0>(this auto&& self) {
+            if constexpr (I < reps) {
+                return
+                    std::forward<decltype(self)>(self).template operator()<I + 1>() +
+                    string_list{};
+            } else {
+                return string_list<>{};
+            }
+        }();
     }
-
-    /// TODO: support for heterogenous types is an interesting idea.  Might be
-    /// challenging in practice, however.
-
-    // /* Convert this string list into a string map with the given values, assuming the
-    // strings it contains are perfectly hashable. */
-    // template <typename... Args>
-    // [[nodiscard]] static consteval string_map<...> map(Args&&... args)
-    //     noexcept(noexcept(string_map<...>{std::forward<Args>(args)...}))
-    //     requires(meta::perfectly_hashable<Strings...>)
-    // {
-    //     return {std::forward<Args>(args)...};
-    // }
 
     /* Concatenate two string lists via the + operator. */
     template <static_str... OtherStrings>
@@ -2934,15 +3109,93 @@ struct string_list {
             ((Strings == OtherStrings) && ...);
     }
 
+    /* Convert this string list into a string set, assuming the strings it contains are
+    perfectly hashable. */
+    [[nodiscard]] static consteval auto to_set()
+        noexcept(noexcept(string_set<Strings...>{}))
+        requires(meta::perfectly_hashable<Strings...>)
+    {
+        return string_set<Strings...>{};
+    }
+
+    /* Convert this string list into a string map with the given values, assuming the
+    strings it contains are perfectly hashable. */
+    template <typename... Args>
+        requires (
+            meta::has_common_type<Args...> &&
+            meta::perfectly_hashable<Strings...>
+        )
+    [[nodiscard]] static consteval auto to_map(Args&&... args)
+        noexcept(noexcept(string_map<
+            meta::remove_reference<meta::common_type<Args...>>,
+            Strings...
+        >{std::forward<Args>(args)...}))
+    {
+        return string_map<
+            meta::remove_reference<meta::common_type<Args...>>,
+            Strings...
+        >{std::forward<Args>(args)...};
+    }
+
 private:
     static constexpr std::array<value_type, size()> m_data {Strings...};
 };
 
 
-
 template <static_str... Keys> requires (meta::perfectly_hashable<Keys...>)
 struct string_set {
+    using value_type = const std::string_view;
+    using reference = value_type&;
+    using const_reference = reference;
+    using pointer = value_type*;
+    using const_pointer = pointer;
+    using size_type = size_t;
+    using index_type = ssize_t;
+    using difference_type = std::ptrdiff_t;
+    using hasher = impl::minimal_perfect_hash<Keys...>;
+    using key_equal = std::equal_to<value_type>;
+    using iterator = impl::contiguous_iterator<value_type>;
+    using const_iterator = iterator;
+    using reverse_iterator = std::reverse_iterator<iterator>;
+    using const_reverse_iterator = reverse_iterator;
+    using slice = impl::contiguous_slice<value_type>;
+    using const_slice = slice;
 
+    template <typename T>
+    static constexpr bool hashable = hasher::template hashable<T>;
+
+    [[nodiscard]] static consteval pointer data() noexcept { return m_data.data(); }
+    [[nodiscard]] static consteval size_type size() noexcept { return sizeof...(Keys); }
+    [[nodiscard]] static consteval index_type ssize() noexcept { return ssize_t(size()); }
+    [[nodiscard]] static consteval bool empty() noexcept { return size() == 0; }
+    [[nodiscard]] explicit consteval operator bool() noexcept { return !empty(); }
+    [[nodiscard]] static constexpr iterator begin() noexcept { return {m_data.data()}; }
+    [[nodiscard]] static constexpr iterator cbegin() noexcept { return begin(); }
+    [[nodiscard]] static constexpr iterator end() noexcept { return {m_data.data() + size()}; }
+    [[nodiscard]] static constexpr iterator cend() noexcept { return end(); }
+    [[nodiscard]] static constexpr reverse_iterator rbegin() noexcept {
+        return std::make_reverse_iterator(end());
+    }
+    [[nodiscard]] static constexpr reverse_iterator crbegin() noexcept {
+        return std::make_reverse_iterator(cend());
+    }
+    [[nodiscard]] static constexpr reverse_iterator rend() noexcept {
+        return std::make_reverse_iterator(begin());
+    }
+    [[nodiscard]] static constexpr reverse_iterator crend() noexcept {
+        return std::make_reverse_iterator(cbegin());
+    }
+
+    /// TODO: full set interface
+
+
+
+    /// TODO: m_data can't be ordered in the proper way, which means iterators and
+    /// slices will not work
+
+
+private:
+    static constexpr std::array<value_type, size()> m_data {Keys...};
 };
 
 
@@ -2966,7 +3219,12 @@ constexpr Foo<1, 2, "abc"_str> foo;
 
 inline void test() {
     constexpr string_list<"foo", "bar", "baz"> list;
-    static_assert(list[5] == list.end());
+    static_assert(list.repeat<2>() == string_list<"foo", "bar", "baz", "foo", "bar", "baz">{});
+    static_assert(list[7] == list.end());
+    static_assert(list.index<"bar">() == 1);
+    static_assert(list.remove<"bar">() == string_list<"foo", "baz">{});
+
+
 
 
 
@@ -3242,6 +3500,120 @@ namespace std {
             );
         }
     };
+
+    template <bertrand::meta::static_str T>
+    struct tuple_size<T> :
+        std::integral_constant<size_t, std::remove_cvref_t<T>::size()>
+    {};
+
+    template <auto... Strings>
+    struct tuple_size<bertrand::string_list<Strings...>> :
+        std::integral_constant<size_t, bertrand::string_list<Strings...>::size()>
+    {};
+
+    template <auto... Keys>
+    struct tuple_size<bertrand::string_set<Keys...>> :
+        std::integral_constant<size_t, bertrand::string_set<Keys...>::size()>
+    {};
+
+    template <typename T, auto... Keys>
+    struct tuple_size<bertrand::string_map<T, Keys...>> :
+        std::integral_constant<size_t, bertrand::string_map<T, Keys...>::size()>
+    {};
+
+    template <size_t I, bertrand::meta::static_str T>
+        requires (I < std::remove_cvref_t<T>::size())
+    struct tuple_element<I, T> {
+        using type = decltype(std::declval<T>().template get<I>());
+    };
+
+    template <size_t I, auto... Strings>
+        requires (I < bertrand::string_list<Strings...>::size())
+    struct tuple_element<I, bertrand::string_list<Strings...>> {
+        using type = decltype(bertrand::string_list<Strings...>::template get<I>());
+    };
+
+    template <size_t I, auto... Keys>
+        requires (I < bertrand::string_set<Keys...>::size())
+    struct tuple_element<I, bertrand::string_set<Keys...>> {
+        using type = decltype(bertrand::string_set<Keys...>::template get<I>());
+    };
+
+    template <size_t I, typename T, auto... Keys>
+        requires (I < bertrand::string_map<T, Keys...>::size())
+    struct tuple_element<I, bertrand::string_map<T, Keys...>> {
+        using type = decltype(bertrand::string_map<T, Keys...>::template get<I>());
+    };
+
+    template <size_t I, bertrand::meta::static_str T>
+        requires (I < std::tuple_size<T>::value)
+    [[nodiscard]] constexpr decltype(auto) get(const T& str) noexcept {
+        return str.template get<I>();
+    }
+
+    template <size_t I, auto... Strings>
+        requires (I < bertrand::string_list<Strings...>::size())
+    [[nodiscard]] constexpr decltype(auto) get(const bertrand::string_list<Strings...>& list)
+        noexcept
+    {
+        return list.template get<I>();
+    }
+
+    template <size_t I, auto... Keys>
+        requires (I < bertrand::string_set<Keys...>::size())
+    [[nodiscard]] constexpr decltype(auto) get(const bertrand::string_set<Keys...>& set)
+        noexcept
+    {
+        return set.template get<I>();
+    }
+
+    template <size_t I, typename T, auto... Keys>
+        requires (I < bertrand::string_map<T, Keys...>::size())
+    [[nodiscard]] constexpr decltype(auto) get(const bertrand::string_map<T, Keys...>& map)
+        noexcept
+    {
+        return map.template get<I>();
+    }
+
+    template <bertrand::slice s, bertrand::meta::static_str T>
+    [[nodiscard]] constexpr decltype(auto) get(const T& str) noexcept {
+        return str.template get<s>();
+    }
+
+    template <bertrand::slice s, auto... Strings>
+    [[nodiscard]] constexpr decltype(auto) get(const bertrand::string_list<Strings...>& list)
+        noexcept
+    {
+        return list.template get<s>();
+    }
+
+    template <bertrand::slice s, auto... Keys>
+    [[nodiscard]] constexpr decltype(auto) get(const bertrand::string_set<Keys...>& set)
+        noexcept
+    {
+        return set.template get<s>();
+    }
+
+    template <bertrand::slice s, typename T, auto... Keys>
+    [[nodiscard]] constexpr decltype(auto) get(const bertrand::string_map<T, Keys...>& map)
+        noexcept
+    {
+        return map.template get<s>();
+    }
+
+    template <bertrand::static_str Key, auto... Keys>
+    [[nodiscard]] constexpr decltype(auto) get(const bertrand::string_list<Keys...>& set)
+        noexcept
+    {
+        return set.template get<Key>();
+    }
+
+    template <bertrand::static_str Key, typename T, auto... Keys>
+    [[nodiscard]] constexpr decltype(auto) get(const bertrand::string_map<T, Keys...>& map)
+        noexcept
+    {
+        return map.template get<Key>();
+    }
 
 }
 
