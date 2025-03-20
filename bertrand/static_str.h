@@ -87,13 +87,6 @@ template <auto S>
 static_str(string_wrapper<S>) -> static_str<S.size()>;
 
 
-/* A user-defined literal operator that converts a string literal directly to a
-`string_wrapper` object, which naturally decays to `static_str` and has a full Python
-string interface. */
-template <static_str self>
-consteval string_wrapper<self> operator""_str() noexcept { return {}; }
-
-
 namespace impl {
     struct static_str_tag {};
 
@@ -1054,6 +1047,42 @@ private:
         }
     }
 
+    /* Equivalent to Python `str.removeprefix()`, but evaluated statically at compile
+    time. */
+    template <bertrand::static_str self, bertrand::static_str prefix>
+    [[nodiscard]] static consteval auto removeprefix() noexcept {
+        if constexpr (startswith<self, prefix>()) {
+            static_str<self.size() - prefix.size()> result;
+            std::copy_n(
+                self.buffer + prefix.size(),
+                self.size() - prefix.size(),
+                result.buffer
+            );
+            result.buffer[self.size() - prefix.size()] = '\0';
+            return result;
+        } else {
+            return self;
+        }
+    }
+
+    /* Equivalent to Python `str.removesuffix()`, but evaluated statically at compile
+    time. */
+    template <bertrand::static_str self, bertrand::static_str suffix>
+    [[nodiscard]] static consteval auto removesuffix() noexcept {
+        if constexpr (endswith<self, suffix>()) {
+            static_str<self.size() - suffix.size()> result;
+            std::copy_n(
+                self.buffer,
+                self.size() - suffix.size(),
+                result.buffer
+            );
+            result.buffer[self.size() - suffix.size()] = '\0';
+            return result;
+        } else {
+            return self;
+        }
+    }
+
     /* Equivalent to Python `str.replace()`. */
     template <
         bertrand::static_str self,
@@ -1153,9 +1182,9 @@ private:
         if constexpr (freq == 0) {
             return string_list<self>{};
         } else {
-            constexpr size_type n = (freq < maxsplit ? freq : maxsplit) + 1;
+            static constexpr size_type n = (freq < maxsplit ? freq : maxsplit) + 1;
             return []<size_type... Is>(std::index_sequence<Is...>) {
-                constexpr std::array<size_type, n> strides = [] {
+                static constexpr std::array<size_type, n> strides = [] {
                     std::array<size_type, n> result;
                     size_type prev = self.size();
                     for (size_type i = prev - 1, j = 0; j < n - 1; --i) {
@@ -1171,24 +1200,14 @@ private:
                     result[n - 1] = prev;
                     return result;
                 }();
-
-                /// TODO: this is basically the opposite logic from split()
-                std::tuple<static_str<std::get<Is>(strides)>...> result;
-                size_type offset = self.size();
-                (
-                    (
-                        offset -= strides[Is],
-                        std::copy_n(
-                            self.buffer + offset,
-                            strides[Is],
-                            std::get<Is>(result).buffer
-                        ),
-                        std::get<Is>(result).buffer[strides[Is]] = '\0',
-                        offset -= sep.size()
-                    ),
-                    ...
-                );
-                return result;
+                constexpr auto substr = []<size_type... Js>(std::index_sequence<Js...>) {
+                    return self.buffer + self.size() - (
+                        strides[0] + ... + (strides[Js + 1] + sep.size())
+                    );
+                };
+                return string_list<static_str<strides[n - 1 - Is]>{
+                    substr(std::make_index_sequence<n - 1 - Is>{})
+                }...>{};
             }(std::make_index_sequence<n>{});
         }
     }
@@ -1220,7 +1239,7 @@ private:
         if constexpr (freq == 0) {
             return string_list<self>{};
         } else {
-            constexpr size_type n = (freq < maxsplit ? freq : maxsplit) + 1;
+            static constexpr size_type n = (freq < maxsplit ? freq : maxsplit) + 1;
             return []<size_type... Is>(std::index_sequence<Is...>) {
                 static constexpr std::array<size_type, sizeof...(Is)> strides = [] {
                     std::array<size_type, n> result;
@@ -1254,30 +1273,24 @@ private:
     /* Equivalent to Python `str.splitlines([keepends])`. */
     template <bertrand::static_str self, bool keepends = false>
     [[nodiscard]] static consteval auto splitlines() noexcept {
-        constexpr size_type n = [] {
-            if constexpr (self.size() == 0) {
-                return 0;
-            } else {
-                size_type total = 1;
-                for (size_type i = 0; i < self.size(); ++i) {
-                    char c = self.buffer[i];
-                    if (c == '\r') {
-                        ++total;
-                        if (self.buffer[i + 1] == '\n') {
-                            ++i;  // skip newline character
-                        }
-                    } else if (impl::char_islinebreak(c)) {
-                        ++total;
-                    }
+        static constexpr size_type n = [] {
+            size_type total = 1;
+            for (size_type i = 0; i < self.size(); ++i) {
+                char c = self.buffer[i];
+                if (c == '\r') {
+                    ++total;
+                    i += self.buffer[i + 1] == '\n';  // skip newline character
+                } else if (impl::char_islinebreak(c)) {
+                    ++total;
                 }
-                return total;
             }
+            return total;
         }();
-        if constexpr (n == 0) {
-            return std::make_tuple();
+        if constexpr (n == 1) {
+            return string_list<self>{};
         } else {
-            constexpr auto result = []<size_type... Is>(std::index_sequence<Is...>) {
-                constexpr std::array<size_type, n> strides = [] {
+            static constexpr auto result = []<size_type... Is>(std::index_sequence<Is...>) {
+                static constexpr std::array<size_type, n> strides = [] {
                     std::array<size_type, n> result;
                     size_type prev = 0;
                     for (size_type i = prev, j = 0; j < n - 1;) {
@@ -1307,30 +1320,27 @@ private:
                     result[n - 1] = self.size() - prev;
                     return result;
                 }();
-                std::tuple<static_str<std::get<Is>(strides)>...> result;
-                size_type offset = 0;
-                (
-                    (
-                        std::copy_n(
-                            self.buffer + offset,
-                            strides[Is],
-                            std::get<Is>(result).buffer
-                        ),
-                        std::get<Is>(result).buffer[strides[Is]] = '\0',
-                        offset += strides[Is],
-                        offset += (
-                            self.buffer[strides[Is]] == '\r' &&
-                            self.buffer[strides[Is] + 1] == '\n'
-                        ) ? 2 : 1
-                    ),
-                    ...
-                );
-                return result;
+                constexpr auto substr = []<size_type... Js>(std::index_sequence<Js...>) {
+                    if constexpr (keepends) {
+                        return self.buffer + (0 + ... + strides[Js]);
+                    } else {
+                        size_type offset = 0;
+                        ((offset += strides[Js] + 1 + (
+                            self.buffer[offset] == '\r' && self.buffer[offset + 1] == '\n')
+                        ), ...);
+                        return self.buffer + offset;
+                    }
+                };
+                return string_list<
+                    static_str<strides[Is]>{substr(std::make_index_sequence<Is>{})}...
+                >{};
             }(std::make_index_sequence<n>{});
-            if constexpr (std::get<n - 1>(result).size() == 0) {  // strip empty line
-                return []<size_type... Is>(std::index_sequence<Is...>, auto&& result) {
-                    return std::make_tuple(std::get<Is>(result)...);
-                }(std::make_index_sequence<n - 1>{}, result);
+
+            // strip empty line from the end
+            if constexpr (result.template get<n - 1>().size() == 0) {
+                return []<size_type... Is>(std::index_sequence<Is...>) {
+                    return string_list<result.template get<Is>()...>{};
+                }(std::make_index_sequence<n - 1>{});
             } else {
                 return result;
             }
@@ -1449,42 +1459,6 @@ private:
             );
             result.buffer[width] = '\0';
             return result;
-        }
-    }
-
-    /* Equivalent to Python `str.removeprefix()`, but evaluated statically at compile
-    time. */
-    template <bertrand::static_str self, bertrand::static_str prefix>
-    [[nodiscard]] static consteval auto removeprefix() noexcept {
-        if constexpr (startswith<self, prefix>()) {
-            static_str<self.size() - prefix.size()> result;
-            std::copy_n(
-                self.buffer + prefix.size(),
-                self.size() - prefix.size(),
-                result.buffer
-            );
-            result.buffer[self.size() - prefix.size()] = '\0';
-            return result;
-        } else {
-            return self;
-        }
-    }
-
-    /* Equivalent to Python `str.removesuffix()`, but evaluated statically at compile
-    time. */
-    template <bertrand::static_str self, bertrand::static_str suffix>
-    [[nodiscard]] static consteval auto removesuffix() noexcept {
-        if constexpr (endswith<self, suffix>()) {
-            static_str<self.size() - suffix.size()> result;
-            std::copy_n(
-                self.buffer,
-                self.size() - suffix.size(),
-                result.buffer
-            );
-            result.buffer[self.size() - suffix.size()] = '\0';
-            return result;
-        } else {
-            return self;
         }
     }
 };
@@ -2661,24 +2635,36 @@ namespace meta {
 }
 
 
-/* A specialization of string_map that does not hold any values.  Such a data structure
-is equivalent to a perfectly-hashed set of compile-time strings, which can be
-efficiently searched at runtime.  Rather than dereferencing to a value, the buckets
-and iterators will dereference to `string_view`s of the template key buffers. */
+/* A compile-time perfect hash set with a finite set of compile-time strings as keys.
+
+This data structure will attempt to compute a minimal perfect hash function over the
+input strings at compile time, granting optimal O(1) lookups at both compile time and
+runtime without any collisions.  The computed hash function is based on the algorithm
+used by tools like `gperf`, which only need to consider the N most variable characters
+in the input strings, where N is minimized using an associative array of relative
+weights for each character.  Searches therefore devolve to just a handful of character
+lookups at fixed offsets within the string, followed by an equality comparison to
+validate the result, which approaches the maximum possible theoretical performance for
+a hash table in any language.  In fact, for search strings that are known at compile
+time, the lookup logic can be completely optimized out, skipping straight to the
+final value without any intermediate computation. */
 template <static_str... Keys> requires (meta::perfectly_hashable<Keys...>)
 struct string_set;
 
 
-/* A compile-time perfect hash table with a finite set of static strings as keys.  The
-data structure will compute a perfect hash function for the given strings at compile
-time, and will store the values in a fixed-size array that can be baked into the final
-binary.
+/* A compile-time perfect hash map with a finite set of compile-time strings as keys.
 
-Searching the map is extremely fast even in the worst case, consisting only of a
-perfect FNV-1a hash, a single array lookup, and a string comparison to validate.  No
-collision resolution is necessary, due to the perfect hash function.  If the search
-string is also known at compile time, then even these can be optimized out, skipping
-straight to the final value with no intermediate computation. */
+This data structure will attempt to compute a minimal perfect hash function over the
+input strings at compile time, granting optimal O(1) lookups at both compile time and
+runtime without any collisions.  The computed hash function is based on the algorithm
+used by tools like `gperf`, which only need to consider the N most variable characters
+in the input strings, where N is minimized using an associative array of relative
+weights for each character.  Searches therefore devolve to just a handful of character
+lookups at fixed offsets within the string, followed by an equality comparison to
+validate the result, which approaches the maximum possible theoretical performance for
+a hash table in any language.  In fact, for search strings that are known at compile
+time, the lookup logic can be completely optimized out, skipping straight to the
+final value without any intermediate computation. */
 template <meta::not_void T, static_str... Keys> requires (meta::perfectly_hashable<Keys...>)
 struct string_map;
 
@@ -3104,9 +3090,11 @@ struct string_list {
     /* Check for lexicographic equality between two string lists. */
     template <static_str... OtherStrings>
     [[nodiscard]] consteval bool operator==(string_list<OtherStrings...>) const noexcept {
-        return
-            sizeof...(Strings) == sizeof...(OtherStrings) &&
-            ((Strings == OtherStrings) && ...);
+        if constexpr (sizeof...(OtherStrings) == size()) {
+            return ((Strings == OtherStrings) && ...);
+        } else {
+            return false;
+        }
     }
 
     /* Convert this string list into a string set, assuming the strings it contains are
@@ -3122,6 +3110,7 @@ struct string_list {
     strings it contains are perfectly hashable. */
     template <typename... Args>
         requires (
+            sizeof...(Args) == size() &&
             meta::has_common_type<Args...> &&
             meta::perfectly_hashable<Strings...>
         )
@@ -3210,22 +3199,16 @@ struct string_map {
 
 
 
-template <auto... values>
-struct Foo {};
-
-constexpr Foo<1, 2, "abc"_str> foo;
-
 
 
 inline void test() {
+    static_assert(string_wrapper<"a\nb\nc\n">::splitlines().join<" ">() == "a b c");
+
     constexpr string_list<"foo", "bar", "baz"> list;
     static_assert(list.repeat<2>() == string_list<"foo", "bar", "baz", "foo", "bar", "baz">{});
     static_assert(list[7] == list.end());
     static_assert(list.index<"bar">() == 1);
     static_assert(list.remove<"bar">() == string_list<"foo", "baz">{});
-
-
-
 
 
 
@@ -3235,7 +3218,7 @@ inline void test() {
 
 
     static_assert(string_wrapper<s>::get<slice{-1, std::nullopt, -1}>().upper() == "OLLEH");
-    static_assert("hello world"_str.split<" ">().join<".">() == "hello.world");
+    static_assert(string_wrapper<"hello world">::split<" ">().join<".">() == "hello.world");
 }
 
 
