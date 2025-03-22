@@ -234,13 +234,13 @@ struct static_str : impl::static_str_tag {
     using slice = impl::contiguous_slice<value_type>;
     using const_slice = slice;
 
-    struct item : impl::item {
+    struct item : impl::wrapper {
     private:
-        friend impl::getitem;
+        friend impl::getter;
         const static_str* container;
         index_type index;
 
-        constexpr const char& getitem() const noexcept(!DEBUG) {
+        constexpr const char& getter() const noexcept(!DEBUG) {
             index_type i = index + container->ssize() * (index < 0);
             if constexpr (DEBUG) {
                 if (i < 0 || i >= container->ssize()) {
@@ -251,8 +251,7 @@ struct static_str : impl::static_str_tag {
         }
 
     public:
-        using __wrapped__ = const char&;
-        using impl::item::operator=;
+        using impl::wrapper::operator=;
         constexpr item(const static_str* container, index_type index) noexcept :
             container(container), index(index)
         {}
@@ -3012,11 +3011,8 @@ struct string_map {
 
 
 
-
-
 inline void test() {
     static_assert(meta::perfectly_hashable<"foo", "bar">);
-
 
     static_assert(string_wrapper<"a\nb\nc\n">::splitlines().join<" ">() == "a b c");
 
@@ -3033,6 +3029,7 @@ inline void test() {
     static_assert(s == s2);
     static_assert(s[0] == 'h');
     static_assert(pow(s[0], 2) == 64);
+    static_assert(modulo::floor(s[0], 3) == 2);
 
     static_str s3 = "hello";
     auto x = static_cast<char>(s3[0]);

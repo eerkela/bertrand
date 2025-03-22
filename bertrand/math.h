@@ -771,12 +771,12 @@ by the `impl::abs<T>` control struct, which is always specialized for integer an
 floating point types at a minimum. */
 template <typename T>
     requires (requires(const T& obj) {
-        impl::abs<meta::unqualify<meta::item_type<T>>>{}(obj);
+        impl::abs<meta::unqualify<meta::unwrap_type<T>>>{}(obj);
     })
 [[nodiscard]] constexpr decltype(auto) abs(const T& obj) noexcept(
-    noexcept(impl::abs<meta::unqualify<meta::item_type<T>>>{}(obj))
+    noexcept(impl::abs<meta::unqualify<meta::unwrap_type<T>>>{}(obj))
 ) {
-    return impl::abs<meta::unqualify<meta::item_type<T>>>{}(obj);
+    return impl::abs<meta::unqualify<meta::unwrap_type<T>>>{}(obj);
 }
 
 
@@ -787,8 +787,8 @@ with a negative exponent always returns zero, without erroring. */
 template <typename Base, typename Exp>
     requires (requires(const Base& base, const Exp& exp) {
         impl::pow<
-            meta::unqualify<meta::item_type<Base>>,
-            meta::unqualify<meta::item_type<Exp>>
+            meta::unqualify<meta::unwrap_type<Base>>,
+            meta::unqualify<meta::unwrap_type<Exp>>
         >{}(base, exp);
     })
 [[nodiscard]] constexpr decltype(auto) pow(
@@ -796,13 +796,13 @@ template <typename Base, typename Exp>
     const Exp& exp
 ) noexcept(
     noexcept(impl::pow<
-        meta::unqualify<meta::item_type<Base>>,
-        meta::unqualify<meta::item_type<Exp>>
+        meta::unqualify<meta::unwrap_type<Base>>,
+        meta::unqualify<meta::unwrap_type<Exp>>
     >{}(base, exp))
 ) {
     return impl::pow<
-        meta::unqualify<meta::item_type<Base>>,
-        meta::unqualify<meta::item_type<Exp>>
+        meta::unqualify<meta::unwrap_type<Base>>,
+        meta::unqualify<meta::unwrap_type<Exp>>
     >{}(base, exp);
 }
 
@@ -816,9 +816,9 @@ zero will cause a `ZeroDivisionError`. */
 template <typename Base, typename Exp, typename Mod>
     requires (requires(const Base& base, const Exp& exp, const Mod& mod) {
         impl::pow<
-            meta::unqualify<meta::item_type<Base>>,
-            meta::unqualify<meta::item_type<Exp>>,
-            meta::unqualify<meta::item_type<Mod>>
+            meta::unqualify<meta::unwrap_type<Base>>,
+            meta::unqualify<meta::unwrap_type<Exp>>,
+            meta::unqualify<meta::unwrap_type<Mod>>
         >{}(base, exp, mod);
     })
 [[nodiscard]] constexpr decltype(auto) pow(
@@ -829,17 +829,17 @@ template <typename Base, typename Exp, typename Mod>
     noexcept(impl::check_for_negative_exponent(exp)) &&
     noexcept(impl::check_for_zero_division(mod)) &&
     noexcept(impl::pow<
-        meta::unqualify<meta::item_type<Base>>,
-        meta::unqualify<meta::item_type<Exp>>,
-        meta::unqualify<meta::item_type<Mod>>
+        meta::unqualify<meta::unwrap_type<Base>>,
+        meta::unqualify<meta::unwrap_type<Exp>>,
+        meta::unqualify<meta::unwrap_type<Mod>>
     >{}(base, exp, mod))
 ) {
     impl::check_for_negative_exponent(exp);
     impl::check_for_zero_division(mod);
     return impl::pow<
-        meta::unqualify<meta::item_type<Base>>,
-        meta::unqualify<meta::item_type<Exp>>,
-        meta::unqualify<meta::item_type<Mod>>
+        meta::unqualify<meta::unwrap_type<Base>>,
+        meta::unqualify<meta::unwrap_type<Exp>>,
+        meta::unqualify<meta::unwrap_type<Mod>>
     >{}(base, exp, mod);
 }
 
@@ -852,7 +852,7 @@ struct divide {
 private:
 
     template <typename T>
-    using unwrap = meta::unqualify<meta::item_type<T>>;
+    using unwrap = meta::unqualify<meta::unwrap_type<T>>;
 
 public:
     constexpr divide() noexcept = delete;
@@ -1084,13 +1084,6 @@ public:
 };
 
 
-/// TODO: modulo and divmod should delegate correctly as written, but may not be
-/// the most efficient in the case of proxy types.  However, it's so tedious to
-/// implement that I should only change it when I'm sure of the best solution.
-/// That probably involves a meta::unwrap() function that converts an object to its
-/// __wrapped__ type or something to that effect.
-
-
 /* A family of modulus operators with different rounding strategies, in order to
 facilitate inter-language communication where conventions may differ.  Numeric
 algorithms that use these operators are guaranteed to behave consistently from one
@@ -1103,15 +1096,17 @@ struct modulo {
     negligible, but not necessarily zero). */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
-            lhs - divide::true_(lhs, rhs) * rhs;
+            meta::unwrap(lhs) - divide::true_(lhs, rhs) * meta::unwrap(rhs);
         })
     [[nodiscard]] static constexpr decltype(auto) true_(
         const L& lhs,
         const R& rhs
     ) noexcept(
-        noexcept(lhs - divide::true_(lhs, rhs) * rhs)
+        noexcept(meta::unwrap(lhs) - divide::true_(lhs, rhs) * meta::unwrap(rhs))
     ) {
-        return lhs - divide::true_(lhs, rhs) * rhs;
+        return [](const auto& lhs, const auto& rhs) {
+            return lhs - divide::true_(lhs, rhs) * rhs;
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, returning the remainder according to C++ semantics.  For
@@ -1119,165 +1114,187 @@ struct modulo {
     it is identical to a "true" modulus (i.e. floating point error) of a division. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
-            lhs - divide::cpp(lhs, rhs) * rhs;
+            meta::unwrap(lhs) - divide::cpp(lhs, rhs) * meta::unwrap(rhs);
         })
     [[nodiscard]] static constexpr decltype(auto) cpp(
         const L& lhs,
         const R& rhs
     ) noexcept(
-        noexcept(lhs - divide::cpp(lhs, rhs) * rhs)
+        noexcept(meta::unwrap(lhs) - divide::cpp(lhs, rhs) * meta::unwrap(rhs))
     ) {
-        return lhs - divide::cpp(lhs, rhs) * rhs;
+        return [](const auto& lhs, const auto& rhs) {
+            return lhs - divide::cpp(lhs, rhs) * rhs;
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient toward negative infinity and returning
     the remainder.  This is the rounding strategy used by Python's `%` operator. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
-            lhs - divide::floor(lhs, rhs) * rhs;
+            meta::unwrap(lhs) - divide::floor(lhs, rhs) * meta::unwrap(rhs);
         })
     [[nodiscard]] static constexpr decltype(auto) floor(
         const L& lhs,
         const R& rhs
     ) noexcept(
-        noexcept(lhs - divide::floor(lhs, rhs) * rhs)
+        noexcept(meta::unwrap(lhs) - divide::floor(lhs, rhs) * meta::unwrap(rhs))
     ) {
-        return lhs - divide::floor(lhs, rhs) * rhs;
+        return [](const auto& lhs, const auto& rhs) {
+            return lhs - divide::floor(lhs, rhs) * rhs;
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient toward positive infinity and returning
     the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
-            lhs - divide::ceil(lhs, rhs) * rhs;
+            meta::unwrap(lhs) - divide::ceil(lhs, rhs) * meta::unwrap(rhs);
         })
     [[nodiscard]] static constexpr decltype(auto) ceil(
         const L& lhs,
         const R& rhs
     ) noexcept(
-        noexcept(lhs - divide::ceil(lhs, rhs) * rhs)
+        noexcept(meta::unwrap(lhs) - divide::ceil(lhs, rhs) * meta::unwrap(rhs))
     ) {
-        return lhs - divide::ceil(lhs, rhs) * rhs;
+        return [](const auto& lhs, const auto& rhs) {
+            return lhs - divide::ceil(lhs, rhs) * rhs;
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient toward zero and returning the
     remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
-            lhs - divide::down(lhs, rhs) * rhs;
+            meta::unwrap(lhs) - divide::down(lhs, rhs) * meta::unwrap(rhs);
         })
     [[nodiscard]] static constexpr decltype(auto) down(
         const L& lhs,
         const R& rhs
     ) noexcept(
-        noexcept(lhs - divide::down(lhs, rhs) * rhs)
+        noexcept(meta::unwrap(lhs) - divide::down(lhs, rhs) * meta::unwrap(rhs))
     ) {
-        return lhs - divide::down(lhs, rhs) * rhs;
+        return [](const auto& lhs, const auto& rhs) {
+            return lhs - divide::down(lhs, rhs) * rhs;
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient away from zero and returning the
     remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
-            lhs - divide::up(lhs, rhs) * rhs;
+            meta::unwrap(lhs) - divide::up(lhs, rhs) * meta::unwrap(rhs);
         })
     [[nodiscard]] static constexpr decltype(auto) up(
         const L& lhs,
         const R& rhs
     ) noexcept(
-        noexcept(lhs - divide::up(lhs, rhs) * rhs)
+        noexcept(meta::unwrap(lhs) - divide::up(lhs, rhs) * meta::unwrap(rhs))
     ) {
-        return lhs - divide::up(lhs, rhs) * rhs;
+        return [](const auto& lhs, const auto& rhs) {
+            return lhs - divide::up(lhs, rhs) * rhs;
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
     ties toward negative infinity, and returning the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
-            lhs - divide::half_floor(lhs, rhs) * rhs;
+            meta::unwrap(lhs) - divide::half_floor(lhs, rhs) * meta::unwrap(rhs);
         })
     [[nodiscard]] static constexpr decltype(auto) half_floor(
         const L& lhs,
         const R& rhs
     ) noexcept(
-        noexcept(lhs - divide::half_floor(lhs, rhs) * rhs)
+        noexcept(meta::unwrap(lhs) - divide::half_floor(lhs, rhs) * meta::unwrap(rhs))
     ) {
-        return lhs - divide::half_floor(lhs, rhs) * rhs;
+        return [](const auto& lhs, const auto& rhs) {
+            return lhs - divide::half_floor(lhs, rhs) * rhs;
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
     ties toward positive infinity, and returning the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
-            lhs - divide::half_ceil(lhs, rhs) * rhs;
+            meta::unwrap(lhs) - divide::half_ceil(lhs, rhs) * meta::unwrap(rhs);
         })
     [[nodiscard]] static constexpr decltype(auto) half_ceil(
         const L& lhs,
         const R& rhs
     ) noexcept(
-        noexcept(lhs - divide::half_ceil(lhs, rhs) * rhs)
+        noexcept(meta::unwrap(lhs) - divide::half_ceil(lhs, rhs) * meta::unwrap(rhs))
     ) {
-        return lhs - divide::half_ceil(lhs, rhs) * rhs;
+        return [](const auto& lhs, const auto& rhs) {
+            return lhs - divide::half_ceil(lhs, rhs) * rhs;
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
     ties toward zero, and returning the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
-            lhs - divide::half_down(lhs, rhs) * rhs;
+            meta::unwrap(lhs) - divide::half_down(lhs, rhs) * meta::unwrap(rhs);
         })
     [[nodiscard]] static constexpr decltype(auto) half_down(
         const L& lhs,
         const R& rhs
     ) noexcept(
-        noexcept(lhs - divide::half_down(lhs, rhs) * rhs)
+        noexcept(meta::unwrap(lhs) - divide::half_down(lhs, rhs) * meta::unwrap(rhs))
     ) {
-        return lhs - divide::half_down(lhs, rhs) * rhs;
+        return [](const auto& lhs, const auto& rhs) {
+            return lhs - divide::half_down(lhs, rhs) * rhs;
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
     ties away from zero, and returning the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
-            lhs - divide::half_up(lhs, rhs) * rhs;
+            meta::unwrap(lhs) - divide::half_up(lhs, rhs) * meta::unwrap(rhs);
         })
     [[nodiscard]] static constexpr decltype(auto) half_up(
         const L& lhs,
         const R& rhs
     ) noexcept(
-        noexcept(lhs - divide::half_up(lhs, rhs) * rhs)
+        noexcept(meta::unwrap(lhs) - divide::half_up(lhs, rhs) * meta::unwrap(rhs))
     ) {
-        return lhs - divide::half_up(lhs, rhs) * rhs;
+        return [](const auto& lhs, const auto& rhs) {
+            return lhs - divide::half_up(lhs, rhs) * rhs;
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
     ties toward the nearest even number. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
-            lhs - divide::half_even(lhs, rhs) * rhs;
+            meta::unwrap(lhs) - divide::half_even(lhs, rhs) * meta::unwrap(rhs);
         })
     [[nodiscard]] static constexpr decltype(auto) half_even(
         const L& lhs,
         const R& rhs
     ) noexcept(
-        noexcept(lhs - divide::half_even(lhs, rhs) * rhs)
+        noexcept(meta::unwrap(lhs) - divide::half_even(lhs, rhs) * meta::unwrap(rhs))
     ) {
-        return lhs - divide::half_even(lhs, rhs) * rhs;
+        return [](const auto& lhs, const auto& rhs) {
+            return lhs - divide::half_even(lhs, rhs) * rhs;
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
     ties toward the nearest odd number. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
-            lhs - divide::half_odd(lhs, rhs) * rhs;
+            meta::unwrap(lhs) - divide::half_odd(lhs, rhs) * meta::unwrap(rhs);
         })
     [[nodiscard]] static constexpr decltype(auto) half_odd(
         const L& lhs,
         const R& rhs
     ) noexcept(
-        noexcept(lhs - divide::half_odd(lhs, rhs) * rhs)
+        noexcept(meta::unwrap(lhs) - divide::half_odd(lhs, rhs) * meta::unwrap(rhs))
     ) {
-        return lhs - divide::half_odd(lhs, rhs) * rhs;
+        return [](const auto& lhs, const auto& rhs) {
+            return lhs - divide::half_odd(lhs, rhs) * rhs;
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 };
 
@@ -1294,22 +1311,18 @@ struct divmod {
     error of the division (i.e. negligible, but not necessarily zero). */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
-            std::make_pair(
-                divide::true_(lhs, rhs),
-                lhs - divide::true_(lhs, rhs) * rhs
-            );
+            std::make_pair(divide::true_(lhs, rhs), modulo::true_(lhs, rhs));
         })
     [[nodiscard]] static constexpr decltype(auto) true_(
         const L& lhs,
         const R& rhs
     ) noexcept(noexcept(
-        std::make_pair(
-            divide::true_(lhs, rhs),
-            lhs - divide::true_(lhs, rhs) * rhs
-        )
+        std::make_pair(divide::true_(lhs, rhs), modulo::true_(lhs, rhs))
     )) {
-        auto quotient = divide::true_(lhs, rhs);
-        return std::make_pair(quotient, lhs - (quotient * rhs));
+        return [](const auto& lhs, const auto& rhs) {
+            auto quotient = divide::true_(lhs, rhs);
+            return std::make_pair(quotient, lhs - (quotient * rhs));
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, returning both the quotient and remainder according to C++
@@ -1318,22 +1331,18 @@ struct divmod {
     error). */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
-            std::make_pair(
-                divide::cpp(lhs, rhs),
-                lhs - divide::cpp(lhs, rhs) * rhs
-            );
+            std::make_pair(divide::cpp(lhs, rhs), modulo::cpp(lhs, rhs));
         })
     [[nodiscard]] static constexpr decltype(auto) cpp(
         const L& lhs,
         const R& rhs
     ) noexcept(noexcept(
-        std::make_pair(
-            divide::cpp(lhs, rhs),
-            lhs - divide::cpp(lhs, rhs) * rhs
-        )
+        std::make_pair(divide::cpp(lhs, rhs), modulo::cpp(lhs, rhs))
     )) {
-        auto quotient = divide::cpp(lhs, rhs);
-        return std::make_pair(quotient, lhs - (quotient * rhs));
+        return [](const auto& lhs, const auto& rhs) {
+            auto quotient = divide::cpp(lhs, rhs);
+            return std::make_pair(quotient, lhs - (quotient * rhs));
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient toward negative infinity and returning
@@ -1341,88 +1350,72 @@ struct divmod {
     `divmod` operator. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
-            std::make_pair(
-                divide::floor(lhs, rhs),
-                lhs - divide::floor(lhs, rhs) * rhs
-            );
+            std::make_pair(divide::floor(lhs, rhs), modulo::floor(lhs, rhs));
         })
     [[nodiscard]] static constexpr decltype(auto) floor(
         const L& lhs,
         const R& rhs
     ) noexcept(noexcept(
-        std::make_pair(
-            divide::floor(lhs, rhs),
-            lhs - divide::floor(lhs, rhs) * rhs
-        )
+        std::make_pair(divide::floor(lhs, rhs), modulo::floor(lhs, rhs))
     )) {
-        auto quotient = divide::floor(lhs, rhs);
-        return std::make_pair(quotient, lhs - (quotient * rhs));
+        return [](const auto& lhs, const auto& rhs) {
+            auto quotient = divide::floor(lhs, rhs);
+            return std::make_pair(quotient, lhs - (quotient * rhs));
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient toward positive infinity and returning
     it along with the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
-            std::make_pair(
-                divide::ceil(lhs, rhs),
-                lhs - divide::ceil(lhs, rhs) * rhs
-            );
+            std::make_pair(divide::ceil(lhs, rhs), modulo::ceil(lhs, rhs));
         })
     [[nodiscard]] static constexpr decltype(auto) ceil(
         const L& lhs,
         const R& rhs
     ) noexcept(noexcept(
-        std::make_pair(
-            divide::ceil(lhs, rhs),
-            lhs - divide::ceil(lhs, rhs) * rhs
-        )
+        std::make_pair(divide::ceil(lhs, rhs), modulo::ceil(lhs, rhs))
     )) {
-        auto quotient = divide::ceil(lhs, rhs);
-        return std::make_pair(quotient, lhs - (quotient * rhs));
+        return [](const auto& lhs, const auto& rhs) {
+            auto quotient = divide::ceil(lhs, rhs);
+            return std::make_pair(quotient, lhs - (quotient * rhs));
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient toward zero and returning it along
     with the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
-            std::make_pair(
-                divide::down(lhs, rhs),
-                lhs - divide::down(lhs, rhs) * rhs
-            );
+            std::make_pair(divide::down(lhs, rhs), modulo::down(lhs, rhs));
         })
     [[nodiscard]] static constexpr decltype(auto) down(
         const L& lhs,
         const R& rhs
     ) noexcept(noexcept(
-        std::make_pair(
-            divide::down(lhs, rhs),
-            lhs - divide::down(lhs, rhs) * rhs
-        )
+        std::make_pair(divide::down(lhs, rhs), modulo::down(lhs, rhs))
     )) {
-        auto quotient = divide::down(lhs, rhs);
-        return std::make_pair(quotient, lhs - (quotient * rhs));
+        return [](const auto& lhs, const auto& rhs) {
+            auto quotient = divide::down(lhs, rhs);
+            return std::make_pair(quotient, lhs - (quotient * rhs));
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient away from zero and returning it along
     with the remainder. */
     template <typename L, typename R>
         requires (requires(const L& lhs, const R& rhs) {
-            std::make_pair(
-                divide::up(lhs, rhs),
-                lhs - divide::up(lhs, rhs) * rhs
-            );
+            std::make_pair(divide::up(lhs, rhs), modulo::up(lhs, rhs));
         })
     [[nodiscard]] static constexpr decltype(auto) up(
         const L& lhs,
         const R& rhs
     ) noexcept(noexcept(
-        std::make_pair(
-            divide::up(lhs, rhs),
-            lhs - divide::up(lhs, rhs) * rhs
-        )
+        std::make_pair(divide::up(lhs, rhs), modulo::up(lhs, rhs))
     )) {
-        auto quotient = divide::up(lhs, rhs);
-        return std::make_pair(quotient, lhs - (quotient * rhs));
+        return [](const auto& lhs, const auto& rhs) {
+            auto quotient = divide::up(lhs, rhs);
+            return std::make_pair(quotient, lhs - (quotient * rhs));
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
@@ -1431,7 +1424,7 @@ struct divmod {
         requires (requires(const L& lhs, const R& rhs) {
             std::make_pair(
                 divide::half_floor(lhs, rhs),
-                lhs - divide::half_floor(lhs, rhs) * rhs
+                modulo::half_floor(lhs, rhs)
             );
         })
     [[nodiscard]] static constexpr decltype(auto) half_floor(
@@ -1440,11 +1433,13 @@ struct divmod {
     ) noexcept(noexcept(
         std::make_pair(
             divide::half_floor(lhs, rhs),
-            lhs - divide::half_floor(lhs, rhs) * rhs
+            modulo::half_floor(lhs, rhs)
         )
     )) {
-        auto quotient = divide::half_floor(lhs, rhs);
-        return std::make_pair(quotient, lhs - (quotient * rhs));
+        return [](const auto& lhs, const auto& rhs) {
+            auto quotient = divide::half_floor(lhs, rhs);
+            return std::make_pair(quotient, lhs - (quotient * rhs));
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
@@ -1453,7 +1448,7 @@ struct divmod {
         requires (requires(const L& lhs, const R& rhs) {
             std::make_pair(
                 divide::half_ceil(lhs, rhs),
-                lhs - divide::half_ceil(lhs, rhs) * rhs
+                modulo::half_ceil(lhs, rhs)
             );
         })
     [[nodiscard]] static constexpr decltype(auto) half_ceil(
@@ -1462,11 +1457,13 @@ struct divmod {
     ) noexcept(noexcept(
         std::make_pair(
             divide::half_ceil(lhs, rhs),
-            lhs - divide::half_ceil(lhs, rhs) * rhs
+            modulo::half_ceil(lhs, rhs)
         )
     )) {
-        auto quotient = divide::half_ceil(lhs, rhs);
-        return std::make_pair(quotient, lhs - (quotient * rhs));
+        return [](const auto& lhs, const auto& rhs) {
+            auto quotient = divide::half_ceil(lhs, rhs);
+            return std::make_pair(quotient, lhs - (quotient * rhs));
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
@@ -1475,7 +1472,7 @@ struct divmod {
         requires (requires(const L& lhs, const R& rhs) {
             std::make_pair(
                 divide::half_down(lhs, rhs),
-                lhs - divide::half_down(lhs, rhs) * rhs
+                modulo::half_down(lhs, rhs)
             );
         })
     [[nodiscard]] static constexpr decltype(auto) half_down(
@@ -1484,11 +1481,13 @@ struct divmod {
     ) noexcept(noexcept(
         std::make_pair(
             divide::half_down(lhs, rhs),
-            lhs - divide::half_down(lhs, rhs) * rhs
+            modulo::half_down(lhs, rhs)
         )
     )) {
-        auto quotient = divide::half_down(lhs, rhs);
-        return std::make_pair(quotient, lhs - (quotient * rhs));
+        return [](const auto& lhs, const auto& rhs) {
+            auto quotient = divide::half_down(lhs, rhs);
+            return std::make_pair(quotient, lhs - (quotient * rhs));
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
@@ -1497,7 +1496,7 @@ struct divmod {
         requires (requires(const L& lhs, const R& rhs) {
             std::make_pair(
                 divide::half_up(lhs, rhs),
-                lhs - divide::half_up(lhs, rhs) * rhs
+                modulo::half_up(lhs, rhs)
             );
         })
     [[nodiscard]] static constexpr decltype(auto) half_up(
@@ -1506,11 +1505,13 @@ struct divmod {
     ) noexcept(noexcept(
         std::make_pair(
             divide::half_up(lhs, rhs),
-            lhs - divide::half_up(lhs, rhs) * rhs
+            modulo::half_up(lhs, rhs)
         )
     )) {
-        auto quotient = divide::half_up(lhs, rhs);
-        return std::make_pair(quotient, lhs - (quotient * rhs));
+        return [](const auto& lhs, const auto& rhs) {
+            auto quotient = divide::half_up(lhs, rhs);
+            return std::make_pair(quotient, lhs - (quotient * rhs));
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
@@ -1519,7 +1520,7 @@ struct divmod {
         requires (requires(const L& lhs, const R& rhs) {
             std::make_pair(
                 divide::half_even(lhs, rhs),
-                lhs - divide::half_even(lhs, rhs) * rhs
+                modulo::half_even(lhs, rhs)
             );
         })
     [[nodiscard]] static constexpr decltype(auto) half_even(
@@ -1528,11 +1529,13 @@ struct divmod {
     ) noexcept(noexcept(
         std::make_pair(
             divide::half_even(lhs, rhs),
-            lhs - divide::half_even(lhs, rhs) * rhs
+            modulo::half_even(lhs, rhs)
         )
     )) {
-        auto quotient = divide::half_even(lhs, rhs);
-        return std::make_pair(quotient, lhs - (quotient * rhs));
+        return [](const auto& lhs, const auto& rhs) {
+            auto quotient = divide::half_even(lhs, rhs);
+            return std::make_pair(quotient, lhs - (quotient * rhs));
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
@@ -1541,7 +1544,7 @@ struct divmod {
         requires (requires(const L& lhs, const R& rhs) {
             std::make_pair(
                 divide::half_odd(lhs, rhs),
-                lhs - divide::half_odd(lhs, rhs) * rhs
+                modulo::half_odd(lhs, rhs)
             );
         })
     [[nodiscard]] static constexpr decltype(auto) half_odd(
@@ -1550,11 +1553,13 @@ struct divmod {
     ) noexcept(noexcept(
         std::make_pair(
             divide::half_odd(lhs, rhs),
-            lhs - divide::half_odd(lhs, rhs) * rhs
+            modulo::half_odd(lhs, rhs)
         )
     )) {
-        auto quotient = divide::half_odd(lhs, rhs);
-        return std::make_pair(quotient, lhs - (quotient * rhs));
+        return [](const auto& lhs, const auto& rhs) {
+            auto quotient = divide::half_odd(lhs, rhs);
+            return std::make_pair(quotient, lhs - (quotient * rhs));
+        }(meta::unwrap(lhs), meta::unwrap(rhs));
     }
 };
 
@@ -1566,7 +1571,7 @@ another. */
 struct round {
 private:
     template <typename T>
-    using unwrap = meta::unqualify<meta::item_type<T>>;
+    using unwrap = meta::unqualify<meta::unwrap_type<T>>;
 
 public:
     constexpr round() noexcept = delete;
@@ -1859,6 +1864,21 @@ public:
     }
 };
 
+
+}
+
+
+namespace std {
+
+    template <bertrand::meta::wrapper T>
+    struct hash<T> {
+        static constexpr decltype(auto) operator()(const T& t)
+            noexcept(noexcept(bertrand::hash(bertrand::meta::unwrap(t))))
+            requires(requires{bertrand::hash(bertrand::meta::unwrap(t));})
+        {
+            return bertrand::hash(bertrand::meta::unwrap(t));
+        }
+    };
 
 }
 
