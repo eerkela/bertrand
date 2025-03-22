@@ -3,6 +3,7 @@
 
 #include "bertrand/common.h"
 #include "bertrand/except.h"
+#include "bertrand/math.h"
 
 
 namespace bertrand {
@@ -173,6 +174,656 @@ namespace impl {
         return i;
     }
 
+    /// TODO: perhaps item{} is just an example of a wrapped type that uses an unwrap()
+    /// function to automatically convert it to the underlying type in a polymorphic
+    /// fashion?
+
+    /* A CRTP proxy class that is meant to be returned by `operator[]` to allow for
+    bounds checking and fluid assignment.  Each container should expose an `item` type
+    that inherits from this class and is constructible with a container reference and
+    the observed key.  That class should then provide private `getitem()` and/or
+    `setitem()` methods that do bounds-checked access and assignment, which are exposed
+    to this class via a `friend` declaration.  This class then ensures that the
+    assignment operator forwards to `setitem()`, and all other operators forward to
+    `getitem()`, without needing to redefine all of the operators for each container
+    type. */
+    struct item : item_tag {
+    private:
+        static constexpr impl::getitem getitem;
+        static constexpr impl::setitem setitem;
+
+    public:
+        constexpr item() = default;
+        constexpr item(const item&) = delete;
+        constexpr item(item&&) = delete;
+        constexpr item& operator=(const item&) = delete;
+        constexpr item& operator=(item&&) = delete;
+
+        template <typename S, typename T>
+            requires (requires(S self, T value) {
+                setitem(std::forward<S>(self), getitem(std::forward<T>(value)));
+            })
+        constexpr decltype(auto) operator=(this S&& self, T&& value) noexcept(
+            noexcept(setitem(std::forward<S>(self), getitem(std::forward<T>(value))))
+        ) {
+            setitem(std::forward<S>(self), getitem(std::forward<T>(value)));
+            return self;
+        }
+
+        template <typename S, typename T>
+            requires (meta::convertible_to<decltype(getitem(std::declval<S>())), T>)
+        constexpr operator T(this S&& self) noexcept(
+            noexcept(meta::implicit_cast<T>(getitem(std::forward<S>(self))))
+        ) {
+            // return {};
+            return getitem(std::forward<S>(self));
+        }
+
+        template <typename S, typename T>
+            requires (
+                !meta::convertible_to<decltype(getitem(std::declval<S>())), T> &&
+                meta::explicitly_convertible_to<decltype(getitem(std::declval<S>())), T>
+            )
+        explicit constexpr operator T(this S&& self) noexcept(
+            noexcept(static_cast<T>(getitem(std::forward<S>(self))))
+        ) {
+            return static_cast<T>(getitem(std::forward<S>(self)));
+        }
+
+        template <typename S>
+            requires (requires(S self) { &getitem(std::forward<S>(self)); })
+        constexpr decltype(auto) operator->(this S&& self) noexcept(
+            noexcept(&getitem(std::forward<S>(self)))
+        ) {
+            return &getitem(std::forward<S>(self));
+        }
+
+        template <typename S, typename M>
+            requires (requires(S self, M member) {
+                getitem(std::forward<S>(self))->*std::forward<M>(member);
+            })
+        constexpr decltype(auto) operator->*(this S&& self, M&& member) noexcept(
+            noexcept(getitem(std::forward<S>(self))->*std::forward<M>(member))
+        ) {
+            return getitem(std::forward<S>(self))->*std::forward<M>(member);
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                *std::forward<S>(self);
+            })
+        constexpr decltype(auto) operator*(this S&& self) noexcept(
+            noexcept(*std::forward<S>(self))
+        ) {
+            return *std::forward<S>(self);
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                &std::forward<S>(self);
+            })
+        constexpr decltype(auto) operator&(this S&& self) noexcept(
+            noexcept(&std::forward<S>(self))
+        ) {
+            return &std::forward<S>(self);
+        }
+
+        template <typename S, typename... K>
+            requires (requires(S self, K... keys) {
+                getitem(std::forward<S>(self))[std::forward<K>(keys)...];
+            })
+        constexpr decltype(auto) operator[](this S&& self, K&&... keys) noexcept(
+            noexcept(getitem(std::forward<S>(self))[std::forward<K>(keys)...])
+        ) {
+            return getitem(std::forward<S>(self))[std::forward<K>(keys)...];
+        }
+
+        template <typename S, typename... A>
+            requires (requires(S self, A... args) {
+                getitem(std::forward<S>(self))(std::forward<A>(args)...);
+            })
+        constexpr decltype(auto) operator()(this S&& self, A&&... args) noexcept(
+            noexcept(getitem(std::forward<S>(self))(std::forward<A>(args)...))
+        ) {
+            return getitem(std::forward<S>(self))(std::forward<A>(args)...);
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)), getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator,(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)), getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)), getitem(std::forward<R>(rhs));
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                !getitem(std::forward<S>(self));
+            })
+        constexpr decltype(auto) operator!(this S&& self) noexcept(
+            noexcept(!getitem(std::forward<S>(self)))
+        ) {
+            return !getitem(std::forward<S>(self));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) && getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator&&(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) && getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) && getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) || getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator||(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) || getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) || getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) < getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator<(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) < getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) < getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) <= getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator<=(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) <= getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) <= getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) == getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator==(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) == getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) == getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) != getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator!=(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) != getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) != getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) >= getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator>=(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) >= getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) >= getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) > getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator>(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) > getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) > getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) <=> getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator<=>(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) <=> getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) <=> getitem(std::forward<R>(rhs));
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                ~getitem(std::forward<S>(self));
+            })
+        constexpr decltype(auto) operator~(this S&& self) noexcept(
+            noexcept(~getitem(std::forward<S>(self)))
+        ) {
+            return ~getitem(std::forward<S>(self));
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                +getitem(std::forward<S>(self));
+            })
+        constexpr decltype(auto) operator+(this S&& self) noexcept(
+            noexcept(+getitem(std::forward<S>(self)))
+        ) {
+            return +getitem(std::forward<S>(self));
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                -getitem(std::forward<S>(self));
+            })
+        constexpr decltype(auto) operator-(this S&& self) noexcept(
+            noexcept(-getitem(std::forward<S>(self)))
+        ) {
+            return -getitem(std::forward<S>(self));
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                ++getitem(std::forward<S>(self));
+            })
+        constexpr decltype(auto) operator++(this S&& self) noexcept(
+            noexcept(++getitem(std::forward<S>(self)))
+        ) {
+            return ++getitem(std::forward<S>(self));
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                getitem(std::forward<S>(self))++;
+            })
+        constexpr decltype(auto) operator++(this S&& self, int) noexcept(
+            noexcept(getitem(std::forward<S>(self))++)
+        ) {
+            return getitem(std::forward<S>(self))++;
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                --getitem(std::forward<S>(self));
+            })
+        constexpr decltype(auto) operator--(this S&& self) noexcept(
+            noexcept(--getitem(std::forward<S>(self)))
+        ) {
+            return --getitem(std::forward<S>(self));
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                getitem(std::forward<S>(self))--;
+            })
+        constexpr decltype(auto) operator--(this S&& self, int) noexcept(
+            noexcept(getitem(std::forward<S>(self))--)
+        ) {
+            return getitem(std::forward<S>(self))--;
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) + getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator+(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) + getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) + getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) += getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator+=(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) += getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) += getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) - getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator-(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) - getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) - getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) -= getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator-=(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) -= getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) -= getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) * getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator*(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) * getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) * getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) *= getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator*=(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) *= getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) *= getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) / getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator/(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) / getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) / getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) /= getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator/=(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) /= getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) /= getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) % getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator%(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) % getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) % getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) %= getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator%=(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) %= getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) %= getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) << getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator<<(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) << getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) << getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) <<= getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator<<=(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) <<= getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) <<= getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) >> getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator>>(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) >> getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) >> getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) >>= getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator>>=(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) >>= getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) >>= getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) & getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator&(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) & getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) & getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) &= getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator&=(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) &= getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) &= getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) | getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator|(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) | getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) | getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) |= getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator|=(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) |= getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) |= getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) ^ getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator^(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) ^ getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) ^ getitem(std::forward<R>(rhs));
+        }
+
+        template <typename L, typename R>
+            requires (requires(L lhs, R rhs) {
+                getitem(std::forward<L>(lhs)) ^= getitem(std::forward<R>(rhs));
+            })
+        constexpr friend decltype(auto) operator^=(L&& lhs, R&& rhs) noexcept(
+            noexcept(getitem(std::forward<L>(lhs)) ^= getitem(std::forward<R>(rhs)))
+        ) {
+            return getitem(std::forward<L>(lhs)) ^= getitem(std::forward<R>(rhs));
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                std::ranges::begin(getitem(std::forward<S>(self)));
+            })
+        constexpr auto begin(this S&& self) noexcept(
+            noexcept(std::ranges::begin(getitem(std::forward<S>(self))))
+        ) {
+            return std::ranges::begin(getitem(std::forward<S>(self)));
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                std::ranges::cbegin(getitem(std::forward<S>(self)));
+            })
+        constexpr auto cbegin(this S&& self) noexcept(
+            noexcept(std::ranges::cbegin(getitem(std::forward<S>(self))))
+        ) {
+            return std::ranges::cbegin(getitem(std::forward<S>(self)));
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                std::ranges::end(getitem(std::forward<S>(self)));
+            })
+        constexpr auto end(this S&& self) noexcept(
+            noexcept(std::ranges::end(getitem(std::forward<S>(self))))
+        ) {
+            return std::ranges::end(getitem(std::forward<S>(self)));
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                std::ranges::cend(getitem(std::forward<S>(self)));
+            })
+        constexpr auto cend(this S&& self) noexcept(
+            noexcept(std::ranges::cend(getitem(std::forward<S>(self))))
+        ) {
+            return std::ranges::cend(getitem(std::forward<S>(self)));
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                std::ranges::rbegin(getitem(std::forward<S>(self)));
+            })
+        constexpr auto rbegin(this S&& self) noexcept(
+            noexcept(std::ranges::rbegin(getitem(std::forward<S>(self))))
+        ) {
+            return std::ranges::rbegin(getitem(std::forward<S>(self)));
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                std::ranges::crbegin(getitem(std::forward<S>(self)));
+            })
+        constexpr auto crbegin(this S&& self) noexcept(
+            noexcept(std::ranges::crbegin(getitem(std::forward<S>(self))))
+        ) {
+            return std::ranges::crbegin(getitem(std::forward<S>(self)));
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                std::ranges::rend(getitem(std::forward<S>(self)));
+            })
+        constexpr auto rend(this S&& self) noexcept(
+            noexcept(std::ranges::rend(getitem(std::forward<S>(self))))
+        ) {
+            return std::ranges::rend(getitem(std::forward<S>(self)));
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                std::ranges::crend(getitem(std::forward<S>(self)));
+            })
+        constexpr auto crend(this S&& self) noexcept(
+            noexcept(std::ranges::crend(getitem(std::forward<S>(self))))
+        ) {
+            return std::ranges::crend(getitem(std::forward<S>(self)));
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                std::ranges::size(getitem(std::forward<S>(self)));
+            })
+        constexpr auto size(this S&& self) noexcept(
+            noexcept(std::ranges::size(getitem(std::forward<S>(self))))
+        ) {
+            return std::ranges::size(getitem(std::forward<S>(self)));
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                std::ranges::empty(getitem(std::forward<S>(self)));
+            })
+        constexpr auto empty(this S&& self) noexcept(
+            noexcept(std::ranges::empty(getitem(std::forward<S>(self))))
+        ) {
+            return std::ranges::empty(getitem(std::forward<S>(self)));
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                std::ranges::data(getitem(std::forward<S>(self)));
+            })
+        constexpr auto data(this S&& self) noexcept(
+            noexcept(std::ranges::data(getitem(std::forward<S>(self))))
+        ) {
+            return std::ranges::data(getitem(std::forward<S>(self)));
+        }
+
+        template <auto... I, typename S, typename... A>
+            requires (requires(S self, A... args) {
+                getitem(std::forward<S>(self)).template get<I...>(
+                    std::forward<A>(args)...
+                );
+            })
+        constexpr decltype(auto) get(this S&& self, A&&... args) noexcept(
+            noexcept(getitem(std::forward<S>(self)).template get<I...>(
+                std::forward<A>(args)...
+            ))
+        ) {
+            return getitem(std::forward<S>(self)).template get<I...>(
+                std::forward<A>(args)...
+            );
+        }
+
+        /// TODO: ADL get() version?  This would require some kind of customization
+        /// point that always triggers ADL, but the problem with that is that it
+        /// prevents me from explicitly providing template arguments, unless you do
+        /// something like meta::get<...>{}(self, args...) which is a bit clunky,
+        /// especially without universal template parameters.
+
+        template <auto... I, typename S, typename... A>
+            requires (!requires(S self, A... args) {
+                getitem(std::forward<S>(self)).template get<I...>(
+                    std::forward<A>(args)...
+                );
+            } && requires(S self, A... args) {
+                std::get<I...>(getitem(
+                    std::forward<S>(self),
+                    std::forward<A>(args)...
+                ));
+            })
+        constexpr decltype(auto) get(this S&& self, A&&... args) noexcept(
+            noexcept(std::get<I...>(getitem(
+                std::forward<S>(self),
+                std::forward<A>(args)...
+            )))
+        ) {
+            return std::get<I...>(getitem(
+                std::forward<S>(self),
+                std::forward<A>(args)...
+            ));
+        }
+    };
+
     template <typename T>
     concept contiguous_iterator_arg = meta::not_void<T> && !meta::reference<T>;
 
@@ -192,17 +843,9 @@ namespace impl {
         constexpr contiguous_iterator& operator=(const contiguous_iterator&) noexcept = default;
         constexpr contiguous_iterator& operator=(contiguous_iterator&&) noexcept = default;
 
-        template <typename V> requires (meta::assignable<reference, V>)
-        constexpr contiguous_iterator& operator=(V&& value) && noexcept(
-            noexcept(*ptr = std::forward<V>(value))
-        ) {
-            *ptr = std::forward<V>(value);
-            return *this;
-        }
-
-        template <typename V> requires (meta::convertible_to<reference, V>)
-        [[nodiscard]] constexpr operator V() && noexcept(noexcept(V(**this))) {
-            return **this;
+        template <meta::more_qualified_than<T> U>
+        [[nodiscard]] constexpr operator contiguous_iterator<U>() noexcept {
+            return {ptr};
         }
 
         [[nodiscard]] constexpr reference operator*() noexcept {
@@ -290,11 +933,6 @@ namespace impl {
             return ptr == rhs.ptr;
         }
 
-        template <meta::more_qualified_than<T> U>
-        [[nodiscard]] constexpr operator contiguous_iterator<U>() noexcept {
-            return {ptr};
-        }
-
     private:
         pointer ptr;
     };
@@ -324,17 +962,9 @@ namespace impl {
         constexpr contiguous_iterator& operator=(const contiguous_iterator&) noexcept = default;
         constexpr contiguous_iterator& operator=(contiguous_iterator&&) noexcept = default;
 
-        template <typename V> requires (meta::assignable<reference, V>)
-        constexpr contiguous_iterator& operator=(V&& value) && {
-            check(*this);
-            *ptr = std::forward<V>(value);
-            return *this;
-        }
-
-        template <typename V> requires (meta::convertible_to<reference, V>)
-        [[nodiscard]] constexpr operator V() && {
-            check(*this);
-            return **this;
+        template <meta::more_qualified_than<T> U>
+        [[nodiscard]] constexpr operator contiguous_iterator<U>() {
+            return {ptr, check};
         }
 
         [[nodiscard]] constexpr reference operator*() {
@@ -429,11 +1059,6 @@ namespace impl {
             return ptr == rhs.ptr;
         }
 
-        template <meta::more_qualified_than<T> U>
-        [[nodiscard]] constexpr operator contiguous_iterator<U>() {
-            return {ptr, check};
-        }
-
     private:
         pointer ptr;
         boundscheck check;
@@ -517,10 +1142,10 @@ namespace impl {
             m_indices(indices)
         {}
 
-        constexpr contiguous_slice(const contiguous_slice&) = default;
-        constexpr contiguous_slice(contiguous_slice&&) = default;
-        constexpr contiguous_slice& operator=(const contiguous_slice&) = default;
-        constexpr contiguous_slice& operator=(contiguous_slice&&) = default;
+        constexpr contiguous_slice(const contiguous_slice&) = delete;
+        constexpr contiguous_slice(contiguous_slice&&) = delete;
+        constexpr contiguous_slice& operator=(const contiguous_slice&) = delete;
+        constexpr contiguous_slice& operator=(contiguous_slice&&) = delete;
 
         [[nodiscard]] constexpr pointer data() const noexcept { return m_data; }
         [[nodiscard]] constexpr ssize_t start() const noexcept { return m_indices.start; }
@@ -1577,6 +2202,89 @@ template <meta::iterable T>
         std::plus<>{}
     );
 }
+
+
+}
+
+
+namespace std {
+
+    template <bertrand::meta::item T>
+    struct hash<T> {
+    private:
+        static constexpr bertrand::impl::getitem getitem;
+
+    public:
+        static constexpr decltype(auto) operator()(const T& t)
+            noexcept(noexcept(bertrand::hash(getitem(t))))
+            requires(requires{bertrand::hash(getitem(t));})
+        {
+            return bertrand::hash(getitem(t));
+        }
+    };
+
+    template <bertrand::meta::item T>
+        requires (requires {
+            std::tuple_size<
+                std::remove_cvref_t<typename std::remove_cvref_t<T>::__wrapped__>
+            >::value;
+    })
+    struct tuple_size<T> : std::integral_constant<
+        size_t,
+        std::tuple_size<
+            std::remove_cvref_t<typename std::remove_cvref_t<T>::__wrapped__>
+        >::value
+    > {};
+
+    template <size_t I, bertrand::meta::item T>
+        requires (requires {
+            typename std::tuple_element<
+                I,
+                std::remove_cvref_t<typename std::remove_cvref_t<T>::__wrapped__>
+            >;
+        })
+    struct tuple_element<I, T> : std::tuple_element<
+        I,
+        std::remove_cvref_t<typename std::remove_cvref_t<T>::__wrapped__>
+    > {};
+
+    template <auto I, bertrand::meta::item T>
+        requires (requires(T t) {
+            std::get<I>(static_cast<typename std::remove_cvref_t<T>::__wrapped__>(t));
+        })
+    constexpr decltype(auto) get(T&& t) noexcept(
+        noexcept(std::get<I>(static_cast<typename std::remove_cvref_t<T>::__wrapped__>(t)))
+    ) {
+        return std::get<I>(static_cast<typename std::remove_cvref_t<T>::__wrapped__>(t));
+    }
+
+}
+
+
+namespace bertrand {
+
+    struct test_item : impl::item {
+    private:
+        friend impl::getitem;
+
+        int value = 2;
+
+        constexpr int& getitem() noexcept {
+            return value;
+        }
+
+        constexpr const int& getitem() const noexcept {
+            return value;
+        }
+
+    public:
+        using impl::item::operator=;
+    };
+
+    inline void test2() {
+        static constexpr test_item t;
+        auto x = abs(test_item{});
+    }
 
 
 }

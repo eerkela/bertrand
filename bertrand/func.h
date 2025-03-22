@@ -5,9 +5,12 @@
 
 #include "bertrand/common.h"
 #include "bertrand/bitset.h"
-#include "bertrand/except.h"
 #include "bertrand/static_str.h"
 #include "bertrand/static_map.h"
+
+
+
+/// TODO: arg<"x"> = 2, arg<"y">(2), "z"_arg(2)
 
 
 namespace bertrand {
@@ -37,6 +40,12 @@ namespace bertrand {
 static_assert(MAX_ARGS > 0, "`BERTRAND_MAX_ARGS` must be positive.");
 static_assert(MAX_OVERLOADS > 0, "`BERTRAND_MAX_OVERLOADS` must be positive.");
 static_assert(OVERLOAD_CACHE > 0, "`BERTRAND_OVERLOAD_CACHE` must be positive.");
+
+
+/* A simple convenience struct implementing the overload pattern for `visit()`-style
+functions. */
+template <typename... Funcs>
+struct visitor : Funcs... { using Funcs::operator()...; };
 
 
 /* Introspect an annotated C++ function signature to extract compile-time type

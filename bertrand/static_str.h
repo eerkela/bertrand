@@ -4,6 +4,7 @@
 #include "bertrand/common.h"
 #include "bertrand/math.h"
 #include "bertrand/iter.h"
+#include "bertrand/sort.h"
 
 
 // required for demangling
@@ -233,6 +234,32 @@ struct static_str : impl::static_str_tag {
     using slice = impl::contiguous_slice<value_type>;
     using const_slice = slice;
 
+    struct item : impl::item {
+    private:
+        friend impl::getitem;
+        const static_str* container;
+        index_type index;
+
+        constexpr const char& getitem() const noexcept(!DEBUG) {
+            index_type i = index + container->ssize() * (index < 0);
+            if constexpr (DEBUG) {
+                if (i < 0 || i >= container->ssize()) {
+                    throw IndexError(std::to_string(index));
+                }
+            }
+            return container->data()[i];
+        }
+
+    public:
+        using __wrapped__ = const char&;
+        using impl::item::operator=;
+        constexpr item(const static_str* container, index_type index) noexcept :
+            container(container), index(index)
+        {}
+    };
+
+    using const_item = item;
+
     char buffer[N + 1];  // +1 for null terminator
 
     consteval static_str(const char* arr) noexcept {
@@ -407,11 +434,11 @@ public:
         }
     }
 
-    [[nodiscard]] consteval const char* data() const noexcept { return buffer; }
-    [[nodiscard]] static consteval size_type size() noexcept { return N; }
-    [[nodiscard]] static consteval index_type ssize() noexcept { return index_type(size()); }
-    [[nodiscard]] static consteval bool empty() noexcept { return !size(); }
-    [[nodiscard]] explicit consteval operator bool() const noexcept { return size(); }
+    [[nodiscard]] constexpr const char* data() const noexcept { return buffer; }
+    [[nodiscard]] static constexpr size_type size() noexcept { return N; }
+    [[nodiscard]] static constexpr index_type ssize() noexcept { return index_type(size()); }
+    [[nodiscard]] static constexpr bool empty() noexcept { return !size(); }
+    [[nodiscard]] explicit constexpr operator bool() const noexcept { return size(); }
     [[nodiscard]] constexpr iterator begin() const noexcept { return {buffer}; }
     [[nodiscard]] constexpr iterator cbegin() const noexcept { return {buffer}; }
     [[nodiscard]] constexpr iterator end() const noexcept { return {buffer + size()}; }
@@ -448,12 +475,8 @@ public:
     /* Access a character within the underlying buffer.  Applies Python-style
     wraparound for negative indices, and throws an `IndexError` if the index is out of
     bounds after normalization. */
-    [[nodiscard]] constexpr iterator operator[](index_type i) const noexcept {
-        i += ssize() * (i < 0);
-        if (i < 0 || i >= ssize()) {
-            return end();
-        }
-        return {buffer + i};
+    [[nodiscard]] constexpr item operator[](index_type i) const noexcept {
+        return {this, i};
     }
 
     /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
@@ -1487,11 +1510,11 @@ public:
 
     template <typename V> requires (meta::convertible_to<static_str<self.size()>, V>)
     [[nodiscard]] constexpr operator V() const noexcept { return self; }
-    [[nodiscard]] static consteval auto data() noexcept { return self.data(); }
-    [[nodiscard]] static consteval auto size() noexcept { return self.size(); }
-    [[nodiscard]] static consteval auto ssize() noexcept { return self.ssize(); }
-    [[nodiscard]] static consteval auto empty() noexcept { return self.empty(); }
-    [[nodiscard]] explicit consteval operator bool() noexcept { return self.operator bool(); }
+    [[nodiscard]] static constexpr auto data() noexcept { return self.data(); }
+    [[nodiscard]] static constexpr auto size() noexcept { return self.size(); }
+    [[nodiscard]] static constexpr auto ssize() noexcept { return self.ssize(); }
+    [[nodiscard]] static constexpr auto empty() noexcept { return self.empty(); }
+    [[nodiscard]] explicit constexpr operator bool() noexcept { return self.operator bool(); }
     [[nodiscard]] static constexpr auto begin() noexcept { return self.begin(); }
     [[nodiscard]] static constexpr auto cbegin() noexcept { return self.cbegin(); }
     [[nodiscard]] static constexpr auto end() noexcept { return self.end(); }
@@ -1941,42 +1964,29 @@ namespace impl {
 
     private:
         template <size_t>
-        struct _minmax {
-            static constexpr std::pair<size_t, size_t> value =
-                std::minmax({Keys.size()...});
-        };
+        static constexpr std::pair<size_t, size_t> minmax =
+            std::minmax({Keys.size()...});
         template <>
-        struct _minmax<0> {
-            static constexpr std::pair<size_t, size_t> value = {0, 0};
-        };
-        static constexpr auto minmax = _minmax<table_size>::value;
+        static constexpr std::pair<size_t, size_t> minmax<0> = {0, 0};
 
     public:
-        static constexpr size_t min_length = minmax.first;
-        static constexpr size_t max_length = minmax.second;
-
-        template <size_t I> requires (I < table_size)
-        static constexpr static_str at = meta::unpack_string<I, Keys...>;
+        static constexpr size_t min_length = minmax<table_size>.first;
+        static constexpr size_t max_length = minmax<table_size>.second;
 
     private:
-        using Weights = std::array<unsigned char, 256>;
-
-        template <static_str...>
-        struct _counts {
-            static constexpr size_t operator()(unsigned char, size_t) { return 0; }
-        };
+        /* Count the occurrences of a particular character at a given offset across all
+        strings. */
+        template <static_str... Strs> requires (sizeof...(Strs) == 0)
+        static constexpr size_t counts(unsigned char, size_t) { return 0; }
         template <static_str First, static_str... Rest>
-        struct _counts<First, Rest...> {
-            static constexpr size_t operator()(unsigned char c, size_t pos) {
-                return
-                    _counts<Rest...>{}(c, pos) +
-                    (pos < First.size() && First.data()[pos] == c);
-            }
-        };
         static constexpr size_t counts(unsigned char c, size_t pos) {
-            return _counts<Keys...>{}(c, pos);
+            return
+                counts<Rest...>(c, pos) +
+                (pos < First.size() && First.data()[pos] == c);
         }
 
+        /* Find the index of the first string at which a particular character occurs
+        for a given offset. */
         template <size_t I, unsigned char C, static_str... Strings>
         static constexpr size_t first_occurrence = 0;
         template <size_t I, unsigned char C, static_str First, static_str... Rest>
@@ -1984,6 +1994,8 @@ namespace impl {
             (I < First.size() && First.data()[I] == C) ?
                 0 : first_occurrence<I, C, Rest...> + 1;
 
+        /* Count the number of unique characters that occur at a given offset across
+        all strings. */
         template <size_t I, size_t J, static_str... Strings>
         static constexpr size_t _variation = 0;
         template <size_t I, size_t J, static_str First, static_str... Rest>
@@ -1993,15 +2005,15 @@ namespace impl {
         template <size_t I, static_str... Strings>
         static constexpr size_t variation = _variation<I, 0, Strings...>;
 
-        /* An array holding the number of unique characters across each index of the
-        input keys, up to `max_length`. */
+        /* An array holding the count of unique characters across each index of the
+        input strings, up to `max_length`. */
         static constexpr std::array<size_t, max_length> frequencies =
             []<size_t... Is>(std::index_sequence<Is...>) {
                 return std::array<size_t, max_length>{variation<Is, Keys...>...};
             }(std::make_index_sequence<max_length>{});
 
-        /* A sorted array holding indices into the frequencies table, with the highest
-        variation indices coming first. */
+        /* An array of indices into the frequencies table sorted in descending order,
+        with the highest variation indices coming first. */
         static constexpr std::array<size_t, max_length> sorted_freq_indices =
             []<size_t... Is>(std::index_sequence<Is...>) {
                 std::array<size_t, max_length> result {Is...};
@@ -2011,14 +2023,15 @@ namespace impl {
                 return result;
             }(std::make_index_sequence<max_length>{});
 
+        using Weights = std::array<unsigned char, 256>;
         using collision = std::pair<std::string_view, std::string_view>;
 
-        /* Check to see if the candidate weights produce any collisions for a given
-        number of significant characters. */
+        /* Check to see if a set of candidate weights produce any collisions for a
+        given number of significant characters. */
         template <static_str...>
         struct collisions {
             static constexpr collision operator()(const Weights&, size_t) {
-                return {"", ""};
+                return {"", ""};  // no collisions across all strings
             }
         };
         template <static_str First, static_str... Rest>
@@ -2031,7 +2044,7 @@ namespace impl {
                     const Weights&,
                     size_t
                 ) {
-                    return {"", ""};
+                    return {"", ""};  // no collisions for this string
                 }
             };
             template <static_str F, static_str... Rs>
@@ -2045,11 +2058,11 @@ namespace impl {
                     size_t hash = 0;
                     for (size_t i = 0; i < significant_chars; ++i) {
                         size_t pos = sorted_freq_indices[i];
-                        unsigned char c = pos < F.size() ? *F[pos] : 0;
+                        unsigned char c = pos < F.size() ? F.data()[pos] : 0;
                         hash += weights[c];
                     }
                     if ((hash % table_size) == idx) {
-                        return {orig, {F.buffer, F.size()}};
+                        return {orig, {F.buffer, F.size()}};  // collision at this string
                     }
                     return scan<Rs...>{}(orig, idx, weights, significant_chars);
                 }
@@ -2072,24 +2085,31 @@ namespace impl {
                     significant_chars
                 );
                 if (result.first != result.second) {
-                    return result;
+                    return result;  // collision at this string
                 }
+                // continue to next string
                 return collisions<Rest...>{}(weights, significant_chars);
             }
         };
 
-        /* Finds an associative value array that produces perfect hashes over the input
-        keywords. */
+        /* Find an associative value array that produces perfect hashes over the input
+        keys. */
         static constexpr auto find_hash = [] -> std::tuple<size_t, Weights, bool> {
             Weights weights;
 
+            // start with zero significant characters and increase until a valid
+            // set of weights is found
             for (size_t i = 0; i <= max_length; ++i) {
-                weights.fill(1);
+                weights.fill(1);  // initialize to uniform weights
+
+                // search is limited by template recursion depth
                 for (size_t j = 0; j < TEMPLATE_RECURSION_LIMIT; ++j) {
                     collision result = collisions<Keys...>{}(weights, i);
                     if (result.first == result.second) {
-                        return {i, weights, true};
+                        return {i, weights, true};  // found valid weights
                     }
+
+                    // adjust weights for next iteration
                     bool identical = true;
                     for (size_t k = 0; k < i; ++k) {
                         size_t pos = sorted_freq_indices[k];
@@ -2098,7 +2118,9 @@ namespace impl {
                         unsigned char c2 = pos < result.second.size() ?
                             result.second[pos] : 0;
                         if (c1 != c2) {
-                            if (counts(c1, pos) < counts(c2, pos)) {
+                            // increment weight of the less frequent character, which
+                            // is the most discriminatory
+                            if (counts<Keys...>(c1, pos) < counts<Keys...>(c2, pos)) {
                                 ++weights[c1];
                             } else {
                                 ++weights[c2];
@@ -2108,26 +2130,30 @@ namespace impl {
                         }
                     }
                     // if all significant characters are the same, widen the search
+                    // to consider additional characters
                     if (identical) {
                         break;
                     }
                 }
             } 
+
+            // no valid weights were found => hash is invalid
             return {0, weights, false};
         }();
 
     public:
+        /* The number of significant characters needed for the perfect hash
+        function. */
         static constexpr size_t significant_chars = std::get<0>(find_hash);
+
+        /* The array of weights for every valid character. */
         static constexpr Weights weights = std::get<1>(find_hash);
+
+        /* True if a perfect hash function was found.  False otherwise. */
         static constexpr bool exists = std::get<2>(find_hash);
 
-        template <typename T>
-        static constexpr bool hashable =
-            meta::convertible_to<T, const char*> ||
-            meta::convertible_to<T, std::string_view>;
-
         /* An array holding the positions of the significant characters for the
-        associative value array, in traversal order. */
+        associative value array, in proper traversal order. */
         static constexpr std::array<size_t, significant_chars> positions =
             []<size_t... Is>(std::index_sequence<Is...>) {
                 std::array<size_t, significant_chars> positions {
@@ -2137,9 +2163,16 @@ namespace impl {
                 return positions;
             }(std::make_index_sequence<significant_chars>{});
 
-        /* Hash a compile-time string according to the computed perfect hash algorithm. */
+        /* A template constraint that checks whether a type represents a valid input to
+        the call operator. */
+        template <typename T>
+        static constexpr bool hashable =
+            meta::convertible_to<T, const char*> ||
+            meta::convertible_to<T, std::string_view>;
+
+        /* Hash a string according to the computed perfect hash function. */
         template <meta::static_str Key>
-        [[nodiscard]] static constexpr size_t hash(const Key& str) noexcept {
+        [[nodiscard]] static constexpr size_t operator()(const Key& str) noexcept {
             constexpr size_t len = Key::size();
             size_t out = 0;
             for (size_t pos : positions) {
@@ -2148,9 +2181,9 @@ namespace impl {
             return out;
         }
 
-        /* Hash a string literal according to the computed perfect hash algorithm. */
+        /* Hash a string according to the computed perfect hash function. */
         template <size_t N>
-        [[nodiscard]] static constexpr size_t hash(const char(&str)[N]) noexcept {
+        [[nodiscard]] static constexpr size_t operator()(const char(&str)[N]) noexcept {
             constexpr size_t M = N - 1;
             size_t out = 0;
             for (size_t pos : positions) {
@@ -2159,9 +2192,13 @@ namespace impl {
             return out;
         }
 
-        /* Hash a string literal according to the computed perfect hash algorithm. */
+        /* Hash a string according to the computed perfect hash function and record its
+        length as an out parameter. */
         template <size_t N>
-        [[nodiscard]] static constexpr size_t hash(const char(&str)[N], size_t& len) noexcept {
+        [[nodiscard]] static constexpr size_t operator()(
+            const char(&str)[N],
+            size_t& len
+        ) noexcept {
             constexpr size_t M = N - 1;
             size_t out = 0;
             for (size_t pos : positions) {
@@ -2171,10 +2208,10 @@ namespace impl {
             return out;
         }
 
-        /* Hash a character buffer according to the computed perfect hash algorithm. */
+        /* Hash a string according to the computed perfect hash function. */
         template <meta::convertible_to<const char*> T>
             requires (!meta::static_str<T> && !meta::string_literal<T>)
-        [[nodiscard]] static constexpr size_t hash(const T& str) noexcept {
+        [[nodiscard]] static constexpr size_t operator()(const T& str) noexcept {
             const char* start = str;
             if constexpr (positions.empty()) {
                 return 0;
@@ -2201,11 +2238,14 @@ namespace impl {
             }
         }
 
-        /* Hash a character buffer according to the computed perfect hash algorithm and
-        record its length as an out parameter. */
+        /* Hash a string according to the computed perfect hash algorithm and record
+        its length as an out parameter. */
         template <meta::convertible_to<const char*> T>
             requires (!meta::static_str<T> && !meta::string_literal<T>)
-        [[nodiscard]] static constexpr size_t hash(const T& str, size_t& len) noexcept {
+        [[nodiscard]] static constexpr size_t operator()(
+            const T& str,
+            size_t& len
+        ) noexcept {
             const char* start = str;
             const char* ptr = start;
             if constexpr (positions.empty()) {
@@ -2237,14 +2277,14 @@ namespace impl {
             }
         }
 
-        /* Hash a string view according to the computed perfect hash algorithm. */
+        /* Hash a string according to the computed perfect hash function. */
         template <meta::convertible_to<std::string_view> T>
             requires (
                 !meta::static_str<T> &&
                 !meta::string_literal<T> &&
                 !meta::convertible_to<T, const char*>
             )
-        [[nodiscard]] static constexpr size_t hash(const T& str) noexcept {
+        [[nodiscard]] static constexpr size_t operator()(const T& str) noexcept {
             std::string_view s = str;
             size_t out = 0;
             for (size_t pos : positions) {
@@ -2254,13 +2294,22 @@ namespace impl {
         }
     };
 
-    /* A standardized iterator type for `bertrand::static_map` instances, independent
-    of the stored names. */
-    template <typename ValueType>
-    struct static_map_iterator {
+    /// TODO: I should try to return these iterators from the set and map index
+    /// operators, rather than raw pointers.  Also, normal iterators and const iterators
+    /// should be unified.
+
+    /// TODO: I may need a generalized `item` type that gets returned by the index
+    /// operator.  It would be assignable and implicitly convertible to the underlying
+    /// type, but support no other operations, so you get strong type safety reminding
+    /// you to explicitly dereference it to get the underlying value.  Assigning to
+    /// an empty item would either throw an index error or insert a value into the
+    /// container, depending on the container's semantics, and for a map, it would
+    /// always refer to the value, without the key.
+
+    struct string_set_iterator {
         using iterator_category = std::random_access_iterator_tag;
         using difference_type = std::ptrdiff_t;
-        using value_type = ValueType;
+        using value_type = const std::string_view;
         using reference = value_type&;
         using pointer = value_type*;
 
@@ -2271,354 +2320,119 @@ namespace impl {
         size_t m_length = 0;
 
     public:
-        static_map_iterator() = default;
-
-        static_map_iterator(
+        constexpr string_set_iterator() noexcept = default;
+        constexpr string_set_iterator(
             pointer data,
             const size_t* indices,
             difference_type index,
             size_t length
-        ) :
+        ) noexcept :
             m_data(data),
             m_indices(indices),
             m_idx(index),
             m_length(length)
         {}
 
-        [[nodiscard]] explicit operator bool() const noexcept {
-            return m_idx >= 0 && m_idx < m_length;
-        }
+        /// TODO: implicit conversion?  Maybe these are not used, and you just always
+        /// need to dereference every iterator?
 
-        [[nodiscard]] reference operator*() const {
-            if (m_idx >= 0 && m_idx < m_length) {
-                return m_data[m_indices[m_idx]];
+        [[nodiscard]] constexpr reference operator*() const noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (m_idx < 0 || m_idx >= m_length) {
+                    throw IndexError(std::to_string(m_idx));
+                }
             }
-            throw IndexError(std::to_string(m_idx));
+            return m_data[m_indices[m_idx]];
         }
 
-        [[nodiscard]] pointer operator->() const {
+        [[nodiscard]] constexpr pointer operator->() const noexcept(!DEBUG) {
             return &**this;
         }
 
-        [[nodiscard]] reference operator[](difference_type n) const {
+        [[nodiscard]] constexpr reference operator[](difference_type n) const noexcept(!DEBUG) {
             difference_type index = m_idx + n;
-            if (index >= 0 && index < m_length) {
-                return m_data[m_indices[index]];
+            if constexpr (DEBUG) {
+                if (index < 0 || index >= m_length) {
+                    throw IndexError(std::to_string(index));
+                }
             }
-            throw IndexError(std::to_string(index));
+            return m_data[m_indices[index]];
         }
 
-        static_map_iterator& operator++() noexcept {
+        constexpr string_set_iterator& operator++() noexcept {
             ++m_idx;
             return *this;
         }
 
-        [[nodiscard]] static_map_iterator operator++(int) {
-            static_map_iterator copy = *this;
+        [[nodiscard]] constexpr string_set_iterator operator++(int) noexcept {
+            string_set_iterator copy = *this;
             ++m_idx;
             return copy;
         }
 
-        static_map_iterator& operator+=(difference_type n) noexcept {
+        constexpr string_set_iterator& operator+=(difference_type n) noexcept {
             m_idx += n;
             return *this;
         }
 
-        [[nodiscard]] friend static_map_iterator operator+(
-            const static_map_iterator& self,
+        [[nodiscard]] constexpr string_set_iterator operator+(
             difference_type n
-        ) noexcept {
-            return static_map_iterator(
-                self.m_data,
-                self.m_indices,
-                self.m_idx + n,
-                self.m_length
-            );
+        ) const noexcept {
+            return {m_data, m_indices, m_idx + n, m_length};
         }
 
-        [[nodiscard]] friend static_map_iterator operator+(
-            difference_type n,
-            const static_map_iterator& self
-        ) noexcept {
-            return static_map_iterator(
-                self.m_data,
-                self.m_indices,
-                self.m_idx + n,
-                self.m_length
-            );
-        }
-
-        static_map_iterator& operator--() noexcept {
+        constexpr string_set_iterator& operator--() noexcept {
             --m_idx;
             return *this;
         }
 
-        [[nodiscard]] static_map_iterator operator--(int) noexcept {
-            static_map_iterator copy = *this;
+        [[nodiscard]] constexpr string_set_iterator operator--(int) noexcept {
+            string_set_iterator copy = *this;
             --m_idx;
             return copy;
         }
 
-        static_map_iterator& operator-=(difference_type n) noexcept {
+        constexpr string_set_iterator& operator-=(difference_type n) noexcept {
             m_idx -= n;
             return *this;
         }
 
-        [[nodiscard]] friend static_map_iterator operator-(
-            const static_map_iterator& self,
+        [[nodiscard]] constexpr string_set_iterator operator-(
             difference_type n
-        ) noexcept {
-            return static_map_iterator(
-                self.m_data,
-                self.m_indices,
-                self.m_idx - n,
-                self.m_length
-            );
+        ) const noexcept {
+            return {m_data, m_indices, m_idx - n, m_length};
         }
 
-        [[nodiscard]] friend static_map_iterator operator-(
-            difference_type n,
-            const static_map_iterator& self
-        ) noexcept {
-            return static_map_iterator(
-                self.m_data,
-                self.m_indices,
-                self.m_idx - n,
-                self.m_length
-            );
+        [[nodiscard]] constexpr difference_type operator-(
+            const string_set_iterator& other
+        ) const noexcept {
+            return m_idx - other.m_idx;
         }
 
-        [[nodiscard]] friend difference_type operator-(
-            const static_map_iterator& lhs,
-            const static_map_iterator& rhs
-        ) noexcept {
-            return lhs.m_idx - rhs.m_idx;
-        }
-
-        [[nodiscard]] friend bool operator<(
-            const static_map_iterator& lhs,
-            const static_map_iterator& rhs
-        ) noexcept {
-            return lhs.m_data == rhs.m_data && lhs.m_idx < rhs.m_idx;
-        }
-
-        [[nodiscard]] friend bool operator<=(
-            const static_map_iterator& lhs,
-            const static_map_iterator& rhs
-        ) noexcept {
-            return lhs.m_data == rhs.m_data && lhs.m_idx <= rhs.m_idx;
-        }
-
-        [[nodiscard]] friend bool operator==(
-            const static_map_iterator& lhs,
-            const static_map_iterator& rhs
-        ) noexcept {
-            return lhs.m_data == rhs.m_data && lhs.m_idx == rhs.m_idx;
-        }
-
-        [[nodiscard]] friend bool operator!=(
-            const static_map_iterator& lhs,
-            const static_map_iterator& rhs
-        ) noexcept {
-            return !(lhs == rhs);
-        }
-
-        [[nodiscard]] friend bool operator>=(
-            const static_map_iterator& lhs,
-            const static_map_iterator& rhs
-        ) noexcept {
-            return lhs.m_data == rhs.m_data && lhs.m_idx >= rhs.m_idx;
-        }
-
-        [[nodiscard]] friend bool operator>(
-            const static_map_iterator& lhs,
-            const static_map_iterator& rhs
-        ) noexcept {
-            return lhs.m_data == rhs.m_data && lhs.m_idx > rhs.m_idx;
-        }
-    };
-
-    /* A standardized iterator type for immutable `bertrand::static_map` instances,
-    indpendent of the stored names. */
-    template <typename ValueType>
-    struct const_static_map_iterator {
-        using iterator_category = std::random_access_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using value_type = ValueType;
-        using reference = value_type&;
-        using pointer = value_type*;
-
-    private:
-        pointer m_data = nullptr;
-        const size_t* m_indices = nullptr;
-        difference_type m_idx = 0;
-        size_t m_length = 0;
-
-    public:
-        const_static_map_iterator() = default;
-
-        const_static_map_iterator(
-            pointer data,
-            const size_t* indices,
-            difference_type index,
-            size_t length
-        ) :
-            m_data(data),
-            m_indices(indices),
-            m_idx(index),
-            m_length(length)
-        {}
-
-        [[nodiscard]] explicit operator bool() const noexcept {
-            return m_idx >= 0 && m_idx < m_length;
-        }
-
-        [[nodiscard]] reference operator*() const {
-            if (m_idx >= 0 && m_idx < m_length) {
-                return m_data[m_indices[m_idx]];
+        [[nodiscard]] constexpr auto operator<=>(
+            const string_set_iterator& other
+        ) const noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (m_data != other.m_data) {
+                    throw ValueError(
+                        "cannot compare iterators from different containers"
+                    );
+                }
             }
-            throw IndexError(std::to_string(m_idx));
+            return m_idx <=> other.m_idx;
         }
 
-        [[nodiscard]] pointer operator->() const {
-            return &**this;
-        }
-
-        [[nodiscard]] reference operator[](difference_type n) const {
-            difference_type index = m_idx + n;
-            if (index >= 0 && index < m_length) {
-                return m_data[m_indices[index]];
+        [[nodiscard]] constexpr bool operator==(
+            const string_set_iterator& other
+        ) const noexcept(!DEBUG) {
+            if constexpr (DEBUG) {
+                if (m_data != other.m_data) {
+                    throw ValueError(
+                        "cannot compare iterators from different containers"
+                    );
+                }
             }
-            throw IndexError(std::to_string(index));
-        }
-
-        const_static_map_iterator& operator++() noexcept {
-            ++m_idx;
-            return *this;
-        }
-
-        [[nodiscard]] const_static_map_iterator operator++(int) {
-            const_static_map_iterator copy = *this;
-            ++m_idx;
-            return copy;
-        }
-
-        const_static_map_iterator& operator+=(difference_type n) noexcept {
-            m_idx += n;
-            return *this;
-        }
-
-        [[nodiscard]] friend const_static_map_iterator operator+(
-            const const_static_map_iterator& self,
-            difference_type n
-        ) noexcept {
-            return const_static_map_iterator(
-                self.m_data,
-                self.m_indices,
-                self.m_idx + n,
-                self.m_length
-            );
-        }
-
-        [[nodiscard]] friend const_static_map_iterator operator+(
-            difference_type n,
-            const const_static_map_iterator& self
-        ) noexcept {
-            return const_static_map_iterator(
-                self.m_data,
-                self.m_indices,
-                self.m_idx + n,
-                self.m_length
-            );
-        }
-
-        const_static_map_iterator& operator--() noexcept {
-            --m_idx;
-            return *this;
-        }
-
-        [[nodiscard]] const_static_map_iterator operator--(int) noexcept {
-            const_static_map_iterator copy = *this;
-            --m_idx;
-            return copy;
-        }
-
-        const_static_map_iterator& operator-=(difference_type n) noexcept {
-            m_idx -= n;
-            return *this;
-        }
-
-        [[nodiscard]] friend const_static_map_iterator operator-(
-            const const_static_map_iterator& self,
-            difference_type n
-        ) noexcept {
-            return const_static_map_iterator(
-                self.m_data,
-                self.m_indices,
-                self.m_idx - n,
-                self.m_length
-            );
-        }
-
-        [[nodiscard]] friend const_static_map_iterator operator-(
-            difference_type n,
-            const const_static_map_iterator& self
-        ) noexcept {
-            return const_static_map_iterator(
-                self.m_data,
-                self.m_indices,
-                self.m_idx - n,
-                self.m_length
-            );
-        }
-
-        [[nodiscard]] friend difference_type operator-(
-            const const_static_map_iterator& lhs,
-            const const_static_map_iterator& rhs
-        ) noexcept {
-            return lhs.m_idx - rhs.m_idx;
-        }
-
-        [[nodiscard]] friend bool operator<(
-            const const_static_map_iterator& lhs,
-            const const_static_map_iterator& rhs
-        ) noexcept {
-            return lhs.m_data == rhs.m_data && lhs.m_idx < rhs.m_idx;
-        }
-
-        [[nodiscard]] friend bool operator<=(
-            const const_static_map_iterator& lhs,
-            const const_static_map_iterator& rhs
-        ) noexcept {
-            return lhs.m_data == rhs.m_data && lhs.m_idx <= rhs.m_idx;
-        }
-
-        [[nodiscard]] friend bool operator==(
-            const const_static_map_iterator& lhs,
-            const const_static_map_iterator& rhs
-        ) noexcept {
-            return lhs.m_data == rhs.m_data && lhs.m_idx == rhs.m_idx;
-        }
-
-        [[nodiscard]] friend bool operator!=(
-            const const_static_map_iterator& lhs,
-            const const_static_map_iterator& rhs
-        ) noexcept {
-            return !(lhs == rhs);
-        }
-
-        [[nodiscard]] friend bool operator>=(
-            const const_static_map_iterator& lhs,
-            const const_static_map_iterator& rhs
-        ) noexcept {
-            return lhs.m_data == rhs.m_data && lhs.m_idx >= rhs.m_idx;
-        }
-
-        [[nodiscard]] friend bool operator>(
-            const const_static_map_iterator& lhs,
-            const const_static_map_iterator& rhs
-        ) noexcept {
-            return lhs.m_data == rhs.m_data && lhs.m_idx > rhs.m_idx;
+            return m_idx == other.m_idx;
         }
     };
 
@@ -3200,8 +3014,10 @@ struct string_map {
 
 
 
-
 inline void test() {
+    static_assert(meta::perfectly_hashable<"foo", "bar">);
+
+
     static_assert(string_wrapper<"a\nb\nc\n">::splitlines().join<" ">() == "a b c");
 
     constexpr string_list<"foo", "bar", "baz"> list;
@@ -3215,6 +3031,15 @@ inline void test() {
     static constexpr static_str s = "hello";
     constexpr std::string s2 = s;
     static_assert(s == s2);
+    static_assert(s[0] == 'h');
+    static_assert(pow(s[0], 2) == 64);
+
+    static_str s3 = "hello";
+    auto x = static_cast<char>(s3[0]);
+    auto y = hash('a');
+    auto z = abs(s[0]);
+    auto w = s3[0];
+    auto w2 = static_cast<char>(w);
 
 
     static_assert(string_wrapper<s>::get<slice{-1, std::nullopt, -1}>().upper() == "OLLEH");

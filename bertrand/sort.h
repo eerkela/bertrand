@@ -844,7 +844,7 @@ namespace impl {
             constexpr merge_tree(size_t size) :
                 size(size),
                 scratch(
-                    reinterpret_cast<pointer>(
+                    static_cast<pointer>(
                         std::malloc(sizeof(value_type) * (size + k + 1))
                     ),
                     deleter{}

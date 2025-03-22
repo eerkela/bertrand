@@ -143,9 +143,9 @@ namespace impl::linked {
         ) || (
             meta::is_void<typename std::remove_cvref_t<Self>::equal_func> &&
             meta::eq_returns<
+                bool,
                 const typename std::remove_cvref_t<Self>::value_type&,
-                const T&,
-                bool
+                const T&
             >
         );
 
@@ -4076,7 +4076,7 @@ namespace impl::linked {
         }
 
         size_t orig_size = self.size();
-        if constexpr (!Self::STATIC && meta::sub_returns<End, Begin, size_t>) {
+        if constexpr (!Self::STATIC && meta::sub_returns<size_t, End, Begin>) {
             self.reserve(orig_size + size_t(end - it));
         }
 
@@ -4205,7 +4205,7 @@ namespace impl::linked {
         }
 
         size_t orig_size = self.size();
-        if constexpr (!Self::STATIC && meta::sub_returns<End, Begin, size_t>) {
+        if constexpr (!Self::STATIC && meta::sub_returns<size_t, End, Begin>) {
             self.reserve(orig_size + size_t(end - it));
         }
 
@@ -4978,7 +4978,7 @@ public:
         if (it == end) {
             return;
         }
-        if constexpr (!base::STATIC && meta::sub_returns<End, Begin, size_t>) {
+        if constexpr (!base::STATIC && meta::sub_returns<size_t, End, Begin>) {
             view.reserve(size_t(end - it));
         }
         construct(it, end);
@@ -4997,7 +4997,7 @@ public:
         if (it == end) {
             return;
         }
-        if constexpr (!base::STATIC && meta::sub_returns<End, Begin, size_t>) {
+        if constexpr (!base::STATIC && meta::sub_returns<size_t, End, Begin>) {
             view.reserve(size_t(end - it));
         }
         construct(it, end);

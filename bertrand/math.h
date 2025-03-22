@@ -770,11 +770,13 @@ template <meta::hashable T>
 by the `impl::abs<T>` control struct, which is always specialized for integer and
 floating point types at a minimum. */
 template <typename T>
-    requires (requires(const T& obj) { impl::abs<T>{}(obj); })
+    requires (requires(const T& obj) {
+        impl::abs<meta::unqualify<meta::item_type<T>>>{}(obj);
+    })
 [[nodiscard]] constexpr decltype(auto) abs(const T& obj) noexcept(
-    noexcept(impl::abs<T>{}(obj))
+    noexcept(impl::abs<meta::unqualify<meta::item_type<T>>>{}(obj))
 ) {
-    return impl::abs<T>{}(obj);
+    return impl::abs<meta::unqualify<meta::item_type<T>>>{}(obj);
 }
 
 
@@ -784,13 +786,24 @@ for integer and floating point types at a minimum.  Note that integer exponentia
 with a negative exponent always returns zero, without erroring. */
 template <typename Base, typename Exp>
     requires (requires(const Base& base, const Exp& exp) {
-        impl::pow<Base, Exp>{}(base, exp);
+        impl::pow<
+            meta::unqualify<meta::item_type<Base>>,
+            meta::unqualify<meta::item_type<Exp>>
+        >{}(base, exp);
     })
 [[nodiscard]] constexpr decltype(auto) pow(
     const Base& base,
     const Exp& exp
-) noexcept(noexcept(impl::pow<Base, Exp>{}(base, exp))) {
-    return impl::pow<Base, Exp>{}(base, exp);
+) noexcept(
+    noexcept(impl::pow<
+        meta::unqualify<meta::item_type<Base>>,
+        meta::unqualify<meta::item_type<Exp>>
+    >{}(base, exp))
+) {
+    return impl::pow<
+        meta::unqualify<meta::item_type<Base>>,
+        meta::unqualify<meta::item_type<Exp>>
+    >{}(base, exp);
 }
 
 
@@ -802,7 +815,11 @@ there is no general solution for the modular case.  Also, providing a modulus eq
 zero will cause a `ZeroDivisionError`. */
 template <typename Base, typename Exp, typename Mod>
     requires (requires(const Base& base, const Exp& exp, const Mod& mod) {
-        impl::pow<Base, Exp, Mod>{}(base, exp, mod);
+        impl::pow<
+            meta::unqualify<meta::item_type<Base>>,
+            meta::unqualify<meta::item_type<Exp>>,
+            meta::unqualify<meta::item_type<Mod>>
+        >{}(base, exp, mod);
     })
 [[nodiscard]] constexpr decltype(auto) pow(
     const Base& base,
@@ -811,11 +828,19 @@ template <typename Base, typename Exp, typename Mod>
 ) noexcept(
     noexcept(impl::check_for_negative_exponent(exp)) &&
     noexcept(impl::check_for_zero_division(mod)) &&
-    noexcept(impl::pow<Base, Exp, Mod>{}(base, exp, mod))
+    noexcept(impl::pow<
+        meta::unqualify<meta::item_type<Base>>,
+        meta::unqualify<meta::item_type<Exp>>,
+        meta::unqualify<meta::item_type<Mod>>
+    >{}(base, exp, mod))
 ) {
     impl::check_for_negative_exponent(exp);
     impl::check_for_zero_division(mod);
-    return impl::pow<Base, Exp, Mod>{}(base, exp, mod);
+    return impl::pow<
+        meta::unqualify<meta::item_type<Base>>,
+        meta::unqualify<meta::item_type<Exp>>,
+        meta::unqualify<meta::item_type<Mod>>
+    >{}(base, exp, mod);
 }
 
 
@@ -824,185 +849,246 @@ facilitate inter-language communication where conventions may differ.  Numeric
 algorithms that use these operators are guaranteed to behave consistently from one
 language to another. */
 struct divide {
+private:
+
+    template <typename T>
+    using unwrap = meta::unqualify<meta::item_type<T>>;
+
+public:
     constexpr divide() noexcept = delete;
 
     /* Divide two numbers, returning a floating point approximation of the true
     quotient.  This is the rounding strategy used by Python's `/` operator. */
     template <typename L, typename R>
-        requires (meta::invocable<impl::divide::true_<L, R>, const L&, const R&>)
+        requires (meta::invocable<
+            impl::divide::true_<unwrap<L>, unwrap<R>>,
+            const L&,
+            const R&
+        >)
     [[nodiscard]] static constexpr decltype(auto) true_(
         const L& lhs,
         const R& rhs
     ) noexcept(
         noexcept(impl::check_for_zero_division(rhs)) &&
-        noexcept(impl::divide::true_<L, R>{}(lhs, rhs))
+        noexcept(impl::divide::true_<unwrap<L>, unwrap<R>>{}(lhs, rhs))
     ) {
         impl::check_for_zero_division(rhs);
-        return impl::divide::true_<L, R>{}(lhs, rhs);
+        return impl::divide::true_<unwrap<L>, unwrap<R>>{}(lhs, rhs);
     }
 
     /* Divide two numbers according to C++ semantics.  For integers, this performs
     truncated division toward zero.  Otherwise, it is identical to "true" division. */
     template <typename L, typename R>
-        requires (meta::invocable<impl::divide::cpp<L, R>, const L&, const R&>)
+        requires (meta::invocable<
+            impl::divide::cpp<unwrap<L>, unwrap<R>>,
+            const L&,
+            const R&
+        >)
     [[nodiscard]] static constexpr decltype(auto) cpp(
         const L& lhs,
         const R& rhs
     ) noexcept(
         noexcept(impl::check_for_zero_division(rhs)) &&
-        noexcept(impl::divide::cpp<L, R>{}(lhs, rhs))
+        noexcept(impl::divide::cpp<unwrap<L>, unwrap<R>>{}(lhs, rhs))
     ) {
         impl::check_for_zero_division(rhs);
-        return impl::divide::cpp<L, R>{}(lhs, rhs);
+        return impl::divide::cpp<unwrap<L>, unwrap<R>>{}(lhs, rhs);
     }
 
     /* Divide two numbers, rounding the quotient toward negative infinity.  This is
     the rounding strategy used by Python's `//` operator. */
     template <typename L, typename R>
-        requires (meta::invocable<impl::divide::floor<L, R>, const L&, const R&>)
+        requires (meta::invocable<
+            impl::divide::floor<unwrap<L>, unwrap<R>>,
+            const L&,
+            const R&
+        >)
     [[nodiscard]] static constexpr decltype(auto) floor(
         const L& lhs,
         const R& rhs
     ) noexcept(
         noexcept(impl::check_for_zero_division(rhs)) &&
-        noexcept(impl::divide::floor<L, R>{}(lhs, rhs))
+        noexcept(impl::divide::floor<unwrap<L>, unwrap<R>>{}(lhs, rhs))
     ) {
         impl::check_for_zero_division(rhs);
-        return impl::divide::floor<L, R>{}(lhs, rhs);
+        return impl::divide::floor<unwrap<L>, unwrap<R>>{}(lhs, rhs);
     }
 
     /* Divide two numbers, rounding the quotient toward positive infinity. */
     template <typename L, typename R>
-        requires (meta::invocable<impl::divide::ceil<L, R>, const L&, const R&>)
+        requires (meta::invocable<
+            impl::divide::ceil<unwrap<L>, unwrap<R>>,
+            const L&,
+            const R&
+        >)
     [[nodiscard]] static constexpr decltype(auto) ceil(
         const L& lhs,
         const R& rhs
     ) noexcept(
         noexcept(impl::check_for_zero_division(rhs)) &&
-        noexcept(impl::divide::ceil<L, R>{}(lhs, rhs))
+        noexcept(impl::divide::ceil<unwrap<L>, unwrap<R>>{}(lhs, rhs))
     ) {
         impl::check_for_zero_division(rhs);
-        return impl::divide::ceil<L, R>{}(lhs, rhs);
+        return impl::divide::ceil<unwrap<L>, unwrap<R>>{}(lhs, rhs);
     }
 
     /* Divide two numbers, rounding the quotient toward zero. */
     template <typename L, typename R>
-        requires (meta::invocable<impl::divide::down<L, R>, const L&, const R&>)
+        requires (meta::invocable<
+            impl::divide::down<unwrap<L>, unwrap<R>>,
+            const L&,
+            const R&
+        >)
     [[nodiscard]] static constexpr decltype(auto) down(
         const L& lhs,
         const R& rhs
     ) noexcept(
         noexcept(impl::check_for_zero_division(rhs)) &&
-        noexcept(impl::divide::down<L, R>{}(lhs, rhs))
+        noexcept(impl::divide::down<unwrap<L>, unwrap<R>>{}(lhs, rhs))
     ) {
         impl::check_for_zero_division(rhs);
-        return impl::divide::down<L, R>{}(lhs, rhs);
+        return impl::divide::down<unwrap<L>, unwrap<R>>{}(lhs, rhs);
     }
 
     /* Divide two numbers, rounding the quotient away from zero. */
     template <typename L, typename R>
-        requires (meta::invocable<impl::divide::up<L, R>, const L&, const R&>)
+        requires (meta::invocable<
+            impl::divide::up<unwrap<L>, unwrap<R>>,
+            const L&,
+            const R&
+        >)
     [[nodiscard]] static constexpr decltype(auto) up(
         const L& lhs,
         const R& rhs
     ) noexcept(
         noexcept(impl::check_for_zero_division(rhs)) &&
-        noexcept(impl::divide::up<L, R>{}(lhs, rhs))
+        noexcept(impl::divide::up<unwrap<L>, unwrap<R>>{}(lhs, rhs))
     ) {
         impl::check_for_zero_division(rhs);
-        return impl::divide::up<L, R>{}(lhs, rhs);
+        return impl::divide::up<unwrap<L>, unwrap<R>>{}(lhs, rhs);
     }
 
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
     ties toward negative infinity. */
     template <typename L, typename R>
-        requires (meta::invocable<impl::divide::half_floor<L, R>, const L&, const R&>)
+        requires (meta::invocable<
+            impl::divide::half_floor<unwrap<L>, unwrap<R>>,
+            const L&,
+            const R&
+        >)
     [[nodiscard]] static constexpr decltype(auto) half_floor(
         const L& lhs,
         const R& rhs
     ) noexcept(
         noexcept(impl::check_for_zero_division(rhs)) &&
-        noexcept(impl::divide::half_floor<L, R>{}(lhs, rhs))
+        noexcept(impl::divide::half_floor<unwrap<L>, unwrap<R>>{}(lhs, rhs))
     ) {
         impl::check_for_zero_division(rhs);
-        return impl::divide::half_floor<L, R>{}(lhs, rhs);
+        return impl::divide::half_floor<unwrap<L>, unwrap<R>>{}(lhs, rhs);
     }
 
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
     ties toward positive infinity. */
     template <typename L, typename R>
-        requires (meta::invocable<impl::divide::half_ceil<L, R>, const L&, const R&>)
+        requires (meta::invocable<
+            impl::divide::half_ceil<unwrap<L>, unwrap<R>>,
+            const L&,
+            const R&
+        >)
     [[nodiscard]] static constexpr decltype(auto) half_ceil(
         const L& lhs,
         const R& rhs
     ) noexcept(
         noexcept(impl::check_for_zero_division(rhs)) &&
-        noexcept(impl::divide::half_ceil<L, R>{}(lhs, rhs))
+        noexcept(impl::divide::half_ceil<unwrap<L>, unwrap<R>>{}(lhs, rhs))
     ) {
         impl::check_for_zero_division(rhs);
-        return impl::divide::half_ceil<L, R>{}(lhs, rhs);
+        return impl::divide::half_ceil<unwrap<L>, unwrap<R>>{}(lhs, rhs);
     }
 
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
     ties toward zero. */
     template <typename L, typename R>
-        requires (meta::invocable<impl::divide::half_down<L, R>, const L&, const R&>)
+        requires (meta::invocable<
+            impl::divide::half_down<unwrap<L>, unwrap<R>>,
+            const L&,
+            const R&
+        >)
     [[nodiscard]] static constexpr decltype(auto) half_down(
         const L& lhs,
         const R& rhs
     ) noexcept(
         noexcept(impl::check_for_zero_division(rhs)) &&
-        noexcept(impl::divide::half_down<L, R>{}(lhs, rhs))
+        noexcept(impl::divide::half_down<unwrap<L>, unwrap<R>>{}(lhs, rhs))
     ) {
         impl::check_for_zero_division(rhs);
-        return impl::divide::half_down<L, R>{}(lhs, rhs);
+        return impl::divide::half_down<unwrap<L>, unwrap<R>>{}(lhs, rhs);
     }
 
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
     ties away from zero. */
     template <typename L, typename R>
-        requires (meta::invocable<impl::divide::half_up<L, R>, const L&, const R&>)
+        requires (meta::invocable<
+            impl::divide::half_up<unwrap<L>, unwrap<R>>,
+            const L&,
+            const R&
+        >)
     [[nodiscard]] static constexpr decltype(auto) half_up(
         const L& lhs,
         const R& rhs
     ) noexcept(
         noexcept(impl::check_for_zero_division(rhs)) &&
-        noexcept(impl::divide::half_up<L, R>{}(lhs, rhs))
+        noexcept(impl::divide::half_up<unwrap<L>, unwrap<R>>{}(lhs, rhs))
     ) {
         impl::check_for_zero_division(rhs);
-        return impl::divide::half_up<L, R>{}(lhs, rhs);
+        return impl::divide::half_up<unwrap<L>, unwrap<R>>{}(lhs, rhs);
     }
 
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
     ties toward the nearest even number. */
     template <typename L, typename R>
-        requires (meta::invocable<impl::divide::half_even<L, R>, const L&, const R&>)
+        requires (meta::invocable<
+            impl::divide::half_even<unwrap<L>, unwrap<R>>,
+            const L&,
+            const R&
+        >)
     [[nodiscard]] static constexpr decltype(auto) half_even(
         const L& lhs,
         const R& rhs
     ) noexcept(
         noexcept(impl::check_for_zero_division(rhs)) &&
-        noexcept(impl::divide::half_even<L, R>{}(lhs, rhs))
+        noexcept(impl::divide::half_even<unwrap<L>, unwrap<R>>{}(lhs, rhs))
     ) {
         impl::check_for_zero_division(rhs);
-        return impl::divide::half_even<L, R>{}(lhs, rhs);
+        return impl::divide::half_even<unwrap<L>, unwrap<R>>{}(lhs, rhs);
     }
 
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
     ties toward the nearest odd number. */
     template <typename L, typename R>
-        requires (meta::invocable<impl::divide::half_odd<L, R>, const L&, const R&>)
+        requires (meta::invocable<
+            impl::divide::half_odd<unwrap<L>, unwrap<R>>,
+            const L&,
+            const R&
+        >)
     [[nodiscard]] static constexpr decltype(auto) half_odd(
         const L& lhs,
         const R& rhs
     ) noexcept(
         noexcept(impl::check_for_zero_division(rhs)) &&
-        noexcept(impl::divide::half_odd<L, R>{}(lhs, rhs))
+        noexcept(impl::divide::half_odd<unwrap<L>, unwrap<R>>{}(lhs, rhs))
     ) {
         impl::check_for_zero_division(rhs);
-        return impl::divide::half_odd<L, R>{}(lhs, rhs);
+        return impl::divide::half_odd<unwrap<L>, unwrap<R>>{}(lhs, rhs);
     }
 };
+
+
+/// TODO: modulo and divmod should delegate correctly as written, but may not be
+/// the most efficient in the case of proxy types.  However, it's so tedious to
+/// implement that I should only change it when I'm sure of the best solution.
+/// That probably involves a meta::unwrap() function that converts an object to its
+/// __wrapped__ type or something to that effect.
 
 
 /* A family of modulus operators with different rounding strategies, in order to
@@ -1478,6 +1564,11 @@ inter-language communication where conventions may differ.  Numeric algorithms t
 use these operators are guaranteed to behave consistently from one language to
 another. */
 struct round {
+private:
+    template <typename T>
+    using unwrap = meta::unqualify<meta::item_type<T>>;
+
+public:
     constexpr round() noexcept = delete;
 
     /* Round a value to the specified number of digits as a power of 10, defaulting
@@ -1487,21 +1578,22 @@ struct round {
     the digit count. */
     template <typename T>
         requires (requires(const T& obj) {
-            impl::divide::true_<T, long long>{}(obj * 1LL, 1LL);
-            impl::divide::true_<T, long long>{}(obj, 1LL) * 1LL;
+            impl::divide::true_<unwrap<T>, long long>{}(obj * 1LL, 1LL);
+            impl::divide::true_<unwrap<T>, long long>{}(obj, 1LL) * 1LL;
         })
     [[nodiscard]] static constexpr decltype(auto) true_(
         const T& obj,
         int digits = 0
     ) noexcept(
-        noexcept(impl::divide::true_<T, long long>{}(obj * 1LL, 1LL))
+        noexcept(impl::divide::true_<unwrap<T>, long long>{}(obj * 1LL, 1LL)) &&
+        noexcept(impl::divide::true_<unwrap<T>, long long>{}(obj, 1LL) * 1LL)
     ) {
         if (digits > 0) {
             long long factor = pow(10LL, digits);
-            return impl::divide::true_<T, long long>{}(obj * factor, factor);
+            return impl::divide::true_<unwrap<T>, long long>{}(obj * factor, factor);
         }
         long long factor = pow(10LL, -digits);
-        return impl::divide::true_<T, long long>{}(obj, factor) * factor;
+        return impl::divide::true_<unwrap<T>, long long>{}(obj, factor) * factor;
     }
 
     /* Round a value to the specified number of digits as a power of 10, defaulting
@@ -1512,21 +1604,22 @@ struct round {
     correction, similar to "true" rounding. */
     template <typename T>
         requires (requires(const T& obj) {
-            impl::divide::cpp<T, long long>{}(obj * 1LL, 1LL);
-            impl::divide::cpp<T, long long>{}(obj, 1LL) * 1LL;
+            impl::divide::cpp<unwrap<T>, long long>{}(obj * 1LL, 1LL);
+            impl::divide::cpp<unwrap<T>, long long>{}(obj, 1LL) * 1LL;
         })
     [[nodiscard]] static constexpr decltype(auto) cpp(
         const T& obj,
         int digits = 0
     ) noexcept(
-        noexcept(impl::divide::cpp<T, long long>{}(obj * 1LL, 1LL))
+        noexcept(impl::divide::cpp<unwrap<T>, long long>{}(obj * 1LL, 1LL)) &&
+        noexcept(impl::divide::cpp<unwrap<T>, long long>{}(obj, 1LL) * 1LL)
     ) {
         if (digits > 0) {
             long long factor = pow(10LL, digits);
-            return impl::divide::cpp<T, long long>{}(obj * factor, factor);
+            return impl::divide::cpp<unwrap<T>, long long>{}(obj * factor, factor);
         }
         long long factor = pow(10LL, -digits);
-        return impl::divide::cpp<T, long long>{}(obj, factor) * factor;
+        return impl::divide::cpp<unwrap<T>, long long>{}(obj, factor) * factor;
     }
 
     /* Round a value to the specified number of digits as a power of 10, defaulting
@@ -1535,21 +1628,21 @@ struct round {
     as if floor dividing by a power of 10, and then rescaling by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
-            impl::divide::floor<T, long long>{}(obj * 1LL, 1LL);
-            impl::divide::floor<T, long long>{}(obj, 1LL) * 1LL;
+            impl::divide::floor<unwrap<T>, long long>{}(obj * 1LL, 1LL);
+            impl::divide::floor<unwrap<T>, long long>{}(obj, 1LL) * 1LL;
         })
     [[nodiscard]] static constexpr decltype(auto) floor(
         const T& obj,
         int digits = 0
     ) noexcept(
-        noexcept(impl::divide::floor<T, long long>{}(obj * 1LL, 1LL))
+        noexcept(impl::divide::floor<unwrap<T>, long long>{}(obj * 1LL, 1LL))
     ) {
         if (digits > 0) {
             long long factor = pow(10LL, digits);
-            return impl::divide::floor<T, long long>{}(obj * factor, factor);
+            return impl::divide::floor<unwrap<T>, long long>{}(obj * factor, factor);
         }
         long long factor = pow(10LL, -digits);
-        return impl::divide::floor<T, long long>{}(obj, factor) * factor;
+        return impl::divide::floor<unwrap<T>, long long>{}(obj, factor) * factor;
     }
 
     /* Round a value to the specified number of digits as a power of 10, defaulting
@@ -1558,21 +1651,21 @@ struct round {
     as if ceil dividing by a power of 10, and then rescaling by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
-            impl::divide::ceil<T, long long>{}(obj * 1LL, 1LL);
-            impl::divide::ceil<T, long long>{}(obj, 1LL) * 1LL;
+            impl::divide::ceil<unwrap<T>, long long>{}(obj * 1LL, 1LL);
+            impl::divide::ceil<unwrap<T>, long long>{}(obj, 1LL) * 1LL;
         })
     [[nodiscard]] static constexpr decltype(auto) ceil(
         const T& obj,
         int digits = 0
     ) noexcept(
-        noexcept(impl::divide::ceil<T, long long>{}(obj * 1LL, 1LL))
+        noexcept(impl::divide::ceil<unwrap<T>, long long>{}(obj * 1LL, 1LL))
     ) {
         if (digits > 0) {
             long long factor = pow(10LL, digits);
-            return impl::divide::ceil<T, long long>{}(obj * factor, factor);
+            return impl::divide::ceil<unwrap<T>, long long>{}(obj * factor, factor);
         }
         long long factor = pow(10LL, -digits);
-        return impl::divide::ceil<T, long long>{}(obj, factor) * factor;
+        return impl::divide::ceil<unwrap<T>, long long>{}(obj, factor) * factor;
     }
 
     /* Round a value to the specified number of digits as a power of 10, defaulting
@@ -1581,21 +1674,21 @@ struct round {
     dividing down by a power of 10, and then rescaling by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
-            impl::divide::down<T, long long>{}(obj * 1LL, 1LL);
-            impl::divide::down<T, long long>{}(obj, 1LL) * 1LL;
+            impl::divide::down<unwrap<T>, long long>{}(obj * 1LL, 1LL);
+            impl::divide::down<unwrap<T>, long long>{}(obj, 1LL) * 1LL;
         })
     [[nodiscard]] static constexpr decltype(auto) down(
         const T& obj,
         int digits = 0
     ) noexcept(
-        noexcept(impl::divide::down<T, long long>{}(obj * 1LL, 1LL))
+        noexcept(impl::divide::down<unwrap<T>, long long>{}(obj * 1LL, 1LL))
     ) {
         if (digits > 0) {
             long long factor = pow(10LL, digits);
-            return impl::divide::down<T, long long>{}(obj * factor, factor);
+            return impl::divide::down<unwrap<T>, long long>{}(obj * factor, factor);
         }
         long long factor = pow(10LL, -digits);
-        return impl::divide::down<T, long long>{}(obj, factor) * factor;
+        return impl::divide::down<unwrap<T>, long long>{}(obj, factor) * factor;
     }
 
     /* Round a value to the specified number of digits as a power of 10, defaulting
@@ -1604,21 +1697,21 @@ struct round {
     dividing up by a power of 10, and then rescaling by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
-            impl::divide::up<T, long long>{}(obj * 1LL, 1LL);
-            impl::divide::up<T, long long>{}(obj, 1LL) * 1LL;
+            impl::divide::up<unwrap<T>, long long>{}(obj * 1LL, 1LL);
+            impl::divide::up<unwrap<T>, long long>{}(obj, 1LL) * 1LL;
         })
     [[nodiscard]] static constexpr decltype(auto) up(
         const T& obj,
         int digits = 0
     ) noexcept(
-        noexcept(impl::divide::up<T, long long>{}(obj * 1LL, 1LL))
+        noexcept(impl::divide::up<unwrap<T>, long long>{}(obj * 1LL, 1LL))
     ) {
         if (digits > 0) {
             long long factor = pow(10LL, digits);
-            return impl::divide::up<T, long long>{}(obj * factor, factor);
+            return impl::divide::up<unwrap<T>, long long>{}(obj * factor, factor);
         }
         long long factor = pow(10LL, -digits);
-        return impl::divide::up<T, long long>{}(obj, factor) * factor;
+        return impl::divide::up<unwrap<T>, long long>{}(obj, factor) * factor;
     }
 
     /* Round a value to the specified number of digits as a power of 10, defaulting
@@ -1628,21 +1721,21 @@ struct round {
     by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
-            impl::divide::half_floor<T, long long>{}(obj * 1LL, 1LL);
-            impl::divide::half_floor<T, long long>{}(obj, 1LL) * 1LL;
+            impl::divide::half_floor<unwrap<T>, long long>{}(obj * 1LL, 1LL);
+            impl::divide::half_floor<unwrap<T>, long long>{}(obj, 1LL) * 1LL;
         })
     [[nodiscard]] static constexpr decltype(auto) half_floor(
         const T& obj,
         int digits = 0
     ) noexcept(
-        noexcept(impl::divide::half_floor<T, long long>{}(obj * 1LL, 1LL))
+        noexcept(impl::divide::half_floor<unwrap<T>, long long>{}(obj * 1LL, 1LL))
     ) {
         if (digits > 0) {
             long long factor = pow(10LL, digits);
-            return impl::divide::half_floor<T, long long>{}(obj * factor, factor);
+            return impl::divide::half_floor<unwrap<T>, long long>{}(obj * factor, factor);
         }
         long long factor = pow(10LL, -digits);
-        return impl::divide::half_floor<T, long long>{}(obj, factor) * factor;
+        return impl::divide::half_floor<unwrap<T>, long long>{}(obj, factor) * factor;
     }
 
     /* Round a value to the specified number of digits as a power of 10, defaulting
@@ -1652,21 +1745,21 @@ struct round {
     by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
-            impl::divide::half_ceil<T, long long>{}(obj * 1LL, 1LL);
-            impl::divide::half_ceil<T, long long>{}(obj, 1LL) * 1LL;
+            impl::divide::half_ceil<unwrap<T>, long long>{}(obj * 1LL, 1LL);
+            impl::divide::half_ceil<unwrap<T>, long long>{}(obj, 1LL) * 1LL;
         })
     [[nodiscard]] static constexpr decltype(auto) half_ceil(
         const T& obj,
         int digits = 0
     ) noexcept(
-        noexcept(impl::divide::half_ceil<T, long long>{}(obj * 1LL, 1LL))
+        noexcept(impl::divide::half_ceil<unwrap<T>, long long>{}(obj * 1LL, 1LL))
     ) {
         if (digits > 0) {
             long long factor = pow(10LL, digits);
-            return impl::divide::half_ceil<T, long long>{}(obj * factor, factor);
+            return impl::divide::half_ceil<unwrap<T>, long long>{}(obj * factor, factor);
         }
         long long factor = pow(10LL, -digits);
-        return impl::divide::half_ceil<T, long long>{}(obj, factor) * factor;
+        return impl::divide::half_ceil<unwrap<T>, long long>{}(obj, factor) * factor;
     }
 
     /* Round a value to the specified number of digits as a power of 10, defaulting
@@ -1676,21 +1769,21 @@ struct round {
     by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
-            impl::divide::half_down<T, long long>{}(obj * 1LL, 1LL);
-            impl::divide::half_down<T, long long>{}(obj, 1LL) * 1LL;
+            impl::divide::half_down<unwrap<T>, long long>{}(obj * 1LL, 1LL);
+            impl::divide::half_down<unwrap<T>, long long>{}(obj, 1LL) * 1LL;
         })
     [[nodiscard]] static constexpr decltype(auto) half_down(
         const T& obj,
         int digits = 0
     ) noexcept(
-        noexcept(impl::divide::half_down<T, long long>{}(obj * 1LL, 1LL))
+        noexcept(impl::divide::half_down<unwrap<T>, long long>{}(obj * 1LL, 1LL))
     ) {
         if (digits > 0) {
             long long factor = pow(10LL, digits);
-            return impl::divide::half_down<T, long long>{}(obj * factor, factor);
+            return impl::divide::half_down<unwrap<T>, long long>{}(obj * factor, factor);
         }
         long long factor = pow(10LL, -digits);
-        return impl::divide::half_down<T, long long>{}(obj, factor) * factor;
+        return impl::divide::half_down<unwrap<T>, long long>{}(obj, factor) * factor;
     }
 
     /* Round a value to the specified number of digits as a power of 10, defaulting
@@ -1700,21 +1793,21 @@ struct round {
     by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
-            impl::divide::half_up<T, long long>{}(obj * 1LL, 1LL);
-            impl::divide::half_up<T, long long>{}(obj, 1LL) * 1LL;
+            impl::divide::half_up<unwrap<T>, long long>{}(obj * 1LL, 1LL);
+            impl::divide::half_up<unwrap<T>, long long>{}(obj, 1LL) * 1LL;
         })
     [[nodiscard]] static constexpr decltype(auto) half_up(
         const T& obj,
         int digits = 0
     ) noexcept(
-        noexcept(impl::divide::half_up<T, long long>{}(obj * 1LL, 1LL))
+        noexcept(impl::divide::half_up<unwrap<T>, long long>{}(obj * 1LL, 1LL))
     ) {
         if (digits > 0) {
             long long factor = pow(10LL, digits);
-            return impl::divide::half_up<T, long long>{}(obj * factor, factor);
+            return impl::divide::half_up<unwrap<T>, long long>{}(obj * factor, factor);
         }
         long long factor = pow(10LL, -digits);
-        return impl::divide::half_up<T, long long>{}(obj, factor) * factor;
+        return impl::divide::half_up<unwrap<T>, long long>{}(obj, factor) * factor;
     }
 
     /* Round a value to the specified number of digits as a power of 10, defaulting
@@ -1724,21 +1817,21 @@ struct round {
     by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
-            impl::divide::half_even<T, long long>{}(obj * 1LL, 1LL);
-            impl::divide::half_even<T, long long>{}(obj, 1LL) * 1LL;
+            impl::divide::half_even<unwrap<T>, long long>{}(obj * 1LL, 1LL);
+            impl::divide::half_even<unwrap<T>, long long>{}(obj, 1LL) * 1LL;
         })
     [[nodiscard]] static constexpr decltype(auto) half_even(
         const T& obj,
         int digits = 0
     ) noexcept(
-        noexcept(impl::divide::half_even<T, long long>{}(obj * 1LL, 1LL))
+        noexcept(impl::divide::half_even<unwrap<T>, long long>{}(obj * 1LL, 1LL))
     ) {
         if (digits > 0) {
             long long factor = pow(10LL, digits);
-            return impl::divide::half_even<T, long long>{}(obj * factor, factor);
+            return impl::divide::half_even<unwrap<T>, long long>{}(obj * factor, factor);
         }
         long long factor = pow(10LL, -digits);
-        return impl::divide::half_even<T, long long>{}(obj, factor) * factor;
+        return impl::divide::half_even<unwrap<T>, long long>{}(obj, factor) * factor;
     }
 
     /* Round a value to the specified number of digits as a power of 10, defaulting
@@ -1748,21 +1841,21 @@ struct round {
     by the same factor. */
     template <typename T>
         requires (requires(const T& obj) {
-            impl::divide::half_odd<T, long long>{}(obj * 1LL, 1LL);
-            impl::divide::half_odd<T, long long>{}(obj, 1LL) * 1LL;
+            impl::divide::half_odd<unwrap<T>, long long>{}(obj * 1LL, 1LL);
+            impl::divide::half_odd<unwrap<T>, long long>{}(obj, 1LL) * 1LL;
         })
     [[nodiscard]] static constexpr decltype(auto) half_odd(
         const T& obj,
         int digits = 0
     ) noexcept(
-        noexcept(impl::divide::half_odd<T, long long>{}(obj * 1LL, 1LL))
+        noexcept(impl::divide::half_odd<unwrap<T>, long long>{}(obj * 1LL, 1LL))
     ) {
         if (digits > 0) {
             long long factor = pow(10LL, digits);
-            return impl::divide::half_odd<T, long long>{}(obj * factor, factor);
+            return impl::divide::half_odd<unwrap<T>, long long>{}(obj * factor, factor);
         }
         long long factor = pow(10LL, -digits);
-        return impl::divide::half_odd<T, long long>{}(obj, factor) * factor;
+        return impl::divide::half_odd<unwrap<T>, long long>{}(obj, factor) * factor;
     }
 };
 
