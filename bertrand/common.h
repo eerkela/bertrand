@@ -2913,6 +2913,9 @@ namespace meta {
     ////    CUSTOMIZATION POINTS    ////
     ////////////////////////////////////
 
+    template <typename T>
+    concept wrapper = inherits<T, impl::wrapper_tag>;
+
     namespace detail {
 
         /// NOTE: in all cases, cvref qualifiers will be stripped from the input
@@ -2943,14 +2946,6 @@ namespace meta {
         constexpr bool enable_comprehension_operator = false;
 
     }
-
-}
-
-
-namespace meta {
-
-    template <typename T>
-    concept wrapper = inherits<T, impl::wrapper_tag>;
 
 }
 
@@ -3016,18 +3011,28 @@ namespace meta {
 
 namespace impl {
 
-    /* A base wrapper class that perfectly forwards every operator except assignment to
-    the result of a private `getter()` method declared with `bertrand::impl::getter` as
-    a friend.  Assignment is forwarded to a separate `setter(T)` method exposed via
-    `bertrand::impl::setter` instead.  Inheriting from this method allows a forwarding
-    wrapper to be declared just by implementing the getter/setter logic, without
-    needing to reimplement the full operator interface. */
+    /* A smart reference class that perfectly forwards every operator except
+    assignment, unary `&`, `*`, `->`, and `->*` to the result of a private `getter()`
+    method declared with `bertrand::impl::getter` as a friend.  Assignment is forwarded
+    to a separate `setter(T)` method exposed via `bertrand::impl::setter`, while unary
+    `&` refers to the address of the wrapper, `*` triggers an explicit getter call, and
+    `->`/`->*` allow indirect access to members of the wrapped type.
+
+    Inheriting from this class allows a forwarding wrapper to be declared just by
+    implementing its getter/setter logic, without needing to recreate the full operator
+    interface.  Note that wrappers of this form cannot be copied or moved by default,
+    and should not expose any public interface of their own, including constructors.
+    The only logic that should be implemented is the getter (which must return a
+    reference), and optionally the setter (whose result will be returned from the
+    assignment operator). */
     struct wrapper : wrapper_tag {
     private:
         static constexpr impl::setter setter;
 
-    public:
+    protected:
         constexpr wrapper() = default;
+
+    public:
         constexpr wrapper(const wrapper&) = delete;
         constexpr wrapper(wrapper&&) = delete;
         constexpr wrapper& operator=(const wrapper&) = delete;
@@ -3040,8 +3045,7 @@ namespace impl {
         constexpr decltype(auto) operator=(this S&& self, T&& value) noexcept(
             noexcept(setter(std::forward<S>(self), meta::unwrap(std::forward<T>(value))))
         ) {
-            setter(std::forward<S>(self), meta::unwrap(std::forward<T>(value)));
-            return self;
+            return setter(std::forward<S>(self), meta::unwrap(std::forward<T>(value)));
         }
 
         template <typename S, typename T>
@@ -3049,7 +3053,6 @@ namespace impl {
         constexpr operator T(this S&& self) noexcept(
             noexcept(meta::implicit_cast<T>(meta::unwrap(std::forward<S>(self))))
         ) {
-            // return {};
             return meta::unwrap(std::forward<S>(self));
         }
 
@@ -3065,7 +3068,19 @@ namespace impl {
         }
 
         template <typename S>
-            requires (requires(S self) { &meta::unwrap(std::forward<S>(self)); })
+            requires (requires(S self) {
+                meta::unwrap(std::forward<S>(self));
+            })
+        constexpr decltype(auto) operator*(this S&& self) noexcept(
+            noexcept(meta::unwrap(std::forward<S>(self)))
+        ) {
+            return meta::unwrap(std::forward<S>(self));
+        }
+
+        template <typename S>
+            requires (requires(S self) {
+                &meta::unwrap(std::forward<S>(self));
+            })
         constexpr decltype(auto) operator->(this S&& self) noexcept(
             noexcept(&meta::unwrap(std::forward<S>(self)))
         ) {
@@ -3074,32 +3089,12 @@ namespace impl {
 
         template <typename S, typename M>
             requires (requires(S self, M member) {
-                meta::unwrap(std::forward<S>(self))->*std::forward<M>(member);
+                meta::unwrap(std::forward<S>(self)).*std::forward<M>(member);
             })
         constexpr decltype(auto) operator->*(this S&& self, M&& member) noexcept(
-            noexcept(meta::unwrap(std::forward<S>(self))->*std::forward<M>(member))
+            noexcept(meta::unwrap(std::forward<S>(self)).*std::forward<M>(member))
         ) {
-            return meta::unwrap(std::forward<S>(self))->*std::forward<M>(member);
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                *std::forward<S>(self);
-            })
-        constexpr decltype(auto) operator*(this S&& self) noexcept(
-            noexcept(*std::forward<S>(self))
-        ) {
-            return *std::forward<S>(self);
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                &std::forward<S>(self);
-            })
-        constexpr decltype(auto) operator&(this S&& self) noexcept(
-            noexcept(&std::forward<S>(self))
-        ) {
-            return &std::forward<S>(self);
+            return meta::unwrap(std::forward<S>(self)).*std::forward<M>(member);
         }
 
         template <typename S, typename... K>
@@ -3664,7 +3659,6 @@ namespace impl {
 }  // namespace bertrand
 
 
-
 namespace std {
 
     template <bertrand::meta::wrapper T>
@@ -3672,7 +3666,7 @@ namespace std {
             std::tuple_size<
                 std::remove_cvref_t<bertrand::meta::unwrap_type<T>>
             >::value;
-    })
+        })
     struct tuple_size<T> : std::integral_constant<
         size_t,
         std::tuple_size<

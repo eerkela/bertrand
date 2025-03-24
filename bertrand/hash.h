@@ -1188,9 +1188,9 @@ struct static_map<Value, Keys...> : impl::minimal_perfect_hash<Keys...> {
     template <typename T>
     static constexpr bool hashable = hasher::template hashable<T>;
 
+    [[nodiscard]] constexpr pointer data() const noexcept { return m_table.data(); }
     [[nodiscard]] static constexpr size_t size() noexcept { return hasher::table_size; }
     [[nodiscard]] static constexpr bool empty() noexcept { return !size(); }
-    [[nodiscard]] constexpr pointer data() const noexcept { return m_table.data(); }
 
 private:
     static constexpr std::array<size_t, size()> m_indices {
@@ -1252,7 +1252,7 @@ public:
                     return false;
                 }
             }
-            return true;   
+            return true;
         }
     }
 
@@ -1410,7 +1410,6 @@ public:
         size_t idx = key;
         return idx < size() ? &m_table[m_indices[idx]] : nullptr;
     }
-
 
     [[nodiscard]] constexpr iterator begin() noexcept {
         return {m_table.data(), m_indices.data(), 0, size()};

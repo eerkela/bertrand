@@ -3,7 +3,6 @@
 
 #include "bertrand/common.h"
 #include "bertrand/except.h"
-#include "bertrand/math.h"
 
 
 namespace bertrand {
