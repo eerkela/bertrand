@@ -5,6 +5,7 @@
 #include "bertrand/math.h"
 #include "bertrand/iter.h"
 #include "bertrand/sort.h"
+#include <compare>
 #include <cstddef>
 
 
@@ -2297,7 +2298,7 @@ namespace impl {
         }
     };
 
-    template <typename T> requires (!meta::reference<T>)
+    template <meta::not_void T> requires (!meta::reference<T>)
     struct hashed_string_iterator {
         using iterator_category = std::random_access_iterator_tag;
         using difference_type = std::ptrdiff_t;
@@ -2306,21 +2307,21 @@ namespace impl {
         using pointer = value_type*;
 
     private:
-        pointer m_data = nullptr;
-        const size_t* m_indices = nullptr;
+        pointer m_table = nullptr;
+        const size_t* m_hash_index = nullptr;
         difference_type m_idx = 0;
         difference_type m_length = 0;
 
     public:
         constexpr hashed_string_iterator() noexcept = default;
         constexpr hashed_string_iterator(
-            pointer data,
-            const size_t* indices,
+            pointer table,
+            const size_t* hash_index,
             difference_type index,
             difference_type length
         ) noexcept :
-            m_data(data),
-            m_indices(indices),
+            m_table(table),
+            m_hash_index(hash_index),
             m_idx(index),
             m_length(length)
         {}
@@ -2331,7 +2332,7 @@ namespace impl {
                     throw IndexError(std::to_string(m_idx));
                 }
             }
-            return m_data[m_indices[m_idx]];
+            return m_table[m_hash_index[m_idx]];
         }
 
         [[nodiscard]] constexpr pointer operator->() const noexcept(!DEBUG) {
@@ -2345,7 +2346,7 @@ namespace impl {
                     throw IndexError(std::to_string(index));
                 }
             }
-            return m_data[m_indices[index]];
+            return m_table[m_hash_index[index]];
         }
 
         constexpr hashed_string_iterator& operator++() noexcept {
@@ -2367,7 +2368,7 @@ namespace impl {
         [[nodiscard]] constexpr hashed_string_iterator operator+(
             difference_type n
         ) const noexcept {
-            return {m_data, m_indices, m_idx + n, m_length};
+            return {m_table, m_hash_index, m_idx + n, m_length};
         }
 
         constexpr hashed_string_iterator& operator--() noexcept {
@@ -2389,7 +2390,7 @@ namespace impl {
         [[nodiscard]] constexpr hashed_string_iterator operator-(
             difference_type n
         ) const noexcept {
-            return {m_data, m_indices, m_idx - n, m_length};
+            return {m_table, m_hash_index, m_idx - n, m_length};
         }
 
         [[nodiscard]] constexpr difference_type operator-(
@@ -2402,7 +2403,7 @@ namespace impl {
             const hashed_string_iterator& other
         ) const noexcept(!DEBUG) {
             if constexpr (DEBUG) {
-                if (m_data != other.m_data) {
+                if (m_table != other.m_table) {
                     throw ValueError(
                         "cannot compare iterators from different containers"
                     );
@@ -2415,7 +2416,7 @@ namespace impl {
             const hashed_string_iterator& other
         ) const noexcept(!DEBUG) {
             if constexpr (DEBUG) {
-                if (m_data != other.m_data) {
+                if (m_table != other.m_table) {
                     throw ValueError(
                         "cannot compare iterators from different containers"
                     );
@@ -2423,6 +2424,139 @@ namespace impl {
             }
             return m_idx == other.m_idx;
         }
+    };
+
+    template <meta::not_void T> requires (!meta::reference<T>)
+    struct hashed_string_slice {
+    private:
+
+        template <typename V>
+        struct iter {
+            using iterator_category = std::input_iterator_tag;
+            using difference_type = ssize_t;
+            using value_type = V;
+            using reference = meta::as_lvalue<value_type>;
+            using const_reference = meta::as_lvalue<meta::as_const<value_type>>;
+            using pointer = meta::as_pointer<value_type>;
+            using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
+
+            pointer table = nullptr;
+            const size_t* hash_index = nullptr;
+            ssize_t index = 0;
+            ssize_t step = 1;
+
+            [[nodiscard]] constexpr reference operator*() noexcept {
+                return table[hash_index[index]];
+            }
+
+            [[nodiscard]] constexpr const_reference operator*() const noexcept {
+                return table[hash_index[index]];
+            }
+
+            [[nodiscard]] constexpr pointer operator->() noexcept {
+                return table + hash_index[index];
+            }
+
+            [[nodiscard]] constexpr const_pointer operator->() const noexcept {
+                return table + hash_index[index];
+            }
+
+            [[maybe_unused]] constexpr iter& operator++() noexcept {
+                index += step;
+                return *this;
+            }
+
+            [[nodiscard]] constexpr iter operator++(int) noexcept {
+                iterator copy = *this;
+                ++(*this);
+                return copy;
+            }
+
+            [[nodiscard]] constexpr bool operator==(const iter& other) noexcept {
+                return step > 0 ? index >= other.index : index <= other.index;
+            }
+
+            [[nodiscard]] constexpr bool operator!=(const iter& other) noexcept {
+                return !(*this == other);
+            }
+        };
+
+    public:
+        using value_type = T;
+        using reference = meta::as_lvalue<value_type>;
+        using const_reference = meta::as_lvalue<meta::as_const<value_type>>;
+        using pointer = meta::as_pointer<value_type>;
+        using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
+        using iterator = iter<value_type>;
+        using const_iterator = iter<meta::as_const<value_type>>;
+
+        constexpr hashed_string_slice(
+            pointer table,
+            const size_t* hash_index,
+            bertrand::slice::normalized indices
+        ) noexcept :
+            m_table(table),
+            m_hash_index(hash_index),
+            m_indices(indices)
+        {}
+
+        constexpr hashed_string_slice(const hashed_string_slice&) = delete;
+        constexpr hashed_string_slice(hashed_string_slice&&) = delete;
+        constexpr hashed_string_slice& operator=(const hashed_string_slice&) = delete;
+        constexpr hashed_string_slice& operator=(hashed_string_slice&&) = delete;
+
+        [[nodiscard]] constexpr pointer data() const noexcept { return m_table; }
+        [[nodiscard]] constexpr ssize_t start() const noexcept { return m_indices.start; }
+        [[nodiscard]] constexpr ssize_t stop() const noexcept { return m_indices.stop; }
+        [[nodiscard]] constexpr ssize_t step() const noexcept { return m_indices.step; }
+        [[nodiscard]] constexpr ssize_t ssize() const noexcept { return m_indices.length; }
+        [[nodiscard]] constexpr size_t size() const noexcept { return size_t(size()); }
+        [[nodiscard]] constexpr bool empty() const noexcept { return !ssize(); }
+        [[nodiscard]] explicit operator bool() const noexcept { return ssize(); }
+
+        [[nodiscard]] constexpr iterator begin() noexcept {
+            return {m_table, m_hash_index, m_indices.start, m_indices.step};
+        }
+
+        [[nodiscard]] constexpr const_iterator begin() const noexcept {
+            return {m_table, m_hash_index, m_indices.start, m_indices.step};
+        }
+
+        [[nodiscard]] constexpr const_iterator cbegin() noexcept {
+            return {m_table, m_hash_index, m_indices.start, m_indices.step};
+        }
+
+        [[nodiscard]] constexpr iterator end() noexcept {
+            return {m_table, m_hash_index, m_indices.stop, m_indices.step};
+        }
+
+        [[nodiscard]] constexpr const_iterator end() const noexcept {
+            return {m_table, m_hash_index, m_indices.stop, m_indices.step};
+        }
+
+        [[nodiscard]] constexpr const_iterator cend() const noexcept {
+            return {m_table, m_hash_index, m_indices.stop, m_indices.step};
+        }
+
+        template <typename V>
+            requires (meta::constructible_from<V, std::from_range_t, hashed_string_slice&>)
+        [[nodiscard]] constexpr operator V() && noexcept(noexcept(V(std::from_range, *this))) {
+            return V(std::from_range, *this);
+        }
+
+        template <typename V>
+            requires (
+                !meta::constructible_from<V, std::from_range_t, hashed_string_slice&> &&
+                meta::constructible_from<V, iterator, iterator>
+            )
+        [[nodiscard]] constexpr operator V() && noexcept(noexcept(V(begin(), end()))) {
+            return V(begin(), end());
+        }
+
+    private:
+        pointer m_table;
+        const size_t* m_hash_index;
+        bertrand::slice::normalized m_indices;
     };
 
 }
@@ -2580,7 +2714,7 @@ struct string_list {
     template <static_str Key> requires (contains<Key>())
     [[nodiscard]] static constexpr index_type index() noexcept {
         return []<index_type I = 0>(this auto&& self) {
-            if constexpr (Key == meta::unpack_string<I, Strings...>) {
+            if constexpr (Key == get<I>()) {
                 return I;
             } else {
                 return std::forward<decltype(self)>(self).template operator()<I + 1>();
@@ -2594,7 +2728,7 @@ struct string_list {
     [[nodiscard]] static constexpr index_type index(const char(&str)[N]) noexcept {
         return []<index_type I = 0>(this auto&& self, const char(&str)[N]) -> index_type {
             if constexpr (I < ssize()) {
-                if (str == meta::unpack_string<I, Strings...>) {
+                if (str == get<I>()) {
                     return I;
                 }
                 return std::forward<decltype(self)>(self).template operator()<I + 1>(str);
@@ -2610,7 +2744,7 @@ struct string_list {
     [[nodiscard]] static constexpr index_type index(const T& key) noexcept {
         return []<index_type I = 0>(this auto&& self, const T& key) -> index_type {
             if constexpr (I < ssize()) {
-                if (key == meta::unpack_string<I, Strings...>) {
+                if (key == get<I>()) {
                     return I;
                 }
                 return std::forward<decltype(self)>(self).template operator()<I + 1>(key);
@@ -2630,7 +2764,7 @@ struct string_list {
         const char* str = std::forward<T>(key);
         return []<index_type I = 0>(this auto&& self, std::string_view key) -> index_type {
             if constexpr (I < ssize()) {
-                if (key == meta::unpack_string<I, Strings...>) {
+                if (key == get<I>()) {
                     return I;
                 }
                 return std::forward<decltype(self)>(self).template operator()<I + 1>(key);
@@ -2653,7 +2787,7 @@ struct string_list {
     ) {
         return []<index_type I = 0>(this auto&& self, std::string_view key) -> index_type {
             if constexpr (I < ssize()) {
-                if (key == meta::unpack_string<I, Strings...>) {
+                if (key == get<I>()) {
                     return I;
                 }
                 return std::forward<decltype(self)>(self).template operator()<I + 1>(key);
@@ -2678,7 +2812,7 @@ struct string_list {
         std::string str = std::forward<T>(key);
         return []<index_type I = 0>(this auto&& self, std::string_view key) -> index_type {
             if constexpr (I < ssize()) {
-                if (key == meta::unpack_string<I, Strings...>) {
+                if (key == get<I>()) {
                     return I;
                 }
                 return std::forward<decltype(self)>(self).template operator()<I + 1>(key);
@@ -2714,10 +2848,7 @@ struct string_list {
     [[nodiscard]] static constexpr auto get() noexcept {
         static constexpr auto indices = s.normalize(ssize());
         return []<size_t... Is>(std::index_sequence<Is...>) {
-            return string_list<meta::unpack_string<
-                indices.start + Is * indices.step,
-                Strings...
-            >...>{};
+            return string_list<get<indices.start + Is * indices.step>()...>{};
         }(std::make_index_sequence<indices.length>{});
     }
 
@@ -2762,6 +2893,25 @@ struct string_list {
         return {data() + index};
     }
 
+    /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
+    describing the start, stop, and step indices, and returns a slice object containing
+    the strings within the slice.  Each index can be omitted by initializing it to
+    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
+    Python-style wraparound to both `start` and `stop`. */
+    template <bertrand::slice s>
+    [[nodiscard]] static constexpr slice at() noexcept {
+        return {data(), s.normalize(ssize())};
+    }
+
+    /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
+    describing the start, stop, and step indices, and returns a slice object containing
+    the strings within the slice.  Each index can be omitted by initializing it to
+    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
+    Python-style wraparound to both `start` and `stop`. */
+    [[nodiscard]] static constexpr slice at(bertrand::slice s) noexcept {
+        return {data(), s.normalize(ssize())};
+    }
+
     /* Get an iterator to the first occurrence of a string within the list.  Returns
     an `end()` iterator if the string is not present. */
     template <static_str Key> requires (contains<Key>())
@@ -2781,24 +2931,14 @@ private:
 
     template <auto indices, index_type I, static_str... Strs>
     struct forward_remove {
-        using type = forward_remove<
-            indices,
-            I + 1,
-            Strs...,
-            meta::unpack_string<I, Strings...>
-        >::type;
+        using type = forward_remove<indices, I + 1, Strs..., get<I>()>::type;
     };
     template <auto indices, index_type I, static_str... Strs>
         requires (I >= indices.start && I < indices.stop)
     struct forward_remove<indices, I, Strs...> {
         template <index_type J>
         struct filter {
-            using type = forward_remove<
-                indices,
-                I + 1,
-                Strs...,
-                meta::unpack_string<J, Strings...>
-            >::type;
+            using type = forward_remove<indices, I + 1, Strs..., get<J>()>::type;
         };
         template <index_type J> requires ((J - indices.start) % indices.step == 0)
         struct filter<J> { using type = forward_remove<indices, I + 1, Strs...>::type; };
@@ -2809,24 +2949,14 @@ private:
 
     template <auto indices, index_type I, static_str... Strs>
     struct backward_remove {
-        using type = backward_remove<
-            indices,
-            I - 1,
-            meta::unpack_string<I, Strings...>,
-            Strs...
-        >::type;
+        using type = backward_remove<indices, I - 1, get<I>(), Strs...>::type;
     };
     template <auto indices, index_type I, static_str... Strs>
         requires (I <= indices.start && I > indices.stop)
     struct backward_remove<indices, I, Strs...> {
         template <index_type J>
         struct filter {
-            using type = backward_remove<
-                indices,
-                I - 1,
-                meta::unpack_string<J, Strings...>,
-                Strs...
-            >::type;
+            using type = backward_remove<indices, I - 1, get<J>(), Strs...>::type;
         };
         template <index_type J> requires ((indices.start - J) % indices.step == 0)
         struct filter<J> { using type = backward_remove<indices, I - 1, Strs...>::type; };
@@ -2846,10 +2976,7 @@ public:
             std::index_sequence<Prev...>,
             std::index_sequence<Next...>
         ) {
-            return string_list<
-                meta::unpack_string<Prev, Strings...>...,
-                meta::unpack_string<idx + 1 + Next, Strings...>...
-            >{};
+            return string_list<get<Prev>()..., get<idx + 1 + Next>()...>{};
         }(
             std::make_index_sequence<idx>{},
             std::make_index_sequence<size() - idx - 1>{}
@@ -2866,10 +2993,7 @@ public:
             std::index_sequence<Prev...>,
             std::index_sequence<Next...>
         ) {
-            return string_list<
-                meta::unpack_string<Prev, Strings...>...,
-                meta::unpack_string<idx + 1 + Next, Strings...>...
-            >{};
+            return string_list<get<Prev>()..., get<idx + 1 + Next>()...>{};
         }(
             std::make_index_sequence<idx>{},
             std::make_index_sequence<size() - idx - 1>{}
@@ -2899,8 +3023,29 @@ public:
         return string_wrapper<sep>::template join<Strings...>();
     }
 
-    /// TODO: include a separate method that filters out duplicates?  Maybe unique
-    /// and to_unique()?
+    /* True if the list contains only unique strings.  False otherwise. */
+    static constexpr bool unique = meta::strings_are_unique<Strings...>;
+
+private:
+
+    template <index_type I, static_str... Strs>
+    struct unique_strings { using type = unique_strings<I + 1, Strs...> ::type; };
+    template <index_type I, static_str... Strs>
+        requires (I < ssize() && I == index<get<I>()>())
+    struct unique_strings<I, Strs...> {
+        using type = unique_strings<I + 1, Strs..., get<I>()>::type;
+    };
+    template <index_type I, static_str... Strs> requires (I == ssize())
+    struct unique_strings<I, Strs...> { using type = string_list<Strs...>; };
+
+public:
+
+    /* Filter out any duplicate strings in the list. */
+    [[nodiscard]] static constexpr auto to_unique() noexcept(
+        noexcept(typename unique_strings<0>::type{})
+    ) {
+        return typename unique_strings<0>::type{};
+    }
 
     /* Convert this string list into a string set, assuming the strings it contains are
     perfectly hashable. */
@@ -2919,12 +3064,12 @@ public:
             meta::has_common_type<Args...> &&
             meta::perfectly_hashable<Strings...>
         )
-    [[nodiscard]] static constexpr auto to_map(Args&&... args)
-        noexcept(noexcept(string_map<
+    [[nodiscard]] static constexpr auto to_map(Args&&... args) noexcept(
+        noexcept(string_map<
             meta::remove_reference<meta::common_type<Args...>>,
             Strings...
-        >{std::forward<Args>(args)...}))
-    {
+        >{std::forward<Args>(args)...})
+    ) {
         return string_map<
             meta::remove_reference<meta::common_type<Args...>>,
             Strings...
@@ -3004,9 +3149,7 @@ struct string_set {
     using const_iterator = iterator;
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = reverse_iterator;
-
-    /// TODO: not a contiguous slice
-    using slice = impl::contiguous_slice<value_type>;
+    using slice = impl::hashed_string_slice<value_type>;
     using const_slice = slice;
 
     template <typename T>
@@ -3190,10 +3333,7 @@ struct string_set {
     [[nodiscard]] static constexpr auto get() noexcept {
         static constexpr auto indices = s.normalize(ssize());
         return []<size_t... Is>(std::index_sequence<Is...>) {
-            return string_set<meta::unpack_string<
-                indices.start + Is * indices.step,
-                Keys...
-            >...>{};
+            return string_set<get<indices.start + Is * indices.step>()...>{};
         }(std::make_index_sequence<indices.length>{});
     }
 
@@ -3206,8 +3346,14 @@ struct string_set {
         return table[hash_index[impl::normalize_index(size(), i)]];
     }
 
-    /// TODO: set[slice].  Requires a separate slice implementation from contiguous
-    /// slice.
+    /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
+    describing the start, stop, and step indices, and returns a slice object containing
+    the strings within the slice.  Each index can be omitted by initializing it to
+    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
+    Python-style wraparound to both `start` and `stop`. */
+    [[nodiscard]] static constexpr slice operator[](bertrand::slice s) noexcept {
+        return {data(), hash_index.data(), s.normalize(ssize())};
+    }
 
     /* Get an iterator to the character at index `I`, where `I` is known at compile
     time.  Applies Python-style wraparound for negative indices, and returns an `end()`
@@ -3237,6 +3383,25 @@ struct string_set {
         return {data(), hash_index.data(), index, ssize()};
     }
 
+    /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
+    describing the start, stop, and step indices, and returns a slice object containing
+    the strings within the slice.  Each index can be omitted by initializing it to
+    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
+    Python-style wraparound to both `start` and `stop`. */
+    template <bertrand::slice s>
+    [[nodiscard]] static constexpr slice at() noexcept {
+        return {data(), hash_index.data(), s.normalize(ssize())};
+    }
+
+    /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
+    describing the start, stop, and step indices, and returns a slice object containing
+    the strings within the slice.  Each index can be omitted by initializing it to
+    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
+    Python-style wraparound to both `start` and `stop`. */
+    [[nodiscard]] static constexpr slice at(bertrand::slice s) noexcept {
+        return {data(), hash_index.data(), s.normalize(ssize())};
+    }
+
     /* Get an iterator to a string within the set.  Returns an `end()` iterator if
     the string is not present. */
     template <static_str Key> requires (contains<Key>())
@@ -3256,12 +3421,7 @@ private:
 
     template <auto indices, index_type I, static_str... Strs>
     struct forward_remove {
-        using type = forward_remove<
-            indices,
-            I + 1,
-            Strs...,
-            meta::unpack_string<I, Keys...>
-        >::type;
+        using type = forward_remove<indices, I + 1, Strs..., get<I>()>::type;
     };
     template <auto indices, index_type I, static_str... Strs>
         requires (I >= indices.start && I < indices.stop)
@@ -3296,12 +3456,7 @@ private:
     struct backward_remove<indices, I, Strs...> {
         template <index_type J>
         struct filter {
-            using type = backward_remove<
-                indices,
-                I - 1,
-                meta::unpack_string<J, Keys...>,
-                Strs...
-            >::type;
+            using type = backward_remove<indices, I - 1, get<J>(), Strs...>::type;
         };
         template <index_type J> requires ((indices.start - J) % indices.step == 0)
         struct filter<J> { using type = backward_remove<indices, I - 1, Strs...>::type; };
@@ -3321,10 +3476,7 @@ public:
             std::index_sequence<Prev...>,
             std::index_sequence<Next...>
         ) {
-            return string_set<
-                meta::unpack_string<Prev, Keys...>...,
-                meta::unpack_string<idx + 1 + Next, Keys...>...
-            >{};
+            return string_set<get<Prev>()..., get<idx + 1 + Next>()...>{};
         }(
             std::make_index_sequence<idx>{},
             std::make_index_sequence<size() - idx - 1>{}
@@ -3341,10 +3493,7 @@ public:
             std::index_sequence<Prev...>,
             std::index_sequence<Next...>
         ) {
-            return string_set<
-                meta::unpack_string<Prev, Keys...>...,
-                meta::unpack_string<idx + 1 + Next, Keys...>...
-            >{};
+            return string_set<get<Prev>()..., get<idx + 1 + Next>()...>{};
         }(
             std::make_index_sequence<idx>{},
             std::make_index_sequence<size() - idx - 1>{}
@@ -3375,28 +3524,125 @@ public:
     }
 
     /* Convert this string set into a string list. */
-    [[nodiscard]] static constexpr auto to_list()
-        noexcept(noexcept(string_list<Keys...>{}))
-    {
+    [[nodiscard]] static constexpr auto to_list() noexcept(
+        noexcept(string_list<Keys...>{})
+    ) {
         return string_list<Keys...>{};
     }
 
     /* Convert this string set into a string map with the given values. */
     template <typename... Args>
         requires (sizeof...(Args) == size() && meta::has_common_type<Args...>)
-    [[nodiscard]] static constexpr auto to_map(Args&&... args)
-        noexcept(noexcept(string_map<
+    [[nodiscard]] static constexpr auto to_map(Args&&... args) noexcept(
+        noexcept(string_map<
             meta::remove_reference<meta::common_type<Args...>>,
             Keys...
-        >{std::forward<Args>(args)...}))
-    {
+        >{std::forward<Args>(args)...})
+    ) {
         return string_map<
             meta::remove_reference<meta::common_type<Args...>>,
             Keys...
         >{std::forward<Args>(args)...};
     }
 
-    /// TODO: |, -, &, ^, ==, <=>, etc.
+private:
+
+    template <typename other, size_t I, static_str... Strs>
+    struct get_union { using type = get_union<other, I + 1, Strs...>::type; };
+    template <typename other, size_t I, static_str... Strs>
+        requires (I < other::size() && !contains<other::template get<I>()>())
+    struct get_union<other, I, Strs...> {
+        using type = get_union<other, I + 1, Strs..., other::template get<I>()>::type;
+    };
+    template <typename other, size_t I, static_str... Strs> requires (I == other::size())
+    struct get_union<other, I, Strs...> { using type = string_set<Strs...>; };
+
+    template <typename other, size_t I, static_str... Strs>
+    struct get_intersection { using type = get_intersection<other, I + 1, Strs...>::type; };
+    template <typename other, size_t I, static_str... Strs>
+        requires (I < other::size() && contains<other::template get<I>()>())
+    struct get_intersection<other, I, Strs...> {
+        using type = get_intersection<other, I + 1, Strs..., other::template get<I>()>::type;
+    };
+    template <typename other, size_t I, static_str... Strs> requires (I == other::size())
+    struct get_intersection<other, I, Strs...> { using type = string_set<Strs...>; };
+
+    template <typename other, size_t I, static_str... Strs>
+    struct get_difference { using type = get_difference<other, I + 1, Strs...>::type; };
+    template <typename other, size_t I, static_str... Strs>
+        requires (I < size() && !other::template contains<get<I>()>())
+    struct get_difference<other, I, Strs...> {
+        using type = get_difference<other, I + 1, Strs..., get<I>()>::type;
+    };
+    template <typename other, size_t I, static_str... Strs> requires (I == size())
+    struct get_difference<other, I, Strs...> { using type = string_set<Strs...>; };
+
+public:
+
+    /* Get the union of two string sets. */
+    template <static_str... OtherKeys>
+    [[nodiscard]] constexpr auto operator|(string_set<OtherKeys...>) const noexcept {
+        return typename get_union<string_set<OtherKeys...>, 0, Keys...>::type{};
+    }
+
+    /* Get the intersection of two string sets. */
+    template <static_str... OtherKeys>
+    [[nodiscard]] constexpr auto operator&(string_set<OtherKeys...>) const noexcept {
+        return typename get_intersection<string_set<OtherKeys...>, 0>::type{};
+    }
+
+    /* Get the difference between two string sets. */
+    template <static_str... OtherKeys>
+    [[nodiscard]] constexpr auto operator-(string_set<OtherKeys...>) const noexcept {
+        return typename get_difference<string_set<OtherKeys...>, 0>::type{};
+    }
+
+    /* Get the symmetric difference between two string sets. */
+    template <static_str... OtherKeys>
+    [[nodiscard]] constexpr auto operator^(string_set<OtherKeys...>) const noexcept {
+        return (*this - string_set<OtherKeys...>{}) | (string_set<OtherKeys...>{} - *this);
+    }
+
+    /* Check whether this string set is a strict subset of another set.  This is true
+    if `set <= other` and `set != other`. */
+    template <static_str... OtherKeys>
+    [[nodiscard]] constexpr bool operator<(string_set<OtherKeys...>) const noexcept {
+        return
+            size() < sizeof...(OtherKeys) &&
+            (string_set<OtherKeys...>::template contains<Keys>() && ...);
+    }
+
+    /* Check whether every string in this set is present in another set. */
+    template <static_str... OtherKeys>
+    [[nodiscard]] constexpr bool operator<=(string_set<OtherKeys...>) const noexcept {
+        return (string_set<OtherKeys...>::template contains<Keys>() && ...);
+    }
+
+    /* Check two string sets for equality.  This is true if all keys are present in
+    both sets, regardless of order. */
+    template <static_str... OtherKeys>
+    [[nodiscard]] constexpr bool operator==(string_set<OtherKeys...>) const noexcept {
+        return (size() == sizeof...(OtherKeys)) && (contains<OtherKeys>() && ...);
+    }
+
+    /* Check two string sets for inequality.  Equivalent to `!(set == other)`. */
+    template <static_str... OtherKeys>
+    [[nodiscard]] constexpr bool operator!=(string_set<OtherKeys...>) const noexcept {
+        return !(*this == string_set<OtherKeys...>{});
+    }
+
+    /* Check whether every string in another set is present in this set. */
+    template <static_str... OtherKeys>
+    [[nodiscard]] constexpr bool operator>=(string_set<OtherKeys...>) const noexcept {
+        return (contains<OtherKeys>() && ...);
+    }
+
+    /* Check whether this string set is a strict superset of another set.  This is
+    true if `set >= other` and `set != other`. */
+    template <static_str... OtherKeys>
+    [[nodiscard]] constexpr bool operator>(string_set<OtherKeys...>) const noexcept {
+        return size() > sizeof...(OtherKeys) && (contains<OtherKeys>() && ...);
+    }
 
 private:
     static constexpr std::array<size_t, size()> hash_index {(hasher{}(Keys) % size())...};
@@ -3408,9 +3654,7 @@ private:
     }(std::make_index_sequence<size()>{});
 
     static constexpr auto table = []<size_t... Is>(std::index_sequence<Is...>) {
-        return std::array<value_type, size()>{
-            meta::unpack_string<pack_index[Is], Keys...>...
-        };
+        return std::array<value_type, size()>{get<pack_index[Is]>()...};
     }(std::make_index_sequence<size()>{});
 };
 
@@ -3438,6 +3682,8 @@ inline void test() {
     static_assert(list.contains("foo"));
     static_assert(list.get<-1>() == "baz");
     static_assert(list.remove<slice{-1, -2, -1}>() == string_list<"foo", "bar">{});
+
+    static_assert(string_list<"a", "a", "b", "c">::to_unique().to_set().to_list() == string_list<"a", "b", "c">{});
 
 
     static constexpr static_str s = "hello";
@@ -3468,6 +3714,9 @@ inline void test() {
     for (auto&& item : set){
         std::cout << item << " "; // prints "foo bar baz "
     }
+    static_assert((set ^ string_set<"foo", "qux">{}).to_list() == string_list<"bar", "baz", "qux">{});
+
+    constexpr std::vector<std::string> view = set[slice{}];
 }
 
 
