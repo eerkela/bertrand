@@ -5,8 +5,6 @@
 #include "bertrand/math.h"
 #include "bertrand/iter.h"
 #include "bertrand/sort.h"
-#include <compare>
-#include <cstddef>
 
 
 // required for demangling
@@ -92,6 +90,9 @@ static_str(string_wrapper<S>) -> static_str<S.size()>;
 
 namespace impl {
     struct static_str_tag {};
+    struct string_list_tag {};
+    struct string_set_tag {};
+    struct string_map_tag {};
 
     constexpr bool char_islower(char c) noexcept {
         return c >= 'a' && c <= 'z';
@@ -2587,10 +2588,18 @@ namespace impl {
 
 namespace meta {
 
+    template <typename T>
+    concept string_list = inherits<T, impl::string_list_tag>;
+
+    template <typename T>
+    concept string_set = inherits<T, impl::string_set_tag>;
+
+    template <typename T>
+    concept string_map = inherits<T, impl::string_map_tag>;
+
     template <bertrand::static_str... Keys>
     concept perfectly_hashable =
-        strings_are_unique<Keys...> &&
-        impl::minimal_perfect_hash<Keys...>::exists;
+        strings_are_unique<Keys...> && impl::minimal_perfect_hash<Keys...>::exists;
 
 }
 
@@ -2630,7 +2639,7 @@ struct string_map;
 
 
 template <static_str... Strings>
-struct string_list {
+struct string_list : impl::string_list_tag {
     using value_type = const std::string_view;
     using reference = value_type&;
     using const_reference = reference;
@@ -2895,7 +2904,7 @@ struct string_list {
         return {data(), s.normalize(ssize())};
     }
 
-    /* Get an iterator to the character at index `I`, where `I` is known at compile
+    /* Get an iterator to the string at index `I`, where `I` is known at compile
     time.  Applies Python-style wraparound for negative indices, and returns an `end()`
     iterator if the index is out of bounds after normalization. */
     template <index_type I>
@@ -2907,7 +2916,7 @@ struct string_list {
         }
     }
 
-    /* Get an iterator to the character at index `i`, where `i` is known at runtime.
+    /* Get an iterator to the string at index `i`, where `i` is known at runtime.
     Applies Python-style wraparound for negative indices, and returns an `end()`
     iterator if the index is out of bounds after normalization. */
     [[nodiscard]] static constexpr iterator at(index_type i) noexcept {
@@ -3191,7 +3200,7 @@ private:
 
 
 template <static_str... Keys> requires (meta::perfectly_hashable<Keys...>)
-struct string_set {
+struct string_set : impl::string_set_tag {
     using value_type = const std::string_view;
     using reference = value_type&;
     using const_reference = reference;
@@ -3381,7 +3390,7 @@ public:
         noexcept(lookup(std::forward<K>(key)))
     ) {
         index_type idx = lookup(std::forward<K>(key));
-        return idx < 0 ? idx : pack_index[idx];
+        return idx < 0 ? idx : index_type(pack_index[idx]);
     }
 
     /* Get the string at index I, where `I` is known at compile time.  Applies
@@ -3426,7 +3435,20 @@ public:
         return {data(), hash_index.data(), s.normalize(ssize())};
     }
 
-    /* Get an iterator to the character at index `i`, where `i` is known at runtime.
+    /* Get an iterator to the key at index `I`, where `I` is known at compile time.
+    Applies Python-style wraparound for negative indices, and returns an `end()`
+    iterator if the index is out of bounds after normalization. */
+    template <index_type I>
+    [[nodiscard]] static constexpr iterator at() noexcept {
+        constexpr index_type index = I + ssize() * (I < 0);
+        if constexpr (index < 0 || index >= ssize()) {
+            return end();
+        } else {
+            return {data(), hash_index.data(), index_type(pack_index[index]), ssize()};
+        }
+    }
+
+    /* Get an iterator to the key at index `i`, where `i` is known at runtime.
     Applies Python-style wraparound for negative indices, and returns an `end()`
     iterator if the index is out of bounds after normalization. */
     [[nodiscard]] static constexpr iterator at(index_type i) noexcept {
@@ -3435,6 +3457,16 @@ public:
             return end();
         }
         return {data(), hash_index.data(), index, ssize()};
+    }
+
+    /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
+    describing the start, stop, and step indices, and returns a slice object containing
+    the strings within the slice.  Each index can be omitted by initializing it to
+    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
+    Python-style wraparound to both `start` and `stop`. */
+    template <bertrand::slice s>
+    [[nodiscard]] static constexpr slice at() noexcept {
+        return {data(), hash_index.data(), s.normalize(ssize())};
     }
 
     /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
@@ -3454,7 +3486,7 @@ public:
         if constexpr (idx < 0) {
             return end();
         } else {
-            return {data(), hash_index.data(), pack_index[idx], ssize()};
+            return {data(), hash_index.data(), index_type(pack_index[idx]), ssize()};
         }
     }
 
@@ -3468,7 +3500,7 @@ public:
         if (idx < 0) {
             return end();
         }
-        return {data(), hash_index.data(), pack_index[idx], ssize()};
+        return {data(), hash_index.data(), index_type(pack_index[idx]), ssize()};
     }
 
 private:
@@ -3617,24 +3649,32 @@ public:
 
 private:
 
-    /// TODO: don't use other::get<I>().  Instead, pass through
-
     template <typename other, size_t I, static_str... Strs>
     struct get_union { using type = get_union<other, I + 1, Strs...>::type; };
-    template <typename other, size_t I, static_str... Strs>
-        requires (I < other::size() && !contains<other::template get<I>()>())
-    struct get_union<other, I, Strs...> {
-        using type = get_union<other, I + 1, Strs..., other::template get<I>()>::type;
+    template <static_str... Ks, size_t I, static_str... Strs>
+        requires (I < sizeof...(Ks) && !contains<meta::unpack_string<I, Ks...>>())
+    struct get_union<string_set<Ks...>, I, Strs...> {
+        using type = get_union<
+            string_set<Ks...>,
+            I + 1,
+            Strs...,
+            meta::unpack_string<I, Ks...>
+        >::type;
     };
     template <typename other, size_t I, static_str... Strs> requires (I == other::size())
     struct get_union<other, I, Strs...> { using type = string_set<Strs...>; };
 
     template <typename other, size_t I, static_str... Strs>
     struct get_intersection { using type = get_intersection<other, I + 1, Strs...>::type; };
-    template <typename other, size_t I, static_str... Strs>
-        requires (I < other::size() && contains<other::template get<I>()>())
-    struct get_intersection<other, I, Strs...> {
-        using type = get_intersection<other, I + 1, Strs..., other::template get<I>()>::type;
+    template <static_str... Ks, size_t I, static_str... Strs>
+        requires (I < sizeof...(Ks) && contains<meta::unpack_string<I, Ks...>>())
+    struct get_intersection<string_set<Ks...>, I, Strs...> {
+        using type = get_intersection<
+            string_set<Ks...>,
+            I + 1,
+            Strs...,
+            meta::unpack_string<I, Ks...>
+        >::type;
     };
     template <typename other, size_t I, static_str... Strs> requires (I == other::size())
     struct get_intersection<other, I, Strs...> { using type = string_set<Strs...>; };
@@ -3642,9 +3682,14 @@ private:
     template <typename other, size_t I, static_str... Strs>
     struct get_difference { using type = get_difference<other, I + 1, Strs...>::type; };
     template <typename other, size_t I, static_str... Strs>
-        requires (I < size() && !other::template contains<get<I>()>())
+        requires (I < size() && !other::template contains<meta::unpack_string<I, Keys...>>())
     struct get_difference<other, I, Strs...> {
-        using type = get_difference<other, I + 1, Strs..., get<I>()>::type;
+        using type = get_difference<
+            other,
+            I + 1,
+            Strs...,
+            meta::unpack_string<I, Keys...>
+        >::type;
     };
     template <typename other, size_t I, static_str... Strs> requires (I == size())
     struct get_difference<other, I, Strs...> { using type = string_set<Strs...>; };
@@ -3734,7 +3779,7 @@ private:
 
 
 template <meta::not_void T, static_str... Keys> requires (meta::perfectly_hashable<Keys...>)
-struct string_map {
+struct string_map : impl::string_map_tag {
     using key_type = const std::string_view;
     using mapped_type = T;
     using value_type = std::pair<key_type, mapped_type>;
@@ -3941,7 +3986,7 @@ public:
         noexcept(lookup(std::forward<K>(key)))
     ) {
         index_type idx = lookup(std::forward<K>(key));
-        return idx < 0 ? idx : pack_index[idx];
+        return idx < 0 ? idx : index_type(pack_index[idx]);
     }
 
     /* Get the value for a specific key within the table, where the key is known at
@@ -4117,11 +4162,35 @@ public:
         return {data(), hash_index.data(), s.normalize(ssize())};
     }
 
-    /// TODO: maybe there is a need for at<I>() just for raw performance.
+    /* Get an iterator to the key-value pair at index `I`, where `I` is known at
+    compile time.  Applies Python-style wraparound for negative indices, and returns an
+    `end()` iterator if the index is out of bounds after normalization. */
+    template <index_type I>
+    [[nodiscard]] constexpr iterator at() noexcept {
+        constexpr index_type index = I + ssize() * (I < 0);
+        if constexpr (index < 0 || index >= ssize()) {
+            return end();
+        } else {
+            return {data(), hash_index.data(), index_type(pack_index[index]), ssize()};
+        }
+    }
 
-    /* Get an iterator to the character at index `i`, where `i` is known at runtime.
-    Applies Python-style wraparound for negative indices, and returns an `end()`
-    iterator if the index is out of bounds after normalization. */
+    /* Get an iterator to the key-value pair at index `I`, where `I` is known at
+    compile time.  Applies Python-style wraparound for negative indices, and returns an
+    `end()` iterator if the index is out of bounds after normalization. */
+    template <index_type I>
+    [[nodiscard]] constexpr const_iterator at() const noexcept {
+        constexpr index_type index = I + ssize() * (I < 0);
+        if constexpr (index < 0 || index >= ssize()) {
+            return end();
+        } else {
+            return {data(), hash_index.data(), index_type(pack_index[index]), ssize()};
+        }
+    }
+
+    /* Get an iterator to the key-value pair at index `i`, where `i` is known at
+    runtime.  Applies Python-style wraparound for negative indices, and returns an
+    `end()` iterator if the index is out of bounds after normalization. */
     [[nodiscard]] constexpr iterator at(index_type i) noexcept {
         index_type index = i + ssize() * (i < 0);
         if (index < 0 || index >= ssize()) {
@@ -4131,9 +4200,9 @@ public:
         }
     }
 
-    /* Get an iterator to the character at index `i`, where `i` is known at runtime.
-    Applies Python-style wraparound for negative indices, and returns an `end()`
-    iterator if the index is out of bounds after normalization. */
+    /* Get an iterator to the key-value pair at index `i`, where `i` is known at
+    runtime. Applies Python-style wraparound for negative indices, and returns an
+    `end()` iterator if the index is out of bounds after normalization. */
     [[nodiscard]] constexpr const_iterator at(index_type i) const noexcept {
         index_type index = i + ssize() * (i < 0);
         if (index < 0 || index >= ssize()) {
@@ -4141,6 +4210,26 @@ public:
         } else {
             return {data(), hash_index.data(), index, ssize()};
         }
+    }
+
+    /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
+    describing the start, stop, and step indices, and returns a slice object containing
+    the strings within the slice.  Each index can be omitted by initializing it to
+    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
+    Python-style wraparound to both `start` and `stop`. */
+    template <bertrand::slice s>
+    [[nodiscard]] constexpr slice at() noexcept {
+        return {data(), hash_index.data(), s.normalize(ssize())};
+    }
+
+    /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
+    describing the start, stop, and step indices, and returns a slice object containing
+    the strings within the slice.  Each index can be omitted by initializing it to
+    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
+    Python-style wraparound to both `start` and `stop`. */
+    template <bertrand::slice s>
+    [[nodiscard]] constexpr const_slice at() const noexcept {
+        return {data(), hash_index.data(), s.normalize(ssize())};
     }
 
     /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
@@ -4169,7 +4258,7 @@ public:
         if constexpr (idx < 0) {
             return end();
         } else {
-            return {data(), hash_index.data(), pack_index[idx], ssize()};
+            return {data(), hash_index.data(), index_type(pack_index[idx]), ssize()};
         }
     }
 
@@ -4181,7 +4270,7 @@ public:
         if constexpr (idx < 0) {
             return end();
         } else {
-            return {data(), hash_index.data(), pack_index[idx], ssize()};
+            return {data(), hash_index.data(), index_type(pack_index[idx]), ssize()};
         }
     }
 
@@ -4195,7 +4284,7 @@ public:
         if (idx < 0) {
             return end();
         }
-        return {data(), hash_index.data(), pack_index[idx], ssize()};
+        return {data(), hash_index.data(), index_type(pack_index[idx]), ssize()};
     }
 
     /* Get an iterator to a string within the set.  Returns an `end()` iterator if
@@ -4208,7 +4297,7 @@ public:
         if (idx < 0) {
             return end();
         }
-        return {data(), hash_index.data(), pack_index[idx], ssize()};
+        return {data(), hash_index.data(), index_type(pack_index[idx]), ssize()};
     }
 
 private:
@@ -4221,6 +4310,29 @@ private:
             Strs...,
             meta::unpack_string<I, Keys...>
         >::type;
+        static constexpr type operator()(auto&& self, auto&&... args) noexcept(
+            noexcept(forward_remove<
+                indices,
+                I + 1,
+                Strs...,
+                meta::unpack_string<I, Keys...>
+            >{}(
+                std::forward<decltype(self)>(self),
+                std::forward<decltype(args)>(args)...,
+                std::forward<decltype(self)>(self).template get<I>()
+            ))
+        ) {
+            return forward_remove<
+                indices,
+                I + 1,
+                Strs...,
+                meta::unpack_string<I, Keys...>
+            >{}(
+                std::forward<decltype(self)>(self),
+                std::forward<decltype(args)>(args)...,
+                std::forward<decltype(self)>(self).template get<I>()
+            );
+        }
     };
     template <auto indices, index_type I, static_str... Strs>
         requires (I >= indices.start && I < indices.stop)
@@ -4233,13 +4345,69 @@ private:
                 Strs...,
                 meta::unpack_string<J, Keys...>
             >::type;
+            static constexpr type operator()(auto&& self, auto&&... args) noexcept(
+                noexcept(forward_remove<
+                    indices,
+                    I + 1,
+                    Strs...,
+                    meta::unpack_string<J, Keys...>
+                >{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(args)>(args)...,
+                    std::forward<decltype(self)>(self).template get<J>()
+                ))
+            ) {
+                return forward_remove<
+                    indices,
+                    I + 1,
+                    Strs...,
+                    meta::unpack_string<J, Keys...>
+                >{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(args)>(args)...,
+                    std::forward<decltype(self)>(self).template get<J>()
+                );
+            }
         };
+
         template <index_type J> requires ((J - indices.start) % indices.step == 0)
-        struct filter<J> { using type = forward_remove<indices, I + 1, Strs...>::type; };
+        struct filter<J> {
+            using type = forward_remove<indices, I + 1, Strs...>::type;
+            static constexpr type operator()(auto&& self, auto&&... args) noexcept(
+                noexcept(forward_remove<indices, I + 1, Strs...>{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(args)>(args)...
+                ))
+            ) {
+                return forward_remove<indices, I + 1, Strs...>{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(args)>(args)...
+                );
+            }
+        };
+
         using type = filter<I>::type;
+        static constexpr type operator()(auto&& self, auto&&... args) noexcept(
+            noexcept(filter<I>{}(
+                std::forward<decltype(self)>(self),
+                std::forward<decltype(args)>(args)...
+            ))
+        ) {
+            return filter<I>{}(
+                std::forward<decltype(self)>(self),
+                std::forward<decltype(args)>(args)...
+            );
+        }
     };
     template <auto indices, index_type I, static_str... Strs> requires (I == ssize())
-    struct forward_remove<indices, I, Strs...> { using type = string_set<Strs...>; };
+    struct forward_remove<indices, I, Strs...> {
+        using type = string_map<mapped_type, Strs...>;
+        static constexpr type operator()(auto&& self, auto&&... args) noexcept(
+            noexcept(type{std::forward<decltype(args)>(args)...})
+        ) {
+            return type{std::forward<decltype(args)>(args)...};
+        }
+    };
 
     template <auto indices, index_type I, static_str... Strs>
     struct backward_remove {
@@ -4249,6 +4417,29 @@ private:
             meta::unpack_string<I, Keys...>,
             Strs...
         >::type;
+        static constexpr type operator()(auto&& self, auto&&... args) noexcept(
+            noexcept(backward_remove<
+                indices,
+                I - 1,
+                meta::unpack_string<I, Keys...>,
+                Strs...
+            >{}(
+                std::forward<decltype(self)>(self),
+                std::forward<decltype(self)>(self).template get<I>(),
+                std::forward<decltype(args)>(args)...
+            ))
+        ) {
+            return backward_remove<
+                indices,
+                I - 1,
+                meta::unpack_string<I, Keys...>,
+                Strs...
+            >{}(
+                std::forward<decltype(self)>(self),
+                std::forward<decltype(self)>(self).template get<I>(),
+                std::forward<decltype(args)>(args)...
+            );
+        }
     };
     template <auto indices, index_type I, static_str... Strs>
         requires (I <= indices.start && I > indices.stop)
@@ -4261,13 +4452,69 @@ private:
                 meta::unpack_string<J, Keys...>,
                 Strs...
             >::type;
+            static constexpr type operator()(auto&& self, auto&&... args) noexcept(
+                noexcept(backward_remove<
+                    indices,
+                    I - 1,
+                    meta::unpack_string<J, Keys...>,
+                    Strs...
+                >{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(self)>(self).template get<J>(),
+                    std::forward<decltype(args)>(args)...
+                ))
+            ) {
+                return backward_remove<
+                    indices,
+                    I - 1,
+                    meta::unpack_string<J, Keys...>,
+                    Strs...
+                >{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(self)>(self).template get<J>(),
+                    std::forward<decltype(args)>(args)...
+                );
+            }
         };
+
         template <index_type J> requires ((indices.start - J) % indices.step == 0)
-        struct filter<J> { using type = backward_remove<indices, I - 1, Strs...>::type; };
+        struct filter<J> {
+            using type = backward_remove<indices, I - 1, Strs...>::type;
+            static constexpr type operator()(auto&& self, auto&&... args) noexcept(
+                noexcept(backward_remove<indices, I - 1, Strs...>{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(args)>(args)...
+                ))
+            ) {
+                return backward_remove<indices, I - 1, Strs...>{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(args)>(args)...
+                );
+            }
+        };
+
         using type = filter<I>::type;
+        static constexpr type operator()(auto&& self, auto&&... args) noexcept(
+            noexcept(filter<I>{}(
+                std::forward<decltype(self)>(self),
+                std::forward<decltype(args)>(args)...
+            ))
+        ) {
+            return filter<I>{}(
+                std::forward<decltype(self)>(self),
+                std::forward<decltype(args)>(args)...
+            );
+        }
     };
     template <auto indices, index_type I, static_str... Strs> requires (I == -1)
-    struct backward_remove<indices, I, Strs...> { using type = string_set<Strs...>; };
+    struct backward_remove<indices, I, Strs...> {
+        using type = string_map<mapped_type, Strs...>;
+        static constexpr type operator()(auto&& self, auto&&... args) noexcept(
+            noexcept(type{std::forward<decltype(args)>(args)...})
+        ) {
+            return type{std::forward<decltype(args)>(args)...};
+        }
+    };
 
     template <size_t idx, typename Self, size_t... Prev, size_t... Next>
     constexpr auto do_remove(
@@ -4309,7 +4556,7 @@ public:
     template <static_str Key, typename Self> requires (contains<Key>())
     [[nodiscard]] consteval auto remove(this Self&& self)
         noexcept(noexcept(std::forward<Self>(self).template do_remove<size_type(index<Key>())>(
-            std::make_index_sequence<size_type(index<Key()>())>{},
+            std::make_index_sequence<size_type(index<Key>())>{},
             std::make_index_sequence<size() - size_type(index<Key>()) - 1>{}
         )))
         requires(requires{std::forward<Self>(self).template do_remove<size_type(index<Key>())>(
@@ -4355,25 +4602,25 @@ public:
     which is equivalent to an empty slice index in Python.  Applies Python-style
     wraparound to both `start` and `stop`. */
     template <bertrand::slice s, typename Self>
-    [[nodiscard]] consteval auto remove(this Self&& self) noexcept {
+    [[nodiscard]] consteval auto remove(this Self&& self) noexcept(
+        noexcept(forward_remove<
+            s.normalize(ssize()),
+            0
+        >{}(std::forward<Self>(self))) &&
+        noexcept(backward_remove<
+            s.normalize(ssize()),
+            ssize() - 1
+        >{}(std::forward<Self>(self)))
+    ) {
         static constexpr auto indices = s.normalize(ssize());
-
         if constexpr (indices.length == 0) {
-            return [this]<size_t... Is>(std::index_sequence<Is...>) {
-                return string_map{get<Is...>()};
-            }(std::make_index_sequence<size()>{});
-
+            return std::forward<Self>(self);
         } else if constexpr (indices.step > 0) {
-            /// TODO: forward the right values
-            return typename forward_remove<indices, 0>::type{};
-
+            return forward_remove<indices, 0>{}(std::forward<Self>(self));
         } else {
-            /// TODO: forward the right values
-            return typename backward_remove<indices, ssize() - 1>::type{};
+            return backward_remove<indices, ssize() - 1>{}(std::forward<Self>(self));
         }
     }
-
-    /// TODO: maybe no join() ?
 
     /* Convert this string set into a string list. */
     [[nodiscard]] static constexpr auto to_list() noexcept(
@@ -4389,13 +4636,313 @@ public:
         return string_set<Keys...>{};
     }
 
-    /// TODO: join(), |, &, -, ^, etc.
+private:
 
-    /// TODO: the hard part here will be figuring out how to copy/move the values for
-    /// |, &, -, ^.  That will probably need some more advanced metaprogramming
-    /// involving call operators for the template abstraction.  Also, new values should
-    /// overwrite old values, except for difference and symmetric difference, where
-    /// they are irrelevant.
+    template <size_t I, size_t J, typename Other, static_str... out>
+    struct get_union {
+        using type = string_map<
+            meta::common_type<mapped_type, typename Other::mapped_type>,
+            out...
+        >;
+        static constexpr type operator()(
+            auto&& self,
+            auto&& other,
+            auto&&... args
+        ) noexcept(
+            noexcept(type{std::forward<decltype(args)>(args)...})
+        ) {
+            return {std::forward<decltype(args)>(args)...};
+        }
+    };
+    template <size_t I, size_t J, typename U, static_str... Ks, static_str... out>
+        requires (I < size())
+    struct get_union<I, J, string_map<U, Ks...>, out...> {
+        using type = get_union<
+            I + 1,
+            J,
+            string_map<U, Ks...>,
+            out...,
+            meta::unpack_string<I, Keys...>
+        >::type;
+
+        template <static_str K>
+        struct filter {
+            static constexpr decltype(auto) operator()(auto&& self, auto&& other) noexcept(
+                noexcept(std::forward<decltype(self)>(self).template get<K>())
+            ) {
+                return std::forward<decltype(self)>(self).template get<K>();
+            }
+        };
+        template <static_str K> requires (string_map<U, Ks...>::template contains<K>())
+        struct filter<K> {
+            static constexpr decltype(auto) operator()(auto&& self, auto&& other) noexcept(
+                noexcept(std::forward<decltype(other)>(other).template get<K>())
+            ) {
+                return std::forward<decltype(other)>(other).template get<K>();
+            }
+        };
+
+        static constexpr type operator()(auto&& self, auto&& other, auto&&... args) noexcept(
+            noexcept(get_union<
+                I + 1,
+                J,
+                string_map<U, Ks...>,
+                out...,
+                meta::unpack_string<I, Keys...>
+            >{}(
+                std::forward<decltype(self)>(self),
+                std::forward<decltype(other)>(other),
+                std::forward<decltype(args)>(args)...,
+                filter<meta::unpack_string<I, Keys...>>{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(other)>(other)
+                )
+            ))
+        ) {
+            return get_union<
+                I + 1,
+                J,
+                string_map<U, Ks...>,
+                out...,
+                meta::unpack_string<I, Keys...>
+            >{}(
+                std::forward<decltype(self)>(self),
+                std::forward<decltype(other)>(other),
+                std::forward<decltype(args)>(args)...,
+                filter<meta::unpack_string<I, Keys...>>{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(other)>(other)
+                )
+            );
+        }
+    };
+    template <size_t J, typename U, static_str... Ks, static_str... out>
+        requires (J < sizeof...(Ks))
+    struct get_union<size(), J, string_map<U, Ks...>, out...> {
+        template <static_str K>
+        struct filter {
+            using type = get_union<size(), J + 1, string_map<U, Ks...>, out..., K>::type;
+            static constexpr type operator()(auto&& self, auto&& other, auto&&... args) noexcept(
+                noexcept(get_union<size(), J + 1, string_map<U, Ks...>, out..., K>{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(other)>(other),
+                    std::forward<decltype(args)>(args)...,
+                    std::forward<decltype(other)>(other).template get<J>()
+                ))
+            ) {
+                return get_union<size(), J + 1, string_map<U, Ks...>, out..., K>{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(other)>(other),
+                    std::forward<decltype(args)>(args)...,
+                    std::forward<decltype(other)>(other).template get<J>()
+                );
+            }
+        };
+        template <static_str K> requires (contains<K>())
+        struct filter<K> {
+            using type = get_union<size(), J + 1, string_map<U, Ks...>, out...>::type;
+            static constexpr type operator()(auto&& self, auto&& other, auto&&... args) noexcept(
+                noexcept(get_union<size(), J + 1, string_map<U, Ks...>, out...>{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(other)>(other),
+                    std::forward<decltype(args)>(args)...
+                ))
+            ) {
+                return get_union<size(), J + 1, string_map<U, Ks...>, out...>{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(other)>(other),
+                    std::forward<decltype(args)>(args)...
+                );
+            }
+        };
+        using type = filter<meta::unpack_string<J, Ks...>>::type;
+        static constexpr type operator()(auto&& self, auto&& other, auto&&... args) noexcept(
+            noexcept(filter<meta::unpack_string<J, Ks...>>{}(
+                std::forward<decltype(self)>(self),
+                std::forward<decltype(other)>(other),
+                std::forward<decltype(args)>(args)...
+            ))
+        ) {
+            return filter<meta::unpack_string<J, Ks...>>{}(
+                std::forward<decltype(self)>(self),
+                std::forward<decltype(other)>(other),
+                std::forward<decltype(args)>(args)...
+            );
+        }
+    };
+
+    template <size_t I, typename Other, static_str... out>
+    struct get_intersection {
+        using type = string_map<typename Other::mapped_type, out...>;
+        static constexpr type operator()(auto&& other, auto&&... args) noexcept(
+            noexcept(type{std::forward<decltype(args)>(args)...})
+        ) {
+            return {std::forward<decltype(args)>(args)...};
+        }
+    };
+    template <size_t I, typename U, static_str... Ks, static_str... out>
+        requires (I < sizeof...(Ks))
+    struct get_intersection<I, string_map<U, Ks...>, out...> {
+        template <static_str K>
+        struct filter {
+            using type = get_intersection<I + 1, string_map<U, Ks...>, out...>::type;
+            static constexpr type operator()(auto&& other, auto&&... args) noexcept(
+                noexcept(get_intersection<I + 1, string_map<U, Ks...>, out...>{}(
+                    std::forward<decltype(other)>(other),
+                    std::forward<decltype(args)>(args)...
+                ))
+            ) {
+                return get_intersection<I + 1, string_map<U, Ks...>, out...>{}(
+                    std::forward<decltype(other)>(other),
+                    std::forward<decltype(args)>(args)...
+                );
+            }
+        };
+        template <static_str K> requires (contains<K>())
+        struct filter<K> {
+            using type = get_intersection<I + 1, string_map<U, Ks...>, out..., K>::type;
+            static constexpr type operator()(auto&& other, auto&&... args) noexcept(
+                noexcept(get_intersection<I + 1, string_map<U, Ks...>, out..., K>{}(
+                    std::forward<decltype(other)>(other),
+                    std::forward<decltype(args)>(args)...,
+                    std::forward<decltype(other)>(other).template get<K>()
+                ))
+            ) {
+                return get_intersection<I + 1, string_map<U, Ks...>, out..., K>{}(
+                    std::forward<decltype(other)>(other),
+                    std::forward<decltype(args)>(args)...,
+                    std::forward<decltype(other)>(other).template get<K>()
+                );
+            }
+        };
+        using type = filter<meta::unpack_string<I, Ks...>>::type;
+        static constexpr type operator()(auto&& other, auto&&... args) noexcept(
+            noexcept(filter<meta::unpack_string<I, Ks...>>{}(
+                std::forward<decltype(other)>(other),
+                std::forward<decltype(args)>(args)...
+            ))
+        ) {
+            return filter<meta::unpack_string<I, Ks...>>{}(
+                std::forward<decltype(other)>(other),
+                std::forward<decltype(args)>(args)...
+            );
+        }
+    };
+
+    template <size_t I, typename Other, static_str... out>
+    struct get_difference {
+        using type = string_map<mapped_type, out...>;
+        static constexpr type operator()(auto&& self, auto&&... args) noexcept(
+            noexcept(type{std::forward<decltype(args)>(args)...})
+        ) {
+            return {std::forward<decltype(args)>(args)...};
+        }
+    };
+    template <size_t I, typename Other, static_str... out>
+        requires (I < size())
+    struct get_difference<I, Other, out...> {
+        template <static_str K>
+        struct filter {
+            using type = get_difference<I + 1, Other, out..., K>::type;
+            static constexpr type operator()(auto&& self, auto&&... args) noexcept(
+                noexcept(get_difference<I + 1, Other, out..., K>{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(args)>(args)...,
+                    std::forward<decltype(self)>(self).template get<K>()
+                ))
+            ) {
+                return get_difference<I + 1, Other, out..., K>{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(args)>(args)...,
+                    std::forward<decltype(self)>(self).template get<K>()
+                );
+            }
+        };
+        template <static_str K> requires (Other::template contains<K>())
+        struct filter<K> {
+            using type = get_difference<I + 1, Other, out...>::type;
+            static constexpr type operator()(auto&& self, auto&&... args) noexcept(
+                noexcept(get_difference<I + 1, Other, out...>{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(args)>(args)...
+                ))
+            ) {
+                return get_difference<I + 1, Other, out...>{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(args)>(args)...
+                );
+            }
+        };
+        using type = filter<meta::unpack_string<I, Keys...>>::type;
+        static constexpr type operator()(auto&& self, auto&&... args) noexcept(
+            noexcept(filter<meta::unpack_string<I, Keys...>>{}(
+                std::forward<decltype(self)>(self),
+                std::forward<decltype(args)>(args)...
+            ))
+        ) {
+            return filter<meta::unpack_string<I, Keys...>>{}(
+                std::forward<decltype(self)>(self),
+                std::forward<decltype(args)>(args)...
+            );
+        }
+    };
+
+public:
+
+    /* Get the union of two string maps.  Values from the other map will take priority
+    in case of conflicts. */
+    template <typename Self, meta::string_map Other>
+        requires (meta::has_common_type<
+            mapped_type,
+            typename meta::unqualify<Other>::mapped_type
+        >)
+    [[nodiscard]] constexpr auto operator|(this Self&& self, Other&& other) noexcept(
+        noexcept(get_union<0, 0, meta::unqualify<Other>>{}(
+            std::forward<Self>(self),
+            std::forward<Other>(other)
+        ))
+    ) {
+        return get_union<0, 0, meta::unqualify<Other>>{}(
+            std::forward<Self>(self),
+            std::forward<Other>(other)
+        );
+    }
+
+    /* Get the intersection of two string maps.  The result will only contain values
+    from the other map. */
+    template <meta::string_map Other>
+    [[nodiscard]] constexpr auto operator&(Other&& other) const noexcept(
+        noexcept(get_intersection<0, meta::unqualify<Other>>{}(std::forward<Other>(other)))
+    ) {
+        return get_intersection<0, meta::unqualify<Other>>{}(std::forward<Other>(other));
+    }
+
+    /* Get the difference of two string maps.  The result will only contains values
+    from this map. */
+    template <typename Self, meta::string_map Other>
+    [[nodiscard]] constexpr auto operator-(this Self&& self, const Other& other) noexcept(
+        noexcept(get_difference<0, meta::unqualify<Other>>{}(std::forward<Self>(self)))
+    ) {
+        return get_difference<0, meta::unqualify<Other>>{}(std::forward<Self>(self));
+    }
+
+    /* Get the symmetric difference of two string maps.  The result will contain only
+    values from the  */
+    template <typename Self, meta::string_map Other>
+        requires (meta::has_common_type<
+            mapped_type,
+            typename meta::unqualify<Other>::mapped_type
+        >)
+    [[nodiscard]] constexpr auto operator^(this Self&& self, Other&& other) noexcept(
+        noexcept(
+            (std::forward<Self>(self) - std::forward<Other>(other)) |
+            (std::forward<Other>(other) - std::forward<Self>(self))
+        )
+    ) {
+        return
+            (std::forward<Self>(self) - std::forward<Other>(other)) |
+            (std::forward<Other>(other) - std::forward<Self>(self));
+    }
 
     /* Check two string maps for equality.  This is true if all keys are present in
     both maps and have equivalent values, regardless of order. */
@@ -4435,14 +4982,14 @@ private:
         std::index_sequence<Is...>,
         auto&&... values
     ) noexcept(
-        noexcept(Table{{
+        noexcept(Table{value_type{
             meta::unpack_string<pack_index[Is], Keys...>,
-            std::forward<decltype(values)>(values)
+            meta::unpack_arg<pack_index[Is]>(std::forward<decltype(values)>(values)...)
         }...})
     ) {
-        return Table{{
+        return Table{value_type{
             meta::unpack_string<pack_index[Is], Keys...>,
-            std::forward<decltype(values)>(values)
+            meta::unpack_arg<pack_index[Is]>(std::forward<decltype(values)>(values)...)
         }...};
     }
 
@@ -4451,12 +4998,12 @@ private:
         std::index_sequence<Is...>,
         const string_map& other
     ) noexcept(
-        noexcept(Table{{
+        noexcept(Table{value_type{
             other.table[Is].first,
             other.table[Is].second
         }...})
     ) {
-        return Table{{
+        return Table{value_type{
             other.table[Is].first,
             other.table[Is].second
         }...};
@@ -4467,12 +5014,12 @@ private:
         std::index_sequence<Is...>,
         string_map&& other
     ) noexcept(
-        noexcept(Table{{
+        noexcept(Table{value_type{
             other.table[Is].first,
             std::forward<mapped_type>(other.table[Is].second)
         }...})
     ) {
-        return Table{{
+        return Table{value_type{
             other.table[Is].first,
             std::forward<mapped_type>(other.table[Is].second)
         }...};
@@ -4582,113 +5129,63 @@ public:
         std::forward<Values>(values)...
     )) {}
 
-    constexpr string_map(const string_map& other)
-        noexcept(noexcept(copy_table(std::make_index_sequence<size()>{}, other)))
-        requires(requires{copy_table(std::make_index_sequence<size()>{}, other);})
-    : table(copy_table(
+    template <typename Self = string_map>
+        requires(requires(Self& self, const Self& other) {
+            copy_table(std::make_index_sequence<size()>{}, other);
+        })
+    constexpr string_map(const string_map& other) noexcept(
+        noexcept(copy_table(std::make_index_sequence<size()>{}, other))
+    ) : table(copy_table(
         std::make_index_sequence<size()>{},
         other
     )) {}
 
-    constexpr string_map(string_map&& other)
-        noexcept(noexcept(move_table(
+    template <typename Self = string_map>
+        requires(requires(Self& self, Self&& other) {
+            move_table(std::make_index_sequence<size()>{}, std::move(other));
+        })
+    constexpr string_map(string_map&& other) noexcept(
+        noexcept(move_table(
             std::make_index_sequence<size()>{},
             std::move(other)
-        )))
-        requires(requires{move_table(
-            std::make_index_sequence<size()>{},
-            std::move(other)
-        );})
-    : table(move_table(
+        ))
+    ) : table(move_table(
         std::make_index_sequence<size()>{},
         std::move(other)
     )) {}
 
-    constexpr string_map& operator=(const string_map& other)
-        noexcept(noexcept(copy_assign_table(std::make_index_sequence<size()>{}, other)))
-        requires(requires{copy_assign_table(std::make_index_sequence<size()>{}, other);})
-    {
+    template <typename Self = string_map>
+        requires(requires(Self& self, const Self& other) {
+            self.copy_assign_table(std::make_index_sequence<size()>{}, other);
+        })
+    constexpr string_map& operator=(const string_map& other) noexcept(
+        noexcept(copy_assign_table(std::make_index_sequence<size()>{}, other))
+    ) {
         if (this != &other) {
             copy_assign_table(std::make_index_sequence<size()>{}, other);
         }
         return *this;
     }
 
-    constexpr string_map& operator=(string_map&& other)
-        noexcept(noexcept(move_assign_table(
+    template <typename Self = string_map>
+        requires(requires(Self& self, Self&& other) {
+            self.move_assign_table(
+                std::make_index_sequence<size()>{},
+                std::move(other)
+            );
+        })
+    constexpr string_map& operator=(string_map&& other) noexcept(
+        noexcept(move_assign_table(
             std::make_index_sequence<size()>{},
             std::move(other)
-        )))
-        requires(requires{move_assign_table(
-            std::make_index_sequence<size()>{},
-            std::move(other)
-        );})
-    {
+        ))
+    ) {
         if (this != &other) {
             move_assign_table(std::make_index_sequence<size()>{}, std::move(other));
         }
         return *this;
     }
 };
-
-
-
-
-
-
-inline void test() {
-    static_assert(meta::perfectly_hashable<"foo", "bar">);
-
-    static_assert(string_wrapper<"a\nb\nc\n">::splitlines().join<" ">() == "a b c");
-
-    constexpr string_list<"foo", "bar", "baz"> list;
-    static_assert(list.repeat<2>() == string_list<"foo", "bar", "baz", "foo", "bar", "baz">{});
-    static_assert(list[2] == "baz");
-    static_assert(list.index<"bar">() == 1);
-    static_assert(list.remove<"bar">() == string_list<"foo", "baz">{});
-    static_assert(list.contains("foo"));
-    static_assert(list.get<-1>() == "baz");
-    static_assert(list.remove<slice{-1, -2, -1}>() == string_list<"foo", "bar">{});
-
-    static_assert(string_list<"a", "a", "b", "c">::to_unique().to_set().to_list() == string_list<"a", "b", "c">{});
-
-
-    static constexpr static_str s = "hello";
-    constexpr std::string s2 = s;
-    static_assert(s == s2);
-    static_assert(s[0] == 'h');
-    static_assert(pow(s[0], 2) == 64);
-    static_assert(modulo::floor(s[0], 3) == 2);
-
-    char a = s[2];
-
-    static_str s3 = "hello";
-    auto x = static_cast<char>(s3[0]);
-    auto y = hash('a');
-    auto z = abs(s[0]);
-    auto w = s3[0];
-    auto w2 = static_cast<char>(w);
-
-
-
-    static_assert(string_wrapper<s>::get<slice{-1, std::nullopt, -1}>().upper() == "OLLEH");
-    static_assert(string_wrapper<"hello world">::split<" ">().join<".">() == "hello.world");
-
-    static constexpr string_set<"foo", "bar", "baz"> set;
-    static_assert(set.contains<"foo">());
-    static_assert(set.index<"baz">() == 2);
-    static_assert(*set.at(-1) == "baz");
-    for (auto&& item : set){
-        std::cout << item << " "; // prints "foo bar baz "
-    }
-    static_assert((set ^ string_set<"foo", "qux">{}).to_list() == string_list<"bar", "baz", "qux">{});
-}
-
-
-
-
-
-
 
 
 namespace impl {
@@ -5064,6 +5561,80 @@ namespace std {
         noexcept
     {
         return map.template get<Key>();
+    }
+
+}
+
+
+namespace bertrand {
+
+    inline void test() {
+        static_assert(meta::perfectly_hashable<"foo", "bar">);
+    
+        static_assert(string_wrapper<"a\nb\nc\n">::splitlines().join<" ">() == "a b c");
+    
+        constexpr string_list<"foo", "bar", "baz"> list;
+        static_assert(list.repeat<2>() == string_list<"foo", "bar", "baz", "foo", "bar", "baz">{});
+        static_assert(list[2] == "baz");
+        static_assert(list.index<"bar">() == 1);
+        static_assert(list.remove<"bar">() == string_list<"foo", "baz">{});
+        static_assert(list.contains("foo"));
+        static_assert(list.get<-1>() == "baz");
+        static_assert(list.remove<slice{-1, -2, -1}>() == string_list<"foo", "bar">{});
+    
+        static_assert(string_list<"a", "a", "b", "c">::to_unique().to_set().to_list() == string_list<"a", "b", "c">{});
+    
+    
+        static constexpr static_str s = "hello";
+        constexpr std::string s2 = s;
+        static_assert(s == s2);
+        static_assert(s[0] == 'h');
+        static_assert(pow(s[0], 2) == 64);
+        static_assert(modulo::floor(s[0], 3) == 2);
+    
+        char a = s[2];
+    
+        static_str s3 = "hello";
+        auto x = static_cast<char>(s3[0]);
+        auto y = hash('a');
+        auto z = abs(s[0]);
+        auto w = s3[0];
+        auto w2 = static_cast<char>(w);
+    
+    
+    
+        static_assert(string_wrapper<s>::get<slice{-1, std::nullopt, -1}>().upper() == "OLLEH");
+        static_assert(string_wrapper<"hello world">::split<" ">().join<".">() == "hello.world");
+    
+        static constexpr string_set<"foo", "bar", "baz"> set;
+        static constexpr auto set2 = set | string_set<"foo", "qux">{};
+        static_assert(set.contains<"foo">());
+        static_assert(set.index<"baz">() == 2);
+        static_assert(*set.at(-1) == "baz");
+        for (auto&& item : set){
+            std::cout << item << " "; // prints "foo bar baz "
+        }
+        static_assert((set ^ string_set<"foo", "qux">{}).to_list() == string_list<"bar", "baz", "qux">{});
+    
+        static constexpr int k1 = 1;
+        static constexpr int k2 = 2;
+        static constexpr int k3 = 3;
+        static constexpr string_map<const int&, "foo", "bar", "baz"> map{k1, k2, k3};
+        static constexpr string_map<const int&, "foo", "qux"> comparison_map {k2, k3};
+        static constexpr string_map map2 = map | comparison_map;
+        static constexpr auto map3 = map & comparison_map;
+        static constexpr auto map4 = map - comparison_map;
+        static constexpr auto map5 = map ^ comparison_map;
+        static_assert(map2 == string_map<const int&, "foo", "bar", "baz", "qux">{k2, k2, k3, k3});
+        static_assert(map3 == string_map<const int&, "foo">{k2});
+        static_assert(map4 == string_map<const int&, "bar", "baz">{k2, k3});
+        static_assert(map5 == string_map<const int&, "bar", "baz", "qux">{k2, k3, k3});
+        static_assert(map.get<"foo">() == 1);
+        static_assert(map.find("qux") == map.end());
+        static_assert(map.remove<slice{0, std::nullopt, -1}>() == string_map<int, "bar", "baz">{2, 3});
+        for (auto&& [k, v] : map) {
+            std::cout << k << ": " << v << std::endl;
+        }
     }
 
 }
