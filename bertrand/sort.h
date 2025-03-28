@@ -1334,4 +1334,4 @@ template <
 }
 
 
-#endif
+#endif  // BERTRAND_SORT_H

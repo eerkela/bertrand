@@ -162,7 +162,8 @@ namespace meta {
     concept is = std::same_as<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;
 
     template <typename L, typename R>
-    concept inherits = std::derived_from<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;
+    concept inherits =
+        is<L, R> || std::derived_from<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;
 
     template <typename T>
     concept lvalue = std::is_lvalue_reference_v<T>;

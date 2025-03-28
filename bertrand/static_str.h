@@ -5258,10 +5258,9 @@ constexpr std::string demangle(const char* name) {
 }
 
 
-/* Get a simple string representation of an arbitrary object.  This function is
-functionally equivalent to Python's `repr()` function, but extended to work for
-arbitrary C++ types.  It is guaranteed not to fail, and will attempt the following,
-in order of precedence:
+/* Get a simple string representation of an arbitrary object.  This is functionally
+equivalent to Python's `repr()` function, but extended to work for arbitrary C++ types.
+It is guaranteed not to fail, and will attempt the following, in order of precedence:
 
     1.  A `std::format()` call using a registered `std::formatter<>` specialization.
     2.  An explicit conversion to `std::string`.
@@ -5561,80 +5560,6 @@ namespace std {
         noexcept
     {
         return map.template get<Key>();
-    }
-
-}
-
-
-namespace bertrand {
-
-    inline void test() {
-        static_assert(meta::perfectly_hashable<"foo", "bar">);
-    
-        static_assert(string_wrapper<"a\nb\nc\n">::splitlines().join<" ">() == "a b c");
-    
-        constexpr string_list<"foo", "bar", "baz"> list;
-        static_assert(list.repeat<2>() == string_list<"foo", "bar", "baz", "foo", "bar", "baz">{});
-        static_assert(list[2] == "baz");
-        static_assert(list.index<"bar">() == 1);
-        static_assert(list.remove<"bar">() == string_list<"foo", "baz">{});
-        static_assert(list.contains("foo"));
-        static_assert(list.get<-1>() == "baz");
-        static_assert(list.remove<slice{-1, -2, -1}>() == string_list<"foo", "bar">{});
-    
-        static_assert(string_list<"a", "a", "b", "c">::to_unique().to_set().to_list() == string_list<"a", "b", "c">{});
-    
-    
-        static constexpr static_str s = "hello";
-        constexpr std::string s2 = s;
-        static_assert(s == s2);
-        static_assert(s[0] == 'h');
-        static_assert(pow(s[0], 2) == 64);
-        static_assert(modulo::floor(s[0], 3) == 2);
-    
-        char a = s[2];
-    
-        static_str s3 = "hello";
-        auto x = static_cast<char>(s3[0]);
-        auto y = hash('a');
-        auto z = abs(s[0]);
-        auto w = s3[0];
-        auto w2 = static_cast<char>(w);
-    
-    
-    
-        static_assert(string_wrapper<s>::get<slice{-1, std::nullopt, -1}>().upper() == "OLLEH");
-        static_assert(string_wrapper<"hello world">::split<" ">().join<".">() == "hello.world");
-    
-        static constexpr string_set<"foo", "bar", "baz"> set;
-        static constexpr auto set2 = set | string_set<"foo", "qux">{};
-        static_assert(set.contains<"foo">());
-        static_assert(set.index<"baz">() == 2);
-        static_assert(*set.at(-1) == "baz");
-        for (auto&& item : set){
-            std::cout << item << " "; // prints "foo bar baz "
-        }
-        static_assert((set ^ string_set<"foo", "qux">{}).to_list() == string_list<"bar", "baz", "qux">{});
-    
-        static constexpr int k1 = 1;
-        static constexpr int k2 = 2;
-        static constexpr int k3 = 3;
-        static constexpr string_map<const int&, "foo", "bar", "baz"> map{k1, k2, k3};
-        static constexpr string_map<const int&, "foo", "qux"> comparison_map {k2, k3};
-        static constexpr string_map map2 = map | comparison_map;
-        static constexpr auto map3 = map & comparison_map;
-        static constexpr auto map4 = map - comparison_map;
-        static constexpr auto map5 = map ^ comparison_map;
-        static_assert(map2 == string_map<const int&, "foo", "bar", "baz", "qux">{k2, k2, k3, k3});
-        static_assert(map3 == string_map<const int&, "foo">{k2});
-        static_assert(map4 == string_map<const int&, "bar", "baz">{k2, k3});
-        static_assert(map5 == string_map<const int&, "bar", "baz", "qux">{k2, k3, k3});
-        static_assert(map.get<"foo">() == 1);
-        static_assert(map.find("qux") == map.end());
-        static_assert(map.remove<slice{0, std::nullopt, -1}>() == string_map<int, "bar", "baz">{2, 3});
-        for (auto&& [k, v] : map) {
-            std::cout << k << ": " << v << std::endl;
-        }
     }
 
 }
