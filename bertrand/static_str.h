@@ -3778,6 +3778,9 @@ private:
 };
 
 
+/// TODO: provide a swap() operator for string_map
+
+
 template <meta::not_void T, static_str... Keys> requires (meta::perfectly_hashable<Keys...>)
 struct string_map : impl::string_map_tag {
     using key_type = const std::string_view;

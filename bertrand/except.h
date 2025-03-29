@@ -31,6 +31,67 @@ namespace impl {
 }
 
 
+struct Foo {
+private:
+    struct compile_time_t {};
+    struct run_time_t {};
+
+    bool m_compiled;
+    union storage {
+        std::string_view compile_time;
+        struct {
+            int stack;  // cpptrace
+            std::string message;
+        } run_time;
+
+        constexpr storage(compile_time_t, std::string_view msg) noexcept :
+            compile_time(msg)
+        {}
+
+        template <typename T>
+        constexpr storage(run_time_t, T&& msg) noexcept(
+            noexcept(std::string_view(std::forward<T>(msg)))
+        ) : run_time{
+            .stack = 0,
+            .message = [](auto&& msg) {
+                if constexpr (meta::inherits<T, std::string>) {
+                    return std::string(std::forward<T>(msg));
+                } else {
+                    return std::string(std::string_view(std::forward<T>(msg)));
+                }
+            }(std::forward<T>(msg))
+        } {}
+
+        constexpr ~storage() noexcept {}
+    } m_storage;
+
+public:
+
+    /// TODO: no need to check for string type, since passing a std::string at compile
+    /// time will cause a compilation error regardless.
+
+    template <std::convertible_to<std::string_view> T>
+    constexpr Foo(T&& msg) :
+        m_compiled(std::is_constant_evaluated()),
+        m_storage([](bool compiled, auto&& msg) {
+            if (compiled) {
+                return storage{compile_time_t{}, std::forward<decltype(msg)>(msg)};
+            } else {
+                return storage{run_time_t{}, std::forward<decltype(msg)>(msg)};
+            }
+        }(m_compiled, std::forward<T>(msg)))
+    {}
+
+    constexpr ~Foo() {
+        if (m_compiled) {
+            std::destroy_at(&m_storage.compile_time);
+        } else {
+            std::destroy_at(&m_storage.run_time);
+        }
+    }
+};
+
+
 /* CPython exception types:
 *      https://docs.python.org/3/c-api/exceptions.html#standard-exceptions
 *
@@ -496,6 +557,11 @@ BERTRAND_EXCEPTION(ValueError, Exception)
         // BERTRAND_EXCEPTION(UnicodeDecodeError, UnicodeError)
         // BERTRAND_EXCEPTION(UnicodeEncodeError, UnicodeError)
         // BERTRAND_EXCEPTION(UnicodeTranslateError, UnicodeError)
+
+
+BERTRAND_EXCEPTION(BadUnionAccess, TypeError)
+BERTRAND_EXCEPTION(BadOptionalAccess, TypeError)
+BERTRAND_EXCEPTION(BadExpectedAccess, TypeError)
 
 
 #undef BERTRAND_EXCEPTION

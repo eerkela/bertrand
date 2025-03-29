@@ -592,6 +592,12 @@ namespace meta {
     template <typename T, typename... Args>
     concept constructible_from = std::constructible_from<T, Args...>;
 
+    template <typename T, typename... Args>
+    concept implicitly_constructible_from =
+        constructible_from<T, Args...> && requires(Args... args) {
+            [](Args... args) -> T { return {std::forward<Args>(args)...}; };
+        };
+
     template <typename T>
     concept default_constructible = std::default_initializable<T>;
 
@@ -599,6 +605,11 @@ namespace meta {
     concept trivially_constructible = std::is_trivially_constructible_v<T, Args...>;
 
     namespace nothrow {
+
+        template <typename T, typename... Args>
+        concept implicitly_constructible_from =
+            meta::implicitly_constructible_from<T, Args...> &&
+            std::is_nothrow_constructible_v<T, Args...>;
 
         template <typename T, typename... Args>
         concept constructible_from =
