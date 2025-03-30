@@ -91,7 +91,7 @@ struct Optional;
 
 
 template <typename T>
-Optional(T&&) -> Optional<T>;
+Optional(T) -> Optional<T>;
 
 
 /* A wrapper for an arbitrarily qualified return type `T` that can also store a
@@ -168,99 +168,49 @@ private:
 
     // implicit conversion to the union type will make a best effort to find the
     // narrowest possible match from the available options
-    enum conversion_tag : uint8_t {
-        EXACT = 0,
-        INHERITS = 1,
-        CONVERT = 2,
-        VOID = 3,
-    };
-    template <typename T, typename result, conversion_tag tag, typename... Us>
-    struct _conversion_type { using type = result; };  // base case: return intermediate result
-    template <typename T, typename result, conversion_tag tag, typename U, typename... Us>
-    struct _conversion_type<T, result, tag, U, Us...> {
+    template <typename T, typename result, typename... Us>
+    struct _conversion_type { using type = result; };
+    template <typename T, typename result, typename U, typename... Us>
+    struct _conversion_type<T, result, U, Us...> {
         // no match at this index: advance U
         template <typename V>
-        struct filter { using type = _conversion_type<T, result, tag, Us...>::type; };
+        struct filter { using type = _conversion_type<T, result, Us...>::type; };
 
-        // if the type is an exact match, short-circuit and return it directly
-        template <std::same_as<U> V>
-        struct filter<V> { using type = U; };
-
-        // if the types differ only in cvref qualifiers, prefer the least-qualified
-        // match
-        template <meta::is<U> V> requires (!std::same_as<V, U> && meta::convertible_to<V, U>)
+        // prefer the most derived and least qualified matching alternative, with
+        // lvalues binding to lvalues and prvalues, and rvalues binding to rvalues and
+        // prvalues
+        template <meta::inherits<U> V>
+            requires (
+                meta::convertible_to<V, U> &&
+                meta::lvalue<V> ? !meta::rvalue<U> : !meta::lvalue<U>
+            )
         struct filter<V> {
             template <typename R>
             struct replace { using type = R; };
 
-            // if the intermediate result is from a lower priority tag, or is more
-            // qualified than U, replace it with U
-            template <typename R> requires (tag > EXACT || meta::more_qualified_than<R, U>)
-            struct replace<R> { using type = U; };
-
-            // recur with updated result
-            using type = _conversion_type<
-                T,
-                typename replace<result>::type,
-                tag,
-                Us...
-            >::type;
-        };
-
-        // if the type is a base class of T, prefer the most proximal match
-        template <meta::inherits<U> V> requires (!meta::is<V, U> && meta::convertible_to<V, U>)
-        struct filter<V> {
-            template <typename R>
-            struct replace { using type = R; };
-
-            // if the intermediate result is from a lower priority tag, or is less
-            // derived or more qualified than U, replace it with U
+            // if the result type is void, or if the candidate is more derived than it,
+            // or if the candidate is less qualified, replace the intermediate result
             template <typename R>
                 requires (
-                    tag > INHERITS ||
-                    (meta::inherits<U, R> && !meta::is<U, R>) ||
-                    (meta::is<U, R> && meta::more_qualified_than<R, U>)
+                    meta::is_void<R> ||
+                    (meta::inherits<U, R> && !meta::is<U, R>) || (
+                        meta::is<U, R> && (
+                            (meta::lvalue<U> && !meta::lvalue<R>) ||
+                            meta::more_qualified_than<R, U>
+                        )
+                    )
                 )
             struct replace<R> { using type = U; };
 
             // recur with updated result
-            using type = _conversion_type<
-                T,
-                typename replace<result>::type,
-                tag,
-                Us...
-            >::type;
+            using type = _conversion_type<T, typename replace<result>::type, Us...>::type;
         };
 
-        // if an implicit conversion exists from V to U, prefer the first match
-        template <meta::convertible_to<U> V> requires (!meta::inherits<V, U>)
-        struct filter<V> {
-            template <typename R>
-            struct replace { using type = R; };
-
-            // if intermediate result is from a lower priority tag, or is more
-            // qualified than U, replace it with U
-            template <typename R>
-                requires (
-                    tag > CONVERT ||
-                    (meta::is<U, R> && meta::more_qualified_than<R, U>)
-                )
-            struct replace<R> { using type = U; };
-
-            // recur with updated result
-            using type = _conversion_type<
-                T,
-                typename replace<result>::type,
-                tag,
-                Us...
-            >::type;
-        };
-
-        // trigger the metafunction
+        // execute the metafunction
         using type = filter<T>::type;
     };
     template <typename T>
-    using conversion_type = _conversion_type<T, void, VOID, Ts...>::type;
+    using conversion_type = _conversion_type<T, void, Ts...>::type;
 
     // recursive C unions are the only way to allow Union<Ts...> to be used at compile
     // time without triggering the compiler's UB filters
@@ -338,7 +288,13 @@ private:
     storage<Ts...> m_storage;
 
     template <size_t I, typename Self> requires (I < alternatives)
-    using get_type = decltype((std::declval<Self>().m_storage.template get<I>()));
+    using access = decltype((std::declval<Self>().m_storage.template get<I>()));
+
+    template <size_t I, typename Self> requires (I < alternatives)
+    using exp_val = Expected<access<I, Self>, BadUnionAccess>;
+
+    template <size_t I, typename Self> requires (I < alternatives)
+    using opt_val = Optional<access<I, Self>>;
 
 public:
 
@@ -367,7 +323,7 @@ public:
     range.  Otherwise, throws a `TypeError` if the indexed type is not the active
     member. */
     template <size_t I, typename Self> requires (I < alternatives)
-    [[nodiscard]] constexpr get_type<I, Self> get(this Self&& self) noexcept(!DEBUG) {
+    [[nodiscard]] constexpr access<I, Self> get(this Self&& self) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
             if (I != self.index()) {
                 throw TypeError(
@@ -383,7 +339,7 @@ public:
     is not a valid union member.  Otherwise, throws a `TypeError` if the templated type
     is not the active member. */
     template <typename T, typename Self> requires (std::same_as<T, Ts> || ...)
-    [[nodiscard]] constexpr get_type<index_of<T>, Self> get(this Self&& self) noexcept(!DEBUG) {
+    [[nodiscard]] constexpr access<index_of<T>, Self> get(this Self&& self) noexcept(!DEBUG) {
         constexpr size_t idx = index_of<T>;
         if constexpr (DEBUG) {
             if (idx != self.index()) {
@@ -401,7 +357,7 @@ public:
     /// good enough state to support it
 
     // template <size_t I, typename Self> requires (I < N)
-    // [[nodiscard]] constexpr Expected<get_type<I, Self>, BadUnionAccess> safe_get(
+    // [[nodiscard]] constexpr exp_val<I, Self> safe_get(
     //     this Self&& self
     // ) noexcept {
     //     if (self.index() != I) {
@@ -414,7 +370,7 @@ public:
     // }
 
     // template <typename T, typename Self> requires (std::same_as<T, Ts> || ...)
-    // [[nodiscard]] constexpr Expected<get_type<index_of<T>, Self>, BadUnionAccess> safe_get(
+    // [[nodiscard]] constexpr exp_val<index_of<T>, Self> safe_get(
     //     this Self&& self
     // ) noexcept {
     //     if (self.index() != index_of<T>) {
@@ -430,11 +386,11 @@ public:
     /* Get an optional wrapper for the value of the type at index `I`.  If that is not
     the active type, returns an empty optional instead. */
     template <size_t I, typename Self> requires (I < alternatives)
-    [[nodiscard]] constexpr Optional<get_type<I, Self>> get_if(
-        this Self&& self
-    ) noexcept(noexcept(Optional<get_type<I, Self>>(
-        std::forward<Self>(self).m_storage.template get<I>()
-    ))) {
+    [[nodiscard]] constexpr opt_val<I, Self> get_if(this Self&& self) noexcept(
+        noexcept(opt_val<I, Self>(
+            std::forward<Self>(self).m_storage.template get<I>()
+        ))
+    ) {
         if (self.index() != I) {
             return {};
         }
@@ -444,11 +400,11 @@ public:
     /* Get an optional wrapper for the value of the templated type.  If that is not
     the active type, returns an empty optional instead. */
     template <typename T, typename Self> requires (std::same_as<T, Ts> || ...)
-    [[nodiscard]] constexpr Optional<get_type<index_of<T>, Self>> get_if(
-        this Self&& self
-    ) noexcept(noexcept(Optional<get_type<index_of<T>, Self>>(
-        std::forward<Self>(self).m_storage.template get<index_of<T>>()
-    ))) {
+    [[nodiscard]] constexpr opt_val<index_of<T>, Self> get_if(this Self&& self) noexcept(
+        noexcept(opt_val<index_of<T>, Self>(
+            std::forward<Self>(self).m_storage.template get<index_of<T>>()
+        ))
+    ) {
         if (self.index() != index_of<T>) {
             return {};
         }
@@ -459,13 +415,13 @@ public:
     /// dependency chain, so that I can easily compute cartesian products, etc.
 
 private:
-    using destructor = void(*)(Union&);
-    using copy_constructor = storage<Ts...>(*)(const Union&);
-    using move_constructor = storage<Ts...>(*)(Union&&);
-    using swap_operator = void(*)(Union&, Union&);
+    using destructor_fn = void(*)(Union&);
+    using copy_fn = storage<Ts...>(*)(const Union&);
+    using move_fn = storage<Ts...>(*)(Union&&);
+    using swap_fn = void(*)(Union&, Union&);
 
     template <typename... Us> requires (meta::destructible<Us> && ...)
-    static constexpr std::array<destructor, alternatives> destructors {
+    static constexpr std::array<destructor_fn, alternatives> destructors {
         +[](Union& self) {
             if constexpr (!meta::trivially_destructible<Ts>) {
                 std::destroy_at(&self.m_storage.template get<index_of<Ts>>());
@@ -474,14 +430,14 @@ private:
     };
 
     template <typename... Us> requires (meta::copyable<Us> && ...)
-    static constexpr std::array<copy_constructor, alternatives> copy_constructors {
+    static constexpr std::array<copy_fn, alternatives> copy_constructors {
         +[](const Union& other) {
             return storage<Ts...>{other.m_storage.template get<index_of<Ts>>()};
         }...
     };
 
     template <typename... Us> requires (meta::movable<Us> && ...)
-    static constexpr std::array<move_constructor, alternatives> move_constructors {
+    static constexpr std::array<move_fn, alternatives> move_constructors {
         +[](Union&& other) {
             return storage<Ts...>{std::move(other).m_storage.template get<index_of<Ts>>()};
         }...
@@ -518,7 +474,7 @@ private:
     static constexpr bool nothrow_swappable = (_nothrow_swappable<T, Ts> && ...);
 
     template <typename T>
-    static constexpr std::array<swap_operator, alternatives> pairwise_swap() noexcept {
+    static constexpr std::array<swap_fn, alternatives> pairwise_swap() noexcept {
         constexpr size_t I = index_of<T>;
         return {
             +[](Union& self, Union& other) {
@@ -604,9 +560,17 @@ private:
     }
 
     template <typename... Us> requires (swappable<Us> && ...)
-    static constexpr std::array<std::array<swap_operator, alternatives>, alternatives> swap_operators {
+    static constexpr std::array<
+        std::array<swap_fn, alternatives>,
+        alternatives
+    > swap_operators {
         pairwise_swap<Us>()...
     };
+
+    static constexpr bool default_constructible = meta::not_void<default_type>;
+
+    template <typename T>
+    static constexpr bool bind_member = meta::not_void<conversion_type<T>>;
 
 public:
 
@@ -614,7 +578,7 @@ public:
     constructed.  If no such type exists, the default constructor is disabled. */
     constexpr Union()
         noexcept(meta::nothrow::default_constructible<default_type>)
-        requires(meta::not_void<default_type>)
+        requires(default_constructible)
     :
         m_index(index_of<default_type>),
         m_storage()
@@ -626,7 +590,7 @@ public:
     inheritance relationships (preferring the most derived and least qualified), and
     finally implicit conversions (preferring the first, least qualified match).  If no
     such type exists, the conversion constructor is disabled. */
-    template <typename T> requires (meta::not_void<conversion_type<T>>)
+    template <typename T> requires (bind_member<T>)
     constexpr Union(T&& v)
         noexcept(meta::nothrow::convertible_to<T, conversion_type<T>>)
     :
@@ -716,43 +680,184 @@ struct Optional {
     using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
 
 private:
-    Union<std::nullopt_t, T> m_data;
+    template <typename U>
+    struct storage {
+        Union<std::nullopt_t, T> m_data;
+
+        constexpr storage() noexcept : m_data(std::nullopt) {};
+
+        template <meta::convertible_to<value_type> V>
+        constexpr storage(V&& value)
+            noexcept(meta::nothrow::convertible_to<V, value_type>)
+        :
+            m_data(value_type(std::forward<V>(value)))
+        {}
+
+        constexpr void swap(storage& other)
+            noexcept(noexcept(m_data.swap(other.m_data)))
+            requires(requires{m_data.swap(other.m_data);})
+        {
+            m_data.swap(other.m_data);
+        }
+
+        /// TODO: & operator on the expected returned by get<>() is not allowed.  I
+        /// will have to dereference the expected first.
+
+        constexpr explicit operator bool() const noexcept {
+            return m_data.index() == 1;
+        }
+
+        template <typename Self>
+        constexpr decltype(auto) operator*(this Self&& self) noexcept {
+            return std::forward<Self>(self).m_data.m_storage.template get<1>();
+        }
+
+        constexpr pointer operator->() noexcept {
+            return &m_data.m_storage.template get<1>();
+        }
+
+        constexpr const_pointer operator->() const noexcept {
+            return &m_data.m_storage.template get<1>();
+        }
+
+        constexpr void reset() noexcept(noexcept(m_data = std::nullopt)) {
+            m_data = std::nullopt;
+        }
+    };
+
+    template <meta::lvalue U>
+    struct storage<U> {
+        pointer m_data = nullptr;
+
+        constexpr storage() noexcept = default;
+        constexpr storage(U value) noexcept(noexcept(&value)) : m_data(&value) {}
+
+        constexpr explicit operator bool() const noexcept {
+            return m_data != nullptr;
+        }
+
+        constexpr void swap(storage& other) noexcept {
+            std::swap(m_data, other.m_data);
+        }
+
+        template <typename Self>
+        constexpr decltype(auto) operator*(this Self&& self) noexcept {
+            return *std::forward<Self>(self).m_data;
+        }
+
+        constexpr pointer operator->() noexcept {
+            return m_data;
+        }
+
+        constexpr const_pointer operator->() const noexcept {
+            return m_data;
+        }
+
+        constexpr void reset() noexcept {
+            m_data = nullptr;
+        }
+    };
+
+    storage<T> m_storage;
+
+    template <typename Self>
+    using access = decltype((*std::declval<Self>().m_storage));
+
+    template <typename Self, meta::invocable<access<Self>> F>
+    struct _and_then_t { using type = Optional<meta::invoke_type<F, access<Self>>>; };
+    template <typename Self, meta::invocable<access<Self>> F>
+        requires (meta::Optional<meta::invoke_type<F, access<Self>>>)
+    struct _and_then_t<Self, F> { using type = meta::invoke_type<F, access<Self>>; };
+    template <typename Self, meta::invocable<access<Self>> F>
+    using and_then_t = _and_then_t<Self, F>::type;
+
+    template <typename Self, meta::invocable<> F>
+    struct _or_else_t {
+        using type = Optional<meta::common_type<
+            value_type,
+            meta::invoke_type<F>
+        >>;
+    };
+    template <typename Self, meta::invocable<> F>
+        requires (meta::Optional<meta::invoke_type<F>>)
+    struct _or_else_t<Self, F> {
+        using type = Optional<meta::common_type<
+            value_type,
+            typename meta::invoke_type<F>::value_type
+        >>;
+    };
+    template <typename Self, meta::invocable<> F>
+    using or_else_t = _or_else_t<Self, F>::type;
 
 public:
-    constexpr Optional() noexcept : m_data(std::nullopt) {};
-    constexpr Optional(std::nullopt_t t) noexcept : m_data(t)  {}
+    [[nodiscard]] constexpr Optional() noexcept = default;
+    [[nodiscard]] constexpr Optional(std::nullopt_t t) noexcept {}
 
-    template <meta::convertible_to<T> V>
-    constexpr Optional(V&& v) noexcept(
-        meta::nothrow::convertible_to<V, T>
+    template <meta::convertible_to<value_type> V>
+    [[nodiscard]] constexpr Optional(V&& v) noexcept(
+        meta::nothrow::convertible_to<V, value_type>
     ) : 
-        m_data(std::forward<V>(v))
+        m_storage(std::forward<V>(v))
     {}
 
-    template <typename... Args> requires (meta::constructible_from<T, Args...>)
-    constexpr explicit Optional(Args&&... args)
-        noexcept(meta::nothrow::constructible_from<T, Args...>)
-    :
-        m_data(T(std::forward<Args>(args)...))
+    template <typename... Args> requires (meta::constructible_from<value_type, Args...>)
+    [[nodiscard]] constexpr explicit Optional(Args&&... args) noexcept(
+        meta::nothrow::constructible_from<value_type, Args...>
+    ) :
+        m_storage(value_type(std::forward<Args>(args)...))
     {}
+
+    /* Swap the contents of two optionals as efficiently as possible. */
+    constexpr void swap(Optional& other)
+        noexcept(noexcept(m_storage.swap(other.m_storage)))
+        requires(requires{m_storage.swap(other.m_storage);})
+    {
+        if (this != &other) {
+            m_storage.swap(other.m_storage);
+        }
+    }
+
+    /* Clear the optional if it currently contains a value, returning it to the empty
+    state. */
+    constexpr void reset() noexcept(noexcept(m_storage.reset())) {
+        m_storage.reset();
+    }
+
+    /* Returns `true` if the optional currently holds a value, or `false` if it is in
+    the empty state. */
+    [[nodiscard]] constexpr bool has_value() const noexcept {
+        return bool(m_storage);
+    }
 
     /* Returns `true` if the optional currently holds a value, or `false` if it is in
     the empty state. */
     [[nodiscard]] constexpr explicit operator bool() const noexcept {
-        return m_data.index() == 1;
+        return bool(m_storage);
+    }
+
+    /* Access the stored value.  Throws a `BadOptionalAccess` exception if the optional
+    is currently in the empty state when this method is called. */
+    template <typename Self>
+    [[nodiscard]] constexpr access<Self> value(this Self&& self) noexcept(!DEBUG) {
+        if constexpr (DEBUG) {
+            if (!self.has_value()) {
+                throw BadOptionalAccess("Cannot access value of an empty Optional");
+            }
+        }
+        return *std::forward<Self>(self).m_storage;
     }
 
     /* Dereference the optional to access the stored value.  Throws a
     `BadOptionalAccess` exception if the optional is currently in the empty state when
     this method is called. */
     template <typename Self>
-    [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) noexcept(!DEBUG) {
+    [[nodiscard]] constexpr access<Self> operator*(this Self&& self) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
-            if (!self) {
+            if (!self.has_value()) {
                 throw BadOptionalAccess("Cannot dereference an empty Optional");
             }
         }
-        return std::forward<Self>(self).m_data.m_storage.template get<1>();
+        return *std::forward<Self>(self).m_storage;
     }
 
     /* Dereference the optional to access a member of the stored value.  Throws a
@@ -760,11 +865,11 @@ public:
     this method is called. */
     [[nodiscard]] constexpr pointer operator->() noexcept(!DEBUG) {
         if constexpr (DEBUG) {
-            if (!*this) {
+            if (!has_value()) {
                 throw BadOptionalAccess("Cannot dereference an empty Optional");
             }
         }
-        return &m_data.m_storage.template get<1>();
+        return m_storage.operator->();
     }
 
     /* Dereference the optional to access a member of the stored value.  Throws a
@@ -772,14 +877,97 @@ public:
     this method is called. */
     [[nodiscard]] constexpr const_pointer operator->() const noexcept(!DEBUG) {
         if constexpr (DEBUG) {
-            if (!*this) {
+            if (!has_value()) {
                 throw BadOptionalAccess("Cannot dereference an empty Optional");
             }
         }
-        return &m_data.m_storage.template get<1>();
+        return m_storage.operator->();
     }
 
-    /// TODO: swap() and rest of monadic optional interface
+    /* Access the stored value or return the default value if the optional is empty.
+    Returns the common type between the wrapped type and the default value. */
+    template <typename Self, typename V>
+    [[nodiscard]] constexpr meta::common_type<access<Self>, V> value_or(
+        this Self&& self,
+        V&& fallback
+    ) noexcept(
+        noexcept(meta::common_type<access<Self>, V>(*std::forward<Self>(self).m_storage)) &&
+        noexcept(meta::common_type<access<Self>, V>(std::forward<V>(fallback)))
+    ) {
+        if (self.has_value()) {
+            return *std::forward<Self>(self).m_storage;
+        } else {
+            return std::forward<V>(fallback);
+        }
+    }
+
+    /* Invoke a visitor function on the wrapped value if the optional is not empty,
+    returning another optional containing the transformed result.  If the original
+    optional was in the empty state, then the visitor function will not be invoked,
+    and the result will be empty as well.  If the visitor returns an `Optional`, then
+    it will be flattened into the result, merging the empty states.
+
+    Note that the extra flattening behavior technically distinguishes this method from
+    the `std::optional::and_then()` equivalent, which never flattens.  In that case,
+    if the visitor returns an optional, then the result will be a nested optional with
+    2 distinct empty states.  Bertrand considers this to be an anti-pattern, as the
+    nested indirection can easily cause confusion, and does not conform to the rest of
+    the monadic operator interface, which flattens by default.  If the empty states
+    must remain distinct, then it is better expressed by explicitly handling the
+    original empty state before chaining, or by converting the optional into a
+    `Union<Ts...>` or `Expected<T, Union<Es...>>` beforehand, both of which can
+    represent multiple distinct empty states without nesting. */
+    template <typename Self, meta::invocable<access<Self>> F>
+    [[nodiscard]] constexpr and_then_t<Self, F> and_then(
+        this Self&& self,
+        F&& visit
+    ) noexcept(
+        meta::nothrow::invoke_returns<and_then_t<Self, F>, F, access<Self>>
+    ) {
+        if (!self.has_value()) {
+            return {};
+        }
+        return std::forward<F>(visit)(*std::forward<Self>(self).m_storage);
+    }
+
+    /* Invoke a visitor function if the optional is empty, returning another optional
+    containing either the original value or the transformed result.  If the original
+    optional was not empty, then the visitor function will not be invoked, and the
+    value will be converted to the common type between the original value and the
+    result of the visitor.  If the visitor returns an `Optional`, then it will be
+    flattened into the result.
+
+    Note that the extra flattening behavior technically distinguishes this method from
+    the `std::optional::or_else()` equivalent, which never flattens.  In that case,
+    if the visitor returns an optional, then the result will be a nested optional with
+    2 distinct empty states, the first of which can never occur.  Bertrand considers
+    this to be an anti-pattern, as the nested indirection can easily cause confusion,
+    and does not conform to the rest of the monadic operator interface, which flattens
+    by default.  If the empty states must remain distinct, then it is better expressed
+    by explicitly handling the original empty state before chaining, or by converting
+    the optional into a `Union<Ts...>` or `Expected<T, Union<Es...>>` beforehand, both
+    of which can represent multiple distinct empty states without nesting. */
+    template <typename Self, meta::invocable<> F>
+    [[nodiscard]] constexpr or_else_t<Self, F> or_else(
+        this Self&& self,
+        F&& visit
+    ) noexcept(
+        meta::nothrow::invoke_returns<or_else_t<Self, F>, F> &&
+        meta::nothrow::convertible_to<or_else_t<Self, F>, access<Self>>
+    ) {
+        if (self.has_value()) {
+            return *std::forward<Self>(self).m_storage;
+        }
+        return std::forward<F>(visit)();
+    }
+
+    /// TODO: rest of monadic optional interface, including iterators, which for the
+    /// empty state will simply produce an end() iterator.  Perhaps this can be
+    /// implemented such that the iterator type holds a union of the begin and end
+    /// iterators along with impl::sentinel{}, which would be used for the empty
+    /// case.  This will be somewhat complex to implement, but would be a nice
+    /// addition, and should be clearer than the `std::optional` interface, which
+    /// treats the optional as a range with a single value.
 };
 
 
@@ -853,8 +1041,9 @@ constexpr void swap(Expected<T, E>& a, Expected<T, E>& b)
 
 
 inline void test() {
-    static constexpr Union<int, const int, std::string> u = "abc";
-    static constexpr Union<int, const int, std::string> u2 = u;
+    static constexpr int i = 42;
+    static constexpr Union<int, const int&, std::string> u = std::string("abc");
+    static constexpr Union<int, const int&, std::string> u2 = u;
     constexpr Union u3 = std::move(Union{u});
     constexpr decltype(auto) x = u.get<2>();
     static_assert(u.index() == 2);
@@ -863,8 +1052,8 @@ inline void test() {
     static_assert(u3.get<2>() == "abc");
     static_assert(u.get<std::string>() == "abc");
 
-    Union<int, const int, std::string> u4 = "abc";
-    Union<int, const int, std::string> u5 = u4;
+    Union<int, const int&, std::string> u4 = std::string("abc");
+    Union<int, const int&, std::string> u5 = u4;
     u4 = u;
     u4 = std::move(u5);
 
@@ -875,9 +1064,17 @@ inline void test() {
     static_assert(val.holds_alternative<const int&>());
     static_assert(*val.get_if<val.index()>() == 2);
     decltype(auto) v = val.get<val.index()>();
+    decltype(auto) v2 = val.get_if<0>();
 
 
-    constexpr Optional<std::string_view> o {"abc", 3};
+
+    static constexpr std::string_view str = "abc";
+    constexpr Optional<const std::string_view&> o = str;
+    constexpr auto o2 = o.and_then([](std::string_view s) {
+        return s.size();
+    });
+    static_assert(o2.value() == 3);
+    static_assert(o.value_or("def") == "abc");
     static_assert(o->size() == 3);
     decltype(auto) ov = *o;
     decltype(auto) ov2 = *Optional<std::string_view>{"abc", 3};
