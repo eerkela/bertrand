@@ -42,12 +42,6 @@ static_assert(MAX_OVERLOADS > 0, "`BERTRAND_MAX_OVERLOADS` must be positive.");
 static_assert(OVERLOAD_CACHE > 0, "`BERTRAND_OVERLOAD_CACHE` must be positive.");
 
 
-/* A simple convenience struct implementing the overload pattern for `visit()`-style
-functions. */
-template <typename... Funcs>
-struct visitor : Funcs... { using Funcs::operator()...; };
-
-
 /* Introspect an annotated C++ function signature to extract compile-time type
 information and allow matching functions to be called using Python-style conventions.
 Also defines supporting data structures to allow for partial function application. */

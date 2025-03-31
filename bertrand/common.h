@@ -2963,6 +2963,31 @@ namespace meta {
 
 
 namespace impl {
+    struct args_tag {};
+
+    template <typename... Ts>
+    struct ArgsBase : args_tag {};
+    template <typename T, typename... Ts>
+        requires (meta::is_void<T> || (meta::is_void<Ts> || ...))
+    struct ArgsBase<T, Ts...> {};
+    template <typename T, typename... Ts>
+    struct ArgsBase<T, Ts...> : ArgsBase<Ts...> {
+        std::conditional_t<meta::lvalue<T>, T, std::remove_reference_t<T>> value;
+        constexpr ArgsBase(T value, Ts... ts) :
+            ArgsBase<Ts...>(std::forward<Ts>(ts)...),
+            value(std::forward<T>(value))
+        {}
+        constexpr ArgsBase(ArgsBase&& other) :
+            ArgsBase<Ts...>(std::move(other)),
+            value([](ArgsBase&& other) {
+                if constexpr (meta::lvalue<T>) {
+                    return other.value;
+                } else {
+                    return std::move(other.value);
+                }
+            }())
+        {}
+    };
 
     /* A helper type that simplifies friend declarations for wrapper types.  Every
     subclass of `wrapper` should declare this as a friend and provide its own
@@ -2998,6 +3023,9 @@ namespace impl {
 
 namespace meta {
 
+    template <typename T>
+    concept args = inherits<T, impl::args_tag>;
+
     /* Transparently unwrap wrapped types, triggering a getter call if the
     `meta::wrapper` concept is modeled, or returning the result as-is otherwise. */
     template <typename T>
@@ -3019,6 +3047,219 @@ namespace meta {
     using unwrap_type = decltype(unwrap(std::declval<T>()));
 
 }
+
+
+/* Save a set of input arguments for later use.  Returns an args<> container, which
+stores the arguments similar to a `std::tuple`, except that it is capable of storing
+references and cannot be copied or moved.  Calling the args pack as an rvalue will
+perfectly forward its values to an input function, without any extra copies, and at
+most 2 moves per element (one when the pack is created and another when it is consumed).
+
+Also provides utilities for compile-time argument manipulation wherever arbitrary lists
+of types may be necessary. 
+
+WARNING: Undefined behavior can occur if an lvalue is bound that falls out of scope
+before the pack is consumed.  Such values will not have their lifetimes extended in any
+way, and it is the user's responsibility to ensure that this is observed at all times.
+Generally speaking, ensuring that no packs are returned out of a local context is
+enough to satisfy this guarantee.  Typically, this class will be consumed within the
+same context in which it was created, or in a downstream one where all of the objects
+are still in scope, as a way of enforcing a certain order of operations.  Note that
+this guidance does not apply to rvalues and temporaries, which are stored directly
+within the pack for its natural lifetime. */
+template <typename... Ts>
+struct args : impl::ArgsBase<Ts...> {
+private:
+
+    template <typename>
+    struct _concat;
+    template <typename... Us>
+    struct _concat<args<Us...>> { using type = args<Ts..., Us...>; };
+
+    template <typename... packs>
+    struct _product {
+        /* permute<> iterates from left to right along the packs. */
+        template <typename permuted, typename...>
+        struct permute { using type = permuted; };
+        template <typename... permuted, typename... types, typename... rest>
+        struct permute<args<permuted...>, args<types...>, rest...> {
+
+            /* accumulate<> iterates over the prior permutations and updates them
+            with the types at this index. */
+            template <typename accumulated, typename...>
+            struct accumulate { using type = accumulated; };
+            template <typename... accumulated, typename permutation, typename... others>
+            struct accumulate<args<accumulated...>, permutation, others...> {
+
+                /* append<> iterates from top to bottom for each type. */
+                template <typename appended, typename...>
+                struct append { using type = appended; };
+                template <typename... appended, typename U, typename... Us>
+                struct append<args<appended...>, U, Us...> {
+                    using type = append<
+                        args<appended..., typename permutation::template append<U>>,
+                        Us...
+                    >::type;
+                };
+
+                /* append<> extends the accumulated output at this index. */
+                using type = accumulate<
+                    typename append<args<accumulated...>, types...>::type,
+                    others...
+                >::type;
+            };
+
+            /* accumulate<> has to rebuild the output pack at each iteration. */
+            using type = permute<
+                typename accumulate<args<>, permuted...>::type,
+                rest...
+            >::type;
+        };
+
+        /* This pack is converted to a 2D pack to initialize the recursion. */
+        using type = permute<args<args<Ts>...>, packs...>::type;
+    };
+
+    template <typename out, typename...>
+    struct _unique { using type = out; };
+    template <typename... Vs, typename U, typename... Us>
+    struct _unique<args<Vs...>, U, Us...> {
+        template <typename>
+        struct helper { using type = args<Vs...>; };
+        template <typename U2> requires (!(std::same_as<U2, Us> || ...))
+        struct helper<U2> { using type = args<Vs..., U>; };
+        using type = _unique<typename helper<U>::type, Us...>::type;
+    };
+
+    template <typename>
+    struct _to_value;
+    template <typename... Us>
+    struct _to_value<args<Us...>> {
+        template <typename out, typename...>
+        struct filter { using type = out; };
+        template <typename... Ws, typename V, typename... Vs>
+        struct filter<args<Ws...>, V, Vs...> {
+            template <typename>
+            struct helper { using type = args<Ws...>; };
+            template <typename V2>
+                requires (!(std::same_as<std::remove_cvref_t<V2>, Ws> || ...))
+            struct helper<V2> {
+                using type = args<Ws..., std::conditional_t<
+                    (std::same_as<
+                        std::remove_cvref_t<V2>,
+                        std::remove_cvref_t<Vs>
+                    > || ...),
+                    std::remove_cvref_t<V2>,
+                    V2
+                >>;
+            };
+            using type = filter<typename helper<V>::type, Vs...>::type;
+        };
+        using type = filter<args<>, Us...>::type;
+    };
+
+    template <typename out, size_t I>
+    struct _get_base { using type = out; };
+    template <typename... Us, size_t I> requires (I < sizeof...(Ts))
+    struct _get_base<impl::ArgsBase<Us...>, I> {
+        using type = _get_base<
+            impl::ArgsBase<Us..., meta::unpack_type<I, Ts...>>,
+            I + 1
+        >::type;
+    };
+    template <size_t I> requires (I < sizeof...(Ts))
+    using get_base = _get_base<impl::ArgsBase<>, I>::type;
+
+    template <size_t I> requires (I < sizeof...(Ts))
+    decltype(auto) forward() {
+        if constexpr (meta::lvalue<meta::unpack_type<I, Ts...>>) {
+            return get_base<I>::value;
+        } else {
+            return std::move(get_base<I>::value);
+        }
+    }
+
+public:
+    /* The total number of arguments being stored. */
+    [[nodiscard]] static constexpr size_t size() noexcept { return sizeof...(Ts); }
+    [[nodiscard]] static constexpr bool empty() noexcept { return !sizeof...(Ts); }
+
+    template <typename T>
+    static constexpr size_t index_of = meta::index_of<T, Ts...>;
+    template <typename T>
+    static constexpr bool contains = index_of<T> != size();
+
+    /* Evaluate a control structure's `::enable` state by inserting this pack's
+    template parameters. */
+    template <template <typename...> class Control>
+    static constexpr bool enable = Control<Ts...>::enable;
+
+    /* Evaluate a control structure's `::type` state by inserting this pack's
+    template parameters, assuming they are valid. */
+    template <template <typename...> class Control> requires (enable<Control>)
+    using type = Control<Ts...>::type;
+
+    /* Get the type at index I. */
+    template <size_t I> requires (I < size())
+    using at = meta::unpack_type<I, Ts...>;
+
+    /* Get a new pack with the type appended. */
+    template <typename T>
+    using append = args<Ts..., T>;
+
+    /* Get a new pack that combines the contents of this pack with another. */
+    template <meta::args T>
+    using concat = _concat<T>::type;
+
+    /* Get a pack of packs containing all unique permutations of the types in this
+    parameter pack and all others, returning their Cartesian product.  */
+    template <meta::args... packs> requires (size() > 0 && ((packs::size() > 0) && ...))
+    using product = _product<packs...>::type;
+
+    /* Get a new pack with exact duplicates filtered out, accounting for cvref
+    qualifications. */
+    using unique = _unique<args<>, Ts...>::type;
+
+    /* Get a new pack with duplicates filtered out, replacing any types that differ
+    only in cvref qualifications with an unqualified equivalent, thereby forcing a
+    copy/move. */
+    using to_value = _to_value<unique>::type;
+
+    template <std::convertible_to<Ts>... Us>
+    args(Us&&... args) : impl::ArgsBase<Ts...>(
+        std::forward<Us>(args)...
+    ) {}
+
+    args(args&&) = default;
+
+    args(const args&) = delete;
+    args& operator=(const args&) = delete;
+    args& operator=(args&&) = delete;
+
+    /* Get the argument at index I. */
+    template <size_t I> requires (I < size())
+    [[nodiscard]] decltype(auto) get() && {
+        if constexpr (meta::lvalue<meta::unpack_type<I, Ts...>>) {
+            return get_base<I>::value;
+        } else {
+            return std::move(get_base<I>::value);
+        }
+    }
+
+    /* Calling a pack as an rvalue will perfectly forward the input arguments to an
+    input function that is templated to accept them. */
+    template <typename Func>
+        requires (!(meta::is_void<Ts> || ...) && std::invocable<Func, Ts...>)
+    decltype(auto) operator()(Func&& func) && {
+        return [&]<size_t... Is>(std::index_sequence<Is...>) {
+            return func(forward<Is>()...);
+        }(std::index_sequence_for<Ts...>{});
+    }
+};
+
+
+template <typename... Ts>
+args(Ts&&...) -> args<Ts...>;
 
 
 namespace impl {
