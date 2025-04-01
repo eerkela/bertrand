@@ -3909,6 +3909,322 @@ namespace impl {
 }
 
 
+/* Hash an arbitrary value.  Equivalent to calling `std::hash<T>{}(...)`, but without
+needing to explicitly specialize `std::hash`. */
+template <meta::hashable T>
+[[nodiscard]] constexpr auto hash(T&& obj) noexcept(meta::nothrow::hashable<T>) {
+    return std::hash<std::decay_t<T>>{}(std::forward<T>(obj));
+}
+
+
+namespace impl {
+
+    /* A functor that implements a universal, non-cryptographic FNV-1a string hashing
+    algorithm, which is stable at both compile time and runtime. */
+    struct fnv1a {
+        static constexpr size_t seed =
+            sizeof(size_t) > 4 ? size_t(14695981039346656037ULL) : size_t(2166136261U);
+
+        static constexpr size_t prime =
+            sizeof(size_t) > 4 ? size_t(1099511628211ULL) : size_t(16777619U);
+
+        [[nodiscard]] static constexpr size_t operator()(
+            const char* str,
+            size_t seed = fnv1a::seed,
+            size_t prime = fnv1a::prime
+        ) noexcept {
+            while (*str) {
+                seed ^= static_cast<size_t>(*str);
+                seed *= prime;
+                ++str;
+            }
+            return seed;
+        }
+    };
+
+    /* Merge several hashes into a single value.  Based on `boost::hash_combine()`:
+    https://www.boost.org/doc/libs/1_86_0/libs/container_hash/doc/html/hash.html#notes_hash_combine */
+    template <meta::convertible_to<size_t>... Hashes>
+    size_t hash_combine(size_t first, Hashes... rest) noexcept {
+        if constexpr (sizeof(size_t) == 4) {
+            constexpr auto mix = [](size_t& seed, size_t value) {
+                seed += 0x9e3779b9 + value;
+                seed ^= seed >> 16;
+                seed *= 0x21f0aaad;
+                seed ^= seed >> 15;
+                seed *= 0x735a2d97;
+                seed ^= seed >> 15;
+            };
+            (mix(first, rest), ...);
+        } else {
+            constexpr auto mix = [](size_t& seed, size_t value) {
+                seed += 0x9e3779b9 + value;
+                seed ^= seed >> 32;
+                seed *= 0xe9846af9b1a615d;
+                seed ^= seed >> 32;
+                seed *= 0xe9846af9b1a615d;
+                seed ^= seed >> 28;
+            };
+            (mix(first, rest), ...);
+        }
+        return first;
+    }
+
+    struct Hash {
+        template <typename T> requires (meta::hashable<T>)
+        static constexpr decltype(auto) operator()(T&& value)
+            noexcept(meta::nothrow::hashable<T>)
+        {
+            return bertrand::hash(std::forward<T>(value));
+        }
+    };
+
+    struct Less {
+        template <typename L, typename R> requires (meta::has_lt<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_lt<L, R>)
+        {
+            return (std::forward<L>(lhs) < std::forward<R>(rhs));
+        }
+    };
+
+    struct LessEqual {
+        template <typename L, typename R> requires (meta::has_le<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_le<L, R>)
+        {
+            return (std::forward<L>(lhs) <= std::forward<R>(rhs));
+        }
+    };
+
+    struct Equal {
+        template <typename L, typename R> requires (meta::has_eq<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_eq<L, R>)
+        {
+            return (std::forward<L>(lhs) == std::forward<R>(rhs));
+        }
+    };
+
+    struct NotEqual {
+        template <typename L, typename R> requires (meta::has_ne<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_ne<L, R>)
+        {
+            return (std::forward<L>(lhs) != std::forward<R>(rhs));
+        }
+    };
+
+    struct GreaterEqual {
+        template <typename L, typename R> requires (meta::has_ge<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_ge<L, R>)
+        {
+            return (std::forward<L>(lhs) >= std::forward<R>(rhs));
+        }
+    };
+
+    struct Greater {
+        template <typename L, typename R> requires (meta::has_gt<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_gt<L, R>)
+        {
+            return (std::forward<L>(lhs) > std::forward<R>(rhs));
+        }
+    };
+
+    struct Spaceship {
+        template <typename L, typename R> requires (meta::has_spaceship<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_spaceship<L, R>)
+        {
+            return (std::forward<L>(lhs) <=> std::forward<R>(rhs));
+        }
+    };
+
+    struct Add {
+        template <typename L, typename R> requires (meta::has_add<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_add<L, R>)
+        {
+            return (std::forward<L>(lhs) + std::forward<R>(rhs));
+        }
+    };
+
+    struct InplaceAdd {
+        template <typename L, typename R> requires (meta::has_iadd<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_iadd<L, R>)
+        {
+            return (std::forward<L>(lhs) += std::forward<R>(rhs));
+        }
+    };
+
+    struct Subtract {
+        template <typename L, typename R> requires (meta::has_sub<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_sub<L, R>)
+        {
+            return (std::forward<L>(lhs) - std::forward<R>(rhs));
+        }
+    };
+
+    struct InplaceSubtract {
+        template <typename L, typename R> requires (meta::has_isub<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_isub<L, R>)
+        {
+            return (std::forward<L>(lhs) -= std::forward<R>(rhs));
+        }
+    };
+
+    struct Multiply {
+        template <typename L, typename R> requires (meta::has_mul<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_mul<L, R>)
+        {
+            return (std::forward<L>(lhs) * std::forward<R>(rhs));
+        }
+    };
+
+    struct InplaceMultiply {
+        template <typename L, typename R> requires (meta::has_imul<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_imul<L, R>)
+        {
+            return (std::forward<L>(lhs) *= std::forward<R>(rhs));
+        }
+    };
+
+    struct Divide {
+        template <typename L, typename R> requires (meta::has_div<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_div<L, R>)
+        {
+            return (std::forward<L>(lhs) / std::forward<R>(rhs));
+        }
+    };
+
+    struct InplaceDivide {
+        template <typename L, typename R> requires (meta::has_idiv<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_idiv<L, R>)
+        {
+            return (std::forward<L>(lhs) /= std::forward<R>(rhs));
+        }
+    };
+
+    struct Modulus {
+        template <typename L, typename R> requires (meta::has_mod<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_mod<L, R>)
+        {
+            return (std::forward<L>(lhs) % std::forward<R>(rhs));
+        }
+    };
+
+    struct InplaceModulus {
+        template <typename L, typename R> requires (meta::has_imod<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_imod<L, R>)
+        {
+            return (std::forward<L>(lhs) %= std::forward<R>(rhs));
+        }
+    };
+
+    struct LeftShift {
+        template <typename L, typename R> requires (meta::has_lshift<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_lshift<L, R>)
+        {
+            return (std::forward<L>(lhs) << std::forward<R>(rhs));
+        }
+    };
+
+    struct InplaceLeftShift {
+        template <typename L, typename R> requires (meta::has_ilshift<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_ilshift<L, R>)
+        {
+            return (std::forward<L>(lhs) <<= std::forward<R>(rhs));
+        }
+    };
+
+    struct RightShift {
+        template <typename L, typename R> requires (meta::has_rshift<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_rshift<L, R>)
+        {
+            return (std::forward<L>(lhs) >> std::forward<R>(rhs));
+        }
+    };
+
+    struct InplaceRightShift {
+        template <typename L, typename R> requires (meta::has_irshift<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_irshift<L, R>)
+        {
+            return (std::forward<L>(lhs) >>= std::forward<R>(rhs));
+        }
+    };
+
+    struct BitwiseAnd {
+        template <typename L, typename R> requires (meta::has_and<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_and<L, R>)
+        {
+            return (std::forward<L>(lhs) & std::forward<R>(rhs));
+        }
+    };
+
+    struct InplaceBitwiseAnd {
+        template <typename L, typename R> requires (meta::has_iand<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_iand<L, R>)
+        {
+            return (std::forward<L>(lhs) &= std::forward<R>(rhs));
+        }
+    };
+
+    struct BitwiseOr {
+        template <typename L, typename R> requires (meta::has_or<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_or<L, R>)
+        {
+            return (std::forward<L>(lhs) | std::forward<R>(rhs));
+        }
+    };
+
+    struct InplaceBitwiseOr {
+        template <typename L, typename R> requires (meta::has_ior<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_ior<L, R>)
+        {
+            return (std::forward<L>(lhs) |= std::forward<R>(rhs));
+        }
+    };
+
+    struct BitwiseXor {
+        template <typename L, typename R> requires (meta::has_xor<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_xor<L, R>)
+        {
+            return (std::forward<L>(lhs) ^ std::forward<R>(rhs));
+        }
+    };
+
+    struct InplaceBitwiseXor {
+        template <typename L, typename R> requires (meta::has_ixor<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_ixor<L, R>)
+        {
+            return (std::forward<L>(lhs) ^= std::forward<R>(rhs));
+        }
+    };
+
+}
+
+
 }  // namespace bertrand
 
 

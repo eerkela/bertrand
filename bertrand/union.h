@@ -8,8 +8,43 @@
 namespace bertrand {
 
 
+/// TODO: the name for this style of typing should be something like "magic" typing
+/// ("magically typed").
+
+
 /* A simple convenience struct implementing the overload pattern for `visit()`-style
-functions. */
+functions.
+
+The intended use of this type is more or less as follows:
+
+    Union<int, std::string> u = "hello, world!";
+    u.visit(visitor{
+        [](int i) { return print(i); },
+        [](const std::string& s) { return print(s); }
+    });
+
+Without the `visitor{}` wrapper, one would need to use a generic lambda or write their
+own elaborated visitor class to handle the various types in the union, which is much
+more verbose.  The `visitor{}` wrapper allows each case to be clearly enumerated and
+handled directly at the call site using lambdas, which may be passed in from elsewhere
+as an expression of the strategy pattern.
+
+Ideally, the `visitor` type could be omitted entirely, yielding a syntax like:
+
+    Union<int, std::string> u = "hello, world!";
+    u.visit({
+        [](int i) { return print(i); },
+        [](const std::string& s) { return print(s); }
+    });
+
+... But this is not currently possible in C++ due to limitations around class template
+argument deduction (CTAD) for function arguments.  Currently, the only workaround is
+to explicitly specify the `visitor` type during the invocation of `visit()`, as shown
+in the first example.  This restriction may be lifted in a future version of C++,
+at which point the second syntax could be standardized as well.  However, there is
+currently no proposal that would allow this in C++26, and it may require universal
+template parameters to function correctly, which is unlikely to be implemented any time
+soon. */
 template <typename... Funcs>
 struct visitor : Funcs... { using Funcs::operator()...; };
 
@@ -51,21 +86,45 @@ namespace meta {
 
 This is similar to `std::variant<Ts...>`, but with the following changes:
 
-    1. `Ts...` may have cvref qualifications, allowing the union to model references
-         and other cvref-qualified types without requiring an extra copy or
-         `std::reference_wrapper` workaround.
+    1.  `Ts...` may have cvref qualifications, allowing the union to model references
+        and other cvref-qualified types without requiring an extra copy or
+        `std::reference_wrapper` workaround.  Note that the union does not extend the
+        lifetime of the referenced objects, so the usual guidelines for references
+        still apply.
+    2.  The union can never be in an invalid state, meaning the index is always within
+        range and points to a valid member of the union.
+    3.  The constructor is more precise than `std::variant`, preferring exact matches
+        if possible, then the most proximal cvref-qualified alternative or base class,
+        with implicit conversions being considered only as a last resort.  If an
+        implicit conversion is selected, then it will always be the leftmost match in
+        the union signature.  The same is true for the default constructor, which
+        always constructs the leftmost default-constructible member.
+    4. `get()` and `get_if()` return `Expected<T, BadUnionAccess>` and `Optional<T>`,
+        respectively, instead of just `T&` or `T*`.  This allows the type system to
+        enforce exhaustive error handling on union access, without substantively
+        changing the familiar variant interface.
+    5.  `visit()` is implemented according to `bertrand::visit()`, which has much
+        better support for partial coverage and heterogenous return types than
+       `std::visit()`, once again with exhaustive error handling via
+        `Expected<..., BadUnionAccess>` and `Optional<...>`.
+    6.  All built-in operators are supported via a monadic interface, forwarding to
+        equivalent visitors.  This allows users to chain unions together in a type-safe
+        and idiomatic manner, again with exhaustive error handling enforced by the
+        compiler.  Any error or empty states will propagate through the chain along
+        with the deduced type information, and must be acknowledged before the result
+        can be safely accessed.
+    7.  An extra `flatten()` method is provided to collapse unions of compatible types
+        into a single common type, where possible.  This can be thought of as an
+        explicit exit point for the monadic interface, allowing users to materialize
+        results into a scalar type when needed.
+    8.  All operations are usable at compile time as long as the underlying types
+        support it, including `get()`, `visit()`, `flatten()`, and all operator
+        overloads.
 
-    /// TODO: rest of documentation, similar to above
-
-
-Unions of this form are monadic in nature, allowing users to chain operations on the
-union in a type-safe manner.  At each step in the chain, the type system will attempt
-to deduce the individual members that support the given operation, and form a new
-union containing the possible results.  If all members return the same type, then that
-type will be returned directly instead.  Additionally, if any type in the union does
-not support the requested operation, the result will be returned as an
-`Expected<T, BadUnionAccess>`, where `T` is the deduced result type, and the error
-state indicates that the active type was invalid. */
+This class is the basis for both `Optional<T>` and `Expected<T, Es...>`, which together
+form a complete, safe, and performant type-erasure mechanism for arbitrary C++ code,
+including value-based exceptions at both compile time and runtime, which must be
+acknowledged through the type system. */
 template <typename... Ts>
     requires (
         sizeof...(Ts) > 1 &&
@@ -381,9 +440,9 @@ namespace impl {
 
         template <typename R, size_t I, typename F, typename... A>
             requires (
-                meta::visitor<F, A...> &&
                 I < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<I, A...>>
+                meta::is<T, meta::unpack_type<I, A...>> &&
+                meta::visitor<F, A...>
             )
         static constexpr R dispatch(F&& func, A&&... args)
             noexcept(meta::nothrow::visitor<F, A...>)
@@ -419,63 +478,64 @@ namespace impl {
 
         template <typename R, size_t I, typename F, typename... A>
             requires (
-                meta::visitor<F, A...> &&
                 I < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<I, A...>>
+                meta::is<T, meta::unpack_type<I, A...>> &&
+                meta::visitor<F, A...>
             )
         static constexpr R dispatch(F&& func, A&&... args)
             noexcept(meta::nothrow::visitor<F, A...>)
         {
             // Build a vtable that dispatches to all possible alternatives
-            static constexpr auto vtable = []<size_t... Is>(std::index_sequence<Is...>) {
+            static constexpr auto vtable = []<
+                size_t... Prev,
+                size_t... Next,
+                size_t... Is
+            >(
+                std::index_sequence<Prev...>,
+                std::index_sequence<Next...>,
+                std::index_sequence<Is...>
+            ) {
                 /// NOTE: func and args are forwarded as lvalues in order to avoid
                 /// unnecessary copies/moves within the dispatch logic.  They are
-                /// converted back to their proper categories when recurring
+                /// converted back to their proper categories upon recursion
                 return std::array{+[](
                     meta::as_lvalue<F> func,
                     meta::as_lvalue<A>... args
                 ) noexcept(meta::nothrow::visitor<F, A...>) -> R {
-                    return []<size_t... Prev, size_t... Next>(
-                        std::index_sequence<Prev...>,
-                        std::index_sequence<Next...>,
-                        auto&& func,
-                        auto&&... args
-                    ) {
-                        if constexpr (meta::invocable<
-                            F,
-                            meta::unpack_type<Prev, A...>...,
-                            decltype((meta::unpack_arg<I>(
-                                std::forward<A>(args)...
-                            ).template get<Is>())),
-                            meta::unpack_type<I + 1 + Next, A...>...
-                        >) {
-                            return visit_impl<R, I + 1>(
-                                std::forward<F>(func),
-                                meta::unpack_arg<Prev>(
-                                    std::forward<A>(args)...
-                                )...,
-                                meta::unpack_arg<I>(
-                                    std::forward<A>(args)...
-                                ).template get<Is>(),
-                                meta::unpack_arg<I + 1 + Next>(
-                                    std::forward<A>(args)...
-                                )...
-                            );
-                        } else {
-                            /// TODO: elaborate the error message to indicate which
-                            /// types failed to match the visitor
-                            return BadUnionAccess(
-                                "Failed to invoke visitor for union type"
-                            );
-                        }
-                    }(
-                        std::make_index_sequence<I>{},
-                        std::make_index_sequence<sizeof...(A) - I - 1>{},
-                        std::forward<F>(func),
+                    using type = decltype((meta::unpack_arg<I>(
                         std::forward<A>(args)...
-                    );
+                    ).template get<Is>()));
+                    if constexpr (meta::visitor<
+                        F,
+                        meta::unpack_type<Prev, A...>...,
+                        type,
+                        meta::unpack_type<I + 1 + Next, A...>...
+                    >) {
+                        return visit_impl<R, I + 1>(
+                            std::forward<F>(func),
+                            meta::unpack_arg<Prev>(
+                                std::forward<A>(args)...
+                            )...,
+                            meta::unpack_arg<I>(
+                                std::forward<A>(args)...
+                            ).template get<Is>(),
+                            meta::unpack_arg<I + 1 + Next>(
+                                std::forward<A>(args)...
+                            )...
+                        );
+                    } else if constexpr (meta::Expected<R>) {
+                        /// TODO: elaborate the error message to better indicate which
+                        /// types failed to match the visitor
+                        return BadUnionAccess(
+                            "Failed to invoke visitor for union type"
+                        );
+                    }
                 }...};
-            }(std::make_index_sequence<N>{});
+            }(
+                std::make_index_sequence<I>{},
+                std::make_index_sequence<sizeof...(A) - I - 1>{},
+                std::make_index_sequence<N>{}
+            );
 
             // search the vtable for the actual type, and recur for the next
             // argument until all arguments have been fully deduced
@@ -514,69 +574,6 @@ namespace impl {
         static constexpr bool enable = true;
         using type = T;
         using pack = _pack<0>::type;
-    };
-
-    struct Less {
-        template <typename L, typename R> requires (meta::has_lt<L, R>)
-        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
-            noexcept(meta::nothrow::has_lt<L, R>)
-        {
-            return (std::forward<L>(lhs) < std::forward<R>(rhs));
-        }
-    };
-
-    struct LessEqual {
-        template <typename L, typename R> requires (meta::has_le<L, R>)
-        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
-            noexcept(meta::nothrow::has_le<L, R>)
-        {
-            return (std::forward<L>(lhs) <= std::forward<R>(rhs));
-        }
-    };
-
-    struct Equal {
-        template <typename L, typename R> requires (meta::has_eq<L, R>)
-        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
-            noexcept(meta::nothrow::has_eq<L, R>)
-        {
-            return (std::forward<L>(lhs) == std::forward<R>(rhs));
-        }
-    };
-
-    struct NotEqual {
-        template <typename L, typename R> requires (meta::has_ne<L, R>)
-        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
-            noexcept(meta::nothrow::has_ne<L, R>)
-        {
-            return (std::forward<L>(lhs) != std::forward<R>(rhs));
-        }
-    };
-
-    struct GreaterEqual {
-        template <typename L, typename R> requires (meta::has_ge<L, R>)
-        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
-            noexcept(meta::nothrow::has_ge<L, R>)
-        {
-            return (std::forward<L>(lhs) >= std::forward<R>(rhs));
-        }
-    };
-
-    struct Greater {
-        template <typename L, typename R> requires (meta::has_gt<L, R>)
-        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
-            noexcept(meta::nothrow::has_gt<L, R>)
-        {
-            return (std::forward<L>(lhs) > std::forward<R>(rhs));
-        }
-    };
-
-    struct Spaceship {
-        template <typename L, typename R> requires (meta::has_spaceship<L, R>)
-        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
-            noexcept(meta::nothrow::has_spaceship<L, R>)
-        {
-            return (std::forward<L>(lhs) <=> std::forward<R>(rhs));
-        }
     };
 
 }
@@ -652,12 +649,12 @@ private:
     // implicit conversion to the union type will make a best effort to find the
     // narrowest possible match from the available options
     template <typename T, typename result, typename... Us>
-    struct _conversion_type { using type = result; };
+    struct _proximal_type { using type = result; };
     template <typename T, typename result, typename U, typename... Us>
-    struct _conversion_type<T, result, U, Us...> {
+    struct _proximal_type<T, result, U, Us...> {
         // no match at this index: advance U
         template <typename V>
-        struct filter { using type = _conversion_type<T, result, Us...>::type; };
+        struct filter { using type = _proximal_type<T, result, Us...>::type; };
 
         // prefer the most derived and least qualified matching alternative, with
         // lvalues binding to lvalues and prvalues, and rvalues binding to rvalues and
@@ -686,14 +683,30 @@ private:
             struct replace<R> { using type = U; };
 
             // recur with updated result
-            using type = _conversion_type<T, typename replace<result>::type, Us...>::type;
+            using type = _proximal_type<T, typename replace<result>::type, Us...>::type;
         };
 
         // execute the metafunction
         using type = filter<T>::type;
     };
     template <typename T>
-    using conversion_type = _conversion_type<T, void, Ts...>::type;
+    using proximal_type = _proximal_type<T, void, Ts...>::type;
+
+    template <typename T, typename S>
+    struct _conversion_type { using type = S; };
+    template <typename T, meta::is_void S>
+    struct _conversion_type<T, S> {
+        template <typename... Us>
+        struct convert { using type = void; };
+        template <typename U, typename... Us>
+        struct convert<U, Us...> { using type = convert<Us...>::type; };
+        template <typename U, typename... Us>
+            requires (!meta::lvalue<U> && meta::convertible_to<T, U>)
+        struct convert<U, Us...> { using type = U; };
+        using type = convert<Ts...>::type;
+    };
+    template <typename T>
+    using conversion_type = _conversion_type<T, proximal_type<T>>::type;
 
     // recursive C unions are the only way to allow Union<Ts...> to be used at compile
     // time without triggering the compiler's UB filters
@@ -716,6 +729,7 @@ private:
         ref curr;
         storage<Us...> rest;
 
+        // base default constructor
         constexpr storage()
             noexcept(meta::nothrow::default_constructible<default_type>)
             requires(std::same_as<U, default_type>)
@@ -723,6 +737,7 @@ private:
             curr()  // not a reference type by definition
         {}
 
+        // recursive default constructor
         constexpr storage()
             noexcept(meta::nothrow::default_constructible<default_type>)
             requires(!std::same_as<U, default_type>)
@@ -730,29 +745,63 @@ private:
             rest()
         {}
 
-        template <typename T> requires (std::same_as<U, conversion_type<T>>)
+        // base proximal constructor
+        template <typename T> requires (std::same_as<U, proximal_type<T>>)
         constexpr storage(T&& value) noexcept(
             noexcept(ref(std::forward<T>(value)))
         ) :
             curr(std::forward<T>(value))
         {}
 
-        template <typename T> requires (std::same_as<U, conversion_type<T>> && meta::lvalue<U>)
+        // base proximal constructor for lvalue references
+        template <typename T>
+            requires (std::same_as<U, proximal_type<T>> && meta::lvalue<U>)
         constexpr storage(T&& value) noexcept(
             noexcept(ref(&value))
         ) :
             curr(&value)
         {}
 
-        template <typename T> requires (!std::same_as<U, conversion_type<T>>)
+        // recursive proximal constructor
+        template <typename T>
+            requires (
+                !meta::is_void<proximal_type<T>> &&
+                !std::same_as<U, proximal_type<T>>
+            )
         constexpr storage(T&& value) noexcept(
             noexcept(storage<Us...>(std::forward<T>(value)))
         ) :
             rest(std::forward<T>(value))
         {}
 
+        // base converting constructor
+        template <typename T>
+            requires (
+                meta::is_void<proximal_type<T>> &&
+                std::same_as<U, conversion_type<T>>
+            )
+        constexpr storage(T&& value) noexcept(
+            noexcept(ref(std::forward<T>(value)))
+        ) :
+            curr(std::forward<T>(value))
+        {}
+
+        // recursive converting constructor
+        template <typename T>
+            requires (
+                meta::is_void<proximal_type<T>> &&
+                !std::same_as<U, conversion_type<T>>
+            )
+        constexpr storage(T&& value) noexcept(
+            noexcept(storage<Us...>(std::forward<T>(value)))
+        ) :
+            rest(std::forward<T>(value))
+        {}
+
+        // destructor
         constexpr ~storage() noexcept {}
 
+        // get() implementation, accounting for lvalues and recursion
         template <size_t I>
         constexpr decltype(auto) get(this auto&& self) noexcept {
             if constexpr (I == 0) {
@@ -925,7 +974,7 @@ private:
     static constexpr bool default_constructible = meta::not_void<default_type>;
 
     template <typename T>
-    static constexpr bool bind_member = meta::not_void<conversion_type<T>>;
+    static constexpr bool can_convert = meta::not_void<conversion_type<T>>;
 
     /// NOTE: copy/move constructors, destructors, and swap operators are implemented
     /// using manual vtables rather than relying on visit() in order to avoid possible
@@ -1098,9 +1147,9 @@ public:
     implicitly converted from the input type.  This will prefer exact matches or
     differences in qualifications (preferring the least qualified) first, then
     inheritance relationships (preferring the most derived and least qualified), and
-    finally implicit conversions (preferring the first, least qualified match).  If no
-    such type exists, the conversion constructor is disabled. */
-    template <typename T> requires (bind_member<T>)
+    finally implicit conversions (preferring the first match and ignoring lvalues).  If
+    no such type exists, the conversion constructor is disabled. */
+    template <typename T> requires (can_convert<T>)
     constexpr Union(T&& v)
         noexcept(meta::nothrow::convertible_to<T, conversion_type<T>>)
     :
@@ -1597,6 +1646,12 @@ constexpr void swap(Expected<T, E>& a, Expected<T, E>& b) noexcept(
 }
 
 
+/// TODO: all the other unary operators for visitable objects, like pos, neg, not,
+/// increment, decrement.  Possibly others
+
+
+
+
 template <typename L, typename R>
     requires (
         (meta::visitable<L> || meta::visitable<R>) &&
@@ -1703,75 +1758,243 @@ constexpr decltype(auto) operator<=>(L&& lhs, R&& rhs)
 }
 
 
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::Add, L, R>)
+constexpr decltype(auto) operator+(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::Add, L, R>)
+{
+    return visit(
+        impl::Add{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
 
 
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::InplaceAdd, L, R>)
+constexpr decltype(auto) operator+=(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::InplaceAdd, L, R>)
+{
+    return visit(
+        impl::InplaceAdd{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
 
 
-inline void test() {
-    {
-        static constexpr int i = 42;
-        static constexpr Union<int, const int&, std::string> u = std::string("abc");
-        static constexpr Union<int, const int&, std::string> u2 = u;
-        constexpr Union u3 = std::move(Union{u});
-        constexpr decltype(auto) x = u.get<2>();
-        static_assert(u.index() == 2);
-        static_assert(u.get<u.index()>() == "abc");
-        static_assert(u2.get<2>() == "abc");
-        static_assert(u3.get<2>() == "abc");
-        static_assert(u.get<std::string>() == "abc");
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::Subtract, L, R>)
+constexpr decltype(auto) operator-(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::Subtract, L, R>)
+{
+    return visit(
+        impl::Subtract{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
 
-        Union<int, const int&, std::string> u4 = std::string("abc");
-        Union<int, const int&, std::string> u5 = u4;
-        u4 = u;
-        u4 = std::move(u5);
-    }
 
-    {
-        static constexpr int value = 2;
-        static constexpr Union<int, const int&> val = value;
-        static constexpr Union<int, const int&> val2 = val;
-        static_assert(val == val2);
-        static constexpr auto f = [](int x, int y) noexcept {
-            return x + y;
-        };
-        static_assert(val.get<val.index()>() == 2);
-        static_assert(visit(f, val, 1) == 3);
-        static_assert(val.visit(f, 1) == 3);
-        static_assert(noexcept(visit(f, val, 1) == 3));
-        static_assert(noexcept(val.visit(f, 1) == 3));
-        static_assert(val.flatten() == 2);
-        static_assert(noexcept(val.flatten() == 2));
-        static_assert(double(val) == 2.0);
-        static_assert(val.index() == 1);
-        static_assert(val.holds_alternative<const int&>());
-        static_assert(*val.get_if<val.index()>() == 2);
-        decltype(auto) v = val.get<val.index()>();
-        decltype(auto) v2 = val.get_if<0>();
-        decltype(auto) v3 = val.visit(f, 1);
-    }
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::InplaceSubtract, L, R>)
+constexpr decltype(auto) operator-=(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::InplaceSubtract, L, R>)
+{
+    return visit(
+        impl::InplaceSubtract{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
 
-    {
-        static constexpr Union<int, double> u = 3.14;
-        static constexpr auto f = []<typename X, typename Y>(X&& x, Y&& y) {
-            return std::forward<X>(x) + std::forward<Y>(y);
-        };
-        static_assert(u.holds_alternative<double>());
-        static_assert(visit(f, u, 1).holds_alternative<double>());
-        decltype(auto) value = visit(f, u, 1);
-    }
 
-    {
-        static constexpr std::string_view str = "abc";
-        constexpr Optional<const std::string_view&> o = str;
-        constexpr auto o2 = o.and_then([](std::string_view s) {
-            return s.size();
-        });
-        static_assert(o2.value() == 3);
-        static_assert(o.value_or("def") == "abc");
-        static_assert(o->size() == 3);
-        decltype(auto) ov = *o;
-        decltype(auto) ov2 = *Optional<std::string_view>{"abc", 3};
-    }
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::Multiply, L, R>)
+constexpr decltype(auto) operator*(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::Multiply, L, R>)
+{
+    return visit(
+        impl::Multiply{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
+
+
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::InplaceMultiply, L, R>)
+constexpr decltype(auto) operator*=(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::InplaceMultiply, L, R>)
+{
+    return visit(
+        impl::InplaceMultiply{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
+
+
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::Divide, L, R>)
+constexpr decltype(auto) operator/(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::Divide, L, R>)
+{
+    return visit(
+        impl::Divide{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
+
+
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::InplaceDivide, L, R>)
+constexpr decltype(auto) operator/=(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::InplaceDivide, L, R>)
+{
+    return visit(
+        impl::InplaceDivide{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
+
+
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::Modulus, L, R>)
+constexpr decltype(auto) operator%(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::Modulus, L, R>)
+{
+    return visit(
+        impl::Modulus{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
+
+
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::InplaceModulus, L, R>)
+constexpr decltype(auto) operator%=(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::InplaceModulus, L, R>)
+{
+    return visit(
+        impl::InplaceModulus{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
+
+
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::BitwiseAnd, L, R>)
+constexpr decltype(auto) operator&(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::BitwiseAnd, L, R>)
+{
+    return visit(
+        impl::BitwiseAnd{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
+
+
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::InplaceBitwiseAnd, L, R>)
+constexpr decltype(auto) operator&=(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::InplaceBitwiseAnd, L, R>)
+{
+    return visit(
+        impl::InplaceBitwiseAnd{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
+
+
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::BitwiseOr, L, R>)
+constexpr decltype(auto) operator|(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::BitwiseOr, L, R>)
+{
+    return visit(
+        impl::BitwiseOr{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
+
+
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::InplaceBitwiseOr, L, R>)
+constexpr decltype(auto) operator|=(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::InplaceBitwiseOr, L, R>)
+{
+    return visit(
+        impl::InplaceBitwiseOr{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
+
+
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::BitwiseXor, L, R>)
+constexpr decltype(auto) operator^(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::BitwiseXor, L, R>)
+{
+    return visit(
+        impl::BitwiseXor{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
+
+
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::InplaceBitwiseXor, L, R>)
+constexpr decltype(auto) operator^=(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::InplaceBitwiseXor, L, R>)
+{
+    return visit(
+        impl::InplaceBitwiseXor{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
 }
 
 
@@ -1782,46 +2005,91 @@ namespace std {
 
     /// TODO: variant_size and variant_alternative?
 
-    template <bertrand::meta::Union T>
-        /// TODO: require at least one member of `T` to be hashable
+    template <bertrand::meta::visitable T>
+        requires (bertrand::meta::visitor<bertrand::impl::Hash, T>)
     struct hash<T> {
         static constexpr auto operator()(auto&& value) noexcept(
-            /// TODO: figure out a proper noexcept guarantee
-            false
+            bertrand::meta::nothrow::visitor<bertrand::impl::Hash, T>
         ) {
-            /// TODO: determine the common hash result for all types in the union.
-            return std::forward<decltype(value)>(value).visit([](auto&& value) -> size_t {
-                if constexpr (bertrand::meta::hashable<decltype(value)>) {
-                    return std::hash<std::decay_t<decltype(value)>>{}(
-                        std::forward<decltype(value)>(value)
-                    );
-                } else {
-                    /// TODO: elaborate the error message to include the type of the value
-                    throw bertrand::TypeError("type is not hashable");
-                }
+            return bertrand::visit(
+                bertrand::impl::Hash{},
+                std::forward<decltype(value)>(value)
+            );
+        }
+    };
+
+}
+
+
+namespace bertrand {
+
+    inline void test() {
+        {
+            static constexpr int i = 42;
+            static constexpr Union<int, const int&, std::string> u = "abc";
+            static constexpr Union<int, const int&, std::string> u2 = u;
+            constexpr Union u3 = std::move(Union{u});
+            constexpr decltype(auto) x = u.get<2>();
+            static_assert(u.index() == 2);
+            static_assert(u.get<u.index()>() == "abc");
+            static_assert(u2.get<2>() == "abc");
+            static_assert(u3.get<2>() == "abc");
+            static_assert(u.get<std::string>() == "abc");
+    
+            Union<int, const int&, std::string> u4 = "abc";
+            Union<int, const int&, std::string> u5 = u4;
+            u4 = u;
+            u4 = std::move(u5);
+        }
+    
+        {
+            static constexpr int value = 2;
+            static constexpr Union<int, const int&> val = value;
+            static constexpr Union<int, const int&> val2 = val;
+            static_assert(val <= 2);
+            static_assert((val + 1) / val2 == 1);
+            static constexpr auto f = [](int x, int y) noexcept {
+                return x + y;
+            };
+            static_assert(val.get<val.index()>() == 2);
+            static_assert(visit(f, val, 1) == 3);
+            static_assert(val.visit(f, 1) == 3);
+            static_assert(noexcept(visit(f, val, 1) == 3));
+            static_assert(noexcept(val.visit(f, 1) == 3));
+            static_assert(val.flatten() == 2);
+            static_assert(noexcept(val.flatten() == 2));
+            static_assert(double(val) == 2.0);
+            static_assert(val.index() == 1);
+            static_assert(val.holds_alternative<const int&>());
+            static_assert(*val.get_if<val.index()>() == 2);
+            decltype(auto) v = val.get<val.index()>();
+            decltype(auto) v2 = val.get_if<0>();
+            decltype(auto) v3 = val.visit(f, 1);
+        }
+    
+        {
+            static constexpr Union<int, double> u = 3.14;
+            static constexpr auto f = []<typename X, typename Y>(X&& x, Y&& y) {
+                return std::forward<X>(x) + std::forward<Y>(y);
+            };
+            static_assert(u.holds_alternative<double>());
+            static_assert(visit(f, u, 1).holds_alternative<double>());
+            decltype(auto) value = visit(f, u, 1);
+        }
+    
+        {
+            static constexpr std::string_view str = "abc";
+            constexpr Optional<const std::string_view&> o = str;
+            constexpr auto o2 = o.and_then([](std::string_view s) {
+                return s.size();
             });
+            static_assert(o2.value() == 3);
+            static_assert(o.value_or("def") == "abc");
+            static_assert(o->size() == 3);
+            decltype(auto) ov = *o;
+            decltype(auto) ov2 = *Optional<std::string_view>{"abc", 3};
         }
-    };
-
-    template <bertrand::meta::Optional T>
-    struct hash<T> {
-        static constexpr auto operator()(auto&& value) noexcept(
-            /// TODO: figure out a proper noexcept guarantee
-            false
-        ) {
-            /// TODO: delegate to hash<Union<...>>?
-        }
-    };
-
-    template <bertrand::meta::Expected T>
-    struct hash<T> {
-        static constexpr auto operator()(auto&& value) noexcept(
-            /// TODO: figure out a proper noexcept guarantee
-            false
-        ) {
-            /// TODO: delegate to hash<Union<...>>?
-        }
-    };
+    }
 
 }
 

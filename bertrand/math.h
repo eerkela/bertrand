@@ -10,57 +10,6 @@ namespace bertrand {
 
 namespace impl {
 
-    /* A functor that implements a universal, non-cryptographic FNV-1a string hashing
-    algorithm, which is stable at both compile time and runtime. */
-    struct fnv1a {
-        static constexpr size_t seed =
-            sizeof(size_t) > 4 ? size_t(14695981039346656037ULL) : size_t(2166136261U);
-
-        static constexpr size_t prime =
-            sizeof(size_t) > 4 ? size_t(1099511628211ULL) : size_t(16777619U);
-
-        [[nodiscard]] static constexpr size_t operator()(
-            const char* str,
-            size_t seed = fnv1a::seed,
-            size_t prime = fnv1a::prime
-        ) noexcept {
-            while (*str) {
-                seed ^= static_cast<size_t>(*str);
-                seed *= prime;
-                ++str;
-            }
-            return seed;
-        }
-    };
-
-    /* Merge several hashes into a single value.  Based on `boost::hash_combine()`:
-    https://www.boost.org/doc/libs/1_86_0/libs/container_hash/doc/html/hash.html#notes_hash_combine */
-    template <meta::convertible_to<size_t>... Hashes>
-    size_t hash_combine(size_t first, Hashes... rest) noexcept {
-        if constexpr (sizeof(size_t) == 4) {
-            constexpr auto mix = [](size_t& seed, size_t value) {
-                seed += 0x9e3779b9 + value;
-                seed ^= seed >> 16;
-                seed *= 0x21f0aaad;
-                seed ^= seed >> 15;
-                seed *= 0x735a2d97;
-                seed ^= seed >> 15;
-            };
-            (mix(first, rest), ...);
-        } else {
-            constexpr auto mix = [](size_t& seed, size_t value) {
-                seed += 0x9e3779b9 + value;
-                seed ^= seed >> 32;
-                seed *= 0xe9846af9b1a615d;
-                seed ^= seed >> 32;
-                seed *= 0xe9846af9b1a615d;
-                seed ^= seed >> 28;
-            };
-            (mix(first, rest), ...);
-        }
-        return first;
-    }
-
     template <typename T>
     concept _check_for_zero_division = DEBUG && requires(const T& rhs) {
         { rhs == 0 } -> meta::explicitly_convertible_to<bool>;
@@ -756,14 +705,6 @@ namespace impl {
     }
 
 }  // namespace impl
-
-
-/* Hash an arbitrary value.  Equivalent to calling `std::hash<T>{}(...)`, but without
-needing to explicitly specialize `std::hash`. */
-template <meta::hashable T>
-[[nodiscard]] constexpr auto hash(T&& obj) noexcept(meta::nothrow::hashable<T>) {
-    return std::hash<std::decay_t<T>>{}(std::forward<T>(obj));
-}
 
 
 /* A generalized absolute value operator.  The behavior of this operator is controlled
