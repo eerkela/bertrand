@@ -33,6 +33,9 @@ namespace impl {
 namespace meta {
 
     template <typename T>
+    concept visitable = impl::visitable<T>::enable;
+
+    template <typename T>
     concept Union = inherits<T, impl::union_tag>;
 
     template <typename T>
@@ -140,7 +143,7 @@ namespace meta {
     namespace detail {
 
         template <typename F, typename... Args>
-        struct exhaustive {
+        struct visit {
             // 1. Convert arguments to a 2D pack of packs representing all possible
             //    permutations of the union types.
             template <typename...>
@@ -153,18 +156,33 @@ namespace meta {
             };
             using permutations = permute<Args...>::type;
 
-            // 2. Analyze each permutation and assert that the function is invocable
-            //    with the given arguments
+            // 2. Analyze each permutation.  If at least one permutation is valid, then
+            //    `enable` will evaluate to true.  If not all permutations are valid,
+            //    then `type` will evaluate to `Expected<R, BadUnionAccess>`, where `R`
+            //    is the deduced return type.  If some valid permutations return `void`
+            //    and others return non-`void`, then `R` will deduce to `Optional<R>`
+            //    and recur for `R`.  If all valid non-void permutations return the
+            //    same type, then `R` will deduce to that type and terminate.
+            //    Otherwise, it evaluates to `Union<Rs...>`, where `Rs...` represents
+            //    the unique result types.  In the worst case, this collapses to
+            //    `Expected<Optional<Union<Rs...>>, BadUnionAccess>` for a visitor
+            //    that is not exhaustive over all possible permutations, in which some
+            //    permutations return void, and others return heterogenous types.
+            //    Users of such a visitor would be forced to acknowledge that the
+            //    active member may not be valid, then that it may not have returned a
+            //    result, and then precisely what type of result was returned, in that
+            //    order.  Typical exhaustive visitors would collapse to just a single
+            //    type, just like `std::visit()`.
             template <typename>
             struct check;
             template <typename... permutations>
             struct check<bertrand::args<permutations...>> {
-                // 2a. Determine if the function is invocable with the permuted
-                //     arguments and get its return type if so.
+                // 3. Determine if the function is invocable with the permuted
+                //    arguments, and get its return type/noexcept status if so.
                 template <typename>
                 struct invoke {
                     static constexpr bool enable = false;
-                    static constexpr bool nothrow = false;
+                    static constexpr bool nothrow = true;
                 };
                 template <typename... A> requires (meta::invocable<F, A...>)
                 struct invoke<bertrand::args<A...>> {
@@ -173,112 +191,156 @@ namespace meta {
                     using type = meta::invoke_type<F, A...>;
                 };
 
-                // 2b. Apply (2a) to all permutations to determine validity of visitor
-                static constexpr bool enable = (invoke<permutations>::enable && ...);
-                static constexpr bool nothrow = (invoke<permutations>::nothrow && ...);
+                // 5. Base case - no valid permutations
+                template <typename...>
+                struct evaluate {
+                    static constexpr bool enable = false;
+                    static constexpr bool exhaustive = false;
+                    static constexpr bool nothrow = true;
+                    using type = void;
+                };
 
-                // 2c. Apply (2a) to all permutations to deduce proper return type
-                template <typename... Ps>
-                struct deduce { using type = void; };
-                template <typename... Ps> requires (enable)
-                struct deduce<Ps...> {
-                    // Gather the unique return types for each permutation of the
-                    // visitor function, filtering out void and duplicate types.
-                    // If a void type is present alongside a non-void type, then the
-                    // result will be returned as an optional.
-                    template <bool, typename, typename...>
-                    struct filter;
-                    template <bool opt, typename... out, typename T, typename... Ts>
-                    struct filter<opt, bertrand::args<out...>, T, Ts...> {
+                // 6.  Recursive case - apply (3) to filter out invalid permutations
+                template <typename... valid, typename P, typename... Ps>
+                struct evaluate<bertrand::args<valid...>, P, Ps...> {
+                    template <typename T>
+                    struct validate {
+                        using recur = evaluate<bertrand::args<valid...>, Ps...>;
+                    };
+                    template <typename T> requires (invoke<P>::enable)
+                    struct validate<T> {
+                        using recur = evaluate<bertrand::args<valid..., P>, Ps...>;
+                    };
+                    static constexpr bool enable = validate<P>::recur::enable;
+                    static constexpr bool exhaustive = validate<P>::recur::exhaustive;
+                    static constexpr bool nothrow = validate<P>::recur::nothrow;
+                    using type = validate<P>::recur::type;
+                };
+
+                // 7. Base case - some valid permutations.  Proceed to deduce an
+                //    appropriate return type.
+                template <typename... valid> requires (sizeof...(valid) > 0)
+                struct evaluate<bertrand::args<valid...>> {
+                    static constexpr bool enable = true;
+                    static constexpr bool exhaustive =
+                        sizeof...(valid) == sizeof...(permutations);
+                    static constexpr bool nothrow = (invoke<valid>::nothrow && ...);
+
+                    // 8. Base case - all valid permutations return void
+                    template <bool, typename...>
+                    struct deduce { using type = void; };
+
+                    // 9. Recursive case - filter out void and duplicate types
+                    template <bool opt, typename... unique, typename T, typename... Ts>
+                    struct deduce<opt, bertrand::args<unique...>, T, Ts...> {
                         template <typename U>
-                        struct recur {
-                            using type = filter<
+                        struct filter {
+                            using type = deduce<
                                 opt || meta::is_void<U>,
-                                bertrand::args<out...>,
+                                bertrand::args<unique...>,
                                 Ts...
                             >::type;
                         };
                         template <meta::not_void U>
-                            requires (meta::index_of<U, out...> == sizeof...(out))
-                        struct recur<U> {
-                            using type = filter<
+                            requires (meta::index_of<U, unique...> == sizeof...(unique))
+                        struct filter<U> {
+                            using type = deduce<
                                 opt,
-                                bertrand::args<out..., U>,
+                                bertrand::args<unique..., U>,
                                 Ts...
                             >::type;
                         };
-                        using type = recur<T>::type;
+                        using type = filter<T>::type;
                     };
 
-                    // all results have been filtered - form the final return type
-                    template <bool opt, typename... out>
-                    struct filter<opt, bertrand::args<out...>> {
-                        // only void
-                        template <typename... Ts>
-                        struct result { using type = void; };
-
-                        // one unique result
-                        template <typename T>
-                        struct result<T> { using type = T; };
-                        template <typename T> requires (opt)
-                        struct result<T> { using type = bertrand::Optional<T>; };
-
-                        // more than one unique result
-                        template <typename T1, typename T2, typename... Ts>
-                        struct result<T1, T2, Ts...> {
-                            using type = bertrand::Union<T1, T2, Ts...>;
-                        };
-                        template <typename T1, typename T2, typename... Ts> requires (opt)
-                        struct result<T1, T2, Ts...> {
-                            using type = bertrand::Optional<bertrand::Union<T1, T2, Ts...>>;
-                        };
-
-                        using type = result<out...>::type;
+                    // 10. Base case - exactly one unique return type
+                    template <typename T>
+                    struct deduce<false, bertrand::args<T>> { using type = T; };
+                    template <typename T>
+                    struct deduce<true, bertrand::args<T>> {
+                        using type = bertrand::Optional<T>;
                     };
 
-                    using type = filter<
+                    // 11. Base case - more than one unique return type
+                    template <typename... Ts> requires (sizeof...(Ts) > 1)
+                    struct deduce<false, bertrand::args<Ts...>> {
+                        using type = bertrand::Union<Ts...>;
+                    };
+                    template <typename... Ts> requires (sizeof...(Ts) > 1)
+                    struct deduce<true, bertrand::args<Ts...>> {
+                        using type = bertrand::Optional<bertrand::Union<Ts...>>;
+                    };
+
+                    // 12. execute `deduce<>` and wrap with an `Expected` if not
+                    //     exhaustive
+                    using result = deduce<
                         false,
                         bertrand::args<>,
-                        typename invoke<Ps>::type...
-                    >::type;
+                        typename invoke<valid>::type...
+                    >;
+                    using type = std::conditional_t<
+                        exhaustive,
+                        typename result::type,
+                        bertrand::Expected<typename result::type, BadUnionAccess>
+                    >;
                 };
-                using type = deduce<permutations...>::type;
+
+                // 13. execute `evaluate<>` to explore permutations
+                using result = evaluate<bertrand::args<>, permutations...>;
+                static constexpr bool enable = result::enable;
+                static constexpr bool exhaustive = result::exhaustive;
+                static constexpr bool nothrow = result::nothrow;
+                using type = result::type;
             };
 
+            // 14. Lift results from `check<>` into outer trait
             static constexpr bool enable = check<permutations>::enable;
+            static constexpr bool exhaustive = check<permutations>::exhaustive;
             static constexpr bool nothrow = check<permutations>::nothrow;
             using type = check<permutations>::type;
         };
 
     }
 
-    /* A visitor function can only be applied to a set of arguments if it is invocable
-    with all possible permutations of the component unions. */
+    /* A visitor function can only be applied to a set of arguments if at least one
+    permutation of the union types are valid. */
     template <typename F, typename... Args>
-    concept exhaustive = detail::exhaustive<F, Args...>::enable;
+    concept visitor = detail::visit<F, Args...>::enable;
 
-    /* A visitor function returns the common type to which all permutation results
-    are mutually convertible. */
-    template <typename F, typename... Args> requires (exhaustive<F, Args...>)
-    using visit_type = detail::exhaustive<F, Args...>::type;
+    /* Specifies that all permutations of the union types must be valid for the visitor
+    function. */
+    template <typename F, typename... Args>
+    concept exhaustive = detail::visit<F, Args...>::exhaustive;
 
+    /* A visitor function returns a new union of all possible results for each
+    permutation of the input unions.  If all permutations return the same type, then
+    that type is returned instead.  If some of the permutations return `void` and
+    others do not, then the result will be wrapped in an `Optional`. */
+    template <typename F, typename... Args> requires (visitor<F, Args...>)
+    using visit_type = detail::visit<F, Args...>::type;
+
+    /* Tests whether the return type of a visitor is implicitly convertible to the
+    expected type. */
     template <typename Ret, typename F, typename... Args>
     concept visit_returns =
-        exhaustive<F, Args...> && convertible_to<visit_type<F, Args...>, Ret>;
+        visitor<F, Args...> && convertible_to<visit_type<F, Args...>, Ret>;
 
     namespace nothrow {
 
         template <typename F, typename... Args>
-        concept exhaustive =
-            meta::exhaustive<F, Args...> &&
-            detail::exhaustive<F, Args...>::nothrow;
+        concept visitor =
+            meta::visitor<F, Args...> && detail::visit<F, Args...>::nothrow;
 
-        template <typename F, typename... Args> requires (exhaustive<F, Args...>)
+        template <typename F, typename... Args>
+        concept exhaustive =
+            meta::exhaustive<F, Args...> && detail::visit<F, Args...>::nothrow;
+
+        template <typename F, typename... Args> requires (visitor<F, Args...>)
         using visit_type = meta::visit_type<F, Args...>;
 
         template <typename Ret, typename F, typename... Args>
         concept visit_returns =
-            exhaustive<F, Args...> && convertible_to<visit_type<F, Args...>, Ret>;
+            visitor<F, Args...> && convertible_to<visit_type<F, Args...>, Ret>;
 
     }
 
@@ -292,19 +354,20 @@ namespace impl {
     types.  When `visit()` is executed, it equates to a sequence of indices into these
     vtables (one for each union), similar to a virtual method call, and with comparable
     overhead. */
-    template <size_t I, typename F, typename... A> requires (meta::exhaustive<F, A...>)
-    constexpr meta::visit_type<F, A...> visit_impl(F&& func, A&&... args)
-        noexcept(meta::nothrow::exhaustive<F, A...>)
+    template <typename R, size_t I, typename F, typename... A>
+        requires (meta::visitor<F, A...>)
+    constexpr R visit_impl(F&& func, A&&... args)
+        noexcept(meta::nothrow::visitor<F, A...>)
     {
         return std::forward<F>(func)(std::forward<A>(args)...);
     }
 
-    template <size_t I, typename F, typename... A>
-        requires (meta::exhaustive<F, A...> && I < sizeof...(A))
-    constexpr meta::visit_type<F, A...> visit_impl(F&& func, A&&... args)
-        noexcept(meta::nothrow::exhaustive<F, A...>)
+    template <typename R, size_t I, typename F, typename... A>
+        requires (meta::visitor<F, A...> && I < sizeof...(A))
+    constexpr R visit_impl(F&& func, A&&... args)
+        noexcept(meta::nothrow::visitor<F, A...>)
     {
-        return impl::visitable<meta::unpack_type<I, A...>>::template dispatch<I>(
+        return impl::visitable<meta::unpack_type<I, A...>>::template dispatch<R, I>(
             std::forward<F>(func),
             std::forward<A>(args)...
         );
@@ -312,19 +375,23 @@ namespace impl {
 
     template <typename T>
     struct visitable {
+        static constexpr bool enable = false;  // meta::visitable<T> evaluates to false
         using type = T;
         using pack = bertrand::args<T>;
 
-        template <size_t I, typename F, typename... A>
+        template <typename R, size_t I, typename F, typename... A>
             requires (
-                meta::exhaustive<F, A...> &&
+                meta::visitor<F, A...> &&
                 I < sizeof...(A) &&
                 meta::is<T, meta::unpack_type<I, A...>>
             )
-        static constexpr auto dispatch(F&& func, A&&... args)
-            noexcept(meta::nothrow::exhaustive<F, A...>)
+        static constexpr R dispatch(F&& func, A&&... args)
+            noexcept(meta::nothrow::visitor<F, A...>)
         {
-            return visit_impl<I + 1>(std::forward<F>(func), std::forward<A>(args)...);
+            return visit_impl<R, I + 1>(
+                std::forward<F>(func),
+                std::forward<A>(args)...
+            );
         }
     };
 
@@ -346,17 +413,18 @@ namespace impl {
         struct _pack<N, Ts...> { using type = bertrand::args<Ts...>; };
 
     public:
+        static constexpr bool enable = true;
         using type = T;
         using pack = _pack<0>::type;
 
-        template <size_t I, typename F, typename... A>
+        template <typename R, size_t I, typename F, typename... A>
             requires (
-                meta::exhaustive<F, A...> &&
+                meta::visitor<F, A...> &&
                 I < sizeof...(A) &&
                 meta::is<T, meta::unpack_type<I, A...>>
             )
-        static constexpr meta::visit_type<F, A...> dispatch(F&& func, A&&... args)
-            noexcept(meta::nothrow::exhaustive<F, A...>)
+        static constexpr R dispatch(F&& func, A&&... args)
+            noexcept(meta::nothrow::visitor<F, A...>)
         {
             // Build a vtable that dispatches to all possible alternatives
             static constexpr auto vtable = []<size_t... Is>(std::index_sequence<Is...>) {
@@ -366,27 +434,40 @@ namespace impl {
                 return std::array{+[](
                     meta::as_lvalue<F> func,
                     meta::as_lvalue<A>... args
-                ) noexcept(
-                    meta::nothrow::exhaustive<F, A...>
-                ) -> meta::visit_type<F, A...> {
+                ) noexcept(meta::nothrow::visitor<F, A...>) -> R {
                     return []<size_t... Prev, size_t... Next>(
                         std::index_sequence<Prev...>,
                         std::index_sequence<Next...>,
                         auto&& func,
                         auto&&... args
                     ) {
-                        return visit_impl<I + 1>(
-                            std::forward<F>(func),
-                            meta::unpack_arg<Prev>(
+                        if constexpr (meta::invocable<
+                            F,
+                            meta::unpack_type<Prev, A...>...,
+                            decltype((meta::unpack_arg<I>(
                                 std::forward<A>(args)...
-                            )...,
-                            meta::unpack_arg<I>(
-                                std::forward<A>(args)...
-                            ).template get<Is>(),
-                            meta::unpack_arg<I + 1 + Next>(
-                                std::forward<A>(args)...
-                            )...
-                        );
+                            ).template get<Is>())),
+                            meta::unpack_type<I + 1 + Next, A...>...
+                        >) {
+                            return visit_impl<R, I + 1>(
+                                std::forward<F>(func),
+                                meta::unpack_arg<Prev>(
+                                    std::forward<A>(args)...
+                                )...,
+                                meta::unpack_arg<I>(
+                                    std::forward<A>(args)...
+                                ).template get<Is>(),
+                                meta::unpack_arg<I + 1 + Next>(
+                                    std::forward<A>(args)...
+                                )...
+                            );
+                        } else {
+                            /// TODO: elaborate the error message to indicate which
+                            /// types failed to match the visitor
+                            return BadUnionAccess(
+                                "Failed to invoke visitor for union type"
+                            );
+                        }
                     }(
                         std::make_index_sequence<I>{},
                         std::make_index_sequence<sizeof...(A) - I - 1>{},
@@ -405,6 +486,7 @@ namespace impl {
     /* Optionals are converted into packs of length 2. */
     template <meta::Optional T>
     struct visitable<T> {
+        static constexpr bool enable = true;
         using type = T;
         using pack = bertrand::args<decltype((*std::declval<T>())), std::nullopt_t>;
     };
@@ -429,8 +511,72 @@ namespace impl {
         struct _pack<N, Ts...> { using type = bertrand::args<Ts...>; };
 
     public:
+        static constexpr bool enable = true;
         using type = T;
         using pack = _pack<0>::type;
+    };
+
+    struct Less {
+        template <typename L, typename R> requires (meta::has_lt<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_lt<L, R>)
+        {
+            return (std::forward<L>(lhs) < std::forward<R>(rhs));
+        }
+    };
+
+    struct LessEqual {
+        template <typename L, typename R> requires (meta::has_le<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_le<L, R>)
+        {
+            return (std::forward<L>(lhs) <= std::forward<R>(rhs));
+        }
+    };
+
+    struct Equal {
+        template <typename L, typename R> requires (meta::has_eq<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_eq<L, R>)
+        {
+            return (std::forward<L>(lhs) == std::forward<R>(rhs));
+        }
+    };
+
+    struct NotEqual {
+        template <typename L, typename R> requires (meta::has_ne<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_ne<L, R>)
+        {
+            return (std::forward<L>(lhs) != std::forward<R>(rhs));
+        }
+    };
+
+    struct GreaterEqual {
+        template <typename L, typename R> requires (meta::has_ge<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_ge<L, R>)
+        {
+            return (std::forward<L>(lhs) >= std::forward<R>(rhs));
+        }
+    };
+
+    struct Greater {
+        template <typename L, typename R> requires (meta::has_gt<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_gt<L, R>)
+        {
+            return (std::forward<L>(lhs) > std::forward<R>(rhs));
+        }
+    };
+
+    struct Spaceship {
+        template <typename L, typename R> requires (meta::has_spaceship<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_spaceship<L, R>)
+        {
+            return (std::forward<L>(lhs) <=> std::forward<R>(rhs));
+        }
     };
 
 }
@@ -447,11 +593,14 @@ permutations of the unwrapped values, or no common return type exists between th
 then a compilation error will occur.  Note that the arguments are not limited to
 unions, unlike `std::visit()` - if no unions are present, then this function is
 identical to invoking the visitor normally. */
-template <typename F, typename... Args> requires (meta::exhaustive<F, Args...>)
+template <typename F, typename... Args> requires (meta::visitor<F, Args...>)
 constexpr meta::visit_type<F, Args...> visit(F&& f, Args&&... args)
-    noexcept(meta::nothrow::exhaustive<F, Args...>)
+    noexcept(meta::nothrow::visitor<F, Args...>)
 {
-    return impl::visit_impl<0>(std::forward<F>(f), std::forward<Args>(args)...);
+    return impl::visit_impl<meta::visit_type<F, Args...>, 0>(
+        std::forward<F>(f),
+        std::forward<Args>(args)...
+    );
 }
 
 
@@ -745,15 +894,15 @@ public:
     the first argument, for chaining purposes.  See `bertrand::visit()` for more
     details. */
     template <typename F, typename Self, typename... Args>
-        requires (meta::exhaustive<F, Self, Args...>)
+        requires (meta::visitor<F, Self, Args...>)
     constexpr meta::visit_type<F, Self, Args...> visit(
         this Self&& self,
         F&& f,
         Args&&... args
     ) noexcept(
-        meta::nothrow::exhaustive<F, Self, Args...>
+        meta::nothrow::visitor<F, Self, Args...>
     ) {
-        return impl::visit_impl<0>(
+        return impl::visit_impl<meta::visit_type<F, Self, Args...>, 0>(
             std::forward<F>(f),
             std::forward<Self>(self),
             std::forward<Args>(args)...
@@ -1051,7 +1200,17 @@ public:
     /// narrowing conversions could return Expected<Union<Ts...>, TypeError>, which
     /// would itself be a monad.
 
+    /// TODO: only the member-only operators need to be implemented here.
+
 };
+
+
+/// TODO: I may want to remove the contextual bool conversion from optional and force
+/// the user to call `has_value()` at all times, which would probably help avoid type
+/// confusion in long chains of visitors.  The same might also apply to `Expected`,
+/// so that you have to explicitly unwrap all values via the type system.  That also
+/// potentially opens these operators up to be included in the monadic forwarding
+/// interface as well.
 
 
 template <meta::not_void T>
@@ -1438,6 +1597,111 @@ constexpr void swap(Expected<T, E>& a, Expected<T, E>& b) noexcept(
 }
 
 
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::Less, L, R>)
+constexpr decltype(auto) operator<(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::Less, L, R>)
+{
+    return visit(
+        impl::Less{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
+
+
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::LessEqual, L, R>)
+constexpr decltype(auto) operator<=(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::LessEqual, L, R>)
+{
+    return visit(
+        impl::LessEqual{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
+
+
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::Equal, L, R>)
+constexpr decltype(auto) operator==(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::Equal, L, R>)
+{
+    return visit(
+        impl::Equal{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
+
+
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::NotEqual, L, R>
+    )
+constexpr decltype(auto) operator!=(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::NotEqual, L, R>)
+{
+    return visit(
+        impl::NotEqual{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
+
+
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::GreaterEqual, L, R>)
+constexpr decltype(auto) operator>=(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::GreaterEqual, L, R>)
+{
+    return visit(
+        impl::GreaterEqual{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
+
+
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::Greater, L, R>)
+constexpr decltype(auto) operator>(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::Greater, L, R>)
+{
+    return visit(
+        impl::Greater{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
+
+
+template <typename L, typename R>
+    requires (
+        (meta::visitable<L> || meta::visitable<R>) &&
+        meta::visitor<impl::Spaceship, L, R>)
+constexpr decltype(auto) operator<=>(L&& lhs, R&& rhs)
+    noexcept(meta::nothrow::visitor<impl::Spaceship, L, R>)
+{
+    return visit(
+        impl::Spaceship{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    );
+}
+
 
 
 
@@ -1465,6 +1729,8 @@ inline void test() {
     {
         static constexpr int value = 2;
         static constexpr Union<int, const int&> val = value;
+        static constexpr Union<int, const int&> val2 = val;
+        static_assert(val == val2);
         static constexpr auto f = [](int x, int y) noexcept {
             return x + y;
         };
