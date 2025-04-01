@@ -18,6 +18,15 @@ namespace impl {
     struct union_tag {};
     struct optional_tag {};
     struct expected_tag {};
+
+    /* Provides an extensible mechanism for controlling the dispatching behavior of
+    the `meta::exhaustive` concept and `bertrand::visit()` operator, including return
+    type deduction from the possible alternatives.  Users can specialize this structure
+    to extend those utilities to arbitrary types, without needing to reimplement the
+    entire compile-time dispatch mechanism. */
+    template <typename T>
+    struct visitable;
+
 }
 
 
@@ -126,29 +135,6 @@ template <typename T, meta::unqualified... Es>
 struct Expected;
 
 
-namespace impl {
-
-    /* Provides an extensible mechanism for controlling the dispatching behavior of
-    the `meta::exhaustive` concept and `bertrand::visit()` operator, including return
-    type deduction from the possible alternatives.  Users can specialize this structure
-    to allow those utilities to work with arbitrary union types, without needing to
-    reimplement the entire compile-time dispatch mechanism. */
-    template <typename T>
-    struct union_traits;
-
-    /* Backs the `visit()` algorithm by recursively expanding union types into a
-    series of compile-time vtables covering all possible permutations of the argument
-    types.  When `visit()` is executed, it equates to a sequence of indices into these
-    vtables (one for each union), similar to a virtual method call, and with comparable
-    overhead.  This approach is highly performant at run time, but can come with
-    significant compile-time cost, since unique vtables must be generated for every
-    unique signature of `visit()`. */
-    template <typename, typename...>
-    struct visit_helper;
-
-}
-
-
 namespace meta {
 
     namespace detail {
@@ -161,8 +147,8 @@ namespace meta {
             struct permute { using type = bertrand::args<>; };
             template <typename First, typename... Rest>
             struct permute<First, Rest...> {
-                using type = impl::union_traits<First>::pack::template product<
-                    typename impl::union_traits<Rest>::pack...
+                using type = impl::visitable<First>::pack::template product<
+                    typename impl::visitable<Rest>::pack...
                 >;
             };
             using permutations = permute<Args...>::type;
@@ -301,61 +287,50 @@ namespace meta {
 
 namespace impl {
 
-    template <typename... Prev>
-    struct visit_helper<args<Prev...>> {
-        // Base case: no more arguments to visit - invoke the visitor function with
-        // the accumulated arguments
-        template <typename F, typename... A> requires (meta::invocable<F, A...>)
-        static constexpr decltype(auto) operator()(F&& func, A&&... args) noexcept(
-            meta::nothrow::exhaustive<F, A...>
-        ) {
-            return std::forward<F>(func)(std::forward<A>(args)...);
-        }
-    };
-    template <typename... Prev, typename Curr, typename... Next>
-    struct visit_helper<args<Prev...>, Curr, Next...> {
-        // Recursive case: if `Curr` describes a union, construct a vtable with all
-        // possible alternatives and dispatch to the active index.  Each entry
-        // recursively invokes this helper to advance to the next argument, allowing
-        // the proper type to be deduced at each step.  If `Curr` is not a union, then
-        // no vtable will be generated, and it will be passed through as-is instead.
-        template <typename F, typename... A>
-        static constexpr decltype(auto) operator()(F&& func, A&&... args) noexcept(
-            meta::nothrow::exhaustive<F, Prev..., Curr, Next...>
-        ) {
-            return typename impl::union_traits<Curr>::template dispatch<
-                F,
-                bertrand::args<Prev...>,
-                Curr,
-                Next...
-            >{}(std::forward<F>(func), std::forward<A>(args)...);
-        }
-    };
+    /* Backs the `visit()` algorithm by recursively expanding union types into a
+    series of compile-time vtables covering all possible permutations of the argument
+    types.  When `visit()` is executed, it equates to a sequence of indices into these
+    vtables (one for each union), similar to a virtual method call, and with comparable
+    overhead. */
+    template <size_t I, typename F, typename... A> requires (meta::exhaustive<F, A...>)
+    constexpr meta::visit_type<F, A...> visit_impl(F&& func, A&&... args)
+        noexcept(meta::nothrow::exhaustive<F, A...>)
+    {
+        return std::forward<F>(func)(std::forward<A>(args)...);
+    }
+
+    template <size_t I, typename F, typename... A>
+        requires (meta::exhaustive<F, A...> && I < sizeof...(A))
+    constexpr meta::visit_type<F, A...> visit_impl(F&& func, A&&... args)
+        noexcept(meta::nothrow::exhaustive<F, A...>)
+    {
+        return impl::visitable<meta::unpack_type<I, A...>>::template dispatch<I>(
+            std::forward<F>(func),
+            std::forward<A>(args)...
+        );
+    }
 
     template <typename T>
-    struct union_traits {
+    struct visitable {
         using type = T;
         using pack = bertrand::args<T>;
 
-        template <typename, typename, typename...>
-        struct dispatch;
-        template <typename F, typename... Prev, meta::is<T> Curr, typename... Next>
-            requires (meta::exhaustive<F, Prev..., Curr, Next...>)
-        struct dispatch<F, bertrand::args<Prev...>, Curr, Next...> {
-            static constexpr auto operator()(auto&& func, auto&&... args) noexcept(
-                meta::nothrow::exhaustive<F, Prev..., Curr, Next...>
-            ) {
-                return visit_helper<bertrand::args<Prev..., Curr>, Next...>{}(
-                    std::forward<decltype(func)>(func),
-                    std::forward<decltype(args)>(args)...
-                );
-            }
-        };
+        template <size_t I, typename F, typename... A>
+            requires (
+                meta::exhaustive<F, A...> &&
+                I < sizeof...(A) &&
+                meta::is<T, meta::unpack_type<I, A...>>
+            )
+        static constexpr auto dispatch(F&& func, A&&... args)
+            noexcept(meta::nothrow::exhaustive<F, A...>)
+        {
+            return visit_impl<I + 1>(std::forward<F>(func), std::forward<A>(args)...);
+        }
     };
 
     /* Unions are converted into a pack of the same length. */
     template <meta::Union T>
-    struct union_traits<T> {
+    struct visitable<T> {
     private:
         static constexpr size_t N = meta::unqualify<T>::alternatives;
 
@@ -374,53 +349,62 @@ namespace impl {
         using type = T;
         using pack = _pack<0>::type;
 
-        template <typename, typename...>
-        struct dispatch;
-        template <typename F, typename... Prev, meta::is<T> Curr, typename... Next>
-            requires (meta::exhaustive<F, Prev..., Curr, Next...>)
-        struct dispatch<F, bertrand::args<Prev...>, Curr, Next...> {
-            // Build a vtable for the current type `Curr` that dispatches to all
-            // possible alternatives.
+        template <size_t I, typename F, typename... A>
+            requires (
+                meta::exhaustive<F, A...> &&
+                I < sizeof...(A) &&
+                meta::is<T, meta::unpack_type<I, A...>>
+            )
+        static constexpr meta::visit_type<F, A...> dispatch(F&& func, A&&... args)
+            noexcept(meta::nothrow::exhaustive<F, A...>)
+        {
+            // Build a vtable that dispatches to all possible alternatives
             static constexpr auto vtable = []<size_t... Is>(std::index_sequence<Is...>) {
+                /// NOTE: func and args are forwarded as lvalues in order to avoid
+                /// unnecessary copies/moves within the dispatch logic.  They are
+                /// converted back to their proper categories when recurring
                 return std::array{+[](
-                    F func,
-                    Prev... prev,
-                    Curr curr,
-                    Next... next
+                    meta::as_lvalue<F> func,
+                    meta::as_lvalue<A>... args
                 ) noexcept(
-                    meta::nothrow::exhaustive<F, Prev..., Curr, Next...>
-                ) -> meta::visit_type<F, Prev..., Curr, Next...> {
-                    return visit_helper<
-                        bertrand::args<
-                            Prev...,
-                            decltype((*std::declval<T>().template get_if<Is>()))
-                        >,
-                        Next...
-                    >{}(
+                    meta::nothrow::exhaustive<F, A...>
+                ) -> meta::visit_type<F, A...> {
+                    return []<size_t... Prev, size_t... Next>(
+                        std::index_sequence<Prev...>,
+                        std::index_sequence<Next...>,
+                        auto&& func,
+                        auto&&... args
+                    ) {
+                        return visit_impl<I + 1>(
+                            std::forward<F>(func),
+                            meta::unpack_arg<Prev>(
+                                std::forward<A>(args)...
+                            )...,
+                            meta::unpack_arg<I>(
+                                std::forward<A>(args)...
+                            ).template get<Is>(),
+                            meta::unpack_arg<I + 1 + Next>(
+                                std::forward<A>(args)...
+                            )...
+                        );
+                    }(
+                        std::make_index_sequence<I>{},
+                        std::make_index_sequence<sizeof...(A) - I - 1>{},
                         std::forward<F>(func),
-                        std::forward<Prev>(prev)...,
-                        std::forward<Curr>(curr).template get<Is>(),
-                        std::forward<Next>(next)...
+                        std::forward<A>(args)...
                     );
                 }...};
             }(std::make_index_sequence<N>{});
 
-            // search the vtable for the actual type, and recur for the next argument
-            // until all arguments have been fully deduced.
-            static constexpr auto operator()(auto&& func, auto&&... args) noexcept(
-                meta::nothrow::exhaustive<F, Prev..., Curr, Next...>
-            ) {
-                return vtable[meta::unpack_arg<sizeof...(Prev)>(args...).index()](
-                    std::forward<decltype(func)>(func),
-                    std::forward<decltype(args)>(args)...
-                );
-            }
-        };
+            // search the vtable for the actual type, and recur for the next
+            // argument until all arguments have been fully deduced
+            return vtable[meta::unpack_arg<I>(args...).index()](func, args...);
+        }
     };
 
     /* Optionals are converted into packs of length 2. */
     template <meta::Optional T>
-    struct union_traits<T> {
+    struct visitable<T> {
         using type = T;
         using pack = bertrand::args<decltype((*std::declval<T>())), std::nullopt_t>;
     };
@@ -429,7 +413,7 @@ namespace impl {
 
     /* `std::variant`s are treated like unions. */
     template <meta::variant T>
-    struct union_traits<T> {
+    struct visitable<T> {
     private:
         static constexpr size_t N = std::variant_size_v<meta::unqualify<T>>;
 
@@ -464,13 +448,10 @@ then a compilation error will occur.  Note that the arguments are not limited to
 unions, unlike `std::visit()` - if no unions are present, then this function is
 identical to invoking the visitor normally. */
 template <typename F, typename... Args> requires (meta::exhaustive<F, Args...>)
-constexpr meta::visit_type<F, Args...> visit(F&& f, Args&&... args) noexcept(
-    meta::nothrow::exhaustive<F, Args...>
-) {
-    return impl::visit_helper<bertrand::args<>, Args...>{}(
-        std::forward<F>(f),
-        std::forward<Args>(args)...
-    );
+constexpr meta::visit_type<F, Args...> visit(F&& f, Args&&... args)
+    noexcept(meta::nothrow::exhaustive<F, Args...>)
+{
+    return impl::visit_impl<0>(std::forward<F>(f), std::forward<Args>(args)...);
 }
 
 
@@ -772,7 +753,7 @@ public:
     ) noexcept(
         meta::nothrow::exhaustive<F, Self, Args...>
     ) {
-        return impl::visit_helper<bertrand::args<>, Self, Args...>{}(
+        return impl::visit_impl<0>(
             std::forward<F>(f),
             std::forward<Self>(self),
             std::forward<Args>(args)...
@@ -792,41 +773,36 @@ public:
     }
 
 private:
-    using destructor_fn = void(*)(Union&);
+    static constexpr bool default_constructible = meta::not_void<default_type>;
+
+    template <typename T>
+    static constexpr bool bind_member = meta::not_void<conversion_type<T>>;
+
+    /// NOTE: copy/move constructors, destructors, and swap operators are implemented
+    /// using manual vtables rather than relying on visit() in order to avoid possible
+    /// infinite recursion.
     using copy_fn = storage<Ts...>(*)(const Union&);
     using move_fn = storage<Ts...>(*)(Union&&);
     using swap_fn = void(*)(Union&, Union&);
-
-    /// TODO: define destructors, copy constructors, move constructors in terms of
-    /// visit() once that is fully implemented
-
-    template <typename... Us> requires (meta::destructible<Us> && ...)
-    static constexpr std::array<destructor_fn, alternatives> destructors {
-        +[](Union& self) {
-            if constexpr (!meta::trivially_destructible<Ts>) {
-                std::destroy_at(&self.m_storage.template get<index_of<Ts>>());
-            }
-        }...
-    };
+    using destructor_fn = void(*)(Union&);
 
     template <typename... Us> requires (meta::copyable<Us> && ...)
     static constexpr std::array<copy_fn, alternatives> copy_constructors {
-        +[](const Union& other) {
-            return storage<Ts...>{other.m_storage.template get<index_of<Ts>>()};
+        +[](const Union& other) noexcept(
+            (meta::nothrow::copyable<Ts> && ...)
+        ) -> storage<Ts...> {
+            return {other.m_storage.template get<index_of<Ts>>()};
         }...
     };
 
     template <typename... Us> requires (meta::movable<Us> && ...)
     static constexpr std::array<move_fn, alternatives> move_constructors {
-        +[](Union&& other) {
-            return storage<Ts...>{std::move(other).m_storage.template get<index_of<Ts>>()};
+        +[](Union&& other) noexcept(
+            (meta::nothrow::movable<Ts> && ...)
+        ) -> storage<Ts...> {
+            return {std::move(other).m_storage.template get<index_of<Ts>>()};
         }...
     };
-
-    static constexpr bool default_constructible = meta::not_void<default_type>;
-
-    template <typename T>
-    static constexpr bool bind_member = meta::not_void<conversion_type<T>>;
 
     template <typename L, typename R>
     static constexpr bool _swappable =
@@ -862,7 +838,7 @@ private:
     static constexpr std::array<swap_fn, alternatives> pairwise_swap() noexcept {
         constexpr size_t I = index_of<T>;
         return {
-            +[](Union& self, Union& other) {
+            +[](Union& self, Union& other) noexcept((nothrow_swappable<Ts> && ...)) {
                 constexpr size_t J = index_of<Ts>;
 
                 // delegate to a swap operator if available
@@ -944,12 +920,17 @@ private:
         };
     }
 
+    // swap operators require a 2D vtable for each pair of types in each union
     template <typename... Us> requires (swappable<Us> && ...)
-    static constexpr std::array<
-        std::array<swap_fn, alternatives>,
-        alternatives
-    > swap_operators {
-        pairwise_swap<Us>()...
+    static constexpr std::array swap_operators {pairwise_swap<Us>()...};
+
+    template <typename... Us> requires (meta::destructible<Us> && ...)
+    static constexpr std::array<destructor_fn, alternatives> destructors {
+        +[](Union& self) noexcept((meta::nothrow::destructible<Ts> && ...)) {
+            if constexpr (!meta::trivially_destructible<Ts>) {
+                std::destroy_at(&self.m_storage.template get<index_of<Ts>>());
+            }
+        }...
     };
 
 public:
@@ -995,7 +976,7 @@ public:
         requires((meta::movable<Ts> && ...))
     :
         m_index(other.index()),
-        m_storage(move_constructors<Ts...>[index()](std::move(other)))
+        m_storage(move_constructors<Ts...>[other.index()](std::move(other)))
     {}
 
     /* Copy assignment operator.  Destroys the current value and then copy constructs
@@ -1462,9 +1443,6 @@ constexpr void swap(Expected<T, E>& a, Expected<T, E>& b) noexcept(
 
 
 
-
-
-
 inline void test() {
     {
         static constexpr int i = 42;
@@ -1490,15 +1468,30 @@ inline void test() {
         static constexpr auto f = [](int x, int y) noexcept {
             return x + y;
         };
+        static_assert(val.get<val.index()>() == 2);
         static_assert(visit(f, val, 1) == 3);
         static_assert(val.visit(f, 1) == 3);
         static_assert(noexcept(visit(f, val, 1) == 3));
         static_assert(noexcept(val.visit(f, 1) == 3));
+        static_assert(val.flatten() == 2);
+        static_assert(noexcept(val.flatten() == 2));
+        static_assert(double(val) == 2.0);
         static_assert(val.index() == 1);
         static_assert(val.holds_alternative<const int&>());
         static_assert(*val.get_if<val.index()>() == 2);
         decltype(auto) v = val.get<val.index()>();
         decltype(auto) v2 = val.get_if<0>();
+        decltype(auto) v3 = val.visit(f, 1);
+    }
+
+    {
+        static constexpr Union<int, double> u = 3.14;
+        static constexpr auto f = []<typename X, typename Y>(X&& x, Y&& y) {
+            return std::forward<X>(x) + std::forward<Y>(y);
+        };
+        static_assert(u.holds_alternative<double>());
+        static_assert(visit(f, u, 1).holds_alternative<double>());
+        decltype(auto) value = visit(f, u, 1);
     }
 
     {
