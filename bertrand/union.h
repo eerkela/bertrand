@@ -716,6 +716,9 @@ private:
     template <typename T>
     using conversion_type = _conversion_type<T, proximal_type<T>>::type;
 
+    template <size_t I>
+    struct create_t {};
+
     // recursive C unions are the only way to allow Union<Ts...> to be used at compile
     // time without triggering the compiler's UB filters
     template <typename... Us>
@@ -804,6 +807,22 @@ private:
             noexcept(storage<Us...>(std::forward<T>(value)))
         ) :
             rest(std::forward<T>(value))
+        {}
+
+        // base create() constructor
+        template <typename... Args>
+        constexpr storage(create_t<0>, Args&&... args) noexcept(
+            noexcept(ref(std::forward<Args>(args)...))
+        ) :
+            curr(std::forward<Args>(args)...)
+        {}
+
+        // recursive create() constructor
+        template <size_t J, typename... Args> requires (J > 0)
+        constexpr storage(create_t<J>, Args&&... args) noexcept(
+            noexcept(storage<Us...>(create_t<J - 1>{}, std::forward<Args>(args)...))
+        ) :
+            rest(create_t<J - 1>{}, std::forward<Args>(args)...)
         {}
 
         // destructor
@@ -990,6 +1009,15 @@ private:
 
     template <typename T>
     static constexpr bool can_convert = meta::not_void<conversion_type<T>>;
+
+    template <size_t I, typename... Args>
+        requires (I < alternatives && meta::constructible_from<alternative<I>, Args...>)
+    constexpr Union(create_t<I>, Args&&... args)
+        noexcept(noexcept(storage<Ts...>(create_t<I>{}, std::forward<Args>(args)...)))
+    :
+        m_index(I),
+        m_storage(create_t<I>{}, std::forward<Args>(args)...)
+    {}
 
     /// NOTE: copy/move constructors, destructors, and swap operators are implemented
     /// using manual vtables rather than relying on visit() in order to avoid possible
@@ -1224,6 +1252,26 @@ public:
         requires((meta::destructible<Ts> && ...))
     {
         destructors<Ts...>[index()](*this);
+    }
+
+    /* Construct a union with an explicit type, rather than using the implicit
+    constructors, which can introduce ambiguity. */
+    template <size_t I, typename... Args>
+        requires (I < alternatives && meta::constructible_from<alternative<I>, Args...>)
+    static constexpr Union create(Args&&... args)
+        noexcept(noexcept(Union(create_t<I>{}, std::forward<Args>(args)...)))
+    {
+        return {create_t<I>{}, std::forward<Args>(args)...};
+    }
+
+    /* Construct a union with an explicit type, rather than using the implicit
+    constructors, which can introduce ambiguity. */
+    template <typename T, typename... Args>
+        requires ((std::same_as<T, Ts> || ...) && meta::constructible_from<T, Args...>)
+    static constexpr Union create(Args&&... args)
+        noexcept(noexcept(Union(create_t<index_of<T>>{}, std::forward<Args>(args)...)))
+    {
+        return {create_t<index_of<T>>{}, std::forward<Args>(args)...};
     }
 
     /* Swap the contents of two unions as efficiently as possible. */
@@ -1744,9 +1792,25 @@ private:
         fashion, so as to avoid leaking an allocation into runtime. */
         struct CompileTime {
             template <typename... Us>
-            struct _Error { using type = Union<Us...>; };
+            struct _Error {
+                using type = Union<Us...>;
+                template <typename V>
+                static constexpr type operator()(V&& e) noexcept(
+                    noexcept(type::template create<err_type<V>>(std::forward<V>(e)))
+                ) {
+                    return type::template create<err_type<V>>(std::forward<V>(e));
+                }
+            };
             template <typename U>
-            struct _Error<U> { using type = U; };
+            struct _Error<U> {
+                using type = U;
+                template <typename V>
+                static constexpr type operator()(V&& e) noexcept(
+                    noexcept(type(std::forward<V>(e)))
+                ) {
+                    return type(std::forward<V>(e));
+                }
+            };
             using Error = _Error<E, Es...>::type;
 
             bool ok;
@@ -1761,12 +1825,11 @@ private:
                     result(std::forward<As>(args)...)
                 {}
 
-                template <meta::convertible_to<Error> V>
-                    requires (meta::not_void<err_type<V>>)
+                template <typename V> requires (meta::not_void<err_type<V>>)
                 constexpr Data(V&& e)
-                    noexcept(meta::nothrow::convertible_to<V, Error>)
+                    noexcept(noexcept(_Error<E, Es...>{}(std::forward<V>(e))))
                 :
-                    error(std::forward<V>(e))
+                    error(_Error<E, Es...>{}(std::forward<V>(e)))
                 {}
 
                 constexpr ~Data() noexcept {}
@@ -1774,31 +1837,32 @@ private:
 
             template <typename... As> requires (meta::constructible_from<type, As...>)
             constexpr CompileTime(As&&... args)
-                noexcept(meta::nothrow::constructible_from<type, As...>)
+                noexcept(meta::nothrow::constructible_from<Data, As...>)
             :
                 ok(true),
                 data(std::forward<As>(args)...)
             {}
 
-            template <meta::convertible_to<Error> V>
-                requires (meta::not_void<err_type<V>>)
+            template <typename V> requires (meta::not_void<err_type<V>>)
             constexpr CompileTime(V&& e)
-                noexcept(meta::nothrow::convertible_to<V, Error>)
+                noexcept(meta::nothrow::constructible_from<Data, V>)
             :
                 ok(false),
                 data(std::forward<V>(e))
             {}
 
-            constexpr CompileTime(const CompileTime& other) noexcept(
-                false
-            ) :
+            constexpr CompileTime(const CompileTime& other)
+                noexcept(meta::nothrow::copyable<type> && meta::nothrow::copyable<Error>)
+                requires(requires{meta::copyable<type> && meta::copyable<Error>;})
+            :
                 ok(other.ok),
                 data(other.ok ? Data(other.data.result) : Data(other.data.error))
             {}
 
-            constexpr CompileTime(CompileTime&& other) noexcept(
-                false
-            ) :
+            constexpr CompileTime(CompileTime&& other)
+                noexcept(meta::nothrow::movable<type> && meta::nothrow::movable<Error>)
+                requires(requires{meta::movable<type> && meta::movable<Error>;})
+            :
                 ok(other.ok),
                 data(other.ok ?
                     Data(std::move(other.data.result)) :
@@ -1870,7 +1934,7 @@ private:
                 return *this;
             }
 
-            constexpr CompileTime() noexcept(
+            constexpr ~CompileTime() noexcept(
                 meta::nothrow::destructible<type> &&
                 meta::nothrow::destructible<Error>
             ) {
@@ -1887,9 +1951,29 @@ private:
         simpler for code that involves many errors. */
         struct RunTime {
             template <typename... Us>
-            struct _Error { using type = Union<std::unique_ptr<Us>...>; };
+            struct _Error {
+                using type = Union<std::unique_ptr<Us>...>;
+                template <typename V>
+                static constexpr type operator()(V&& e) noexcept(
+                    noexcept(type::template create<err_type<V>>(
+                        std::make_unique<meta::unqualify<V>>(std::forward<V>(e))
+                    ))
+                ) {
+                    return type::template create<err_type<V>>(
+                        std::make_unique<meta::unqualify<V>>(std::forward<V>(e))
+                    );
+                }
+            };
             template <typename U>
-            struct _Error<U> { using type = std::unique_ptr<U>; };
+            struct _Error<U> {
+                using type = std::unique_ptr<U>;
+                template <typename V>
+                static constexpr type operator()(V&& e) noexcept(
+                    noexcept(std::make_unique<meta::unqualify<U>>(std::forward<V>(e)))
+                ) {
+                    return std::make_unique<meta::unqualify<U>>(std::forward<V>(e));
+                }
+            };
             using Error = _Error<E, Es...>::type;
 
             bool ok;
@@ -1898,22 +1982,13 @@ private:
                 Error error;
 
                 template <typename... As> requires (meta::constructible_from<type, As...>)
-                constexpr Data(As&&... args)
-                    noexcept(meta::nothrow::constructible_from<type, As...>)
-                :
+                Data(As&&... args) noexcept(meta::nothrow::constructible_from<type, As...>) :
                     result(std::forward<As>(args)...)
                 {}
 
-                /// TODO: I might need to manually specify which alternative to
-                /// construct here.
-
                 template <typename V> requires (meta::not_void<err_type<V>>)
-                constexpr Data(V&& e)
-                    noexcept(noexcept(Error(
-                        std::make_unique<meta::unqualify<V>>(std::forward<V>(e))
-                    )))
-                :
-                    error(std::make_unique<meta::unqualify<V>>(std::forward<V>(e)))
+                Data(V&& e) noexcept(noexcept(_Error<E, Es...>{}(std::forward<V>(e)))) :
+                    error(_Error<E, Es...>{}(std::forward<V>(e)))
                 {}
 
                 constexpr ~Data() noexcept {}
@@ -1921,31 +1996,32 @@ private:
 
             template <typename... As> requires (meta::constructible_from<type, As...>)
             RunTime(As&&... args)
-                noexcept(meta::nothrow::constructible_from<type, As...>)
+                noexcept(meta::nothrow::constructible_from<Data, As...>)
             :
                 ok(true),
                 data(std::forward<As>(args)...)
             {}
 
-            template <meta::convertible_to<Error> V>
-                requires (meta::not_void<err_type<V>>)
+            template <typename V> requires (meta::not_void<err_type<V>>)
             RunTime(V&& e)
-                noexcept(meta::nothrow::convertible_to<V, Error>)
+                noexcept(meta::nothrow::constructible_from<Data, V>)
             :
                 ok(false),
                 data(std::forward<V>(e))
             {}
 
-            constexpr RunTime(const RunTime& other) noexcept(
-                false
-            ) :
+            RunTime(const RunTime& other)
+                noexcept(meta::nothrow::copyable<type> && meta::nothrow::copyable<Error>)
+                requires(requires{meta::copyable<type> && meta::copyable<Error>;})
+            :
                 ok(other.ok),
                 data(other.ok ? Data(other.data.result) : Data(other.data.error))
             {}
 
-            constexpr RunTime(RunTime&& other) noexcept(
-                false
-            ) :
+            RunTime(RunTime&& other)
+                noexcept(meta::nothrow::movable<type> && meta::nothrow::movable<Error>)
+                requires(requires{meta::movable<type> && meta::movable<Error>;})
+            :
                 ok(other.ok),
                 data(other.ok ?
                     Data(std::move(other.data.result)) :
@@ -1953,7 +2029,7 @@ private:
                 )
             {}
 
-            constexpr RunTime& operator=(const RunTime& other) noexcept(
+            RunTime& operator=(const RunTime& other) noexcept(
                 false
             ) {
                 if (ok) {
@@ -1985,7 +2061,7 @@ private:
                 return *this;
             }
 
-            constexpr RunTime& operator=(RunTime&& other) noexcept(
+            RunTime& operator=(RunTime&& other) noexcept(
                 false
             ) {
                 if (ok) {
@@ -2017,7 +2093,7 @@ private:
                 return *this;
             }
 
-            constexpr RunTime() noexcept(
+            constexpr ~RunTime() noexcept(
                 meta::nothrow::destructible<type> &&
                 meta::nothrow::destructible<Error>
             ) {
@@ -2053,7 +2129,9 @@ public:
         meta::nothrow::constructible_from<typename storage::type, Args...>
     ) :
         m_compiled(std::is_constant_evaluated()),
-        m_storage([](auto&&... args) noexcept(false) -> storage {
+        m_storage([](auto&&... args) noexcept(
+            meta::nothrow::constructible_from<typename storage::type, Args...>
+        ) -> storage {
             if consteval {
                 return {compile_time_t{}, std::forward<Args>(args)...};
             } else {
@@ -2073,7 +2151,10 @@ public:
         noexcept(storage(run_time_t{}, std::forward<V>(e)))
     ) :
         m_compiled(std::is_constant_evaluated()),
-        m_storage([](auto&& e) noexcept(false) -> storage {
+        m_storage([](auto&& e) noexcept(
+            noexcept(storage(compile_time_t{}, std::forward<V>(e))) &&
+            noexcept(storage(run_time_t{}, std::forward<V>(e)))
+        ) -> storage {
             if consteval {
                 return {compile_time_t{}, std::forward<V>(e)};
             } else {
@@ -2082,11 +2163,21 @@ public:
         }(std::forward<V>(e)))
     {}
 
-    [[nodiscard]] constexpr Expected(const Expected& other) noexcept(
-        false
-    ) :
+    [[nodiscard]] constexpr Expected(const Expected& other)
+        noexcept(
+            meta::nothrow::copyable<typename storage::CompileTime> &&
+            meta::nothrow::copyable<typename storage::RunTime>
+        )
+        requires(requires{
+            meta::copyable<typename storage::CompileTime>;
+            meta::copyable<typename storage::RunTime>;
+        })
+    :
         m_compiled(other.compiled()),
-        m_storage([](const Expected& other) noexcept(false) -> storage {
+        m_storage([](const Expected& other) noexcept(
+            meta::nothrow::copyable<typename storage::CompileTime> &&
+            meta::nothrow::copyable<typename storage::RunTime>
+        ) -> storage {
             if consteval {
                 return {compile_time_t{}, other.m_storage.compile_time};
             } else {
@@ -2098,9 +2189,16 @@ public:
         }(other))
     {}
 
-    [[nodiscard]] constexpr Expected(Expected&& other) noexcept(
-        false
-    ) :
+    [[nodiscard]] constexpr Expected(Expected&& other)
+        noexcept(
+            meta::nothrow::movable<typename storage::CompileTime> &&
+            meta::nothrow::movable<typename storage::RunTime>
+        )
+        requires(requires{
+            meta::movable<typename storage::CompileTime>;
+            meta::movable<typename storage::RunTime>;
+        })
+    :
         m_compiled(other.compiled()),
         m_storage([](Expected&& other) noexcept(false) -> storage {
             if consteval {
@@ -2182,17 +2280,21 @@ public:
         return *this;
     }
 
+    /// TODO: this is somehow broken
+
     constexpr ~Expected() noexcept(
         false
+        // meta::nothrow::destructible<typename storage::CompileTime> &&
+        // meta::nothrow::destructible<typename storage::RunTime>
     ) {
         if consteval {
             std::destroy_at(&m_storage.compile_time);
         } else {
-            if (compiled()) {
-                std::destroy_at(&m_storage.compile_time);
-            } else {
-                std::destroy_at(&m_storage.run_time);
-            }
+        //     if (compiled()) {
+        //         std::destroy_at(&m_storage.compile_time);
+        //     } else {
+        //         std::destroy_at(&m_storage.run_time);
+        //     }
         }
     }
 
@@ -2847,11 +2949,14 @@ namespace bertrand {
             static_assert(u2.get<2>() == "abc");
             static_assert(u3.get<2>() == "abc");
             static_assert(u.get<std::string>() == "abc");
-    
+
             Union<int, const int&, std::string> u4 = "abc";
             Union<int, const int&, std::string> u5 = u4;
             u4 = u;
             u4 = std::move(u5);
+
+            constexpr auto u6 = Union<int, const int&, std::string>::create<std::string>("abc");
+            static_assert(u6.index() == 2);
         }
 
         {
@@ -2902,6 +3007,10 @@ namespace bertrand {
             decltype(auto) ov2 = *Optional<std::string_view>{"abc", 3};
         }
 
+        {
+            static constexpr std::array<Exception, 1> err{Exception("abc")};
+            static constexpr Expected<int> e1 = 42;
+        }
 
         {
             struct A { static constexpr int operator()() { return 42; } };
