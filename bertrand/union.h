@@ -1534,8 +1534,8 @@ public:
         return bool(m_storage);
     }
 
-    /* Access the stored value.  Throws a `BadOptionalAccess` exception if the optional
-    is currently in the empty state. */
+    /* Access the stored value.  Throws a `BadUnionAccess` exception if the optional
+    is currently in the empty state and the program is compiled in debug mode. */
     template <typename Self>
     [[nodiscard]] constexpr access<Self> value(this Self&& self) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
@@ -1549,7 +1549,7 @@ public:
     /// TODO: delete these operators
 
     /* Dereference the optional to access the stored value.  Throws a
-    `BadOptionalAccess` exception if the optional is currently in the empty state. */
+    `BadUnionAccess` exception if the optional is currently in the empty state. */
     template <typename Self>
     [[nodiscard]] constexpr access<Self> operator*(this Self&& self) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
@@ -1561,7 +1561,7 @@ public:
     }
 
     /* Dereference the optional to access a member of the stored value.  Throws a
-    `BadOptionalAccess` exception if the optional is currently in the empty state. */
+    `BadUnionAccess` exception if the optional is currently in the empty state. */
     [[nodiscard]] constexpr pointer operator->() noexcept(!DEBUG) {
         if constexpr (DEBUG) {
             if (!has_value()) {
@@ -1572,7 +1572,7 @@ public:
     }
 
     /* Dereference the optional to access a member of the stored value.  Throws a
-    `BadOptionalAccess` exception if the optional is currently in the empty state. */
+    `BadUnionAccess` exception if the optional is currently in the empty state. */
     [[nodiscard]] constexpr const_pointer operator->() const noexcept(!DEBUG) {
         if constexpr (DEBUG) {
             if (!has_value()) {
@@ -1704,7 +1704,6 @@ struct Expected : impl::expected_tag {
 private:
     struct compile_time_t {};
     struct run_time_t {};
-    struct err_state {};
 
     template <typename out, typename...>
     struct _search_error { using type = out; };
@@ -1731,114 +1730,317 @@ private:
     /// TODO: if executed at runtime, store each of the errors as a unique_ptr to
     /// allow for polymorphism.  Otherwise, store them directly to avoid a heap
     /// allocation from compile time to runtime.
+    /// -> Allocating them as heap objects is probably incorrect?  I need to research
+    /// how to do this correctly.  This should probably just work
 
     /// TODO: figure out proper noexcept specifiers
 
     bool m_compiled;
     union storage {
-        struct void_t {};
-        using type = std::conditional_t<meta::is_void<T>, void_t, value_type>;
+        struct empty_t {};
+        using type = std::conditional_t<meta::is_void<T>, empty_t, value_type>;
 
         /* At compile time, we store the error instances directly in a non-polymorphic
         fashion, so as to avoid leaking an allocation into runtime. */
         struct CompileTime {
-            Union<type, E, Es...> data;
+            template <typename... Us>
+            struct _Error { using type = Union<Us...>; };
+            template <typename U>
+            struct _Error<U> { using type = U; };
+            using Error = _Error<E, Es...>::type;
 
-            constexpr CompileTime()
-                noexcept(meta::nothrow::default_constructible<type>)
-                requires(meta::default_constructible<type>)
+            bool ok;
+            union Data {
+                type result;
+                Error error;
+
+                template <typename... As> requires (meta::constructible_from<type, As...>)
+                constexpr Data(As&&... args)
+                    noexcept(meta::nothrow::constructible_from<type, As...>)
+                :
+                    result(std::forward<As>(args)...)
+                {}
+
+                template <meta::convertible_to<Error> V>
+                    requires (meta::not_void<err_type<V>>)
+                constexpr Data(V&& e)
+                    noexcept(meta::nothrow::convertible_to<V, Error>)
+                :
+                    error(std::forward<V>(e))
+                {}
+
+                constexpr ~Data() noexcept {}
+            } data;
+
+            template <typename... As> requires (meta::constructible_from<type, As...>)
+            constexpr CompileTime(As&&... args)
+                noexcept(meta::nothrow::constructible_from<type, As...>)
             :
-                data()
+                ok(true),
+                data(std::forward<As>(args)...)
             {}
 
-            template <meta::convertible_to<type> V>
-            constexpr CompileTime(V&& v)
-                noexcept(meta::nothrow::convertible_to<V, type>)
+            template <meta::convertible_to<Error> V>
+                requires (meta::not_void<err_type<V>>)
+            constexpr CompileTime(V&& e)
+                noexcept(meta::nothrow::convertible_to<V, Error>)
             :
-                data(std::forward<V>(v))
-            {}
-
-            template <typename A, typename... As>
-                requires (
-                    (!meta::convertible_to<A, type> || sizeof...(As) > 0) &&
-                    meta::constructible_from<type, A, As...>
-                )
-            constexpr CompileTime(A&& first, As&&... rest) noexcept(
-                noexcept(Union<type, E, Es...>(type(
-                    std::forward<A>(first),
-                    std::forward<As>(rest)...
-                )))
-            ) :
-                data(type(std::forward<A>(first), std::forward<As>(rest)...))
-            {}
-
-            template <typename V> requires (meta::not_void<err_type<V>>)
-            constexpr CompileTime(err_state, V&& e)
-                noexcept(meta::nothrow::constructible_from<err_type<V>, V>)
-            :
+                ok(false),
                 data(std::forward<V>(e))
             {}
 
-            constexpr bool ok() const noexcept { return data.index() == 0; }
+            constexpr CompileTime(const CompileTime& other) noexcept(
+                false
+            ) :
+                ok(other.ok),
+                data(other.ok ? Data(other.data.result) : Data(other.data.error))
+            {}
 
+            constexpr CompileTime(CompileTime&& other) noexcept(
+                false
+            ) :
+                ok(other.ok),
+                data(other.ok ?
+                    Data(std::move(other.data.result)) :
+                    Data(std::move(other.data.error))
+                )
+            {}
+
+            constexpr CompileTime& operator=(const CompileTime& other) noexcept(
+                false
+            ) {
+                if (ok) {
+                    if (other.ok) {
+                        /// TODO: check to see for assignment, etc.  Do this as
+                        /// intelligently as possible
+                        data.result = other.data.result;
+                    } else {
+                        std::destroy_at(&data.result);
+                        std::construct_at(
+                            &data.error,
+                            other.data.error
+                        );
+                    }
+                } else {
+                    if (other.ok) {
+                        std::destroy_at(&data.error);
+                        std::construct_at(
+                            &data.result,
+                            other.data.result
+                        );
+                    } else {
+                        /// TODO: check to see for assignment, etc.  Do this as
+                        /// intelligently as possible
+                        data.error = other.data.error;
+                    }
+                }
+                ok = other.ok;
+                return *this;
+            }
+
+            constexpr CompileTime& operator=(CompileTime&& other) noexcept(
+                false
+            ) {
+                if (ok) {
+                    if (other.ok) {
+                        /// TODO: check to see for assignment, etc.  Do this as
+                        /// intelligently as possible
+                        data.result = std::move(other.data.result);
+                    } else {
+                        std::destroy_at(&data.result);
+                        std::construct_at(
+                            &data.error,
+                            std::move(other.data.error)
+                        );
+                    }
+                } else {
+                    if (other.ok) {
+                        std::destroy_at(&data.error);
+                        std::construct_at(
+                            &data.result,
+                            std::move(other.data.result)
+                        );
+                    } else {
+                        /// TODO: check to see for assignment, etc.  Do this as
+                        /// intelligently as possible
+                        data.error = std::move(other.data.error);
+                    }
+                }
+                ok = other.ok;
+                return *this;
+            }
+
+            constexpr CompileTime() noexcept(
+                meta::nothrow::destructible<type> &&
+                meta::nothrow::destructible<Error>
+            ) {
+                if (ok) {
+                    std::destroy_at(&data.result);
+                } else {
+                    std::destroy_at(&data.error);
+                }
+            }
         } compile_time;
 
-        struct run_time_t {
-            Union<type, std::unique_ptr<E>, std::unique_ptr<Es...>> data;
+        /* At run time, we store the error instances as unique_ptrs to the templated
+        classes.  This allows them to respect polymorphic error types, which can be
+        simpler for code that involves many errors. */
+        struct RunTime {
+            template <typename... Us>
+            struct _Error { using type = Union<std::unique_ptr<Us>...>; };
+            template <typename U>
+            struct _Error<U> { using type = std::unique_ptr<U>; };
+            using Error = _Error<E, Es...>::type;
 
-            run_time_t()
-                noexcept(meta::nothrow::default_constructible<type>)
-                requires(meta::default_constructible<type>)
+            bool ok;
+            union Data {
+                type result;
+                Error error;
+
+                template <typename... As> requires (meta::constructible_from<type, As...>)
+                constexpr Data(As&&... args)
+                    noexcept(meta::nothrow::constructible_from<type, As...>)
+                :
+                    result(std::forward<As>(args)...)
+                {}
+
+                /// TODO: I might need to manually specify which alternative to
+                /// construct here.
+
+                template <typename V> requires (meta::not_void<err_type<V>>)
+                constexpr Data(V&& e)
+                    noexcept(noexcept(Error(
+                        std::make_unique<meta::unqualify<V>>(std::forward<V>(e))
+                    )))
+                :
+                    error(std::make_unique<meta::unqualify<V>>(std::forward<V>(e)))
+                {}
+
+                constexpr ~Data() noexcept {}
+            } data;            
+
+            template <typename... As> requires (meta::constructible_from<type, As...>)
+            RunTime(As&&... args)
+                noexcept(meta::nothrow::constructible_from<type, As...>)
             :
-                data()
+                ok(true),
+                data(std::forward<As>(args)...)
             {}
 
-            template <meta::convertible_to<type> V>
-            run_time_t(V&& v)
-                noexcept(meta::nothrow::convertible_to<V, type>)
+            template <meta::convertible_to<Error> V>
+                requires (meta::not_void<err_type<V>>)
+            RunTime(V&& e)
+                noexcept(meta::nothrow::convertible_to<V, Error>)
             :
-                data(std::forward<V>(v))
+                ok(false),
+                data(std::forward<V>(e))
             {}
 
-            template <typename A, typename... As>
-                requires (
-                    (!meta::convertible_to<A, type> || sizeof...(As) > 0) &&
-                    meta::constructible_from<type, A, As...>
-                )
-            run_time_t(A&& first, As&&... rest) noexcept(
-                noexcept(Union<type, std::unique_ptr<E>, std::unique_ptr<Es...>>(
-                    type(std::forward<A>(first), std::forward<As>(rest)...)
-                ))
+            constexpr RunTime(const RunTime& other) noexcept(
+                false
             ) :
-                data(type(std::forward<A>(first), std::forward<As>(rest)...))
+                ok(other.ok),
+                data(other.ok ? Data(other.data.result) : Data(other.data.error))
             {}
 
-            template <typename V> requires (meta::not_void<err_type<V>>)
-            run_time_t(err_state, V&& e)
-                noexcept(meta::nothrow::constructible_from<err_type<V>, V>)
-            :
-                data(std::make_unique<err_type<V>>(std::forward<V>(e)))
+            constexpr RunTime(RunTime&& other) noexcept(
+                false
+            ) :
+                ok(other.ok),
+                data(other.ok ?
+                    Data(std::move(other.data.result)) :
+                    Data(std::move(other.data.error))
+                )
             {}
 
-            constexpr bool ok() const noexcept { return data.index() == 0; }
+            constexpr RunTime& operator=(const RunTime& other) noexcept(
+                false
+            ) {
+                if (ok) {
+                    if (other.ok) {
+                        /// TODO: check to see for assignment, etc.  Do this as
+                        /// intelligently as possible
+                        data.result = other.data.result;
+                    } else {
+                        std::destroy_at(&data.result);
+                        std::construct_at(
+                            &data.error,
+                            other.data.error
+                        );
+                    }
+                } else {
+                    if (other.ok) {
+                        std::destroy_at(&data.error);
+                        std::construct_at(
+                            &data.result,
+                            other.data.result
+                        );
+                    } else {
+                        /// TODO: check to see for assignment, etc.  Do this as
+                        /// intelligently as possible
+                        data.error = other.data.error;
+                    }
+                }
+                ok = other.ok;
+                return *this;
+            }
 
+            constexpr RunTime& operator=(RunTime&& other) noexcept(
+                false
+            ) {
+                if (ok) {
+                    if (other.ok) {
+                        /// TODO: check to see for assignment, etc.  Do this as
+                        /// intelligently as possible
+                        data.result = std::move(other.data.result);
+                    } else {
+                        std::destroy_at(&data.result);
+                        std::construct_at(
+                            &data.error,
+                            std::move(other.data.error)
+                        );
+                    }
+                } else {
+                    if (other.ok) {
+                        std::destroy_at(&data.error);
+                        std::construct_at(
+                            &data.result,
+                            std::move(other.data.result)
+                        );
+                    } else {
+                        /// TODO: check to see for assignment, etc.  Do this as
+                        /// intelligently as possible
+                        data.error = std::move(other.data.error);
+                    }
+                }
+                ok = other.ok;
+                return *this;
+            }
+
+            constexpr RunTime() noexcept(
+                meta::nothrow::destructible<type> &&
+                meta::nothrow::destructible<Error>
+            ) {
+                if (ok) {
+                    std::destroy_at(&data.result);
+                } else {
+                    std::destroy_at(&data.error);
+                }
+            }
         } run_time;
-
-        /// TODO: I may not want to move the cases here, since it technically
-        /// invokes an extra move constructor?  It might be best to use an ordinary
-        /// tag to differentiate
 
         template <typename... As> requires (meta::constructible_from<CompileTime, As...>)
         constexpr storage(compile_time_t, As&&... args)
-            noexcept(noexcept(CompileTime(std::forward<As>(args)...)))
+            noexcept(meta::nothrow::constructible_from<CompileTime, As...>)
         :
             compile_time(std::forward<As>(args)...)
         {}
 
-        storage(run_time_t&& t)
-            noexcept(noexcept(run_time_t(std::move(t))))
+        template <typename... As> requires (meta::constructible_from<RunTime, As...>)
+        storage(run_time_t, As&&... args)
+            noexcept(meta::nothrow::constructible_from<RunTime, As...>)
         :
-            run_time(std::move(t))
+            run_time(std::forward<As>(args)...)
         {}
 
         constexpr ~storage() noexcept {}
@@ -1867,15 +2069,15 @@ public:
             (meta::inherits<V, Es> || ...)
         )
     [[nodiscard]] constexpr Expected(V&& e) noexcept(
-        noexcept(storage(compile_time_t{}, err_state{}, std::forward<V>(e))) &&
-        noexcept(storage(run_time_t{}, err_state{}, std::forward<V>(e)))
+        noexcept(storage(compile_time_t{}, std::forward<V>(e))) &&
+        noexcept(storage(run_time_t{}, std::forward<V>(e)))
     ) :
         m_compiled(std::is_constant_evaluated()),
         m_storage([](auto&& e) noexcept(false) -> storage {
             if consteval {
-                return {compile_time_t{}, err_state{}, std::forward<V>(e)};
+                return {compile_time_t{}, std::forward<V>(e)};
             } else {
-                return {run_time_t{}, err_state{}, std::forward<V>(e)};
+                return {run_time_t{}, std::forward<V>(e)};
             }
         }(std::forward<V>(e)))
     {}
@@ -2003,40 +2205,51 @@ public:
     state. */
     [[nodiscard]] constexpr bool ok() const noexcept {
         if consteval {
-            return m_storage.compile_time.data.index() == 0;
+            return m_storage.compile_time.ok;
         } else {
-            if (compiled()) {
-                return m_storage.compile_time.data.index() == 0;
-            } else {
-                return m_storage.run_time.data.index() == 0;
-            }
+            return compiled() ? m_storage.compile_time.ok : m_storage.run_time.ok;
         }
     }
 
-    /// TODO: result() should include debug assertions?
-
-    /* Get the valid result state. */
+    /* Access the valid state.  Throws a `BadUnionAccess` exception if the expected is
+    currently in the error state and the program is compiled in debug mode. */
     template <typename Self>
-    [[nodiscard]] constexpr decltype(auto) result(this Self&& self) noexcept(
-        false
-    ) {
-        // gross
+    [[nodiscard]] constexpr decltype(auto) result(this Self&& self) noexcept(!DEBUG) {
+        if constexpr (DEBUG) {
+            if (!self.ok()) {
+                throw BadUnionAccess("Expected in error state has no result");
+            }
+        }
         if consteval {
-            (std::forward<Self>(self).m_storage.compile_time.data.m_storage.template get<0>());
+            return (std::forward<Self>(self).m_storage.compile_time.data.result);
         } else {
             if (self.compiled()) {
-                (std::forward<Self>(self).m_storage.compile_time.data.m_storage.template get<0>());
+                return (std::forward<Self>(self).m_storage.compile_time.data.result);
             } else {
-                (std::forward<Self>(self).m_storage.run_time.data.m_storage.template get<0>());
+                return (std::forward<Self>(self).m_storage.run_time.data.result);
             }
         }
     }
 
-    /// TODO: for error() to work, the stored union must only contain errors, so that
-    /// I can just return a reference or move it here, along with a debug assertion.
-
-    // template <typename Self>
-    // [[nodiscard]] constexpr decltype(auto) error(this Self)
+    /* Access the error state.  Throws a `BadUnionAccess` exception if the expected is
+    currently in the valid state and the program is compiled in debug mode. */
+    template <typename Self>
+    [[nodiscard]] constexpr decltype(auto) error(this Self&& self) noexcept(!DEBUG) {
+        if constexpr (DEBUG) {
+            if (!self.ok()) {
+                throw BadUnionAccess("Expected in valid state has no error");
+            }
+        }
+        if consteval {
+            return (std::forward<Self>(self).m_storage.compile_time.data.error);
+        } else {
+            if (self.compiled()) {
+                return (std::forward<Self>(self).m_storage.compile_time.data.error);
+            } else {
+                return (std::forward<Self>(self).m_storage.run_time.data.error);
+            }
+        }
+    }
 
 
     /// TODO: don't really know if I even need any other methods here?  Maybe not

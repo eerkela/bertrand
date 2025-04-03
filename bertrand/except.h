@@ -366,7 +366,7 @@ public:
         return *this;
     }
 
-    constexpr ~Exception() noexcept {
+    constexpr virtual ~Exception() noexcept {
         if consteval {
             std::destroy_at(&m_storage.compile_time);
         } else {
