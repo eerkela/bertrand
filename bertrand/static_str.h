@@ -7,42 +7,11 @@
 #include "bertrand/sort.h"
 
 
-// required for demangling
-#if defined(__GNUC__) || defined(__clang__)
-    #include <cxxabi.h>
-    #include <cstdlib>
-#elif defined(_MSC_VER)
-    #include <windows.h>
-    #include <dbghelp.h>
-    #pragma comment(lib, "dbghelp.lib")
-#endif
-
-
 // avoid conflict with deprecated isascii() from <ctype.h>
 #undef isascii
 
 
 namespace bertrand {
-
-
-/* A compile-time string literal type that can be used as a non-type template
-parameter.
-
-This class allows string literals to be encoded directly into C++'s type system,
-consistent with other consteval language constructs.  That means they can be used to
-specialize templates and trigger arbitrarily complex metafunctions at compile time,
-without any impact on the final binary.  Such metafunctions are used internally to
-implement zero-cost keyword arguments for C++ functions, full static type safety for
-Python attributes, and minimal perfect hash tables for arbitrary data.
-
-Users can leverage these strings for their own metaprogramming needs as well; the class
-implements the full Python string interface as consteval member methods, and even
-supports regular expressions through the CTRE library.  This can serve as a powerful
-base for user-defined metaprogramming facilities, up to and including full
-Domain-Specific Languages (DSLs) that can be parsed at compile time and subjected to
-exhaustive static analysis. */
-template <size_t N>
-struct static_str;
 
 
 /* A wrapper class for a template string that exposes a Python-style string interface,
@@ -89,7 +58,6 @@ static_str(string_wrapper<S>) -> static_str<S.size()>;
 
 
 namespace impl {
-    struct static_str_tag {};
     struct string_list_tag {};
     struct string_set_tag {};
     struct string_map_tag {};
@@ -189,33 +157,32 @@ namespace meta {
 
     namespace detail {
 
-        template <size_t I, static_str... Strs>
+        template <size_t I, bertrand::static_str... Strs>
         struct _unpack_string;
-        template <size_t I, static_str Str, static_str... Strs>
+        template <size_t I, bertrand::static_str Str, bertrand::static_str... Strs>
         struct _unpack_string<I, Str, Strs...> {
-            static constexpr static_str value = _unpack_string<I - 1, Strs...>::value;
+            static constexpr bertrand::static_str value =
+                _unpack_string<I - 1, Strs...>::value;
         };
-        template <static_str Str, static_str... Strs>
+        template <bertrand::static_str Str, bertrand::static_str... Strs>
         struct _unpack_string<0, Str, Strs...> {
-            static constexpr static_str value = Str;
+            static constexpr bertrand::static_str value = Str;
         };
 
-        template <static_str...>
+        template <bertrand::static_str...>
         constexpr bool strings_are_unique = true;
-        template <static_str First, static_str... Rest>
+        template <bertrand::static_str First, bertrand::static_str... Rest>
         constexpr bool strings_are_unique<First, Rest...> =
             ((First != Rest) && ...) && strings_are_unique<Rest...>;
 
     }
 
-    template <size_t I, static_str... Strs>
-    constexpr static_str unpack_string = detail::_unpack_string<I, Strs...>::value;
+    template <size_t I, bertrand::static_str... Strs>
+    constexpr bertrand::static_str unpack_string =
+        detail::_unpack_string<I, Strs...>::value;
 
-    template <static_str... Strings>
+    template <bertrand::static_str... Strings>
     concept strings_are_unique = detail::strings_are_unique<Strings...>;
-
-    template <typename T>
-    concept static_str = inherits<T, impl::static_str_tag>;
 
 }
 
@@ -252,41 +219,6 @@ private:
     template <bertrand::static_str self>
     friend struct bertrand::string_wrapper;
 
-    template <long long num, size_type base>
-    static constexpr size_type _int_length = [] {
-        if constexpr (num == 0) {
-            return 0;
-        } else {
-            return _int_length<num / base, base> + 1;
-        }
-    }();
-
-    template <long long num, size_type base>
-    static constexpr size_type int_length = [] {
-        // length is always at least 1 to correct for num == 0
-        if constexpr (num < 0) {
-            return std::max(_int_length<-num, base>, 1UL) + 1;  // include negative sign
-        } else {
-            return std::max(_int_length<num, base>, 1UL);
-        }
-    }();
-
-    template <double num, size_type precision>
-    static constexpr size_type float_length = [] {
-        if constexpr (std::isnan(num)) {
-            return 3;  // "nan"
-        } else if constexpr (std::isinf(num)) {
-            return 3 + impl::sign_bit(num);  // "inf" or "-inf"
-        } else {
-            // negative zero integral part needs a leading minus sign
-            return
-                int_length<static_cast<long long>(num), 10> +
-                (static_cast<long long>(num) == 0 && impl::sign_bit(num)) +
-                (precision > 0) +
-                precision;
-        }
-    }();
-
     template <typename T>
     static constexpr bool is_format_string = false;
     template <typename... Args>
@@ -297,101 +229,14 @@ public:
     /* Convert an integer into a string at compile time using the specified base. */
     template <long long num, size_type base = 10> requires (base >= 2 && base <= 36)
     static constexpr auto from_int = [] {
-        constexpr const char chars[] = "0123456789abcdefghijklmnopqrstuvwxyz";
-        constexpr size_type len = int_length<num, base>;
-        static_str<len> result;
-
-        long long temp = num;
-        size_type idx = len - 1;
-        if constexpr (num < 0) {
-            result.buffer[0] = '-';
-            temp = -temp;
-        } else if constexpr (num == 0) {
-            result.buffer[idx--] = '0';
-        }
-
-        while (temp > 0) {
-            result.buffer[idx--] = chars[temp % base];
-            temp /= base;
-        }
-
-        result.buffer[len] = '\0';
-        return result;
+        return impl::int_to_static_string<num, base>;
     }();
 
     /* Convert a floating point number into a string at compile time with the
     specified precision. */
     template <double num, size_type precision = 6>
     static constexpr auto from_float = [] {
-        constexpr size_type len = float_length<num, precision>;
-        static_str<len> result;
-
-        if constexpr (std::isnan(num)) {
-            result.buffer[0] = 'n';
-            result.buffer[1] = 'a';
-            result.buffer[2] = 'n';
-
-        } else if constexpr (std::isinf(num)) {
-            if constexpr (num < 0) {
-                result.buffer[0] = '-';
-                result.buffer[1] = 'i';
-                result.buffer[2] = 'n';
-                result.buffer[3] = 'f';
-            } else {
-                result.buffer[0] = 'i';
-                result.buffer[1] = 'n';
-                result.buffer[2] = 'f';
-            }
-
-        } else {
-            // decompose into integral and (rounded) fractional parts
-            constexpr long long integral = static_cast<long long>(num);
-            constexpr long long fractional = [] {
-                double exp = 1;
-                for (size_type i = 0; i < precision; ++i) {
-                    exp *= 10;
-                }
-                if constexpr (num > integral) {
-                    return static_cast<long long>((num - integral) * exp + 0.5);
-                } else {
-                    return static_cast<long long>((integral - num) * exp + 0.5);
-                }
-            }();
-
-            // convert to string (base 10)
-            constexpr auto integral_str = from_int<integral, 10>;
-            constexpr auto fractional_str = from_int<fractional, 10>;
-
-            char* pos = result.buffer;
-            if constexpr (integral == 0 && impl::sign_bit(num)) {
-                result.buffer[0] = '-';
-                ++pos;
-            }
-
-            // concatenate integral and fractional parts (zero padded to precision)
-            std::copy_n(
-                integral_str.buffer,
-                integral_str.size(),
-                pos
-            );
-            if constexpr (precision > 0) {
-                std::copy_n(".", 1, pos + integral_str.size());
-                pos += integral_str.size() + 1;
-                std::copy_n(
-                    fractional_str.buffer,
-                    fractional_str.size(),
-                    pos
-                );
-                std::fill_n(
-                    pos + fractional_str.size(),
-                    precision - fractional_str.size(),
-                    '0'
-                );
-            }
-        }
-
-        result.buffer[len] = '\0';
-        return result;
+        return impl::float_to_static_string<num, precision>;
     }();
 
     /* Implicitly convert a static string to any other standard string type. */
@@ -5189,76 +5034,6 @@ public:
         return *this;
     }
 };
-
-
-namespace impl {
-
-    template <typename T>
-    constexpr auto type_name_impl() {
-        #if defined(__clang__)
-            constexpr std::string_view prefix {"[T = "};
-            constexpr std::string_view suffix {"]"};
-            constexpr std::string_view function {__PRETTY_FUNCTION__};
-        #elif defined(__GNUC__)
-            constexpr std::string_view prefix {"with T = "};
-            constexpr std::string_view suffix {"]"};
-            constexpr std::string_view function {__PRETTY_FUNCTION__};
-        #elif defined(_MSC_VER)
-            constexpr std::string_view prefix {"type_name_impl<"};
-            constexpr std::string_view suffix {">(void)"};
-            constexpr std::string_view function {__FUNCSIG__};
-        #else
-            #error Unsupported compiler
-        #endif
-
-        constexpr size_t start = function.find(prefix) + prefix.size();
-        constexpr size_t end = function.rfind(suffix);
-        static_assert(start < end);
-
-        constexpr std::string_view name = function.substr(start, (end - start));
-        constexpr size_t N = name.size();
-        return static_str<N>{name.data()};
-    }
-
-}
-
-
-/* Gets a C++ type name as a fully-qualified, demangled string computed entirely
-at compile time.  The underlying buffer is baked directly into the final binary. */
-template <typename T>
-constexpr auto type_name = impl::type_name_impl<T>();
-
-
-/* Demangle a runtime string using the compiler's intrinsics. */
-constexpr std::string demangle(const char* name) {
-    #if defined(__GNUC__) || defined(__clang__)
-        int status = 0;
-        std::unique_ptr<char, void(*)(void*)> res {
-            abi::__cxa_demangle(
-                name,
-                nullptr,
-                nullptr,
-                &status
-            ),
-            std::free
-        };
-        return (status == 0) ? res.get() : name;
-    #elif defined(_MSC_VER)
-        char undecorated_name[1024];
-        if (UnDecorateSymbolName(
-            name,
-            undecorated_name,
-            sizeof(undecorated_name),
-            UNDNAME_COMPLETE
-        )) {
-            return std::string(undecorated_name);
-        } else {
-            return name;
-        }
-    #else
-        return name; // fallback: no demangling
-    #endif
-}
 
 
 /* Get a simple string representation of an arbitrary object.  This is functionally

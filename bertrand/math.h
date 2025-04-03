@@ -298,24 +298,6 @@ namespace impl {
         return 2;  // only returned for n < 2
     }
 
-    template <typename T>
-    struct bit_view;
-    template <typename T> requires (sizeof(T) == 1)
-    struct bit_view<T> { using type = uint8_t; };
-    template <typename T> requires (sizeof(T) == 2)
-    struct bit_view<T> { using type = uint16_t; };
-    template <typename T> requires (sizeof(T) == 4)
-    struct bit_view<T> { using type = uint32_t; };
-    template <typename T> requires (sizeof(T) == 8)
-    struct bit_view<T> { using type = uint64_t; };
-
-    /* Get the state of the sign bit (0 or 1) for a floating point number.  1 indicates
-    a negative number. */
-    inline constexpr bool sign_bit(double num) noexcept {
-        using Int = bit_view<double>::type;
-        return std::bit_cast<Int>(num) >> (8 * sizeof(double) - 1);
-    };
-
     namespace divide {
 
         template <typename L, typename R>
