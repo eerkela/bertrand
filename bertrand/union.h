@@ -3,6 +3,7 @@
 
 #include "bertrand/common.h"
 #include "bertrand/except.h"
+#include <type_traits>
 
 
 namespace bertrand {
@@ -192,7 +193,7 @@ Bertrand uses this type internally to represent any errors that could occur duri
 normal program execution, excluding debug assertions.  The same convention is
 encouraged, though not required, for downstream users as well, in order to promote
 exhaustive error handling via the type system. */
-template <typename T, meta::unqualified... Es>
+template <typename T, meta::unqualified E = Exception, meta::unqualified... Es>
     requires (meta::inherits<Es, Exception> && ...)
 struct Expected;
 
@@ -630,7 +631,7 @@ struct Union : impl::union_tag {
 private:
     template <meta::not_void T>
     friend struct bertrand::Optional;
-    template <typename T, meta::unqualified... Es>
+    template <typename T, meta::unqualified E, meta::unqualified... Es>
         requires (meta::inherits<Es, Exception> && ...)
     friend struct bertrand::Expected;
 
@@ -1525,6 +1526,8 @@ public:
         return bool(m_storage);
     }
 
+    /// TODO: delete this
+
     /* Returns `true` if the optional currently holds a value, or `false` if it is in
     the empty state. */
     [[nodiscard]] constexpr explicit operator bool() const noexcept {
@@ -1542,6 +1545,8 @@ public:
         }
         return *std::forward<Self>(self).m_storage;
     }
+
+    /// TODO: delete these operators
 
     /* Dereference the optional to access the stored value.  Throws a
     `BadOptionalAccess` exception if the optional is currently in the empty state. */
@@ -1682,10 +1687,12 @@ public:
         );
     }
 
+    /// TODO: iterators
+
 };
 
 
-template <typename T, meta::unqualified... Es>
+template <typename T, meta::unqualified E, meta::unqualified... Es>
     requires (meta::inherits<Es, Exception> && ...)
 struct Expected : impl::expected_tag {
     using value_type = T;
@@ -1695,50 +1702,348 @@ struct Expected : impl::expected_tag {
     using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
 
 private:
+    struct compile_time_t {};
+    struct run_time_t {};
+    struct err_state {};
+
+    template <typename out, typename...>
+    struct _search_error { using type = out; };
+    template <typename out, typename in, typename curr, typename... next>
+    struct _search_error<out, in, curr, next...> {
+        using type = _search_error<out, in, next...>::type;
+    };
+    template <typename out, typename in, typename curr, typename... next>
+        requires (
+            !meta::constructible_from<value_type, in> &&
+            meta::inherits<in, curr>
+        )
+    struct _search_error<out, in, curr, next...> {
+        template <typename prev>
+        struct most_derived { using type = _search_error<prev, in, next...>::type; };
+        template <typename prev>
+            requires (meta::is_void<prev> || meta::inherits<curr, prev>)
+        struct most_derived<prev> { using type = _search_error<curr, in, next...>::type; };
+        using type = most_derived<out>::type;
+    };
+    template <typename in>
+    using err_type = _search_error<void, in, E, Es...>::type;
 
     /// TODO: if executed at runtime, store each of the errors as a unique_ptr to
     /// allow for polymorphism.  Otherwise, store them directly to avoid a heap
-    /// allocation.
+    /// allocation from compile time to runtime.
 
-    // if `T` is not void, store it as a union with the exception types
-    template <typename U, typename... Errs>
-    struct storage {
-        Union<T, Es..., std::unique_ptr<Es...>> m_data;
+    /// TODO: figure out proper noexcept specifiers
 
-        /// TODO: rest of interface
-    };
+    bool m_compiled;
+    union storage {
+        struct void_t {};
+        using type = std::conditional_t<meta::is_void<T>, void_t, value_type>;
 
-    // if `T` is void, use a placeholder type for the successful state
-    template <meta::is_void U, typename... Errs> requires (sizeof...(Errs) > 0)
-    struct storage<U, Errs...> {
-        struct ok {};
-        Union<ok, Errs..., std::unique_ptr<Es...>> m_data;
+        /* At compile time, we store the error instances directly in a non-polymorphic
+        fashion, so as to avoid leaking an allocation into runtime. */
+        struct CompileTime {
+            Union<type, E, Es...> data;
 
-        /// TODO: rest of interface
-    };
+            constexpr CompileTime()
+                noexcept(meta::nothrow::default_constructible<type>)
+                requires(meta::default_constructible<type>)
+            :
+                data()
+            {}
 
-    // if `Es...` is empty, inject `Exception` as the default exception type
-    template <typename U>
-    struct storage<U> : storage<U, Exception> {};
+            template <meta::convertible_to<type> V>
+            constexpr CompileTime(V&& v)
+                noexcept(meta::nothrow::convertible_to<V, type>)
+            :
+                data(std::forward<V>(v))
+            {}
 
-    storage<T, Es...> m_storage;
+            template <typename A, typename... As>
+                requires (
+                    (!meta::convertible_to<A, type> || sizeof...(As) > 0) &&
+                    meta::constructible_from<type, A, As...>
+                )
+            constexpr CompileTime(A&& first, As&&... rest) noexcept(
+                noexcept(Union<type, E, Es...>(type(
+                    std::forward<A>(first),
+                    std::forward<As>(rest)...
+                )))
+            ) :
+                data(type(std::forward<A>(first), std::forward<As>(rest)...))
+            {}
+
+            template <typename V> requires (meta::not_void<err_type<V>>)
+            constexpr CompileTime(err_state, V&& e)
+                noexcept(meta::nothrow::constructible_from<err_type<V>, V>)
+            :
+                data(std::forward<V>(e))
+            {}
+
+            constexpr bool ok() const noexcept { return data.index() == 0; }
+
+        } compile_time;
+
+        struct run_time_t {
+            Union<type, std::unique_ptr<E>, std::unique_ptr<Es...>> data;
+
+            run_time_t()
+                noexcept(meta::nothrow::default_constructible<type>)
+                requires(meta::default_constructible<type>)
+            :
+                data()
+            {}
+
+            template <meta::convertible_to<type> V>
+            run_time_t(V&& v)
+                noexcept(meta::nothrow::convertible_to<V, type>)
+            :
+                data(std::forward<V>(v))
+            {}
+
+            template <typename A, typename... As>
+                requires (
+                    (!meta::convertible_to<A, type> || sizeof...(As) > 0) &&
+                    meta::constructible_from<type, A, As...>
+                )
+            run_time_t(A&& first, As&&... rest) noexcept(
+                noexcept(Union<type, std::unique_ptr<E>, std::unique_ptr<Es...>>(
+                    type(std::forward<A>(first), std::forward<As>(rest)...)
+                ))
+            ) :
+                data(type(std::forward<A>(first), std::forward<As>(rest)...))
+            {}
+
+            template <typename V> requires (meta::not_void<err_type<V>>)
+            run_time_t(err_state, V&& e)
+                noexcept(meta::nothrow::constructible_from<err_type<V>, V>)
+            :
+                data(std::make_unique<err_type<V>>(std::forward<V>(e)))
+            {}
+
+            constexpr bool ok() const noexcept { return data.index() == 0; }
+
+        } run_time;
+
+        /// TODO: I may not want to move the cases here, since it technically
+        /// invokes an extra move constructor?  It might be best to use an ordinary
+        /// tag to differentiate
+
+        template <typename... As> requires (meta::constructible_from<CompileTime, As...>)
+        constexpr storage(compile_time_t, As&&... args)
+            noexcept(noexcept(CompileTime(std::forward<As>(args)...)))
+        :
+            compile_time(std::forward<As>(args)...)
+        {}
+
+        storage(run_time_t&& t)
+            noexcept(noexcept(run_time_t(std::move(t))))
+        :
+            run_time(std::move(t))
+        {}
+
+        constexpr ~storage() noexcept {}
+    } m_storage;
 
 public:
-    template <typename... Args> requires (meta::constructible_from<value_type, Args...>)
+    template <typename... Args>
+        requires (meta::constructible_from<typename storage::type, Args...>)
     [[nodiscard]] constexpr Expected(Args&&... args) noexcept(
-        meta::nothrow::constructible_from<value_type, Args...>
+        meta::nothrow::constructible_from<typename storage::type, Args...>
     ) :
-        m_storage(std::forward<Args>(args)...)
+        m_compiled(std::is_constant_evaluated()),
+        m_storage([](auto&&... args) noexcept(false) -> storage {
+            if consteval {
+                return {compile_time_t{}, std::forward<Args>(args)...};
+            } else {
+                return {run_time_t{}, std::forward<Args>(args)...};
+            }
+        }(std::forward<Args>(args)...))
     {}
 
-    /// TODO: a constructor that takes any of the Es... types polymorphically, as long
-    /// as T is not constructible with the same type.
+    template <typename V>
+        requires (
+            !meta::constructible_from<typename storage::type, V> &&
+            meta::inherits<V, E> ||
+            (meta::inherits<V, Es> || ...)
+        )
+    [[nodiscard]] constexpr Expected(V&& e) noexcept(
+        noexcept(storage(compile_time_t{}, err_state{}, std::forward<V>(e))) &&
+        noexcept(storage(run_time_t{}, err_state{}, std::forward<V>(e)))
+    ) :
+        m_compiled(std::is_constant_evaluated()),
+        m_storage([](auto&& e) noexcept(false) -> storage {
+            if consteval {
+                return {compile_time_t{}, err_state{}, std::forward<V>(e)};
+            } else {
+                return {run_time_t{}, err_state{}, std::forward<V>(e)};
+            }
+        }(std::forward<V>(e)))
+    {}
 
-    /// TODO: this will end up needing modifications to exceptions so that they can be
-    /// constructed at compile time and used with this class.
+    [[nodiscard]] constexpr Expected(const Expected& other) noexcept(
+        false
+    ) :
+        m_compiled(other.compiled()),
+        m_storage([](const Expected& other) noexcept(false) -> storage {
+            if consteval {
+                return {compile_time_t{}, other.m_storage.compile_time};
+            } else {
+                if (other.compiled()) {
+                    return {compile_time_t{}, other.m_storage.compile_time};
+                }
+                return {run_time_t{}, other.m_storage.run_time};
+            }
+        }(other))
+    {}
+
+    [[nodiscard]] constexpr Expected(Expected&& other) noexcept(
+        false
+    ) :
+        m_compiled(other.compiled()),
+        m_storage([](Expected&& other) noexcept(false) -> storage {
+            if consteval {
+                return {compile_time_t{}, std::move(other.m_storage.compile_time)};
+            } else {
+                if (other.compiled()) {
+                    return {compile_time_t{}, std::move(other.m_storage.compile_time)};
+                }
+                return {run_time_t{}, std::move(other.m_storage.run_time)};
+            }
+        }(std::move(other)))
+    {}
+
+    constexpr Expected& operator=(const Expected& other) noexcept(
+        false
+    ) {
+        if (this != &other) {
+            if consteval {
+                m_storage.compile_time = other.m_storage.compile_time;
+            } else {
+                if (compiled()) {
+                    if (other.compiled()) {
+                        m_storage.compile_time = other.m_storage.compile_time;
+                    } else {
+                        std::destroy_at(&m_storage.compile_time);
+                        std::construct_at(
+                            &m_storage.run_time,
+                            other.m_storage.run_time
+                        );
+                    }
+                } else {
+                    if (other.compiled()) {
+                        std::destroy_at(&m_storage.run_time);
+                        std::construct_at(
+                            &m_storage.compile_time,
+                            other.m_storage.compile_time
+                        );
+                    } else {
+                        m_storage.run_time = other.m_storage.run_time;
+                    }
+                }
+            }
+            m_compiled = other.compiled();
+        }
+        return *this;
+    }
+
+    constexpr Expected& operator=(Expected&& other) noexcept(
+        false
+    ) {
+        if (this != &other) {
+            if consteval {
+                m_storage.compile_time = std::move(other.m_storage.compile_time);
+            } else {
+                if (compiled()) {
+                    if (other.compiled()) {
+                        m_storage.compile_time = std::move(other.m_storage.compile_time);
+                    } else {
+                        std::destroy_at(&m_storage.run_time);
+                        std::construct_at(
+                            &m_storage.run_time,
+                            std::move(other.m_storage.run_time)
+                        );
+                    }
+                } else {
+                    if (other.compiled()) {
+                        std::destroy_at(&m_storage.run_time);
+                        std::construct_at(
+                            &m_storage.compile_time,
+                            std::move(other.m_storage.compile_time)
+                        );
+                    } else {
+                        m_storage.run_time = std::move(other.m_storage.run_time);
+                    }
+                }
+            }
+            m_compiled = other.compiled();
+        }
+        return *this;
+    }
+
+    constexpr ~Expected() noexcept(
+        false
+    ) {
+        if consteval {
+            std::destroy_at(&m_storage.compile_time);
+        } else {
+            if (compiled()) {
+                std::destroy_at(&m_storage.compile_time);
+            } else {
+                std::destroy_at(&m_storage.run_time);
+            }
+        }
+    }
+
+    /* `True` if the `Expected` was created at compile time.  `False` if it was created
+    at runtime.  Compile-time exception states will not store a stack trace, and will
+    not support polymorphism, so as to be constexpr-compatible. */
+    [[nodiscard]] constexpr bool compiled() const noexcept { return m_compiled; }
+
+    /* True if the `Expected` stores a valid result.  `False` if it is in the error
+    state. */
+    [[nodiscard]] constexpr bool ok() const noexcept {
+        if consteval {
+            return m_storage.compile_time.data.index() == 0;
+        } else {
+            if (compiled()) {
+                return m_storage.compile_time.data.index() == 0;
+            } else {
+                return m_storage.run_time.data.index() == 0;
+            }
+        }
+    }
+
+    /// TODO: result() should include debug assertions?
+
+    /* Get the valid result state. */
+    template <typename Self>
+    [[nodiscard]] constexpr decltype(auto) result(this Self&& self) noexcept(
+        false
+    ) {
+        // gross
+        if consteval {
+            (std::forward<Self>(self).m_storage.compile_time.data.m_storage.template get<0>());
+        } else {
+            if (self.compiled()) {
+                (std::forward<Self>(self).m_storage.compile_time.data.m_storage.template get<0>());
+            } else {
+                (std::forward<Self>(self).m_storage.run_time.data.m_storage.template get<0>());
+            }
+        }
+    }
+
+    /// TODO: for error() to work, the stored union must only contain errors, so that
+    /// I can just return a reference or move it here, along with a debug assertion.
+
+    // template <typename Self>
+    // [[nodiscard]] constexpr decltype(auto) error(this Self)
 
 
-    /// TODO: minimal interface, so that this can be the result of union.get()
+    /// TODO: don't really know if I even need any other methods here?  Maybe not
+    /// even visit()?  That or visit() needs to cover all states, including the
+    /// valid state, and that gets pretty tricky.  Maybe it can be accounted for within
+    /// the visitor interface, where it inserts an extra item for the valid state, and
+    /// then delegates to `visitable<errors...>::dispatch()` to reuse existing logic
 
 
     /////////////////////
@@ -1767,7 +2072,7 @@ public:
         );
     }
 
-
+    /// TODO: figure out iterators
 };
 
 
@@ -1775,9 +2080,9 @@ public:
 as a member method. */
 template <typename... Ts>
     requires (requires(Union<Ts...>& a, Union<Ts...>& b) { a.swap(b); })
-constexpr void swap(Union<Ts...>& a, Union<Ts...>& b) noexcept(
-    noexcept(a.swap(b))
-) {
+constexpr void swap(Union<Ts...>& a, Union<Ts...>& b)
+    noexcept(noexcept(a.swap(b)))
+{
     a.swap(b);
 }
 
@@ -1786,9 +2091,9 @@ constexpr void swap(Union<Ts...>& a, Union<Ts...>& b) noexcept(
 as a member method. */
 template <typename T>
     requires (requires(Optional<T>& a, Optional<T>& b) { a.swap(b); })
-constexpr void swap(Optional<T>& a, Optional<T>& b) noexcept(
-    noexcept(a.swap(b))
-) {
+constexpr void swap(Optional<T>& a, Optional<T>& b)
+    noexcept(noexcept(a.swap(b)))
+{
     a.swap(b);
 }
 
@@ -1797,9 +2102,9 @@ constexpr void swap(Optional<T>& a, Optional<T>& b) noexcept(
 `a.swap(b)` as a member method. */
 template <typename T, typename E>
     requires (requires(Expected<T, E>& a, Expected<T, E>& b) { a.swap(b); })
-constexpr void swap(Expected<T, E>& a, Expected<T, E>& b) noexcept(
-    noexcept(a.swap(b))
-) {
+constexpr void swap(Expected<T, E>& a, Expected<T, E>& b)
+    noexcept(noexcept(a.swap(b)))
+{
     a.swap(b);
 }
 

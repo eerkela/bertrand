@@ -39,6 +39,10 @@ namespace impl {
 */
 
 
+/// TODO: in C++26 with constexpr exceptions, `Exception` can inherit from
+/// std::exception, but not before, since its constructors are not marked as constexpr
+
+
 /* The root of the bertrand exception hierarchy.  This and all its subclasses are
 usable just like their built-in Python equivalents, and maintain coherent stack traces
 across both languages.  If an exception is constructed at compile time, then the
@@ -46,27 +50,29 @@ C++ stack trace will be omitted.  If Python is not loaded, then the same excepti
 types can still be used in a pure C++ context, but the `from_python()` and
 `to_python()` methods will be disabled. */
 struct Exception {
-protected:
+private:
+struct compile_time_t {};
+    struct run_time_t {};
 
     /* Exception internals are stored in a tagged union to differentiate between
     compile time and runtime exceptions. */
     bool m_compiled;
     union storage {
         /* At compile time, all we store is the message, without any traceback info. */
-        struct compile_time_t {
+        struct CompileTime {
             std::string_view message;
         } compile_time;
 
         /* At runtime, we also store a full traceback to the error location, as well
         as a mutable cache for the `what()` message. */
-        struct run_time_t {
+        struct RunTime {
             std::string message;
             mutable size_t skip;
             mutable bool resolved;
             union Trace {
                 mutable cpptrace::raw_trace raw;
                 mutable cpptrace::stacktrace full;
-                // default constructor skips Trace() + run_time_t constructor
+                // default constructor skips Trace() + RunTime constructor
                 Trace() noexcept : raw(cpptrace::generate_raw_trace(2)) {}
                 Trace(cpptrace::raw_trace&& trace) noexcept : raw(std::move(trace)) {}
                 Trace(cpptrace::stacktrace&& trace) noexcept : full(std::move(trace)) {}
@@ -77,14 +83,14 @@ protected:
             /// TODO: figure out skips to hide exception internals
 
             template <meta::convertible_to<std::string> T>
-            run_time_t(T&& message) noexcept :
+            RunTime(T&& message) noexcept :
                 message(std::forward<T>(message)),
                 skip(0),
                 resolved(false)
             {}
 
             template <meta::convertible_to<std::string> T>
-            run_time_t(cpptrace::raw_trace&& trace, size_t skip, T&& message) noexcept :
+            RunTime(cpptrace::raw_trace&& trace, size_t skip, T&& message) noexcept :
                 message(std::forward<T>(message)),
                 skip(skip),
                 resolved(false),
@@ -92,14 +98,14 @@ protected:
             {}
 
             template <meta::convertible_to<std::string> T>
-            run_time_t(cpptrace::stacktrace&& trace, size_t skip, T&& message) noexcept :
+            RunTime(cpptrace::stacktrace&& trace, size_t skip, T&& message) noexcept :
                 message(std::forward<T>(message)),
                 skip(skip),
                 resolved(true),
                 trace(std::move(trace))
             {}
 
-            run_time_t(const run_time_t& other) noexcept :
+            RunTime(const RunTime& other) noexcept :
                 message(other.message),
                 skip(other.skip),
                 resolved(other.resolved),
@@ -110,7 +116,7 @@ protected:
                 what(other.what)
             {}
 
-            run_time_t(run_time_t&& other) noexcept :
+            RunTime(RunTime&& other) noexcept :
                 message(std::move(other.message)),
                 skip(other.skip),
                 resolved(other.resolved),
@@ -121,7 +127,7 @@ protected:
                 what(std::move(other.what))
             {}
 
-            run_time_t& operator=(const run_time_t& other) noexcept {
+            RunTime& operator=(const RunTime& other) noexcept {
                 message = other.message;
                 skip = other.skip;
                 if (resolved) {
@@ -144,7 +150,7 @@ protected:
                 return *this;
             }
 
-            run_time_t& operator=(run_time_t&& other) noexcept {
+            RunTime& operator=(RunTime&& other) noexcept {
                 message = std::move(other.message);
                 skip = other.skip;
                 if (resolved) {
@@ -171,7 +177,7 @@ protected:
                 return *this;
             }
 
-            constexpr ~run_time_t() noexcept {
+            constexpr ~RunTime() noexcept {
                 if (resolved) {
                     trace.full.~stacktrace();
                 } else {
@@ -180,8 +186,20 @@ protected:
             }
         } run_time;
 
-        constexpr storage(compile_time_t&& t) noexcept : compile_time(std::move(t)) {}
-        storage(run_time_t&& t) noexcept : run_time(std::move(t)) {}
+        template <typename... As> requires (meta::constructible_from<CompileTime, As...>)
+        constexpr storage(compile_time_t, As&&... args)
+            noexcept(noexcept(CompileTime(std::forward<As>(args)...)))
+        :
+            compile_time(std::forward<As>(args)...)
+        {}
+
+        template <typename... As> requires (meta::constructible_from<RunTime, As...>)
+        storage(run_time_t, As&&... args)
+            noexcept(noexcept(RunTime(std::forward<As>(args)...)))
+        :
+            run_time(std::forward<As>(args)...)
+        {}
+
         constexpr ~storage() noexcept {}
     } m_storage;
 
@@ -199,19 +217,21 @@ protected:
         return result;
     }
 
+protected:
     struct get_trace {
         size_t skip = 1;
         constexpr get_trace operator++(int) const noexcept { return {skip + 1}; }
     };
 
     template <typename Msg> requires (meta::constructible_from<std::string, Msg>)
-    constexpr explicit Exception(get_trace trace, Msg&& msg) :
+    constexpr explicit Exception(get_trace trace, Msg&& msg) noexcept :
         m_compiled(std::is_constant_evaluated()),
-        m_storage([](get_trace& trace, auto&& msg) -> storage {
+        m_storage([](get_trace& trace, auto&& msg) noexcept -> storage {
             if consteval {
-                return typename storage::compile_time_t{std::forward<Msg>(msg)};
+                return {compile_time_t{}, std::forward<Msg>(msg)};
             } else {
-                return typename storage::run_time_t{
+                return {
+                    run_time_t{},
                     cpptrace::generate_raw_trace(1),  // skip wrapping lambda
                     trace.skip,
                     std::forward<Msg>(msg)
@@ -221,75 +241,64 @@ protected:
     {}
 
 public:
-
     template <meta::convertible_to<std::string_view> T>
-    constexpr explicit Exception(T&& msg) noexcept :
+    [[nodiscard]] constexpr explicit Exception(T&& msg) noexcept :
         m_compiled(std::is_constant_evaluated()),
-        m_storage([](auto&& msg) -> storage {
+        m_storage([](auto&& msg) noexcept -> storage {
             if consteval {
-                return typename storage::compile_time_t{std::forward<T>(msg)};
+                return {compile_time_t{}, std::forward<T>(msg)};
             } else {
-                return typename storage::run_time_t{std::forward<T>(msg)};
+                return {run_time_t{}, std::forward<T>(msg)};
             }
         }(std::forward<T>(msg)))
     {}
 
     template <meta::convertible_to<std::string> Msg = const char*>
-    explicit Exception(cpptrace::raw_trace&& trace, Msg&& msg = "") noexcept :
+    [[nodiscard]] explicit Exception(cpptrace::raw_trace&& trace, Msg&& msg = "") noexcept :
         m_compiled(false),
-        m_storage(typename storage::run_time_t{
+        m_storage(
+            run_time_t{},
             std::move(trace),
             0,
             std::forward<Msg>(msg)
-        })
+        )
     {}
 
     template <meta::convertible_to<std::string> Msg = const char*>
-    explicit Exception(cpptrace::stacktrace&& trace, Msg&& msg) noexcept :
+    [[nodiscard]] explicit Exception(cpptrace::stacktrace&& trace, Msg&& msg) noexcept :
         m_compiled(false),
-        m_storage(typename storage::run_time_t{
+        m_storage(
+            run_time_t{},
             std::move(trace),
             0,
             std::forward<Msg>(msg)
-        })
+        )
     {}
 
-    constexpr Exception(const Exception& other) noexcept :
+    [[nodiscard]] constexpr Exception(const Exception& other) noexcept :
         m_compiled(other.compiled()),
-        m_storage([](const Exception& other) -> storage {
+        m_storage([](const Exception& other) noexcept -> storage {
             if consteval {
-                return typename storage::compile_time_t{
-                    other.m_storage.compile_time
-                };
+                return {compile_time_t{}, other.m_storage.compile_time};
             } else {
                 if (other.compiled()) {
-                    return typename storage::compile_time_t{
-                        other.m_storage.compile_time
-                    };
+                    return {compile_time_t{}, other.m_storage.compile_time};
                 }
-                return typename storage::run_time_t{
-                    other.m_storage.run_time
-                };
+                return {run_time_t{}, other.m_storage.run_time};
             }
         }(other))
     {}
 
-    constexpr Exception(Exception&& other) noexcept :
+    [[nodiscard]] constexpr Exception(Exception&& other) noexcept :
         m_compiled(other.compiled()),
-        m_storage([](Exception&& other) -> storage {
+        m_storage([](Exception&& other) noexcept -> storage {
             if consteval {
-                return typename storage::compile_time_t{
-                    std::move(other.m_storage.compile_time)
-                };
+                return {compile_time_t{}, std::move(other.m_storage.compile_time)};
             } else {
                 if (other.compiled()) {
-                    return typename storage::compile_time_t{
-                        std::move(other.m_storage.compile_time)
-                    };
+                    return {compile_time_t{}, std::move(other.m_storage.compile_time)};
                 }
-                return typename storage::run_time_t{
-                    std::move(other.m_storage.run_time)
-                };
+                return {run_time_t{}, std::move(other.m_storage.run_time)};
             }
         }(std::move(other)))
     {}
@@ -372,7 +381,7 @@ public:
     /* `True` if the Exception was created at compile time.  `False` if it was created
     at runtime.  Compile-time exceptions will not store a stack trace, and will store
     the string as a `string_view`. */
-    constexpr bool compiled() const noexcept { return m_compiled; }
+    [[nodiscard]] constexpr bool compiled() const noexcept { return m_compiled; }
 
     /* Skip the `n` most recent frames in the stack trace.  Note that this works by
     incrementing an internal counter, so no extra traces are resolved at runtime, and
@@ -386,7 +395,7 @@ public:
                 return (std::forward<Self>(self));
             }
             ++n;  // always skip this method
-            typename storage::run_time_t& s = self.m_storage.run_time;
+            typename storage::RunTime& s = self.m_storage.run_time;
             if (s.resolved) {
                 if (n >= s.trace.full.frames.size()) {
                     s.trace.full.frames.clear();
@@ -418,7 +427,7 @@ public:
                 return std::forward<Self>(self);  // no frames to cut
             }
             cpptrace::frame_ptr pivot = curr.frames[curr.frames.size() - offset];
-            typename storage::run_time_t& s = self.m_storage.run_time;
+            typename storage::RunTime& s = self.m_storage.run_time;
             if (s.resolved) {
                 for (size_t i = s.trace.full.frames.size(); i-- > s.skip;) {
                     if (s.trace.full.frames[i].raw_address == pivot) {
@@ -461,7 +470,7 @@ public:
                 return std::forward<Self>(self);  // no frames to cut
             }
             cpptrace::frame_ptr pivot = curr.frames[offset];
-            typename storage::run_time_t& s = self.m_storage.run_time;
+            typename storage::RunTime& s = self.m_storage.run_time;
             if (s.resolved) {
                 for (size_t i = s.skip; i < s.trace.full.frames.size(); ++i) {
                     if (s.trace.full.frames[i].raw_address == pivot) {
@@ -487,14 +496,14 @@ public:
     displayed via the `what()` method).  This may return a null pointer if the
     exception has no traceback to report, which only occurs when an exception is thrown
     in a constexpr context (C++26 and later). */
-    const cpptrace::stacktrace* trace() const noexcept {
+    [[nodiscard]] const cpptrace::stacktrace* trace() const noexcept {
         if consteval {
             return nullptr;
         } else {
             if (m_compiled) {
                 return nullptr;
             }
-            const typename storage::run_time_t& r = m_storage.run_time;
+            const typename storage::RunTime& r = m_storage.run_time;
             if (r.resolved) {
                 return &r.trace.full;
             }
@@ -521,7 +530,7 @@ public:
     }
 
     /* The raw text of the exception message, sans traceback. */
-    constexpr std::string_view message() const noexcept {
+    [[nodiscard]] constexpr std::string_view message() const noexcept {
         if consteval {
             return m_storage.compile_time.message;
         } else {
@@ -535,14 +544,14 @@ public:
     /* The full exception diagnostic, including a coherent, Python-style traceback and
     error text.  If the exception was constructed at compile time, then the traceback
     will be omitted. */
-    constexpr const char* what() const noexcept {
+    [[nodiscard]] constexpr const char* what() const noexcept {
         if consteval {
             return m_storage.compile_time.message.data();
         } else {
             if (m_compiled) {
                 return m_storage.compile_time.message.data();
             }
-            const typename storage::run_time_t& r = m_storage.run_time;
+            const typename storage::RunTime& r = m_storage.run_time;
             if (r.what.empty()) {
                 r.what = "Traceback (most recent call last):\n";
                 if (const cpptrace::stacktrace* trace = this->trace()) {
@@ -564,7 +573,7 @@ public:
 
     /* A type index for this exception, which can be searched in the global
     `to_python()` map to find a corresponding callback. */
-    virtual std::type_index type() const noexcept {
+    [[nodiscard]] virtual std::type_index type() const noexcept {
         return typeid(Exception);
     }
 
@@ -595,30 +604,38 @@ public:
     protected:                                                                          \
                                                                                         \
         template <typename Msg> requires (meta::constructible_from<std::string, Msg>)   \
-        explicit constexpr CLS(get_trace trace, Msg&& msg) : BASE(                      \
+        explicit constexpr CLS(get_trace trace, Msg&& msg) noexcept : BASE(             \
             trace++,                                                                    \
             std::forward<Msg>(msg)                                                      \
         ) {}                                                                            \
                                                                                         \
     public:                                                                             \
-        virtual std::type_index type() const noexcept override { return typeid(CLS); }  \
-        virtual void raise() const override { throw *this; }                            \
-        virtual void raise() && override { throw std::move(*this); }                    \
+        [[nodiscard]] virtual std::type_index type() const noexcept override {          \
+            return typeid(CLS);                                                         \
+        }                                                                               \
+        [[noreturn]] virtual void raise() const override { throw *this; }               \
+        [[noreturn]] virtual void raise() && override { throw std::move(*this); }       \
                                                                                         \
         template <meta::convertible_to<std::string_view> Msg = const char*>             \
-        explicit constexpr CLS(Msg&& msg = "") : BASE(                                  \
+        [[nodiscard]] explicit constexpr CLS(Msg&& msg = "") noexcept : BASE(           \
             get_trace{},                                                                \
             std::forward<Msg>(msg)                                                      \
         ) {}                                                                            \
                                                                                         \
         template <meta::convertible_to<std::string_view> Msg = const char*>             \
-        explicit CLS(cpptrace::raw_trace&& trace, Msg&& msg = "") : BASE(               \
+        [[nodiscard]] explicit CLS(                                                     \
+            cpptrace::raw_trace&& trace,                                                \
+            Msg&& msg = ""                                                              \
+        ) noexcept : BASE(                                                              \
             std::move(trace),                                                           \
             std::forward<Msg>(msg)                                                      \
         ) {}                                                                            \
                                                                                         \
         template <meta::convertible_to<std::string_view> Msg = const char*>             \
-        explicit CLS(cpptrace::stacktrace&& trace, Msg&& msg = "") : BASE(              \
+        [[nodiscard]] explicit CLS(                                                     \
+            cpptrace::stacktrace&& trace,                                               \
+            Msg&& msg = ""                                                              \
+        ) noexcept : BASE(                                                              \
             std::move(trace),                                                           \
             std::forward<Msg>(msg)                                                      \
         ) {}                                                                            \
@@ -690,7 +707,7 @@ protected:
         ssize_t start,
         ssize_t end,
         std::string reason
-    ) :
+    ) noexcept :
         UnicodeError(
             trace++,
             "'" + encoding + "' codec can't decode bytes in position " +
@@ -705,7 +722,7 @@ protected:
     {}
 
 public:
-    virtual std::type_index type() const noexcept override {
+    [[nodiscard]] virtual std::type_index type() const noexcept override {
         return typeid(UnicodeDecodeError);
     }
     [[noreturn]] virtual void raise() const override { throw *this; }
@@ -717,13 +734,13 @@ public:
     ssize_t end;
     std::string reason;
 
-    explicit constexpr UnicodeDecodeError(
+    [[nodiscard]] explicit constexpr UnicodeDecodeError(
         std::string encoding,
         std::string object,
         ssize_t start,
         ssize_t end,
         std::string reason
-    ) :
+    ) noexcept :
         UnicodeError(
             get_trace{},
             "'" + encoding + "' codec can't decode bytes in position " +
@@ -737,14 +754,14 @@ public:
         reason(std::move(reason))
     {}
 
-    explicit UnicodeDecodeError(
+    [[nodiscard]] explicit UnicodeDecodeError(
         cpptrace::raw_trace&& trace,
         std::string encoding,
         std::string object,
         ssize_t start,
         ssize_t end,
         std::string reason
-    ) :
+    ) noexcept :
         UnicodeError(
             std::move(trace),
             "'" + encoding + "' codec can't decode bytes in position " +
@@ -758,14 +775,14 @@ public:
         reason(std::move(reason))
     {}
 
-    explicit UnicodeDecodeError(
+    [[nodiscard]] explicit UnicodeDecodeError(
         cpptrace::stacktrace&& trace,
         std::string encoding,
         std::string object,
         ssize_t start,
         ssize_t end,
         std::string reason
-    ) :
+    ) noexcept :
         UnicodeError(
             std::move(trace),
             "'" + encoding + "' codec can't decode bytes in position " +
@@ -790,7 +807,7 @@ protected:
         ssize_t start,
         ssize_t end,
         std::string reason
-    ) :
+    ) noexcept :
         UnicodeError(
             trace++,
             "'" + encoding + "' codec can't encode characters in position " +
@@ -805,7 +822,7 @@ protected:
     {}
 
 public:
-    virtual std::type_index type() const noexcept override {
+    [[nodiscard]] virtual std::type_index type() const noexcept override {
         return typeid(UnicodeEncodeError);
     }
     [[noreturn]] virtual void raise() const override { throw *this; }
@@ -817,13 +834,13 @@ public:
     ssize_t end;
     std::string reason;
 
-    explicit constexpr UnicodeEncodeError(
+    [[nodiscard]] explicit constexpr UnicodeEncodeError(
         std::string encoding,
         std::string object,
         ssize_t start,
         ssize_t end,
         std::string reason
-    ) :
+    ) noexcept :
         UnicodeError(
             get_trace{},
             "'" + encoding + "' codec can't encode characters in position " +
@@ -837,14 +854,14 @@ public:
         reason(std::move(reason))
     {}
 
-    explicit UnicodeEncodeError(
+    [[nodiscard]] explicit UnicodeEncodeError(
         cpptrace::raw_trace&& trace,
         std::string encoding,
         std::string object,
         ssize_t start,
         ssize_t end,
         std::string reason
-    ) :
+    ) noexcept :
         UnicodeError(
             std::move(trace),
             "'" + encoding + "' codec can't encode characters in position " +
@@ -858,14 +875,14 @@ public:
         reason(std::move(reason))
     {}
 
-    explicit UnicodeEncodeError(
+    [[nodiscard]] explicit UnicodeEncodeError(
         cpptrace::stacktrace&& trace,
         std::string encoding,
         std::string object,
         ssize_t start,
         ssize_t end,
         std::string reason
-    ) :
+    ) noexcept :
         UnicodeError(
             std::move(trace),
             "'" + encoding + "' codec can't encode characters in position " +
@@ -889,7 +906,7 @@ protected:
         ssize_t start,
         ssize_t end,
         std::string reason
-    ) :
+    ) noexcept :
         UnicodeError(
             trace++,
             "can't translate characters in position " +
@@ -903,7 +920,7 @@ protected:
     {}
 
 public:
-    virtual std::type_index type() const noexcept override {
+    [[nodiscard]] virtual std::type_index type() const noexcept override {
         return typeid(UnicodeTranslateError);
     }
     [[noreturn]] virtual void raise() const override { throw *this; }
@@ -914,12 +931,12 @@ public:
     ssize_t end;
     std::string reason;
 
-    explicit constexpr UnicodeTranslateError(
+    [[nodiscard]] explicit constexpr UnicodeTranslateError(
         std::string object,
         ssize_t start,
         ssize_t end,
         std::string reason
-    ) :
+    ) noexcept :
         UnicodeError(
             get_trace{},
             "can't translate characters in position " +
@@ -932,13 +949,13 @@ public:
         reason(std::move(reason))
     {}
 
-    explicit UnicodeTranslateError(
+    [[nodiscard]] explicit UnicodeTranslateError(
         cpptrace::raw_trace&& trace,
         std::string object,
         ssize_t start,
         ssize_t end,
         std::string reason
-    ) :
+    ) noexcept :
         UnicodeError(
             std::move(trace),
             "can't translate characters in position " +
@@ -951,13 +968,13 @@ public:
         reason(std::move(reason))
     {}
 
-    explicit UnicodeTranslateError(
+    [[nodiscard]] explicit UnicodeTranslateError(
         cpptrace::stacktrace&& trace,
         std::string object,
         ssize_t start,
         ssize_t end,
         std::string reason
-    ) :
+    ) noexcept :
         UnicodeError(
             std::move(trace),
             "can't translate characters in position " +
