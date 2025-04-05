@@ -2,7 +2,6 @@
 #define BERTRAND_STATIC_STRING_H
 
 #include "bertrand/common.h"
-#include "bertrand/math.h"
 #include "bertrand/iter.h"
 #include "bertrand/sort.h"
 

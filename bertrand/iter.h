@@ -109,9 +109,6 @@ public:
 
 namespace impl {
 
-    /* A generic sentinel type to simplify iterator implementations. */
-    struct sentinel {};
-
     /* Check to see if applying Python-style wraparound to a compile-time index would
     yield a valid index into a container of a given size.  Returns false if the
     index would be out of bounds after normalizing. */

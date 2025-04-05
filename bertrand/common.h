@@ -95,7 +95,12 @@ static_assert(
 
 namespace impl {
     struct wrapper_tag {};
+    struct args_tag {};
 }
+
+
+template <typename... Ts>
+struct args;
 
 
 namespace meta {
@@ -110,18 +115,23 @@ namespace meta {
 
     namespace detail {
 
-        template <typename... Ts>
+        template <typename...>
         constexpr bool types_are_unique = true;
         template <typename T, typename... Ts>
         constexpr bool types_are_unique<T, Ts...> =
             !(std::same_as<T, Ts> || ...) && types_are_unique<Ts...>;
 
-    }
-
-    template <typename... Ts>
-    concept types_are_unique = detail::types_are_unique<Ts...>;
-
-    namespace detail {
+        template <typename out, typename...>
+        struct unique_types { using type = out; };
+        template <typename... out, typename T, typename... Ts>
+        struct unique_types<bertrand::args<out...>, T, Ts...> {
+            using type = unique_types<bertrand::args<out..., T>, Ts...>::type;
+        };
+        template <typename... out, typename T, typename... Ts>
+            requires (std::same_as<T, out> || ...)
+        struct unique_types<bertrand::args<out...>, T, Ts...> {
+            using type = unique_types<bertrand::args<out...>, Ts...>::type;
+        };
 
         template <typename Search, size_t I, typename... Ts>
         constexpr size_t index_of = 0;
@@ -130,6 +140,15 @@ namespace meta {
             std::same_as<Search, T> ? 0 : index_of<Search, I + 1, Ts...> + 1;
 
     }
+
+    /* Concept that is satisfied only if every `T` occurs exactly once in `Ts...`. */
+    template <typename... Ts>
+    concept types_are_unique = detail::types_are_unique<Ts...>;
+
+    /* Filter out any duplicate types from `Ts...`, returning a `bertrand::args<Us...>`
+    placeholder where `Us...` contains only the unique types. */
+    template <typename... Ts>
+    using unique_types = detail::unique_types<bertrand::args<>, Ts...>::type;
 
     /* Get the index of a particular type within a parameter pack.  Returns the pack's
     size if the type is not present. */
@@ -1686,28 +1705,107 @@ namespace meta {
     }
 
     template <typename T>
-    concept can_dereference = requires(T t) { *t; };
+    concept addressable = requires(T t) {
+        { &t } -> std::convertible_to<T*>;
+    };
 
-    template <can_dereference T>
-    using dereference_type = decltype((*std::declval<T>()));
+    template <addressable T>
+    using address_type = decltype(&std::declval<T>());
 
     template <typename T, typename Ret>
-    concept dereferences_to =
-        can_dereference<T> && convertible_to<dereference_type<T>, Ret>;
+    concept address_returns =
+        addressable<T> && convertible_to<address_type<T>, Ret>;
 
     namespace nothrow {
 
         template <typename T>
-        concept can_dereference =
-            meta::can_dereference<T> &&
+        concept addressable = meta::addressable<T> && noexcept(&std::declval<T>());
+
+        template <addressable T>
+        using address_type = meta::address_type<T>;
+
+        template <typename T, typename Ret>
+        concept address_returns =
+            addressable<T> && convertible_to<address_type<T>, Ret>;
+
+    }
+
+    template <typename T>
+    concept dereferenceable = requires(T t) { *t; };
+
+    template <dereferenceable T>
+    using dereference_type = decltype((*std::declval<T>()));
+
+    template <typename T, typename Ret>
+    concept dereferences_to =
+        dereferenceable<T> && convertible_to<dereference_type<T>, Ret>;
+
+    namespace nothrow {
+
+        template <typename T>
+        concept dereferenceable =
+            meta::dereferenceable<T> &&
             noexcept((*std::declval<T>()));
 
-        template <can_dereference T>
+        template <dereferenceable T>
         using dereference_type = meta::dereference_type<T>;
 
         template <typename T, typename Ret>
         concept dereferences_to =
-            can_dereference<T> && convertible_to<dereference_type<T>, Ret>;
+            dereferenceable<T> && convertible_to<dereference_type<T>, Ret>;
+
+    }
+
+    template <typename T>
+    concept has_arrow = requires(T t) {
+        { t.operator->() } -> meta::pointer;
+    };
+
+    template <has_arrow T>
+    using arrow_type = decltype((std::declval<T>().operator->()));
+
+    template <typename T, typename Ret>
+    concept arrow_returns = has_arrow<T> && convertible_to<arrow_type<T>, Ret>;
+
+    namespace nothrow {
+
+        template <typename T>
+        concept has_arrow =
+            meta::has_arrow<T> && noexcept(std::declval<T>().operator->());
+
+        template <has_arrow T>
+        using arrow_type = meta::arrow_type<T>;
+
+        template <typename T, typename Ret>
+        concept arrow_returns =
+            has_arrow<T> && convertible_to<arrow_type<T>, Ret>;
+
+    }
+
+    template <typename L, typename R>
+    concept has_arrow_dereference = requires(L l, R r) { l->*r; };
+
+    template <typename L, typename R> requires (has_arrow_dereference<L, R>)
+    using arrow_dereference_type = decltype((std::declval<L>()->*std::declval<R>()));
+
+    template <typename Ret, typename L, typename R>
+    concept arrow_dereference_returns =
+        has_arrow_dereference<L, R> && convertible_to<arrow_dereference_type<L, R>, Ret>;
+
+    namespace nothrow {
+
+        template <typename L, typename R>
+        concept has_arrow_dereference =
+            meta::has_arrow_dereference<L, R> &&
+            noexcept(std::declval<L>()->*std::declval<R>());
+
+        template <typename L, typename R> requires (has_arrow_dereference<L, R>)
+        using arrow_dereference_type = meta::arrow_dereference_type<L, R>;
+
+        template <typename Ret, typename L, typename R>
+        concept arrow_dereference_returns =
+            has_arrow_dereference<L, R> &&
+            convertible_to<arrow_dereference_type<L, R>, Ret>;
 
     }
 
@@ -3054,7 +3152,6 @@ namespace meta {
 
 
 namespace impl {
-    struct args_tag {};
 
     template <typename... Ts>
     struct ArgsBase : args_tag {};
@@ -3078,6 +3175,14 @@ namespace impl {
                 }
             }())
         {}
+    };
+
+    /* A generic sentinel type to simplify iterator implementations. */
+    struct sentinel {
+        constexpr bool operator==(sentinel) const noexcept { return true; }
+        constexpr auto operator<=>(sentinel) const noexcept {
+            return std::strong_ordering::equal;
+        }
     };
 
     /* A helper type that simplifies friend declarations for wrapper types.  Every
@@ -3153,11 +3258,11 @@ WARNING: Undefined behavior can occur if an lvalue is bound that falls out of sc
 before the pack is consumed.  Such values will not have their lifetimes extended in any
 way, and it is the user's responsibility to ensure that this is observed at all times.
 Generally speaking, ensuring that no packs are returned out of a local context is
-enough to satisfy this guarantee.  Typically, this class will be consumed within the
+enough to satisfy this guarantee.  Usually, this class will be consumed within the
 same context in which it was created, or in a downstream one where all of the objects
 are still in scope, as a way of enforcing a certain order of operations.  Note that
 this guidance does not apply to rvalues and temporaries, which are stored directly
-within the pack for its natural lifetime. */
+within the pack, extending their lifetimes. */
 template <typename... Ts>
 struct args : impl::ArgsBase<Ts...> {
 private:
@@ -3273,6 +3378,7 @@ private:
 public:
     /* The total number of arguments being stored. */
     [[nodiscard]] static constexpr size_t size() noexcept { return sizeof...(Ts); }
+    [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(sizeof...(Ts)); }
     [[nodiscard]] static constexpr bool empty() noexcept { return !sizeof...(Ts); }
 
     template <typename T>
@@ -4062,11 +4168,47 @@ namespace impl {
     }
 
     struct Hash {
-        template <typename T> requires (meta::hashable<T>)
+        template <meta::hashable T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::hashable<T>)
         {
-            return bertrand::hash(std::forward<T>(value));
+            return (bertrand::hash(std::forward<T>(value)));
+        }
+    };
+
+    struct AddressOf {
+        template <meta::addressable T>
+        static constexpr decltype(auto) operator()(T&& value)
+            noexcept(meta::nothrow::addressable<T>)
+        {
+            return (&std::forward<T>(value));
+        }
+    };
+
+    struct Dereference {
+        template <meta::dereferenceable T>
+        static constexpr decltype(auto) operator()(T&& value)
+            noexcept(meta::nothrow::dereferenceable<T>)
+        {
+            return (*std::forward<T>(value));
+        }
+    };
+
+    struct Arrow {
+        template <meta::has_arrow T>
+        static constexpr decltype(auto) operator()(T&& value)
+            noexcept(meta::nothrow::has_arrow<T>)
+        {
+            return (std::forward<T>(value).operator->());
+        }
+    };
+
+    struct ArrowDereference {
+        template <typename L, typename R> requires (meta::has_arrow_dereference<L, R>)
+        static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
+            noexcept(meta::nothrow::has_arrow_dereference<L, R>)
+        {
+            return (std::forward<L>(lhs)->*std::forward<R>(rhs));
         }
     };
 
@@ -4089,7 +4231,7 @@ namespace impl {
     };
 
     struct Pos {
-        template <typename T> requires (meta::has_pos<T>)
+        template <meta::has_pos T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_pos<T>)
         {
@@ -4098,7 +4240,7 @@ namespace impl {
     };
 
     struct Neg {
-        template <typename T> requires (meta::has_neg<T>)
+        template <meta::has_neg T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_neg<T>)
         {
@@ -4107,7 +4249,7 @@ namespace impl {
     };
 
     struct Invert {
-        template <typename T> requires (meta::has_invert<T>)
+        template <meta::has_invert T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_invert<T>)
         {
@@ -4116,7 +4258,7 @@ namespace impl {
     };
 
     struct PreIncrement {
-        template <typename T> requires (meta::has_preincrement<T>)
+        template <meta::has_preincrement T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_preincrement<T>)
         {
@@ -4125,7 +4267,7 @@ namespace impl {
     };
 
     struct PostIncrement {
-        template <typename T> requires (meta::has_postincrement<T>)
+        template <meta::has_postincrement T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_postincrement<T>)
         {
@@ -4134,7 +4276,7 @@ namespace impl {
     };
 
     struct PreDecrement {
-        template <typename T> requires (meta::has_predecrement<T>)
+        template <meta::has_predecrement T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_predecrement<T>)
         {
@@ -4143,7 +4285,7 @@ namespace impl {
     };
 
     struct PostDecrement {
-        template <typename T> requires (meta::has_postdecrement<T>)
+        template <meta::has_postdecrement T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_postdecrement<T>)
         {
@@ -4152,7 +4294,7 @@ namespace impl {
     };
 
     struct LogicalNot {
-        template <typename T> requires (meta::has_logical_not<T>)
+        template <meta::has_logical_not T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_logical_not<T>)
         {
