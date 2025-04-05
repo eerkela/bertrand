@@ -806,449 +806,6 @@ namespace impl {
         }
     };
 
-    /// TODO: choosing the right categories, value/difference types, etc. becomes a
-    /// bit of a challenge.  Ideally, it would be as simple as checking
-    /// std::iterator_traits for each unique begin iterator, and maybe it is actually
-    /// that simple.  But maybe I should form the value_type
-
-    template <size_t n_begin, typename... Ts>
-    struct union_iterator {
-    private:
-        static constexpr size_t N = sizeof...(Ts);
-
-        template <size_t, typename...>
-        struct _traits;
-
-        /// TODO: also collect categories and difference types?
-
-        // recursive case: get dereference type for each non-sentinel iterator
-        template <size_t I, typename... values, typename U, typename... Us>
-        struct _traits<I, bertrand::args<values...>, U, Us...> {
-            template <typename T>
-            struct filter {
-                using type = _traits<I + 1, bertrand::args<values...>, Us...>::type;
-            };
-            template <meta::dereferenceable T>
-            struct filter<T> {
-                using type = _traits<
-                    I + 1,
-                    bertrand::args<values..., meta::dereference_type<T>>,
-                    Us...
-                >::type;
-            };
-            using type = filter<U>::type;
-        };
-
-        // base case: form a union for dereference types of non-sentinel iterators
-        template <typename... values, typename... Us>
-        struct _traits<n_begin, bertrand::args<values...>, Us...> {
-            /// TODO: if everything dereferences to the same type, then I can store
-            /// that as an optional?
-
-        };
-
-        using traits = _traits<0, bertrand::args<>, Ts...>;
-
-        /// TODO: deduce proper value types, etc.
-
-        using storage_type = Union<Ts...>;
-        storage_type storage;
-
-        /// TODO: store a value type internally, so that references to it can be
-        /// returned from the dereference operator, and a pointer from the arrow
-        /// operator.
-
-    public:
-        using iterator_category = void;
-        using difference_type = void;
-        using value_type = void;
-        using reference = void;
-        using pointer = std::add_pointer_t<reference>;
-
-        /// TODO: always initialize with the first value?  If no such value exists,
-        /// then the value_type will be uninitialized.  It is thus always stored
-        /// in an Optional<>?
-
-        template <typename... Args>
-            requires (meta::constructible_from<storage_type, Args...>)
-        constexpr union_iterator(Args&&... args)
-            noexcept(meta::nothrow::constructible_from<storage_type, Args...>)
-        :
-            storage(std::forward<Args>(args)...)
-        {}
-
-        /// TODO: swap()?
-
-    private:
-
-        template <typename func, typename T>
-        static constexpr auto pairwise_compare() noexcept
-            -> std::array<bool(*)(const storage_type&, const storage_type&), N>
-        {
-            constexpr size_t I = meta::index_of<T, Ts...>;
-            return {+[](const storage_type& lhs, const storage_type& rhs) noexcept(
-                !DEBUG && meta::nothrow::invocable<func, T, Ts>
-            ) -> bool {
-                constexpr size_t J = meta::index_of<Ts>;
-                if constexpr (meta::invoke_returns<bool, T, Ts>) {
-                    return func{}(
-                        lhs.m_storage.template get<I>(),
-                        rhs.m_storage.template get<J>()
-                    );
-                } else {
-                    if constexpr (DEBUG) {
-                        /// TODO: print proper type names
-                        if constexpr (meta::is<func, impl::Less>) {
-                            throw BadUnionAccess(
-                                "iterators do not support `<` operator"
-                            );
-                        } else if constexpr (meta::is<func, impl::LessEqual>) {
-                            throw BadUnionAccess(
-                                "iterators do not support `<=` operator"
-                            );
-                        } else if constexpr (meta::is<func, impl::Equal>) {
-                            throw BadUnionAccess(
-                                "iterators do not support `==` operator"
-                            );
-                        } else if constexpr (meta::is<func, impl::NotEqual>) {
-                            throw BadUnionAccess(
-                                "iterators do not support `!=` operator"
-                            );
-                        } else if constexpr (meta::is<func, impl::Greater>) {
-                            throw BadUnionAccess(
-                                "iterators do not support `>` operator"
-                            );
-                        } else if constexpr (meta::is<func, impl::GreaterEqual>) {
-                            throw BadUnionAccess(
-                                "iterators do not support `>=` operator"
-                            );
-                        }
-                    }
-                    return false;
-                }
-            }...};
-        }
-
-    public:
-
-        /// TODO: dereferencing requires some kind of internal union, a pointer to
-        /// which can be returned by the arrow operator.  This gets really complicated
-
-        constexpr reference operator*()
-            /// TODO: only requires the non-sentinel iterators to be dereferenceable
-            noexcept(!DEBUG && (meta::nothrow::dereferenceable<Ts> && ...))
-            requires(meta::dereferenceable<Ts> && ...)
-        {
-            // vtable only includes dereference functions for non-sentinel iterators,
-            // which are guaranteed to be valid.
-            static constexpr auto vtable = []<size_t... Is>(std::index_sequence<Is...>) {
-                return std::array{+[](storage_type& s) noexcept(
-                    meta::nothrow::dereferenceable<meta::unpack_type<Is, Ts...>>
-                ) -> reference {
-                    return *s.m_storage.template get<Is>();
-                }...};
-            }(std::make_index_sequence<n_begin>{});
-
-            // if the current index is a sentinel, throw a debug assertion
-            if constexpr (DEBUG) {
-                if (storage.index() >= n_begin) {
-                    throw AssertionError("cannot dereference an end iterator");
-                }
-            }
-            return vtable[storage.index()](storage);
-        }
-
-        constexpr meta::as_const<reference> operator*() const
-            /// TODO: only requires the non-sentinel iterators to be dereferenceable
-            noexcept(!DEBUG && (meta::nothrow::dereferenceable<Ts> && ...))
-            requires(meta::dereferenceable<Ts> && ...)
-        {
-            // vtable only includes dereference functions for non-sentinel iterators,
-            // which are guaranteed to be valid.
-            static constexpr auto vtable = []<size_t... Is>(std::index_sequence<Is...>) {
-                return std::array{+[](const storage_type& s) noexcept(
-                    meta::nothrow::dereferenceable<meta::unpack_type<Is, Ts...>>
-                ) -> reference {
-                    return *s.m_storage.template get<Is>();
-                }...};
-            }(std::make_index_sequence<n_begin>{});
-
-            // if the current index is a sentinel, throw a debug assertion
-            if constexpr (DEBUG) {
-                if (storage.index() >= n_begin) {
-                    throw AssertionError("cannot dereference an end iterator");
-                }
-            }
-            return vtable[storage.index()](storage);
-        }
-
-        /// TODO: operator->, operator[]
-
-        /// TODO: ++, +=, +, --, -=, - (also counting distance)
-
-
-        constexpr bool operator<(const union_iterator& other) const
-            noexcept(
-                /// TODO: noexcept specification here is complicated, and shouldn't
-                /// just depend on direct == between the storage types.
-                !DEBUG && false
-            )
-            requires (
-                /// TODO: only enabled if at least one begin iterator allows comparison
-                /// with either another begin type or an end type
-                false
-            )
-        {
-            static constexpr std::array vtable {pairwise_compare<impl::Less, Ts>()...};
-            return vtable[storage.index()][other.storage.index()](
-                storage,
-                other.storage
-            );
-        }
-
-        constexpr bool operator<=(const union_iterator& other) const
-            noexcept(
-                /// TODO: noexcept specification here is complicated, and shouldn't
-                /// just depend on direct == between the storage types.
-                !DEBUG && false
-            )
-            requires (
-                /// TODO: only enabled if at least one begin iterator allows comparison
-                /// with either another begin type or an end type
-                false
-            )
-        {
-            static constexpr std::array vtable {pairwise_compare<impl::LessEqual, Ts>()...};
-            return vtable[storage.index()][other.storage.index()](
-                storage,
-                other.storage
-            );
-        }
-
-        constexpr bool operator==(const union_iterator& other) const
-            noexcept(
-                /// TODO: noexcept specification here is complicated, and shouldn't
-                /// just depend on direct == between the storage types.
-                !DEBUG && false
-            )
-            requires (
-                /// TODO: only enabled if at least one begin iterator allows comparison
-                /// with either another begin type or an end type
-                false
-            )
-        {
-            static constexpr std::array vtable {pairwise_compare<impl::Equal, Ts>()...};
-            return vtable[storage.index()][other.storage.index()](
-                storage,
-                other.storage
-            );
-        }
-
-        constexpr bool operator!=(const union_iterator& other) const
-            noexcept(
-                /// TODO: noexcept specification here is complicated, and shouldn't
-                /// just depend on direct == between the storage types.
-                !DEBUG && false
-            )
-            requires (
-                /// TODO: only enabled if at least one begin iterator allows comparison
-                /// with either another begin type or an end type
-                false
-            )
-        {
-            static constexpr std::array vtable {pairwise_compare<impl::NotEqual, Ts>()...};
-            return vtable[storage.index()][other.storage.index()](
-                storage,
-                other.storage
-            );
-        }
-
-        constexpr bool operator>=(const union_iterator& other) const
-            noexcept(
-                /// TODO: noexcept specification here is complicated, and shouldn't
-                /// just depend on direct == between the storage types.
-                !DEBUG && false
-            )
-            requires (
-                /// TODO: only enabled if at least one begin iterator allows comparison
-                /// with either another begin type or an end type
-                false
-            )
-        {
-            static constexpr std::array vtable {pairwise_compare<impl::GreaterEqual, Ts>()...};
-            return vtable[storage.index()][other.storage.index()](
-                storage,
-                other.storage
-            );
-        }
-
-        constexpr bool operator>(const union_iterator& other) const
-            noexcept(
-                /// TODO: noexcept specification here is complicated, and shouldn't
-                /// just depend on direct == between the storage types.
-                !DEBUG && false
-            )
-            requires (
-                /// TODO: only enabled if at least one begin iterator allows comparison
-                /// with either another begin type or an end type
-                false
-            )
-        {
-            static constexpr std::array vtable {pairwise_compare<impl::Greater, Ts>()...};
-            return vtable[storage.index()][other.storage.index()](
-                storage,
-                other.storage
-            );
-        }
-
-        /// TODO: spaceship comparison similar to above  This would maybe require yet
-        /// more template metaprogramming to handle all the possible return types for
-        /// the spaceship comparison.
-
-    };
-
-    /* Given a sequence of types `Ts...`, some of which may be iterable, get an
-    iterator type that can iterate over all of them in monadic fashion.  Types that
-    cannot be iterated over will be represented as empty ranges, and the resulting
-    iterator may dereference to a union of all the valid results. */
-    template <typename... Ts>
-    struct get_union_iterator;
-
-    /* Recursive case: determine valid iterator types from templated containers. */
-    template <typename... begin, typename... end, typename T, typename... Ts>
-    struct get_union_iterator<
-        bertrand::args<begin...>,
-        bertrand::args<end...>,
-        T,
-        Ts...
-    > {
-        template <typename U>
-        struct filter {
-            using type = get_union_iterator<
-                bertrand::args<begin...>,
-                bertrand::args<end..., impl::sentinel>,
-                Ts...
-            >::type;
-            static constexpr bool n_begin = get_union_iterator<
-                bertrand::args<begin...>,
-                bertrand::args<end..., impl::sentinel>,
-                Ts...
-            >::n_begin;
-        };
-        template <meta::iterable U>
-        struct filter<U> {
-            using type = get_union_iterator<
-                bertrand::args<begin..., meta::begin_type<U>>,
-                bertrand::args<end..., meta::end_type<U>>,
-                Ts...
-            >::type;
-            static constexpr bool n_begin = get_union_iterator<
-                bertrand::args<begin..., meta::begin_type<U>>,
-                bertrand::args<end..., meta::end_type<U>>,
-                Ts...
-            >::n_begin;
-        };
-        using type = filter<T>::type;
-        static constexpr size_t n_begin = filter<T>::n_begin;
-    };
-
-    /* Base case: deduplicate the begin and end iterator types and combine them into
-    a single iterator type. */
-    template <typename... begin, typename... end>
-    struct get_union_iterator<
-        bertrand::args<begin...>,
-        bertrand::args<end...>
-    > {
-        static constexpr size_t n_begin = meta::unique_types<begin...>::size();
-
-        // if there are no types in the union, return void
-        template <typename>
-        struct _type { using type = void; };
-
-        // if there is only one type in the union, return that type directly
-        template <typename It>
-        struct _type<bertrand::args<It>> { using type = It; };
-
-        // if there are multiple types, forward to union_iterator
-        template <typename... Its> requires (sizeof...(Its) > 1)
-        struct _type<bertrand::args<Its...>> {
-            using type = union_iterator<n_begin, Its...>;
-        };
-
-        using type = _type<meta::unique_types<begin..., end...>>::type;
-    };
-
-    /* Given a sequence of types `Ts...`, some of which may be reverse iterable, get an
-    iterator type that can reverse iterate over all of them in monadic fashion.  Types
-    that cannot be iterated over will be represented as empty ranges, and the resulting
-    iterator may dereference to a union of all the valid results. */
-    template <typename... Ts>
-    struct get_reverse_union_iterator;
-
-    /* Recursive case: determine valid iterator types from templated containers. */
-    template <typename... rbegin, typename... rend, typename T, typename... Ts>
-    struct get_reverse_union_iterator<
-        bertrand::args<rbegin...>,
-        bertrand::args<rend...>,
-        T,
-        Ts...
-    > {
-        template <typename U>
-        struct filter {
-            using type = get_reverse_union_iterator<
-                bertrand::args<rbegin...>,
-                bertrand::args<rend..., impl::sentinel>,
-                Ts...
-            >::type;
-            static constexpr bool n_begin = get_reverse_union_iterator<
-                bertrand::args<rbegin...>,
-                bertrand::args<rend..., impl::sentinel>,
-                Ts...
-            >::n_begin;
-        };
-        template <meta::reverse_iterable U>
-        struct filter<U> {
-            using type = get_reverse_union_iterator<
-                bertrand::args<rbegin..., meta::rbegin_type<U>>,
-                bertrand::args<rend..., meta::rend_type<U>>,
-                Ts...
-            >::type;
-            static constexpr bool n_begin = get_reverse_union_iterator<
-                bertrand::args<rbegin..., meta::rbegin_type<U>>,
-                bertrand::args<rend..., meta::rend_type<U>>,
-                Ts...
-            >::n_begin;
-        };
-        using type = filter<T>::type;
-        static constexpr size_t n_begin = filter<T>::n_begin;
-    };
-
-    /* Base case: deduplicate the rbegin and rend iterator types and combine them into
-    a single iterator type. */
-    template <typename... rbegin, typename... rend>
-    struct get_reverse_union_iterator<
-        bertrand::args<rbegin...>,
-        bertrand::args<rend...>
-    > {
-        static constexpr size_t n_begin = meta::unique_types<rbegin...>::size();
-
-        // if there are no types in the union, return void
-        template <typename>
-        struct _type { using type = void; };
-
-        // if there is only one type in the union, return that type directly
-        template <typename It>
-        struct _type<bertrand::args<It>> { using type = It; };
-
-        // if there are multiple types, forward to union_iterator
-        template <typename... Its> requires (sizeof...(Its) > 1)
-        struct _type<bertrand::args<Its...>> {
-            using type = union_iterator<n_begin, Its...>;
-        };
-
-        using type = _type<meta::unique_types<rbegin..., rend...>>::type;
-    };
-
 }
 
 
@@ -1309,10 +866,6 @@ template <typename... Ts>
     )
 struct Union : impl::union_tag {
     using types = bertrand::args<Ts...>;
-    using iterator = impl::get_union_iterator<Ts...>;
-    using const_iterator = impl::get_union_iterator<meta::as_const<Ts>...>;
-    using reverse_iterator = impl::get_reverse_union_iterator<Ts...>;
-    using const_reverse_iterator = impl::get_reverse_union_iterator<meta::as_const<Ts>...>;
 
     /// TODO: maybe alternatives -> types::size()?
     /// alternative<I> -> types::at<I>?
@@ -1863,6 +1416,32 @@ private:
         }...
     };
 
+    struct Size {
+        template <typename T>
+        static constexpr decltype(auto) operator()(const T& value) noexcept(
+            noexcept(!meta::has_size<T> || meta::nothrow::has_size<T>)
+        ) {
+            if constexpr (meta::has_size<T>) {
+                return std::ranges::size(value);
+            } else {
+                return 0; // default size for invalid types
+            }
+        }
+    };
+
+    struct Empty {
+        template <typename T>
+        static constexpr bool operator()(const T& value) noexcept(
+            noexcept(!meta::has_empty<T> || meta::nothrow::has_empty<T>)
+        ) {
+            if constexpr (meta::has_empty<T>) {
+                return std::ranges::empty(value);
+            } else {
+                return true; // default status for invalid types
+            }
+        }
+    };
+
 public:
 
     /* Default constructor finds the first type in `Ts...` that can be default
@@ -2015,86 +1594,6 @@ public:
     }
 
     /// TODO: dereference, ->* operator overloads?  These should be global operators?
-
-    template <typename Self>
-        requires (meta::visitor<decltype(std::ranges::size), Self>)
-    constexpr decltype(auto) size(this Self&& self)
-        noexcept(meta::nothrow::visitor<decltype(std::ranges::size), Self>)
-    {
-        return std::forward<Self>(self).visit(std::ranges::size);
-    }
-
-    template <typename Self>
-        requires (meta::visitor<decltype(std::ranges::empty), Self>)
-    constexpr decltype(auto) empty(this Self&& self)
-        noexcept(meta::nothrow::visitor<decltype(std::ranges::empty), Self>)
-    {
-        return std::forward<Self>(self).visit(std::ranges::empty);
-    }
-
-    template <typename Self>
-        requires (meta::visitor<decltype(std::ranges::begin), Self>)
-    constexpr decltype(auto) begin(this Self&& self)
-        noexcept(meta::nothrow::visitor<decltype(std::ranges::begin), Self>)
-    {
-        return std::forward<Self>(self).visit(std::ranges::begin);
-    }
-
-    template <typename Self>
-        requires (meta::visitor<decltype(std::ranges::cbegin), Self>)
-    constexpr decltype(auto) cbegin(this Self&& self)
-        noexcept(meta::nothrow::visitor<decltype(std::ranges::cbegin), Self>)
-    {
-        return std::forward<Self>(self).visit(std::ranges::cbegin);
-    }
-
-    template <typename Self>
-        requires (meta::visitor<decltype(std::ranges::end), Self>)
-    constexpr decltype(auto) end(this Self&& self)
-        noexcept(meta::nothrow::visitor<decltype(std::ranges::end), Self>)
-    {
-        return std::forward<Self>(self).visit(std::ranges::end);
-    }
-
-    template <typename Self>
-        requires (meta::visitor<decltype(std::ranges::cend), Self>)
-    constexpr decltype(auto) cend(this Self&& self)
-        noexcept(meta::nothrow::visitor<decltype(std::ranges::cend), Self>)
-    {
-        return std::forward<Self>(self).visit(std::ranges::cend);
-    }
-
-    template <typename Self>
-        requires (meta::visitor<decltype(std::ranges::rbegin), Self>)
-    constexpr decltype(auto) rbegin(this Self&& self)
-        noexcept(meta::nothrow::visitor<decltype(std::ranges::rbegin), Self>)
-    {
-        return std::forward<Self>(self).visit(std::ranges::rbegin);
-    }
-
-    template <typename Self>
-        requires (meta::visitor<decltype(std::ranges::crbegin), Self>)
-    constexpr decltype(auto) crbegin(this Self&& self)
-        noexcept(meta::nothrow::visitor<decltype(std::ranges::crbegin), Self>)
-    {
-        return std::forward<Self>(self).visit(std::ranges::crbegin);
-    }
-
-    template <typename Self>
-        requires (meta::visitor<decltype(std::ranges::rend), Self>)
-    constexpr decltype(auto) rend(this Self&& self)
-        noexcept(meta::nothrow::visitor<decltype(std::ranges::rend), Self>)
-    {
-        return std::forward<Self>(self).visit(std::ranges::rend);
-    }
-
-    template <typename Self>
-        requires (meta::visitor<decltype(std::ranges::crend), Self>)
-    constexpr decltype(auto) crend(this Self&& self)
-        noexcept(meta::nothrow::visitor<decltype(std::ranges::crend), Self>)
-    {
-        return std::forward<Self>(self).visit(std::ranges::crend);
-    }
 };
 
 
@@ -2336,14 +1835,6 @@ public:
         return std::forward<F>(f)();
     }
 
-    /// TODO: rest of monadic optional interface, including iterators, which for the
-    /// empty state will simply produce an end() iterator.  Perhaps this can be
-    /// implemented such that the iterator type holds a union of the begin and end
-    /// iterators along with impl::sentinel{}, which would be used for the empty
-    /// case.  This will be somewhat complex to implement, but would be a nice
-    /// addition, and should be clearer than the `std::optional` interface, which
-    /// treats the optional as a range with a single value.
-
     template <typename Self, typename... Args>
         requires (meta::visitor<impl::Call, Self, Args...>)
     constexpr decltype(auto) operator()(this Self&& self, Args&&... args)
@@ -2365,9 +1856,6 @@ public:
             std::forward<Key>(keys)...
         );
     }
-
-    /// TODO: iterators
-
 };
 
 
@@ -2881,8 +2369,6 @@ public:
             std::forward<Key>(keys)...
         );
     }
-
-    /// TODO: figure out iterators for this and optional
 };
 
 
@@ -3431,12 +2917,15 @@ namespace bertrand {
 
             constexpr auto u6 = Union<int, const int&, std::string>::create<std::string>("abc");
             static_assert(u6.index() == 2);
+            static_assert(u6.size() == 3);
+            static_assert(!u6.empty());
         }
 
         {
             static constexpr int value = 2;
             static constexpr Union<int, const int&> val = value;
             static constexpr Union<int, const int&> val2 = val;
+            // static_assert(val.empty());
             static_assert(val <= 2);
             static_assert((val + 1) / val2 == 1);
             static constexpr auto f = [](int x, int y) noexcept {
