@@ -7,6 +7,7 @@
 #include <concepts>
 #include <cstddef>
 #include <exception>
+#include <expected>
 #include <filesystem>
 #include <functional>
 #include <iostream>
@@ -514,106 +515,6 @@ namespace meta {
 
     template <typename T>
     concept is_aggregate = std::is_aggregate_v<unqualify<T>>;
-
-    /////////////////////////
-    ////    STL TYPES    ////
-    /////////////////////////
-
-    namespace detail {
-
-        template <typename T>
-        struct optional { static constexpr bool value = false; };
-        template <typename T>
-        struct optional<std::optional<T>> {
-            static constexpr bool value = true;
-            using type = T;
-        };
-
-    }
-
-    template <typename T>
-    concept optional = detail::optional<unqualify<T>>::value;
-
-    template <optional T>
-    using optional_type = detail::optional<unqualify<T>>::type;
-
-    namespace detail {
-
-        template <typename T>
-        struct variant { static constexpr bool value = false; };
-        template <typename... Ts>
-        struct variant<std::variant<Ts...>> {
-            static constexpr bool value = true;
-            using types = std::tuple<Ts...>;
-        };
-
-    }
-
-    template <typename T>
-    concept variant = detail::variant<unqualify<T>>::value;
-
-    template <variant T>
-    using variant_types = detail::variant<unqualify<T>>::types;
-
-    namespace detail {
-
-        template <typename T>
-        struct shared_ptr { static constexpr bool enable = false; };
-        template <typename T>
-        struct shared_ptr<std::shared_ptr<T>> {
-            static constexpr bool enable = true;
-            using type = T;
-        };
-
-    }
-
-    template <typename T>
-    concept shared_ptr = detail::shared_ptr<unqualify<T>>::enable;
-
-    template <shared_ptr T>
-    using shared_ptr_type = detail::shared_ptr<unqualify<T>>::type;
-
-    namespace detail {
-
-        template <typename T>
-        struct unique_ptr { static constexpr bool enable = false; };
-        template <typename T>
-        struct unique_ptr<std::unique_ptr<T>> {
-            static constexpr bool enable = true;
-            using type = T;
-        };
-
-    }
-
-    template <typename T>
-    concept unique_ptr = detail::unique_ptr<unqualify<T>>::enable;
-
-    template <unique_ptr T>
-    using unique_ptr_type = detail::unique_ptr<unqualify<T>>::type;
-
-    template <typename A, typename T>
-    concept allocator_for =
-        // 1) A must have member alias value_type which equals T
-        requires { typename unqualify<A>::value_type; } &&
-        std::same_as<typename unqualify<A>::value_type, T> &&
-
-        // 2) A must be copy and move constructible/assignable
-        std::is_copy_constructible_v<unqualify<A>> &&
-        std::is_copy_assignable_v<unqualify<A>> &&
-        std::is_move_constructible_v<unqualify<A>> &&
-        std::is_move_assignable_v<unqualify<A>> &&
-
-        // 3) A must be equality comparable
-        requires(A a, A b) {
-            { a == b } -> std::convertible_to<bool>;
-            { a != b } -> std::convertible_to<bool>;
-        } &&
-
-        // 4) A must be able to allocate and deallocate
-        requires(A a, T* ptr, size_t n) {
-            { a.allocate(n) } -> std::convertible_to<T*>;
-            { a.deallocate(ptr, n) };
-        };
 
     ////////////////////////////
     ////    CONSTRUCTION    ////
@@ -3110,6 +3011,132 @@ namespace meta {
 
     }
 
+    /////////////////////////
+    ////    STL TYPES    ////
+    /////////////////////////
+
+    namespace std {
+
+        namespace detail {
+
+            template <typename T>
+            struct optional { static constexpr bool value = false; };
+            template <typename T>
+            struct optional<::std::optional<T>> {
+                static constexpr bool value = true;
+                using type = T;
+            };
+    
+        }
+    
+        template <typename T>
+        concept optional = detail::optional<unqualify<T>>::value;
+
+        template <optional T>
+        using optional_type = detail::optional<unqualify<T>>::type;
+
+        namespace detail {
+
+            template <typename T>
+            struct expected { static constexpr bool value = false; };
+            template <typename T, typename E>
+            struct expected<::std::expected<T, E>> {
+                static constexpr bool value = true;
+                using type = T;
+                using error = E;
+            };
+
+        }
+
+        template <typename T>
+        concept expected = detail::expected<unqualify<T>>::value;
+
+        template <expected T>
+        using expected_type = detail::expected<unqualify<T>>::type;
+
+        template <expected T>
+        using expected_error = typename detail::expected<unqualify<T>>::error;
+
+        namespace detail {
+
+            template <typename T>
+            struct variant { static constexpr bool value = false; };
+            template <typename... Ts>
+            struct variant<::std::variant<Ts...>> {
+                static constexpr bool value = true;
+                using types = bertrand::args<Ts...>;
+            };
+    
+        }
+    
+        template <typename T>
+        concept variant = detail::variant<unqualify<T>>::value;
+    
+        template <variant T>
+        using variant_types = detail::variant<unqualify<T>>::types;
+    
+        namespace detail {
+    
+            template <typename T>
+            struct shared_ptr { static constexpr bool enable = false; };
+            template <typename T>
+            struct shared_ptr<::std::shared_ptr<T>> {
+                static constexpr bool enable = true;
+                using type = T;
+            };
+    
+        }
+    
+        template <typename T>
+        concept shared_ptr = detail::shared_ptr<unqualify<T>>::enable;
+    
+        template <shared_ptr T>
+        using shared_ptr_type = detail::shared_ptr<unqualify<T>>::type;
+    
+        namespace detail {
+    
+            template <typename T>
+            struct unique_ptr { static constexpr bool enable = false; };
+            template <typename T>
+            struct unique_ptr<::std::unique_ptr<T>> {
+                static constexpr bool enable = true;
+                using type = T;
+            };
+    
+        }
+    
+        template <typename T>
+        concept unique_ptr = detail::unique_ptr<unqualify<T>>::enable;
+    
+        template <unique_ptr T>
+        using unique_ptr_type = detail::unique_ptr<unqualify<T>>::type;
+
+        template <typename A, typename T>
+        concept allocator_for =
+            // 1) A must have member alias value_type which equals T
+            requires { typename unqualify<A>::value_type; } &&
+            ::std::same_as<typename unqualify<A>::value_type, T> &&
+
+            // 2) A must be copy and move constructible/assignable
+            ::std::is_copy_constructible_v<unqualify<A>> &&
+            ::std::is_copy_assignable_v<unqualify<A>> &&
+            ::std::is_move_constructible_v<unqualify<A>> &&
+            ::std::is_move_assignable_v<unqualify<A>> &&
+
+            // 3) A must be equality comparable
+            requires(A a, A b) {
+                { a == b } -> ::std::convertible_to<bool>;
+                { a != b } -> ::std::convertible_to<bool>;
+            } &&
+
+            // 4) A must be able to allocate and deallocate
+            requires(A a, T* ptr, size_t n) {
+                { a.allocate(n) } -> ::std::convertible_to<T*>;
+                { a.deallocate(ptr, n) };
+            };
+
+    }
+
     ////////////////////////////////////
     ////    CUSTOMIZATION POINTS    ////
     ////////////////////////////////////
@@ -3226,21 +3253,21 @@ namespace meta {
     `meta::wrapper` concept is modeled, or returning the result as-is otherwise. */
     template <typename T>
     [[nodiscard]] constexpr decltype(auto) unwrap(T&& t) noexcept {
-        return std::forward<T>(t);
+        return ::std::forward<T>(t);
     }
 
     /* Transparently unwrap wrapped types, triggering a getter call if the
     `meta::wrapper` concept is modeled, or returning the result as-is otherwise. */
     template <wrapper T>
     [[nodiscard]] constexpr decltype(auto) unwrap(T&& t) noexcept(
-        noexcept(impl::getter{}(std::forward<T>(t)))
+        noexcept(impl::getter{}(::std::forward<T>(t)))
     ) {
-        return impl::getter{}(std::forward<T>(t));
+        return impl::getter{}(::std::forward<T>(t));
     }
 
     /* Describes the result of the `meta::unwrap()` operator. */
     template <typename T>
-    using unwrap_type = decltype(unwrap(std::declval<T>()));
+    using unwrap_type = decltype(unwrap(::std::declval<T>()));
 
 }
 

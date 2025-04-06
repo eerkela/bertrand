@@ -343,7 +343,7 @@ namespace meta {
                         bertrand::args<>,
                         typename invoke<valid>::type...
                     >;
-                    using type = std::conditional_t<
+                    using type = ::std::conditional_t<
                         exhaustive,
                         typename result::type,
                         bertrand::Expected<typename result::type, BadUnionAccess>
@@ -365,6 +365,30 @@ namespace meta {
             using type = check<permutations>::type;
         };
 
+        template <typename T, typename R>
+        static constexpr bool visit_returns = meta::convertible_to<T, R>;
+        template <typename... Ts, typename R>
+        static constexpr bool visit_returns<bertrand::Union<Ts...>, R> =
+            (visit_returns<Ts, R> && ...);
+        template <typename T, typename R>
+        static constexpr bool visit_returns<bertrand::Optional<T>, R> =
+            visit_returns<T, R> && meta::convertible_to<void, R>;
+        template <typename T, typename... Es, typename R>
+        static constexpr bool visit_returns<bertrand::Expected<T, Es...>, R> =
+            visit_returns<T, R>;
+
+        template <typename T, typename R>
+        static constexpr bool nothrow_visit_returns = meta::nothrow::convertible_to<T, R>;
+        template <typename... Ts, typename R>
+        static constexpr bool nothrow_visit_returns<bertrand::Union<Ts...>, R> =
+            (nothrow_visit_returns<Ts, R> && ...);
+        template <typename T, typename R>
+        static constexpr bool nothrow_visit_returns<bertrand::Optional<T>, R> =
+            nothrow_visit_returns<T, R> && meta::nothrow::convertible_to<void, R>;
+        template <typename T, typename... Es, typename R>
+        static constexpr bool nothrow_visit_returns<bertrand::Expected<T, Es...>, R> =
+            nothrow_visit_returns<T, R>;
+
     }
 
     /* A visitor function can only be applied to a set of arguments if at least one
@@ -385,10 +409,10 @@ namespace meta {
     using visit_type = detail::visit<F, Args...>::type;
 
     /* Tests whether the return type of a visitor is implicitly convertible to the
-    expected type. */
+    expected type for every possible permutation. */
     template <typename Ret, typename F, typename... Args>
     concept visit_returns =
-        visitor<F, Args...> && convertible_to<visit_type<F, Args...>, Ret>;
+        visitor<F, Args...> && detail::visit_returns<visit_type<F, Args...>, Ret>;
 
     namespace nothrow {
 
@@ -405,7 +429,8 @@ namespace meta {
 
         template <typename Ret, typename F, typename... Args>
         concept visit_returns =
-            visitor<F, Args...> && convertible_to<visit_type<F, Args...>, Ret>;
+            visitor<F, Args...> &&
+            detail::nothrow_visit_returns<visit_type<F, Args...>, Ret>;
 
     }
 
@@ -556,6 +581,99 @@ namespace impl {
         }
     };
 
+    /* `std::variant`s are treated like unions. */
+    template <meta::std::variant T>
+    struct visitable<T> {
+    private:
+        static constexpr size_t N = std::variant_size_v<meta::unqualify<T>>;
+
+        template <size_t I, typename... Ts>
+        struct _pack {
+            using type = _pack<
+                I + 1,
+                Ts...,
+                decltype((std::get<I>(std::declval<T>())))
+            >::type;
+        };
+        template <typename... Ts>
+        struct _pack<N, Ts...> { using type = bertrand::args<Ts...>; };
+
+    public:
+        static constexpr bool enable = true;
+        using type = T;
+        using pack = _pack<0>::type;
+
+        template <typename R, size_t I, typename F, typename... A>
+            requires (
+                I < sizeof...(A) &&
+                meta::is<T, meta::unpack_type<I, A...>> &&
+                meta::visitor<F, A...>
+            )
+        static constexpr R dispatch(F&& func, A&&... args)
+            noexcept(meta::nothrow::visitor<F, A...>)
+        {
+            // Build a vtable that dispatches to all possible alternatives
+            static constexpr auto vtable = []<
+                size_t... Prev,
+                size_t... Next,
+                size_t... Is
+            >(
+                std::index_sequence<Prev...>,
+                std::index_sequence<Next...>,
+                std::index_sequence<Is...>
+            ) {
+                /// NOTE: func and args are forwarded as lvalues in order to avoid
+                /// unnecessary copies/moves within the dispatch logic.  They are
+                /// converted back to their proper categories upon recursion
+                return std::array{+[](
+                    meta::as_lvalue<F> func,
+                    meta::as_lvalue<A>... args
+                ) noexcept(meta::nothrow::visitor<F, A...>) -> R {
+                    using type = decltype((
+                        std::get<Is>(meta::unpack_arg<I>(std::forward<A>(args)...))
+                    ));
+                    if constexpr (meta::visitor<
+                        F,
+                        meta::unpack_type<Prev, A...>...,
+                        type,
+                        meta::unpack_type<I + 1 + Next, A...>...
+                    >) {
+                        return visit_impl<R, I + 1>(
+                            std::forward<F>(func),
+                            meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
+                            std::get<Is>(meta::unpack_arg<I>(std::forward<A>(args)...)),
+                            meta::unpack_arg<I + 1 + Next>(std::forward<A>(args)...)...
+                        );
+                    } else if constexpr (meta::Expected<R>) {
+                        return BadUnionAccess(
+                            "failed to invoke visitor for variant argument " +
+                            impl::int_to_static_string<I> + " with active type '" +
+                            type_name<typename std::variant_alternative_t<
+                                Is,
+                                meta::unqualify<T>
+                            >> + "'"
+                        );
+                    } else {
+                        static_assert(
+                            false,
+                            "unreachable: a non-exhaustive iterator must always "
+                            "return an `Expected` result"
+                        );
+                        std::unreachable();
+                    }
+                }...};
+            }(
+                std::make_index_sequence<I>{},
+                std::make_index_sequence<sizeof...(A) - I - 1>{},
+                std::make_index_sequence<N>{}
+            );
+
+            // search the vtable for the actual type, and recur for the next
+            // argument until all arguments have been fully deduced
+            return vtable[meta::unpack_arg<I>(args...).index()](func, args...);
+        }
+    };
+
     /* Optionals are converted into packs of length 2. */
     template <meta::Optional T>
     struct visitable<T> {
@@ -664,14 +782,146 @@ namespace impl {
         }
     };
 
+    /* `std::optional`s are treated like `Optional`. */
+    template <meta::std::optional T>
+    struct visitable<T> {
+        static constexpr bool enable = true;
+        using type = T;
+        using pack = bertrand::args<
+            std::nullopt_t,
+            decltype((std::declval<T>().value()))
+        >;
+
+        template <typename R, size_t I, typename F, typename... A>
+            requires (
+                I < sizeof...(A) &&
+                meta::is<T, meta::unpack_type<I, A...>> &&
+                meta::visitor<F, A...>
+            )
+        static constexpr R dispatch(F&& func, A&&... args)
+            noexcept(meta::nothrow::visitor<F, A...>)
+        {
+            static constexpr auto vtable = []<size_t... Prev, size_t... Next>(
+                std::index_sequence<Prev...>,
+                std::index_sequence<Next...>
+            ) {
+                return std::array{
+                    // empty case
+                    +[](meta::as_lvalue<F> func, meta::as_lvalue<A>... args) noexcept(
+                        meta::nothrow::visitor<F, A...>
+                    ) -> R {
+                        if constexpr (meta::visitor<
+                            F,
+                            meta::unpack_type<Prev, A...>...,
+                            std::nullopt_t,
+                            meta::unpack_type<I + 1 + Next, A...>...
+                        >) {
+                            return visit_impl<R, I + 1>(
+                                std::forward<F>(func),
+                                meta::unpack_arg<Prev>(
+                                    std::forward<A>(args)...
+                                )...,
+                                std::nullopt,
+                                meta::unpack_arg<I + 1 + Next>(
+                                    std::forward<A>(args)...
+                                )...
+                            );
+                        } else if constexpr (meta::Expected<R>) {
+                            return BadUnionAccess(
+                                "failed to invoke visitor for empty optional argument " +
+                                impl::int_to_static_string<I>
+                            );
+                        } else {
+                            static_assert(
+                                false,
+                                "unreachable: a non-exhaustive iterator must always "
+                                "return an `Expected` result"
+                            );
+                            std::unreachable();
+                        }
+                    },
+                    // non-empty case
+                    +[](meta::as_lvalue<F> func, meta::as_lvalue<A>... args) noexcept(
+                        meta::nothrow::visitor<F, A...>
+                    ) -> R {
+                        using type = decltype((meta::unpack_arg<I>(
+                            std::forward<A>(args)...
+                        ).m_storage.value()));
+                        if constexpr (meta::visitor<
+                            F,
+                            meta::unpack_type<Prev, A...>...,
+                            type,
+                            meta::unpack_type<I + 1 + Next, A...>...
+                        >) {
+                            return visit_impl<R, I + 1>(
+                                std::forward<F>(func),
+                                meta::unpack_arg<Prev>(
+                                    std::forward<A>(args)...
+                                )...,
+                                meta::unpack_arg<I>(
+                                    std::forward<A>(args)...
+                                ).value(),
+                                meta::unpack_arg<I + 1 + Next>(
+                                    std::forward<A>(args)...
+                                )...
+                            );
+                        } else if constexpr (meta::Expected<R>) {
+                            return BadUnionAccess(
+                                "failed to invoke visitor for empty optional argument " +
+                                impl::int_to_static_string<I>
+                            );
+                        } else {
+                            static_assert(
+                                false,
+                                "unreachable: a non-exhaustive iterator must always "
+                                "return an `Expected` result"
+                            );
+                            std::unreachable();
+                        }
+                    }
+                };
+            }(
+                std::make_index_sequence<I>{},
+                std::make_index_sequence<sizeof...(A) - I - 1>{}
+            );
+
+            // search the vtable based on empty/non-empty state of the optional
+            return vtable[meta::unpack_arg<I>(args...).has_value()](func, args...);
+        }
+    };
+
     /* Expecteds are converted into packs including the result type (if not void)
     followed by all error types. */
     template <meta::Expected T>
     struct visitable<T> {
+    private:
+        static constexpr bool is_void =
+            meta::is_void<typename meta::unqualify<T>::value_type>;
+        static constexpr size_t n_errors = meta::unqualify<T>::errors::size();
+
+        template <size_t I, typename... Ts>
+        struct build_pack {
+            using type = build_pack<
+                I + 1,
+                Ts...,
+                decltype((std::declval<T>().m_storage.template get_error<I>()))
+            >::type;
+        };
+        template <typename... Ts>
+        struct build_pack<n_errors, Ts...> { using type = bertrand::args<Ts...>; };
+
+        template <typename V>
+        struct _pack {
+            using type = build_pack<0, decltype((std::declval<T>().result()))>::type;
+
+        };
+        template <meta::is_void V>
+        struct _pack<V> { using type = build_pack<0, std::nullopt_t>::type; };
+    
+    public:
         static constexpr bool enable = true;
         using type = T;
-        /// TODO: generate the right pack
-        /// TODO: this needs to use type aliases exposed in Expected<T, Es...>
+        using pack = _pack<typename meta::unqualify<T>::value_type>::type;
 
         template <typename R, size_t I, typename F, typename... A>
             requires (
@@ -698,7 +948,8 @@ namespace impl {
                         meta::nothrow::visitor<F, A...>
                     ) -> R {
                         /// TODO: differentiate between single error and unions of
-                        /// errors
+                        /// errors.  delegates to `visitable<Union<errors...>>::dispatch()`
+                        /// to reuse existing logic
                     }
                 };
             }(
@@ -707,103 +958,14 @@ namespace impl {
             );
 
             // search the vtable based on valid/error state of the expected
-            return vtable[meta::unpack_arg<I>(args...).has_value()](func, args...);
+            return vtable[meta::unpack_arg<I>(args...).has_error()](func, args...);
         }
     };
 
-    /// TODO: maybe std::optional and std::expected are also visitable
-
-    /* `std::variant`s are treated like unions. */
-    template <meta::variant T>
+    /* `std::expected`s are treated like `Expected`. */
+    template <meta::std::expected T>
     struct visitable<T> {
-    private:
-        static constexpr size_t N = std::variant_size_v<meta::unqualify<T>>;
-
-        template <size_t I, typename... Ts>
-        struct _pack {
-            using type = _pack<
-                I + 1,
-                Ts...,
-                decltype((std::get<I>(std::declval<T>())))
-            >::type;
-        };
-        template <typename... Ts>
-        struct _pack<N, Ts...> { using type = bertrand::args<Ts...>; };
-
-    public:
-        static constexpr bool enable = true;
-        using type = T;
-        using pack = _pack<0>::type;
-
-        template <typename R, size_t I, typename F, typename... A>
-            requires (
-                I < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<I, A...>> &&
-                meta::visitor<F, A...>
-            )
-        static constexpr R dispatch(F&& func, A&&... args)
-            noexcept(meta::nothrow::visitor<F, A...>)
-        {
-            // Build a vtable that dispatches to all possible alternatives
-            static constexpr auto vtable = []<
-                size_t... Prev,
-                size_t... Next,
-                size_t... Is
-            >(
-                std::index_sequence<Prev...>,
-                std::index_sequence<Next...>,
-                std::index_sequence<Is...>
-            ) {
-                /// NOTE: func and args are forwarded as lvalues in order to avoid
-                /// unnecessary copies/moves within the dispatch logic.  They are
-                /// converted back to their proper categories upon recursion
-                return std::array{+[](
-                    meta::as_lvalue<F> func,
-                    meta::as_lvalue<A>... args
-                ) noexcept(meta::nothrow::visitor<F, A...>) -> R {
-                    using type = decltype((
-                        std::get<Is>(meta::unpack_arg<I>(std::forward<A>(args)...))
-                    ));
-                    if constexpr (meta::visitor<
-                        F,
-                        meta::unpack_type<Prev, A...>...,
-                        type,
-                        meta::unpack_type<I + 1 + Next, A...>...
-                    >) {
-                        return visit_impl<R, I + 1>(
-                            std::forward<F>(func),
-                            meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
-                            std::get<Is>(meta::unpack_arg<I>(std::forward<A>(args)...)),
-                            meta::unpack_arg<I + 1 + Next>(std::forward<A>(args)...)...
-                        );
-                    } else if constexpr (meta::Expected<R>) {
-                        return BadUnionAccess(
-                            "failed to invoke visitor for variant argument " +
-                            impl::int_to_static_string<I> + " with active type '" +
-                            type_name<typename std::variant_alternative_t<
-                                Is,
-                                meta::unqualify<T>
-                            >> + "'"
-                        );
-                    } else {
-                        static_assert(
-                            false,
-                            "unreachable: a non-exhaustive iterator must always "
-                            "return an `Expected` result"
-                        );
-                        std::unreachable();
-                    }
-                }...};
-            }(
-                std::make_index_sequence<I>{},
-                std::make_index_sequence<sizeof...(A) - I - 1>{},
-                std::make_index_sequence<N>{}
-            );
-
-            // search the vtable for the actual type, and recur for the next
-            // argument until all arguments have been fully deduced
-            return vtable[meta::unpack_arg<I>(args...).index()](func, args...);
-        }
+        /// TODO: implement this similar to the above
     };
 
 }
@@ -887,8 +1049,6 @@ struct Union : impl::union_tag {
 private:
     template <typename T>
     friend struct impl::visitable;
-    template <size_t n_begin, typename... Us>
-    friend struct impl::union_iterator;
     template <meta::not_void T>
     friend struct bertrand::Optional;
     template <typename T, meta::unqualified E, meta::unqualified... Es>
@@ -1662,28 +1822,27 @@ private:
     template <typename Self>
     using access = decltype((std::declval<Self>().m_storage.value()));
 
-    template <typename Self, meta::invocable<access<Self>> F>
-    struct _and_then_t { using type = Optional<meta::invoke_type<F, access<Self>>>; };
-    template <typename Self, meta::invocable<access<Self>> F>
-        requires (meta::Optional<meta::invoke_type<F, access<Self>>>)
-    struct _and_then_t<Self, F> { using type = meta::invoke_type<F, access<Self>>; };
-    template <typename Self, meta::invocable<access<Self>> F>
-    using and_then_t = _and_then_t<Self, F>::type;
+    template <typename R>
+    struct _and_then_t { using type = Optional<R>; };
+    template <meta::Optional R>
+    struct _and_then_t<R> { using type = meta::unqualify<R>; };
+    template <typename F, typename Self, typename... Args>
+        requires (meta::invocable<F, access<Self>, Args...>)
+    using and_then_t = _and_then_t<meta::invoke_type<F, access<Self>, Args...>>::type;
 
-    template <typename Self, meta::invocable<> F>
+    template <typename R>
     struct _or_else_t {
-        using type = Optional<meta::common_type<value_type, meta::invoke_type<F>>>;
+        using type = Optional<meta::common_type<value_type, R>>;
     };
-    template <typename Self, meta::invocable<> F>
-        requires (meta::Optional<meta::invoke_type<F>>)
-    struct _or_else_t<Self, F> {
+    template <meta::Optional R>
+    struct _or_else_t<R> {
         using type = Optional<meta::common_type<
             value_type,
-            typename meta::invoke_type<F>::value_type
+            typename meta::unqualify<R>::value_type
         >>;
     };
-    template <typename Self, meta::invocable<> F>
-    using or_else_t = _or_else_t<Self, F>::type;
+    template <typename F, typename... Args>
+    using or_else_t = _or_else_t<meta::invoke_type<F, Args...>>::type;
 
 public:
     [[nodiscard]] constexpr Optional() noexcept = default;
@@ -1713,7 +1872,7 @@ public:
         }
     }
 
-    /* Clear the current value, restoring the optional to the empty state. */
+    /* Clear the current value, transitioning the optional to the empty state. */
     constexpr void reset() noexcept(noexcept(m_storage.reset())) {
         m_storage.reset();
     }
@@ -1724,8 +1883,8 @@ public:
         return m_storage.has_value();
     }
 
-    /* Access the stored value.  Throws a `BadUnionAccess` exception if the optional
-    is currently in the empty state and the program is compiled in debug mode. */
+    /* Access the stored value.  Throws a `BadUnionAccess` assertion if the program is
+    compiled in debug mode and the optional is currently in the empty state. */
     template <typename Self>
     [[nodiscard]] constexpr access<Self> value(this Self&& self) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
@@ -1737,19 +1896,15 @@ public:
     }
 
     /* Access the stored value or return the default value if the optional is empty,
-    returning the common type between the wrapped type and the default value. */
+    converting to the common type between the wrapped type and the default value. */
     template <typename Self, typename V>
         requires (meta::has_common_type<access<Self>, V>)
     [[nodiscard]] constexpr meta::common_type<access<Self>, V> value_or(
         this Self&& self,
         V&& fallback
     ) noexcept(
-        noexcept(meta::common_type<access<Self>, V>(
-            std::forward<Self>(self).m_storage.value()
-        )) &&
-        noexcept(meta::common_type<access<Self>, V>(
-            std::forward<V>(fallback)
-        ))
+        meta::nothrow::convertible_to<meta::common_type<access<Self>, V>, access<Self>> &&
+        meta::nothrow::convertible_to<meta::common_type<access<Self>, V>, V>
     ) {
         if (self.has_value()) {
             return std::forward<Self>(self).m_storage.value();
@@ -1760,7 +1915,12 @@ public:
 
     /* A member equivalent for `bertrand::visit()`, which always inserts this optional
     as the first argument, for chaining purposes.  See `bertrand::visit()` for more
-    details. */
+    details.
+
+    For optionals, the visitor function only needs to handle two cases corresponding
+    to the empty and non-empty states.  If the optional is empty, then the visitor will
+    be invoked with an argument of type `std::nullopt_t`.  Otherwise, it will be
+    invoked with the output from `.value()`. */
     template <typename F, typename Self, typename... Args>
         requires (meta::visitor<F, Self, Args...>)
     constexpr meta::visit_type<F, Self, Args...> visit(
@@ -1777,62 +1937,128 @@ public:
         );
     }
 
-    /////////////////////
-    ////    MONAD    ////
-    /////////////////////
+    /* If the optional is not empty, invoke a boolean predicate on the value, returning
+    a new optional with an identical value where the result is `true`, or an empty
+    optional where it is `false`.  Any additional arguments in `Args...` will be
+    perfectly forwarded to the predicate function in the order they are provided.
+    If the original optional was empty to begin with, the predicate will not be
+    invoked, and the optional will remain in the empty state.
 
-    /* Invoke a visitor function on the wrapped value if the optional is not empty,
-    returning another optional containing the transformed result.  If the original
-    optional was in the empty state, then the visitor function will not be invoked,
-    and the result will be empty as well.  If the visitor returns an `Optional`, then
-    it will be flattened into the result, merging the empty states.
-
-    Note that the extra flattening behavior technically distinguishes this method from
-    the `std::optional::and_then()` equivalent, which never flattens.  In that case,
-    if the visitor returns an optional, then the result will be a nested optional with
-    2 distinct empty states.  Bertrand considers this to be an anti-pattern, as the
-    nested indirection can easily cause confusion, and does not conform to the rest of
-    the monadic operator interface, which flattens by default.  If the empty states
-    must remain distinct, then it is better expressed by explicitly handling the
-    original empty state before chaining, or by converting the optional into a
-    `Union<Ts...>` or `Expected<T, Union<Es...>>` beforehand, both of which can
-    represent multiple distinct empty states without nesting. */
-    template <typename Self, meta::invocable<access<Self>> F>
-    [[nodiscard]] constexpr and_then_t<Self, F> and_then(this Self&& self, F&& f) noexcept(
-        meta::nothrow::invoke_returns<and_then_t<Self, F>, F, access<Self>>
+                self                    invoke                      result
+        -------------------------------------------------------------------------
+        1.  Optional<T>(empty)  => (no call)                => Optional<T>(empty)
+        2.  Optional<T>(x)      => f(x, args...) -> false   => Optional<T>(empty)
+        3.  Optional<T>(x)      => f(x, args...) -> true    => Optional<T>(x)
+    */
+    template <typename Self, typename F, typename... Args>
+        requires (meta::invoke_returns<bool, F, access<Self>, Args...>)
+    constexpr Optional filter(this Self&& self, F&& f, Args&&... args) noexcept(
+        meta::nothrow::invoke_returns<bool, F, access<Self>, Args...>
     ) {
+        if (!self.has_value() || !std::forward<F>(f)(
+            std::forward<Self>(self).m_storage.value(),
+            std::forward<Args>(args)...
+        )) {
+            return {};
+        }
+        return std::forward<Self>(self);
+    }
+
+    /* Invoke a function on the wrapped value if the optional is not empty, returning
+    another optional containing the transformed result.  If the original optional was
+    in the empty state, then the function will not be invoked, and the result will be
+    empty as well.  If the function returns an `Optional`, then it will be flattened
+    into the result, merging the empty states.
+        
+                self                    invoke                      result
+        -------------------------------------------------------------------------
+        1.  Optional<T>(empty)  => (no call)                => Optional<U>(empty)
+        2.  Optional<T>(x)      => f(x, args...) -> empty   => Optional<U>(empty)
+        3.  Optional<T>(x)      => f(x, args...) -> y       => Optional<U>(y)
+
+    Some functional languages call this operation "flatMap" or "bind".
+
+    NOTE: this method's flattening behavior differs from `std::optional::and_then()`
+    and `std::optional::transform()`.  For those methods, the former requires the
+    function to always return another `std::optional`, whereas the latter implicitly
+    promotes the return type to `std::optional`, even if it was one already (possibly
+    resulting in a nested optional).  Bertrand's `and_then()` method splits the
+    difference by allowing the function to return either an `Optional<U>` or `U`
+    directly, producing a flattened `Optional<U>` in both cases.  This is done to guard
+    against nested optionals, which Bertrand considers to be an anti-pattern, as
+    accessing the result is necessarily more verbose and can easily cause confusion.
+    This is especially true if the nesting is dependent on the order of operations,
+    which can lead to subtle bugs.  If the empty states must remain distinct, then it
+    is preferable to explicitly handle the original empty state before chaining, or by
+    converting the optional into a `Union<Ts...>` or `Expected<T, Union<Es...>>`
+    beforehand, both of which can represent multiple distinct empty states without
+    nesting. */
+    template <typename Self, typename F, typename... Args>
+        requires (
+            meta::invocable<F, access<Self>, Args...> &&
+            meta::convertible_to<
+                meta::invoke_type<F, access<Self>, Args...>,
+                and_then_t<F, Self, Args...>
+            >
+        )
+    [[nodiscard]] constexpr and_then_t<F, Self, Args...> and_then(
+        this Self&& self,
+        F&& f,
+        Args&&... args
+    ) noexcept(meta::nothrow::invoke_returns<
+        and_then_t<F, Self, Args...>,
+        F,
+        access<Self>,
+        Args...
+    >) {
         if (!self.has_value()) {
             return {};
         }
-        return std::forward<F>(f)(std::forward<Self>(self).m_storage.value());
+        return std::forward<F>(f)(
+            std::forward<Self>(self).m_storage.value(),
+            std::forward<Args>(args)...
+        );
     }
 
-    /* Invoke a visitor function if the optional is empty, returning another optional
+    /* Invoke a function if the optional is empty, returning another optional
     containing either the original value or the transformed result.  If the original
-    optional was not empty, then the visitor function will not be invoked, and the
-    value will be converted to the common type between the original value and the
-    result of the visitor.  If the visitor returns an `Optional`, then it will be
-    flattened into the result.
+    optional was not empty, then the function will not be invoked, and the value will
+    be converted to the common type between the original value and the result of the
+    function.  If the function returns an `Optional`, then it will be flattened into
+    the result.
 
-    Note that the extra flattening behavior technically distinguishes this method from
-    the `std::optional::or_else()` equivalent, which never flattens.  In that case,
-    if the visitor returns an optional, then the result will be a nested optional with
-    2 distinct empty states, the first of which can never occur.  Bertrand considers
-    this to be an anti-pattern, as the nested indirection can easily cause confusion,
-    and does not conform to the rest of the monadic operator interface, which flattens
-    by default.  If the empty states must remain distinct, then it is better expressed
-    by explicitly handling the original empty state before chaining, or by converting
-    the optional into a `Union<Ts...>` or `Expected<T, Union<Es...>>` beforehand, both
-    of which can represent multiple distinct empty states without nesting. */
-    template <typename Self, meta::invocable<> F>
-    [[nodiscard]] constexpr or_else_t<Self, F> or_else(this Self&& self, F&& f) noexcept(
-        meta::nothrow::invoke_returns<or_else_t<Self, F>, F> &&
-        meta::nothrow::convertible_to<or_else_t<Self, F>, access<Self>>
+                self                    invoke                      result
+        -------------------------------------------------------------------------
+        1.  Optional<T>(empty)  => f(args...) -> empty      => Optional<U>(empty)
+        2.  Optional<T>(empty)  => f(args...) -> y          => Optional<U>(y)
+        3.  Optional<T>(x)      => (no call)                => Optional<U>(x)
+
+    Where `U` is the common type between the original value type `T` and the return
+    type of the function `f()`.  If `f()` returns an `Optional<V>`, then `U` will be
+    the common type between `T` and `V`.
+
+    NOTE: this method's flattening behavior differs from `std::optional::or_else()`,
+    which forces the function to always return another `std::optional`.  In Bertrand's
+    `or_else()` method, the function can return either an `Optional<U>` or `U` directly,
+    producing a flattened `Optional<U>` in both cases.  This is done for consistency
+    with `and_then()`, which avoids nested optionals. */
+    template <typename Self, typename F, typename... Args>
+        requires (
+            meta::invocable<F, Args...> &&
+            meta::convertible_to<meta::invoke_type<F, Args...>, or_else_t<F, Args...>>
+        )
+    [[nodiscard]] constexpr or_else_t<F, Args...> or_else(
+        this Self&& self,
+        F&& f,
+        Args&&... args
+    ) noexcept(
+        meta::nothrow::invoke_returns<or_else_t<F, Args...>, F, Args...> &&
+        meta::nothrow::convertible_to<or_else_t<F, Args...>, access<Self>>
     ) {
         if (self.has_value()) {
             return std::forward<Self>(self).m_storage.value();
         }
-        return std::forward<F>(f)();
+        return std::forward<F>(f)(std::forward<Args>(args)...);
     }
 
     template <typename Self, typename... Args>
@@ -1862,6 +2088,7 @@ public:
 template <typename T, meta::unqualified E, meta::unqualified... Es>
     requires (meta::inherits<E, Exception> && ... && meta::inherits<Es, Exception>)
 struct Expected : impl::expected_tag {
+    using errors = bertrand::args<E, Es...>;
     using value_type = T;
     using reference = meta::as_lvalue<value_type>;
     using const_reference = meta::as_const<reference>;
@@ -1879,10 +2106,7 @@ private:
         using type = _search_error<out, in, next...>::type;
     };
     template <typename out, typename in, typename curr, typename... next>
-        requires (
-            !meta::constructible_from<value_type, in> &&
-            meta::inherits<in, curr>
-        )
+        requires (!meta::constructible_from<value_type, in> && meta::inherits<in, curr>)
     struct _search_error<out, in, curr, next...> {
         template <typename prev>
         struct most_derived { using type = _search_error<prev, in, next...>::type; };
@@ -2068,6 +2292,17 @@ private:
                     std::destroy_at(&data.error);
                 }
             }
+
+            template <size_t I> requires (I < errors::size())
+            constexpr decltype(auto) get_error(this auto&& self) noexcept {
+                if constexpr (sizeof...(Es) == 0) {
+                    return std::forward<decltype(self)>(self).data.error;
+                } else {
+                    return std::forward<decltype(self)>(
+                        self
+                    ).data.error.m_storage.template get<I>();
+                }
+            }
         };
 
         type compile_time;
@@ -2246,7 +2481,7 @@ public:
     constexpr ~Expected() noexcept(meta::nothrow::destructible<typename storage::type>) {
         if consteval {
             /// NOTE: compile-time exceptions are trivially destructible, and
-            /// attempting to call their destructors will trip the compiler's UB
+            /// attempting to call their destructors here will trip the compiler's UB
             /// filters, even though it should be safe by design.
             if constexpr (!meta::trivially_destructible<value_type>) {
                 std::destroy_at(&m_storage.compile_time.data.result);
@@ -2271,22 +2506,25 @@ public:
     not support polymorphism, so as to be constexpr-compatible. */
     [[nodiscard]] constexpr bool compiled() const noexcept { return m_compiled; }
 
-    /* True if the `Expected` stores a valid result.  `False` if it is in the error
+    /* True if the `Expected` stores a valid result.  `False` if it is in an error
     state. */
-    [[nodiscard]] constexpr bool ok() const noexcept {
+    [[nodiscard]] constexpr bool has_result() const noexcept {
         if consteval {
             return m_storage.compile_time.ok;
         } else {
-            return compiled() ? m_storage.compile_time.ok : m_storage.run_time.ok;
+            return compiled() ?
+                m_storage.compile_time.ok :
+                m_storage.run_time.ok;
         }
     }
 
-    /* Access the valid state.  Throws a `BadUnionAccess` exception if the expected is
-    currently in the error state and the program is compiled in debug mode. */
+    /* Access the valid state.  Throws a `BadUnionAccess` assertion if the expected is
+    currently in the error state and the program is compiled in debug mode.  Fails to
+    compile if the result type is void. */
     template <typename Self> requires (!meta::is_void<value_type>)
     [[nodiscard]] constexpr decltype(auto) result(this Self&& self) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
-            if (!self.ok()) {
+            if (self.has_error()) {
                 throw BadUnionAccess("Expected in error state has no result");
             }
         }
@@ -2313,12 +2551,24 @@ public:
         }
     }
 
+    /* True if the `Expected` is in an error state.  `False` if it stores a valid
+    result. */
+    [[nodiscard]] constexpr bool has_error() const noexcept {
+        if consteval {
+            return !m_storage.compile_time.ok;
+        } else {
+            return compiled() ?
+                !m_storage.compile_time.ok :
+                !m_storage.run_time.ok;
+        }
+    }
+
     /* Access the error state.  Throws a `BadUnionAccess` exception if the expected is
     currently in the valid state and the program is compiled in debug mode. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) error(this Self&& self) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
-            if (!self.ok()) {
+            if (self.has_result()) {
                 throw BadUnionAccess("Expected in valid state has no error");
             }
         }
@@ -2333,14 +2583,24 @@ public:
         }
     }
 
-    /// TODO: expected.raise().  Includes a debug assertion that the expected is not
-    /// in the valid state when this methods is called, making this noreturn.  If
-    /// the errors are a union, then I need to do this via a visitor
-
-    /// TODO: visit() has to handle both the result and error states, which would be
-    /// done in the visitable::dispatch() method, where it inserts an extra item for
-    /// the valid state, and then delegates to `visitable<Union<errors...>>::dispatch()`
-    /// to reuse existing logic
+    /* A member equivalent for `bertrand::visit()`, which always inserts this expected
+    as the first argument, for chaining purposes.  See `bertrand::visit()` for more
+    details. */
+    template <typename F, typename Self, typename... Args>
+        requires (meta::visitor<F, Self, Args...>)
+    constexpr meta::visit_type<F, Self, Args...> visit(
+        this Self&& self,
+        F&& f,
+        Args&&... args
+    ) noexcept(
+        meta::nothrow::visitor<F, Self, Args...>
+    ) {
+        return impl::visit_impl<meta::visit_type<F, Self, Args...>, 0>(
+            std::forward<F>(f),
+            std::forward<Self>(self),
+            std::forward<Args>(args)...
+        );
+    }
 
     /////////////////////
     ////    MONAD    ////
@@ -2917,8 +3177,6 @@ namespace bertrand {
 
             constexpr auto u6 = Union<int, const int&, std::string>::create<std::string>("abc");
             static_assert(u6.index() == 2);
-            static_assert(u6.size() == 3);
-            static_assert(!u6.empty());
         }
 
         {
@@ -2969,16 +3227,30 @@ namespace bertrand {
             static_assert(o.value().size() == 3);
             decltype(auto) ov = o.value();
             decltype(auto) ov2 = Optional{"abc"}.value();
+
+            static constexpr Optional<int> o3 = 4;
+            static_assert(o3.has_value());
+            static_assert(o3.value() == 4);
+            static constexpr auto o4 = o3.filter(
+                [](int x) { return x < 4; }
+            );
+            static_assert(!o4.has_value());
+            // static_assert(o4.value() == 4);
+            static_assert(o4.or_else([] { return 42; }).value() == 42);
+            static_assert(o4.visit(visitor{
+                [](int x) { return x; },
+                [](std::nullopt_t) { return 0; }
+            }) == 0);
         }
 
         {
             static constexpr TypeError err("An error occurred");
             static constexpr std::array<TypeError, 3> errs{err, err, err};
             static constexpr Expected<int, TypeError, ValueError> e1 = ValueError{"abc"};
-            static_assert(!e1.ok());
+            static_assert(e1.has_error());
             static_assert(e1.error().get<1>().result().message() == "abc");
             static constexpr Expected<int, TypeError, ValueError> e2 = 42;
-            static_assert(e2.ok());
+            static_assert(!e2.has_error());
             static_assert(e2.result() == 42);
             static constexpr Union<TypeError, ValueError> u = TypeError{"abc"};
         }
@@ -2992,13 +3264,6 @@ namespace bertrand {
             static constexpr Union<std::array<int, 3>, std::string> u2 =
                 std::array{1, 2, 3};
             static_assert(u2[1] == 2);
-        }
-
-        {
-            static constexpr Union<std::string, const std::string&> u = "abc";
-            for (auto&& x : u) {
-
-            }
         }
     }
 
