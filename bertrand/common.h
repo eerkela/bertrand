@@ -791,22 +791,20 @@ namespace meta {
     using invoke_type = std::invoke_result_t<F, A...>;
 
     template <typename R, typename F, typename... A>
-    concept invoke_returns = invocable<F, A...> && std::is_invocable_r_v<R, F, A...>;
+    concept invoke_returns = invocable<F, A...> && convertible_to<invoke_type<F, A...>, R>;
 
     namespace nothrow {
 
         template <typename F, typename... A>
         concept invocable =
-            meta::invocable<F, A...> &&
-            std::is_nothrow_invocable_v<F, A...>;
+            meta::invocable<F, A...> && std::is_nothrow_invocable_v<F, A...>;
 
         template <typename F, typename... A> requires (invocable<F, A...>)
         using invoke_type = meta::invoke_type<F, A...>;
 
         template <typename R, typename F, typename... A>
         concept invoke_returns =
-            meta::invoke_returns<R, F, A...> &&
-            std::is_nothrow_invocable_r_v<R, F, A...>;
+            invocable<F, A...> && convertible_to<invoke_type<F, A...>, R>;
 
     }
 
