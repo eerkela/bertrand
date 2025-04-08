@@ -662,8 +662,6 @@ BERTRAND_EXCEPTION(ValueError, Exception)
 
 
 BERTRAND_EXCEPTION(BadUnionAccess, TypeError)
-BERTRAND_EXCEPTION(BadOptionalAccess, TypeError)
-BERTRAND_EXCEPTION(BadExpectedAccess, TypeError)
 
 
 #undef BERTRAND_EXCEPTION

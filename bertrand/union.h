@@ -42,10 +42,11 @@ Ideally, the `visitor` type could be omitted entirely, yielding a syntax like:
 argument deduction (CTAD) for function arguments.  Currently, the only workaround is
 to explicitly specify the `visitor` type during the invocation of `visit()`, as shown
 in the first example.  This restriction may be lifted in a future version of C++,
-at which point the second syntax could be standardized as well.  However, there is
-currently no proposal that would allow this in C++26, and it may require universal
-template parameters to function correctly, which is unlikely to be implemented any time
-soon. */
+at which point the second syntax could be standardized as well.  One proposal that
+would allow this is P2998 (https://open-std.org/jtc1/sc22/wg21/docs/papers/2024/p2998r0.html),
+which would get around this by using alias deduction guides at a language level.  Until
+that paper or a similar proposal is standardized, an explicit `visitor` constructor is
+unavoidable. */
 template <typename... Funcs>
 struct visitor : public Funcs... { using Funcs::operator()...; };
 
@@ -70,6 +71,9 @@ namespace meta {
 
     template <typename T>
     concept visitable = impl::visitable<T>::enable;
+
+    template <typename T>
+    concept monad = impl::visitable<T>::monad;
 
     template <typename T>
     concept Union = inherits<T, impl::union_tag>;
@@ -401,18 +405,11 @@ namespace meta {
 
                 template <typename alt>
                 static constexpr bool empty_state =
-                    meta::Optional<A> && meta::is<alt, ::std::nullopt_t>;
+                    meta::is<alt, typename impl::visitable<A>::empty>;
 
                 template <typename alt>
                 static constexpr bool error_state =
                     meta::Expected<A> && meta::inherits<alt, Exception>;
-
-                template <typename alt>
-                struct unhandled { using type = BadUnionAccess; };
-                template <meta::Optional alt>
-                struct unhandled<alt> { using type = BadOptionalAccess; };
-                template <meta::Expected alt>
-                struct unhandled<alt> { using type = BadExpectedAccess; };
 
                 template <bool, typename...>
                 struct scan;
@@ -465,14 +462,14 @@ namespace meta {
                         !empty_state<alt> &&
                         !error_state<alt> &&
                         (!valid<alt, Ps> && ...) &&
-                        (!::std::same_as<typename unhandled<alt>::type, errs> && ...)
+                        (!::std::same_as<BadUnionAccess, errs> && ...)
                     )
                 struct scan<opt, bertrand::args<alt, alts...>, errs...> {
                     using type = scan<
                         opt,
                         bertrand::args<alts...>,
                         errs...,
-                        typename unhandled<alt>::type
+                        BadUnionAccess
                     >::type;
                 };
                 template <bool opt, typename alt, typename... alts, typename... errs>
@@ -480,7 +477,7 @@ namespace meta {
                         !empty_state<alt> &&
                         !error_state<alt> &&
                         (!valid<alt, Ps> && ...) &&
-                        (::std::same_as<typename unhandled<alt>::type, errs> || ...)
+                        (::std::same_as<BadUnionAccess, errs> || ...)
                     )
                 struct scan<opt, bertrand::args<alt, alts...>, errs...> {
                     using type = scan<opt, bertrand::args<alts...>, errs...>::type;
@@ -717,15 +714,15 @@ namespace impl {
 
     /// TODO: visitable<T> should probably expose more information that can be used in
     /// visit<>, but it's hard to know what exactly I need.  I probably need some way
-    /// to flatten Optional<std::optional<T>> and std::optional<Optional<T>>, as well
-    /// as only allow the monadic union operators to be used on bertrand types, rather
-    /// than STL types, so as not to interfere with standard library code.
+    /// to flatten Optional<std::optional<T>> and std::optional<Optional<T>>
 
     template <typename T>
     struct visitable {
         static constexpr bool enable = false;  // meta::visitable<T> evaluates to false
+        static constexpr bool monad = false;  // meta::monad<T> evaluates to false
         using type = T;
         using pack = bertrand::args<T>;
+        using empty = void;  // no empty state
 
         template <typename R, size_t I, typename F, typename... A>
             requires (
@@ -762,8 +759,10 @@ namespace impl {
 
     public:
         static constexpr bool enable = true;
+        static constexpr bool monad = true;
         using type = T;
         using pack = _pack<0>::type;
+        using empty = void;
 
         template <typename R, size_t I, typename F, typename... A>
             requires (
@@ -858,8 +857,10 @@ namespace impl {
 
     public:
         static constexpr bool enable = true;
+        static constexpr bool monad = false;
         using type = T;
         using pack = _pack<0>::type;
+        using empty = void;
 
         template <typename R, size_t I, typename F, typename... A>
             requires (
@@ -936,11 +937,13 @@ namespace impl {
     template <meta::Optional T>
     struct visitable<T> {
         static constexpr bool enable = true;
+        static constexpr bool monad = true;
         using type = T;
         using pack = bertrand::args<
             std::nullopt_t,
             decltype((std::declval<T>().m_storage.value()))
         >;
+        using empty = std::nullopt_t;
 
         template <typename R, size_t I, typename F, typename... A>
             requires (
@@ -1012,8 +1015,8 @@ namespace impl {
                                     std::forward<A>(args)...
                                 )...
                             );
-                        } else if constexpr (meta::convertible_to<BadOptionalAccess, R>) {
-                            return BadOptionalAccess(
+                        } else if constexpr (meta::convertible_to<BadUnionAccess, R>) {
+                            return BadUnionAccess(
                                 "failed to invoke visitor for empty optional argument " +
                                 impl::int_to_static_string<I>
                             );
@@ -1041,11 +1044,13 @@ namespace impl {
     template <meta::std::optional T>
     struct visitable<T> {
         static constexpr bool enable = true;
+        static constexpr bool monad = false;
         using type = T;
         using pack = bertrand::args<
             std::nullopt_t,
             decltype((std::declval<T>().value()))
         >;
+        using empty = std::nullopt_t;
 
         template <typename R, size_t I, typename F, typename... A>
             requires (
@@ -1117,8 +1122,8 @@ namespace impl {
                                     std::forward<A>(args)...
                                 )...
                             );
-                        } else if constexpr (meta::convertible_to<BadOptionalAccess, R>) {
-                            return BadOptionalAccess(
+                        } else if constexpr (meta::convertible_to<BadUnionAccess, R>) {
+                            return BadUnionAccess(
                                 "failed to invoke visitor for empty optional argument " +
                                 impl::int_to_static_string<I>
                             );
@@ -1174,8 +1179,10 @@ namespace impl {
     
     public:
         static constexpr bool enable = true;
+        static constexpr bool monad = true;
         using type = T;
         using pack = _pack<typename meta::unqualify<T>::value_type>::type;
+        using empty = void;
 
         template <typename R, size_t I, typename F, typename... A>
             requires (
@@ -1225,41 +1232,62 @@ namespace impl {
 }
 
 
-/* Non-member `visit(f, args...)` operator, similar to `std::visit()`.  A member
-version of this operator is implemented for `Union`, `Optional`, and `Expected`
-objects, which allows for chaining.
+/* Non-member `visit(f, args...)` operator, similar to `std::visit()`, but with greatly
+extended metaprogramming capabilities.  A member version of this operator is provided
+for `Union`, `Optional`, and `Expected` objects, which allows for chaining.
 
 The visitor is constructed from either a single function or a set of functions defined
-using `bertrand::visitor` or a similar overload set.  The remaining arguments will be
-passed to it in the order they are defined, with unions being unwrapped to their actual
-types within the visitor context.  The visitor must be callable for at least one
-permutation of the unwrapped values, otherwise a compilation error will occur.
+using `bertrand::visitor` or a similar overload set.  The subsequent arguments will be
+passed to the visitor in the order they are defined, with each union being unwrapped to
+its actual type within the visitor context.  A compilation error will occur if the
+visitor is not callable with at least one permutation of the unwrapped values.
 
-If the visitor is not callable for all possible permutations of the unwrapped values,
-then the function will return an `Expected<R, BadUnionAccess>`, where `R` is the
-deduced return type for the valid states, and `BadUnionAccess` indicates that the
-visitor was called with an invalid set of arguments.  If the valid states all return a
-consistent type, then `R` will be that type.  Otherwise, it will be another union
-describing the unique return types.  Additionally, if some of the valid permutations
-return `void` and others return non-`void`, then `R` will be wrapped in an `Optional`,
-where the empty state represents a void return type.  In the worst case, if the visitor
-is not exhaustive over all permutations and returns one of several different types,
-some of which may be void, then the overall result will be an
-`Expected<Optional<Union<Rs...>>, BadUnionAccess>`.  For an exhaustive visitor, this
-may be reduced to `Optional<Union<Rs...>>`, and for visitors that never return void, it
-will simply be `Union<Rs...>`.  If the visitor further returns a single consistent
-type (as is the case for `std::visit()`), then this will further reduce to just that
-type, without a union.
+Note that the visitor does not need to be exhaustive over all permutations of the
+unwrapped values, unlike `std::visit()`.  In that case, the function will return an
+`Expected<R, BadUnionAccess>`, where `R` is the deduced return type for the valid
+permutations, and `BadUnionAccess` indicates that an invalid permutation was
+encountered at runtime.  If `R` is itself an expected type, then the `BadUnionAccess`
+state will be flattened into its list of errors automatically.  Alternatively, if the
+unhandled case(s) represent the empty state of an optional or error state of an
+expected input, then those states will be implicitly propagated to the return type,
+potentially converting it into an `Optional` or `Expected` if it was not one already.
+This equates to adding implicit overloads to the visitor, which trivially forward these
+states without any modifications.  In practice, this means that visitors can treat
+optional and expected types as if they were always in the valid state, with invalid
+states implicitly propagated unless otherwise handled.  The
+`bertrand::meta::exhaustive<F, Args...>` concept can be used to selectively forbid the
+non-exhaustive case at compile time, which brings the semantics back to those of
+`std::visit()` at the expense of more verbose (and potentially brittle) code.
 
-Note that the arguments are also not limited to union types, unlike `std::visit()` - if
-no unions are present, then this function is identical to invoking the visitor
-normally.  Custom unions can be accounted for by specializing the `impl::visitable`
-class for that type, allowing it to be unwrapped normally when passed to the `visit()`
-operator.  This is done internally for `Union`, `Optional`, and `Expected`, as well as
-`std::variant`, `std::optional`, and `std::expected`, all of which can be passed to
-`visit()` without any special handling.  If a type is not visitable, then it will be
-treated as a non-union type and passed directly to the visitor function without any
-unwrapping. */
+Similarly, unlike `std::visit()`, the visitor is not constrained to return a single
+consistent type for all permutations.  If it does not, then `R` will deduce to
+`bertrand::Union<Rs...>`, where `Rs...` are the unique return types for all valid
+permutations.  Otherwise, if all permutations return the same type, then `R` will
+simply be that type.  If some permutations return `void` and others return non-`void`,
+then `R` will be wrapped in an `Optional`, where the empty state indicates a void
+return type at runtime.  Similar to above, if `R` is itself an optional type, then
+the empty states will be merged so as to avoid nested optionals.  Also as above, the
+`bertrand::meta::consistent<F, Args...>` concept can be used to selectively forbid the
+inconsistent case at compile time.  Applying that concept in combination with
+`bertrand::meta::exhaustive<F, Args...>` will yield the exact same visitor semantics as
+`std::visit()`, again at the cost of more verbose (though possibly safer) code.
+
+If neither of the above features are disabled, then a worst-case, non-exhaustive and
+inconsistent visitor, where some permutations return void and others do not, can yield
+a return type of the form `bertrand::Expected<Optional<Union<Rs...>>, BadUnionAccess>`.
+For an exhaustive visitor, this may be reduced to `Optional<Union<Rs...>>`, and for
+visitors that never return void, it will simply be `Union<Rs...>`.  If the visitor
+further returns a single consistent type, then this will collapse to just that type,
+without a union, in which case the semantics are identical to `std::visit()`.
+
+Finally, note that arguments are not strictly limited to union types, in contrast to
+`std::visit()`.  If no unions are present, then this function is identical to invoking
+the visitor normally, without the `visit()` wrapper.  Custom unions can be accounted
+for by specializing the `bertrand::impl::visitable` class for that type, allowing it to
+be automatically unwrapped when passed to the `visit()` operator.  This is done by
+default for `Union`, `Optional`, and `Expected`, as well as `std::variant`,
+`std::optional`, and `std::expected`, all of which can be passed to `visit()` without
+any special handling. */
 template <typename F, typename... Args> requires (meta::visitor<F, Args...>)
 constexpr meta::visit_type<F, Args...> visit(F&& f, Args&&... args)
     noexcept(meta::nothrow::visitor<F, Args...>)
@@ -1281,13 +1309,10 @@ template <typename... Ts>
         meta::types_are_unique<Ts...>
     )
 struct Union : impl::union_tag {
+    /* An argument pack holding the templated alternatives for posterity. */
     using types = bertrand::args<Ts...>;
 
-    /// TODO: maybe alternatives -> types::size()?
-    /// alternative<I> -> types::at<I>?
-    /// index_of<T> -> types::index<T>?
-    /// common_type -> types::common?
-
+    /* The number of alternatives that were supplied to the union specialization. */
     static constexpr size_t alternatives = sizeof...(Ts);
 
     /* Get the templated type at index `I`.  Fails to compile if the index is out of
@@ -1374,6 +1399,7 @@ private:
     template <typename T>
     using proximal_type = _proximal_type<T, void, Ts...>::type;
 
+    // implicit conversion operators will only be called if no proximal type is found
     template <typename T, typename S>
     struct _conversion_type { using type = S; };
     template <typename T, meta::is_void S>
@@ -1393,8 +1419,8 @@ private:
     template <size_t I>
     struct create_t {};
 
-    // recursive C unions are the only way to allow Union<Ts...> to be used at compile
-    // time without triggering the compiler's UB filters
+    // recursive C unions are the only way to make Union<Ts...> provably safe at
+    // compile time without tripping the compiler's UB filters
     template <typename... Us>
     union storage {
         constexpr storage() noexcept = default;
@@ -1550,11 +1576,11 @@ private:
 public:
     /* The common type to which all alternatives can be converted, if such a type
     exists.  Void otherwise. */
-    using common = get_common_type<Ts...>::type;
+    using common_type = get_common_type<Ts...>::type;
 
     /* True if all alternatives share a common type to which they can be converted.
     If this is false, then the `flatten()` method will be disabled. */
-    static constexpr bool can_flatten = meta::not_void<common>;
+    static constexpr bool can_flatten = meta::not_void<common_type>;
 
     /* Get the index of the currently-active type in the union. */
     [[nodiscard]] constexpr size_t index() const noexcept {
@@ -1640,10 +1666,10 @@ public:
     the common type, assuming one exists.  If no common type exists, then this will
     fail to compile.  Users can check the `can_flatten` flag to guard against this. */
     template <typename Self> requires (can_flatten)
-    [[nodiscard]] constexpr common flatten(this Self&& self) noexcept(
-        (meta::nothrow::convertible_to<Ts, common> && ...)
+    [[nodiscard]] constexpr common_type flatten(this Self&& self) noexcept(
+        (meta::nothrow::convertible_to<Ts, common_type> && ...)
     ) {
-        return std::forward<Self>(self).visit([](auto&& value) -> common {
+        return std::forward<Self>(self).visit([](auto&& value) -> common_type {
             return std::forward<decltype(value)>(value);
         });
     }
@@ -2902,15 +2928,10 @@ constexpr void swap(Expected<T, E>& a, Expected<T, E>& b)
 }
 
 
-/// TODO: I probably shouldn't constrain these operators just to visitable<> types,
-/// since that would potentially conflict with standard library types at some point
-/// in the future.  Instead, I should constrain just to Union, Optional, and
-/// Expected types, and get the right behavior by massaging the visitor logic.
-
 /// TODO: add dereference and arrow operators to monadic interface?
 
 
-template <meta::visitable T> requires (meta::visitor<impl::Invert, T>)
+template <meta::monad T> requires (meta::visitor<impl::Invert, T>)
 constexpr decltype(auto) operator~(T&& val)
     noexcept(meta::nothrow::visitor<impl::Invert, T>)
 {
@@ -2918,7 +2939,7 @@ constexpr decltype(auto) operator~(T&& val)
 }
 
 
-template <meta::visitable T> requires (meta::visitor<impl::Pos, T>)
+template <meta::monad T> requires (meta::visitor<impl::Pos, T>)
 constexpr decltype(auto) operator+(T&& val)
     noexcept(meta::nothrow::visitor<impl::Pos, T>)
 {
@@ -2926,7 +2947,7 @@ constexpr decltype(auto) operator+(T&& val)
 }
 
 
-template <meta::visitable T> requires (meta::visitor<impl::Neg, T>)
+template <meta::monad T> requires (meta::visitor<impl::Neg, T>)
 constexpr decltype(auto) operator-(T&& val)
     noexcept(meta::nothrow::visitor<impl::Neg, T>)
 {
@@ -2934,7 +2955,7 @@ constexpr decltype(auto) operator-(T&& val)
 }
 
 
-template <meta::visitable T> requires (meta::visitor<impl::PreIncrement, T>)
+template <meta::monad T> requires (meta::visitor<impl::PreIncrement, T>)
 constexpr decltype(auto) operator++(T&& val)
     noexcept(meta::nothrow::visitor<impl::PreIncrement, T>)
 {
@@ -2942,7 +2963,7 @@ constexpr decltype(auto) operator++(T&& val)
 }
 
 
-template <meta::visitable T> requires (meta::visitor<impl::PostIncrement, T>)
+template <meta::monad T> requires (meta::visitor<impl::PostIncrement, T>)
 constexpr decltype(auto) operator++(T&& val, int)
     noexcept(meta::nothrow::visitor<impl::PostIncrement, T>)
 {
@@ -2950,7 +2971,7 @@ constexpr decltype(auto) operator++(T&& val, int)
 }
 
 
-template <meta::visitable T> requires (meta::visitor<impl::PreDecrement, T>)
+template <meta::monad T> requires (meta::visitor<impl::PreDecrement, T>)
 constexpr decltype(auto) operator--(T&& val)
     noexcept(meta::nothrow::visitor<impl::PreDecrement, T>)
 {
@@ -2958,7 +2979,7 @@ constexpr decltype(auto) operator--(T&& val)
 }
 
 
-template <meta::visitable T> requires (meta::visitor<impl::PostDecrement, T>)
+template <meta::monad T> requires (meta::visitor<impl::PostDecrement, T>)
 constexpr decltype(auto) operator--(T&& val, int)
     noexcept(meta::nothrow::visitor<impl::PostDecrement, T>)
 {
@@ -2966,7 +2987,7 @@ constexpr decltype(auto) operator--(T&& val, int)
 }
 
 
-template <meta::visitable T>
+template <meta::monad T>
 constexpr decltype(auto) operator!(T&& val)
     noexcept(meta::nothrow::visitor<impl::LogicalNot, T>)
 {
@@ -2976,7 +2997,7 @@ constexpr decltype(auto) operator!(T&& val)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::LogicalAnd, L, R>
     )
 constexpr decltype(auto) operator&&(L&& lhs, R&& rhs)
@@ -2992,7 +3013,7 @@ constexpr decltype(auto) operator&&(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::LogicalOr, L, R>
     )
 constexpr decltype(auto) operator||(L&& lhs, R&& rhs)
@@ -3008,7 +3029,7 @@ constexpr decltype(auto) operator||(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::Less, L, R>
     )
 constexpr decltype(auto) operator<(L&& lhs, R&& rhs)
@@ -3024,7 +3045,7 @@ constexpr decltype(auto) operator<(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::LessEqual, L, R>
     )
 constexpr decltype(auto) operator<=(L&& lhs, R&& rhs)
@@ -3040,7 +3061,7 @@ constexpr decltype(auto) operator<=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::Equal, L, R>
     )
 constexpr decltype(auto) operator==(L&& lhs, R&& rhs)
@@ -3056,7 +3077,7 @@ constexpr decltype(auto) operator==(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::NotEqual, L, R>
     )
 constexpr decltype(auto) operator!=(L&& lhs, R&& rhs)
@@ -3072,7 +3093,7 @@ constexpr decltype(auto) operator!=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::GreaterEqual, L, R>
     )
 constexpr decltype(auto) operator>=(L&& lhs, R&& rhs)
@@ -3088,7 +3109,7 @@ constexpr decltype(auto) operator>=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::Greater, L, R>
     )
 constexpr decltype(auto) operator>(L&& lhs, R&& rhs)
@@ -3104,7 +3125,7 @@ constexpr decltype(auto) operator>(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::Spaceship, L, R>
     )
 constexpr decltype(auto) operator<=>(L&& lhs, R&& rhs)
@@ -3120,7 +3141,7 @@ constexpr decltype(auto) operator<=>(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::Add, L, R>
     )
 constexpr decltype(auto) operator+(L&& lhs, R&& rhs)
@@ -3136,7 +3157,7 @@ constexpr decltype(auto) operator+(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::InplaceAdd, L, R>
     )
 constexpr decltype(auto) operator+=(L&& lhs, R&& rhs)
@@ -3152,7 +3173,7 @@ constexpr decltype(auto) operator+=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::Subtract, L, R>
     )
 constexpr decltype(auto) operator-(L&& lhs, R&& rhs)
@@ -3168,7 +3189,7 @@ constexpr decltype(auto) operator-(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::InplaceSubtract, L, R>
     )
 constexpr decltype(auto) operator-=(L&& lhs, R&& rhs)
@@ -3184,7 +3205,7 @@ constexpr decltype(auto) operator-=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::Multiply, L, R>
     )
 constexpr decltype(auto) operator*(L&& lhs, R&& rhs)
@@ -3200,7 +3221,7 @@ constexpr decltype(auto) operator*(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::InplaceMultiply, L, R>
     )
 constexpr decltype(auto) operator*=(L&& lhs, R&& rhs)
@@ -3216,7 +3237,7 @@ constexpr decltype(auto) operator*=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::Divide, L, R>
     )
 constexpr decltype(auto) operator/(L&& lhs, R&& rhs)
@@ -3232,7 +3253,7 @@ constexpr decltype(auto) operator/(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::InplaceDivide, L, R>
     )
 constexpr decltype(auto) operator/=(L&& lhs, R&& rhs)
@@ -3248,7 +3269,7 @@ constexpr decltype(auto) operator/=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::Modulus, L, R>
     )
 constexpr decltype(auto) operator%(L&& lhs, R&& rhs)
@@ -3264,7 +3285,7 @@ constexpr decltype(auto) operator%(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::InplaceModulus, L, R>
     )
 constexpr decltype(auto) operator%=(L&& lhs, R&& rhs)
@@ -3280,7 +3301,7 @@ constexpr decltype(auto) operator%=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::BitwiseAnd, L, R>
     )
 constexpr decltype(auto) operator&(L&& lhs, R&& rhs)
@@ -3296,7 +3317,7 @@ constexpr decltype(auto) operator&(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::InplaceBitwiseAnd, L, R>
     )
 constexpr decltype(auto) operator&=(L&& lhs, R&& rhs)
@@ -3312,7 +3333,7 @@ constexpr decltype(auto) operator&=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::BitwiseOr, L, R>
     )
 constexpr decltype(auto) operator|(L&& lhs, R&& rhs)
@@ -3328,7 +3349,7 @@ constexpr decltype(auto) operator|(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::InplaceBitwiseOr, L, R>
     )
 constexpr decltype(auto) operator|=(L&& lhs, R&& rhs)
@@ -3344,7 +3365,7 @@ constexpr decltype(auto) operator|=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::BitwiseXor, L, R>
     )
 constexpr decltype(auto) operator^(L&& lhs, R&& rhs)
@@ -3360,7 +3381,7 @@ constexpr decltype(auto) operator^(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
     requires (
-        (meta::visitable<L> || meta::visitable<R>) &&
+        (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::InplaceBitwiseXor, L, R>
     )
 constexpr decltype(auto) operator^=(L&& lhs, R&& rhs)
@@ -3381,7 +3402,7 @@ namespace std {
 
     /// TODO: variant_size and variant_alternative?
 
-    template <bertrand::meta::visitable T>
+    template <bertrand::meta::monad T>
         requires (bertrand::meta::visitor<bertrand::impl::Hash, T>)
     struct hash<T> {
         static constexpr auto operator()(auto&& value) noexcept(
@@ -3487,7 +3508,6 @@ namespace bertrand {
             }) == 0);
 
 
-    
             struct Func {
                 static constexpr int operator()(int x) noexcept {
                     return x * 2;
@@ -3514,11 +3534,15 @@ namespace bertrand {
             struct A { static constexpr int operator()() { return 42; } };
             struct B { static constexpr std::string operator()() { return "hello, world"; } };
             static constexpr Union<A, B> u = B{};
-            // static_assert(u() == "hello, world");
+            static constexpr decltype(auto) x = u().get<std::string>();
+            static_assert(u().get<std::string>().result() == "hello, world");
 
             static constexpr Union<std::array<int, 3>, std::string> u2 =
                 std::array{1, 2, 3};
             static_assert(u2[1] == 2);
+
+            static constexpr Optional<std::array<int, 3>> o = std::array{1, 2, 3};
+            static_assert(o[1].value() == 2);
         }
     }
 
