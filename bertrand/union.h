@@ -56,10 +56,10 @@ namespace impl {
     struct expected_tag {};
 
     /* Provides an extensible mechanism for controlling the dispatching behavior of
-    the `meta::exhaustive` concept and `bertrand::visit()` operator, including return
-    type deduction from the possible alternatives.  Users can specialize this structure
-    to extend those utilities to arbitrary types, without needing to reimplement the
-    entire compile-time dispatch mechanism. */
+    the `meta::visitor` concept and `bertrand::visit()` operator, including return
+    type deduction from the possible alternatives and customizable dispatch logic.
+    Users can specialize this structure to extend those utilities to arbitrary types,
+    without needing to reimplement the entire compile-time dispatch mechanism. */
     template <typename T>
     struct visitable;
 
@@ -701,26 +701,21 @@ namespace impl {
 
         /* The active index for non-visitable types is trivially zero. */
         template <meta::is<T> U>
-        static constexpr size_t index(const U& u) noexcept { return 0; }
+        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
+            return 0;
+        }
 
         /* Dispatching to a non-visitable type trivially forwards to the next arg. */
         template <
             typename R,  // deduced return type
+            size_t idx,  // encoded index of the current argument
             size_t... Prev,  // index sequence over processed arguments
-            size_t... indices,  // active index for each argument
             size_t... Next,  // index sequence over remaining arguments
             typename F,  // visitor function
             typename... A  // current arguments in-flight
         >
-            requires (
-                meta::visitor<F, A...> &&
-                sizeof...(Prev) < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
-                meta::unpack_value<sizeof...(Prev), indices...> < pack::size()
-            )
-        static constexpr R dispatch(
+        [[gnu::always_inline]] static constexpr R dispatch(
             std::index_sequence<Prev...>,
-            std::index_sequence<indices...> idx,
             std::index_sequence<Next...>,
             F&& func,
             A&&... args
@@ -734,9 +729,11 @@ namespace impl {
                     meta::unpack_arg<I>(std::forward<A>(args)...)
                 );
             } else {
-                return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<R>(
+                return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<
+                    R,
+                    idx  // this index is guaranteed to be zero, so we can ignore it
+                >(
                     std::make_index_sequence<I + 1>{},
-                    idx,
                     std::make_index_sequence<sizeof...(A) - (I + 2)>{},
                     std::forward<F>(func),
                     meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
@@ -773,28 +770,23 @@ namespace impl {
 
         /* Get the active index for a union of this type. */
         template <meta::is<T> U>
-        static constexpr size_t index(const U& u) noexcept { return u.index(); }
+        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
+            return u.index();
+        }
 
         /* Dispatch to the proper index of this union to reveal the exact type, then
         recur for the next argument.  If the visitor can't handle the current type,
         then return an error indicating as such. */
         template <
             typename R,
+            size_t idx,
             size_t... Prev,
-            size_t... indices,
             size_t... Next,
             typename F,
             typename... A
         >
-            requires (
-                meta::visitor<F, A...> &&
-                sizeof...(Prev) < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
-                meta::unpack_value<sizeof...(Prev), indices...> < pack::size()
-            )
-        static constexpr R dispatch(
+        [[gnu::always_inline]] static constexpr R dispatch(
             std::index_sequence<Prev...>,
-            std::index_sequence<indices...> idx,
             std::index_sequence<Next...>,
             F&& func,
             A&&... args
@@ -802,10 +794,13 @@ namespace impl {
             noexcept(meta::nothrow::visitor<F, A...>)
         {
             constexpr size_t I = sizeof...(Prev);
-            constexpr size_t index = meta::unpack_value<I, indices...>;
+            constexpr size_t scale = (
+                visitable<meta::unpack_type<I + 1 + Next, A...>>::pack::size() * ... * 1
+            );
+            constexpr size_t J = idx / scale;
             using type = decltype((meta::unpack_arg<I>(
                 std::forward<A>(args)...
-            ).m_storage.template get<index>()));
+            ).m_storage.template get<J>()));
 
             if constexpr (meta::visitor<
                 F,
@@ -818,18 +813,20 @@ namespace impl {
                         meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
                         meta::unpack_arg<I>(
                             std::forward<A>(args)...
-                        ).m_storage.template get<index>()
+                        ).m_storage.template get<J>()
                     );
                 } else {
-                    return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<R>(
+                    return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<
+                        R,
+                        idx % scale
+                    >(
                         std::make_index_sequence<I + 1>{},
-                        idx,
                         std::make_index_sequence<sizeof...(A) - (I + 2)>{},
                         std::forward<F>(func),
                         meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
                         meta::unpack_arg<I>(
                             std::forward<A>(args)...
-                        ).m_storage.template get<index>(),
+                        ).m_storage.template get<J>(),
                         meta::unpack_arg<I + 1 + Next>(
                             std::forward<A>(args)...
                         )...
@@ -839,7 +836,7 @@ namespace impl {
                 return BadUnionAccess(
                     "failed to invoke visitor for union argument " +
                     impl::int_to_static_string<I> + " with active type '" + type_name<
-                        typename meta::unqualify<T>::template alternative<index>
+                        typename meta::unqualify<T>::template alternative<J>
                     > + "'"
                 );
             } else {
@@ -879,28 +876,23 @@ namespace impl {
 
         /* Get the active index for a union of this type. */
         template <meta::is<T> U>
-        static constexpr size_t index(const U& u) noexcept { return u.index(); }
+        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
+            return u.index();
+        }
 
         /* Dispatch to the proper index of this variant to reveal the exact type, then
         recur for the next argument.  If the visitor can't handle the current type,
         then return an error indicating as such. */
         template <
             typename R,
+            size_t idx,
             size_t... Prev,
-            size_t... indices,
             size_t... Next,
             typename F,
             typename... A
         >
-            requires (
-                meta::visitor<F, A...> &&
-                sizeof...(Prev) < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
-                meta::unpack_value<sizeof...(Prev), indices...> < pack::size()
-            )
-        static constexpr R dispatch(
+        [[gnu::always_inline]] static constexpr R dispatch(
             std::index_sequence<Prev...>,
-            std::index_sequence<indices...> idx,
             std::index_sequence<Next...>,
             F&& func,
             A&&... args
@@ -908,8 +900,11 @@ namespace impl {
             noexcept(meta::nothrow::visitor<F, A...>)
         {
             constexpr size_t I = sizeof...(Prev);
-            constexpr size_t index = meta::unpack_value<I, indices...>;
-            using type = decltype((std::get<index>(meta::unpack_arg<I>(
+            constexpr size_t scale = (
+                visitable<meta::unpack_type<I + 1 + Next, A...>>::pack::size() * ... * 1
+            );
+            constexpr size_t J = idx / scale;
+            using type = decltype((std::get<J>(meta::unpack_arg<I>(
                 std::forward<A>(args)...
             ))));
 
@@ -924,16 +919,18 @@ namespace impl {
                         meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
                         meta::unpack_arg<I>(
                             std::forward<A>(args)...
-                        ).m_storage.template get<index>()
+                        ).m_storage.template get<J>()
                     );
                 } else {
-                    return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<R>(
+                    return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<
+                        R,
+                        idx % scale
+                    >(
                         std::make_index_sequence<I + 1>{},
-                        idx,
                         std::make_index_sequence<sizeof...(A) - (I + 2)>{},
                         std::forward<F>(func),
                         meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
-                        std::get<index>(meta::unpack_arg<I>(
+                        std::get<J>(meta::unpack_arg<I>(
                             std::forward<A>(args)...
                         )),
                         meta::unpack_arg<I + 1 + Next>(
@@ -945,7 +942,7 @@ namespace impl {
                 return BadUnionAccess(
                     "failed to invoke visitor for union argument " +
                     impl::int_to_static_string<I> + " with active type '" + type_name<
-                        typename meta::unqualify<T>::template alternative<index>
+                        typename meta::unqualify<T>::template alternative<J>
                     > + "'"
                 );
             } else {
@@ -974,7 +971,9 @@ namespace impl {
         /* The active index of an optional is 0 for the empty state and 1 for the
         non-empty state. */
         template <meta::is<T> U>
-        static constexpr size_t index(const U& u) noexcept { return u.has_value(); }
+        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
+            return u.has_value();
+        }
 
         /* Dispatch to the proper state of this optional, then recur for the next
         argument.  If the visitor can't handle the current state, and it is not the
@@ -982,21 +981,14 @@ namespace impl {
         propagate the empty state. */
         template <
             typename R,
+            size_t idx,
             size_t... Prev,
-            size_t... indices,
             size_t... Next,
             typename F,
             typename... A
         >
-            requires (
-                meta::visitor<F, A...> &&
-                sizeof...(Prev) < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
-                meta::unpack_value<sizeof...(Prev), indices...> < pack::size()
-            )
-        static constexpr R dispatch(
+        [[gnu::always_inline]] static constexpr R dispatch(
             std::index_sequence<Prev...>,
-            std::index_sequence<indices...> idx,
             std::index_sequence<Next...>,
             F&& func,
             A&&... args
@@ -1004,10 +996,13 @@ namespace impl {
             noexcept(meta::nothrow::visitor<F, A...>)
         {
             constexpr size_t I = sizeof...(Prev);
-            constexpr size_t index = meta::unpack_value<I, indices...>;
+            constexpr size_t scale = (
+                visitable<meta::unpack_type<I + 1 + Next, A...>>::pack::size() * ... * 1
+            );
+            constexpr size_t J = idx / scale;
 
             // empty state is implicitly propagated if left unhandled
-            if constexpr (index == 0) {
+            if constexpr (J == 0) {
                 if constexpr (meta::visitor<
                     F,
                     meta::unpack_type<Prev, A...>...,
@@ -1020,9 +1015,11 @@ namespace impl {
                             std::nullopt
                         );
                     } else {
-                        return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<R>(
+                        return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<
+                            R,
+                            idx  // we know J == 0, so no need to take the remainder
+                        >(
                             std::make_index_sequence<I + 1>{},
-                            idx,
                             std::make_index_sequence<sizeof...(A) - (I + 2)>{},
                             std::forward<F>(func),
                             meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
@@ -1061,9 +1058,11 @@ namespace impl {
                             ).m_storage.value()
                         );
                     } else {
-                        return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<R>(
+                        return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<
+                            R,
+                            idx - scale  // J == 1, so we can reduce to subtraction
+                        >(
                             std::make_index_sequence<I + 1>{},
-                            idx,
                             std::make_index_sequence<sizeof...(A) - (I + 2)>{},
                             std::forward<F>(func),
                             meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
@@ -1107,7 +1106,9 @@ namespace impl {
         /* The active index of an optional is 0 for the empty state and 1 for the
         non-empty state. */
         template <meta::is<T> U>
-        static constexpr size_t index(const U& u) noexcept { return u.has_value(); }
+        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
+            return u.has_value();
+        }
 
         /* Dispatch to the proper state of this optional, then recur for the next
         argument.  If the visitor can't handle the current state, and it is not the
@@ -1115,21 +1116,14 @@ namespace impl {
         propagate the empty state. */
         template <
             typename R,
+            size_t idx,
             size_t... Prev,
-            size_t... indices,
             size_t... Next,
             typename F,
             typename... A
         >
-            requires (
-                meta::visitor<F, A...> &&
-                sizeof...(Prev) < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
-                meta::unpack_value<sizeof...(Prev), indices...> < pack::size()
-            )
-        static constexpr R dispatch(
+        [[gnu::always_inline]] static constexpr R dispatch(
             std::index_sequence<Prev...>,
-            std::index_sequence<indices...> idx,
             std::index_sequence<Next...>,
             F&& func,
             A&&... args
@@ -1137,10 +1131,13 @@ namespace impl {
             noexcept(meta::nothrow::visitor<F, A...>)
         {
             constexpr size_t I = sizeof...(Prev);
-            constexpr size_t index = meta::unpack_value<I, indices...>;
+            constexpr size_t scale = (
+                visitable<meta::unpack_type<I + 1 + Next, A...>>::pack::size() * ... * 1
+            );
+            constexpr size_t J = idx / scale;
 
             // empty state is implicitly propagated if left unhandled
-            if constexpr (index == 0) {
+            if constexpr (J == 0) {
                 if constexpr (meta::visitor<
                     F,
                     meta::unpack_type<Prev, A...>...,
@@ -1153,9 +1150,11 @@ namespace impl {
                             std::nullopt
                         );
                     } else {
-                        return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<R>(
+                        return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<
+                            R,
+                            idx  // we know J == 0, so no need to take the remainder
+                        >(
                             std::make_index_sequence<I + 1>{},
-                            idx,
                             std::make_index_sequence<sizeof...(A) - (I + 2)>{},
                             std::forward<F>(func),
                             meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
@@ -1194,9 +1193,11 @@ namespace impl {
                             ).value()
                         );
                     } else {
-                        return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<R>(
+                        return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<
+                            R,
+                            idx - scale  // J == 1, so we can reduce to subtraction
+                        >(
                             std::make_index_sequence<I + 1>{},
-                            idx,
                             std::make_index_sequence<sizeof...(A) - (I + 2)>{},
                             std::forward<F>(func),
                             meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
@@ -1253,7 +1254,9 @@ namespace impl {
 
         };
         template <meta::is_void V>
-        struct _pack<V> { using type = build_pack<0, std::nullopt_t>::type; };
+        struct _pack<V> {
+            using type = build_pack<0, std::nullopt_t>::type;
+        };
     
     public:
         static constexpr bool enable = true;
@@ -1319,24 +1322,8 @@ namespace impl {
         return visit_index(i + (visitable<A>::index(first) * scale), rest...);
     }
 
-    /* Compile-time helper that decomposes a fixed index in a vtable into a sequence
-    of indices into the component unions for the encoded permutation. */
-    template <typename out, size_t, typename...>
-    struct _visit_sequence { using type = out; };
-    template <size_t... Is, size_t I, typename A, typename... As>
-    struct _visit_sequence<std::index_sequence<Is...>, I, A, As...> {
-        static constexpr size_t scale = (impl::visitable<As>::pack::size() * ... * 1);
-        using type = _visit_sequence<
-            std::index_sequence<Is..., I / scale>,
-            I % scale,
-            As...
-        >::type;
-    };
-    template <size_t I, typename... As>
-    using visit_sequence = _visit_sequence<std::index_sequence<>, I, As...>::type;
-
-
 }
+
 
 /* Non-member `visit(f, args...)` operator, similar to `std::visit()`, but with greatly
 extended metaprogramming capabilities.  A member version of this operator is provided
@@ -1395,7 +1382,7 @@ default for `Union`, `Optional`, and `Expected`, as well as `std::variant`,
 `std::optional`, and `std::expected`, all of which can be passed to `visit()` without
 any special handling. */
 template <typename F, typename... Args> requires (meta::visitor<F, Args...>)
-[[gnu::flatten]] constexpr meta::visit_type<F, Args...> visit(F&& f, Args&&... args)
+constexpr meta::visit_type<F, Args...> visit(F&& f, Args&&... args)
     noexcept(meta::nothrow::visitor<F, Args...>)
 {
     // only generate a vtable if unions are present in the signature
@@ -1412,9 +1399,8 @@ template <typename F, typename... Args> requires (meta::visitor<F, Args...>)
                     +[](meta::as_lvalue<F> f, meta::as_lvalue<Args>... args)
                         noexcept(meta::nothrow::visitor<F, Args...>) -> R
                     {
-                        return impl::visitable<T>::template dispatch<R>(
+                        return impl::visitable<T>::template dispatch<R, Is>(
                             std::make_index_sequence<0>{},
-                            impl::visit_sequence<Is, Args...>{},
                             std::make_index_sequence<sizeof...(Args) - 1>{},
                             std::forward<F>(f),
                             std::forward<Args>(args)...
@@ -3721,7 +3707,7 @@ namespace std {
     };
 
     /// TODO: maybe `std::get()` should mirror the semantics of `std::variant` (i.e.
-    /// no expected return type?
+    /// no expected return type)?
 
     template <size_t I, bertrand::meta::Union U> requires (I < variant_size<U>::value)
     constexpr decltype(auto) get(U&& u)
@@ -3887,18 +3873,16 @@ namespace bertrand {
         {
             static constexpr Union<int, double> u = 3.14;
             static_assert(std::get<double>(u).result() == 3.14);
+
+            static constexpr Union<int, std::string_view> u2 = 2;
+            static constexpr Union<int, std::string_view> u3 = "abc";
+            static_assert(visit(visitor{
+                [](int x, int y) { return 1; },
+                [](int x, std::string_view y) { return 2; },
+                [](std::string_view x, int y) { return 3; },
+                [](std::string_view x, std::string_view y) { return 4; }
+            }, u2, u3) == 2);
         }
-
-
-        static constexpr Union<int, std::string_view> u = "abc";
-        static constexpr Union<int, std::string_view> u2 = "abc";
-        static_assert(visit(visitor{
-            [](int x, int y) { return 1; },
-            [](int x, std::string_view y) { return 2; },
-            [](std::string_view x, int y) { return 3; },
-            [](std::string_view x, std::string_view y) { return 4; }
-        }, u, u2) == 4);
-
     }
 
 }
