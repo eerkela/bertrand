@@ -3,7 +3,6 @@
 
 #include "bertrand/common.h"
 #include "bertrand/except.h"
-#include <cstddef>
 
 
 namespace bertrand {
@@ -688,30 +687,6 @@ namespace meta {
 
 namespace impl {
 
-    /* Backs the `visit()` algorithm by recursively expanding union types into a
-    series of compile-time vtables covering all possible permutations of the argument
-    types.  When `visit()` is executed, it equates to a sequence of indices into these
-    vtables (one for each union), similar to a virtual method call, and with comparable
-    overhead. */
-    template <typename R, size_t I, typename F, typename... A>
-        requires (meta::visitor<F, A...>)
-    constexpr R visit_impl(F&& func, A&&... args)
-        noexcept(meta::nothrow::visitor<F, A...>)
-    {
-        return std::forward<F>(func)(std::forward<A>(args)...);
-    }
-
-    template <typename R, size_t I, typename F, typename... A>
-        requires (meta::visitor<F, A...> && I < sizeof...(A))
-    constexpr R visit_impl(F&& func, A&&... args)
-        noexcept(meta::nothrow::visitor<F, A...>)
-    {
-        return impl::visitable<meta::unpack_type<I, A...>>::template dispatch<R, I>(
-            std::forward<F>(func),
-            std::forward<A>(args)...
-        );
-    }
-
     /// TODO: visitable<T> should probably expose more information that can be used in
     /// visit<>, but it's hard to know what exactly I need.  I probably need some way
     /// to flatten Optional<std::optional<T>> and std::optional<Optional<T>>
@@ -724,19 +699,51 @@ namespace impl {
         using pack = bertrand::args<T>;
         using empty = void;  // no empty state
 
-        template <typename R, size_t I, typename F, typename... A>
+        /* The active index for non-visitable types is trivially zero. */
+        template <meta::is<T> U>
+        static constexpr size_t index(const U& u) noexcept { return 0; }
+
+        /* Dispatching to a non-visitable type trivially forwards to the next arg. */
+        template <
+            typename R,  // deduced return type
+            size_t... Prev,  // index sequence over processed arguments
+            size_t... indices,  // active index for each argument
+            size_t... Next,  // index sequence over remaining arguments
+            typename F,  // visitor function
+            typename... A  // current arguments in-flight
+        >
             requires (
-                I < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<I, A...>> &&
-                meta::visitor<F, A...>
+                meta::visitor<F, A...> &&
+                sizeof...(Prev) < sizeof...(A) &&
+                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
+                meta::unpack_value<sizeof...(Prev), indices...> < pack::size()
             )
-        static constexpr R dispatch(F&& func, A&&... args)
+        static constexpr R dispatch(
+            std::index_sequence<Prev...>,
+            std::index_sequence<indices...> idx,
+            std::index_sequence<Next...>,
+            F&& func,
+            A&&... args
+        )
             noexcept(meta::nothrow::visitor<F, A...>)
         {
-            return visit_impl<R, I + 1>(
-                std::forward<F>(func),
-                std::forward<A>(args)...
-            );
+            constexpr size_t I = sizeof...(Prev);
+            if constexpr (I + 1 == sizeof...(A)) {
+                return std::forward<F>(func)(
+                    meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
+                    meta::unpack_arg<I>(std::forward<A>(args)...)
+                );
+            } else {
+                return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<R>(
+                    std::make_index_sequence<I + 1>{},
+                    idx,
+                    std::make_index_sequence<sizeof...(A) - (I + 2)>{},
+                    std::forward<F>(func),
+                    meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
+                    meta::unpack_arg<I>(std::forward<A>(args)...),
+                    meta::unpack_arg<I + 1 + Next>(std::forward<A>(args)...)...
+                );
+            }
         }
     };
 
@@ -764,77 +771,85 @@ namespace impl {
         using pack = _pack<0>::type;
         using empty = void;
 
-        template <typename R, size_t I, typename F, typename... A>
+        /* Get the active index for a union of this type. */
+        template <meta::is<T> U>
+        static constexpr size_t index(const U& u) noexcept { return u.index(); }
+
+        /* Dispatch to the proper index of this union to reveal the exact type, then
+        recur for the next argument.  If the visitor can't handle the current type,
+        then return an error indicating as such. */
+        template <
+            typename R,
+            size_t... Prev,
+            size_t... indices,
+            size_t... Next,
+            typename F,
+            typename... A
+        >
             requires (
-                I < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<I, A...>> &&
-                meta::visitor<F, A...>
+                meta::visitor<F, A...> &&
+                sizeof...(Prev) < sizeof...(A) &&
+                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
+                meta::unpack_value<sizeof...(Prev), indices...> < pack::size()
             )
-        static constexpr R dispatch(F&& func, A&&... args)
+        static constexpr R dispatch(
+            std::index_sequence<Prev...>,
+            std::index_sequence<indices...> idx,
+            std::index_sequence<Next...>,
+            F&& func,
+            A&&... args
+        )
             noexcept(meta::nothrow::visitor<F, A...>)
         {
-            static constexpr auto vtable = []<
-                size_t... Prev,
-                size_t... Next,
-                size_t... Is
-            >(
-                std::index_sequence<Prev...>,
-                std::index_sequence<Next...>,
-                std::index_sequence<Is...>
-            ) {
-                /// NOTE: func and args are forwarded as lvalues in order to avoid
-                /// unnecessary copies/moves within the dispatch logic.  They are
-                /// converted back to their proper categories upon recursion
-                return std::array{+[](
-                    meta::as_lvalue<F> func,
-                    meta::as_lvalue<A>... args
-                ) noexcept(meta::nothrow::visitor<F, A...>) -> R {
-                    using type = decltype((meta::unpack_arg<I>(
-                        std::forward<A>(args)...
-                    ).m_storage.template get<Is>()));
-                    if constexpr (meta::visitor<
-                        F,
-                        meta::unpack_type<Prev, A...>...,
-                        type,
-                        meta::unpack_type<I + 1 + Next, A...>...
-                    >) {
-                        return visit_impl<R, I + 1>(
-                            std::forward<F>(func),
-                            meta::unpack_arg<Prev>(
-                                std::forward<A>(args)...
-                            )...,
-                            meta::unpack_arg<I>(
-                                std::forward<A>(args)...
-                            ).m_storage.template get<Is>(),
-                            meta::unpack_arg<I + 1 + Next>(
-                                std::forward<A>(args)...
-                            )...
-                        );
-                    } else if constexpr (meta::convertible_to<BadUnionAccess, R>) {
-                        return BadUnionAccess(
-                            "failed to invoke visitor for union argument " +
-                            impl::int_to_static_string<I> + " with active type '" +
-                            type_name<
-                                typename meta::unqualify<T>::template alternative<Is>
-                            > + "'"
-                        );
-                    } else {
-                        static_assert(
-                            false,
-                            "unreachable: a non-exhaustive iterator must always "
-                            "return an `Expected` result"
-                        );
-                        std::unreachable();
-                    }
-                }...};
-            }(
-                std::make_index_sequence<I>{},
-                std::make_index_sequence<sizeof...(A) - I - 1>{},
-                std::make_index_sequence<N>{}
-            );
+            constexpr size_t I = sizeof...(Prev);
+            constexpr size_t index = meta::unpack_value<I, indices...>;
+            using type = decltype((meta::unpack_arg<I>(
+                std::forward<A>(args)...
+            ).m_storage.template get<index>()));
 
-            // search the vtable for the actual type
-            return vtable[meta::unpack_arg<I>(args...).index()](func, args...);
+            if constexpr (meta::visitor<
+                F,
+                meta::unpack_type<Prev, A...>...,
+                type,
+                meta::unpack_type<I + 1 + Next, A...>...
+            >) {
+                if constexpr (I + 1 == sizeof...(A)) {
+                    return std::forward<F>(func)(
+                        meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
+                        meta::unpack_arg<I>(
+                            std::forward<A>(args)...
+                        ).m_storage.template get<index>()
+                    );
+                } else {
+                    return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<R>(
+                        std::make_index_sequence<I + 1>{},
+                        idx,
+                        std::make_index_sequence<sizeof...(A) - (I + 2)>{},
+                        std::forward<F>(func),
+                        meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
+                        meta::unpack_arg<I>(
+                            std::forward<A>(args)...
+                        ).m_storage.template get<index>(),
+                        meta::unpack_arg<I + 1 + Next>(
+                            std::forward<A>(args)...
+                        )...
+                    );
+                }
+            } else if constexpr (meta::convertible_to<BadUnionAccess, R>) {
+                return BadUnionAccess(
+                    "failed to invoke visitor for union argument " +
+                    impl::int_to_static_string<I> + " with active type '" + type_name<
+                        typename meta::unqualify<T>::template alternative<index>
+                    > + "'"
+                );
+            } else {
+                static_assert(
+                    false,
+                    "unreachable: a non-exhaustive iterator must always return an "
+                    "`Expected` result"
+                );
+                std::unreachable();
+            }
         }
     };
 
@@ -862,74 +877,85 @@ namespace impl {
         using pack = _pack<0>::type;
         using empty = void;
 
-        template <typename R, size_t I, typename F, typename... A>
+        /* Get the active index for a union of this type. */
+        template <meta::is<T> U>
+        static constexpr size_t index(const U& u) noexcept { return u.index(); }
+
+        /* Dispatch to the proper index of this variant to reveal the exact type, then
+        recur for the next argument.  If the visitor can't handle the current type,
+        then return an error indicating as such. */
+        template <
+            typename R,
+            size_t... Prev,
+            size_t... indices,
+            size_t... Next,
+            typename F,
+            typename... A
+        >
             requires (
-                I < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<I, A...>> &&
-                meta::visitor<F, A...>
+                meta::visitor<F, A...> &&
+                sizeof...(Prev) < sizeof...(A) &&
+                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
+                meta::unpack_value<sizeof...(Prev), indices...> < pack::size()
             )
-        static constexpr R dispatch(F&& func, A&&... args)
+        static constexpr R dispatch(
+            std::index_sequence<Prev...>,
+            std::index_sequence<indices...> idx,
+            std::index_sequence<Next...>,
+            F&& func,
+            A&&... args
+        )
             noexcept(meta::nothrow::visitor<F, A...>)
         {
-            // Build a vtable that dispatches to all possible alternatives
-            static constexpr auto vtable = []<
-                size_t... Prev,
-                size_t... Next,
-                size_t... Is
-            >(
-                std::index_sequence<Prev...>,
-                std::index_sequence<Next...>,
-                std::index_sequence<Is...>
-            ) {
-                /// NOTE: func and args are forwarded as lvalues in order to avoid
-                /// unnecessary copies/moves within the dispatch logic.  They are
-                /// converted back to their proper categories upon recursion
-                return std::array{+[](
-                    meta::as_lvalue<F> func,
-                    meta::as_lvalue<A>... args
-                ) noexcept(meta::nothrow::visitor<F, A...>) -> R {
-                    using type = decltype((
-                        std::get<Is>(meta::unpack_arg<I>(std::forward<A>(args)...))
-                    ));
-                    if constexpr (meta::visitor<
-                        F,
-                        meta::unpack_type<Prev, A...>...,
-                        type,
-                        meta::unpack_type<I + 1 + Next, A...>...
-                    >) {
-                        return visit_impl<R, I + 1>(
-                            std::forward<F>(func),
-                            meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
-                            std::get<Is>(meta::unpack_arg<I>(std::forward<A>(args)...)),
-                            meta::unpack_arg<I + 1 + Next>(std::forward<A>(args)...)...
-                        );
-                    } else if constexpr (meta::convertible_to<BadUnionAccess, R>) {
-                        return BadUnionAccess(
-                            "failed to invoke visitor for variant argument " +
-                            impl::int_to_static_string<I> + " with active type '" +
-                            type_name<typename std::variant_alternative_t<
-                                Is,
-                                meta::unqualify<T>
-                            >> + "'"
-                        );
-                    } else {
-                        static_assert(
-                            false,
-                            "unreachable: a non-exhaustive iterator must always "
-                            "return an `Expected` result"
-                        );
-                        std::unreachable();
-                    }
-                }...};
-            }(
-                std::make_index_sequence<I>{},
-                std::make_index_sequence<sizeof...(A) - I - 1>{},
-                std::make_index_sequence<N>{}
-            );
+            constexpr size_t I = sizeof...(Prev);
+            constexpr size_t index = meta::unpack_value<I, indices...>;
+            using type = decltype((std::get<index>(meta::unpack_arg<I>(
+                std::forward<A>(args)...
+            ))));
 
-            // search the vtable for the actual type, and recur for the next
-            // argument until all arguments have been fully deduced
-            return vtable[meta::unpack_arg<I>(args...).index()](func, args...);
+            if constexpr (meta::visitor<
+                F,
+                meta::unpack_type<Prev, A...>...,
+                type,
+                meta::unpack_type<I + 1 + Next, A...>...
+            >) {
+                if constexpr (I + 1 == sizeof...(A)) {
+                    return std::forward<F>(func)(
+                        meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
+                        meta::unpack_arg<I>(
+                            std::forward<A>(args)...
+                        ).m_storage.template get<index>()
+                    );
+                } else {
+                    return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<R>(
+                        std::make_index_sequence<I + 1>{},
+                        idx,
+                        std::make_index_sequence<sizeof...(A) - (I + 2)>{},
+                        std::forward<F>(func),
+                        meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
+                        std::get<index>(meta::unpack_arg<I>(
+                            std::forward<A>(args)...
+                        )),
+                        meta::unpack_arg<I + 1 + Next>(
+                            std::forward<A>(args)...
+                        )...
+                    );
+                }
+            } else if constexpr (meta::convertible_to<BadUnionAccess, R>) {
+                return BadUnionAccess(
+                    "failed to invoke visitor for union argument " +
+                    impl::int_to_static_string<I> + " with active type '" + type_name<
+                        typename meta::unqualify<T>::template alternative<index>
+                    > + "'"
+                );
+            } else {
+                static_assert(
+                    false,
+                    "unreachable: a non-exhaustive iterator must always return an "
+                    "`Expected` result"
+                );
+                std::unreachable();
+            }
         }
     };
 
@@ -945,98 +971,124 @@ namespace impl {
         >;
         using empty = std::nullopt_t;
 
-        template <typename R, size_t I, typename F, typename... A>
+        /* The active index of an optional is 0 for the empty state and 1 for the
+        non-empty state. */
+        template <meta::is<T> U>
+        static constexpr size_t index(const U& u) noexcept { return u.has_value(); }
+
+        /* Dispatch to the proper state of this optional, then recur for the next
+        argument.  If the visitor can't handle the current state, and it is not the
+        empty state, then return an error indicating as such.  Otherwise, implicitly
+        propagate the empty state. */
+        template <
+            typename R,
+            size_t... Prev,
+            size_t... indices,
+            size_t... Next,
+            typename F,
+            typename... A
+        >
             requires (
-                I < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<I, A...>> &&
-                meta::visitor<F, A...>
+                meta::visitor<F, A...> &&
+                sizeof...(Prev) < sizeof...(A) &&
+                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
+                meta::unpack_value<sizeof...(Prev), indices...> < pack::size()
             )
-        static constexpr R dispatch(F&& func, A&&... args)
+        static constexpr R dispatch(
+            std::index_sequence<Prev...>,
+            std::index_sequence<indices...> idx,
+            std::index_sequence<Next...>,
+            F&& func,
+            A&&... args
+        )
             noexcept(meta::nothrow::visitor<F, A...>)
         {
-            static constexpr auto vtable = []<size_t... Prev, size_t... Next>(
-                std::index_sequence<Prev...>,
-                std::index_sequence<Next...>
-            ) {
-                return std::array{
-                    // empty case
-                    +[](meta::as_lvalue<F> func, meta::as_lvalue<A>... args) noexcept(
-                        meta::nothrow::visitor<F, A...>
-                    ) -> R {
-                        if constexpr (meta::visitor<
-                            F,
-                            meta::unpack_type<Prev, A...>...,
-                            std::nullopt_t,
-                            meta::unpack_type<I + 1 + Next, A...>...
-                        >) {
-                            return visit_impl<R, I + 1>(
-                                std::forward<F>(func),
-                                meta::unpack_arg<Prev>(
-                                    std::forward<A>(args)...
-                                )...,
-                                std::nullopt,
-                                meta::unpack_arg<I + 1 + Next>(
-                                    std::forward<A>(args)...
-                                )...
-                            );
-                        } else if constexpr (meta::convertible_to<std::nullopt_t, R>) {
-                            return std::nullopt;
-                        } else {
-                            static_assert(
-                                false,
-                                "unreachable: a non-exhaustive iterator must always "
-                                "return an `Expected` result"
-                            );
-                            std::unreachable();
-                        }
-                    },
-                    // non-empty case
-                    +[](meta::as_lvalue<F> func, meta::as_lvalue<A>... args) noexcept(
-                        meta::nothrow::visitor<F, A...>
-                    ) -> R {
-                        using type = decltype((meta::unpack_arg<I>(
-                            std::forward<A>(args)...
-                        ).m_storage.value()));
-                        if constexpr (meta::visitor<
-                            F,
-                            meta::unpack_type<Prev, A...>...,
-                            type,
-                            meta::unpack_type<I + 1 + Next, A...>...
-                        >) {
-                            return visit_impl<R, I + 1>(
-                                std::forward<F>(func),
-                                meta::unpack_arg<Prev>(
-                                    std::forward<A>(args)...
-                                )...,
-                                meta::unpack_arg<I>(
-                                    std::forward<A>(args)...
-                                ).m_storage.value(),
-                                meta::unpack_arg<I + 1 + Next>(
-                                    std::forward<A>(args)...
-                                )...
-                            );
-                        } else if constexpr (meta::convertible_to<BadUnionAccess, R>) {
-                            return BadUnionAccess(
-                                "failed to invoke visitor for empty optional argument " +
-                                impl::int_to_static_string<I>
-                            );
-                        } else {
-                            static_assert(
-                                false,
-                                "unreachable: a non-exhaustive iterator must always "
-                                "return an `Expected` result"
-                            );
-                            std::unreachable();
-                        }
-                    }
-                };
-            }(
-                std::make_index_sequence<I>{},
-                std::make_index_sequence<sizeof...(A) - I - 1>{}
-            );
+            constexpr size_t I = sizeof...(Prev);
+            constexpr size_t index = meta::unpack_value<I, indices...>;
 
-            // search the vtable based on empty/non-empty state of the optional
-            return vtable[meta::unpack_arg<I>(args...).has_value()](func, args...);
+            // empty state is implicitly propagated if left unhandled
+            if constexpr (index == 0) {
+                if constexpr (meta::visitor<
+                    F,
+                    meta::unpack_type<Prev, A...>...,
+                    std::nullopt_t,
+                    meta::unpack_type<I + 1 + Next, A...>...
+                >) {
+                    if constexpr (I + 1 == sizeof...(A)) {
+                        return std::forward<F>(func)(
+                            meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
+                            std::nullopt
+                        );
+                    } else {
+                        return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<R>(
+                            std::make_index_sequence<I + 1>{},
+                            idx,
+                            std::make_index_sequence<sizeof...(A) - (I + 2)>{},
+                            std::forward<F>(func),
+                            meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
+                            std::nullopt,
+                            meta::unpack_arg<I + 1 + Next>(
+                                std::forward<A>(args)...
+                            )...
+                        );
+                    }
+                } else if constexpr (meta::convertible_to<std::nullopt_t, R>) {
+                    return std::nullopt;
+                } else {
+                    static_assert(
+                        false,
+                        "unreachable: a non-exhaustive iterator must always "
+                        "return an `Expected` result"
+                    );
+                    std::unreachable();
+                }
+
+            // non-empty state returns an error if unhandled
+            } else {
+                if constexpr (meta::visitor<
+                    F,
+                    meta::unpack_type<Prev, A...>...,
+                    decltype((meta::unpack_arg<I>(
+                        std::forward<A>(args)...
+                    ).m_storage.value())),
+                    meta::unpack_type<I + 1 + Next, A...>...
+                >) {
+                    if constexpr (I + 1 == sizeof...(A)) {
+                        return std::forward<F>(func)(
+                            meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
+                            meta::unpack_arg<I>(
+                                std::forward<A>(args)...
+                            ).m_storage.value()
+                        );
+                    } else {
+                        return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<R>(
+                            std::make_index_sequence<I + 1>{},
+                            idx,
+                            std::make_index_sequence<sizeof...(A) - (I + 2)>{},
+                            std::forward<F>(func),
+                            meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
+                            meta::unpack_arg<I>(
+                                std::forward<A>(args)...
+                            ).m_storage.value(),
+                            meta::unpack_arg<I + 1 + Next>(
+                                std::forward<A>(args)...
+                            )...
+                        );
+                    }
+                } else if constexpr (meta::convertible_to<BadUnionAccess, R>) {
+                    return BadUnionAccess(
+                        "failed to invoke visitor for empty optional argument " +
+                        impl::int_to_static_string<I>
+                    );
+                } else {
+                    static_assert(
+                        false,
+                        "unreachable: a non-exhaustive iterator must always "
+                        "return an `Expected` result"
+                    );
+                    std::unreachable();
+                }
+            }
         }
     };
 
@@ -1052,98 +1104,124 @@ namespace impl {
         >;
         using empty = std::nullopt_t;
 
-        template <typename R, size_t I, typename F, typename... A>
+        /* The active index of an optional is 0 for the empty state and 1 for the
+        non-empty state. */
+        template <meta::is<T> U>
+        static constexpr size_t index(const U& u) noexcept { return u.has_value(); }
+
+        /* Dispatch to the proper state of this optional, then recur for the next
+        argument.  If the visitor can't handle the current state, and it is not the
+        empty state, then return an error indicating as such.  Otherwise, implicitly
+        propagate the empty state. */
+        template <
+            typename R,
+            size_t... Prev,
+            size_t... indices,
+            size_t... Next,
+            typename F,
+            typename... A
+        >
             requires (
-                I < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<I, A...>> &&
-                meta::visitor<F, A...>
+                meta::visitor<F, A...> &&
+                sizeof...(Prev) < sizeof...(A) &&
+                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
+                meta::unpack_value<sizeof...(Prev), indices...> < pack::size()
             )
-        static constexpr R dispatch(F&& func, A&&... args)
+        static constexpr R dispatch(
+            std::index_sequence<Prev...>,
+            std::index_sequence<indices...> idx,
+            std::index_sequence<Next...>,
+            F&& func,
+            A&&... args
+        )
             noexcept(meta::nothrow::visitor<F, A...>)
         {
-            static constexpr auto vtable = []<size_t... Prev, size_t... Next>(
-                std::index_sequence<Prev...>,
-                std::index_sequence<Next...>
-            ) {
-                return std::array{
-                    // empty case
-                    +[](meta::as_lvalue<F> func, meta::as_lvalue<A>... args) noexcept(
-                        meta::nothrow::visitor<F, A...>
-                    ) -> R {
-                        if constexpr (meta::visitor<
-                            F,
-                            meta::unpack_type<Prev, A...>...,
-                            std::nullopt_t,
-                            meta::unpack_type<I + 1 + Next, A...>...
-                        >) {
-                            return visit_impl<R, I + 1>(
-                                std::forward<F>(func),
-                                meta::unpack_arg<Prev>(
-                                    std::forward<A>(args)...
-                                )...,
-                                std::nullopt,
-                                meta::unpack_arg<I + 1 + Next>(
-                                    std::forward<A>(args)...
-                                )...
-                            );
-                        } else if constexpr (meta::convertible_to<std::nullopt_t, R>) {
-                            return std::nullopt;
-                        } else {
-                            static_assert(
-                                false,
-                                "unreachable: a non-exhaustive iterator must always "
-                                "return an `Expected` result"
-                            );
-                            std::unreachable();
-                        }
-                    },
-                    // non-empty case
-                    +[](meta::as_lvalue<F> func, meta::as_lvalue<A>... args) noexcept(
-                        meta::nothrow::visitor<F, A...>
-                    ) -> R {
-                        using type = decltype((meta::unpack_arg<I>(
-                            std::forward<A>(args)...
-                        ).m_storage.value()));
-                        if constexpr (meta::visitor<
-                            F,
-                            meta::unpack_type<Prev, A...>...,
-                            type,
-                            meta::unpack_type<I + 1 + Next, A...>...
-                        >) {
-                            return visit_impl<R, I + 1>(
-                                std::forward<F>(func),
-                                meta::unpack_arg<Prev>(
-                                    std::forward<A>(args)...
-                                )...,
-                                meta::unpack_arg<I>(
-                                    std::forward<A>(args)...
-                                ).value(),
-                                meta::unpack_arg<I + 1 + Next>(
-                                    std::forward<A>(args)...
-                                )...
-                            );
-                        } else if constexpr (meta::convertible_to<BadUnionAccess, R>) {
-                            return BadUnionAccess(
-                                "failed to invoke visitor for empty optional argument " +
-                                impl::int_to_static_string<I>
-                            );
-                        } else {
-                            static_assert(
-                                false,
-                                "unreachable: a non-exhaustive iterator must always "
-                                "return an `Expected` result"
-                            );
-                            std::unreachable();
-                        }
-                    }
-                };
-            }(
-                std::make_index_sequence<I>{},
-                std::make_index_sequence<sizeof...(A) - I - 1>{}
-            );
+            constexpr size_t I = sizeof...(Prev);
+            constexpr size_t index = meta::unpack_value<I, indices...>;
 
-            // search the vtable based on empty/non-empty state of the optional
-            return vtable[meta::unpack_arg<I>(args...).has_value()](func, args...);
+            // empty state is implicitly propagated if left unhandled
+            if constexpr (index == 0) {
+                if constexpr (meta::visitor<
+                    F,
+                    meta::unpack_type<Prev, A...>...,
+                    std::nullopt_t,
+                    meta::unpack_type<I + 1 + Next, A...>...
+                >) {
+                    if constexpr (I + 1 == sizeof...(A)) {
+                        return std::forward<F>(func)(
+                            meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
+                            std::nullopt
+                        );
+                    } else {
+                        return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<R>(
+                            std::make_index_sequence<I + 1>{},
+                            idx,
+                            std::make_index_sequence<sizeof...(A) - (I + 2)>{},
+                            std::forward<F>(func),
+                            meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
+                            std::nullopt,
+                            meta::unpack_arg<I + 1 + Next>(
+                                std::forward<A>(args)...
+                            )...
+                        );
+                    }
+                } else if constexpr (meta::convertible_to<std::nullopt_t, R>) {
+                    return std::nullopt;
+                } else {
+                    static_assert(
+                        false,
+                        "unreachable: a non-exhaustive iterator must always "
+                        "return an `Expected` result"
+                    );
+                    std::unreachable();
+                }
+
+            // non-empty state returns an error if unhandled
+            } else {
+                if constexpr (meta::visitor<
+                    F,
+                    meta::unpack_type<Prev, A...>...,
+                    decltype((meta::unpack_arg<I>(
+                        std::forward<A>(args)...
+                    ).value())),
+                    meta::unpack_type<I + 1 + Next, A...>...
+                >) {
+                    if constexpr (I + 1 == sizeof...(A)) {
+                        return std::forward<F>(func)(
+                            meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
+                            meta::unpack_arg<I>(
+                                std::forward<A>(args)...
+                            ).value()
+                        );
+                    } else {
+                        return visitable<meta::unpack_type<I + 1, A...>>::template dispatch<R>(
+                            std::make_index_sequence<I + 1>{},
+                            idx,
+                            std::make_index_sequence<sizeof...(A) - (I + 2)>{},
+                            std::forward<F>(func),
+                            meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
+                            meta::unpack_arg<I>(
+                                std::forward<A>(args)...
+                            ).value(),
+                            meta::unpack_arg<I + 1 + Next>(
+                                std::forward<A>(args)...
+                            )...
+                        );
+                    }
+                } else if constexpr (meta::convertible_to<BadUnionAccess, R>) {
+                    return BadUnionAccess(
+                        "failed to invoke visitor for empty optional argument " +
+                        impl::int_to_static_string<I>
+                    );
+                } else {
+                    static_assert(
+                        false,
+                        "unreachable: a non-exhaustive iterator must always "
+                        "return an `Expected` result"
+                    );
+                    std::unreachable();
+                }
+            }
         }
     };
 
@@ -1229,8 +1307,36 @@ namespace impl {
         /// TODO: implement this similar to the above
     };
 
-}
+    /* Helper function to compute an encoded index for a sequence of visitable
+    arguments at runtime, which can then be used to index into a 1D vtable for all
+    arguments simultaneously. */
+    constexpr size_t visit_index(size_t i) noexcept {
+        return i;
+    }
+    template <typename A, typename... As>
+    constexpr size_t visit_index(size_t i, const A& first, const As&... rest) noexcept {
+        constexpr size_t scale = (impl::visitable<As>::pack::size() * ... * 1);
+        return visit_index(i + (visitable<A>::index(first) * scale), rest...);
+    }
 
+    /* Compile-time helper that decomposes a fixed index in a vtable into a sequence
+    of indices into the component unions for the encoded permutation. */
+    template <typename out, size_t, typename...>
+    struct _visit_sequence { using type = out; };
+    template <size_t... Is, size_t I, typename A, typename... As>
+    struct _visit_sequence<std::index_sequence<Is...>, I, A, As...> {
+        static constexpr size_t scale = (impl::visitable<As>::pack::size() * ... * 1);
+        using type = _visit_sequence<
+            std::index_sequence<Is..., I / scale>,
+            I % scale,
+            As...
+        >::type;
+    };
+    template <size_t I, typename... As>
+    using visit_sequence = _visit_sequence<std::index_sequence<>, I, As...>::type;
+
+
+}
 
 /* Non-member `visit(f, args...)` operator, similar to `std::visit()`, but with greatly
 extended metaprogramming capabilities.  A member version of this operator is provided
@@ -1289,13 +1395,42 @@ default for `Union`, `Optional`, and `Expected`, as well as `std::variant`,
 `std::optional`, and `std::expected`, all of which can be passed to `visit()` without
 any special handling. */
 template <typename F, typename... Args> requires (meta::visitor<F, Args...>)
-constexpr meta::visit_type<F, Args...> visit(F&& f, Args&&... args)
+[[gnu::flatten]] constexpr meta::visit_type<F, Args...> visit(F&& f, Args&&... args)
     noexcept(meta::nothrow::visitor<F, Args...>)
 {
-    return impl::visit_impl<meta::visit_type<F, Args...>, 0>(
-        std::forward<F>(f),
-        std::forward<Args>(args)...
-    );
+    // only generate a vtable if unions are present in the signature
+    if constexpr ((meta::visitable<Args> || ...)) {
+        using R = meta::visit_type<F, Args...>;
+        using T = meta::unpack_type<0, Args...>;
+        static constexpr size_t N = (impl::visitable<Args>::pack::size() * ... * 1);
+
+        // flat vtable encodes all permutations simultaneously, minimizing binary size
+        // and compile-time/runtime overhead by only doing a single array lookup.
+        static constexpr auto vtable =
+            []<size_t... Is>(std::index_sequence<Is...>) noexcept {
+                return std::array{
+                    +[](meta::as_lvalue<F> f, meta::as_lvalue<Args>... args)
+                        noexcept(meta::nothrow::visitor<F, Args...>) -> R
+                    {
+                        return impl::visitable<T>::template dispatch<R>(
+                            std::make_index_sequence<0>{},
+                            impl::visit_sequence<Is, Args...>{},
+                            std::make_index_sequence<sizeof...(Args) - 1>{},
+                            std::forward<F>(f),
+                            std::forward<Args>(args)...
+                        );
+                    }...
+                };
+            }(std::make_index_sequence<N>{});
+
+        // `impl::visit_index()` produces an index into the vtable that encodes all
+        // visitable arguments simultaneously.
+        return vtable[impl::visit_index(0, args...)](f, args...);
+
+    // otherwise, call the function directly
+    } else {
+        return std::forward<F>(f)(std::forward<Args>(args)...);
+    }
 }
 
 
@@ -1320,9 +1455,14 @@ struct Union : impl::union_tag {
     template <size_t I> requires (I < alternatives)
     using alternative = meta::unpack_type<I, Ts...>;
 
+    /* Evaluates to true if `T` is contained within the list of alternatives for this
+    union.  False otherwise. */
+    template <typename T>
+    static constexpr bool valid_alternative = (std::same_as<T, Ts> || ...);
+
     /* Get the index of type `T`, assuming it is present in the union's template
     signature.  Fails to compile otherwise. */
-    template <typename T> requires (std::same_as<T, Ts> || ...)
+    template <typename T> requires (valid_alternative<T>)
     static constexpr size_t index_of = meta::index_of<T, Ts...>;
 
 private:
@@ -1588,7 +1728,7 @@ public:
     }
 
     /* Check whether the variant holds a specific type. */
-    template <typename T> requires (std::same_as<T, Ts> || ...)
+    template <typename T> requires (valid_alternative<T>)
     [[nodiscard]] constexpr bool holds_alternative() const noexcept {
         return m_index == index_of<T>;
     }
@@ -1608,7 +1748,7 @@ public:
     /* Get the value for the templated type.  Fails to compile if the templated type
     is not a valid union member.  Otherwise, returns an `Expected<T, BadUnionAccess>`,
     where `T` is forwarded according to the qualifiers of the enclosing union. */
-    template <typename T, typename Self> requires (std::same_as<T, Ts> || ...)
+    template <typename T, typename Self> requires (valid_alternative<T>)
     [[nodiscard]] constexpr exp_val<index_of<T>, Self> get(this Self&& self) noexcept {
         if (self.index() != index_of<T>) {
             /// TODO: this can't work until static_str is fully defined
@@ -1631,7 +1771,7 @@ public:
 
     /* Get an optional wrapper for the value of the templated type.  If that is not
     the active type, returns an empty optional instead. */
-    template <typename T, typename Self> requires (std::same_as<T, Ts> || ...)
+    template <typename T, typename Self> requires (valid_alternative<T>)
     [[nodiscard]] constexpr opt_val<index_of<T>, Self> get_if(this Self&& self) noexcept(
         noexcept(opt_val<index_of<T>, Self>(
             std::forward<Self>(self).m_storage.template get<index_of<T>>()
@@ -1655,7 +1795,7 @@ public:
     ) noexcept(
         meta::nothrow::visitor<F, Self, Args...>
     ) {
-        return impl::visit_impl<meta::visit_type<F, Self, Args...>, 0>(
+        return bertrand::visit(
             std::forward<F>(f),
             std::forward<Self>(self),
             std::forward<Args>(args)...
@@ -1948,7 +2088,7 @@ public:
     /* Construct a union with an explicit type, rather than using the implicit
     constructors, which can introduce ambiguity. */
     template <typename T, typename... Args>
-        requires ((std::same_as<T, Ts> || ...) && meta::constructible_from<T, Args...>)
+        requires (valid_alternative<T> && meta::constructible_from<T, Args...>)
     static constexpr Union create(Args&&... args)
         noexcept(noexcept(Union(create_t<index_of<T>>{}, std::forward<Args>(args)...)))
     {
@@ -2146,6 +2286,12 @@ public:
         return m_storage.has_value();
     }
 
+    /* Contextually convert the optional to a boolean.  Equivalent to checking
+    `optional.has_value()`. */
+    [[nodiscard]] constexpr explicit operator bool() const noexcept {
+        return m_storage.has_value();
+    }
+
     /* Access the stored value.  Throws a `BadUnionAccess` assertion if the program is
     compiled in debug mode and the optional is currently in the empty state. */
     template <typename Self>
@@ -2156,6 +2302,42 @@ public:
             }
         }
         return std::forward<Self>(self).m_storage.value();
+    }
+
+    /* Access the stored value.  Throws a `BadUnionAccess` assertion if the program is
+    compiled in debug mode and the optional is currently in the empty state. */
+    template <typename Self>
+    [[nodiscard]] constexpr access<Self> operator*(this Self&& self) noexcept(!DEBUG) {
+        if constexpr (DEBUG) {
+            if (!self.has_value()) {
+                throw BadUnionAccess("Cannot access value of an empty Optional");
+            }
+        }
+        return std::forward<Self>(self).m_storage.value();
+    }
+
+    /* Access a member of the stored value.  Throws a `BadUnionAccess` assertion if the
+    program is compiled in debug mode and the optional is currently in the empty
+    state. */
+    [[nodiscard]] constexpr pointer operator->() noexcept(!DEBUG) {
+        if constexpr (DEBUG) {
+            if (!has_value()) {
+                throw BadUnionAccess("Cannot access value of an empty Optional");
+            }
+        }
+        return &m_storage.value();
+    }
+
+    /* Access a member of the stored value.  Throws a `BadUnionAccess` assertion if the
+    program is compiled in debug mode and the optional is currently in the empty
+    state. */
+    [[nodiscard]] constexpr const_pointer operator->() const noexcept(!DEBUG) {
+        if constexpr (DEBUG) {
+            if (!has_value()) {
+                throw BadUnionAccess("Cannot access value of an empty Optional");
+            }
+        }
+        return &m_storage.value();
     }
 
     /* Access the stored value or return the default value if the optional is empty,
@@ -2193,7 +2375,7 @@ public:
     ) noexcept(
         meta::nothrow::visitor<F, Self, Args...>
     ) {
-        return impl::visit_impl<meta::visit_type<F, Self, Args...>, 0>(
+        return bertrand::visit(
             std::forward<F>(f),
             std::forward<Self>(self),
             std::forward<Args>(args)...
@@ -2324,6 +2506,11 @@ public:
         return std::forward<F>(f)(std::forward<Args>(args)...);
     }
 
+    /* Monadic call operator.  If the optional type is a function-like object and is
+    not in the empty state, then this will return the result of that function wrapped
+    in another optional.  Otherwise, it will return the empty state.  If the function
+    returns void, then the result will be void in both cases, and the function will
+    not be invoked for the empty state. */
     template <typename Self, typename... Args>
         requires (meta::visitor<impl::Call, Self, Args...>)
     constexpr decltype(auto) operator()(this Self&& self, Args&&... args)
@@ -2335,6 +2522,9 @@ public:
         );
     }
 
+    /* Monadic subscript operator.  If the optional type is a container that supports
+    indexing with the given key, then this will return the result of the access wrapped
+    in another optional.  Otherwise, it will return the empty state. */
     template <typename Self, typename... Key>
         requires (meta::visitor<impl::Subscript, Self, Key...>)
     constexpr decltype(auto) operator[](this Self&& self, Key&&... keys)
@@ -2858,7 +3048,7 @@ public:
     ) noexcept(
         meta::nothrow::visitor<F, Self, Args...>
     ) {
-        return impl::visit_impl<meta::visit_type<F, Self, Args...>, 0>(
+        return bertrand::visit(
             std::forward<F>(f),
             std::forward<Self>(self),
             std::forward<Args>(args)...
@@ -2928,65 +3118,9 @@ constexpr void swap(Expected<T, E>& a, Expected<T, E>& b)
 }
 
 
-/// TODO: add dereference and arrow operators to monadic interface?
-
-
-template <meta::monad T> requires (meta::visitor<impl::Invert, T>)
-constexpr decltype(auto) operator~(T&& val)
-    noexcept(meta::nothrow::visitor<impl::Invert, T>)
-{
-    return visit(impl::Invert{}, std::forward<T>(val));
-}
-
-
-template <meta::monad T> requires (meta::visitor<impl::Pos, T>)
-constexpr decltype(auto) operator+(T&& val)
-    noexcept(meta::nothrow::visitor<impl::Pos, T>)
-{
-    return visit(impl::Pos{}, std::forward<T>(val));
-}
-
-
-template <meta::monad T> requires (meta::visitor<impl::Neg, T>)
-constexpr decltype(auto) operator-(T&& val)
-    noexcept(meta::nothrow::visitor<impl::Neg, T>)
-{
-    return visit(impl::Neg{}, std::forward<T>(val));
-}
-
-
-template <meta::monad T> requires (meta::visitor<impl::PreIncrement, T>)
-constexpr decltype(auto) operator++(T&& val)
-    noexcept(meta::nothrow::visitor<impl::PreIncrement, T>)
-{
-    return visit(impl::PreIncrement{}, std::forward<T>(val));
-}
-
-
-template <meta::monad T> requires (meta::visitor<impl::PostIncrement, T>)
-constexpr decltype(auto) operator++(T&& val, int)
-    noexcept(meta::nothrow::visitor<impl::PostIncrement, T>)
-{
-    return visit(impl::PostIncrement{}, std::forward<T>(val));
-}
-
-
-template <meta::monad T> requires (meta::visitor<impl::PreDecrement, T>)
-constexpr decltype(auto) operator--(T&& val)
-    noexcept(meta::nothrow::visitor<impl::PreDecrement, T>)
-{
-    return visit(impl::PreDecrement{}, std::forward<T>(val));
-}
-
-
-template <meta::monad T> requires (meta::visitor<impl::PostDecrement, T>)
-constexpr decltype(auto) operator--(T&& val, int)
-    noexcept(meta::nothrow::visitor<impl::PostDecrement, T>)
-{
-    return visit(impl::PostDecrement{}, std::forward<T>(val));
-}
-
-
+/* Monadic logical NOT operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
+true and at least one type within the monad supports logical NOT. */
 template <meta::monad T>
 constexpr decltype(auto) operator!(T&& val)
     noexcept(meta::nothrow::visitor<impl::LogicalNot, T>)
@@ -2995,6 +3129,10 @@ constexpr decltype(auto) operator!(T&& val)
 }
 
 
+/* Monadic logical AND operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
+true and at least one type within the monad supports logical AND against the other
+operand (which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3011,6 +3149,10 @@ constexpr decltype(auto) operator&&(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic logical OR operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
+true and at least one type within the monad supports logical OR against the other
+operand (which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3027,6 +3169,10 @@ constexpr decltype(auto) operator||(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic less-than comparison operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
+true and at least one type within the monad supports less-than comparisons against the
+other operand (which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3043,6 +3189,10 @@ constexpr decltype(auto) operator<(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic less-than-or-equal comparison operator.  Delegates to `bertrand::visit()`,
+and is automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
+true and at least one type within the monad supports less-than-or-equal comparisons
+against the other operand (which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3059,6 +3209,10 @@ constexpr decltype(auto) operator<=(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic equality operator.  Delegates to `bertrand::visit()`, and is automatically
+defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
+one type within the monad supports equality comparisons against the other operand
+(which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3075,6 +3229,10 @@ constexpr decltype(auto) operator==(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic inequality operator.  Delegates to `bertrand::visit()`, and is automatically
+defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
+one type within the monad supports equality comparisons against the other operand
+(which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3091,6 +3249,10 @@ constexpr decltype(auto) operator!=(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic greater-than-or-equal comparison operator.  Delegates to `bertrand::visit()`,
+and is automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
+true and at least one type within the monad supports greater-than-or-equal comparisons
+against the other operand (which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3107,6 +3269,10 @@ constexpr decltype(auto) operator>=(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic greater-than comparison operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
+and at least one type within the monad supports greater-than-or-equal comparisons
+against the other operand (which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3123,6 +3289,10 @@ constexpr decltype(auto) operator>(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic three-way comparison operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
+and at least one type within the monad supports three-way comparisons against the
+other operand (which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3139,6 +3309,75 @@ constexpr decltype(auto) operator<=>(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic unary plus operator.  Delegates to `bertrand::visit()`, and is automatically
+defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
+one type within the monad supports unary plus. */
+template <meta::monad T> requires (meta::visitor<impl::Pos, T>)
+constexpr decltype(auto) operator+(T&& val)
+    noexcept(meta::nothrow::visitor<impl::Pos, T>)
+{
+    return visit(impl::Pos{}, std::forward<T>(val));
+}
+
+
+/* Monadic unary minus operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
+and at least one type within the monad supports unary minus. */
+template <meta::monad T> requires (meta::visitor<impl::Neg, T>)
+constexpr decltype(auto) operator-(T&& val)
+    noexcept(meta::nothrow::visitor<impl::Neg, T>)
+{
+    return visit(impl::Neg{}, std::forward<T>(val));
+}
+
+
+/* Monadic prefix increment operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
+true and at least one tyoe within the monad supports prefix increments. */
+template <meta::monad T> requires (meta::visitor<impl::PreIncrement, T>)
+constexpr decltype(auto) operator++(T&& val)
+    noexcept(meta::nothrow::visitor<impl::PreIncrement, T>)
+{
+    return visit(impl::PreIncrement{}, std::forward<T>(val));
+}
+
+
+/* Monadic postfix increment operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
+true and at least one type within the monad supports postfix increments. */
+template <meta::monad T> requires (meta::visitor<impl::PostIncrement, T>)
+constexpr decltype(auto) operator++(T&& val, int)
+    noexcept(meta::nothrow::visitor<impl::PostIncrement, T>)
+{
+    return visit(impl::PostIncrement{}, std::forward<T>(val));
+}
+
+
+/* Monadic prefix decrement operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
+true and at least one type within the monad supports prefix decrements. */
+template <meta::monad T> requires (meta::visitor<impl::PreDecrement, T>)
+constexpr decltype(auto) operator--(T&& val)
+    noexcept(meta::nothrow::visitor<impl::PreDecrement, T>)
+{
+    return visit(impl::PreDecrement{}, std::forward<T>(val));
+}
+
+/* Monadic postfix decrement operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
+true and at least one type within the monad supports postfix decrements. */
+template <meta::monad T> requires (meta::visitor<impl::PostDecrement, T>)
+constexpr decltype(auto) operator--(T&& val, int)
+    noexcept(meta::nothrow::visitor<impl::PostDecrement, T>)
+{
+    return visit(impl::PostDecrement{}, std::forward<T>(val));
+}
+
+
+/* Monadic addition operator.  Delegates to `bertrand::visit()`, and is automatically
+defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
+one type within the monad supports addition with the other operand (which may be
+another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3155,6 +3394,10 @@ constexpr decltype(auto) operator+(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic in-place addition operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
+and at least one type within the monad supports addition with the other operand
+(which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3171,6 +3414,10 @@ constexpr decltype(auto) operator+=(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic subtraction operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
+and at least one type within the monad supports subtraction with the other operand
+(which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3187,6 +3434,10 @@ constexpr decltype(auto) operator-(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic in-place subtraction operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
+and at least one type within the monad supports subtraction with the other operand
+(which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3203,6 +3454,10 @@ constexpr decltype(auto) operator-=(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic multiplication operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
+and at least one type within the monad supports multiplication with the other operand
+(which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3219,6 +3474,10 @@ constexpr decltype(auto) operator*(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic in-place multiplication operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
+and at least one type within the monad supports multiplication with the other operand
+(which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3235,6 +3494,10 @@ constexpr decltype(auto) operator*=(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic division operator.  Delegates to `bertrand::visit()`, and is automatically
+defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
+one type within the monad supports division with the other operand (which may be
+another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3251,6 +3514,10 @@ constexpr decltype(auto) operator/(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic in-place division operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
+and at least one type within the monad supports division with the other operand
+(which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3267,6 +3534,10 @@ constexpr decltype(auto) operator/=(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic modulus operator.  Delegates to `bertrand::visit()`, and is automatically
+defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
+one type within the monad supports modulus with the other operand (which may be
+another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3283,6 +3554,10 @@ constexpr decltype(auto) operator%(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic in-place modulus operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
+and at least one type within the monad supports modulus with the other operand
+(which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3299,6 +3574,21 @@ constexpr decltype(auto) operator%=(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic bitwise NOT operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
+and at least one type within the monad supports bitwise NOT. */
+template <meta::monad T> requires (meta::visitor<impl::Invert, T>)
+constexpr decltype(auto) operator~(T&& val)
+    noexcept(meta::nothrow::visitor<impl::Invert, T>)
+{
+    return visit(impl::Invert{}, std::forward<T>(val));
+}
+
+
+/* Monadic bitwise AND operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
+and at least one type within the monad supports bitwise AND with the other operand
+(which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3315,6 +3605,10 @@ constexpr decltype(auto) operator&(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic in-place bitwise AND operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
+and at least one type within the monad supports bitwise AND with the other operand
+(which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3331,6 +3625,10 @@ constexpr decltype(auto) operator&=(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic bitwise OR operator.  Delegates to `bertrand::visit()`, and is automatically
+defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
+one type within the monad supports bitwise OR with the other operand (which may be
+another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3347,6 +3645,10 @@ constexpr decltype(auto) operator|(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic in-place bitwise OR operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
+and at least one type within the monad supports bitwise OR with the other operand
+(which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3363,6 +3665,10 @@ constexpr decltype(auto) operator|=(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic bitwise XOR operator.  Delegates to `bertrand::visit()`, and is automatically
+defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
+one type within the monad supports bitwise XOR with the other operand (which may be
+another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3379,6 +3685,10 @@ constexpr decltype(auto) operator^(L&& lhs, R&& rhs)
 }
 
 
+/* Monadic in-place bitwise XOR operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
+and at least one type within the monad supports bitwise XOR with the other operand
+(which may be another monad). */
 template <typename L, typename R>
     requires (
         (meta::monad<L> || meta::monad<R>) &&
@@ -3400,7 +3710,35 @@ constexpr decltype(auto) operator^=(L&& lhs, R&& rhs)
 
 namespace std {
 
-    /// TODO: variant_size and variant_alternative?
+    template <bertrand::meta::Union U>
+    struct variant_size<U> :
+        std::integral_constant<size_t, remove_cvref_t<U>::alternatives>
+    {};
+
+    template <size_t I, bertrand::meta::Union U> requires (I < variant_size<U>::value)
+    struct variant_alternative<I, U> {
+        using type = remove_cvref_t<U>::template alternative<I>;
+    };
+
+    /// TODO: maybe `std::get()` should mirror the semantics of `std::variant` (i.e.
+    /// no expected return type?
+
+    template <size_t I, bertrand::meta::Union U> requires (I < variant_size<U>::value)
+    constexpr decltype(auto) get(U&& u)
+        noexcept(noexcept(std::forward<U>(u).template get<I>()))
+    {
+        return std::forward<U>(u).template get<I>();
+    }
+
+    template <typename T, bertrand::meta::Union U>
+        requires (remove_cvref_t<U>::template valid_alternative<T>)
+    constexpr decltype(auto) get(U&& u)
+        noexcept(noexcept(std::forward<U>(u).template get<T>()))
+    {
+        return std::forward<U>(u).template get<T>();
+    }
+
+    /// TODO: `std::get_if()`?
 
     template <bertrand::meta::monad T>
         requires (bertrand::meta::visitor<bertrand::impl::Hash, T>)
@@ -3507,7 +3845,6 @@ namespace bertrand {
                 [](std::nullopt_t) { return 0; }
             }) == 0);
 
-
             struct Func {
                 static constexpr int operator()(int x) noexcept {
                     return x * 2;
@@ -3543,7 +3880,25 @@ namespace bertrand {
 
             static constexpr Optional<std::array<int, 3>> o = std::array{1, 2, 3};
             static_assert(o[1].value() == 2);
+            static_assert(*o[1] == 2);
+            static_assert(o->size() == 3);
         }
+
+        {
+            static constexpr Union<int, double> u = 3.14;
+            static_assert(std::get<double>(u).result() == 3.14);
+        }
+
+
+        static constexpr Union<int, std::string_view> u = "abc";
+        static constexpr Union<int, std::string_view> u2 = "abc";
+        static_assert(visit(visitor{
+            [](int x, int y) { return 1; },
+            [](int x, std::string_view y) { return 2; },
+            [](std::string_view x, int y) { return 3; },
+            [](std::string_view x, std::string_view y) { return 4; }
+        }, u, u2) == 4);
+
     }
 
 }

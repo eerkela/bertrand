@@ -165,12 +165,21 @@ namespace meta {
         template <typename T, typename... Ts>
         struct unpack_type<0, T, Ts...> { using type = T; };
 
+        template <size_t I, auto V, auto... Vs>
+        constexpr auto unpack_value = unpack_value<I - 1, Vs...>;
+        template <auto V, auto... Vs>
+        constexpr auto unpack_value<0, V, Vs...> = V;
     }
 
     /* Get the type at a particular index of a parameter pack.  This is superceded by
     the C++26 pack indexing language feature. */
     template <size_t I, typename... Ts> requires (I < sizeof...(Ts))
     using unpack_type = detail::unpack_type<I, Ts...>::type;
+
+    /* Unpack the non-type template parameter at a particular index of a parameter
+    pack.  This is superceded by the C++26 pack indexing language feature. */
+    template <size_t I, auto... Vs> requires (I < sizeof...(Vs))
+    constexpr auto unpack_value = detail::unpack_value<I, Vs...>;
 
     /* Index into a parameter pack and perfectly forward a single item.  This is
     superceded by the C++26 pack indexing language feature. */
@@ -731,14 +740,31 @@ namespace meta {
     namespace nothrow {
 
         template <typename T>
-        concept swappable =
-            meta::swappable<T> &&
-            std::is_nothrow_swappable_v<T>;
+        concept swappable = meta::swappable<T> &&
+            noexcept(std::ranges::swap(
+                std::declval<meta::as_lvalue<T>>(),
+                std::declval<meta::as_lvalue<T>>()
+            ));
 
         template <typename T, typename U>
         concept swappable_with =
             meta::swappable_with<T, U> &&
-            std::is_nothrow_swappable_with_v<T, U>;
+            noexcept(std::ranges::swap(
+                std::declval<meta::as_lvalue<T>>(),
+                std::declval<meta::as_lvalue<T>>()
+            )) &&
+            noexcept(std::ranges::swap(
+                std::declval<meta::as_lvalue<T>>(),
+                std::declval<meta::as_lvalue<U>>()
+            )) &&
+            noexcept(std::ranges::swap(
+                std::declval<meta::as_lvalue<U>>(),
+                std::declval<meta::as_lvalue<T>>()
+            )) &&
+            noexcept(std::ranges::swap(
+                std::declval<meta::as_lvalue<U>>(),
+                std::declval<meta::as_lvalue<U>>()
+            ));
 
     }
 
