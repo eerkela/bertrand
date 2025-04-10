@@ -45,11 +45,12 @@ namespace impl {
 /// there are multiple error states, which is amazingly efficient, and perfectly
 /// matches `std::expected`.
 
-/// TODO: the only trick here is that I need to swap the internals over to using
-/// custom reference counting rather than a unique pointer, since otherwise copy
-/// semantics would get unnecessarily expensive.  This is probably a good idea anyways,
-/// but most importantly, it means that accessing `expected.error()` will always
-/// return a new error object, which might be a trivial copy.
+/// TODO: the way this works is by lifting the union and as much consolidated logic
+/// as possible into impl::ExceptionStorage<T>, where `T` is a CRTP type that the
+/// `ExceptionStorage` class is convertible to by injecting a boolean discriminator
+/// into a factory method.  Then, when I store the exceptions within `Expected<>`,
+/// I would actually wrap each one in `impl:ExceptionStorage<T>` and return a new
+/// exception/union from `error()` each time, using trivial copy semantics.
 
 
 
@@ -79,9 +80,11 @@ private:
 
         /* At runtime, we also store a full traceback to the error location, as well
         as a mutable cache for the `what()` message.  This information is stored in a
-        unique pointer so as not to contribute to the `Exception`'s overall size. */
+        reference-counted pointer so as not to contribute to the `Exception`'s overall
+        size, and allow fast copy/move semantics. */
         struct type {
             /// TODO: figure out skips to hide exception internals
+            mutable std::atomic<size_t> refcount;
             mutable size_t skip;
             mutable bool resolved;
             union Trace {
@@ -102,13 +105,28 @@ private:
                 return reinterpret_cast<const char*>(this + 1);
             }
 
+            /* Custom reference counting is used to ensure efficient copy semantics. */
+            const type* incref() const noexcept {
+                ++refcount;
+                return this;
+            }
+
+            /* Custom reference counting is used to ensure efficient copy semantics. */
+            void decref() noexcept {
+                if (--refcount == 0) {
+                    delete[] reinterpret_cast<std::byte*>(this);
+                }
+            }
+
             type(std::string_view msg) noexcept :
+                refcount(1),
                 skip(0),
                 resolved(false),
                 trace{.raw = cpptrace::generate_raw_trace(1)}, // skip this constructor
                 length(msg.size())
             {
                 std::copy_n(msg.data(), msg.size(), data());
+                data()[msg.size()] = '\0';
             }
 
             type(
@@ -116,12 +134,14 @@ private:
                 size_t skip,
                 std::string_view msg
             ) noexcept :
+                refcount(1),
                 skip(skip),
                 resolved(false),
                 trace{.raw = std::move(trace)},
                 length(msg.size())
             {
                 std::copy_n(msg.data(), msg.size(), data());
+                data()[msg.size()] = '\0';
             }
 
             type(
@@ -129,49 +149,14 @@ private:
                 size_t skip,
                 std::string_view msg
             ) noexcept :
+                refcount(1),
                 skip(skip),
                 resolved(true),
                 trace{.full = std::move(trace)},
                 length(msg.size())
             {
                 std::copy_n(msg.data(), msg.size(), data());
-            }
-
-            type(const type& other) noexcept :
-                skip(other.skip),
-                resolved(other.resolved),
-                trace(resolved ?
-                    Trace{.raw = other.trace.raw} :
-                    Trace{.full = other.trace.full}
-                ),
-                what(other.what),
-                length(other.length)
-            {
-                std::copy_n(other.data(), other.length, data());
-            }
-
-            type& operator=(const type& other) noexcept {
-                skip = other.skip;
-                if (resolved) {
-                    if (other.resolved) {
-                        trace.full = other.trace.full;
-                    } else {
-                        std::destroy_at(&trace.full);
-                        std::construct_at(&trace.raw, other.trace.raw);
-                    }
-                } else {
-                    if (other.resolved) {
-                        std::destroy_at(&trace.raw);
-                        std::construct_at(&trace.full, other.trace.full);
-                    } else {
-                        trace.raw = other.trace.raw;
-                    }
-                }
-                resolved = other.resolved;
-                what = other.what;
-                length = other.length;
-                std::copy_n(other.data(), other.length, data());
-                return *this;
+                data()[msg.size()] = '\0';
             }
 
             constexpr ~type() noexcept {
@@ -183,25 +168,21 @@ private:
             }
         };
 
-        /* The unique pointer also includes enough buffer space to store the exception
+        /* The storage pointer also includes enough buffer space to hold the exception
         message inline, in order to limit heap allocations.  The `type` header will
         occupy the first `sizeof(type)` bytes of the buffer, followed by the message,
-        whose length is included in the header. */
-        std::unique_ptr<char[]> run_time;
+        whose length is included in the header, followed by a null byte. */
+        type* run_time;
 
-        /* Access the header of the run_time buffer. */
-        type* get() noexcept {
-            return reinterpret_cast<type*>(run_time.get());
-        }
-
-        /* Access the header of the run_time buffer. */
-        const type* get() const noexcept {
-            return reinterpret_cast<const type*>(run_time.get());
-        }
+        /// TODO: if/when I separate this union out into an implementation detail,
+        /// I could provide constructors that automate the allocation/assignment
+        /// details.  That would probably be the maximal reusage way to do this.
 
         constexpr ~storage() noexcept {}
     } m_storage;
     bool m_compiled;
+
+    using info = storage::type;
 
     static std::string format_frame(const cpptrace::stacktrace_frame& frame) {
         std::string result = "    File \"" + frame.filename + "\", line ";
@@ -228,18 +209,14 @@ protected:
             if consteval {
                 return {.compile_time = msg.data()};
             } else {
-                std::unique_ptr p = std::make_unique<char[]>(
-                    sizeof(typename storage::type) + msg.size()
-                );
-                std::construct_at(
-                    reinterpret_cast<typename storage::type*>(
-                        p.get()
+                return {.run_time = std::construct_at(
+                    reinterpret_cast<info*>(
+                        new std::byte[sizeof(info) + msg.size() + 1]  // +1 for null
                     ),
                     cpptrace::generate_raw_trace(1),
                     trace.skip,
                     msg
-                );
-                return {.run_time = std::move(p)};
+                )};
             }
         }(trace, msg)),
         m_compiled(std::is_constant_evaluated())
@@ -253,16 +230,12 @@ public:
             if consteval {
                 return {.compile_time = msg.data()};
             } else {
-                std::unique_ptr p = std::make_unique<char[]>(
-                    sizeof(typename storage::type) + msg.size()
-                );
-                std::construct_at(
-                    reinterpret_cast<typename storage::type*>(
-                        p.get()
+                return {.run_time = std::construct_at(
+                    reinterpret_cast<info*>(
+                        new std::byte[sizeof(info) + msg.size() + 1]  // +1 for null
                     ),
                     msg
-                );
-                return {.run_time = std::move(p)};
+                )};
             }
         }(msg)),
         m_compiled(std::is_constant_evaluated())
@@ -272,35 +245,31 @@ public:
         cpptrace::raw_trace&& trace,
         std::string_view msg = {}
     ) noexcept :
-        m_storage{.run_time = std::make_unique<char[]>(
-            sizeof(typename storage::type) + msg.size()
-        )},
-        m_compiled(false)
-    {
-        std::construct_at(
-            m_storage.get(),
+        m_storage{.run_time = std::construct_at(
+            reinterpret_cast<info*>(
+                new std::byte[sizeof(info) + msg.size() + 1]  // +1 for null
+            ),
             std::move(trace),
             0,
             msg
-        );
-    }
+        )},
+        m_compiled(false)
+    {}
 
     [[nodiscard]] explicit Exception(
         cpptrace::stacktrace&& trace,
         std::string_view msg = {}
     ) noexcept :
-        m_storage{.run_time = std::make_unique<char[]>(
-            sizeof(typename storage::type) + msg.size()
-        )},
-        m_compiled(false)
-    {
-        std::construct_at(
-            m_storage.get(),
+        m_storage{.run_time = std::construct_at(
+            reinterpret_cast<info*>(
+                new std::byte[sizeof(info) + msg.size() + 1]  // +1 for null
+            ),
             std::move(trace),
             0,
             msg
-        );
-    }
+        )},
+        m_compiled(false)
+    {}
 
     [[nodiscard]] constexpr Exception(const Exception& other) noexcept :
         m_storage([](const Exception& other) noexcept -> storage {
@@ -310,17 +279,9 @@ public:
                 if (other.compiled()) {
                     return {.compile_time = other.m_storage.compile_time};
                 }
-                auto* o = other.m_storage.get();
-                std::unique_ptr p = std::make_unique<char[]>(
-                    sizeof(typename storage::type) + o->length
-                );
-                std::construct_at(
-                    reinterpret_cast<typename storage::type*>(
-                        p.get()
-                    ),
-                    *other.m_storage.get()
-                );
-                return {.run_time = std::move(p)};
+                return {.run_time = const_cast<info*>(
+                    other.m_storage.run_time->incref()
+                )};
             }
         }(other)),
         m_compiled(other.compiled())
@@ -334,7 +295,9 @@ public:
                 if (other.compiled()) {
                     return {.compile_time = other.m_storage.compile_time};
                 }
-                return {.run_time = std::move(other.m_storage.run_time)};
+                info* p = other.m_storage.run_time;
+                other.m_storage.run_time = nullptr;
+                return {.run_time = p};
             }
         }(std::move(other))),
         m_compiled(other.compiled())
@@ -349,37 +312,20 @@ public:
                     if (other.compiled()) {
                         m_storage.compile_time = other.m_storage.compile_time;
                     } else {
-                        std::destroy_at(&m_storage.compile_time);
-                        std::construct_at(
-                            &m_storage.run_time,
-                            std::make_unique<char[]>(
-                                sizeof(typename storage::type) +
-                                other.m_storage.get()->length
-                            )
-                        );
-                        std::construct_at(
-                            m_storage.get(),
-                            *other.m_storage.get()
+                        m_storage.run_time = const_cast<info*>(
+                            other.m_storage.run_time->incref()
                         );
                     }
                 } else {
+                    if (m_storage.run_time) {
+                        m_storage.run_time->decref();
+                    }
                     if (other.compiled()) {
-                        std::destroy_at(&m_storage.run_time);
-                        std::construct_at(
-                            &m_storage.compile_time,
-                            other.m_storage.compile_time
-                        );
+                        m_storage.compile_time = other.m_storage.compile_time;
                     } else {
-                        auto* s = m_storage.get();
-                        auto* o = other.m_storage.get();
-                        if (o->length <= s->length) {  // reuse the same buffer
-                            *s = *o;
-                        } else {  // allocate a new buffer
-                            m_storage.run_time = std::make_unique<char[]>(
-                                sizeof(typename storage::type) + o->length
-                            );
-                            std::construct_at(m_storage.get(), *o);
-                        }
+                        m_storage.run_time = const_cast<info*>(
+                            other.m_storage.run_time->incref()
+                        );
                     }
                 }
             }
@@ -397,21 +343,18 @@ public:
                     if (other.compiled()) {
                         m_storage.compile_time = other.m_storage.compile_time;
                     } else {
-                        std::destroy_at(&m_storage.compile_time);
-                        std::construct_at(
-                            &m_storage.run_time,
-                            std::move(other.m_storage.run_time)
-                        );
+                        m_storage.run_time = other.m_storage.run_time;
+                        other.m_storage.run_time = nullptr;
                     }
                 } else {
+                    if (m_storage.run_time) {
+                        m_storage.run_time->decref();
+                    }
                     if (other.compiled()) {
-                        std::destroy_at(&m_storage.run_time);
-                        std::construct_at(
-                            &m_storage.compile_time,
-                            std::move(other.m_storage.compile_time)
-                        );
+                        m_storage.compile_time = other.m_storage.compile_time;
                     } else {
-                        m_storage.run_time = std::move(other.m_storage.run_time);
+                        m_storage.run_time = other.m_storage.run_time;
+                        other.m_storage.run_time = nullptr;
                     }
                 }
             }
@@ -420,13 +363,9 @@ public:
     }
 
     constexpr virtual ~Exception() noexcept {
-        if consteval {
-            std::destroy_at(&m_storage.compile_time);
-        } else {
-            if (compiled()) {
-                std::destroy_at(&m_storage.compile_time);
-            } else {
-                std::destroy_at(&m_storage.run_time);
+        if !consteval {
+            if (!compiled() && m_storage.run_time) {
+                m_storage.run_time->decref();
             }
         }
     }
@@ -556,7 +495,7 @@ public:
             if (m_compiled) {
                 return nullptr;
             }
-            const typename storage::type& r = *m_storage.get();
+            const info& r = *m_storage.run_time;
             if (r.resolved) {
                 return &r.trace.full;
             }
@@ -590,7 +529,7 @@ public:
             if (m_compiled) {
                 return m_storage.compile_time;
             }
-            return {m_storage.get()->data(), m_storage.get()->length};
+            return {m_storage.run_time->data(), m_storage.run_time->length};
         }
     }
 
@@ -604,7 +543,7 @@ public:
             if (m_compiled) {
                 return m_storage.compile_time;
             }
-            const typename storage::type& r = *m_storage.get();
+            const typename storage::type& r = *m_storage.run_time;
             if (r.what.empty()) {
                 r.what = "Traceback (most recent call last):\n";
                 if (const cpptrace::stacktrace* trace = this->trace()) {
@@ -621,7 +560,7 @@ public:
     /* Clear the exception's what() cache, forcing it to be recomputed the next time
     it is requested. */
     void flush() noexcept {
-        m_storage.get()->what.clear();
+        m_storage.run_time->what.clear();
     }
 
     /* A type index for this exception, which can be searched in the global
@@ -631,15 +570,7 @@ public:
     }
 
     /* Re-raise this error as the proper type if it has been caught polymorphically. */
-    [[noreturn]] virtual void raise() const {
-        throw *this;
-    }
-
-    /* Re-raise this error as the proper type if it has been caught polymorphically.
-    The error will be moved into C++'s internal  */
-    [[noreturn]] virtual void raise() && {
-        throw std::move(*this);
-    }
+    [[noreturn]] virtual void raise() const { throw *this; }
 
     /* Throw the most recent C++ exception as a corresponding Python error, pushing it
     onto the active interpreter.  If there is no unhandled exception for this thread or
@@ -660,11 +591,10 @@ public:
         {}                                                                              \
                                                                                         \
     public:                                                                             \
+        [[noreturn]] virtual void raise() const override { throw *this; }               \
         [[nodiscard]] virtual std::type_index type() const noexcept override {          \
             return typeid(CLS);                                                         \
         }                                                                               \
-        [[noreturn]] virtual void raise() const override { throw *this; }               \
-        [[noreturn]] virtual void raise() && override { throw std::move(*this); }       \
                                                                                         \
         [[nodiscard]] explicit constexpr CLS(std::string_view msg = {}) noexcept :      \
             BASE(get_trace{}, msg)                                                      \
@@ -766,11 +696,10 @@ protected:
     {}
 
 public:
+    [[noreturn]] virtual void raise() const override { throw *this; }
     [[nodiscard]] virtual std::type_index type() const noexcept override {
         return typeid(UnicodeDecodeError);
     }
-    [[noreturn]] virtual void raise() const override { throw *this; }
-    [[noreturn]] virtual void raise() && override { throw std::move(*this); }
 
     std::string encoding;
     std::string object;
@@ -866,11 +795,10 @@ protected:
     {}
 
 public:
+    [[noreturn]] virtual void raise() const override { throw *this; }
     [[nodiscard]] virtual std::type_index type() const noexcept override {
         return typeid(UnicodeEncodeError);
     }
-    [[noreturn]] virtual void raise() const override { throw *this; }
-    [[noreturn]] virtual void raise() && override { throw std::move(*this); }
 
     std::string encoding;
     std::string object;
@@ -964,11 +892,10 @@ protected:
     {}
 
 public:
+    [[noreturn]] virtual void raise() const override { throw *this; }
     [[nodiscard]] virtual std::type_index type() const noexcept override {
         return typeid(UnicodeTranslateError);
     }
-    [[noreturn]] virtual void raise() const override { throw *this; }
-    [[noreturn]] virtual void raise() && override { throw std::move(*this); }
 
     std::string object;
     ssize_t start;
