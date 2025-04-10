@@ -3890,6 +3890,11 @@ namespace bertrand {
 
         static_assert(sizeof(TypeError) == 24);
         static_assert(sizeof(Expected<int, TypeError>) == 32);
+        static_assert(sizeof(Optional<int>) == 16);
+
+        static constexpr TypeError err("test");
+        TypeError err2("test2");
+        static_assert(err.message() == "test");
     }
 
 }

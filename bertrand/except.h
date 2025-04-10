@@ -39,6 +39,22 @@ namespace impl {
 */
 
 
+/// TODO: it might be possible to extract the backing union from the `Exception` class
+/// and use it within `Expected<>` to densely pack all of the discriminators.  That
+/// would reduce the overhead of expecteds down to 24-32 bytes, depending on whether
+/// there are multiple error states, which is amazingly efficient, and perfectly
+/// matches `std::expected`.
+
+/// TODO: the only trick here is that I need to swap the internals over to using
+/// custom reference counting rather than a unique pointer, since otherwise copy
+/// semantics would get unnecessarily expensive.  This is probably a good idea anyways,
+/// but most importantly, it means that accessing `expected.error()` will always
+/// return a new error object, which might be a trivial copy.
+
+
+
+
+
 /// TODO: in C++26 with constexpr exceptions, `Exception` can inherit from
 /// std::exception, but not before, since its constructors are not marked as constexpr
 
@@ -64,11 +80,8 @@ private:
         /* At runtime, we also store a full traceback to the error location, as well
         as a mutable cache for the `what()` message.  This information is stored in a
         unique pointer so as not to contribute to the `Exception`'s overall size. */
-        struct RunTime {
-            /// TODO: I can probably inline the message buffer into the `RunTime`
-            /// struct itself, which would provide more locality and reduce the
-            /// number of overall allocations on the exception path.
-            std::string message;
+        struct type {
+            /// TODO: figure out skips to hide exception internals
             mutable size_t skip;
             mutable bool resolved;
             union Trace {
@@ -77,57 +90,67 @@ private:
                 constexpr ~Trace() noexcept {}
             } trace;
             mutable std::string what;
+            size_t length;
 
-            /// TODO: figure out skips to hide exception internals
+            /* The exception message is inlined directly after this header struct. */
+            char* data() noexcept {
+                return reinterpret_cast<char*>(this + 1);
+            }
 
-            template <meta::explicitly_convertible_to<std::string> T>
-            RunTime(T&& message) noexcept :
-                message(std::forward<T>(message)),
+            /* The exception message is inlined directly after this header struct. */
+            const char* data() const noexcept {
+                return reinterpret_cast<const char*>(this + 1);
+            }
+
+            type(std::string_view msg) noexcept :
                 skip(0),
                 resolved(false),
-                trace{.raw = cpptrace::generate_raw_trace(1)} // skip this constructor
-            {}
+                trace{.raw = cpptrace::generate_raw_trace(1)}, // skip this constructor
+                length(msg.size())
+            {
+                std::copy_n(msg.data(), msg.size(), data());
+            }
 
-            template <meta::explicitly_convertible_to<std::string> T>
-            RunTime(cpptrace::raw_trace&& trace, size_t skip, T&& message) noexcept :
-                message(std::forward<T>(message)),
+            type(
+                cpptrace::raw_trace&& trace,
+                size_t skip,
+                std::string_view msg
+            ) noexcept :
                 skip(skip),
                 resolved(false),
-                trace{.raw = std::move(trace)}
-            {}
+                trace{.raw = std::move(trace)},
+                length(msg.size())
+            {
+                std::copy_n(msg.data(), msg.size(), data());
+            }
 
-            template <meta::explicitly_convertible_to<std::string> T>
-            RunTime(cpptrace::stacktrace&& trace, size_t skip, T&& message) noexcept :
-                message(std::forward<T>(message)),
+            type(
+                cpptrace::stacktrace&& trace,
+                size_t skip,
+                std::string_view msg
+            ) noexcept :
                 skip(skip),
                 resolved(true),
-                trace{.full = std::move(trace)}
-            {}
+                trace{.full = std::move(trace)},
+                length(msg.size())
+            {
+                std::copy_n(msg.data(), msg.size(), data());
+            }
 
-            RunTime(const RunTime& other) noexcept :
-                message(other.message),
+            type(const type& other) noexcept :
                 skip(other.skip),
                 resolved(other.resolved),
                 trace(resolved ?
                     Trace{.raw = other.trace.raw} :
                     Trace{.full = other.trace.full}
                 ),
-                what(other.what)
-            {}
+                what(other.what),
+                length(other.length)
+            {
+                std::copy_n(other.data(), other.length, data());
+            }
 
-            RunTime(RunTime&& other) noexcept :
-                message(std::move(other.message)),
-                skip(other.skip),
-                resolved(other.resolved),
-                trace(resolved ?
-                    Trace{.raw = std::move(other.trace.raw)} :
-                    Trace{.full = std::move(other.trace.full)}
-                ),
-                what(std::move(other.what))
-            {}
-
-            RunTime& operator=(const RunTime& other) noexcept {
-                message = other.message;
+            type& operator=(const type& other) noexcept {
                 skip = other.skip;
                 if (resolved) {
                     if (other.resolved) {
@@ -146,37 +169,12 @@ private:
                 }
                 resolved = other.resolved;
                 what = other.what;
+                length = other.length;
+                std::copy_n(other.data(), other.length, data());
                 return *this;
             }
 
-            RunTime& operator=(RunTime&& other) noexcept {
-                message = std::move(other.message);
-                skip = other.skip;
-                if (resolved) {
-                    if (other.resolved) {
-                        trace.full = std::move(other.trace.full);
-                    } else {
-                        std::destroy_at(&trace.full);
-                        std::construct_at(
-                            &trace.raw,
-                            std::move(other.trace.raw)
-                        );
-                    }
-                } else {
-                    if (other.resolved) {
-                        std::destroy_at(&trace.raw);
-                        std::construct_at(
-                            &trace.full,
-                            std::move(other.trace.full)
-                        );
-                    } else {
-                        trace.raw = std::move(other.trace.raw);
-                    }
-                }
-                return *this;
-            }
-
-            constexpr ~RunTime() noexcept {
+            constexpr ~type() noexcept {
                 if (resolved) {
                     std::destroy_at(&trace.full);
                 } else {
@@ -184,7 +182,22 @@ private:
                 }
             }
         };
-        std::unique_ptr<RunTime> run_time;
+
+        /* The unique pointer also includes enough buffer space to store the exception
+        message inline, in order to limit heap allocations.  The `type` header will
+        occupy the first `sizeof(type)` bytes of the buffer, followed by the message,
+        whose length is included in the header. */
+        std::unique_ptr<char[]> run_time;
+
+        /* Access the header of the run_time buffer. */
+        type* get() noexcept {
+            return reinterpret_cast<type*>(run_time.get());
+        }
+
+        /* Access the header of the run_time buffer. */
+        const type* get() const noexcept {
+            return reinterpret_cast<const type*>(run_time.get());
+        }
 
         constexpr ~storage() noexcept {}
     } m_storage;
@@ -215,11 +228,18 @@ protected:
             if consteval {
                 return {.compile_time = msg.data()};
             } else {
-                return {.run_time = std::make_unique<typename storage::RunTime>(
-                    cpptrace::generate_raw_trace(1),  // skip wrapping lambda
+                std::unique_ptr p = std::make_unique<char[]>(
+                    sizeof(typename storage::type) + msg.size()
+                );
+                std::construct_at(
+                    reinterpret_cast<typename storage::type*>(
+                        p.get()
+                    ),
+                    cpptrace::generate_raw_trace(1),
                     trace.skip,
                     msg
-                )};
+                );
+                return {.run_time = std::move(p)};
             }
         }(trace, msg)),
         m_compiled(std::is_constant_evaluated())
@@ -233,7 +253,16 @@ public:
             if consteval {
                 return {.compile_time = msg.data()};
             } else {
-                return {.run_time = std::make_unique<typename storage::RunTime>(msg)};
+                std::unique_ptr p = std::make_unique<char[]>(
+                    sizeof(typename storage::type) + msg.size()
+                );
+                std::construct_at(
+                    reinterpret_cast<typename storage::type*>(
+                        p.get()
+                    ),
+                    msg
+                );
+                return {.run_time = std::move(p)};
             }
         }(msg)),
         m_compiled(std::is_constant_evaluated())
@@ -243,25 +272,35 @@ public:
         cpptrace::raw_trace&& trace,
         std::string_view msg = {}
     ) noexcept :
-        m_storage{.run_time = std::make_unique<typename storage::RunTime>(
+        m_storage{.run_time = std::make_unique<char[]>(
+            sizeof(typename storage::type) + msg.size()
+        )},
+        m_compiled(false)
+    {
+        std::construct_at(
+            m_storage.get(),
             std::move(trace),
             0,
             msg
-        )},
-        m_compiled(false)
-    {}
+        );
+    }
 
     [[nodiscard]] explicit Exception(
         cpptrace::stacktrace&& trace,
         std::string_view msg = {}
     ) noexcept :
-        m_storage{.run_time = std::make_unique<typename storage::RunTime>(
+        m_storage{.run_time = std::make_unique<char[]>(
+            sizeof(typename storage::type) + msg.size()
+        )},
+        m_compiled(false)
+    {
+        std::construct_at(
+            m_storage.get(),
             std::move(trace),
             0,
             msg
-        )},
-        m_compiled(false)
-    {}
+        );
+    }
 
     [[nodiscard]] constexpr Exception(const Exception& other) noexcept :
         m_storage([](const Exception& other) noexcept -> storage {
@@ -271,9 +310,17 @@ public:
                 if (other.compiled()) {
                     return {.compile_time = other.m_storage.compile_time};
                 }
-                return {.run_time = std::make_unique<typename storage::RunTime>(
-                    *other.m_storage.run_time
-                )};
+                auto* o = other.m_storage.get();
+                std::unique_ptr p = std::make_unique<char[]>(
+                    sizeof(typename storage::type) + o->length
+                );
+                std::construct_at(
+                    reinterpret_cast<typename storage::type*>(
+                        p.get()
+                    ),
+                    *other.m_storage.get()
+                );
+                return {.run_time = std::move(p)};
             }
         }(other)),
         m_compiled(other.compiled())
@@ -305,9 +352,14 @@ public:
                         std::destroy_at(&m_storage.compile_time);
                         std::construct_at(
                             &m_storage.run_time,
-                            std::make_unique<typename storage::RunTime>(
-                                *other.m_storage.run_time
+                            std::make_unique<char[]>(
+                                sizeof(typename storage::type) +
+                                other.m_storage.get()->length
                             )
+                        );
+                        std::construct_at(
+                            m_storage.get(),
+                            *other.m_storage.get()
                         );
                     }
                 } else {
@@ -318,9 +370,16 @@ public:
                             other.m_storage.compile_time
                         );
                     } else {
-                        m_storage.run_time = std::make_unique<typename storage::RunTime>(
-                            *other.m_storage.run_time
-                        );
+                        auto* s = m_storage.get();
+                        auto* o = other.m_storage.get();
+                        if (o->length <= s->length) {  // reuse the same buffer
+                            *s = *o;
+                        } else {  // allocate a new buffer
+                            m_storage.run_time = std::make_unique<char[]>(
+                                sizeof(typename storage::type) + o->length
+                            );
+                            std::construct_at(m_storage.get(), *o);
+                        }
                     }
                 }
             }
@@ -389,7 +448,7 @@ public:
                 return (std::forward<Self>(self));
             }
             ++n;  // always skip this method
-            typename storage::RunTime& s = *self.m_storage.run_time;
+            typename storage::type& s = *self.m_storage.run_time;
             if (s.resolved) {
                 if (n >= s.trace.full.frames.size()) {
                     s.trace.full.frames.clear();
@@ -421,7 +480,7 @@ public:
                 return std::forward<Self>(self);  // no frames to cut
             }
             cpptrace::frame_ptr pivot = curr.frames[curr.frames.size() - offset];
-            typename storage::RunTime& s = *self.m_storage.run_time;
+            typename storage::type& s = *self.m_storage.run_time;
             if (s.resolved) {
                 for (size_t i = s.trace.full.frames.size(); i-- > s.skip;) {
                     if (s.trace.full.frames[i].raw_address == pivot) {
@@ -464,7 +523,7 @@ public:
                 return std::forward<Self>(self);  // no frames to cut
             }
             cpptrace::frame_ptr pivot = curr.frames[offset];
-            typename storage::RunTime& s = *self.m_storage.run_time;
+            typename storage::type& s = *self.m_storage.run_time;
             if (s.resolved) {
                 for (size_t i = s.skip; i < s.trace.full.frames.size(); ++i) {
                     if (s.trace.full.frames[i].raw_address == pivot) {
@@ -497,7 +556,7 @@ public:
             if (m_compiled) {
                 return nullptr;
             }
-            const typename storage::RunTime& r = *m_storage.run_time;
+            const typename storage::type& r = *m_storage.get();
             if (r.resolved) {
                 return &r.trace.full;
             }
@@ -531,7 +590,7 @@ public:
             if (m_compiled) {
                 return m_storage.compile_time;
             }
-            return m_storage.run_time->message;
+            return {m_storage.get()->data(), m_storage.get()->length};
         }
     }
 
@@ -545,7 +604,7 @@ public:
             if (m_compiled) {
                 return m_storage.compile_time;
             }
-            const typename storage::RunTime& r = *m_storage.run_time;
+            const typename storage::type& r = *m_storage.get();
             if (r.what.empty()) {
                 r.what = "Traceback (most recent call last):\n";
                 if (const cpptrace::stacktrace* trace = this->trace()) {
@@ -553,7 +612,7 @@ public:
                         r.what += format_frame(trace->frames[i]);
                     }
                 }
-                r.what += r.message;
+                r.what += std::string_view{r.data(), r.length};
             }
             return r.what.data();
         }
@@ -562,7 +621,7 @@ public:
     /* Clear the exception's what() cache, forcing it to be recomputed the next time
     it is requested. */
     void flush() noexcept {
-        m_storage.run_time->what.clear();
+        m_storage.get()->what.clear();
     }
 
     /* A type index for this exception, which can be searched in the global
